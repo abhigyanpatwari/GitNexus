@@ -1,6 +1,8 @@
-# 🔍 GitNexus - Code Knowledge Graph Explorer
+# 🔍 CodeNexus - Edge Knowledge Graph Creator with Graph RAG
 
-GitNexus is a comprehensive code analysis and exploration tool that transforms repositories into interactive knowledge graphs, enabling AI-powered insights about code structure, relationships, and functionality.
+**Transform any codebase into an interactive knowledge graph in your browser. No servers, no setup - just instant Graph RAG-powered code intelligence.**
+
+CodeNexus is a client-side knowledge graph creator that runs entirely in your browser. Drop in a GitHub repo or ZIP file, and get an interactive knowledge graph with AI-powered chat interface. Perfect for code exploration, documentation, and understanding complex codebases through Graph RAG (Retrieval-Augmented Generation).
 
 ## ✨ Features
 
@@ -550,6 +552,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**GitNexus** - Transforming code into knowledge, one repository at a time. 🚀
+**CodeNexus** - Edge Knowledge Graph Creator with instant Graph RAG. Zero setup, maximum insight. 🚀
 
-*Now with enhanced reliability, performance optimization, and comprehensive error handling for production-ready code analysis.* 
+*Browser-native code intelligence that runs anywhere, anytime - no servers required.* 
