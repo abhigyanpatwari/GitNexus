@@ -47,47 +47,151 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
   const convertToD3Format = (graph: KnowledgeGraph) => {
     const nodeIds = new Set<string>();
     
-    // Convert nodes
-    const nodes: D3Node[] = graph.nodes.map((node: GraphNode) => {
-      nodeIds.add(node.id);
+    // First pass: collect all node IDs and analyze the graph structure
+    graph.nodes.forEach(node => nodeIds.add(node.id));
+    
+    // Calculate node metrics for intelligent sizing
+    const nodeMetrics = new Map<string, {
+      inDegree: number;
+      outDegree: number;
+      totalDegree: number;
+      depth: number;
+      isRoot: boolean;
+      childrenCount: number;
+    }>();
+    
+    // Initialize metrics
+    graph.nodes.forEach(node => {
+      nodeMetrics.set(node.id, {
+        inDegree: 0,
+        outDegree: 0,
+        totalDegree: 0,
+        depth: 0,
+        isRoot: false,
+        childrenCount: 0
+      });
+    });
+    
+    // Calculate degrees and relationships
+    graph.relationships.forEach(rel => {
+      const sourceMetrics = nodeMetrics.get(rel.source);
+      const targetMetrics = nodeMetrics.get(rel.target);
       
-      // Determine node color and size based on type
+      if (sourceMetrics && targetMetrics) {
+        sourceMetrics.outDegree++;
+        targetMetrics.inDegree++;
+        
+        // For CONTAINS relationships, count children
+        if (rel.type.toLowerCase() === 'contains') {
+          sourceMetrics.childrenCount++;
+        }
+      }
+    });
+    
+    // Calculate total degree and identify root nodes
+    nodeMetrics.forEach((metrics) => {
+      metrics.totalDegree = metrics.inDegree + metrics.outDegree;
+      // Root nodes typically have high out-degree and low/zero in-degree
+      metrics.isRoot = metrics.inDegree === 0 && metrics.outDegree > 0;
+    });
+    
+    // Calculate depth (simplified - could be more sophisticated)
+    const calculateDepth = (nodeId: string, visited = new Set<string>()): number => {
+      if (visited.has(nodeId)) return 0;
+      visited.add(nodeId);
+      
+      const parentRels = graph.relationships.filter(rel => 
+        rel.target === nodeId && rel.type.toLowerCase() === 'contains'
+      );
+      
+      if (parentRels.length === 0) return 0; // Root level
+      
+      const parentDepths = parentRels.map(rel => calculateDepth(rel.source, new Set(visited)));
+      return Math.max(...parentDepths, 0) + 1;
+    };
+    
+    // Calculate depths for all nodes
+    graph.nodes.forEach(node => {
+      const metrics = nodeMetrics.get(node.id);
+      if (metrics) {
+        metrics.depth = calculateDepth(node.id);
+      }
+    });
+    
+    // Convert nodes with intelligent sizing
+    const nodes: D3Node[] = graph.nodes.map((node: GraphNode) => {
+      const metrics = nodeMetrics.get(node.id)!;
+      
+      // Determine base color and size based on type
       let color = '#69b3a2';
-      let size = 8;
+      let baseSize = 8;
       
       switch (node.label.toLowerCase()) {
         case 'project':
           color = '#2E7D32';
-          size = 20;
+          baseSize = 25; // Largest - project root
           break;
         case 'folder':
           color = '#F57C00';
-          size = 12;
+          baseSize = 16;
           break;
         case 'file':
           color = '#1976D2';
-          size = 10;
+          baseSize = 12;
           break;
         case 'function':
           color = '#00796B';
-          size = 8;
+          baseSize = 8;
           break;
         case 'method':
           color = '#00695C';
-          size = 7;
+          baseSize = 7;
           break;
         case 'class':
           color = '#C2185B';
-          size = 10;
+          baseSize = 12;
           break;
         case 'variable':
           color = '#546E7A';
-          size = 6;
+          baseSize = 6;
           break;
         default:
           color = '#69b3a2';
-          size = 8;
+          baseSize = 8;
       }
+      
+      // Calculate final size based on multiple factors
+      let finalSize = baseSize;
+      
+      // Factor 1: Hierarchy depth (higher levels = bigger)
+      const depthMultiplier = Math.max(0.7, 1.5 - (metrics.depth * 0.15));
+      finalSize *= depthMultiplier;
+      
+      // Factor 2: Connection importance (more connections = bigger)
+      if (metrics.totalDegree > 0) {
+        const connectionMultiplier = 1 + Math.min(0.8, metrics.totalDegree * 0.1);
+        finalSize *= connectionMultiplier;
+      }
+      
+      // Factor 3: Container nodes (nodes with children) should be bigger
+      if (metrics.childrenCount > 0) {
+        const containerMultiplier = 1 + Math.min(0.6, metrics.childrenCount * 0.08);
+        finalSize *= containerMultiplier;
+      }
+      
+      // Factor 4: Root nodes get a boost
+      if (metrics.isRoot) {
+        finalSize *= 1.4;
+      }
+      
+      // Factor 5: Special boost for hub nodes (high degree centrality)
+      if (metrics.totalDegree > 10) {
+        finalSize *= 1.3;
+        color = adjustColorBrightness(color, 20); // Make hub nodes slightly brighter
+      }
+      
+      // Ensure size bounds
+      finalSize = Math.max(4, Math.min(35, finalSize));
       
       return {
         id: node.id,
@@ -95,11 +199,13 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
         nodeType: node.label.toLowerCase(),
         properties: node.properties,
         color,
-        size
+        size: Math.round(finalSize),
+        // Store metrics for potential future use
+        metrics
       };
     });
 
-    // Convert links with validation
+    // Convert links with validation (unchanged)
     const links: D3Link[] = [];
     graph.relationships.forEach((rel: GraphRelationship) => {
       // Validate that both source and target nodes exist
@@ -150,6 +256,18 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
     });
 
     return { nodes, links };
+  };
+
+  // Helper function to adjust color brightness
+  const adjustColorBrightness = (hex: string, percent: number): string => {
+    const num = parseInt(hex.replace("#", ""), 16);
+    const amt = Math.round(2.55 * percent);
+    const R = (num >> 16) + amt;
+    const G = (num >> 8 & 0x00FF) + amt;
+    const B = (num & 0x0000FF) + amt;
+    return "#" + (0x1000000 + (R < 255 ? R < 1 ? 0 : R : 255) * 0x10000 +
+      (G < 255 ? G < 1 ? 0 : G : 255) * 0x100 +
+      (B < 255 ? B < 1 ? 0 : B : 255)).toString(16).slice(1);
   };
 
   // Initialize D3 visualization
@@ -435,18 +553,17 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
 
   const defaultStyle: React.CSSProperties = {
     width: '100%',
-    height: style.height || '700px',
-    minHeight: '600px',
+    height: '100%',
+    minHeight: '400px',
     border: '1px solid #37474F',
     borderRadius: '8px',
     backgroundColor: '#263238',
-    position: 'relative',
     boxShadow: '0 4px 20px rgba(0,0,0,0.1)',
     ...style
   };
 
   return (
-    <div className={`graph-visualization ${className}`} style={{ position: 'relative', width: '100%', minHeight: '600px' }}>
+    <div className={`graph-visualization ${className}`} style={{ position: 'relative', width: '100%', height: '100%', minHeight: '400px' }}>
       <svg
         ref={svgRef}
         style={defaultStyle}

@@ -618,6 +618,11 @@ const HomePage: React.FC = () => {
             100% { transform: rotate(360deg); }
           }
           
+          #root {
+            height: 100vh;
+            width: 100vw;
+          }
+          
           input:focus, textarea:focus {
             border-color: ${colors.primary} !important;
             box-shadow: 0 0 0 3px ${colors.primary}20 !important;

@@ -226,6 +226,151 @@ public class ${name.replace(/\.[^/.]+$/, "")} {
     }
   };
 
+  // Generate content for built-in functions
+  const generateBuiltinFunctionContent = (functionName: string): string => {
+    switch (functionName) {
+      case 'round':
+        return `# Built-in Function: ${functionName}
+"""
+Rounds a number to the nearest integer.
+"""
+
+def round(number: float, ndigits: int = 0) -> float:
+    """
+    Rounds a number to the nearest integer.
+    Args:
+        number (float): The number to round.
+        ndigits (int, optional): The number of decimal places to round to. Defaults to 0.
+    Returns:
+        float: The rounded number.
+    """
+    # Implementation here
+    pass`;
+      case 'len':
+        return `# Built-in Function: ${functionName}
+"""
+Returns the number of items in an object.
+"""
+
+def len(obj: Any) -> int:
+    """
+    Returns the number of items in an object.
+    Args:
+        obj (Any): The object to get the length of.
+    Returns:
+        int: The number of items.
+    """
+    # Implementation here
+    pass`;
+      case 'print':
+        return `# Built-in Function: ${functionName}
+"""
+Prints the given arguments to the standard output.
+"""
+
+def print(*args, sep: str = " ", end: str = "\\n") -> None:
+    """
+    Prints the given arguments to the standard output.
+    Args:
+        *args: The arguments to print.
+        sep (str, optional): The separator between arguments. Defaults to " ".
+        end (str, optional): The string to print at the end. Defaults to "\\n".
+    """
+    # Implementation here
+    pass`;
+      case 'input':
+        return `# Built-in Function: ${functionName}
+"""
+Reads a line from the standard input.
+"""
+
+def input(prompt: str = "") -> str:
+    """
+    Reads a line from the standard input.
+    Args:
+        prompt (str, optional): The prompt to display. Defaults to "".
+    Returns:
+        str: The input string.
+    """
+    # Implementation here
+    pass`;
+      case 'open':
+        return `# Built-in Function: ${functionName}
+"""
+Opens a file and returns a file object.
+"""
+
+def open(file: str, mode: str = "r", buffering: int = -1, encoding: str | None = None, errors: str | None = None, newline: str | None = None) -> Any:
+    """
+    Opens a file and returns a file object.
+    Args:
+        file (str): The path to the file.
+        mode (str, optional): The mode in which the file is opened. Defaults to "r".
+        buffering (int, optional): The buffering strategy. Defaults to -1.
+        encoding (str | None, optional): The encoding to use. Defaults to None.
+        errors (str | None, optional): How to handle encoding errors. Defaults to None.
+        newline (str | None, optional): How to handle newlines. Defaults to None.
+    Returns:
+        Any: The file object.
+    """
+    # Implementation here
+    pass`;
+      case 'type':
+        return `# Built-in Function: ${functionName}
+"""
+Returns the type of an object.
+"""
+
+def type(obj: Any) -> type:
+    """
+    Returns the type of an object.
+    Args:
+        obj (Any): The object to get the type of.
+    Returns:
+        type: The type of the object.
+    """
+    # Implementation here
+    pass`;
+      case 'isinstance':
+        return `# Built-in Function: ${functionName}
+"""
+Checks if an object is an instance of a class or a tuple of classes.
+"""
+
+def isinstance(obj: Any, classinfo: type | tuple[type, ...]) -> bool:
+    """
+    Checks if an object is an instance of a class or a tuple of classes.
+    Args:
+        obj (Any): The object to check.
+        classinfo (type | tuple[type, ...]): The class or tuple of classes to check against.
+    Returns:
+        bool: True if the object is an instance of the class or one of the classes in the tuple.
+    """
+    # Implementation here
+    pass`;
+      case 'hasattr':
+        return `# Built-in Function: ${functionName}
+"""
+Checks if an object has an attribute.
+"""
+
+def hasattr(obj: Any, name: str) -> bool:
+    """
+    Checks if an object has an attribute.
+    Args:
+        obj (Any): The object to check.
+        name (str): The name of the attribute to check for.
+    Returns:
+        bool: True if the object has the attribute, False otherwise.
+    """
+    # Implementation here
+    pass`;
+      default:
+        return `# Built-in Function: ${functionName}
+# No specific content available`;
+    }
+  };
+
   // Get source info for selected node
   const sourceInfo = useMemo((): SourceInfo | null => {
     if (!selectedNodeId || !graph?.nodes) return null;
@@ -258,19 +403,62 @@ public class ${name.replace(/\.[^/.]+$/, "")} {
       // If still no file path, try reverse lookup by searching for the node name in file contents
       if (!filePath && fileContents) {
         console.log('SourceViewer - Searching file contents for node:', nodeName);
+        
+        // Try multiple search patterns for the function
+        const searchPatterns = [
+          `def ${nodeName}(`,           // Python function
+          `def ${nodeName} (`,          // Python function with space
+          `function ${nodeName}(`,      // JavaScript function
+          `function ${nodeName} (`,     // JavaScript function with space
+          `const ${nodeName} =`,        // JavaScript const
+          `let ${nodeName} =`,          // JavaScript let
+          `var ${nodeName} =`,          // JavaScript var
+          `class ${nodeName}`,          // Class definition
+          `${nodeName}:`,               // Object property or TypeScript type
+          `export const ${nodeName}`,   // ES6 export
+          `export function ${nodeName}`, // ES6 export function
+          `public ${nodeName}(`,        // Java/C# method
+          `private ${nodeName}(`,       // Java/C# method
+          `protected ${nodeName}(`,     // Java/C# method
+          // Also try with underscores and variations
+          `def ${nodeName}_`,           // Python with underscore
+          `function ${nodeName}_`,      // JavaScript with underscore
+        ];
+        
         for (const [path, content] of fileContents) {
-          const patterns = [
-            `def ${nodeName}(`,           // Python function
-            `function ${nodeName}(`,      // JavaScript function
-            `const ${nodeName} =`,        // JavaScript const
-            `class ${nodeName}`,          // Class definition
-            `${nodeName}:`,               // Object property or TypeScript type
-          ];
+          console.log(`SourceViewer - Checking file: ${path}`);
           
-          if (patterns.some(pattern => content.includes(pattern))) {
+          // Check if any pattern matches
+          const foundPattern = searchPatterns.find(pattern => {
+            const found = content.includes(pattern);
+            if (found) {
+              console.log(`SourceViewer - Found pattern "${pattern}" in ${path}`);
+            }
+            return found;
+          });
+          
+          if (foundPattern) {
             filePath = path;
             console.log('SourceViewer - Found file through content search:', filePath);
             break;
+          }
+        }
+        
+        // If still not found, try a more lenient search (case-insensitive)
+        if (!filePath) {
+          console.log('SourceViewer - Trying case-insensitive search for:', nodeName);
+          for (const [path, content] of fileContents) {
+            const lowerContent = content.toLowerCase();
+            const lowerNodeName = nodeName.toLowerCase();
+            
+            if (lowerContent.includes(`def ${lowerNodeName}(`) || 
+                lowerContent.includes(`function ${lowerNodeName}(`) ||
+                lowerContent.includes(`const ${lowerNodeName} =`) ||
+                lowerContent.includes(`class ${lowerNodeName}`)) {
+              filePath = path;
+              console.log('SourceViewer - Found file through case-insensitive search:', filePath);
+              break;
+            }
           }
         }
       }
@@ -285,7 +473,23 @@ public class ${name.replace(/\.[^/.]+$/, "")} {
       fileName,
       nodeLabel: node.label,
       nodeProperties: node.properties,
-      fileContentsSize: fileContents?.size || 0
+      fileContentsSize: fileContents?.size || 0,
+      // Add detailed relationship debugging
+      allRelationships: graph?.relationships?.length || 0,
+      containsRelationships: graph?.relationships?.filter(rel => rel.type === 'CONTAINS').length || 0,
+      relationshipsForThisNode: graph?.relationships?.filter(rel => rel.target === selectedNodeId || rel.source === selectedNodeId) || [],
+      fileNodesInGraph: graph?.nodes?.filter(n => n.label === 'File').map(n => ({
+        id: n.id,
+        path: n.properties.path,
+        filePath: n.properties.filePath,
+        name: n.properties.name
+      })) || [],
+      availableFileContents: fileContents ? Array.from(fileContents.entries()).map(([path, content]) => ({
+        path,
+        size: content.length,
+        firstLines: content.split('\n').slice(0, 3).join('\\n'),
+        containsSub: content.includes('def sub(') || content.includes('function sub(')
+      })) : []
     });
 
     // Try to get actual file content
@@ -304,8 +508,20 @@ public class ${name.replace(/\.[^/.]+$/, "")} {
         }
       }
     } else {
-      console.log('SourceViewer - No file content found, using mock content');
-      content = generateMockContent(node);
+      console.log('SourceViewer - No file content found, checking if this is a built-in function');
+      
+      // Check if this is a built-in function
+      if (node.id.includes('builtin_') || nodeName === 'round' || nodeName === 'len' || nodeName === 'print' || 
+          ['round', 'len', 'str', 'int', 'float', 'bool', 'list', 'dict', 'tuple', 'set',
+           'range', 'enumerate', 'zip', 'map', 'filter', 'sum', 'max', 'min', 'abs',
+           'print', 'input', 'open', 'type', 'isinstance', 'hasattr'].includes(nodeName)) {
+        
+        content = generateBuiltinFunctionContent(nodeName);
+        console.log('SourceViewer - Using built-in function content for:', nodeName);
+      } else {
+        console.log('SourceViewer - Using mock content for user-defined node:', nodeName);
+        content = generateMockContent(node);
+      }
     }
 
     // Detect language from file extension
