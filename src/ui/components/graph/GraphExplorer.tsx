@@ -32,6 +32,33 @@ const GraphExplorer: React.FC<GraphExplorerProps> = ({
     }
   };
 
+  const handleDownloadKG = () => {
+    if (!graph) return;
+
+    const kgData = {
+      nodes: graph.nodes,
+      relationships: graph.relationships,
+      metadata: {
+        exportDate: new Date().toISOString(),
+        nodeCount: graph.nodes.length,
+        relationshipCount: graph.relationships.length,
+        version: "1.0"
+      }
+    };
+
+    const jsonString = JSON.stringify(kgData, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `knowledge-graph-${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   // Warm tone colors to match the new theme
   const colors = {
     background: '#FEF9F0', // Slightly warm white
@@ -67,7 +94,30 @@ const GraphExplorer: React.FC<GraphExplorerProps> = ({
     marginBottom: '16px',
     display: 'flex',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%'
+  };
+
+  const titleLeftStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
     gap: '12px'
+  };
+
+  const downloadButtonStyle: React.CSSProperties = {
+    padding: '8px 16px',
+    backgroundColor: colors.primary,
+    color: '#FFFFFF',
+    border: 'none',
+    borderRadius: '6px',
+    fontSize: '14px',
+    fontWeight: '500',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    transition: 'all 0.2s ease',
+    boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
   };
 
   const statsContainerStyle: React.CSSProperties = {
@@ -142,8 +192,28 @@ const GraphExplorer: React.FC<GraphExplorerProps> = ({
       {/* Header with Statistics */}
       <div style={headerStyle}>
         <div style={titleStyle}>
-          <span>🕸️</span>
-          <span>Knowledge Graph</span>
+          <div style={titleLeftStyle}>
+            <span>🕸️</span>
+            <span>Knowledge Graph</span>
+          </div>
+          <button 
+            onClick={handleDownloadKG}
+            style={downloadButtonStyle}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = '#B45309';
+              e.currentTarget.style.transform = 'translateY(-1px)';
+              e.currentTarget.style.boxShadow = '0 4px 8px rgba(0,0,0,0.15)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = colors.primary;
+              e.currentTarget.style.transform = 'translateY(0)';
+              e.currentTarget.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
+            }}
+            title="Download Knowledge Graph as JSON"
+          >
+            <span>💾</span>
+            <span>Download KG</span>
+          </button>
         </div>
         
         <div style={statsContainerStyle}>
