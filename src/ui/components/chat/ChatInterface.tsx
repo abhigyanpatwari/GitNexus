@@ -30,6 +30,10 @@ interface LLMSettings {
   model: string;
   temperature: number;
   maxTokens: number;
+  // Azure OpenAI specific fields
+  azureOpenAIEndpoint?: string;
+  azureOpenAIDeploymentName?: string;
+  azureOpenAIApiVersion?: string;
 }
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({
@@ -50,7 +54,10 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     apiKey: '',
     model: 'gpt-4o-mini',
     temperature: 0.1,
-    maxTokens: 4000
+    maxTokens: 4000,
+    azureOpenAIEndpoint: '',
+    azureOpenAIDeploymentName: '',
+    azureOpenAIApiVersion: '2024-02-01'
   });
 
   // Services
@@ -65,6 +72,30 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   useEffect(() => {
     ragOrchestrator.setContext({ graph, fileContents });
   }, [graph, fileContents, ragOrchestrator]);
+
+  // Load settings from localStorage on mount
+  useEffect(() => {
+    const savedProvider = localStorage.getItem('llm_provider') as LLMProvider;
+    const savedApiKey = localStorage.getItem('llm_api_key');
+    const savedAzureEndpoint = localStorage.getItem('azure_openai_endpoint');
+    const savedAzureDeployment = localStorage.getItem('azure_openai_deployment');
+    const savedAzureApiVersion = localStorage.getItem('azure_openai_api_version');
+
+    if (savedProvider || savedApiKey || savedAzureEndpoint) {
+      setLLMSettings(prev => ({
+        ...prev,
+        provider: savedProvider || prev.provider,
+        apiKey: savedApiKey || prev.apiKey,
+        azureOpenAIEndpoint: savedAzureEndpoint || prev.azureOpenAIEndpoint,
+        azureOpenAIDeploymentName: savedAzureDeployment || prev.azureOpenAIDeploymentName,
+        azureOpenAIApiVersion: savedAzureApiVersion || prev.azureOpenAIApiVersion,
+        // For Azure OpenAI, use deployment name as model, otherwise use default model
+        model: savedProvider === 'azure-openai' 
+          ? (savedAzureDeployment || 'gpt-4.1-mini-v2')
+          : (savedProvider ? llmService.getAvailableModels(savedProvider)[0] : prev.model)
+      }));
+    }
+  }, [llmService]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -89,6 +120,20 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       return;
     }
 
+    // Additional validation for Azure OpenAI
+    if (llmSettings.provider === 'azure-openai') {
+      if (!llmSettings.azureOpenAIEndpoint?.trim()) {
+        alert('Please configure your Azure OpenAI endpoint in settings');
+        setShowSettings(true);
+        return;
+      }
+      if (!llmSettings.azureOpenAIDeploymentName?.trim()) {
+        alert('Please configure your Azure OpenAI deployment name in settings');
+        setShowSettings(true);
+        return;
+      }
+    }
+
     const userMessage: ChatMessage = {
       id: generateId(),
       role: 'user',
@@ -106,7 +151,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         apiKey: llmSettings.apiKey,
         model: llmSettings.model,
         temperature: llmSettings.temperature,
-        maxTokens: llmSettings.maxTokens
+        maxTokens: llmSettings.maxTokens,
+        // Azure OpenAI specific fields
+        azureOpenAIEndpoint: llmSettings.azureOpenAIEndpoint,
+        azureOpenAIDeploymentName: llmSettings.azureOpenAIDeploymentName,
+        azureOpenAIApiVersion: llmSettings.azureOpenAIApiVersion
       };
 
       const ragOptions: RAGOptions = {
@@ -321,22 +370,35 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 style={{ width: '100%', padding: '6px', fontSize: '14px' }}
               >
                 <option value="openai">OpenAI</option>
+                <option value="azure-openai">Azure OpenAI</option>
                 <option value="anthropic">Anthropic</option>
                 <option value="gemini">Google Gemini</option>
               </select>
             </div>
             
             <div>
-              <label style={{ fontSize: '12px', color: '#666' }}>Model</label>
-              <select
-                value={llmSettings.model}
-                onChange={(e) => setLLMSettings(prev => ({ ...prev, model: e.target.value }))}
-                style={{ width: '100%', padding: '6px', fontSize: '14px' }}
-              >
-                {getAvailableModels().map(model => (
-                  <option key={model} value={model}>{model}</option>
-                ))}
-              </select>
+              <label style={{ fontSize: '12px', color: '#666' }}>
+                {llmSettings.provider === 'azure-openai' ? 'Deployment Name' : 'Model'}
+              </label>
+              {llmSettings.provider === 'azure-openai' ? (
+                <input
+                  type="text"
+                  value={llmSettings.model}
+                  onChange={(e) => setLLMSettings(prev => ({ ...prev, model: e.target.value }))}
+                  placeholder="gpt-4.1-mini-v2"
+                  style={{ width: '100%', padding: '6px', fontSize: '14px' }}
+                />
+              ) : (
+                <select
+                  value={llmSettings.model}
+                  onChange={(e) => setLLMSettings(prev => ({ ...prev, model: e.target.value }))}
+                  style={{ width: '100%', padding: '6px', fontSize: '14px' }}
+                >
+                  {getAvailableModels().map(model => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+                </select>
+              )}
             </div>
           </div>
 
@@ -346,10 +408,41 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
               type="password"
               value={llmSettings.apiKey}
               onChange={(e) => setLLMSettings(prev => ({ ...prev, apiKey: e.target.value }))}
-              placeholder="Enter your API key"
+              placeholder={
+                llmSettings.provider === 'azure-openai' ? 'Your Azure OpenAI key...' :
+                llmSettings.provider === 'anthropic' ? 'sk-ant-...' :
+                llmSettings.provider === 'gemini' ? 'Your Google API key...' : 'sk-...'
+              }
               style={{ width: '100%', padding: '6px', fontSize: '14px' }}
             />
           </div>
+
+          {/* Azure OpenAI Specific Fields */}
+          {llmSettings.provider === 'azure-openai' && (
+            <>
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ fontSize: '12px', color: '#666' }}>Azure OpenAI Endpoint</label>
+                <input
+                  type="text"
+                  value={llmSettings.azureOpenAIEndpoint || ''}
+                  onChange={(e) => setLLMSettings(prev => ({ ...prev, azureOpenAIEndpoint: e.target.value }))}
+                  placeholder="https://your-resource.openai.azure.com"
+                  style={{ width: '100%', padding: '6px', fontSize: '14px' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ fontSize: '12px', color: '#666' }}>API Version</label>
+                <input
+                  type="text"
+                  value={llmSettings.azureOpenAIApiVersion || '2024-02-01'}
+                  onChange={(e) => setLLMSettings(prev => ({ ...prev, azureOpenAIApiVersion: e.target.value }))}
+                  placeholder="2024-02-01"
+                  style={{ width: '100%', padding: '6px', fontSize: '14px' }}
+                />
+              </div>
+            </>
+          )}
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
             <div>
@@ -379,6 +472,48 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 style={{ width: '100%', padding: '6px', fontSize: '14px' }}
               />
             </div>
+          </div>
+
+          {/* Save Button */}
+          <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+            <button
+              onClick={() => {
+                // Save to localStorage
+                localStorage.setItem('llm_provider', llmSettings.provider);
+                localStorage.setItem('llm_api_key', llmSettings.apiKey);
+                if (llmSettings.azureOpenAIEndpoint) {
+                  localStorage.setItem('azure_openai_endpoint', llmSettings.azureOpenAIEndpoint);
+                }
+                // For Azure OpenAI, the model field contains the deployment name
+                if (llmSettings.provider === 'azure-openai' && llmSettings.model) {
+                  localStorage.setItem('azure_openai_deployment', llmSettings.model);
+                }
+                if (llmSettings.azureOpenAIApiVersion) {
+                  localStorage.setItem('azure_openai_api_version', llmSettings.azureOpenAIApiVersion);
+                }
+                setShowSettings(false);
+                alert('Settings saved successfully!');
+              }}
+              style={{
+                ...buttonStyle,
+                backgroundColor: '#28a745',
+                fontSize: '12px',
+                padding: '8px 16px'
+              }}
+            >
+              💾 Save Settings
+            </button>
+            <button
+              onClick={() => setShowSettings(false)}
+              style={{
+                ...buttonStyle,
+                backgroundColor: '#6c757d',
+                fontSize: '12px',
+                padding: '8px 16px'
+              }}
+            >
+              Cancel
+            </button>
           </div>
         </div>
       )}

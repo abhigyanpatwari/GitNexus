@@ -1,10 +1,11 @@
 import { ChatOpenAI } from '@langchain/openai';
+import { AzureChatOpenAI } from '@langchain/openai';
 import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import type { BaseMessage } from '@langchain/core/messages';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 
-export type LLMProvider = 'openai' | 'anthropic' | 'gemini';
+export type LLMProvider = 'openai' | 'azure-openai' | 'anthropic' | 'gemini';
 
 export interface LLMConfig {
   provider: LLMProvider;
@@ -13,6 +14,10 @@ export interface LLMConfig {
   temperature?: number;
   maxTokens?: number;
   maxRetries?: number;
+  // Azure OpenAI specific fields
+  azureOpenAIEndpoint?: string;
+  azureOpenAIApiVersion?: string;
+  azureOpenAIDeploymentName?: string;
 }
 
 export interface ChatResponse {
@@ -31,14 +36,16 @@ export class LLMService {
   private defaultConfig: Partial<LLMConfig> = {
     temperature: 0.1,
     maxTokens: 4000,
-    maxRetries: 3
+    maxRetries: 3,
+    azureOpenAIApiVersion: '2024-02-01' // Default Azure OpenAI API version
   };
 
   // Default models for each provider
   private static readonly DEFAULT_MODELS: Record<LLMProvider, string> = {
     openai: 'gpt-4o-mini',
+    'azure-openai': 'gpt-4o-mini',
     anthropic: 'claude-3-haiku-20240307',
-    gemini: 'gemini-1.5-flash'
+    gemini: 'gemini-2.5-flash'  // Use the latest 2.5 Flash model as default (2025)
   };
 
   constructor() {}
@@ -103,6 +110,9 @@ export class LLMService {
     switch (provider) {
       case 'openai':
         return apiKey.startsWith('sk-') && apiKey.length > 20;
+      case 'azure-openai':
+        // Azure OpenAI keys are typically 32 characters long and don't have a specific prefix
+        return apiKey.length >= 20; // More flexible validation for Azure keys
       case 'anthropic':
         return apiKey.startsWith('sk-ant-') && apiKey.length > 20;
       case 'gemini':
@@ -110,6 +120,29 @@ export class LLMService {
       default:
         return false;
     }
+  }
+
+  /**
+   * Validate Azure OpenAI configuration
+   */
+  public validateAzureOpenAIConfig(config: LLMConfig): { valid: boolean; error?: string } {
+    if (config.provider !== 'azure-openai') {
+      return { valid: false, error: 'Provider must be azure-openai' };
+    }
+
+    if (!config.azureOpenAIEndpoint) {
+      return { valid: false, error: 'Azure OpenAI endpoint is required' };
+    }
+
+    if (!config.azureOpenAIEndpoint.includes('openai.azure.com')) {
+      return { valid: false, error: 'Invalid Azure OpenAI endpoint format. Should contain "openai.azure.com"' };
+    }
+
+    if (!config.azureOpenAIDeploymentName) {
+      return { valid: false, error: 'Azure OpenAI deployment name is required' };
+    }
+
+    return { valid: true };
   }
 
   /**
@@ -125,6 +158,16 @@ export class LLMService {
           'gpt-4',
           'gpt-3.5-turbo'
         ];
+      case 'azure-openai':
+        return [
+          'gpt-4o',
+          'gpt-4o-mini', 
+          'gpt-4.1-mini-v2', // Common deployment name
+          'gpt-4-turbo',
+          'gpt-4',
+          'gpt-35-turbo', // Note: Azure uses gpt-35-turbo instead of gpt-3.5-turbo
+          'gpt-4-32k'
+        ];
       case 'anthropic':
         return [
           'claude-3-5-sonnet-20241022',
@@ -135,9 +178,14 @@ export class LLMService {
         ];
       case 'gemini':
         return [
-          'gemini-1.5-pro',
-          'gemini-1.5-flash',
-          'gemini-1.0-pro'
+          'gemini-2.5-flash',         // Latest and fastest (2025) - NEW DEFAULT
+          'gemini-2.5-pro',           // Latest pro model (2025) - PREMIUM
+          'gemini-1.5-flash',         // Most stable and widely available
+          'gemini-1.5-pro',           // Stable pro model
+          'gemini-1.0-pro',           // Legacy but very stable
+          'gemini-1.5-flash-8b',      // Smaller, efficient version
+          'gemini-2.0-flash',         // Newer model (may not be available to all users)
+          'gemini-2.0-flash-lite'     // Lightweight version
         ];
       default:
         return [];
@@ -151,6 +199,8 @@ export class LLMService {
     switch (provider) {
       case 'openai':
         return 'OpenAI';
+      case 'azure-openai':
+        return 'Azure OpenAI';
       case 'anthropic':
         return 'Anthropic';
       case 'gemini':
@@ -165,6 +215,17 @@ export class LLMService {
    */
   public async testConnection(config: LLMConfig): Promise<{ success: boolean; error?: string }> {
     try {
+      // Validate Azure OpenAI config if needed
+      if (config.provider === 'azure-openai') {
+        const validation = this.validateAzureOpenAIConfig(config);
+        if (!validation.valid) {
+          return {
+            success: false,
+            error: validation.error
+          };
+        }
+      }
+
       const model = this.createChatModel(config);
       
       // Send a simple test message
@@ -211,6 +272,19 @@ export class LLMService {
           timeout: 30000
         });
 
+      case 'azure-openai':
+        return new AzureChatOpenAI({
+          azureOpenAIApiKey: config.apiKey,
+          model: config.azureOpenAIDeploymentName, // Use deployment name as model
+          temperature: mergedConfig.temperature,
+          maxTokens: mergedConfig.maxTokens,
+          maxRetries: mergedConfig.maxRetries,
+          timeout: 30000,
+          azureOpenAIApiInstanceName: config.azureOpenAIEndpoint?.replace('https://', '').split('.')[0],
+          azureOpenAIApiVersion: config.azureOpenAIApiVersion,
+          azureOpenAIApiDeploymentName: config.azureOpenAIDeploymentName
+        });
+
       case 'anthropic':
         return new ChatAnthropic({
           apiKey: config.apiKey,
@@ -240,6 +314,13 @@ export class LLMService {
    */
   private getCacheKey(config: LLMConfig): string {
     const model = config.model || LLMService.DEFAULT_MODELS[config.provider];
-    return `${config.provider}:${model}:${config.apiKey.slice(-8)}:${config.temperature}:${config.maxTokens}`;
+    let baseKey = `${config.provider}:${model}:${config.apiKey.slice(-8)}:${config.temperature}:${config.maxTokens}`;
+    
+    // Add Azure OpenAI specific fields to cache key
+    if (config.provider === 'azure-openai') {
+      baseKey += `:${config.azureOpenAIEndpoint}:${config.azureOpenAIDeploymentName}:${config.azureOpenAIApiVersion}`;
+    }
+    
+    return baseKey;
   }
 } 

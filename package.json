@@ -11,8 +11,8 @@
   },
   "dependencies": {
     "@langchain/anthropic": "^0.1.21",
-    "@langchain/core": "^0.1.62",
-    "@langchain/google-genai": "^0.0.11",
+    "@langchain/core": "^0.3.66",
+    "@langchain/google-genai": "^0.2.16",
     "@langchain/langgraph": "^0.0.26",
     "@langchain/openai": "^0.0.28",
     "@types/d3": "^7.4.3",
