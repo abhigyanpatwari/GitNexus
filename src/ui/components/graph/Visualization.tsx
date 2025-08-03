@@ -179,8 +179,7 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
       selector: '.selected',
       style: {
         'border-width': '4px',
-        'border-color': '#FF5722',
-        'box-shadow': '0 0 20px rgba(255, 87, 34, 0.6)'
+        'border-color': '#FF5722'
       }
     },
     // Base edge styles
@@ -191,8 +190,7 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
         'line-color': '#666',
         'target-arrow-color': '#666',
         'target-arrow-shape': 'triangle',
-        'curve-style': 'bezier',
-        'arrow-scale': '1.2'
+        'curve-style': 'bezier'
       }
     },
     // CONTAINS relationships
@@ -243,13 +241,27 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
   useEffect(() => {
     if (!containerRef.current || !graph) return;
 
+    console.log('=== INITIALIZING CYTOSCAPE ===');
+    console.log('Container ref:', containerRef.current);
+    console.log('Container dimensions:', {
+      width: containerRef.current.offsetWidth,
+      height: containerRef.current.offsetHeight,
+      clientWidth: containerRef.current.clientWidth,
+      clientHeight: containerRef.current.clientHeight
+    });
+    console.log('Graph nodes:', graph.nodes.length);
+    console.log('Graph relationships:', graph.relationships.length);
+
     const elements = convertToElements(graph);
+    console.log('Converted elements:', elements.length);
+    
     const stylesheet = getStylesheet();
 
     cyRef.current = cytoscape({
       container: containerRef.current,
       elements,
-      style: stylesheet as unknown as cytoscape.StylesheetStyle[],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      style: stylesheet as any,
       layout: {
         name: 'dagre',
         rankDir: 'TB',
@@ -257,7 +269,8 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
         nodeSep: 50,
         edgeSep: 10,
         rankSep: 100
-      } as unknown as cytoscape.LayoutOptions,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
       // Interaction options
       minZoom: 0.1,
       maxZoom: 3,
@@ -265,6 +278,9 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
       boxSelectionEnabled: false,
       autounselectify: false
     });
+
+    console.log('Cytoscape instance created:', cyRef.current);
+    console.log('Cytoscape elements count:', cyRef.current.elements().length);
 
     // Handle node click events
     cyRef.current.on('tap', 'node', (event: cytoscape.EventObject) => {
@@ -294,6 +310,17 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
     });
 
     setIsReady(true);
+    console.log('=== CYTOSCAPE INITIALIZED SUCCESSFULLY ===');
+
+    // Force fit and center the graph
+    setTimeout(() => {
+      if (cyRef.current) {
+        console.log('Fitting graph to container...');
+        cyRef.current.fit(undefined, 50);
+        cyRef.current.center();
+        console.log('Graph fitted and centered');
+      }
+    }, 100);
 
     // Cleanup function
     return () => {
@@ -335,15 +362,17 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
 
   const defaultStyle: React.CSSProperties = {
     width: '100%',
-    height: '600px',
+    height: style.height || '600px',
+    minHeight: '400px',
     border: '1px solid #ddd',
     borderRadius: '4px',
     backgroundColor: '#fafafa',
+    position: 'relative',
     ...style
   };
 
   return (
-    <div className={`graph-visualization ${className}`}>
+    <div className={`graph-visualization ${className}`} style={{ position: 'relative', width: '100%', minHeight: '400px' }}>
       <div
         ref={containerRef}
         style={defaultStyle}
@@ -357,7 +386,8 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
             left: '50%',
             transform: 'translate(-50%, -50%)',
             color: '#666',
-            fontSize: '14px'
+            fontSize: '14px',
+            zIndex: 10
           }}
         >
           Loading graph...

@@ -1,20 +1,31 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import GraphVisualization from './Visualization.tsx';
 import SourceViewer from './SourceViewer.tsx';
 import type { KnowledgeGraph } from '../../../core/graph/types.ts';
 
 interface GraphExplorerProps {
   graph: KnowledgeGraph;
+  fileContents?: Map<string, string>;
   className?: string;
   style?: React.CSSProperties;
 }
 
 const GraphExplorer: React.FC<GraphExplorerProps> = ({
   graph,
+  fileContents,
   className = '',
   style = {}
 }) => {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+
+  // Debug: Log when component receives graph data
+  useEffect(() => {
+    console.log('=== GRAPH EXPLORER RECEIVED GRAPH ===');
+    console.log('Graph nodes:', graph?.nodes?.length || 0);
+    console.log('Graph relationships:', graph?.relationships?.length || 0);
+    console.log('Graph object:', graph);
+    console.log('=====================================');
+  }, [graph]);
 
   const handleNodeSelect = (nodeId: string | null) => {
     setSelectedNodeId(nodeId);
@@ -27,6 +38,9 @@ const GraphExplorer: React.FC<GraphExplorerProps> = ({
     padding: '16px',
     backgroundColor: '#f5f5f5',
     borderRadius: '8px',
+    width: '100%',
+    height: '100%',
+    overflow: 'hidden',
     ...style
   };
 
@@ -74,10 +88,25 @@ const GraphExplorer: React.FC<GraphExplorerProps> = ({
     return acc;
   }, {} as Record<string, number>);
 
-  const relationshipStats = graph.relationships.reduce((acc, rel) => {
-    acc[rel.type] = (acc[rel.type] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
+  function getSelectedNodeName(): string {
+    if (!selectedNodeId) return '';
+    const node = graph.nodes.find(n => n.id === selectedNodeId);
+    return node?.properties.name as string || node?.id || '';
+  }
+
+  function getNodeTypeIcon(nodeType: string): string {
+    switch (nodeType.toLowerCase()) {
+      case 'project': return '📁';
+      case 'folder': return '📂';
+      case 'file': return '📄';
+      case 'module': return '📦';
+      case 'function': return '⚡';
+      case 'method': return '🔧';
+      case 'class': return '🏗️';
+      case 'variable': return '📊';
+      default: return '📄';
+    }
+  }
 
   return (
     <div className={`graph-explorer ${className}`} style={containerStyle}>
@@ -140,31 +169,12 @@ const GraphExplorer: React.FC<GraphExplorerProps> = ({
         <SourceViewer
           graph={graph}
           selectedNodeId={selectedNodeId}
+          fileContents={fileContents}
           style={{ height: '100%' }}
         />
       </div>
     </div>
   );
-
-  function getSelectedNodeName(): string {
-    if (!selectedNodeId) return '';
-    const node = graph.nodes.find(n => n.id === selectedNodeId);
-    return node?.properties.name as string || node?.id || '';
-  }
-
-  function getNodeTypeIcon(nodeType: string): string {
-    switch (nodeType.toLowerCase()) {
-      case 'project': return '📁';
-      case 'folder': return '📂';
-      case 'file': return '📄';
-      case 'module': return '📦';
-      case 'function': return '⚡';
-      case 'method': return '🔧';
-      case 'class': return '🏗️';
-      case 'variable': return '📊';
-      default: return '📄';
-    }
-  }
 };
 
 export default GraphExplorer; 

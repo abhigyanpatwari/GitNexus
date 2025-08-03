@@ -10,6 +10,21 @@ import { exportAndDownloadGraph, calculateExportSize } from '../../lib/export.ts
 import type { KnowledgeGraph } from '../../core/graph/types.ts';
 import type { LLMProvider, LLMConfig } from '../../ai/llm-service.ts';
 
+// Import GitHubFile type
+interface GitHubFile {
+  name: string;
+  path: string;
+  sha: string;
+  size: number;
+  url: string;
+  html_url: string;
+  git_url: string;
+  download_url: string | null;
+  type: 'file' | 'dir';
+  content?: string;
+  encoding?: string;
+}
+
 // Global services singleton to survive component remounts
 interface Services {
   github: GitHubService;
@@ -132,7 +147,11 @@ const ConfirmationDialog: React.FC<ConfirmationDialogProps> = ({
 
         <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
           <button
-            onClick={onCancel}
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              onCancel();
+            }}
             style={{
               padding: '8px 16px',
               border: '1px solid #ddd',
@@ -145,7 +164,11 @@ const ConfirmationDialog: React.FC<ConfirmationDialogProps> = ({
             {cancelText}
           </button>
           <button
-            onClick={onConfirm}
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              onConfirm();
+            }}
             style={{
               padding: '8px 16px',
               border: 'none',
@@ -215,7 +238,7 @@ const HomePage: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [confirmationData, setConfirmationData] = useState<{
-    files: { path: string }[];
+    files: GitHubFile[];
     projectName: string;
   } | null>(null);
 
@@ -369,7 +392,7 @@ const HomePage: React.FC = () => {
       return { isValid: false, error: 'Please enter a GitHub repository URL' };
     }
 
-    const githubUrlPattern = /^https:\/\/github\.com\/([^\/]+)\/([^\/]+)(?:\/.*)?$/;
+    const githubUrlPattern = /^https:\/\/github\.com\/([^/]+)\/([^/]+)(?:\/.*)?$/;
     const match = url.match(githubUrlPattern);
     
     if (!match) {
@@ -381,7 +404,7 @@ const HomePage: React.FC = () => {
 
   // Extract owner and repo from GitHub URL
   const parseGitHubUrl = useCallback((url: string): { owner: string; repo: string } | null => {
-    const githubUrlPattern = /^https:\/\/github\.com\/([^\/]+)\/([^\/]+)(?:\/.*)?$/;
+    const githubUrlPattern = /^https:\/\/github\.com\/([^/]+)\/([^/]+)(?:\/.*)?$/;
     const match = url.match(githubUrlPattern);
     
     if (match) {
@@ -392,7 +415,7 @@ const HomePage: React.FC = () => {
   }, []);
 
   // Filter files based on directory and pattern filters
-  const filterFiles = useCallback((files: any[]): any[] => {
+  const filterFiles = useCallback((files: GitHubFile[]): GitHubFile[] => {
     let filtered = files;
 
     // Filter by directory
@@ -437,13 +460,13 @@ const HomePage: React.FC = () => {
     updateState({ 
       isProcessing: true, 
       error: null, 
-      progress: { phase: 'structure', message: 'Fetching repository...', progress: 0 }
+      progress: { phase: 'structure', message: 'Fetching repository...', progress: 0, timestamp: Date.now() }
     });
 
     try {
       // Fetch repository contents
       updateState({ 
-        progress: { phase: 'structure', message: 'Fetching repository structure...', progress: 10 }
+        progress: { phase: 'structure', message: 'Fetching repository structure...', progress: 10, timestamp: Date.now() }
       });
 
       const allFiles = await services.github.getAllFilesRecursively(parsed.owner, parsed.repo);
@@ -452,7 +475,7 @@ const HomePage: React.FC = () => {
       // Check if repository exceeds file limit
       if (filteredFiles.length > state.maxFiles) {
         setConfirmationData({
-          files: filteredFiles.map(f => ({ path: f.path })),
+          files: filteredFiles,
           projectName: `${parsed.owner}/${parsed.repo}`
         });
         setShowConfirmation(true);
@@ -499,7 +522,7 @@ const HomePage: React.FC = () => {
       logToPersistent('Progress callback set');
 
       updateState({ 
-        progress: { phase: 'parsing', message: 'Starting knowledge graph construction...', progress: 50 }
+        progress: { phase: 'parsing', message: 'Starting knowledge graph construction...', progress: 50, timestamp: Date.now() }
       });
 
       // Process repository
@@ -540,6 +563,13 @@ const HomePage: React.FC = () => {
         });
         logToPersistent('Application state updated');
 
+        // Debug: Log graph data
+        console.log('=== GRAPH SET SUCCESSFULLY ===');
+        console.log('Graph nodes:', result.graph.nodes.length);
+        console.log('Graph relationships:', result.graph.relationships.length);
+        console.log('First few nodes:', result.graph.nodes.slice(0, 3));
+        console.log('================================');
+
         setProcessingStats(stats);
         logToPersistent('Processing stats set');
 
@@ -550,7 +580,8 @@ const HomePage: React.FC = () => {
             progress: { 
               phase: 'complete', 
               message: `Successfully processed ${stats.nodeCount} nodes and ${stats.relationshipCount} relationships!`, 
-              progress: 100 
+              progress: 100,
+              timestamp: Date.now()
             }
           });
           setTimeout(() => {
@@ -583,7 +614,7 @@ const HomePage: React.FC = () => {
   }, [updateState, logToPersistent]);
 
   // Process files from GitHub (used by both normal processing and confirmation)
-  const processFilesFromGitHub = useCallback(async (files: any[], projectName: string) => {
+  const processFilesFromGitHub = useCallback(async (files: GitHubFile[], projectName: string) => {
     const fileContents = new Map<string, string>();
 
     try {
@@ -594,7 +625,7 @@ const HomePage: React.FC = () => {
 
       updateState({ 
         isProcessing: true,
-        progress: { phase: 'structure', message: `Found ${files.length} files. Downloading...`, progress: 20 }
+        progress: { phase: 'structure', message: `Found ${files.length} files. Downloading...`, progress: 20, timestamp: Date.now() }
       });
 
       // Download file contents
@@ -624,7 +655,8 @@ const HomePage: React.FC = () => {
             progress: { 
               phase: 'structure', 
               message: `Downloaded ${processedFiles}/${files.length} files...`, 
-              progress 
+              progress,
+              timestamp: Date.now()
             }
           });
         } catch (error) {
@@ -689,13 +721,13 @@ const HomePage: React.FC = () => {
     updateState({ 
       isProcessing: true, 
       error: null,
-      progress: { phase: 'structure', message: 'Extracting ZIP file...', progress: 0 }
+      progress: { phase: 'structure', message: 'Extracting ZIP file...', progress: 0, timestamp: Date.now() }
     });
 
     try {
       // Extract ZIP contents
       updateState({ 
-        progress: { phase: 'structure', message: 'Reading ZIP file...', progress: 10 }
+        progress: { phase: 'structure', message: 'Reading ZIP file...', progress: 10, timestamp: Date.now() }
       });
 
       const allFileContents = await services.zip.extractTextFiles(state.uploadedFile);
@@ -740,7 +772,17 @@ const HomePage: React.FC = () => {
       if (filePaths.length > state.maxFiles) {
         const projectName = state.uploadedFile.name.replace(/\.zip$/i, '');
         setConfirmationData({
-          files: filePaths.map(path => ({ path })),
+          files: filePaths.map(path => ({
+            name: path.split('/').pop() || path,
+            path,
+            sha: '',
+            size: 0,
+            url: '',
+            html_url: '',
+            git_url: '',
+            download_url: null,
+            type: 'file' as const
+          })),
           projectName
         });
         setShowConfirmation(true);
@@ -752,7 +794,8 @@ const HomePage: React.FC = () => {
         progress: { 
           phase: 'structure', 
           message: `Extracted ${filePaths.length} text files...`, 
-          progress: 30 
+          progress: 30,
+          timestamp: Date.now()
         }
       });
 
@@ -810,11 +853,6 @@ const HomePage: React.FC = () => {
     }
   }, [updateState]);
 
-  // Handle node selection
-  const handleNodeSelect = useCallback((nodeId: string | null) => {
-    updateState({ selectedNodeId: nodeId });
-  }, [updateState]);
-
   // Clear all data
   const clearData = useCallback(() => {
     setState(prev => ({
@@ -847,8 +885,10 @@ const HomePage: React.FC = () => {
     display: 'flex',
     flexDirection: 'column',
     height: '100vh',
+    width: '100vw',
     backgroundColor: '#f5f5f5',
-    fontFamily: 'system-ui, -apple-system, sans-serif'
+    fontFamily: 'system-ui, -apple-system, sans-serif',
+    overflow: 'hidden'
   };
 
   const headerStyle: React.CSSProperties = {
@@ -918,7 +958,9 @@ const HomePage: React.FC = () => {
     display: 'flex',
     gap: '16px',
     padding: '16px',
-    overflow: 'hidden'
+    overflow: 'hidden',
+    width: '100%',
+    height: '100%'
   };
 
   const leftPaneStyle: React.CSSProperties = {
@@ -928,14 +970,16 @@ const HomePage: React.FC = () => {
     backgroundColor: '#fff',
     borderRadius: '8px',
     boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-    overflow: 'hidden'
+    overflow: 'hidden',
+    minWidth: 0
   };
 
   const rightPaneStyle: React.CSSProperties = {
     flex: '1 1 40%',
     display: 'flex',
     flexDirection: 'column',
-    gap: '16px'
+    gap: '16px',
+    minWidth: 0
   };
 
   const panelStyle: React.CSSProperties = {
@@ -979,7 +1023,9 @@ const HomePage: React.FC = () => {
     justifyContent: 'center',
     flexDirection: 'column',
     color: '#666',
-    fontSize: '16px'
+    fontSize: '16px',
+    width: '100%',
+    height: '100%'
   };
 
   const settingsModalStyle: React.CSSProperties = {
@@ -1014,10 +1060,7 @@ const HomePage: React.FC = () => {
 
   return (
     <ErrorBoundary>
-      <div style={containerStyle} onError={(e) => {
-        logToPersistent('Div onError triggered', e);
-        console.error('Div error:', e);
-      }}>
+      <div style={containerStyle}>
         {/* Header */}
         <div style={headerStyle}>
           <div style={titleStyle}>
@@ -1081,7 +1124,11 @@ const HomePage: React.FC = () => {
             {/* Action Buttons */}
             <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
               <button
-                onClick={() => {
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  
                   logToPersistent('Analyze button clicked', {
                     hasGithubUrl: !!state.githubUrl,
                     githubUrl: state.githubUrl,
@@ -1091,13 +1138,16 @@ const HomePage: React.FC = () => {
                     willProcessZip: !state.githubUrl && !!state.uploadedFile
                   });
                   
-                  if (state.githubUrl) {
-                    logToPersistent('Calling processGitHubRepository');
-                    processGitHubRepository();
-                  } else {
-                    logToPersistent('Calling processZipFile');
-                    processZipFile();
-                  }
+                  // Use setTimeout to break out of the current call stack
+                  setTimeout(() => {
+                    if (state.githubUrl) {
+                      logToPersistent('Calling processGitHubRepository');
+                      processGitHubRepository();
+                    } else {
+                      logToPersistent('Calling processZipFile');
+                      processZipFile();
+                    }
+                  }, 0);
                 }}
                 disabled={state.isProcessing || (!state.githubUrl && !state.uploadedFile)}
                 style={buttonStyle('primary')}
@@ -1106,7 +1156,62 @@ const HomePage: React.FC = () => {
               </button>
               
               <button
-                onClick={() => setShowSettings(true)}
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  
+                  console.log('=== CREATING TEST GRAPH ===');
+                  
+                  // Create a simple test graph
+                  const testGraph: KnowledgeGraph = {
+                    nodes: [
+                      {
+                        id: 'node1',
+                        label: 'File' as const,
+                        properties: { name: 'test.js', path: '/test.js' }
+                      },
+                      {
+                        id: 'node2', 
+                        label: 'Function' as const,
+                        properties: { name: 'testFunction', path: '/test.js' }
+                      }
+                    ],
+                    relationships: [
+                      {
+                        id: 'rel1',
+                        source: 'node1',
+                        target: 'node2',
+                        type: 'CONTAINS' as const,
+                        properties: {}
+                      }
+                    ]
+                  };
+                  
+                  console.log('Setting test graph:', testGraph);
+                  
+                  updateState({
+                    graph: testGraph,
+                    fileContents: new Map([['test.js', 'function testFunction() { return "hello"; }']]),
+                    isProcessing: false,
+                    progress: null,
+                    error: null
+                  });
+                  
+                  console.log('=== TEST GRAPH SET ===');
+                }}
+                style={buttonStyle('secondary')}
+                title="Create Test Graph"
+              >
+                🧪 Test
+              </button>
+
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setShowSettings(true);
+                }}
                 style={buttonStyle('secondary')}
                 title="Settings"
               >
@@ -1116,7 +1221,11 @@ const HomePage: React.FC = () => {
               {state.graph && (
                 <>
                   <button
-                    onClick={handleExportGraph}
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      handleExportGraph();
+                    }}
                     style={buttonStyle('secondary')}
                     title={`Export Graph${exportSize ? ` (${exportSize.sizeFormatted})` : ''}`}
                   >
@@ -1124,7 +1233,11 @@ const HomePage: React.FC = () => {
                   </button>
                   
                   <button
-                    onClick={clearData}
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      clearData();
+                    }}
                     style={buttonStyle('danger')}
                     title="Clear Data"
                   >
@@ -1186,6 +1299,7 @@ const HomePage: React.FC = () => {
               <div style={leftPaneStyle}>
                 <GraphExplorer
                   graph={state.graph}
+                  fileContents={state.fileContents}
                   style={{ height: '100%' }}
                 />
               </div>
@@ -1206,7 +1320,11 @@ const HomePage: React.FC = () => {
                       </div>
                       <div>Configure your API key in settings to use the chat interface</div>
                       <button
-                        onClick={() => setShowSettings(true)}
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          setShowSettings(true);
+                        }}
                         style={{ ...buttonStyle('primary'), marginTop: '16px' }}
                       >
                         Open Settings
@@ -1249,7 +1367,11 @@ const HomePage: React.FC = () => {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
                 <h3 style={{ margin: 0 }}>Settings</h3>
                 <button
-                  onClick={() => setShowSettings(false)}
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setShowSettings(false);
+                  }}
                   style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer' }}
                 >
                   ×
@@ -1357,7 +1479,11 @@ const HomePage: React.FC = () => {
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '24px' }}>
                 <button
-                  onClick={() => setShowSettings(false)}
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setShowSettings(false);
+                  }}
                   style={buttonStyle('primary')}
                 >
                   Save Settings

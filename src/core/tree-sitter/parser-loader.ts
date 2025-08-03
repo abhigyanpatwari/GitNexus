@@ -1,4 +1,5 @@
 
+// Import tree-sitter explicitly to ensure Vite pre-optimizes it
 import Parser from "web-tree-sitter";
 
 let parserInstance: Parser | null = null;

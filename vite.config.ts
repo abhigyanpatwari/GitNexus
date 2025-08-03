@@ -15,6 +15,9 @@ export default defineConfig({
     headers: {
       'Cross-Origin-Embedder-Policy': 'require-corp',
       'Cross-Origin-Opener-Policy': 'same-origin'
+    },
+    hmr: {
+      overlay: false
     }
   },
   build: {
@@ -55,8 +58,11 @@ export default defineConfig({
       'retry',
       'p-timeout',
       'p-finally',
-      'eventemitter3'
+      'eventemitter3',
+      'web-tree-sitter',
+      'comlink'
     ],
-    force: true
+    force: true,
+    holdUntilCrawlEnd: true
   }
 })

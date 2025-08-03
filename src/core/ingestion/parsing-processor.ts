@@ -26,23 +26,67 @@ export class ParsingProcessor {
 
     console.log('ParsingProcessor: Processing', filePaths.length, 'files');
 
-    // Temporarily disable tree-sitter parsing due to WASM loading issues
-    console.warn('Tree-sitter parsing temporarily disabled due to WASM loading issues');
-    
-    // Create basic file nodes without parsing
-    for (const filePath of filePaths) {
-      if (this.isPythonFile(filePath)) {
-        const fileNode: GraphNode = {
-          id: generateId('file', filePath),
-          label: 'File',
-          properties: {
-            name: filePath.split('/').pop() || filePath,
-            filePath,
-            extension: '.py',
-            language: 'python'
+    // Enable tree-sitter parsing once WASM files are available
+    try {
+      await this.initializeParser();
+      
+      // Process files with full parsing
+      for (const filePath of filePaths) {
+        if (this.isPythonFile(filePath)) {
+          const definitions = this.parseFile();
+          
+          // Create file node
+          const fileNode: GraphNode = {
+            id: generateId('file', filePath),
+            label: 'File',
+            properties: {
+              name: filePath.split('/').pop() || filePath,
+              filePath,
+              extension: '.py',
+              language: 'python'
+            }
+          };
+          graph.nodes.push(fileNode);
+          
+          // Create definition nodes and relationships
+          for (const definition of definitions) {
+            const defNode = this.createDefinitionNode(filePath, definition);
+            graph.nodes.push(defNode);
+            
+            // Create CONTAINS relationship from file to definition
+            graph.relationships.push({
+              id: generateId('relationship', `${fileNode.id}-contains-${defNode.id}`),
+              type: 'CONTAINS',
+              source: fileNode.id,
+              target: defNode.id,
+              properties: {}
+            });
+            
+            // Create relationships between definitions
+            this.createDefinitionRelationships(graph, filePath, definitions);
           }
-        };
-        graph.nodes.push(fileNode);
+        }
+      }
+      
+      console.log('ParsingProcessor: Full parsing completed');
+    } catch (error) {
+      console.warn('Tree-sitter parsing failed, falling back to basic file nodes:', error);
+      
+      // Fallback: Create basic file nodes without parsing
+      for (const filePath of filePaths) {
+        if (this.isPythonFile(filePath)) {
+          const fileNode: GraphNode = {
+            id: generateId('file', filePath),
+            label: 'File',
+            properties: {
+              name: filePath.split('/').pop() || filePath,
+              filePath,
+              extension: '.py',
+              language: 'python'
+            }
+          };
+          graph.nodes.push(fileNode);
+        }
       }
     }
 
