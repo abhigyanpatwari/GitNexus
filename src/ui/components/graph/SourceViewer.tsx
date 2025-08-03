@@ -27,6 +27,100 @@ const SourceViewer: React.FC<SourceViewerProps> = ({
   className = '',
   style = {}
 }) => {
+  // Warm tone colors to match the new theme
+  const colors = {
+    background: '#FEF9F0', // Slightly warm white
+    surface: '#FFFFFF',
+    text: '#451A03', // Dark brown
+    textSecondary: '#78350F', // Medium brown
+    textMuted: '#A16207', // Light brown
+    border: '#FED7AA', // Light orange
+    borderLight: '#FEF3C7', // Very light orange
+    primary: '#D97706', // Warm orange
+    codeBackground: '#FDF6E3', // Warm cream for code
+    lineNumbers: '#92400E' // Dark orange for line numbers
+  };
+
+  // Extract relevant content from a file for a specific function/class/method
+  const extractRelevantContent = (fileContent: string, targetName: string, nodeType: string): string | null => {
+    const lines = fileContent.split('\n');
+    
+    try {
+      if (nodeType === 'Function') {
+        // Look for function definition patterns
+        const patterns = [
+          new RegExp(`^\\s*def\\s+${targetName}\\s*\\(`),     // Python
+          new RegExp(`^\\s*function\\s+${targetName}\\s*\\(`), // JavaScript
+          new RegExp(`^\\s*const\\s+${targetName}\\s*=`),     // JavaScript const
+          new RegExp(`^\\s*let\\s+${targetName}\\s*=`),       // JavaScript let
+          new RegExp(`^\\s*export\\s+function\\s+${targetName}\\s*\\(`), // ES6 export
+          new RegExp(`^\\s*(public|private|protected)?\\s*\\w*\\s*${targetName}\\s*\\(`) // Java/C#
+        ];
+        
+        for (let i = 0; i < lines.length; i++) {
+          if (patterns.some(pattern => pattern.test(lines[i]))) {
+            // Found the function, now extract it with context
+            const startLine = Math.max(0, i - 2); // Include 2 lines before for context
+            let endLine = i + 1;
+            
+            // Find the end of the function (simple heuristic)
+            let braceCount = 0;
+            const indentLevel = lines[i].match(/^\s*/)?.[0].length || 0;
+            
+            for (let j = i + 1; j < lines.length; j++) {
+              const line = lines[j];
+              const currentIndent = line.match(/^\s*/)?.[0].length || 0;
+              
+              // For Python, use indentation
+              if (lines[i].includes('def ')) {
+                if (line.trim() && currentIndent <= indentLevel && !line.startsWith(' ')) {
+                  break;
+                }
+                endLine = j;
+              } 
+              // For JavaScript/Java, use braces
+              else {
+                braceCount += (line.match(/\{/g) || []).length;
+                braceCount -= (line.match(/\}/g) || []).length;
+                endLine = j;
+                if (braceCount === 0 && j > i) {
+                  break;
+                }
+              }
+              
+              // Safety limit
+              if (j - i > 100) break;
+            }
+            
+            return lines.slice(startLine, endLine + 3).join('\n'); // Include 3 lines after
+          }
+        }
+      }
+      
+      if (nodeType === 'Class') {
+        const patterns = [
+          new RegExp(`^\\s*class\\s+${targetName}\\b`),
+          new RegExp(`^\\s*(public|private)?\\s*class\\s+${targetName}\\b`)
+        ];
+        
+        for (let i = 0; i < lines.length; i++) {
+          if (patterns.some(pattern => pattern.test(lines[i]))) {
+            const startLine = Math.max(0, i - 2);
+            const endLine = i + 20; // Show first 20 lines of class
+            
+            return lines.slice(startLine, Math.min(endLine, lines.length)).join('\n');
+          }
+        }
+      }
+      
+      // If we can't extract specifically, return null to use full file
+      return null;
+    } catch (error) {
+      console.warn('Error extracting content:', error);
+      return null;
+    }
+  };
+
   // Generate mock source content based on node type
   const generateMockContent = (node: GraphNode): string => {
     try {
@@ -58,390 +152,366 @@ const SourceViewer: React.FC<SourceViewerProps> = ({
     """
     Class: ${name}
     """
+    
     def __init__(self):
-        # Constructor implementation
+        # Constructor
         pass`;
 
+        case 'Variable':
+          return `# Variable: ${name}
+${name} = None  # Initialize variable`;
+
         case 'File': {
-          const extension = node.properties.extension as string || '';
-          const language = node.properties.language as string || 'unknown';
+          const path = node.properties.path as string || name;
+          const extension = path.split('.').pop()?.toLowerCase() || 'txt';
           
-          // Handle different file types
-          if (extension === '.js' || extension === '.ts' || extension === '.tsx' || extension === '.jsx') {
-            return `// File: ${name}
-// Path: ${node.properties.filePath || node.properties.path || 'unknown'}
-// Language: JavaScript/TypeScript
+          switch (extension) {
+            case 'py':
+              return `# File: ${path}
+"""
+Python module: ${name}
+"""
 
-// This is a ${language} file in the project
-// Click on specific functions or classes to see their details
+def main():
+    print("Hello from ${name}")
 
-export default function() {
-  // Implementation here
+if __name__ == "__main__":
+    main()`;
+            
+            case 'js':
+            case 'ts':
+              return `// File: ${path}
+/**
+ * JavaScript/TypeScript module: ${name}
+ */
+
+function main() {
+    console.log("Hello from ${name}");
+}
+
+export default main;`;
+            
+            case 'java':
+              return `// File: ${path}
+/**
+ * Java class: ${name}
+ */
+public class ${name.replace(/\.[^/.]+$/, "")} {
+    public static void main(String[] args) {
+        System.out.println("Hello from ${name}");
+    }
 }`;
-          } else {
-            return `# File: ${name}
-# Path: ${node.properties.filePath || node.properties.path || 'unknown'}
-
-# This is a Python file in the project
-# Click on specific functions or classes to see their details`;
+            
+            default:
+              return `// File: ${path}
+// Content of ${name}`;
           }
         }
 
         case 'Folder':
-          return `# Folder: ${name}
-# Path: ${node.properties.path || 'unknown'}
-
-# This folder contains:
-# - Python files (.py)
-# - Other project files
-# 
-# Navigate through the graph to explore the contents`;
+          return `# Directory: ${name}
+# This is a folder containing other files and directories`;
 
         case 'Project':
           return `# Project: ${name}
+# Root directory of the project`;
 
-# This is the root of your project
-# Explore the graph to see:
-# - Project structure
-# - Files and folders
-# - Functions and classes
-# - Code relationships`;
-
-        default: {
-          // Safe JSON stringify for default case
-          const safeStringify = (obj: unknown) => {
-            try {
-              return JSON.stringify(obj, null, 2);
-            } catch {
-              const seen = new WeakSet();
-              return JSON.stringify(obj, (key, val) => {
-                if (val != null && typeof val === "object") {
-                  if (seen.has(val)) {
-                    return "[Circular Reference]";
-                  }
-                  seen.add(val);
-                }
-                if (typeof val === 'function') return "[Function]";
-                if (val instanceof Date) return val.toISOString();
-                if (val instanceof RegExp) return val.toString();
-                return val;
-              }, 2);
-            }
-          };
-
+        default:
           return `# ${node.label}: ${name}
-
-# Node ID: ${node.id}
-# Properties: ${safeStringify(node.properties)}
-
-# This node represents a ${node.label.toLowerCase()} in your codebase`;
-        }
+# No specific content available`;
       }
     } catch (error) {
-      console.error('Error generating mock content:', error);
-      return `# Error generating content for ${node.label}: ${node.properties.name || node.id}
-
-Error: ${error instanceof Error ? error.message : 'Unknown error'}
-
-Node type: ${node.label}
-Node ID: ${node.id}
-
-# This error occurred while trying to generate mock content for display`;
+      return `# Error generating content for ${node.label}
+# ${error instanceof Error ? error.message : 'Unknown error'}`;
     }
   };
 
-  // Get source information for the selected node
+  // Get source info for selected node
   const sourceInfo = useMemo((): SourceInfo | null => {
-    if (!selectedNodeId) return null;
+    if (!selectedNodeId || !graph?.nodes) return null;
 
-    const selectedNode = graph.nodes.find(n => n.id === selectedNodeId);
-    if (!selectedNode) return null;
+    const node = graph.nodes.find(n => n.id === selectedNodeId);
+    if (!node) return null;
 
-    try {
-      // Get file path from node properties
-      const filePath = selectedNode.properties.filePath as string || selectedNode.properties.path as string || '/unknown';
-      
-      // Get file name from path
-      const pathParts = filePath.split('/');
-      const fileName = pathParts[pathParts.length - 1];
-
-      let content: string = '';
-      
-      // Try to get real file contents first
-      if (fileContents && selectedNode.label === 'File') {
-        const realContent = fileContents.get(filePath);
-        if (realContent) {
-          content = realContent;
-        } else {
-          // Try alternative path formats
-          const alternativePaths = [
-            selectedNode.properties.name as string,
-            fileName,
-            filePath.replace(/^\/+/, ''), // Remove leading slashes
-            filePath.replace(/\\/g, '/'), // Normalize path separators
-          ].filter(Boolean);
-          
-          let found = false;
-          for (const altPath of alternativePaths) {
-            const altContent = fileContents.get(altPath);
-            if (altContent) {
-              content = altContent;
-              found = true;
-              break;
-            }
-          }
-          
-          if (!found) {
-            // Fall back to mock content if real content not found
-            content = generateMockContent(selectedNode);
-          }
-        }
-      } else {
-        // For non-file nodes or when fileContents not available, use mock content
-        try {
-          content = generateMockContent(selectedNode);
-        } catch (mockError) {
-          console.error('Error in generateMockContent:', mockError);
-          // If mock content generation fails, create a basic display
-          const extension = selectedNode.properties.extension as string || '';
-          const name = selectedNode.properties.name as string || 'unknown';
-          
-          if (extension === '.js' || extension === '.ts' || extension === '.tsx' || extension === '.jsx') {
-            content = `// File: ${name}
-// Path: ${filePath}
-// Type: JavaScript/TypeScript Build Artifact
-
-// This is a compiled JavaScript file
-// It's part of the build output and contains bundled code
-
-console.log('This is a Next.js build chunk');
-
-// Original source files would show actual code here
-// Build artifacts like this contain minified/compiled code`;
-          } else {
-            content = `# File: ${name}
-# Path: ${filePath}
-
-# This file could not be processed for display
-# Error: ${mockError instanceof Error ? mockError.message : 'Unknown error'}`;
-          }
-        }
-      }
-
-      // Determine language from file extension
-      const extension = selectedNode.properties.extension as string || '';
-      let language = selectedNode.properties.language as string;
-      
-      if (!language) {
-        if (extension === '.js' || extension === '.jsx') {
-          language = 'javascript';
-        } else if (extension === '.ts' || extension === '.tsx') {
-          language = 'typescript';
-        } else if (extension === '.py') {
-          language = 'python';
-        } else if (extension === '.sol') {
-          language = 'solidity';
-        } else {
-          language = 'text';
-        }
-      }
-
-      return {
-        fileName,
-        filePath,
-        content,
-        language,
-        nodeType: selectedNode.label,
-        nodeName: selectedNode.properties.name as string || selectedNode.id
-      };
-    } catch (error) {
-      console.error('Error generating source info:', error);
-      
-      // Safe JSON stringify that handles circular references
-      const safeStringify = (obj: unknown) => {
-        try {
-          return JSON.stringify(obj, null, 2);
-        } catch {
-          // Handle circular references and non-serializable values
-          const seen = new WeakSet();
-          return JSON.stringify(obj, (key, val) => {
-            if (val != null && typeof val === "object") {
-              if (seen.has(val)) {
-                return "[Circular Reference]";
-              }
-              seen.add(val);
-            }
-            // Handle functions and other non-serializable types
-            if (typeof val === 'function') {
-              return "[Function]";
-            }
-            if (val instanceof Date) {
-              return val.toISOString();
-            }
-            if (val instanceof RegExp) {
-              return val.toString();
-            }
-            return val;
-          }, 2);
-        }
-      };
-
-      return {
-        fileName: 'error.txt',
-        filePath: '/error',
-        content: `Error loading source for node: ${selectedNode.id}\n\nNode properties: ${safeStringify(selectedNode.properties)}`,
-        language: 'text',
-        nodeType: selectedNode.label,
-        nodeName: selectedNode.properties.name as string || selectedNode.id
-      };
-    }
-  }, [selectedNodeId, graph, fileContents]);
-
-  // Format line numbers
-  const formatLineNumbers = (content: string, startLine?: number): string => {
-    const lines = content.split('\n');
-    const lineStart = startLine || 1;
+    const nodeName = node.properties.name as string || node.id;
     
-    return lines
-      .map((line, index) => {
-        const lineNumber = (lineStart + index).toString().padStart(3, ' ');
-        return `${lineNumber}│ ${line}`;
-      })
-      .join('\n');
-  };
+    // First, try to get the file path from the node's properties
+    let filePath = node.properties.path as string || node.properties.filePath as string;
+    
+    // If the node doesn't have a direct file path, find it through graph relationships
+    if (!filePath || filePath === nodeName) {
+      console.log('SourceViewer - Finding file through graph relationships for:', nodeName);
+      
+      // Find the file that CONTAINS this node
+      const containsRelationship = graph.relationships?.find(rel => 
+        rel.type === 'CONTAINS' && rel.target === selectedNodeId
+      );
+      
+      if (containsRelationship) {
+        const fileNode = graph.nodes.find(n => n.id === containsRelationship.source);
+        if (fileNode && fileNode.label === 'File') {
+          filePath = fileNode.properties.path as string || fileNode.properties.filePath as string;
+          console.log('SourceViewer - Found file through CONTAINS relationship:', filePath);
+        }
+      }
+      
+      // If still no file path, try reverse lookup by searching for the node name in file contents
+      if (!filePath && fileContents) {
+        console.log('SourceViewer - Searching file contents for node:', nodeName);
+        for (const [path, content] of fileContents) {
+          const patterns = [
+            `def ${nodeName}(`,           // Python function
+            `function ${nodeName}(`,      // JavaScript function
+            `const ${nodeName} =`,        // JavaScript const
+            `class ${nodeName}`,          // Class definition
+            `${nodeName}:`,               // Object property or TypeScript type
+          ];
+          
+          if (patterns.some(pattern => content.includes(pattern))) {
+            filePath = path;
+            console.log('SourceViewer - Found file through content search:', filePath);
+            break;
+          }
+        }
+      }
+    }
 
-  const defaultStyle: React.CSSProperties = {
-    width: '100%',
-    height: '400px',
-    border: '1px solid #ddd',
-    borderRadius: '4px',
-    backgroundColor: '#f8f9fa',
+    const fileName = filePath ? filePath.split('/').pop() || filePath : nodeName;
+
+    console.log('SourceViewer - Final node details:', {
+      nodeId: selectedNodeId,
+      nodeName,
+      filePath,
+      fileName,
+      nodeLabel: node.label,
+      nodeProperties: node.properties,
+      fileContentsSize: fileContents?.size || 0
+    });
+
+    // Try to get actual file content
+    let content = '';
+    
+    if (filePath && fileContents && fileContents.has(filePath)) {
+      content = fileContents.get(filePath)!;
+      console.log('SourceViewer - Found file content for:', filePath);
+      
+      // For function/method/class nodes, try to extract just the relevant part
+      if (node.label === 'Function' || node.label === 'Method' || node.label === 'Class') {
+        const extractedContent = extractRelevantContent(content, nodeName, node.label);
+        if (extractedContent) {
+          content = extractedContent;
+          console.log('SourceViewer - Extracted relevant content for:', nodeName);
+        }
+      }
+    } else {
+      console.log('SourceViewer - No file content found, using mock content');
+      content = generateMockContent(node);
+    }
+
+    // Detect language from file extension
+    const extension = fileName.split('.').pop()?.toLowerCase();
+    let language = 'text';
+    switch (extension) {
+      case 'js':
+      case 'jsx':
+        language = 'javascript';
+        break;
+      case 'ts':
+      case 'tsx':
+        language = 'typescript';
+        break;
+      case 'py':
+        language = 'python';
+        break;
+      case 'java':
+        language = 'java';
+        break;
+      case 'cpp':
+      case 'cc':
+      case 'cxx':
+        language = 'cpp';
+        break;
+      case 'c':
+        language = 'c';
+        break;
+      case 'cs':
+        language = 'csharp';
+        break;
+      case 'php':
+        language = 'php';
+        break;
+      case 'rb':
+        language = 'ruby';
+        break;
+      case 'go':
+        language = 'go';
+        break;
+      case 'rs':
+        language = 'rust';
+        break;
+      case 'swift':
+        language = 'swift';
+        break;
+      case 'kt':
+        language = 'kotlin';
+        break;
+      case 'scala':
+        language = 'scala';
+        break;
+      case 'html':
+        language = 'html';
+        break;
+      case 'css':
+        language = 'css';
+        break;
+      case 'scss':
+        language = 'scss';
+        break;
+      case 'json':
+        language = 'json';
+        break;
+      case 'xml':
+        language = 'xml';
+        break;
+      case 'yaml':
+      case 'yml':
+        language = 'yaml';
+        break;
+      case 'md':
+        language = 'markdown';
+        break;
+      case 'sh':
+        language = 'bash';
+        break;
+      case 'sql':
+        language = 'sql';
+        break;
+    }
+
+    return {
+      fileName,
+      filePath: filePath || nodeName,
+      content,
+      nodeType: node.label,
+      nodeName,
+      language,
+      startLine: node.properties.startLine as number,
+      endLine: node.properties.endLine as number
+    };
+  }, [selectedNodeId, graph?.nodes, graph?.relationships, fileContents]);
+
+  const containerStyle: React.CSSProperties = {
     display: 'flex',
     flexDirection: 'column',
+    height: '100%',
+    width: '100%',
+    backgroundColor: colors.background,
+    overflow: 'hidden',
     ...style
   };
 
   const headerStyle: React.CSSProperties = {
-    padding: '12px 16px',
-    borderBottom: '1px solid #ddd',
-    backgroundColor: '#fff',
-    borderRadius: '4px 4px 0 0',
-    fontSize: '14px',
-    fontWeight: '600',
-    color: '#333'
+    padding: '16px 20px',
+    backgroundColor: colors.surface,
+    borderBottom: `1px solid ${colors.borderLight}`,
+    flexShrink: 0
   };
 
-  const contentStyle: React.CSSProperties = {
+  const titleStyle: React.CSSProperties = {
+    fontSize: '16px',
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: '8px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px'
+  };
+
+  const infoStyle: React.CSSProperties = {
+    fontSize: '12px',
+    color: colors.textMuted,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '16px',
+    flexWrap: 'wrap'
+  };
+
+  const codeContainerStyle: React.CSSProperties = {
     flex: 1,
-    padding: '16px',
     overflow: 'auto',
-    fontFamily: 'Monaco, Menlo, "Ubuntu Mono", Consolas, source-code-pro, monospace',
+    backgroundColor: colors.codeBackground,
+    position: 'relative'
+  };
+
+  const codeStyle: React.CSSProperties = {
+    fontFamily: "'Fira Code', 'Monaco', 'Menlo', 'Ubuntu Mono', monospace",
     fontSize: '13px',
     lineHeight: '1.5',
-    backgroundColor: '#fafafa',
-    color: '#333',
-    whiteSpace: 'pre',
-    tabSize: 2
+    padding: '16px',
+    margin: 0,
+    backgroundColor: 'transparent',
+    color: colors.text,
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    border: 'none',
+    outline: 'none',
+    resize: 'none',
+    width: '100%',
+    minHeight: '100%',
+    boxSizing: 'border-box'
   };
 
-  const placeholderStyle: React.CSSProperties = {
-    flex: 1,
+  const emptyStateStyle: React.CSSProperties = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    color: '#666',
+    flexDirection: 'column',
+    height: '100%',
+    color: colors.textMuted,
     fontSize: '14px',
-    fontStyle: 'italic'
+    gap: '12px',
+    padding: '32px'
   };
 
-  const getNodeTypeColor = (nodeType: string): string => {
-    switch (nodeType.toLowerCase()) {
-      case 'project': return '#4CAF50';
-      case 'folder': return '#FF9800';
-      case 'file': return '#2196F3';
-      case 'module': return '#9C27B0';
-      case 'function': return '#00BCD4';
-      case 'method': return '#00BCD4';
-      case 'class': return '#E91E63';
-      case 'variable': return '#607D8B';
-      default: return '#666';
-    }
-  };
+  const renderEmptyState = () => (
+    <div style={emptyStateStyle}>
+      <div style={{ fontSize: '48px', opacity: 0.3 }}>📝</div>
+      <div style={{ textAlign: 'center' }}>
+        Select a node in the graph to view its source code
+      </div>
+    </div>
+  );
 
-  const getNodeTypeIcon = (nodeType: string): string => {
-    switch (nodeType.toLowerCase()) {
-      case 'project': return '📁';
-      case 'folder': return '📂';
-      case 'file': return '📄';
-      case 'module': return '📦';
-      case 'function': return '⚡';
-      case 'method': return '🔧';
-      case 'class': return '🏗️';
-      case 'variable': return '📊';
-      default: return '📄';
-    }
+  const renderSourceContent = (info: SourceInfo) => {
+    const lines = info.content.split('\n');
+
+    return (
+      <>
+        <div style={headerStyle}>
+          <div style={titleStyle}>
+            <span>📝</span>
+            <span>{info.fileName}</span>
+          </div>
+          <div style={infoStyle}>
+            <span>📄 {info.nodeType}</span>
+            <span>🏷️ {info.nodeName}</span>
+            {info.language && <span>💻 {info.language}</span>}
+            <span>📏 {lines.length} lines</span>
+          </div>
+        </div>
+        
+        <div style={codeContainerStyle}>
+          <pre style={codeStyle}>
+            {info.content}
+          </pre>
+        </div>
+      </>
+    );
   };
 
   return (
-    <div className={`source-viewer ${className}`} style={defaultStyle}>
-      {sourceInfo ? (
-        <>
-          <div style={headerStyle}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '16px' }}>
-                {getNodeTypeIcon(sourceInfo.nodeType)}
-              </span>
-              <span 
-                style={{ 
-                  color: getNodeTypeColor(sourceInfo.nodeType),
-                  fontWeight: 'bold'
-                }}
-              >
-                {sourceInfo.nodeType}
-              </span>
-              <span style={{ color: '#666' }}>•</span>
-              <span>{sourceInfo.nodeName}</span>
-            </div>
-            <div style={{ 
-              fontSize: '12px', 
-              color: '#666', 
-              marginTop: '4px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '16px'
-            }}>
-              <span>📁 {sourceInfo.fileName}</span>
-              {sourceInfo.startLine && sourceInfo.endLine && (
-                <span>📍 Lines {sourceInfo.startLine}-{sourceInfo.endLine}</span>
-              )}
-            </div>
-          </div>
-          <div style={contentStyle}>
-            {formatLineNumbers(sourceInfo.content, sourceInfo.startLine)}
-          </div>
-        </>
-      ) : (
-        <>
-          <div style={headerStyle}>
-            <span style={{ color: '#666' }}>Source Code Viewer</span>
-          </div>
-          <div style={placeholderStyle}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '48px', marginBottom: '16px', opacity: 0.3 }}>
-                📄
-              </div>
-              <div>Select a node to view its source code</div>
-              <div style={{ 
-                fontSize: '12px', 
-                color: '#999', 
-                marginTop: '8px' 
-              }}>
-                Click on any node in the graph to see its details
-              </div>
-            </div>
-          </div>
-        </>
-      )}
+    <div className={`source-viewer ${className}`} style={containerStyle}>
+      {sourceInfo ? renderSourceContent(sourceInfo) : renderEmptyState()}
     </div>
   );
 };

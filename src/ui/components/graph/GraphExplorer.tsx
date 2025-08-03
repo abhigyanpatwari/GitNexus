@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import GraphVisualization from './Visualization.tsx';
-import SourceViewer from './SourceViewer.tsx';
 import type { KnowledgeGraph } from '../../../core/graph/types.ts';
 
 interface GraphExplorerProps {
@@ -8,89 +7,119 @@ interface GraphExplorerProps {
   fileContents?: Map<string, string>;
   className?: string;
   style?: React.CSSProperties;
+  onNodeSelect?: (nodeId: string | null) => void;
+  selectedNodeId?: string | null;
 }
 
 const GraphExplorer: React.FC<GraphExplorerProps> = ({
   graph,
   fileContents,
   className = '',
-  style = {}
+  style = {},
+  onNodeSelect,
+  selectedNodeId
 }) => {
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [internalSelectedNodeId, setInternalSelectedNodeId] = useState<string | null>(null);
 
-  // Debug: Log when component receives graph data
-  useEffect(() => {
-    console.log('=== GRAPH EXPLORER RECEIVED GRAPH ===');
-    console.log('Graph nodes:', graph?.nodes?.length || 0);
-    console.log('Graph relationships:', graph?.relationships?.length || 0);
-    console.log('Graph object:', graph);
-    console.log('=====================================');
-  }, [graph]);
+  // Use external selectedNodeId if provided, otherwise use internal state
+  const currentSelectedNodeId = selectedNodeId !== undefined ? selectedNodeId : internalSelectedNodeId;
 
   const handleNodeSelect = (nodeId: string | null) => {
-    setSelectedNodeId(nodeId);
+    if (onNodeSelect) {
+      onNodeSelect(nodeId);
+    } else {
+      setInternalSelectedNodeId(nodeId);
+    }
+  };
+
+  // Warm tone colors to match the new theme
+  const colors = {
+    background: '#FEF9F0', // Slightly warm white
+    surface: '#FFFFFF',
+    text: '#451A03', // Dark brown
+    textSecondary: '#78350F', // Medium brown
+    textMuted: '#A16207', // Light brown
+    border: '#FED7AA', // Light orange
+    borderLight: '#FEF3C7', // Very light orange
+    primary: '#D97706' // Warm orange
   };
 
   const containerStyle: React.CSSProperties = {
     display: 'flex',
     flexDirection: 'column',
-    gap: '16px',
-    padding: '16px',
-    backgroundColor: '#f5f5f5',
-    borderRadius: '8px',
-    width: '100%',
     height: '100%',
+    width: '100%',
+    backgroundColor: colors.background,
     overflow: 'hidden',
     ...style
   };
 
-  const graphContainerStyle: React.CSSProperties = {
-    flex: '1 1 60%',
-    minHeight: '400px'
-  };
-
-  const sourceContainerStyle: React.CSSProperties = {
-    flex: '1 1 40%',
-    minHeight: '300px'
-  };
-
   const headerStyle: React.CSSProperties = {
-    fontSize: '18px',
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: '8px',
+    padding: '24px 24px 16px 24px',
+    backgroundColor: colors.surface,
+    borderBottom: `1px solid ${colors.borderLight}`
+  };
+
+  const titleStyle: React.CSSProperties = {
+    fontSize: '20px',
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: '16px',
     display: 'flex',
     alignItems: 'center',
-    gap: '8px'
+    gap: '12px'
   };
 
-  const statsStyle: React.CSSProperties = {
+  const statsContainerStyle: React.CSSProperties = {
     display: 'flex',
     gap: '24px',
-    fontSize: '14px',
-    color: '#666',
-    marginBottom: '16px',
-    padding: '12px',
-    backgroundColor: '#fff',
-    borderRadius: '4px',
-    border: '1px solid #ddd'
+    flexWrap: 'wrap'
   };
 
   const statItemStyle: React.CSSProperties = {
     display: 'flex',
     alignItems: 'center',
-    gap: '4px'
+    gap: '8px',
+    padding: '8px 16px',
+    backgroundColor: colors.background,
+    borderRadius: '8px',
+    border: `1px solid ${colors.borderLight}`,
+    fontSize: '14px',
+    fontWeight: '500',
+    color: colors.textSecondary
+  };
+
+  const graphContainerStyle: React.CSSProperties = {
+    flex: 1,
+    overflow: 'hidden',
+    position: 'relative'
+  };
+
+  const selectedNodeInfoStyle: React.CSSProperties = {
+    position: 'absolute',
+    top: '16px',
+    left: '16px',
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    backdropFilter: 'blur(8px)',
+    padding: '12px 16px',
+    borderRadius: '8px',
+    border: `1px solid ${colors.borderLight}`,
+    fontSize: '14px',
+    fontWeight: '500',
+    color: colors.text,
+    zIndex: 10,
+    boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
   };
 
   // Calculate graph statistics
-  const nodeStats = graph.nodes.reduce((acc, node) => {
+  const nodeStats = graph?.nodes?.reduce((acc, node) => {
     acc[node.label] = (acc[node.label] || 0) + 1;
     return acc;
-  }, {} as Record<string, number>);
+  }, {} as Record<string, number>) || {};
 
   function getSelectedNodeName(): string {
-    if (!selectedNodeId) return '';
-    const node = graph.nodes.find(n => n.id === selectedNodeId);
+    if (!currentSelectedNodeId || !graph?.nodes) return '';
+    const node = graph.nodes.find(n => n.id === currentSelectedNodeId);
     return node?.properties.name as string || node?.id || '';
   }
 
@@ -110,27 +139,26 @@ const GraphExplorer: React.FC<GraphExplorerProps> = ({
 
   return (
     <div className={`graph-explorer ${className}`} style={containerStyle}>
-      {/* Header */}
-      <div>
-        <div style={headerStyle}>
-          <span>🔍</span>
-          <span>Code Knowledge Graph Explorer</span>
+      {/* Header with Statistics */}
+      <div style={headerStyle}>
+        <div style={titleStyle}>
+          <span>🕸️</span>
+          <span>Knowledge Graph</span>
         </div>
         
-        {/* Statistics */}
-        <div style={statsStyle}>
+        <div style={statsContainerStyle}>
           <div style={statItemStyle}>
             <span>📊</span>
-            <span><strong>{graph.nodes.length}</strong> nodes</span>
+            <span>{graph?.nodes?.length || 0} nodes</span>
           </div>
           <div style={statItemStyle}>
             <span>🔗</span>
-            <span><strong>{graph.relationships.length}</strong> relationships</span>
+            <span>{graph?.relationships?.length || 0} relationships</span>
           </div>
-          {Object.entries(nodeStats).map(([type, count]) => (
+          {Object.entries(nodeStats).slice(0, 4).map(([type, count]) => (
             <div key={type} style={statItemStyle}>
               <span>{getNodeTypeIcon(type)}</span>
-              <span><strong>{count}</strong> {type.toLowerCase()}s</span>
+              <span>{count} {type.toLowerCase()}s</span>
             </div>
           ))}
         </div>
@@ -138,40 +166,19 @@ const GraphExplorer: React.FC<GraphExplorerProps> = ({
 
       {/* Graph Visualization */}
       <div style={graphContainerStyle}>
-        <div style={{ ...headerStyle, fontSize: '16px', marginBottom: '8px' }}>
-          <span>🕸️</span>
-          <span>Interactive Graph</span>
-          {selectedNodeId && (
-            <span style={{ 
-              fontSize: '14px', 
-              fontWeight: 'normal', 
-              color: '#666',
-              marginLeft: '8px'
-            }}>
-              • Selected: {getSelectedNodeName()}
-            </span>
-          )}
-        </div>
         <GraphVisualization
           graph={graph}
-          selectedNodeId={selectedNodeId}
+          selectedNodeId={currentSelectedNodeId}
           onNodeSelect={handleNodeSelect}
           style={{ height: '100%' }}
         />
-      </div>
-
-      {/* Source Viewer */}
-      <div style={sourceContainerStyle}>
-        <div style={{ ...headerStyle, fontSize: '16px', marginBottom: '8px' }}>
-          <span>📝</span>
-          <span>Source Code</span>
-        </div>
-        <SourceViewer
-          graph={graph}
-          selectedNodeId={selectedNodeId}
-          fileContents={fileContents}
-          style={{ height: '100%' }}
-        />
+        
+        {/* Selected Node Info Overlay */}
+        {currentSelectedNodeId && (
+          <div style={selectedNodeInfoStyle}>
+            <strong>Selected:</strong> {getSelectedNodeName()}
+          </div>
+        )}
       </div>
     </div>
   );
