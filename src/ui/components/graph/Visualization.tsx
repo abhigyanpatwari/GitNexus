@@ -1,8 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import cytoscape from 'npm:cytoscape';
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import dagre from 'npm:cytoscape-dagre';
+import cytoscape from 'cytoscape';
+// @ts-expect-error - No type definitions available for cytoscape-dagre
+import dagre from 'cytoscape-dagre';
 import type { KnowledgeGraph, GraphNode, GraphRelationship } from '../../../core/graph/types.ts';
 
 // Register the dagre layout extension
@@ -36,7 +35,7 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
   style = {}
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const cyRef = useRef<any>(null);
+  const cyRef = useRef<cytoscape.Core | null>(null);
   const [isReady, setIsReady] = useState(false);
 
   // Convert KnowledgeGraph to Cytoscape elements
@@ -250,15 +249,15 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
     cyRef.current = cytoscape({
       container: containerRef.current,
       elements,
-      style: stylesheet,
+      style: stylesheet as unknown as cytoscape.StylesheetStyle[],
       layout: {
         name: 'dagre',
-        rankDir: 'TB', // Top to bottom
+        rankDir: 'TB',
         spacingFactor: 1.2,
         nodeSep: 50,
         edgeSep: 10,
         rankSep: 100
-      },
+      } as unknown as cytoscape.LayoutOptions,
       // Interaction options
       minZoom: 0.1,
       maxZoom: 3,
@@ -268,12 +267,12 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
     });
 
     // Handle node click events
-    cyRef.current.on('tap', 'node', (event: any) => {
+    cyRef.current.on('tap', 'node', (event: cytoscape.EventObject) => {
       const node = event.target;
       const nodeId = node.id();
       
       // Remove previous selection
-      cyRef.current.elements('.selected').removeClass('selected');
+      cyRef.current?.elements('.selected').removeClass('selected');
       
       // Add selection to clicked node
       node.addClass('selected');
@@ -285,9 +284,9 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
     });
 
     // Handle background click (deselect)
-    cyRef.current.on('tap', (event: any) => {
+    cyRef.current.on('tap', (event: cytoscape.EventObject) => {
       if (event.target === cyRef.current) {
-        cyRef.current.elements('.selected').removeClass('selected');
+        cyRef.current?.elements('.selected').removeClass('selected');
         if (onNodeSelect) {
           onNodeSelect(null);
         }
@@ -330,7 +329,7 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
 
     // Fit the graph to the container with some padding
     setTimeout(() => {
-      cyRef.current.fit(undefined, 50);
+      cyRef.current?.fit(undefined, 50);
     }, 100);
   }, [graph, isReady]);
 

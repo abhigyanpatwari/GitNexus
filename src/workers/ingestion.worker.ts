@@ -1,5 +1,4 @@
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import * as Comlink from 'npm:comlink';
+import * as Comlink from 'comlink';
 import { GraphPipeline, type PipelineInput } from '../core/ingestion/pipeline.ts';
 import type { KnowledgeGraph } from '../core/graph/types.ts';
 

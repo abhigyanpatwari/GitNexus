@@ -1,13 +1,8 @@
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import { ChatOpenAI } from 'npm:@langchain/openai';
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import { ChatAnthropic } from 'npm:@langchain/anthropic';
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import { ChatGoogleGenerativeAI } from 'npm:@langchain/google-genai';
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import type { BaseMessage } from 'npm:@langchain/core/messages';
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import type { BaseChatModel } from 'npm:@langchain/core/language_models/chat_models';
+import { ChatOpenAI } from '@langchain/openai';
+import { ChatAnthropic } from '@langchain/anthropic';
+import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
+import type { BaseMessage } from '@langchain/core/messages';
+import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 
 export type LLMProvider = 'openai' | 'anthropic' | 'gemini';
 

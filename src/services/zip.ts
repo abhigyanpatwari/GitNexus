@@ -1,5 +1,10 @@
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import JSZip from 'npm:jszip';
+import JSZip from 'jszip';
+
+interface JSZipObjectWithData extends JSZip.JSZipObject {
+  _data?: {
+    uncompressedSize: number;
+  };
+}
 
 interface ZipFileEntry {
   path: string;
@@ -75,12 +80,13 @@ export class ZipService {
           continue;
         }
         
-        if (zipFile._data && zipFile._data.uncompressedSize > maxFileSize) {
+        const zipFileWithData = zipFile as JSZipObjectWithData;
+        if (zipFileWithData._data && zipFileWithData._data.uncompressedSize > maxFileSize) {
           console.warn(`Skipping file ${filePath}: exceeds maximum file size (${maxFileSize} bytes)`);
           continue;
         }
         
-        if (totalExtractedSize + (zipFile._data?.uncompressedSize || 0) > maxTotalSize) {
+        if (totalExtractedSize + (zipFileWithData._data?.uncompressedSize || 0) > maxTotalSize) {
           console.warn(`Stopping extraction: total size would exceed maximum (${maxTotalSize} bytes)`);
           break;
         }

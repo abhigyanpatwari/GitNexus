@@ -1,13 +1,8 @@
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import { createReactAgent } from 'npm:@langchain/langgraph/prebuilt';
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import { MemorySaver } from 'npm:@langchain/langgraph';
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import { tool } from 'npm:@langchain/core/tools';
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import { z } from 'npm:zod';
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import { SystemMessage } from 'npm:@langchain/core/messages';
+import { createReactAgent } from '@langchain/langgraph/prebuilt';
+import { MemorySaver } from '@langchain/langgraph';
+import { DynamicStructuredTool } from '@langchain/core/tools';
+import { z } from 'zod';
+import { SystemMessage } from '@langchain/core/messages';
 import type { LLMService, LLMConfig } from './llm-service.ts';
 import type { CypherGenerator } from './cypher-generator.ts';
 import type { KnowledgeGraph } from '../core/graph/types.ts';
@@ -17,15 +12,17 @@ export interface LangChainRAGContext {
   fileContents: Map<string, string>;
 }
 
+export interface ToolCall {
+  tool: string;
+  input: Record<string, unknown>;
+  output: string;
+}
+
 export interface LangChainRAGResponse {
   answer: string;
   sources: string[];
   confidence: number;
-  toolCalls: Array<{
-    tool: string;
-    input: any;
-    output: string;
-  }>;
+  toolCalls: ToolCall[];
 }
 
 export interface LangChainRAGOptions {
@@ -35,12 +32,15 @@ export interface LangChainRAGOptions {
   threadId?: string;
 }
 
+type AgentType = ReturnType<typeof createReactAgent>;
+type MemoryType = InstanceType<typeof MemorySaver>;
+
 export class LangChainRAGOrchestrator {
   private llmService: LLMService;
   private cypherGenerator: CypherGenerator;
   private context: LangChainRAGContext | null = null;
-  private agent: any = null;
-  private memory: any = null;
+  private agent: AgentType | null = null;
+  private memory: MemoryType | null = null;
 
   constructor(llmService: LLMService, cypherGenerator: CypherGenerator) {
     this.llmService = llmService;
@@ -66,10 +66,10 @@ export class LangChainRAGOrchestrator {
 
     // Create the ReAct agent using LangGraph
     this.agent = createReactAgent({
-      llm,
-      tools,
-      messageModifier: systemMessage,
-      checkpointSaver: this.memory
+      llm: llm,
+      tools: tools,
+      checkpointSaver: this.memory || undefined,
+      messageModifier: systemMessage
     });
   }
 
@@ -105,30 +105,24 @@ export class LangChainRAGOrchestrator {
       );
 
       let finalAnswer = '';
-      const toolCalls: Array<{ tool: string; input: any; output: string }> = [];
+      const toolCalls: ToolCall[] = [];
       const sources: string[] = [];
 
       // Process the stream
       for await (const chunk of stream) {
         if (chunk.agent) {
-          const lastMessage = chunk.agent.messages[chunk.agent.messages.length - 1];
-          if (lastMessage.content) {
-            finalAnswer = lastMessage.content;
-          }
-        } else if (chunk.tools) {
+          finalAnswer = chunk.agent.messages[chunk.agent.messages.length - 1].content;
+        }
+        
+        if (chunk.tools) {
           const toolMessage = chunk.tools.messages[chunk.tools.messages.length - 1];
           if (toolMessage.tool_calls) {
-            toolMessage.tool_calls.forEach((toolCall: any) => {
+            toolMessage.tool_calls.forEach((toolCall: { name: string; args: Record<string, unknown> }) => {
               toolCalls.push({
                 tool: toolCall.name,
                 input: toolCall.args,
                 output: toolMessage.content || ''
               });
-
-              // Extract sources from tool calls
-              if (toolCall.name === 'get_code_content') {
-                sources.push(toolCall.args.filePath);
-              }
             });
           }
         }
@@ -153,8 +147,13 @@ export class LangChainRAGOrchestrator {
    * Create LangChain-compliant tools
    */
   private createTools(llmConfig: LLMConfig) {
-    const queryGraphTool = tool(
-      async (input: { question: string }) => {
+    const queryGraphTool = new DynamicStructuredTool({
+      name: "query_graph",
+      description: "Query the code knowledge graph using natural language. Use this to find information about code structure, relationships, functions, classes, etc.",
+      schema: z.object({
+        question: z.string().describe("Natural language question about the codebase")
+      }),
+      func: async (input: { question: string }) => {
         try {
           const cypherQuery = await this.cypherGenerator.generateQuery(input.question, llmConfig);
           const mockResults = this.simulateGraphQuery(cypherQuery.cypher);
@@ -163,18 +162,16 @@ export class LangChainRAGOrchestrator {
         } catch (error) {
           return `Error generating graph query: ${error instanceof Error ? error.message : 'Unknown error'}`;
         }
-      },
-      {
-        name: "query_graph",
-        description: "Query the code knowledge graph using natural language. Use this to find information about code structure, relationships, functions, classes, etc.",
-        schema: z.object({
-          question: z.string().describe("Natural language question about the codebase")
-        })
       }
-    );
+    });
 
-    const getCodeContentTool = tool(
-      async (input: { filePath: string }) => {
+    const getCodeContentTool = new DynamicStructuredTool({
+      name: "get_code_content",
+      description: "Retrieve the source code content of a specific file. Use this when you need to examine the actual code implementation.",
+      schema: z.object({
+        filePath: z.string().describe("The path to the file whose content you want to retrieve")
+      }),
+      func: async (input: { filePath: string }) => {
         if (!this.context) {
           return 'No context available';
         }
@@ -193,18 +190,16 @@ export class LangChainRAGOrchestrator {
         }
 
         return `File: ${input.filePath}\n\n${content}`;
-      },
-      {
-        name: "get_code_content",
-        description: "Retrieve the source code content of a specific file. Use this when you need to examine the actual code implementation.",
-        schema: z.object({
-          filePath: z.string().describe("The path to the file whose content you want to retrieve")
-        })
       }
-    );
+    });
 
-    const searchFilesTool = tool(
-      async (input: { pattern: string }) => {
+    const searchFilesTool = new DynamicStructuredTool({
+      name: "search_files",
+      description: "Search for files matching a pattern or containing specific text. Use this to find relevant files in the codebase.",
+      schema: z.object({
+        pattern: z.string().describe("Search pattern or text to look for in file names or content")
+      }),
+      func: async (input: { pattern: string }) => {
         if (!this.context) {
           return 'No context available';
         }
@@ -230,15 +225,8 @@ export class LangChainRAGOrchestrator {
         return matchingFiles.length > 0 
           ? `Found ${matchingFiles.length} files:\n${matchingFiles.slice(0, 10).join('\n')}${matchingFiles.length > 10 ? '\n... and more' : ''}`
           : 'No files found matching the pattern';
-      },
-      {
-        name: "search_files",
-        description: "Search for files matching a pattern or containing specific text. Use this to find relevant files in the codebase.",
-        schema: z.object({
-          pattern: z.string().describe("Search pattern or text to look for in file names or content")
-        })
       }
-    );
+    });
 
     return [queryGraphTool, getCodeContentTool, searchFilesTool];
   }
@@ -308,7 +296,7 @@ Your goal is to provide accurate, evidence-based answers about the codebase usin
   /**
    * Calculate confidence based on tool usage
    */
-  private calculateConfidence(toolCalls: Array<{ tool: string; input: any; output: string }>): number {
+  private calculateConfidence(toolCalls: ToolCall[]): number {
     if (toolCalls.length === 0) return 0.3;
 
     const successfulCalls = toolCalls.filter(call => 

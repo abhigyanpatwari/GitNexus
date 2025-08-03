@@ -69,7 +69,7 @@ const SourceViewer: React.FC<SourceViewerProps> = ({
     # Implementation here
     pass`;
 
-      case 'Method':
+      case 'Method': {
         const parentClass = node.properties.parentClass as string || 'UnknownClass';
         return `class ${parentClass}:
     def ${name}(self):
@@ -79,6 +79,7 @@ const SourceViewer: React.FC<SourceViewerProps> = ({
         """
         # Implementation here
         pass`;
+      }
 
       case 'Class':
         return `class ${name}:
@@ -99,7 +100,7 @@ This module contains various functions and classes.
 
 # Module-level imports and code here`;
 
-      case 'File':
+      case 'File': {
         const extension = node.properties.extension as string || '';
         if (extension === '.py') {
           return `# Python file: ${name}
@@ -112,6 +113,7 @@ File: ${name}
         }
         return `// File: ${name}
 // Content of the file would be displayed here`;
+      }
 
       case 'Project':
         return `# Project: ${name}

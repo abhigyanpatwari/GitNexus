@@ -1,5 +1,5 @@
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import * as Comlink from 'npm:comlink';
+// @ts-expect-error -  imports are resolved at runtime in Deno
+import * as Comlink from 'comlink';
 import type { IngestionWorker, IngestionProgress, IngestionResult } from '../workers/ingestion.worker.ts';
 import type { PipelineInput } from '../core/ingestion/pipeline.ts';
 

@@ -1,12 +1,8 @@
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import Parser from "npm:web-tree-sitter";
 
-interface Language {
-  [key: string]: unknown;
-}
+import Parser from "web-tree-sitter";
 
 let parserInstance: Parser | null = null;
-const parserCache = new Map<string, Language>();
+const parserCache = new Map<string, Parser.Language>();
 
 export async function initTreeSitter(): Promise<Parser> {
   if (parserInstance) return parserInstance;
@@ -17,7 +13,7 @@ export async function initTreeSitter(): Promise<Parser> {
   return parserInstance;
 }
 
-export async function loadPythonParser(): Promise<Language> {
+export async function loadPythonParser(): Promise<Parser.Language> {
   if (parserCache.has('python')) {
     return parserCache.get('python')!;
   }

@@ -1,5 +1,4 @@
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import { HumanMessage, SystemMessage, AIMessage } from 'npm:@langchain/core/messages';
+import { HumanMessage, SystemMessage, AIMessage } from '@langchain/core/messages';
 import type { LLMService, LLMConfig } from './llm-service.ts';
 import type { CypherGenerator, CypherQuery } from './cypher-generator.ts';
 import type { KnowledgeGraph, GraphNode } from '../core/graph/types.ts';

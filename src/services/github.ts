@@ -1,5 +1,4 @@
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import axios, { type AxiosInstance, type AxiosResponse } from 'npm:axios';
+import axios, { type AxiosInstance, type AxiosResponse } from 'axios';
 
 interface GitHubFile {
   name: string;

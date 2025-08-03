@@ -1,8 +1,7 @@
 import type { KnowledgeGraph, GraphNode, GraphRelationship } from '../graph/types.ts';
 import { generateId } from '../../lib/utils.ts';
 
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import type Parser from 'npm:web-tree-sitter';
+import type Parser from 'web-tree-sitter';
 
 export interface CallResolutionInput {
   graph: KnowledgeGraph;

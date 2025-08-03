@@ -1,7 +1,7 @@
 {
   "name": "gitnexus",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,8 +10,21 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@langchain/anthropic": "^0.1.21",
+    "@langchain/core": "^0.1.62",
+    "@langchain/google-genai": "^0.0.11",
+    "@langchain/langgraph": "^0.0.26",
+    "@langchain/openai": "^0.0.28",
+    "axios": "^1.6.0",
+    "comlink": "^4.4.1",
+    "cytoscape": "^3.26.0",
+    "cytoscape-dagre": "^2.5.0",
+    "jszip": "^3.10.1",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "uuid": "^11.1.0",
+    "web-tree-sitter": "^0.20.8",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@eslint/js": "^9.11.1",

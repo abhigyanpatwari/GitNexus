@@ -2,8 +2,7 @@ import type { KnowledgeGraph, GraphNode, GraphRelationship } from '../graph/type
 import { initTreeSitter, loadPythonParser } from '../tree-sitter/parser-loader.ts';
 import { generateId } from '../../lib/utils.ts';
 
-// @ts-expect-error - npm: imports are resolved at runtime in Deno
-import type Parser from 'npm:web-tree-sitter';
+import type Parser from 'web-tree-sitter';
 
 export interface ParsingInput {
   filePaths: string[];
@@ -20,7 +19,7 @@ interface ParsedDefinition {
 
 export class ParsingProcessor {
   private parser: Parser | null = null;
-  private astCache: Map<string, any> = new Map();
+  private astCache: Map<string, Parser.Tree> = new Map();
 
   public async process(graph: KnowledgeGraph, input: ParsingInput): Promise<void> {
     const { filePaths, fileContents } = input;
@@ -62,7 +61,7 @@ export class ParsingProcessor {
       graph.nodes.push(moduleNode);
       
       // Extract definitions from the AST
-      const definitions = this.extractDefinitions(tree.rootNode, content);
+      const definitions = this.extractDefinitions(tree.rootNode);
       
       // Create nodes for definitions and establish relationships
       for (const definition of definitions) {
@@ -110,7 +109,7 @@ export class ParsingProcessor {
     
     return {
       id: generateId(definition.type, `${filePath}:${definition.name}`),
-      label: nodeLabel as any,
+      label: nodeLabel as 'Function' | 'Method' | 'Class',
       properties: {
         name: definition.name,
         filePath,
@@ -130,11 +129,10 @@ export class ParsingProcessor {
     };
   }
 
-  private extractDefinitions(node: any, content: string): ParsedDefinition[] {
+  private extractDefinitions(node: Parser.SyntaxNode): ParsedDefinition[] {
     const definitions: ParsedDefinition[] = [];
-    const lines = content.split('\n');
     
-    this.traverseNode(node, (currentNode: any) => {
+    this.traverseNode(node, (currentNode: Parser.SyntaxNode) => {
       if (currentNode.type === 'function_definition') {
         const nameNode = currentNode.childForFieldName('name');
         if (nameNode) {
@@ -166,10 +164,10 @@ export class ParsingProcessor {
     return definitions;
   }
 
-  private extractMethodsFromClass(classNode: any, className: string): ParsedDefinition[] {
+  private extractMethodsFromClass(classNode: Parser.SyntaxNode, className: string): ParsedDefinition[] {
     const methods: ParsedDefinition[] = [];
     
-    this.traverseNode(classNode, (node: any) => {
+    this.traverseNode(classNode, (node: Parser.SyntaxNode) => {
       if (node.type === 'function_definition') {
         const nameNode = node.childForFieldName('name');
         if (nameNode) {
@@ -187,7 +185,7 @@ export class ParsingProcessor {
     return methods;
   }
 
-  private traverseNode(node: any, callback: (node: any) => void): void {
+  private traverseNode(node: Parser.SyntaxNode, callback: (node: Parser.SyntaxNode) => void): void {
     callback(node);
     
     for (let i = 0; i < node.childCount; i++) {
@@ -210,11 +208,11 @@ export class ParsingProcessor {
     return filePath.endsWith('.py');
   }
 
-  public getAst(filePath: string): any {
+  public getAst(filePath: string): Parser.Tree | undefined {
     return this.astCache.get(filePath);
   }
 
-  public getCachedAsts(): Map<string, any> {
+  public getCachedAsts(): Map<string, Parser.Tree> {
     return new Map(this.astCache);
   }
 } 
