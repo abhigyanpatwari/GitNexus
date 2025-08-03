@@ -46,12 +46,28 @@ export class CallProcessor {
     // Build function node lookup for fast resolution
     this.buildFunctionNodeLookup(graph);
     
+    console.log(`CallProcessor: Processing ${astCache.size} files with ASTs`);
+    
     // Extract imports from all files first
     for (const [filePath, ast] of astCache) {
       if (this.isPythonFile(filePath)) {
         const content = fileContents.get(filePath);
         if (content && ast) {
           await this.extractImports(filePath, ast, content);
+        }
+      }
+    }
+    
+    // For files without ASTs, try regex-based import extraction
+    const pythonFiles = Array.from(fileContents.keys()).filter(path => this.isPythonFile(path));
+    const filesWithoutAST = pythonFiles.filter(path => !astCache.has(path));
+    
+    if (filesWithoutAST.length > 0) {
+      console.log(`CallProcessor: ${filesWithoutAST.length} files don't have ASTs, using regex fallback for imports`);
+      for (const filePath of filesWithoutAST) {
+        const content = fileContents.get(filePath);
+        if (content) {
+          await this.extractImportsRegex(filePath, content);
         }
       }
     }
@@ -65,6 +81,91 @@ export class CallProcessor {
         }
       }
     }
+    
+    console.log(`CallProcessor: Found imports in ${this.importCache.size} files`);
+    
+    // Create import relationships between files
+    this.createImportRelationships(graph);
+  }
+
+  private createImportRelationships(graph: KnowledgeGraph): void {
+    let importRelationshipsCreated = 0;
+    
+    for (const [filePath, imports] of this.importCache) {
+      const sourceFileNode = graph.nodes.find(node => 
+        node.label === 'File' && node.properties.filePath === filePath
+      );
+      
+      if (!sourceFileNode) continue;
+      
+      for (const importInfo of imports) {
+        // Try to find the target file based on the module name
+        const targetFileNode = this.findTargetFileForImport(graph, importInfo);
+        
+        if (targetFileNode) {
+          // Create IMPORTS relationship
+          const relationship: GraphRelationship = {
+            id: generateId('relationship', `${sourceFileNode.id}-imports-${targetFileNode.id}`),
+            type: 'IMPORTS',
+            source: sourceFileNode.id,
+            target: targetFileNode.id,
+            properties: {
+              importedName: importInfo.importedName,
+              fromModule: importInfo.fromModule,
+              importType: importInfo.importType
+            }
+          };
+          
+          // Check if relationship already exists
+          const existingRel = graph.relationships.find(rel => 
+            rel.source === sourceFileNode.id && 
+            rel.target === targetFileNode.id && 
+            rel.type === 'IMPORTS'
+          );
+          
+          if (!existingRel) {
+            graph.relationships.push(relationship);
+            importRelationshipsCreated++;
+          }
+        }
+      }
+    }
+    
+    console.log(`CallProcessor: Created ${importRelationshipsCreated} import relationships`);
+  }
+
+  private findTargetFileForImport(graph: KnowledgeGraph, importInfo: ImportInfo): GraphNode | null {
+    const moduleName = importInfo.fromModule;
+    
+    // Try different strategies to find the target file
+    const fileNodes = graph.nodes.filter(node => node.label === 'File');
+    
+    // Strategy 1: Direct module name match (e.g., "utils" -> "utils.py")
+    let targetFile = fileNodes.find(node => {
+      const fileName = node.properties.name as string;
+      return fileName === `${moduleName}.py`;
+    });
+    
+    if (targetFile) return targetFile;
+    
+    // Strategy 2: Last part of module path (e.g., "myproject.utils" -> "utils.py")
+    const lastPart = moduleName.split('.').pop();
+    if (lastPart) {
+      targetFile = fileNodes.find(node => {
+        const fileName = node.properties.name as string;
+        return fileName === `${lastPart}.py`;
+      });
+    }
+    
+    if (targetFile) return targetFile;
+    
+    // Strategy 3: Check if module path matches file path
+    targetFile = fileNodes.find(node => {
+      const filePath = node.properties.filePath as string;
+      return filePath && filePath.includes(moduleName.replace('.', '/'));
+    });
+    
+    return targetFile || null;
   }
 
   private buildFunctionNodeLookup(graph: KnowledgeGraph): void {
@@ -237,6 +338,13 @@ export class CallProcessor {
       this.resolveMethodCall(graph, call);
     
     if (targetNode) {
+      // Ensure the target node exists in the graph before creating relationship
+      const existingNode = graph.nodes.find(node => node.id === targetNode.id);
+      if (!existingNode) {
+        // Add the node to the graph if it doesn't exist
+        graph.nodes.push(targetNode);
+      }
+      
       const relationship = this.createCallRelationship(callerNode.id, targetNode.id, call);
       graph.relationships.push(relationship);
     }
@@ -381,5 +489,44 @@ export class CallProcessor {
     
     // This would be populated during processing
     return stats;
+  }
+
+  private async extractImportsRegex(filePath: string, content: string): Promise<void> {
+    const imports: ImportInfo[] = [];
+    const lines = content.split('\n');
+    
+    for (const line of lines) {
+      const trimmedLine = line.trim();
+      
+      // Match: import module
+      const importMatch = trimmedLine.match(/^import\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)/);
+      if (importMatch) {
+        const moduleName = importMatch[1];
+        imports.push({
+          filePath,
+          importedName: moduleName,
+          fromModule: moduleName,
+          importType: 'module'
+        });
+      }
+      
+      // Match: from module import item
+      const fromImportMatch = trimmedLine.match(/^from\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\s+import\s+([a-zA-Z_][a-zA-Z0-9_]*)/);
+      if (fromImportMatch) {
+        const moduleName = fromImportMatch[1];
+        const importedName = fromImportMatch[2];
+        imports.push({
+          filePath,
+          importedName,
+          fromModule: moduleName,
+          importType: 'function' // Default assumption
+        });
+      }
+    }
+    
+    if (imports.length > 0) {
+      this.importCache.set(filePath, imports);
+      console.log(`Regex-extracted ${imports.length} imports from ${filePath}`);
+    }
   }
 } 

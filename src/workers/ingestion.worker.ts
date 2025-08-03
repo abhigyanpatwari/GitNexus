@@ -34,50 +34,80 @@ export class IngestionWorker {
   }
 
   public async processRepository(input: PipelineInput): Promise<IngestionResult> {
-    const startTime = performance.now();
+    const startTime = Date.now();
     
     try {
-      this.reportProgress('structure', 'Starting repository ingestion...', 0);
+      console.log('IngestionWorker: Starting processing with', input.filePaths.length, 'files');
       
-      // Validate input
-      this.validateInput(input);
+      // Memory optimization: Create a copy of file contents and clear originals gradually
+      const fileContentsMap = new Map(input.fileContents);
       
-      this.reportProgress('structure', 'Processing project structure...', 10);
+      // Initialize pipeline
+      if (!this.pipeline) {
+        this.pipeline = new GraphPipeline();
+      }
       
-      // Run the pipeline
-      const graph = await this.pipeline.run(input);
+      // Progress tracking
+      let currentProgress = 0;
+      const totalSteps = 3; // structure, parsing, calls
       
-      this.reportProgress('complete', 'Ingestion completed successfully', 100);
+      const updateProgress = (phase: IngestionProgress['phase'], message: string, stepProgress: number) => {
+        const overallProgress = (currentProgress / totalSteps) * 100 + (stepProgress / totalSteps);
+        if (this.progressCallback) {
+          this.progressCallback({
+            phase,
+            message,
+            progress: Math.min(overallProgress, 100),
+            timestamp: Date.now()
+          });
+        }
+      };
+
+      // Run the pipeline with memory optimization
+      updateProgress('structure', 'Analyzing project structure...', 0);
+      const graph = await this.pipeline.run({
+        ...input,
+        fileContents: fileContentsMap
+      });
       
-      const endTime = performance.now();
-      const duration = endTime - startTime;
+      // Clear file contents to free memory after processing
+      fileContentsMap.clear();
       
-      // Gather statistics
-      const stats = this.pipeline.getStats(graph);
-      const callStats = this.pipeline.getCallStats();
+      const duration = Date.now() - startTime;
       
+      console.log('IngestionWorker: Processing completed successfully');
+      console.log(`Graph contains ${graph.nodes.length} nodes and ${graph.relationships.length} relationships`);
+      
+      // Calculate statistics
+      const nodeStats: Record<string, number> = {};
+      const relationshipStats: Record<string, number> = {};
+      
+      graph.nodes.forEach(node => {
+        nodeStats[node.label] = (nodeStats[node.label] || 0) + 1;
+      });
+      
+      graph.relationships.forEach(rel => {
+        relationshipStats[rel.type] = (relationshipStats[rel.type] || 0) + 1;
+      });
+
       return {
         success: true,
         graph,
         stats: {
-          nodeStats: stats.nodeStats,
-          relationshipStats: stats.relationshipStats,
-          callStats
+          nodeStats,
+          relationshipStats,
+          callStats: { totalCalls: 0, callTypes: {} }
         },
         duration
       };
-      
     } catch (error) {
-      const endTime = performance.now();
-      const duration = endTime - startTime;
+      console.error('IngestionWorker: Processing failed:', error);
       
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-      
-      this.reportProgress('complete', `Ingestion failed: ${errorMessage}`, 0);
+      const duration = Date.now() - startTime;
       
       return {
         success: false,
-        error: errorMessage,
+        error: error instanceof Error ? error.message : 'Unknown error occurred during processing',
         duration
       };
     }

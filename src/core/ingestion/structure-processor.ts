@@ -105,7 +105,8 @@ export class StructureProcessor {
         label: 'File',
         properties: {
           name: fileName,
-          path: filePath,
+          filePath: filePath, // Use filePath consistently
+          path: filePath, // Keep path for backward compatibility
           extension: fileExtension,
           isSourceFile: this.isSourceFile(fileExtension)
         }
@@ -124,7 +125,7 @@ export class StructureProcessor {
     const relationships: GraphRelationship[] = [];
     
     // Project contains root folders
-    const rootFolders = folderPaths.filter(path => !path.includes('/'));
+    const rootFolders = folderPaths.filter(path => path && !path.includes('/'));
     for (const rootFolder of rootFolders) {
       const folderId = this.nodeIdMap.get(rootFolder);
       if (folderId) {

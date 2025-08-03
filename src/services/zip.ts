@@ -76,6 +76,12 @@ export class ZipService {
           continue;
         }
         
+        // Skip directories and files that shouldn't be processed
+        if (this.shouldSkipPath(filePath)) {
+          console.log(`Skipping filtered path: ${filePath}`);
+          continue;
+        }
+        
         if (!this.isTextFile(filePath, allowedExtensions)) {
           continue;
         }
@@ -236,15 +242,195 @@ export class ZipService {
   }
 
   private isTextFile(filePath: string, allowedExtensions: string[]): boolean {
-    const extension = this.getFileExtension(filePath);
-    return allowedExtensions.includes(extension);
+    if (!filePath || filePath.endsWith('/')) {
+      return false;
+    }
+    
+    const extension = filePath.toLowerCase().split('.').pop();
+    return extension ? allowedExtensions.includes(`.${extension}`) : false;
   }
 
-  private getFileExtension(filePath: string): string {
-    const lastDotIndex = filePath.lastIndexOf('.');
-    if (lastDotIndex === -1) return '';
+  private shouldSkipPath(filePath: string): boolean {
+    // Skip directories that shouldn't be processed
+    if (this.shouldSkipDirectory(filePath)) {
+      return true;
+    }
     
-    return filePath.substring(lastDotIndex).toLowerCase();
+    // Skip files that shouldn't be processed
+    if (!this.shouldIncludeFile(filePath)) {
+      return true;
+    }
+    
+    return false;
+  }
+
+  private shouldSkipDirectory(path: string): boolean {
+    if (!path) return true; // Skip if path is undefined/null
+    
+    const skipDirs = [
+      // Git version control
+      '.git',
+      // JavaScript dependencies (common in full-stack projects)
+      'node_modules',
+      // Python bytecode cache
+      '__pycache__',
+      // Python virtual environments
+      'venv',
+      'env', 
+      '.venv',
+      'envs',
+      'virtualenv',
+      // Build, distribution, and temporary directories
+      'build',
+      'dist', 
+      'docs',
+      'logs',
+      'tmp',
+      '.tmp',
+      // Additional common directories to skip
+      'coverage',
+      '.coverage',
+      'htmlcov',
+      'vendor',
+      'deps',
+      '_build',
+      '.gradle',
+      'bin',
+      'obj',
+      '.vs',
+      '.vscode',
+      '.idea',
+      'temp'
+    ];
+    
+    // Check each directory component in the path
+    const pathParts = path.split('/');
+    for (const part of pathParts) {
+      const dirName = part.toLowerCase();
+      
+      // Check for exact matches
+      if (skipDirs.includes(dirName) || dirName.startsWith('.')) {
+        return true;
+      }
+      
+      // Check for .egg-info directories
+      if (dirName.endsWith('.egg-info')) {
+        return true;
+      }
+    }
+    
+    // Check for virtual environment patterns anywhere in the path
+    const fullPathLower = path.toLowerCase();
+    const venvPatterns = [
+      '/.venv/',
+      '/venv/',
+      '/env/',
+      '/.env/',
+      '/envs/',
+      '/virtualenv/',
+      '/site-packages/',
+      '/lib/python',
+      '/lib64/python',
+      '/scripts/',
+      '/bin/python'
+    ];
+    
+    if (venvPatterns.some(pattern => fullPathLower.includes(pattern))) {
+      return true;
+    }
+    
+    return false;
+  }
+
+  private shouldIncludeFile(path: string): boolean {
+    if (!path) return false; // Skip if path is undefined/null
+    
+    const fileName = path.split('/').pop() || '';
+    
+    // Skip hidden files except specific config files
+    if (fileName.startsWith('.') && !fileName.endsWith('.env.example')) {
+      return false;
+    }
+    
+    // Skip Python-specific file patterns
+    const skipPatterns = [
+      // Python compiled bytecode
+      /\.pyc$/,
+      /\.pyo$/,
+      // Python extension modules (binary)
+      /\.pyd$/,
+      /\.so$/,
+      // Python packages
+      /\.egg$/,
+      /\.whl$/,
+      // Lock files
+      /\.lock$/,
+      /poetry\.lock$/,
+      /Pipfile\.lock$/,
+      // Editor swap files
+      /\..*\.swp$/,
+      /\..*\.swo$/,
+      // OS metadata files
+      /^Thumbs\.db$/,
+      /^\.DS_Store$/,
+      // General binary and archive files
+      /\.zip$/,
+      /\.tar$/,
+      /\.rar$/,
+      /\.7z$/,
+      /\.gz$/,
+      // Media files
+      /\.(jpg|jpeg|png|gif|bmp|svg|ico)$/i,
+      /\.(mp4|avi|mov|wmv|flv|webm)$/i,
+      /\.(mp3|wav|flac|aac|ogg)$/i,
+      // Document files
+      /\.(pdf|doc|docx|xls|xlsx|ppt|pptx)$/i,
+      // Other binary files
+      /\.(exe|dll|dylib)$/i,
+      // Minified files and source maps
+      /\.min\.(js|css)$/,
+      /\.map$/,
+      // Log and temporary files
+      /\.log$/,
+      /\.tmp$/,
+      /\.cache$/,
+      /\.pid$/,
+      /\.seed$/
+    ];
+    
+    if (skipPatterns.some(pattern => pattern.test(fileName))) {
+      return false;
+    }
+    
+    // Only include Python files and essential config files
+    const extension = '.' + fileName.split('.').pop()?.toLowerCase();
+    
+    // Python source files
+    if (extension === '.py') {
+      return true;
+    }
+    
+    // Essential Python config files
+    const importantPythonFiles = [
+      'pyproject.toml',
+      'setup.py',
+      'requirements.txt',
+      'setup.cfg',
+      'tox.ini',
+      'pytest.ini',
+      'Pipfile',
+      'poetry.toml',
+      'README.md',
+      'LICENSE',
+      'CHANGELOG.md',
+      'MANIFEST.in'
+    ];
+    
+    if (importantPythonFiles.includes(fileName)) {
+      return true;
+    }
+    
+    return false;
   }
 
   public getDefaultTextExtensions(): string[] {

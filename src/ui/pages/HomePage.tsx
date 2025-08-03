@@ -229,7 +229,7 @@ const HomePage: React.FC = () => {
     llmProvider: 'openai',
     llmApiKey: '',
     llmModel: 'gpt-4o-mini',
-    maxFiles: 500,
+    maxFiles: 100, // Reduced from 500 to prevent memory issues
     directoryFilter: '',
     filePatternFilter: ''
   });
@@ -628,49 +628,63 @@ const HomePage: React.FC = () => {
         progress: { phase: 'structure', message: `Found ${files.length} files. Downloading...`, progress: 20, timestamp: Date.now() }
       });
 
-      // Download file contents
+      // Memory optimization: Process files in smaller batches
+      const DOWNLOAD_BATCH_SIZE = 20; // Download 20 files at a time
       let processedFiles = 0;
-      for (const file of files) {
-        try {
-          logToPersistent(`Processing file ${processedFiles + 1}/${files.length}`, file.path);
-          
-          const parsed = parseGitHubUrl(state.githubUrl);
-          if (!parsed) {
-            logToPersistent('Failed to parse GitHub URL', state.githubUrl);
-            break;
-          }
-
-          logToPersistent(`Downloading content for: ${file.path}`);
-          const content = await services.github.getFileContent(parsed.owner, parsed.repo, file.path);
-          if (content) {
-            fileContents.set(file.path, content);
-            logToPersistent(`Successfully downloaded: ${file.path}`, `${content.length} chars`);
-          } else {
-            logToPersistent(`No content received for: ${file.path}`);
-          }
-          processedFiles++;
-          
-          const progress = 20 + (processedFiles / files.length) * 30;
-          updateState({ 
-            progress: { 
-              phase: 'structure', 
-              message: `Downloaded ${processedFiles}/${files.length} files...`, 
-              progress,
-              timestamp: Date.now()
+      
+      for (let i = 0; i < files.length; i += DOWNLOAD_BATCH_SIZE) {
+        const batch = files.slice(i, i + DOWNLOAD_BATCH_SIZE);
+        
+        for (const file of batch) {
+          try {
+            logToPersistent(`Processing file ${processedFiles + 1}/${files.length}`, file.path);
+            
+            const parsed = parseGitHubUrl(state.githubUrl);
+            if (!parsed) {
+              logToPersistent('Failed to parse GitHub URL', state.githubUrl);
+              break;
             }
-          });
-        } catch (error) {
-          logToPersistent(`Failed to download ${file.path}`, {
-            message: error instanceof Error ? error.message : String(error),
-            stack: error instanceof Error ? error.stack : 'No stack'
-          });
-          // Continue with other files instead of breaking
+
+            logToPersistent(`Downloading content for: ${file.path}`);
+            const content = await services.github.getFileContent(parsed.owner, parsed.repo, file.path);
+            if (content) {
+              // Memory optimization: Skip very large files
+              if (content.length > 1000000) { // Skip files larger than 1MB
+                logToPersistent(`Skipping large file (${content.length} chars): ${file.path}`);
+              } else {
+                fileContents.set(file.path, content);
+                logToPersistent(`Successfully downloaded: ${file.path}`, `${content.length} chars`);
+              }
+            } else {
+              logToPersistent(`No content received for: ${file.path}`);
+            }
+            processedFiles++;
+            
+            const progress = 20 + (processedFiles / files.length) * 30;
+            updateState({ 
+              progress: { 
+                phase: 'structure', 
+                message: `Downloaded ${processedFiles}/${files.length} files...`, 
+                progress,
+                timestamp: Date.now()
+              }
+            });
+          } catch (error) {
+            logToPersistent(`Failed to download ${file.path}`, {
+              message: error instanceof Error ? error.message : String(error),
+              stack: error instanceof Error ? error.stack : 'No stack'
+            });
+            // Continue with other files instead of breaking
+          }
         }
+        
+        // Small delay between batches to prevent overwhelming the API
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
 
       logToPersistent('GITHUB FILE PROCESSING COMPLETED', {
         downloadedFiles: fileContents.size,
-        filePaths: Array.from(fileContents.keys())
+        totalSize: Array.from(fileContents.values()).reduce((sum, content) => sum + content.length, 0)
       });
 
       // Process with ingestion worker

@@ -1,11 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import cytoscape from 'cytoscape';
-// @ts-expect-error - No type definitions available for cytoscape-dagre
-import dagre from 'cytoscape-dagre';
+import * as d3 from 'd3';
 import type { KnowledgeGraph, GraphNode, GraphRelationship } from '../../../core/graph/types.ts';
-
-// Register the dagre layout extension
-cytoscape.use(dagre);
 
 interface GraphVisualizationProps {
   graph: KnowledgeGraph;
@@ -15,16 +10,22 @@ interface GraphVisualizationProps {
   style?: React.CSSProperties;
 }
 
-interface CytoscapeElement {
-  data: {
-    id: string;
-    label?: string;
-    source?: string;
-    target?: string;
-    nodeType?: string;
-    [key: string]: unknown;
-  };
-  classes?: string;
+interface D3Node extends d3.SimulationNodeDatum {
+  id: string;
+  label: string;
+  nodeType: string;
+  properties: Record<string, unknown>;
+  color: string;
+  size: number;
+}
+
+interface D3Link extends d3.SimulationLinkDatum<D3Node> {
+  id: string;
+  source: string | D3Node;
+  target: string | D3Node;
+  relationshipType: string;
+  color: string;
+  width: number;
 }
 
 const GraphVisualization: React.FC<GraphVisualizationProps> = ({
@@ -34,350 +35,425 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
   className = '',
   style = {}
 }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const cyRef = useRef<cytoscape.Core | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const simulationRef = useRef<d3.Simulation<D3Node, D3Link> | null>(null);
+  const onNodeSelectRef = useRef(onNodeSelect);
   const [isReady, setIsReady] = useState(false);
 
-  // Convert KnowledgeGraph to Cytoscape elements
-  const convertToElements = (graph: KnowledgeGraph): CytoscapeElement[] => {
-    const elements: CytoscapeElement[] = [];
+  // Update the ref whenever onNodeSelect changes
+  onNodeSelectRef.current = onNodeSelect;
 
-    // Add nodes
-    graph.nodes.forEach((node: GraphNode) => {
-      elements.push({
-        data: {
-          id: node.id,
-          label: node.properties.name as string || node.id,
-          nodeType: node.label.toLowerCase(),
-          ...node.properties
-        },
-        classes: `node-${node.label.toLowerCase()}`
-      });
+  // Convert KnowledgeGraph to D3 format
+  const convertToD3Format = (graph: KnowledgeGraph) => {
+    const nodeIds = new Set<string>();
+    
+    // Convert nodes
+    const nodes: D3Node[] = graph.nodes.map((node: GraphNode) => {
+      nodeIds.add(node.id);
+      
+      // Determine node color and size based on type
+      let color = '#69b3a2';
+      let size = 8;
+      
+      switch (node.label.toLowerCase()) {
+        case 'project':
+          color = '#2E7D32';
+          size = 20;
+          break;
+        case 'folder':
+          color = '#F57C00';
+          size = 12;
+          break;
+        case 'file':
+          color = '#1976D2';
+          size = 10;
+          break;
+        case 'function':
+          color = '#00796B';
+          size = 8;
+          break;
+        case 'method':
+          color = '#00695C';
+          size = 7;
+          break;
+        case 'class':
+          color = '#C2185B';
+          size = 10;
+          break;
+        case 'variable':
+          color = '#546E7A';
+          size = 6;
+          break;
+        default:
+          color = '#69b3a2';
+          size = 8;
+      }
+      
+      return {
+        id: node.id,
+        label: node.properties.name as string || node.id,
+        nodeType: node.label.toLowerCase(),
+        properties: node.properties,
+        color,
+        size
+      };
     });
 
-    // Add edges
+    // Convert links with validation
+    const links: D3Link[] = [];
     graph.relationships.forEach((rel: GraphRelationship) => {
-      elements.push({
-        data: {
-          id: rel.id,
-          source: rel.source,
-          target: rel.target,
-          label: rel.type,
-          relationshipType: rel.type.toLowerCase(),
-          ...rel.properties
-        },
-        classes: `edge-${rel.type.toLowerCase()}`
+      // Validate that both source and target nodes exist
+      if (!nodeIds.has(rel.source) || !nodeIds.has(rel.target)) {
+        console.warn(`Skipping invalid relationship: ${rel.source} -> ${rel.target}`);
+        return;
+      }
+      
+      // Skip self-loops
+      if (rel.source === rel.target) {
+        return;
+      }
+
+      // Determine link color and width based on type
+      let color = '#999';
+      let width = 1;
+      
+      switch (rel.type.toLowerCase()) {
+        case 'contains':
+          color = '#4CAF50';
+          width = 2;
+          break;
+        case 'calls':
+          color = '#F44336';
+          width = 1;
+          break;
+        case 'imports':
+          color = '#9C27B0';
+          width = 1.5;
+          break;
+        case 'inherits':
+          color = '#2196F3';
+          width = 2;
+          break;
+        default:
+          color = '#999';
+          width = 1;
+      }
+
+      links.push({
+        id: rel.id,
+        source: rel.source,
+        target: rel.target,
+        relationshipType: rel.type.toLowerCase(),
+        color,
+        width
       });
     });
 
-    return elements;
+    return { nodes, links };
   };
 
-  // Define styles for different node types
-  const getStylesheet = () => [
-    // Base node styles
-    {
-      selector: 'node',
-      style: {
-        'label': 'data(label)',
-        'text-valign': 'center',
-        'text-halign': 'center',
-        'font-size': '12px',
-        'font-family': 'system-ui, -apple-system, sans-serif',
-        'color': '#333',
-        'text-wrap': 'wrap',
-        'text-max-width': '80px',
-        'width': '60px',
-        'height': '60px',
-        'border-width': '2px',
-        'border-style': 'solid',
-        'border-color': '#ccc'
-      }
-    },
-    // Project nodes
-    {
-      selector: '.node-project',
-      style: {
-        'background-color': '#4CAF50',
-        'border-color': '#388E3C',
-        'shape': 'round-rectangle',
-        'width': '80px',
-        'height': '40px'
-      }
-    },
-    // Folder nodes
-    {
-      selector: '.node-folder',
-      style: {
-        'background-color': '#FF9800',
-        'border-color': '#F57C00',
-        'shape': 'round-rectangle',
-        'width': '70px',
-        'height': '35px'
-      }
-    },
-    // File nodes
-    {
-      selector: '.node-file',
-      style: {
-        'background-color': '#2196F3',
-        'border-color': '#1976D2',
-        'shape': 'rectangle'
-      }
-    },
-    // Module nodes
-    {
-      selector: '.node-module',
-      style: {
-        'background-color': '#9C27B0',
-        'border-color': '#7B1FA2',
-        'shape': 'round-rectangle'
-      }
-    },
-    // Function nodes
-    {
-      selector: '.node-function',
-      style: {
-        'background-color': '#00BCD4',
-        'border-color': '#0097A7',
-        'shape': 'ellipse'
-      }
-    },
-    // Method nodes
-    {
-      selector: '.node-method',
-      style: {
-        'background-color': '#00BCD4',
-        'border-color': '#0097A7',
-        'shape': 'ellipse',
-        'width': '50px',
-        'height': '50px'
-      }
-    },
-    // Class nodes
-    {
-      selector: '.node-class',
-      style: {
-        'background-color': '#E91E63',
-        'border-color': '#C2185B',
-        'shape': 'diamond'
-      }
-    },
-    // Variable nodes
-    {
-      selector: '.node-variable',
-      style: {
-        'background-color': '#607D8B',
-        'border-color': '#455A64',
-        'shape': 'triangle',
-        'width': '40px',
-        'height': '40px'
-      }
-    },
-    // Selected node
-    {
-      selector: '.selected',
-      style: {
-        'border-width': '4px',
-        'border-color': '#FF5722'
-      }
-    },
-    // Base edge styles
-    {
-      selector: 'edge',
-      style: {
-        'width': '2px',
-        'line-color': '#666',
-        'target-arrow-color': '#666',
-        'target-arrow-shape': 'triangle',
-        'curve-style': 'bezier'
-      }
-    },
-    // CONTAINS relationships
-    {
-      selector: '.edge-contains',
-      style: {
-        'line-color': '#4CAF50',
-        'target-arrow-color': '#4CAF50'
-      }
-    },
-    // CALLS relationships
-    {
-      selector: '.edge-calls',
-      style: {
-        'line-color': '#FF5722',
-        'target-arrow-color': '#FF5722',
-        'line-style': 'dashed'
-      }
-    },
-    // IMPORTS relationships
-    {
-      selector: '.edge-imports',
-      style: {
-        'line-color': '#9C27B0',
-        'target-arrow-color': '#9C27B0',
-        'line-style': 'dotted'
-      }
-    },
-    // INHERITS relationships
-    {
-      selector: '.edge-inherits',
-      style: {
-        'line-color': '#2196F3',
-        'target-arrow-color': '#2196F3'
-      }
-    },
-    // OVERRIDES relationships
-    {
-      selector: '.edge-overrides',
-      style: {
-        'line-color': '#FF9800',
-        'target-arrow-color': '#FF9800'
-      }
-    }
-  ];
-
-  // Initialize Cytoscape
+  // Initialize D3 visualization
   useEffect(() => {
-    if (!containerRef.current || !graph) return;
+    if (!svgRef.current || !graph) return;
 
-    console.log('=== INITIALIZING CYTOSCAPE ===');
-    console.log('Container ref:', containerRef.current);
-    console.log('Container dimensions:', {
-      width: containerRef.current.offsetWidth,
-      height: containerRef.current.offsetHeight,
-      clientWidth: containerRef.current.clientWidth,
-      clientHeight: containerRef.current.clientHeight
-    });
-    console.log('Graph nodes:', graph.nodes.length);
-    console.log('Graph relationships:', graph.relationships.length);
-
-    const elements = convertToElements(graph);
-    console.log('Converted elements:', elements.length);
+    const svg = d3.select(svgRef.current);
+    const container = svg.select('.graph-container');
     
-    const stylesheet = getStylesheet();
+    // Clear previous content
+    container.selectAll('*').remove();
 
-    cyRef.current = cytoscape({
-      container: containerRef.current,
-      elements,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      style: stylesheet as any,
-      layout: {
-        name: 'dagre',
-        rankDir: 'TB',
-        spacingFactor: 1.2,
-        nodeSep: 50,
-        edgeSep: 10,
-        rankSep: 100
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } as any,
-      // Interaction options
-      minZoom: 0.1,
-      maxZoom: 3,
-      wheelSensitivity: 0.5,
-      boxSelectionEnabled: false,
-      autounselectify: false
+    const { nodes, links } = convertToD3Format(graph);
+
+    // Get SVG dimensions
+    const rect = svgRef.current.getBoundingClientRect();
+    const width = rect.width || 800;
+    const height = rect.height || 600;
+
+    // Set up zoom behavior
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.1, 4])
+      .on('zoom', (event) => {
+        container.attr('transform', event.transform);
+      });
+
+    // Apply zoom behavior to SVG
+    svg.call(zoom);
+
+    // Reset zoom on double-click
+    svg.on('dblclick.zoom', null);
+    svg.on('dblclick', () => {
+      svg.transition().duration(750).call(
+        zoom.transform,
+        d3.zoomIdentity
+      );
     });
 
-    console.log('Cytoscape instance created:', cyRef.current);
-    console.log('Cytoscape elements count:', cyRef.current.elements().length);
+    // Create force simulation
+    const simulation = d3.forceSimulation<D3Node>(nodes)
+      .force('link', d3.forceLink<D3Node, D3Link>(links)
+        .id((d: D3Node) => d.id)
+        .distance((d: D3Link) => {
+          switch (d.relationshipType) {
+            case 'contains': return 60;
+            case 'imports': return 100;
+            case 'calls': return 80;
+            default: return 90;
+          }
+        })
+        .strength(0.7)
+      )
+      .force('charge', d3.forceManyBody()
+        .strength((d: d3.SimulationNodeDatum) => {
+          const node = d as D3Node;
+          switch (node.nodeType) {
+            case 'project': return -800;
+            case 'folder': return -400;
+            case 'file': return -300;
+            default: return -200;
+          }
+        })
+      )
+      .force('center', d3.forceCenter(width / 2, height / 2))
+      .force('collision', d3.forceCollide()
+        .radius((node: d3.SimulationNodeDatum) => {
+          const d = node as D3Node;
+          return d.size + 5;
+        })
+        .strength(0.7)
+      )
+      .alphaTarget(0.05)
+      .alphaDecay(0.005);
 
-    // Handle node click events
-    cyRef.current.on('tap', 'node', (event: cytoscape.EventObject) => {
-      const node = event.target;
-      const nodeId = node.id();
+    simulationRef.current = simulation;
+
+    // Create links
+    const link = container.append('g')
+      .attr('class', 'links')
+      .selectAll('line')
+      .data(links)
+      .enter().append('line')
+      .attr('stroke', (d) => d.color)
+      .attr('stroke-width', (d) => d.width)
+      .attr('stroke-opacity', 0.8)
+      .style('stroke-dasharray', (d) => {
+        switch (d.relationshipType) {
+          case 'calls': return '5,5';
+          case 'imports': return '3,3';
+          default: return 'none';
+        }
+      });
+
+    // Create nodes
+    const node = container.append('g')
+      .attr('class', 'nodes')
+      .selectAll('circle')
+      .data(nodes)
+      .enter().append('circle')
+      .attr('r', (d) => d.size)
+      .attr('fill', (d) => d.color)
+      .attr('stroke', '#fff')
+      .attr('stroke-width', 2)
+      .style('cursor', 'pointer');
+
+    // Use D3 drag with proper click distance to prevent sticking
+    node.call(d3.drag<SVGCircleElement, D3Node>()
+      .clickDistance(10) // Larger threshold to better distinguish clicks from drags
+      .on('start', function(event) {
+        // Only fix position if this is actually a drag (not a click)
+        if (event.sourceEvent.type === 'mousedown') {
+          // Don't fix position immediately - wait for actual drag
+        }
+      })
+      .on('drag', function(event, d) {
+        // This only fires on actual drags (beyond clickDistance)
+        if (!d.fx && !d.fy) {
+          // First drag event - fix position and restart simulation
+          d.fx = d.x;
+          d.fy = d.y;
+          if (!event.active) simulation.alphaTarget(0.3).restart();
+        }
+        d.fx = event.x;
+        d.fy = event.y;
+      })
+      .on('end', function(event, d) {
+        if (!event.active) simulation.alphaTarget(0.05);
+        // Release the node
+        d.fx = null;
+        d.fy = null;
+      })
+    );
+
+    // Create labels
+    const label = container.append('g')
+      .attr('class', 'labels')
+      .selectAll('text')
+      .data(nodes)
+      .enter().append('text')
+      .text((d) => d.label)
+      .attr('font-size', (d) => Math.max(8, d.size - 2))
+      .attr('font-family', 'Inter, system-ui, sans-serif')
+      .attr('font-weight', '500')
+      .attr('fill', '#fff')
+      .attr('text-anchor', 'middle')
+      .attr('dy', '0.35em')
+      .style('pointer-events', 'none')
+      .style('text-shadow', '1px 1px 2px rgba(0,0,0,0.8)');
+
+    // Node click handler
+    node.on('click', (event, d) => {
+      
+      // Ignore clicks if we're dragging or just finished dragging
+      if (d.fx || d.fy) return; // Check if node is being dragged
+      
+      event.stopPropagation();
       
       // Remove previous selection
-      cyRef.current?.elements('.selected').removeClass('selected');
+      node.classed('selected', false);
+      node.attr('stroke-width', 2);
       
       // Add selection to clicked node
-      node.addClass('selected');
+      d3.select(event.currentTarget)
+        .classed('selected', true)
+        .attr('stroke-width', 4)
+        .attr('stroke', '#FFD54F');
       
-      // Notify parent component
-      if (onNodeSelect) {
-        onNodeSelect(nodeId);
+      // Highlight connected elements
+      const connectedNodeIds = new Set<string>();
+      link.attr('stroke-opacity', 0.1);
+      node.attr('opacity', 0.3);
+      label.attr('opacity', 0.3);
+      
+      links.forEach(linkData => {
+        const sourceId = typeof linkData.source === 'object' ? linkData.source.id : linkData.source;
+        const targetId = typeof linkData.target === 'object' ? linkData.target.id : linkData.target;
+        
+        if (sourceId === d.id || targetId === d.id) {
+          connectedNodeIds.add(sourceId);
+          connectedNodeIds.add(targetId);
+        }
+      });
+      
+      // Highlight connected nodes and links
+      link.filter(linkData => {
+        const sourceId = typeof linkData.source === 'object' ? linkData.source.id : linkData.source;
+        const targetId = typeof linkData.target === 'object' ? linkData.target.id : linkData.target;
+        return sourceId === d.id || targetId === d.id;
+      }).attr('stroke-opacity', 1);
+      
+      node.filter(nodeData => connectedNodeIds.has(nodeData.id))
+        .attr('opacity', 1);
+      
+      label.filter(nodeData => connectedNodeIds.has(nodeData.id))
+        .attr('opacity', 1);
+      
+      // Keep selected node fully visible
+      d3.select(event.currentTarget).attr('opacity', 1);
+      label.filter(nodeData => nodeData.id === d.id).attr('opacity', 1);
+      
+      if (onNodeSelectRef.current) {
+        onNodeSelectRef.current(d.id);
       }
     });
 
-    // Handle background click (deselect)
-    cyRef.current.on('tap', (event: cytoscape.EventObject) => {
-      if (event.target === cyRef.current) {
-        cyRef.current?.elements('.selected').removeClass('selected');
-        if (onNodeSelect) {
-          onNodeSelect(null);
+    // Background click handler - clear selection when clicking empty space
+    svg.on('click', (event) => {
+      // Only handle clicks on the SVG background (not on nodes or other elements)
+      if (event.target === event.currentTarget) {
+        // Remove all selections and highlighting
+        node.classed('selected', false);
+        node.attr('stroke-width', 2).attr('stroke', '#fff').attr('opacity', 1);
+        link.attr('stroke-opacity', 0.8);
+        label.attr('opacity', 1);
+        
+        if (onNodeSelectRef.current) {
+          onNodeSelectRef.current(null);
         }
       }
     });
 
-    setIsReady(true);
-    console.log('=== CYTOSCAPE INITIALIZED SUCCESSFULLY ===');
+    // Hover effects
+    node.on('mouseover', (event, d) => {
+      d3.select(event.currentTarget)
+        .transition()
+        .duration(200)
+        .attr('r', d.size * 1.3);
+    });
 
-    // Force fit and center the graph
-    setTimeout(() => {
-      if (cyRef.current) {
-        console.log('Fitting graph to container...');
-        cyRef.current.fit(undefined, 50);
-        cyRef.current.center();
-        console.log('Graph fitted and centered');
-      }
-    }, 100);
+    node.on('mouseout', (event, d) => {
+      d3.select(event.currentTarget)
+        .transition()
+        .duration(200)
+        .attr('r', d.size);
+    });
+
+    // Update positions on each tick
+    simulation.on('tick', () => {
+      link
+        .attr('x1', (d) => (d.source as D3Node).x!)
+        .attr('y1', (d) => (d.source as D3Node).y!)
+        .attr('x2', (d) => (d.target as D3Node).x!)
+        .attr('y2', (d) => (d.target as D3Node).y!);
+
+      node
+        .attr('cx', (d) => d.x!)
+        .attr('cy', (d) => d.y!);
+
+      label
+        .attr('x', (d) => d.x!)
+        .attr('y', (d) => d.y!);
+    });
+
+    setIsReady(true);
 
     // Cleanup function
     return () => {
-      if (cyRef.current) {
-        cyRef.current.destroy();
-        cyRef.current = null;
+      if (simulationRef.current) {
+        simulationRef.current.stop();
+        simulationRef.current = null;
       }
       setIsReady(false);
     };
-  }, [graph, onNodeSelect]);
+  }, [graph]); // Removed onNodeSelect from dependencies to prevent re-renders
 
-  // Update selection when selectedNodeId prop changes
+  // Handle selected node changes
   useEffect(() => {
-    if (!cyRef.current || !isReady) return;
+    if (!svgRef.current || !isReady || !selectedNodeId) return;
 
-    // Remove all selections
-    cyRef.current.elements('.selected').removeClass('selected');
-
-    // Add selection to specified node
-    if (selectedNodeId) {
-      const node = cyRef.current.getElementById(selectedNodeId);
-      if (node.length > 0) {
-        node.addClass('selected');
-        // Center the view on the selected node
-        cyRef.current.center(node);
-      }
-    }
+    const svg = d3.select(svgRef.current);
+    const nodes = svg.selectAll('.nodes circle');
+    
+    // Remove previous selection
+    nodes.classed('selected', false);
+    nodes.attr('stroke-width', 2).attr('stroke', '#fff');
+    
+    // Select the specified node
+    nodes.filter(function(d) { return (d as D3Node).id === selectedNodeId; })
+      .classed('selected', true)
+      .attr('stroke-width', 4)
+      .attr('stroke', '#FFD54F');
   }, [selectedNodeId, isReady]);
-
-  // Fit graph to container when graph changes
-  useEffect(() => {
-    if (!cyRef.current || !isReady) return;
-
-    // Fit the graph to the container with some padding
-    setTimeout(() => {
-      cyRef.current?.fit(undefined, 50);
-    }, 100);
-  }, [graph, isReady]);
 
   const defaultStyle: React.CSSProperties = {
     width: '100%',
-    height: style.height || '600px',
-    minHeight: '400px',
-    border: '1px solid #ddd',
-    borderRadius: '4px',
-    backgroundColor: '#fafafa',
+    height: style.height || '700px',
+    minHeight: '600px',
+    border: '1px solid #37474F',
+    borderRadius: '8px',
+    backgroundColor: '#263238',
     position: 'relative',
+    boxShadow: '0 4px 20px rgba(0,0,0,0.1)',
     ...style
   };
 
   return (
-    <div className={`graph-visualization ${className}`} style={{ position: 'relative', width: '100%', minHeight: '400px' }}>
-      <div
-        ref={containerRef}
+    <div className={`graph-visualization ${className}`} style={{ position: 'relative', width: '100%', minHeight: '600px' }}>
+      <svg
+        ref={svgRef}
         style={defaultStyle}
-        className="cytoscape-container"
-      />
+        className="d3-graph-container"
+      >
+        <g className="graph-container" />
+      </svg>
       {!isReady && (
         <div
           style={{
@@ -385,14 +461,84 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
             top: '50%',
             left: '50%',
             transform: 'translate(-50%, -50%)',
-            color: '#666',
-            fontSize: '14px',
-            zIndex: 10
+            color: '#90A4AE',
+            fontSize: '16px',
+            fontFamily: 'Inter, system-ui, sans-serif',
+            fontWeight: '500',
+            zIndex: 10,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px'
           }}
         >
-          Loading graph...
+          <div
+            style={{
+              width: '20px',
+              height: '20px',
+              border: '2px solid #90A4AE',
+              borderTop: '2px solid transparent',
+              borderRadius: '50%',
+              animation: 'spin 1s linear infinite'
+            }}
+          />
+          Loading knowledge graph...
         </div>
       )}
+      
+      {/* Add navigation instructions */}
+      <div
+        style={{
+          position: 'absolute',
+          top: '10px',
+          right: '16px',
+          backgroundColor: 'rgba(0, 0, 0, 0.7)',
+          color: '#fff',
+          padding: '8px 12px',
+          borderRadius: '4px',
+          fontSize: '12px',
+          fontFamily: 'Inter, system-ui, sans-serif',
+          zIndex: 10,
+          lineHeight: '1.4'
+        }}
+      >
+        <div>🖱️ <strong>Navigation:</strong></div>
+        <div>• Drag to pan</div>
+        <div>• Scroll to zoom</div>
+        <div>• Double-click to reset view</div>
+        <div>• Drag nodes to reposition</div>
+      </div>
+
+      <style>{`
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        
+        .d3-graph-container {
+          font-family: 'Inter', system-ui, sans-serif;
+          cursor: grab;
+        }
+        
+        .d3-graph-container:active {
+          cursor: grabbing;
+        }
+        
+        .nodes circle.selected {
+          filter: drop-shadow(0 0 10px rgba(255, 213, 79, 0.8));
+        }
+        
+        .links line {
+          transition: stroke-opacity 0.3s ease;
+        }
+        
+        .nodes circle {
+          transition: opacity 0.3s ease, r 0.2s ease;
+        }
+        
+        .labels text {
+          transition: opacity 0.3s ease;
+        }
+      `}</style>
     </div>
   );
 };

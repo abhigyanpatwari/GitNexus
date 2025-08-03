@@ -62,7 +62,7 @@ const SourceViewer: React.FC<SourceViewerProps> = ({
         # Constructor implementation
         pass`;
 
-        case 'File':
+        case 'File': {
           const extension = node.properties.extension as string || '';
           const language = node.properties.language as string || 'unknown';
           
@@ -85,6 +85,7 @@ export default function() {
 # This is a Python file in the project
 # Click on specific functions or classes to see their details`;
           }
+        }
 
         case 'Folder':
           return `# Folder: ${name}
@@ -106,12 +107,12 @@ export default function() {
 # - Functions and classes
 # - Code relationships`;
 
-        default:
+        default: {
           // Safe JSON stringify for default case
-          const safeStringify = (obj: any) => {
+          const safeStringify = (obj: unknown) => {
             try {
               return JSON.stringify(obj, null, 2);
-            } catch (e) {
+            } catch {
               const seen = new WeakSet();
               return JSON.stringify(obj, (key, val) => {
                 if (val != null && typeof val === "object") {
@@ -134,6 +135,7 @@ export default function() {
 # Properties: ${safeStringify(node.properties)}
 
 # This node represents a ${node.label.toLowerCase()} in your codebase`;
+        }
       }
     } catch (error) {
       console.error('Error generating mock content:', error);
@@ -163,16 +165,12 @@ Node ID: ${node.id}
       const pathParts = filePath.split('/');
       const fileName = pathParts[pathParts.length - 1];
 
-      let content: string;
+      let content: string = '';
       
       // Try to get real file contents first
       if (fileContents && selectedNode.label === 'File') {
-        console.log('Attempting to load real file content for:', filePath);
-        console.log('Available file paths:', Array.from(fileContents.keys()));
-        
         const realContent = fileContents.get(filePath);
         if (realContent) {
-          console.log('Found real content for:', filePath);
           content = realContent;
         } else {
           // Try alternative path formats
@@ -183,13 +181,10 @@ Node ID: ${node.id}
             filePath.replace(/\\/g, '/'), // Normalize path separators
           ].filter(Boolean);
           
-          console.log('Trying alternative paths:', alternativePaths);
-          
           let found = false;
           for (const altPath of alternativePaths) {
             const altContent = fileContents.get(altPath);
             if (altContent) {
-              console.log('Found real content using alternative path:', altPath);
               content = altContent;
               found = true;
               break;
@@ -197,7 +192,6 @@ Node ID: ${node.id}
           }
           
           if (!found) {
-            console.log('No real content found, falling back to mock content');
             // Fall back to mock content if real content not found
             content = generateMockContent(selectedNode);
           }
@@ -264,10 +258,10 @@ console.log('This is a Next.js build chunk');
       console.error('Error generating source info:', error);
       
       // Safe JSON stringify that handles circular references
-      const safeStringify = (obj: any) => {
+      const safeStringify = (obj: unknown) => {
         try {
           return JSON.stringify(obj, null, 2);
-        } catch (e) {
+        } catch {
           // Handle circular references and non-serializable values
           const seen = new WeakSet();
           return JSON.stringify(obj, (key, val) => {
