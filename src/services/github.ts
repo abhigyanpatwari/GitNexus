@@ -48,7 +48,6 @@ export class GitHubService {
       baseURL: this.baseURL,
       headers: {
         'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'GitNexus/1.0',
         ...(token && { 'Authorization': `Bearer ${token}` })
       },
       timeout: 30000
@@ -159,8 +158,14 @@ export class GitHubService {
         throw new Error(`Path ${path} is not a file`);
       }
       
+      // If content or encoding is missing, try to download directly
       if (!file.content || !file.encoding) {
-        throw new Error('File content or encoding information missing');
+        if (file.download_url) {
+          console.warn(`File ${path} missing content/encoding, downloading directly`);
+          return await this.downloadFileRaw(owner, repo, path);
+        } else {
+          throw new Error('File content, encoding, and download URL are all missing');
+        }
       }
       
       if (file.encoding === 'base64') {
@@ -196,10 +201,7 @@ export class GitHubService {
       }
       
       const downloadResponse = await axios.get(file.download_url, {
-        timeout: 30000,
-        headers: {
-          'User-Agent': 'GitNexus/1.0'
-        }
+        timeout: 30000
       });
       
       return downloadResponse.data;

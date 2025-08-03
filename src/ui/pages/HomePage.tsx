@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { GitHubService } from '../../services/github.ts';
 import { ZipService } from '../../services/zip.ts';
 import { getIngestionWorker, type IngestionProgress } from '../../lib/workerUtils.ts';
@@ -9,6 +9,35 @@ import { LLMService, CypherGenerator, LangChainRAGOrchestrator } from '../../ai/
 import { exportAndDownloadGraph, calculateExportSize } from '../../lib/export.ts';
 import type { KnowledgeGraph } from '../../core/graph/types.ts';
 import type { LLMProvider, LLMConfig } from '../../ai/llm-service.ts';
+
+// Global services singleton to survive component remounts
+interface Services {
+  github: GitHubService;
+  zip: ZipService;
+  llm: LLMService;
+  cypher: CypherGenerator;
+  rag: LangChainRAGOrchestrator;
+}
+
+let globalServices: Services | null = null;
+
+function getOrCreateServices(githubToken?: string): Services {
+  if (!globalServices) {
+    console.log('[GLOBAL] Creating services singleton');
+    const llmService = new LLMService();
+    const cypherGenerator = new CypherGenerator(llmService);
+    const ragOrchestrator = new LangChainRAGOrchestrator(llmService, cypherGenerator);
+    
+    globalServices = {
+      github: new GitHubService(githubToken),
+      zip: new ZipService(),
+      llm: llmService,
+      cypher: cypherGenerator,
+      rag: ragOrchestrator
+    };
+  }
+  return globalServices;
+}
 
 interface AppState {
   // Data
@@ -135,6 +164,34 @@ const ConfirmationDialog: React.FC<ConfirmationDialogProps> = ({
 };
 
 const HomePage: React.FC = () => {
+  // Persistent logging system - make it completely stable
+  const logToPersistent = useRef((message: string, data?: unknown) => {
+    const timestamp = new Date().toISOString();
+    const logEntry = {
+      timestamp,
+      message,
+      data: data ? JSON.stringify(data, null, 2) : undefined
+    };
+    
+    // Get existing logs
+    const existingLogs = localStorage.getItem('gitnexus_debug_logs');
+    const logs = existingLogs ? JSON.parse(existingLogs) : [];
+    
+    // Add new log
+    logs.push(logEntry);
+    
+    // Keep only last 50 logs
+    if (logs.length > 50) {
+      logs.splice(0, logs.length - 50);
+    }
+    
+    // Save back to localStorage
+    localStorage.setItem('gitnexus_debug_logs', JSON.stringify(logs));
+    
+    // Also log to console
+    console.log(`[PERSISTENT] ${message}`, data || '');
+  }).current;
+
   // Main application state
   const [state, setState] = useState<AppState>({
     graph: null,
@@ -158,27 +215,134 @@ const HomePage: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [confirmationData, setConfirmationData] = useState<{
-    files: any[];
+    files: { path: string }[];
     projectName: string;
   } | null>(null);
 
-  // Initialize services
-  const services = useMemo(() => {
-    const llmService = new LLMService();
-    const cypherGenerator = new CypherGenerator(llmService);
-    const ragOrchestrator = new LangChainRAGOrchestrator(llmService, cypherGenerator);
-    
-    return {
-      github: new GitHubService(state.githubToken || undefined),
-      zip: new ZipService(),
-      llm: llmService,
-      cypher: cypherGenerator,
-      rag: ragOrchestrator
-    };
+  // Stable reference for GitHub token to prevent service recreation
+  const githubTokenRef = useRef(state.githubToken);
+  
+  // Update the ref when token changes
+  useEffect(() => {
+    githubTokenRef.current = state.githubToken;
   }, [state.githubToken]);
+
+  // Update state helper - remove logToPersistent dependency
+  const updateState = useCallback((updates: Partial<AppState>) => {
+    logToPersistent('State update', updates);
+    setState(prev => ({ ...prev, ...updates }));
+  }, []); // No dependencies!
+
+  // Check for previous logs on component mount - remove logToPersistent dependency
+  useEffect(() => {
+    const existingLogs = localStorage.getItem('gitnexus_debug_logs');
+    if (existingLogs) {
+      console.log('=== PREVIOUS DEBUG LOGS FOUND ===');
+      const logs = JSON.parse(existingLogs);
+      logs.forEach((log: { timestamp: string; message: string; data?: string }, index: number) => {
+        console.log(`Log ${index + 1}:`, log.timestamp, log.message, log.data || '');
+      });
+      console.log('=== END PREVIOUS LOGS ===');
+    }
+    
+    logToPersistent('HomePage component mounted');
+
+    // Cleanup function to detect unmounting
+    return () => {
+      logToPersistent('HomePage component UNMOUNTING - this might explain the refresh!');
+    };
+  }, []); // No dependencies!
+
+  // Get services singleton
+  const services = getOrCreateServices(state.githubToken);
+
+  // Global error handlers
+  useEffect(() => {
+    // Check for previous errors on load
+    const previousError = localStorage.getItem('gitnexus_last_error');
+    if (previousError) {
+      console.error('=== PREVIOUS ERROR FOUND ===');
+      console.error(previousError);
+      localStorage.removeItem('gitnexus_last_error');
+    }
+
+    const handleError = (event: ErrorEvent) => {
+      const errorInfo = {
+        timestamp: new Date().toISOString(),
+        message: event.message,
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno,
+        error: event.error?.toString(),
+        stack: event.error?.stack
+      };
+      
+      console.error('=== GLOBAL ERROR CAUGHT ===');
+      console.error('Error info:', errorInfo);
+      
+      // Store error in localStorage for debugging
+      localStorage.setItem('gitnexus_last_error', JSON.stringify(errorInfo));
+      
+      // Prevent default behavior (page reload)
+      event.preventDefault();
+      
+      // Use setState directly to avoid dependency issues
+      setState(prev => ({ 
+        ...prev,
+        error: `Unexpected error: ${event.message}`,
+        isProcessing: false,
+        progress: null
+      }));
+    };
+
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const rejectionInfo = {
+        timestamp: new Date().toISOString(),
+        reason: event.reason?.toString(),
+        stack: event.reason?.stack
+      };
+      
+      console.error('=== UNHANDLED PROMISE REJECTION ===');
+      console.error('Rejection info:', rejectionInfo);
+      
+      // Store rejection in localStorage for debugging
+      localStorage.setItem('gitnexus_last_error', JSON.stringify(rejectionInfo));
+      
+      // Prevent default behavior
+      event.preventDefault();
+      
+      const errorMessage = event.reason instanceof Error 
+        ? event.reason.message 
+        : String(event.reason);
+      
+      // Use setState directly to avoid dependency issues
+      setState(prev => ({ 
+        ...prev,
+        error: `Unhandled promise rejection: ${errorMessage}`,
+        isProcessing: false,
+        progress: null
+      }));
+    };
+
+    // Add global error listeners
+    window.addEventListener('error', handleError);
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+
+    // Cleanup
+    return () => {
+      window.removeEventListener('error', handleError);
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+    };
+  }, []); // No dependencies!
 
   // Initialize RAG context when graph changes
   useEffect(() => {
+    logToPersistent('RAG context effect triggered', {
+      hasGraph: !!state.graph,
+      fileContentsSize: state.fileContents.size,
+      hasApiKey: !!state.llmApiKey
+    });
+    
     if (state.graph && state.fileContents.size > 0 && state.llmApiKey) {
       const llmConfig: LLMConfig = {
         provider: state.llmProvider,
@@ -188,19 +352,16 @@ const HomePage: React.FC = () => {
         maxTokens: 4000
       };
 
+      logToPersistent('Setting RAG context');
       services.rag.setContext({
         graph: state.graph,
         fileContents: state.fileContents
       }, llmConfig).catch(error => {
+        logToPersistent('Failed to initialize RAG context', error);
         console.error('Failed to initialize RAG context:', error);
       });
     }
-  }, [state.graph, state.fileContents, state.llmApiKey, state.llmProvider, state.llmModel, services.rag]);
-
-  // Update state helper
-  const updateState = useCallback((updates: Partial<AppState>) => {
-    setState(prev => ({ ...prev, ...updates }));
-  }, []);
+  }, [state.graph, state.fileContents, state.llmApiKey, state.llmProvider, state.llmModel, services.rag]); // Removed logToPersistent dependency
 
   // Validate GitHub URL
   const validateGitHubUrl = useCallback((url: string): { isValid: boolean; error?: string } => {
@@ -291,7 +452,7 @@ const HomePage: React.FC = () => {
       // Check if repository exceeds file limit
       if (filteredFiles.length > state.maxFiles) {
         setConfirmationData({
-          files: filteredFiles,
+          files: filteredFiles.map(f => ({ path: f.path })),
           projectName: `${parsed.owner}/${parsed.repo}`
         });
         setShowConfirmation(true);
@@ -311,44 +472,193 @@ const HomePage: React.FC = () => {
     }
   }, [state.githubUrl, state.githubToken, state.maxFiles, services.github, validateGitHubUrl, parseGitHubUrl, filterFiles, updateState]);
 
+  // Process with ingestion worker
+  const processWithWorker = useCallback(async (
+    fileContents: Map<string, string>,
+    projectName: string,
+    filePaths: string[]
+  ) => {
+    try {
+      logToPersistent('STARTING WORKER PROCESSING', { 
+        projectName, 
+        fileCount: fileContents.size, 
+        pathCount: filePaths.length 
+      });
+      
+      const worker = getIngestionWorker();
+      logToPersistent('Worker obtained, initializing...');
+      
+      await worker.initialize();
+      logToPersistent('Worker initialized successfully');
+
+      // Set up progress callback
+      await worker.setProgressCallback((progress: IngestionProgress) => {
+        logToPersistent('Progress update', progress);
+        updateState({ progress });
+      });
+      logToPersistent('Progress callback set');
+
+      updateState({ 
+        progress: { phase: 'parsing', message: 'Starting knowledge graph construction...', progress: 50 }
+      });
+
+      // Process repository
+      logToPersistent('Calling worker.processRepository...');
+      const result = await worker.processRepository({
+        projectRoot: '/',
+        projectName,
+        filePaths,
+        fileContents
+      });
+      logToPersistent('Worker processing completed', {
+        success: result.success,
+        nodeCount: result.graph?.nodes?.length || 0,
+        relationshipCount: result.graph?.relationships?.length || 0
+      });
+
+      if (result.success && result.graph) {
+        logToPersistent('Processing successful, creating stats...');
+        
+        // Calculate stats
+        const stats: ProcessingStats = {
+          totalFiles: filePaths.length,
+          processedFiles: fileContents.size,
+          duration: result.duration || 0,
+          nodeCount: result.graph.nodes.length,
+          relationshipCount: result.graph.relationships.length,
+          projectName
+        };
+        logToPersistent('Stats created', stats);
+
+        logToPersistent('Updating application state...');
+        updateState({
+          graph: result.graph,
+          fileContents,
+          isProcessing: false,
+          progress: null,
+          error: null
+        });
+        logToPersistent('Application state updated');
+
+        setProcessingStats(stats);
+        logToPersistent('Processing stats set');
+
+        // Show success message briefly
+        setTimeout(() => {
+          logToPersistent('Showing success message');
+          updateState({ 
+            progress: { 
+              phase: 'complete', 
+              message: `Successfully processed ${stats.nodeCount} nodes and ${stats.relationshipCount} relationships!`, 
+              progress: 100 
+            }
+          });
+          setTimeout(() => {
+            logToPersistent('Clearing success message');
+            updateState({ progress: null });
+          }, 3000);
+        }, 500);
+
+        logToPersistent('WORKER PROCESSING COMPLETED SUCCESSFULLY');
+      } else {
+        logToPersistent('Worker processing failed - no success or no graph', result);
+        throw new Error(result.error || 'Processing failed');
+      }
+
+    } catch (error) {
+      logToPersistent('WORKER PROCESSING ERROR', {
+        type: typeof error,
+        isError: error instanceof Error,
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : 'No stack trace'
+      });
+      
+      updateState({ 
+        error: error instanceof Error ? error.message : 'Failed to process with worker',
+        isProcessing: false,
+        progress: null
+      });
+      logToPersistent('ERROR STATE UPDATED');
+    }
+  }, [updateState, logToPersistent]);
+
   // Process files from GitHub (used by both normal processing and confirmation)
   const processFilesFromGitHub = useCallback(async (files: any[], projectName: string) => {
     const fileContents = new Map<string, string>();
 
-    updateState({ 
-      isProcessing: true,
-      progress: { phase: 'structure', message: `Found ${files.length} files. Downloading...`, progress: 20 }
-    });
+    try {
+      logToPersistent('STARTING GITHUB FILE PROCESSING', {
+        fileCount: files.length,
+        projectName
+      });
 
-    // Download file contents
-    let processedFiles = 0;
-    for (const file of files) {
-      try {
-        const parsed = parseGitHubUrl(state.githubUrl);
-        if (!parsed) break;
+      updateState({ 
+        isProcessing: true,
+        progress: { phase: 'structure', message: `Found ${files.length} files. Downloading...`, progress: 20 }
+      });
 
-        const content = await services.github.getFileContent(parsed.owner, parsed.repo, file.path);
-        if (content) {
-          fileContents.set(file.path, content);
-        }
-        processedFiles++;
-        
-        const progress = 20 + (processedFiles / files.length) * 30;
-        updateState({ 
-          progress: { 
-            phase: 'structure', 
-            message: `Downloaded ${processedFiles}/${files.length} files...`, 
-            progress 
+      // Download file contents
+      let processedFiles = 0;
+      for (const file of files) {
+        try {
+          logToPersistent(`Processing file ${processedFiles + 1}/${files.length}`, file.path);
+          
+          const parsed = parseGitHubUrl(state.githubUrl);
+          if (!parsed) {
+            logToPersistent('Failed to parse GitHub URL', state.githubUrl);
+            break;
           }
-        });
-      } catch (error) {
-        console.warn(`Failed to download ${file.path}:`, error);
-      }
-    }
 
-    // Process with ingestion worker
-    await processWithWorker(fileContents, projectName, files.map(f => f.path));
-  }, [state.githubUrl, services.github, parseGitHubUrl, updateState]);
+          logToPersistent(`Downloading content for: ${file.path}`);
+          const content = await services.github.getFileContent(parsed.owner, parsed.repo, file.path);
+          if (content) {
+            fileContents.set(file.path, content);
+            logToPersistent(`Successfully downloaded: ${file.path}`, `${content.length} chars`);
+          } else {
+            logToPersistent(`No content received for: ${file.path}`);
+          }
+          processedFiles++;
+          
+          const progress = 20 + (processedFiles / files.length) * 30;
+          updateState({ 
+            progress: { 
+              phase: 'structure', 
+              message: `Downloaded ${processedFiles}/${files.length} files...`, 
+              progress 
+            }
+          });
+        } catch (error) {
+          logToPersistent(`Failed to download ${file.path}`, {
+            message: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : 'No stack'
+          });
+          // Continue with other files instead of breaking
+        }
+      }
+
+      logToPersistent('GITHUB FILE PROCESSING COMPLETED', {
+        downloadedFiles: fileContents.size,
+        filePaths: Array.from(fileContents.keys())
+      });
+
+      // Process with ingestion worker
+      logToPersistent('Calling processWithWorker...');
+      await processWithWorker(fileContents, projectName, files.map(f => f.path));
+      
+    } catch (error) {
+      logToPersistent('GITHUB FILE PROCESSING ERROR', {
+        type: typeof error,
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : 'No stack trace'
+      });
+      
+      updateState({ 
+        error: error instanceof Error ? error.message : 'Failed to process GitHub files',
+        isProcessing: false,
+        progress: null
+      });
+    }
+  }, [state.githubUrl, services.github, parseGitHubUrl, updateState, processWithWorker, logToPersistent]);
 
   // Handle confirmation dialog
   const handleConfirmLargeRepository = useCallback(async () => {
@@ -459,80 +769,6 @@ const HomePage: React.FC = () => {
       });
     }
   }, [state.uploadedFile, state.maxFiles, state.directoryFilter, state.filePatternFilter, services.zip, updateState]);
-
-  // Process with ingestion worker
-  const processWithWorker = useCallback(async (
-    fileContents: Map<string, string>,
-    projectName: string,
-    filePaths: string[]
-  ) => {
-    try {
-      const worker = getIngestionWorker();
-      await worker.initialize();
-
-      // Set up progress callback
-      await worker.setProgressCallback((progress: IngestionProgress) => {
-        updateState({ progress });
-      });
-
-      updateState({ 
-        progress: { phase: 'parsing', message: 'Starting knowledge graph construction...', progress: 50 }
-      });
-
-      // Process repository
-      const result = await worker.processRepository({
-        projectRoot: '/',
-        projectName,
-        filePaths,
-        fileContents
-      });
-
-      if (result.success && result.graph) {
-        // Calculate stats
-        const stats: ProcessingStats = {
-          totalFiles: filePaths.length,
-          processedFiles: fileContents.size,
-          duration: result.duration || 0,
-          nodeCount: result.graph.nodes.length,
-          relationshipCount: result.graph.relationships.length,
-          projectName
-        };
-
-        updateState({
-          graph: result.graph,
-          fileContents,
-          isProcessing: false,
-          progress: null,
-          error: null
-        });
-
-        setProcessingStats(stats);
-
-        // Show success message briefly
-        setTimeout(() => {
-          updateState({ 
-            progress: { 
-              phase: 'complete', 
-              message: `Successfully processed ${stats.nodeCount} nodes and ${stats.relationshipCount} relationships!`, 
-              progress: 100 
-            }
-          });
-          setTimeout(() => updateState({ progress: null }), 3000);
-        }, 500);
-
-      } else {
-        throw new Error(result.error || 'Processing failed');
-      }
-
-    } catch (error) {
-      console.error('Worker processing error:', error);
-      updateState({ 
-        error: error instanceof Error ? error.message : 'Failed to process with worker',
-        isProcessing: false,
-        progress: null
-      });
-    }
-  }, [updateState]);
 
   // Export graph
   const handleExportGraph = useCallback(() => {
@@ -778,7 +1014,10 @@ const HomePage: React.FC = () => {
 
   return (
     <ErrorBoundary>
-      <div style={containerStyle}>
+      <div style={containerStyle} onError={(e) => {
+        logToPersistent('Div onError triggered', e);
+        console.error('Div error:', e);
+      }}>
         {/* Header */}
         <div style={headerStyle}>
           <div style={titleStyle}>
@@ -842,7 +1081,24 @@ const HomePage: React.FC = () => {
             {/* Action Buttons */}
             <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
               <button
-                onClick={state.githubUrl ? processGitHubRepository : processZipFile}
+                onClick={() => {
+                  logToPersistent('Analyze button clicked', {
+                    hasGithubUrl: !!state.githubUrl,
+                    githubUrl: state.githubUrl,
+                    hasUploadedFile: !!state.uploadedFile,
+                    uploadedFileName: state.uploadedFile?.name,
+                    willProcessGitHub: !!state.githubUrl,
+                    willProcessZip: !state.githubUrl && !!state.uploadedFile
+                  });
+                  
+                  if (state.githubUrl) {
+                    logToPersistent('Calling processGitHubRepository');
+                    processGitHubRepository();
+                  } else {
+                    logToPersistent('Calling processZipFile');
+                    processZipFile();
+                  }
+                }}
                 disabled={state.isProcessing || (!state.githubUrl && !state.uploadedFile)}
                 style={buttonStyle('primary')}
               >

@@ -3,6 +3,9 @@ import * as Comlink from 'comlink';
 import type { IngestionWorker, IngestionProgress, IngestionResult } from '../workers/ingestion.worker.ts';
 import type { PipelineInput } from '../core/ingestion/pipeline.ts';
 
+// Export types for external use
+export type { IngestionProgress, IngestionResult };
+
 export interface WorkerProxy {
   processRepository(input: PipelineInput): Promise<IngestionResult>;
   processFiles(projectName: string, files: { path: string; content: string }[]): Promise<IngestionResult>;

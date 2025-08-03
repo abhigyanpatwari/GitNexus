@@ -8,6 +8,15 @@ export default defineConfig({
     format: 'es'
   },
   assetsInclude: ['**/*.wasm'],
+  server: {
+    fs: {
+      allow: ['..']
+    },
+    headers: {
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+      'Cross-Origin-Opener-Policy': 'same-origin'
+    }
+  },
   build: {
     target: 'esnext',
     assetsInlineLimit: 0,
@@ -29,7 +38,6 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['@langchain/langgraph'],
     include: [
-      // CommonJS modules that need explicit handling
       'camelcase', 
       'decamelize', 
       'ansi-styles',

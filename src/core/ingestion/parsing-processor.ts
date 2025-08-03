@@ -10,8 +10,8 @@ export interface ParsingInput {
 }
 
 interface ParsedDefinition {
-  type: 'function' | 'class' | 'method';
   name: string;
+  type: 'function' | 'class' | 'method';
   startLine: number;
   endLine: number;
   parentClass?: string;
@@ -22,90 +22,59 @@ export class ParsingProcessor {
   private astCache: Map<string, Parser.Tree> = new Map();
 
   public async process(graph: KnowledgeGraph, input: ParsingInput): Promise<void> {
-    const { filePaths, fileContents } = input;
+    const { filePaths } = input;
+
+    console.log('ParsingProcessor: Processing', filePaths.length, 'files');
+
+    // Temporarily disable tree-sitter parsing due to WASM loading issues
+    console.warn('Tree-sitter parsing temporarily disabled due to WASM loading issues');
     
-    // Initialize Tree-sitter parser
-    await this.initializeParser();
-    
-    // Process each Python file
+    // Create basic file nodes without parsing
     for (const filePath of filePaths) {
       if (this.isPythonFile(filePath)) {
-        const content = fileContents.get(filePath);
-        if (content) {
-          await this.parseFile(graph, filePath, content);
-        }
+        const fileNode: GraphNode = {
+          id: generateId('file', filePath),
+          label: 'File',
+          properties: {
+            name: filePath.split('/').pop() || filePath,
+            filePath,
+            extension: '.py',
+            language: 'python'
+          }
+        };
+        graph.nodes.push(fileNode);
       }
     }
+
+    console.log('ParsingProcessor: Created', graph.nodes.filter(n => n.label === 'File').length, 'file nodes');
   }
 
   private async initializeParser(): Promise<void> {
-    if (!this.parser) {
-      this.parser = await initTreeSitter();
-      const pythonLanguage = await loadPythonParser();
-      this.parser.setLanguage(pythonLanguage);
-    }
-  }
-
-  private async parseFile(graph: KnowledgeGraph, filePath: string, content: string): Promise<void> {
-    if (!this.parser) {
-      throw new Error('Parser not initialized');
-    }
+    if (this.parser) return;
 
     try {
-      // Parse the file and cache the AST
-      const tree = this.parser.parse(content);
-      this.astCache.set(filePath, tree);
+      await initTreeSitter();
+      await loadPythonParser();
       
-      // Create module node
-      const moduleNode = this.createModuleNode(filePath);
-      graph.nodes.push(moduleNode);
+      this.parser = await initTreeSitter();
+      const pythonLang = await loadPythonParser();
+      this.parser.setLanguage(pythonLang);
       
-      // Extract definitions from the AST
-      const definitions = this.extractDefinitions(tree.rootNode);
-      
-      // Create nodes for definitions and establish relationships
-      for (const definition of definitions) {
-        const definitionNode = this.createDefinitionNode(filePath, definition);
-        graph.nodes.push(definitionNode);
-        
-        // Create CONTAINS relationship between module and definition
-        const relationship = this.createContainsRelationship(moduleNode.id, definitionNode.id);
-        graph.relationships.push(relationship);
-        
-        // If it's a method, create relationship with its class
-        if (definition.type === 'method' && definition.parentClass) {
-          const classNode = this.findClassNode(graph, filePath, definition.parentClass);
-          if (classNode) {
-            const methodRelationship = this.createContainsRelationship(classNode.id, definitionNode.id);
-            graph.relationships.push(methodRelationship);
-          }
-        }
-      }
-      
+      console.log('Tree-sitter parser initialized successfully');
     } catch (error) {
-      console.warn(`Failed to parse file ${filePath}:`, error);
+      console.error('Failed to initialize parser:', error);
+      throw new Error(`Parser initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
-  private createModuleNode(filePath: string): GraphNode {
-    const pathParts = filePath.split('/');
-    const fileName = pathParts[pathParts.length - 1];
-    const moduleName = fileName.replace(/\.py$/, '');
-    
-    return {
-      id: generateId('module', filePath),
-      label: 'Module',
-      properties: {
-        name: moduleName,
-        path: filePath,
-        language: 'python'
-      }
-    };
+  private parseFile(): ParsedDefinition[] {
+    // Temporarily return empty array - parsing disabled
+    return [];
   }
 
   private createDefinitionNode(filePath: string, definition: ParsedDefinition): GraphNode {
     const nodeLabel = definition.type === 'function' ? 'Function' : 
-                     definition.type === 'method' ? 'Method' : 'Class';
+                     (definition.type === 'method' ? 'Method' : 'Class');
     
     return {
       id: generateId(definition.type, `${filePath}:${definition.name}`),
@@ -120,13 +89,39 @@ export class ParsingProcessor {
     };
   }
 
-  private createContainsRelationship(sourceId: string, targetId: string): GraphRelationship {
-    return {
-      id: generateId('relationship', `${sourceId}-contains-${targetId}`),
-      type: 'CONTAINS',
-      source: sourceId,
-      target: targetId
-    };
+  private createDefinitionRelationships(
+    graph: KnowledgeGraph,
+    filePath: string,
+    definitions: ParsedDefinition[]
+  ): void {
+    const fileNodeId = generateId('file', filePath);
+    
+    for (const definition of definitions) {
+      const defNodeId = generateId(definition.type, `${filePath}:${definition.name}`);
+      
+      const relationship: GraphRelationship = {
+        id: generateId('relationship', `${fileNodeId}-contains-${defNodeId}`),
+        source: fileNodeId,
+        target: defNodeId,
+        type: 'CONTAINS',
+        properties: {}
+      };
+      
+      graph.relationships.push(relationship);
+      
+      if (definition.type === 'method' && definition.parentClass) {
+        const classNodeId = generateId('class', `${filePath}:${definition.parentClass}`);
+        const methodRelationship: GraphRelationship = {
+          id: generateId('relationship', `${classNodeId}-has-method-${defNodeId}`),
+          source: classNodeId,
+          target: defNodeId,
+          type: 'CONTAINS',
+          properties: {}
+        };
+        
+        graph.relationships.push(methodRelationship);
+      }
+    }
   }
 
   private extractDefinitions(node: Parser.SyntaxNode): ParsedDefinition[] {
@@ -137,8 +132,8 @@ export class ParsingProcessor {
         const nameNode = currentNode.childForFieldName('name');
         if (nameNode) {
           definitions.push({
-            type: 'function',
             name: nameNode.text,
+            type: 'function',
             startLine: currentNode.startPosition.row + 1,
             endLine: currentNode.endPosition.row + 1
           });
@@ -148,13 +143,12 @@ export class ParsingProcessor {
         if (nameNode) {
           const className = nameNode.text;
           definitions.push({
-            type: 'class',
             name: className,
+            type: 'class',
             startLine: currentNode.startPosition.row + 1,
             endLine: currentNode.endPosition.row + 1
           });
           
-          // Extract methods from the class
           const methods = this.extractMethodsFromClass(currentNode, className);
           definitions.push(...methods);
         }
@@ -172,8 +166,8 @@ export class ParsingProcessor {
         const nameNode = node.childForFieldName('name');
         if (nameNode) {
           methods.push({
-            type: 'method',
             name: nameNode.text,
+            type: 'method',
             startLine: node.startPosition.row + 1,
             endLine: node.endPosition.row + 1,
             parentClass: className
@@ -194,14 +188,6 @@ export class ParsingProcessor {
         this.traverseNode(child, callback);
       }
     }
-  }
-
-  private findClassNode(graph: KnowledgeGraph, filePath: string, className: string): GraphNode | null {
-    return graph.nodes.find(node => 
-      node.label === 'Class' && 
-      node.properties.name === className && 
-      node.properties.filePath === filePath
-    ) || null;
   }
 
   private isPythonFile(filePath: string): boolean {
