@@ -741,7 +741,7 @@ export class CallProcessor {
       const bestCandidate = rankedCandidates[0];
       
       // Enable detailed logging for debugging (can be controlled via environment variable)
-      const enableDetailedLogging = process.env.GITNEXUS_DEBUG_FALLBACK === 'true';
+      const enableDetailedLogging = typeof process !== 'undefined' && process.env?.GITNEXUS_DEBUG_FALLBACK === 'true';
       if (enableDetailedLogging) {
         this.logCandidateAnalysis(call, rankedCandidates);
       } else {
@@ -757,9 +757,6 @@ export class CallProcessor {
   private applySpecialCaseHeuristics(call: FunctionCall, candidates: GraphNode[]): GraphNode[] {
     // Apply special case filtering and prioritization
     const filtered = candidates.filter(candidate => {
-      const candidatePath = candidate.properties.filePath as string;
-      const candidateName = candidate.properties.name as string;
-      
       // Skip obvious non-matches
       if (this.isObviousNonMatch(call, candidate)) {
         return false;
@@ -1273,7 +1270,7 @@ export class CallProcessor {
   }
 
   private logTypeInference(call: FunctionCall, inferredType: string, confidence: string): void {
-    if (process.env.GITNEXUS_DEBUG_TYPES === 'true') {
+    if (typeof process !== 'undefined' && process.env?.GITNEXUS_DEBUG_TYPES === 'true') {
       console.log(`Type inference: ${call.assignedToVariable} = ${call.calledName}() -> ${inferredType} (${confidence} confidence)`);
     }
   }
