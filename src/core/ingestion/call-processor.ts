@@ -173,8 +173,22 @@ export class CallProcessor {
       if (node.label === 'Function' || node.label === 'Method') {
         const filePath = node.properties.filePath as string;
         const functionName = node.properties.name as string;
-        const key = `${filePath}:${functionName}`;
-        this.functionNodes.set(key, node);
+        
+        // Create different keys for Functions vs Methods to avoid conflicts
+        if (node.label === 'Method') {
+          const parentClass = node.properties.parentClass as string;
+          const methodKey = `${filePath}:method:${parentClass}.${functionName}`;
+          this.functionNodes.set(methodKey, node);
+          
+          // Also add a general method key for resolution when class context is unknown
+          const generalMethodKey = `${filePath}:method:${functionName}`;
+          if (!this.functionNodes.has(generalMethodKey)) {
+            this.functionNodes.set(generalMethodKey, node);
+          }
+        } else {
+          const functionKey = `${filePath}:function:${functionName}`;
+          this.functionNodes.set(functionKey, node);
+        }
       }
     }
   }
@@ -330,18 +344,26 @@ export class CallProcessor {
     const callerNode = this.findCallerNode(graph, call);
     if (!callerNode) return;
     
-    // Try different resolution strategies
+    // Improved resolution order: prioritize imports to avoid self-referential calls
     const targetNode = 
       this.resolveBuiltinFunction(call) ||
-      this.resolveImportedFunction(call) ||
-      this.resolveLocalFunction(call) ||
-      this.resolveMethodCall(graph, call);
+      this.resolveImportedFunction(call) ||  // Check imports first
+      this.resolveMethodCall(graph, call) ||
+      this.resolveLocalFunction(call);      // Check local functions last
     
     if (targetNode) {
-      // Ensure the target node exists in the graph before creating relationship
+      // Prevent self-referential calls unless it's actually recursive
+      if (callerNode.id === targetNode.id) {
+        // Only allow self-calls if the function name matches exactly (true recursion)
+        const callerName = callerNode.properties.name as string;
+        if (callerName !== call.calledName) {
+          console.warn(`Prevented incorrect self-referential call from ${callerName} to ${call.calledName}`);
+          return;
+        }
+      }
+      
       const existingNode = graph.nodes.find(node => node.id === targetNode.id);
       if (!existingNode) {
-        // Add the node to the graph if it doesn't exist
         graph.nodes.push(targetNode);
       }
       
@@ -375,15 +397,22 @@ export class CallProcessor {
     const imports = this.importCache.get(call.callerFilePath) || [];
     
     for (const importInfo of imports) {
-      // Check direct import match
+      // Handle direct import match (from module import function)
       if (importInfo.importedName === call.calledName || importInfo.alias === call.calledName) {
-        // For now, create a placeholder node for imported functions
-        // In a full implementation, this would resolve to actual function nodes
         return this.getOrCreateImportedNode(call.calledName, importInfo.fromModule);
       }
       
-      // Check module.function pattern
-      if (call.callType === 'method' && call.objectName === importInfo.importedName) {
+      // Handle module.function pattern (import module; module.function())
+      if (call.callType === 'method' && call.objectName) {
+        // Check if objectName matches imported module or alias
+        if (importInfo.importedName === call.objectName || importInfo.alias === call.objectName) {
+          // This is a call to an imported module's function
+          return this.getOrCreateImportedNode(call.calledName, importInfo.fromModule);
+        }
+      }
+      
+      // Handle import module as alias patterns
+      if (call.callType === 'method' && call.objectName === importInfo.alias && importInfo.importType === 'module') {
         return this.getOrCreateImportedNode(call.calledName, importInfo.fromModule);
       }
     }
@@ -392,21 +421,35 @@ export class CallProcessor {
   }
 
   private resolveLocalFunction(call: FunctionCall): GraphNode | null {
-    const key = `${call.callerFilePath}:${call.calledName}`;
-    return this.functionNodes.get(key) || null;
+    // Try function key first
+    const functionKey = `${call.callerFilePath}:function:${call.calledName}`;
+    const functionNode = this.functionNodes.get(functionKey);
+    if (functionNode) {
+      return functionNode;
+    }
+    
+    // Try method key if function not found
+    const methodKey = `${call.callerFilePath}:method:${call.calledName}`;
+    return this.functionNodes.get(methodKey) || null;
   }
 
   private resolveMethodCall(graph: KnowledgeGraph, call: FunctionCall): GraphNode | null {
     if (call.callType !== 'method') return null;
     
-    // Look for method in the same file
+    // First try to find methods in the same file using the new key format
+    const methodKey = `${call.callerFilePath}:method:${call.calledName}`;
+    const methodNode = this.functionNodes.get(methodKey);
+    if (methodNode) {
+      return methodNode;
+    }
+    
+    // Fallback: look for method nodes in the graph (for cases where key lookup fails)
     const methods = graph.nodes.filter(node => 
       node.label === 'Method' && 
       node.properties.filePath === call.callerFilePath &&
       node.properties.name === call.calledName
     );
     
-    // Return first matching method (could be refined with class context)
     return methods[0] || null;
   }
 
@@ -530,3 +573,5 @@ export class CallProcessor {
     }
   }
 } 
+
+

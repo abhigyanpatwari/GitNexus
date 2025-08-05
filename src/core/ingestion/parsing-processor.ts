@@ -296,17 +296,28 @@ export class ParsingProcessor {
     }
 
     try {
-      // Parse the file content using tree-sitter
       const tree = this.parser.parse(fileContent);
       
-      // Cache the AST for later use
       this.astCache.set(filePath, tree);
       
       const definitions: ParsedDefinition[] = [];
       const rootNode = tree.rootNode;
+      const processedMethodNodes = new Set<Parser.SyntaxNode>();
 
+      // First pass: identify all methods inside classes
       this.traverseNode(rootNode, (currentNode: Parser.SyntaxNode) => {
-        if (currentNode.type === 'function_definition') {
+        if (currentNode.type === 'class_definition') {
+          this.traverseNode(currentNode, (methodNode: Parser.SyntaxNode) => {
+            if (methodNode.type === 'function_definition' && methodNode !== currentNode) {
+              processedMethodNodes.add(methodNode);
+            }
+          });
+        }
+      });
+
+      // Second pass: process all definitions, skipping methods that will be handled as class methods
+      this.traverseNode(rootNode, (currentNode: Parser.SyntaxNode) => {
+        if (currentNode.type === 'function_definition' && !processedMethodNodes.has(currentNode)) {
           const nameNode = currentNode.childForFieldName('name');
           if (nameNode) {
             definitions.push({
@@ -327,7 +338,6 @@ export class ParsingProcessor {
               endLine: currentNode.endPosition.row + 1
             });
             
-            // Extract methods from this class
             const methods = this.extractMethodsFromClass(currentNode, className);
             definitions.push(...methods);
           }
