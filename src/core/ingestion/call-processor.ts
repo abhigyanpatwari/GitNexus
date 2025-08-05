@@ -1,11 +1,25 @@
 import type { KnowledgeGraph, GraphNode, GraphRelationship } from '../graph/types.ts';
 import { generateId } from '../../lib/utils.ts';
 
-import type Parser from 'web-tree-sitter';
+// Tree-sitter AST node type definitions
+interface TreeSitterNode {
+  type: string;
+  text: string;
+  childCount: number;
+  startPosition: { row: number; column: number };
+  parent?: TreeSitterNode;
+  children: TreeSitterNode[];
+  child(index: number): TreeSitterNode | null;
+  childForFieldName(fieldName: string): TreeSitterNode | null;
+}
+
+interface TreeSitterAST {
+  rootNode: TreeSitterNode;
+}
 
 export interface CallResolutionInput {
   graph: KnowledgeGraph;
-  astCache: Map<string, any>;
+  astCache: Map<string, TreeSitterAST>;
   fileContents: Map<string, string>;
 }
 
@@ -77,7 +91,7 @@ export class CallProcessor {
       if (this.isPythonFile(filePath)) {
         const content = fileContents.get(filePath);
         if (content && ast) {
-          await this.extractImports(filePath, ast, content);
+          await this.extractImports(filePath, ast);
         }
       }
     }
@@ -101,7 +115,7 @@ export class CallProcessor {
       if (this.isPythonFile(filePath)) {
         const content = fileContents.get(filePath);
         if (content && ast) {
-          await this.processFunctionCalls(graph, filePath, ast, content);
+          await this.processFunctionCalls(graph, filePath, ast);
         }
       }
     }
@@ -243,13 +257,13 @@ export class CallProcessor {
     }
     // Getter methods often return specific types
     else if (methodName.startsWith('get_')) {
-      returnType = this.inferGetterReturnType(methodName, className);
+      returnType = this.inferGetterReturnType(methodName);
     }
     // Property methods (decorated with @property) return the property type
     else if (methodNode.properties.decorators) {
       const decorators = methodNode.properties.decorators as string[];
       if (decorators.includes('property')) {
-        returnType = this.inferPropertyReturnType(methodName, className);
+        returnType = this.inferPropertyReturnType(methodName);
       }
     }
     
@@ -288,7 +302,7 @@ export class CallProcessor {
     return undefined;
   }
 
-  private inferGetterReturnType(methodName: string, className: string): string | undefined {
+  private inferGetterReturnType(methodName: string): string | undefined {
     // Common getter patterns
     if (methodName === 'get_name' || methodName === 'get_title') return 'str';
     if (methodName === 'get_id' || methodName === 'get_count') return 'int';
@@ -300,7 +314,7 @@ export class CallProcessor {
     return undefined;
   }
 
-  private inferPropertyReturnType(methodName: string, className: string): string | undefined {
+  private inferPropertyReturnType(methodName: string): string | undefined {
     // Property return type inference based on naming patterns
     if (methodName === 'name' || methodName === 'title' || methodName === 'description') return 'str';
     if (methodName === 'id' || methodName === 'count' || methodName === 'size') return 'int';
@@ -314,10 +328,10 @@ export class CallProcessor {
     return str.charAt(0).toUpperCase() + str.slice(1);
   }
 
-  private async extractImports(filePath: string, ast: any, content: string): Promise<void> {
+  private async extractImports(filePath: string, ast: TreeSitterAST): Promise<void> {
     const imports: ImportInfo[] = [];
     
-    this.traverseNode(ast.rootNode, (node: any) => {
+    this.traverseNode(ast.rootNode, (node: TreeSitterNode) => {
       if (node.type === 'import_statement') {
         this.processImportStatement(node, imports, filePath);
       } else if (node.type === 'import_from_statement') {
@@ -328,13 +342,13 @@ export class CallProcessor {
     this.importCache.set(filePath, imports);
   }
 
-  private processImportStatement(node: any, imports: ImportInfo[], filePath: string): void {
+  private processImportStatement(node: TreeSitterNode, imports: ImportInfo[], filePath: string): void {
     const nameNode = node.childForFieldName('name');
     if (nameNode) {
       const moduleName = nameNode.text;
       
       // Handle aliased imports (import module as alias)
-      const asNode = node.children.find((child: any) => child.type === 'as_pattern');
+      const asNode = node.children.find((child: TreeSitterNode) => child.type === 'as_pattern');
       const alias = asNode ? asNode.childForFieldName('alias')?.text : undefined;
       
       imports.push({
@@ -347,14 +361,14 @@ export class CallProcessor {
     }
   }
 
-  private processImportFromStatement(node: any, imports: ImportInfo[], filePath: string): void {
+  private processImportFromStatement(node: TreeSitterNode, imports: ImportInfo[], filePath: string): void {
     const moduleNameNode = node.childForFieldName('module_name');
-    const importListNode = node.children.find((child: any) => child.type === 'import_list');
+    const importListNode = node.children.find((child: TreeSitterNode) => child.type === 'import_list');
     
     if (moduleNameNode && importListNode) {
       const moduleName = moduleNameNode.text;
       
-      this.traverseNode(importListNode, (child: any) => {
+      this.traverseNode(importListNode, (child: TreeSitterNode) => {
         if (child.type === 'dotted_name' || child.type === 'identifier') {
           const importedName = child.text;
           imports.push({
@@ -384,13 +398,12 @@ export class CallProcessor {
   private async processFunctionCalls(
     graph: KnowledgeGraph, 
     filePath: string, 
-    ast: any, 
-    content: string
+    ast: TreeSitterAST
   ): Promise<void> {
     const functionCalls: FunctionCall[] = [];
     let currentFunction: string | null = null;
     
-    this.traverseNode(ast.rootNode, (node: any) => {
+    this.traverseNode(ast.rootNode, (node: TreeSitterNode) => {
       // Track current function context
       if (node.type === 'function_definition') {
         const nameNode = node.childForFieldName('name');
@@ -406,7 +419,7 @@ export class CallProcessor {
       
       // Find function calls
       if (node.type === 'call') {
-        const callInfo = this.extractCallInfo(node, filePath, currentFunction, content);
+        const callInfo = this.extractCallInfo(node, filePath, currentFunction);
         if (callInfo) {
           // Check if this call is part of an assignment
           const assignmentInfo = this.extractAssignmentInfo(node);
@@ -430,7 +443,7 @@ export class CallProcessor {
     }
   }
 
-  private processVariableAssignment(assignmentNode: any, filePath: string, currentFunction: string | null): void {
+  private processVariableAssignment(assignmentNode: TreeSitterNode, filePath: string, currentFunction: string | null): void {
     const leftNode = assignmentNode.childForFieldName('left');
     const rightNode = assignmentNode.childForFieldName('right');
     
@@ -455,7 +468,7 @@ export class CallProcessor {
     }
   }
 
-  private extractAssignmentInfo(callNode: any): { variableName: string } | null {
+  private extractAssignmentInfo(callNode: TreeSitterNode): { variableName: string } | null {
     // Walk up the AST to find if this call is part of an assignment
     let parent = callNode.parent;
     
@@ -563,10 +576,9 @@ export class CallProcessor {
   }
 
   private extractCallInfo(
-    callNode: any, 
+    callNode: TreeSitterNode, 
     filePath: string, 
-    currentFunction: string | null,
-    content: string
+    currentFunction: string | null
   ): FunctionCall | null {
     const functionNode = callNode.childForFieldName('function');
     if (!functionNode) return null;
@@ -609,7 +621,7 @@ export class CallProcessor {
         }
         
         // Check if the object is a variable with known type (for chained calls)
-        let objectName = objectNode.text;
+        const objectName = objectNode.text;
         let chainedFromVariable: string | undefined;
         
         if (objectNode.type === 'identifier') {
@@ -860,9 +872,8 @@ export class CallProcessor {
 
   private applyDjangoHeuristics(call: FunctionCall, candidates: GraphNode[]): GraphNode[] {
     // Prefer models.py for model-related functions, views.py for view functions, etc.
-    return candidates.sort((a, b) => {
+    return candidates.sort((a) => {
       const pathA = a.properties.filePath as string;
-      const pathB = b.properties.filePath as string;
       
       if (call.callerFilePath.includes('views.py') && pathA.includes('models.py')) {
         return -1; // Prefer models.py when called from views.py
@@ -1194,7 +1205,7 @@ export class CallProcessor {
     };
   }
 
-  private traverseNode(node: any, callback: (node: any) => void): void {
+  private traverseNode(node: TreeSitterNode, callback: (node: TreeSitterNode) => void): void {
     callback(node);
     
     for (let i = 0; i < node.childCount; i++) {
