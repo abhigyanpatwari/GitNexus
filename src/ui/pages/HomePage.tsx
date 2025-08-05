@@ -33,6 +33,8 @@ interface AppState {
   azureOpenAIEndpoint: string;
   azureOpenAIDeploymentName: string;
   azureOpenAIApiVersion: string;
+  // GitHub settings
+  githubToken: string;
   showSettings: boolean;
 }
 
@@ -52,6 +54,7 @@ const initialState: AppState = {
   azureOpenAIEndpoint: localStorage.getItem('azure_openai_endpoint') || '',
   azureOpenAIDeploymentName: localStorage.getItem('azure_openai_deployment') || '',
   azureOpenAIApiVersion: localStorage.getItem('azure_openai_api_version') || '2024-02-01',
+  githubToken: localStorage.getItem('github_token') || '',
   showSettings: false
 };
 
@@ -81,7 +84,10 @@ const HomePage: React.FC = () => {
     if (state.azureOpenAIApiVersion) {
       localStorage.setItem('azure_openai_api_version', state.azureOpenAIApiVersion);
     }
-  }, [state.llmApiKey, state.llmProvider, state.azureOpenAIEndpoint, state.azureOpenAIDeploymentName, state.azureOpenAIApiVersion]);
+    if (state.githubToken) {
+      localStorage.setItem('github_token', state.githubToken);
+    }
+  }, [state.llmApiKey, state.llmProvider, state.azureOpenAIEndpoint, state.azureOpenAIDeploymentName, state.azureOpenAIApiVersion, state.githubToken]);
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -145,7 +151,10 @@ const HomePage: React.FC = () => {
 
       console.log('Starting GitHub processing...', state.githubUrl);
 
-      const result = await services.ingestion.processGitHubRepo(state.githubUrl, {
+      // Create ingestion service with GitHub token if provided
+      const ingestionService = new IngestionService(state.githubToken || undefined);
+
+      const result = await ingestionService.processGitHubRepo(state.githubUrl, {
         directoryFilter: state.directoryFilter,
         fileExtensions: state.fileExtensions,
         onProgress: (progress) => {
@@ -500,12 +509,60 @@ const HomePage: React.FC = () => {
               style={styles.input}
               disabled={state.isProcessing}
             />
+            
+            {/* GitHub Token Input - Optional */}
+            <div style={{ marginTop: '12px' }}>
+              <label style={{...styles.label, color: colors.textMuted}}>
+                GitHub Personal Access Token (Optional)
+              </label>
+              <input
+                type="password"
+                value={state.githubToken}
+                onChange={(e) => updateState({ githubToken: e.target.value })}
+                placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+                style={{
+                  ...styles.input,
+                  borderColor: colors.borderLight,
+                  backgroundColor: colors.surface
+                }}
+                disabled={state.isProcessing}
+              />
+              <div style={{ 
+                fontSize: '11px', 
+                color: colors.textMuted, 
+                marginTop: '4px',
+                lineHeight: '1.4'
+              }}>
+                Increases rate limit from 60 to 5,000 requests/hour. 
+                <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer" 
+                   style={{ color: colors.primary, textDecoration: 'none', marginLeft: '4px' }}>
+                  Generate token
+                </a>
+              </div>
+            </div>
+            
+            {/* GitHub Token Status */}
+            <div style={{
+              fontSize: '12px',
+              color: state.githubToken ? colors.success : colors.textMuted,
+              marginTop: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}>
+              <span>{state.githubToken ? '🔑' : '⚠️'}</span>
+              {state.githubToken 
+                ? 'GitHub token configured (5,000 requests/hour)' 
+                : 'No GitHub token (60 requests/hour limit)'}
+            </div>
+            
             <button
               onClick={handleGitHubProcess}
               disabled={state.isProcessing || !state.githubUrl.trim()}
               style={{
                 ...styles.primaryButton,
-                opacity: state.isProcessing || !state.githubUrl.trim() ? 0.5 : 1
+                opacity: state.isProcessing || !state.githubUrl.trim() ? 0.5 : 1,
+                marginTop: '16px'
               }}
             >
               <span>📊</span>
@@ -689,8 +746,52 @@ const HomePage: React.FC = () => {
               overflow: 'auto'
             }}>
               <h2 style={{ color: colors.text, marginBottom: '24px', fontSize: '24px', fontWeight: '700' }}>
-                🤖 LLM Settings
+                ⚙️ Settings
               </h2>
+              
+              {/* GitHub Token Section */}
+              <div style={{
+                padding: '20px',
+                borderRadius: '12px',
+                backgroundColor: colors.surfaceWarm,
+                border: `1px solid ${colors.borderLight}`,
+                marginBottom: '24px'
+              }}>
+                <h3 style={{ color: colors.text, marginBottom: '16px', fontSize: '18px', fontWeight: '600' }}>
+                  🔑 GitHub Configuration
+                </h3>
+                
+                <div style={styles.inputGroup}>
+                  <label style={styles.label}>
+                    GitHub Personal Access Token (Optional)
+                  </label>
+                  <input
+                    type="password"
+                    value={state.githubToken}
+                    onChange={(e) => updateState({ githubToken: e.target.value })}
+                    placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+                    style={styles.input}
+                  />
+                  <div style={{ fontSize: '12px', color: colors.textMuted, marginTop: '4px' }}>
+                    Increases rate limit from 60 to 5,000 requests/hour. Generate at: 
+                    <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer" 
+                       style={{ color: colors.primary, textDecoration: 'none', marginLeft: '4px' }}>
+                      github.com/settings/tokens
+                    </a>
+                  </div>
+                </div>
+              </div>
+
+              {/* LLM Configuration Section */}
+              <div style={{
+                padding: '20px',
+                borderRadius: '12px',
+                backgroundColor: colors.surfaceWarm,
+                border: `1px solid ${colors.borderLight}`
+              }}>
+                <h3 style={{ color: colors.text, marginBottom: '16px', fontSize: '18px', fontWeight: '600' }}>
+                  🤖 LLM Configuration
+                </h3>
               
               {/* Provider Selection */}
               <div style={styles.inputGroup}>
@@ -823,10 +924,26 @@ const HomePage: React.FC = () => {
                   {state.llmProvider === 'gemini' && 'Google Gemini API. Get your API key from aistudio.google.com'}
                 </div>
               </div>
+              </div>
 
               <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
                 <button
-                  onClick={() => updateState({ showSettings: false })}
+                  onClick={() => {
+                    // Save settings to localStorage
+                    if (state.githubToken) {
+                      localStorage.setItem('github_token', state.githubToken);
+                    } else {
+                      localStorage.removeItem('github_token');
+                    }
+                    localStorage.setItem('llm_provider', state.llmProvider);
+                    localStorage.setItem('llm_api_key', state.llmApiKey);
+                    if (state.llmProvider === 'azure-openai') {
+                      localStorage.setItem('azure_openai_endpoint', state.azureOpenAIEndpoint);
+                      localStorage.setItem('azure_openai_deployment', state.azureOpenAIDeploymentName);
+                      localStorage.setItem('azure_openai_api_version', state.azureOpenAIApiVersion);
+                    }
+                    updateState({ showSettings: false });
+                  }}
                   style={styles.primaryButton}
                 >
                   💾 Save Settings

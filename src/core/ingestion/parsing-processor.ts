@@ -15,6 +15,8 @@ interface ParsedDefinition {
   startLine: number;
   endLine: number;
   parentClass?: string;
+  decorators?: string[];
+  baseClasses?: string[];
 }
 
 export class ParsingProcessor {
@@ -91,6 +93,9 @@ export class ParsingProcessor {
                 });
               }
               
+              // Create inheritance and override relationships
+              this.createInheritanceRelationships(graph, filePath, definitions);
+              
               if (definitions.length > 0) {
                 successfullyParsed++;
                 console.log(`✅ Successfully parsed ${filePath} - found ${definitions.length} definitions`);
@@ -131,6 +136,9 @@ export class ParsingProcessor {
                   properties: {}
                 });
               }
+              
+              // Create inheritance and override relationships
+              this.createInheritanceRelationships(graph, filePath, definitions);
             }
             
           } catch (parseError) {
@@ -235,6 +243,9 @@ export class ParsingProcessor {
       const line = lines[i].trim();
       const lineNumber = i + 1;
       
+      // Extract decorators for upcoming function/class definitions
+      const decorators = this.extractDecoratorsRegex(lines, i);
+      
       // Match function definitions: def function_name(
       const functionMatch = line.match(/^def\s+(\w+)\s*\(/);
       if (functionMatch) {
@@ -242,18 +253,22 @@ export class ParsingProcessor {
           name: functionMatch[1],
           type: 'function',
           startLine: lineNumber,
-          endLine: lineNumber // Basic implementation
+          endLine: lineNumber,
+          decorators: decorators.length > 0 ? decorators : undefined
         });
       }
       
       // Match class definitions: class ClassName
       const classMatch = line.match(/^class\s+(\w+)(?:\s*\(.*\))?\s*:/);
       if (classMatch) {
+        const baseClasses = this.extractBaseClassesRegex(line);
         definitions.push({
           name: classMatch[1],
           type: 'class',
           startLine: lineNumber,
-          endLine: lineNumber // Basic implementation
+          endLine: lineNumber,
+          decorators: decorators.length > 0 ? decorators : undefined,
+          baseClasses: baseClasses.length > 0 ? baseClasses : undefined
         });
       }
       
@@ -275,18 +290,111 @@ export class ParsingProcessor {
           }
         }
         
+        // Extract decorators for methods (look for indented decorators)
+        const methodDecorators = this.extractMethodDecoratorsRegex(lines, i);
+        
         definitions.push({
           name: methodMatch[1],
           type: 'method',
           startLine: lineNumber,
           endLine: lineNumber,
-          parentClass
+          parentClass,
+          decorators: methodDecorators.length > 0 ? methodDecorators : undefined
         });
       }
     }
     
     console.log(`Regex-parsed ${definitions.length} Python definitions from ${filePath}`);
     return definitions;
+  }
+
+  private extractDecoratorsRegex(lines: string[], currentIndex: number): string[] {
+    const decorators: string[] = [];
+    
+    // Look backwards for decorator lines
+    for (let i = currentIndex - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      
+      // Stop if we hit a non-decorator, non-empty line
+      if (line && !line.startsWith('@')) {
+        break;
+      }
+      
+      if (line.startsWith('@')) {
+        const decoratorName = this.parseDecoratorNameRegex(line);
+        if (decoratorName) {
+          decorators.unshift(decoratorName);
+        }
+      }
+    }
+    
+    return decorators;
+  }
+
+  private extractMethodDecoratorsRegex(lines: string[], currentIndex: number): string[] {
+    const decorators: string[] = [];
+    
+    // Look backwards for indented decorator lines
+    for (let i = currentIndex - 1; i >= 0; i--) {
+      const line = lines[i];
+      const trimmedLine = line.trim();
+      
+      // Stop if we hit a non-decorator line that's not just whitespace
+      if (trimmedLine && !trimmedLine.startsWith('@')) {
+        break;
+      }
+      
+      if (trimmedLine.startsWith('@') && line.match(/^\s+@/)) {
+        const decoratorName = this.parseDecoratorNameRegex(trimmedLine);
+        if (decoratorName) {
+          decorators.unshift(decoratorName);
+        }
+      }
+    }
+    
+    return decorators;
+  }
+
+  private extractBaseClassesRegex(classLine: string): string[] {
+    const baseClasses: string[] = [];
+    
+    // Match class definition with parentheses: class Child(Parent1, Parent2):
+    const match = classLine.match(/^class\s+\w+\s*\(([^)]+)\)\s*:/);
+    if (match) {
+      const baseClassesStr = match[1].trim();
+      if (baseClassesStr) {
+        // Split by comma and clean up each base class name
+        const classes = baseClassesStr.split(',').map(cls => cls.trim());
+        for (const cls of classes) {
+          // Handle simple names and qualified names
+          const cleanClass = cls.replace(/\s+/g, '');
+          if (cleanClass && cleanClass.match(/^[a-zA-Z_][a-zA-Z0-9_.]*$/)) {
+            baseClasses.push(cleanClass);
+          }
+        }
+      }
+    }
+    
+    return baseClasses;
+  }
+
+  private parseDecoratorNameRegex(decoratorLine: string): string | null {
+    // Remove @ symbol and extract decorator name
+    const withoutAt = decoratorLine.substring(1);
+    
+    // Handle simple decorators: @decorator_name
+    const simpleMatch = withoutAt.match(/^([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)/);
+    if (simpleMatch) {
+      return simpleMatch[1];
+    }
+    
+    // Handle decorators with arguments: @decorator_name(args)
+    const withArgsMatch = withoutAt.match(/^([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\s*\(/);
+    if (withArgsMatch) {
+      return withArgsMatch[1];
+    }
+    
+    return null;
   }
 
   private parsePythonFile(filePath: string, fileContent: string): ParsedDefinition[] {
@@ -320,22 +428,28 @@ export class ParsingProcessor {
         if (currentNode.type === 'function_definition' && !processedMethodNodes.has(currentNode)) {
           const nameNode = currentNode.childForFieldName('name');
           if (nameNode) {
+            const decorators = this.extractDecorators(currentNode);
             definitions.push({
               name: nameNode.text,
               type: 'function',
               startLine: currentNode.startPosition.row + 1,
-              endLine: currentNode.endPosition.row + 1
+              endLine: currentNode.endPosition.row + 1,
+              decorators: decorators.length > 0 ? decorators : undefined
             });
           }
         } else if (currentNode.type === 'class_definition') {
           const nameNode = currentNode.childForFieldName('name');
           if (nameNode) {
             const className = nameNode.text;
+            const decorators = this.extractDecorators(currentNode);
+            const baseClasses = this.extractBaseClasses(currentNode);
             definitions.push({
               name: className,
               type: 'class',
               startLine: currentNode.startPosition.row + 1,
-              endLine: currentNode.endPosition.row + 1
+              endLine: currentNode.endPosition.row + 1,
+              decorators: decorators.length > 0 ? decorators : undefined,
+              baseClasses: baseClasses.length > 0 ? baseClasses : undefined
             });
             
             const methods = this.extractMethodsFromClass(currentNode, className);
@@ -365,9 +479,109 @@ export class ParsingProcessor {
         filePath,
         startLine: definition.startLine,
         endLine: definition.endLine,
-        ...(definition.parentClass && { parentClass: definition.parentClass })
+        ...(definition.parentClass && { parentClass: definition.parentClass }),
+        ...(definition.decorators && { decorators: definition.decorators }),
+        ...(definition.baseClasses && { baseClasses: definition.baseClasses })
       }
     };
+  }
+
+  private createInheritanceRelationships(
+    graph: KnowledgeGraph,
+    filePath: string,
+    definitions: ParsedDefinition[]
+  ): void {
+    // Create INHERITS relationships for classes with base classes
+    const classDefinitions = definitions.filter(def => def.type === 'class');
+    
+    for (const classDef of classDefinitions) {
+      if (classDef.baseClasses && classDef.baseClasses.length > 0) {
+        const childClassId = generateId('class', `${filePath}:${classDef.name}`);
+        
+        for (const baseClassName of classDef.baseClasses) {
+          // Try to find the base class in the same file first
+          let baseClassId = generateId('class', `${filePath}:${baseClassName}`);
+          let baseClassExists = graph.nodes.some(node => node.id === baseClassId);
+          
+          if (!baseClassExists) {
+            // If not found in same file, look for it in other files
+            const baseClassNode = graph.nodes.find(node => 
+              node.label === 'Class' && 
+              node.properties.name === baseClassName
+            );
+            
+            if (baseClassNode) {
+              baseClassId = baseClassNode.id;
+              baseClassExists = true;
+            }
+          }
+          
+          if (baseClassExists) {
+            // Create INHERITS relationship
+            const inheritanceRelationship: GraphRelationship = {
+              id: generateId('relationship', `${childClassId}-inherits-${baseClassId}`),
+              type: 'INHERITS',
+              source: childClassId,
+              target: baseClassId,
+              properties: {}
+            };
+            
+            graph.relationships.push(inheritanceRelationship);
+            
+            // Create OVERRIDES relationships for methods
+            this.createOverrideRelationships(graph, filePath, classDef, baseClassName, definitions);
+          }
+        }
+      }
+    }
+  }
+
+  private createOverrideRelationships(
+    graph: KnowledgeGraph,
+    filePath: string,
+    childClass: ParsedDefinition,
+    baseClassName: string,
+    allDefinitions: ParsedDefinition[]
+  ): void {
+    // Get all methods from the child class
+    const childMethods = allDefinitions.filter(def => 
+      def.type === 'method' && def.parentClass === childClass.name
+    );
+    
+    for (const childMethod of childMethods) {
+      // Look for a method with the same name in the base class
+      const baseMethodId = this.findBaseClassMethod(graph, baseClassName, childMethod.name);
+      
+      if (baseMethodId) {
+        const childMethodId = generateId('method', `${filePath}:${childMethod.name}`);
+        
+        // Create OVERRIDES relationship
+        const overrideRelationship: GraphRelationship = {
+          id: generateId('relationship', `${childMethodId}-overrides-${baseMethodId}`),
+          type: 'OVERRIDES',
+          source: childMethodId,
+          target: baseMethodId,
+          properties: {
+            methodName: childMethod.name,
+            childClass: childClass.name,
+            baseClass: baseClassName
+          }
+        };
+        
+        graph.relationships.push(overrideRelationship);
+      }
+    }
+  }
+
+  private findBaseClassMethod(graph: KnowledgeGraph, baseClassName: string, methodName: string): string | null {
+    // Look for a method with the given name in the base class
+    const baseMethod = graph.nodes.find(node => 
+      node.label === 'Method' && 
+      node.properties.name === methodName &&
+      node.properties.parentClass === baseClassName
+    );
+    
+    return baseMethod ? baseMethod.id : null;
   }
 
   private createDefinitionRelationships(
@@ -446,18 +660,83 @@ export class ParsingProcessor {
       if (node.type === 'function_definition') {
         const nameNode = node.childForFieldName('name');
         if (nameNode) {
+          const decorators = this.extractDecorators(node);
           methods.push({
             name: nameNode.text,
             type: 'method',
             startLine: node.startPosition.row + 1,
             endLine: node.endPosition.row + 1,
-            parentClass: className
+            parentClass: className,
+            decorators: decorators.length > 0 ? decorators : undefined
           });
         }
       }
     });
     
     return methods;
+  }
+
+  private extractBaseClasses(classNode: Parser.SyntaxNode): string[] {
+    const baseClasses: string[] = [];
+    
+    // Look for argument_list node which contains base classes
+    const argumentList = classNode.childForFieldName('superclasses');
+    if (argumentList) {
+      this.traverseNode(argumentList, (node: Parser.SyntaxNode) => {
+        if (node.type === 'identifier') {
+          baseClasses.push(node.text);
+        } else if (node.type === 'attribute') {
+          // Handle qualified names like module.ClassName
+          baseClasses.push(node.text);
+        }
+      });
+    }
+    
+    return baseClasses;
+  }
+
+  private extractDecorators(node: Parser.SyntaxNode): string[] {
+    const decorators: string[] = [];
+    
+    // Look for decorator nodes that are siblings before the function/class definition
+    let currentNode = node.previousSibling;
+    
+    while (currentNode && currentNode.type === 'decorator') {
+      const decoratorName = this.getDecoratorName(currentNode);
+      if (decoratorName) {
+        decorators.unshift(decoratorName); // Add to beginning to maintain order
+      }
+      currentNode = currentNode.previousSibling;
+    }
+    
+    return decorators;
+  }
+
+  private getDecoratorName(decoratorNode: Parser.SyntaxNode): string | null {
+    // Find the identifier or attribute after the '@' symbol
+    for (let i = 0; i < decoratorNode.childCount; i++) {
+      const child = decoratorNode.child(i);
+      if (!child) continue;
+      
+      if (child.type === 'identifier') {
+        return child.text;
+      } else if (child.type === 'attribute') {
+        // Handle dotted decorators like @app.route
+        return child.text;
+      } else if (child.type === 'call') {
+        // Handle decorators with arguments like @retry(attempts=3)
+        const functionNode = child.childForFieldName('function');
+        if (functionNode) {
+          if (functionNode.type === 'identifier') {
+            return functionNode.text;
+          } else if (functionNode.type === 'attribute') {
+            return functionNode.text;
+          }
+        }
+      }
+    }
+    
+    return null;
   }
 
   private traverseNode(node: Parser.SyntaxNode, callback: (node: Parser.SyntaxNode) => void): void {
