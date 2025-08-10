@@ -7,7 +7,10 @@ export type NodeLabel =
   | 'Class' 
   | 'Function' 
   | 'Method' 
-  | 'Variable';
+  | 'Variable'
+  | 'Interface'
+  | 'Enum'
+  | 'Decorator';
 
 export interface GraphNode {
   id: string;
@@ -20,7 +23,12 @@ export type RelationshipType =
   | 'CALLS' 
   | 'INHERITS' 
   | 'OVERRIDES' 
-  | 'IMPORTS';
+  | 'IMPORTS'
+  | 'USES'
+  | 'DEFINES'
+  | 'DECORATES'
+  | 'IMPLEMENTS'
+  | 'ACCESSES';
 
 export interface GraphRelationship {
   id: string;

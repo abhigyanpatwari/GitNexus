@@ -10,6 +10,10 @@ const pathUtils = {
   extname: (filePath: string): string => {
     const lastDot = filePath.lastIndexOf('.');
     return lastDot === -1 ? '' : filePath.substring(lastDot);
+  },
+  dirname: (filePath: string): string => {
+    const lastSlash = filePath.lastIndexOf('/');
+    return lastSlash === -1 ? '' : filePath.substring(0, lastSlash);
   }
 };
 
@@ -198,34 +202,84 @@ export class CallProcessor {
         success: true,
         targetNodeId: candidates[0].nodeId,
         stage: 'heuristic',
-        confidence: 'medium',
-        distance: FunctionRegistryTrie.calculateImportDistance(call.callerFile, candidates[0].filePath)
+        confidence: 'medium'
       };
     }
 
-    // Multiple candidates - use import distance heuristic
+    // Multiple candidates - apply smart heuristics
     let bestCandidate = candidates[0];
-    let bestDistance = FunctionRegistryTrie.calculateImportDistance(call.callerFile, bestCandidate.filePath);
+    let bestScore = this.calculateImportDistance(call.callerFile, bestCandidate.filePath);
 
-    for (let i = 1; i < candidates.length; i++) {
-      const candidate = candidates[i];
-      const distance = FunctionRegistryTrie.calculateImportDistance(call.callerFile, candidate.filePath);
+    for (const candidate of candidates) {
+      let score = this.calculateImportDistance(call.callerFile, candidate.filePath);
       
-      if (distance < bestDistance) {
-        bestDistance = distance;
+      // Special handling for method calls
+      if (call.callType === 'method_call' && candidate.type === 'method') {
+        // Bonus for methods in the same file (likely self/this calls)
+        if (candidate.filePath === call.callerFile) {
+          score -= 2; // Strong preference for same-file methods
+        }
+        
+        // Bonus for methods in the same class context
+        // This would require more context about the calling class
+        // For now, we give a small bonus to method-to-method calls
+        score -= 0.5;
+      }
+      
+      // Bonus for function calls to functions (type matching)
+      if (call.callType === 'function_call' && candidate.type === 'function') {
+        score -= 0.5;
+      }
+      
+      // Bonus for sibling modules (same parent directory)
+      if (this.areSiblingModules(call.callerFile, candidate.filePath)) {
+        score -= 1;
+      }
+
+      if (score < bestScore) {
+        bestScore = score;
         bestCandidate = candidate;
       }
     }
-
-    console.log(`🎯 Heuristic match: ${call.functionName} -> ${bestCandidate.qualifiedName} (distance: ${bestDistance})`);
 
     return {
       success: true,
       targetNodeId: bestCandidate.nodeId,
       stage: 'heuristic',
-      confidence: 'medium',
-      distance: bestDistance
+      confidence: bestScore <= 1 ? 'medium' : 'low'
     };
+  }
+
+  /**
+   * Calculate import distance between two file paths
+   */
+  private calculateImportDistance(callerFile: string, targetFile: string): number {
+    const callerParts = callerFile.split('/');
+    const targetParts = targetFile.split('/');
+    
+    // Find common prefix length
+    let commonPrefixLength = 0;
+    const minLength = Math.min(callerParts.length, targetParts.length);
+    
+    for (let i = 0; i < minLength; i++) {
+      if (callerParts[i] === targetParts[i]) {
+        commonPrefixLength++;
+      } else {
+        break;
+      }
+    }
+    
+    // Distance is max depth minus common prefix
+    return Math.max(callerParts.length, targetParts.length) - commonPrefixLength;
+  }
+
+  /**
+   * Check if two file paths are sibling modules (same parent directory)
+   */
+  private areSiblingModules(file1: string, file2: string): boolean {
+    const parent1 = pathUtils.dirname(file1);
+    const parent2 = pathUtils.dirname(file2);
+    return parent1 === parent2;
   }
 
   /**
@@ -394,6 +448,19 @@ export class CallProcessor {
 
     if (containingFunction) {
       return containingFunction;
+    }
+
+    // If no containing function found, try to find a class that contains this call
+    // This helps with method calls at class level
+    const containingClass = graph.nodes.find(node =>
+      node.label === 'Class' &&
+      node.properties.filePath === call.callerFile &&
+      (node.properties.startLine as number) <= call.startLine &&
+      (node.properties.endLine as number) >= call.endLine
+    );
+
+    if (containingClass) {
+      return containingClass;
     }
 
     // Fallback to file node

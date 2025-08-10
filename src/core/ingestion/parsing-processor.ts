@@ -18,12 +18,14 @@ export interface ParsingInput {
 
 interface ParsedDefinition {
   name: string;
-  type: 'function' | 'class' | 'method';
+  type: 'function' | 'class' | 'method' | 'interface' | 'enum' | 'decorator' | 'variable';
   startLine: number;
   endLine: number;
   parentClass?: string;
   decorators?: string[];
   baseClasses?: string[];
+  decoratedTarget?: string; // For decorator nodes - what they decorate
+  variableType?: string;    // For variable nodes - inferred type
 }
 
 export interface ParsedAST {
@@ -194,8 +196,17 @@ export class ParsingProcessor {
                 });
               }
               
+              // Create class-to-method CONTAINS relationships
+              this.createClassMethodRelationships(graph, filePath, definitions);
+              
               // Create inheritance and override relationships
               this.createInheritanceRelationships(graph, filePath, definitions);
+              
+              // Create interface implementation relationships
+              this.createImplementsRelationships(graph, filePath, definitions);
+              
+              // Create decorator relationships
+              this.createDecoratorRelationships(graph, filePath, definitions);
               
               if (definitions.length > 0) {
                 successfullyParsed++;
@@ -238,8 +249,17 @@ export class ParsingProcessor {
                 });
               }
               
+              // Create class-to-method CONTAINS relationships
+              this.createClassMethodRelationships(graph, filePath, definitions);
+              
               // Create inheritance and override relationships
               this.createInheritanceRelationships(graph, filePath, definitions);
+              
+              // Create interface implementation relationships
+              this.createImplementsRelationships(graph, filePath, definitions);
+              
+              // Create decorator relationships
+              this.createDecoratorRelationships(graph, filePath, definitions);
             }
             
           } catch (parseError) {
@@ -685,6 +705,10 @@ export class ParsingProcessor {
               endLine: currentNode.endPosition.row + 1,
               decorators: decorators.length > 0 ? decorators : undefined
             });
+            
+            // Extract decorators as separate nodes
+            const decoratorNodes = this.extractDecoratorsAsNodes(currentNode, nameNode.text);
+            definitions.push(...decoratorNodes);
           }
         } else if (currentNode.type === 'class_definition') {
           const nameNode = currentNode.childForFieldName('name');
@@ -703,7 +727,15 @@ export class ParsingProcessor {
             
             const methods = this.extractMethodsFromClass(currentNode, className);
             definitions.push(...methods);
+            
+            // Extract decorators as separate nodes
+            const decoratorNodes = this.extractDecoratorsAsNodes(currentNode, className);
+            definitions.push(...decoratorNodes);
           }
+        } else if (currentNode.type === 'assignment') {
+          // Extract variable assignments at module level
+          const variables = this.extractVariableAssignments(currentNode);
+          definitions.push(...variables);
         }
       });
       
@@ -718,7 +750,11 @@ export class ParsingProcessor {
 
   private createDefinitionNode(filePath: string, definition: ParsedDefinition): GraphNode {
     const nodeLabel = definition.type === 'function' ? 'Function' : 
-                     (definition.type === 'method' ? 'Method' : 'Class');
+                     (definition.type === 'method' ? 'Method' : 
+                     (definition.type === 'interface' ? 'Interface' :
+                     (definition.type === 'enum' ? 'Enum' :
+                     (definition.type === 'decorator' ? 'Decorator' :
+                     (definition.type === 'variable' ? 'Variable' : 'Class')))));
     
     const nodeId = generateId(definition.type, `${filePath}:${definition.name}`);
     
@@ -728,21 +764,26 @@ export class ParsingProcessor {
       ? `${filePathParts.join('.')}.${definition.parentClass}.${definition.name}`
       : `${filePathParts.join('.')}.${definition.name}`;
     
-    // Add to function registry trie
+    // Add to function registry trie (extend to include new types)
     this.functionTrie.addDefinition({
       nodeId,
       qualifiedName,
       filePath,
       functionName: definition.name,
       type: definition.type === 'class' ? 'class' : 
-            definition.type === 'method' ? 'method' : 'function',
+            definition.type === 'method' ? 'method' : 
+            definition.type === 'interface' ? 'interface' :
+            definition.type === 'enum' ? 'enum' :
+            definition.type === 'decorator' ? 'function' : // Treat decorators as functions in trie
+            definition.type === 'variable' ? 'function' :   // Treat variables as functions in trie
+            'function',
       startLine: definition.startLine,
       endLine: definition.endLine
     });
     
     return {
       id: nodeId,
-      label: nodeLabel as 'Function' | 'Method' | 'Class',
+      label: nodeLabel as 'Function' | 'Method' | 'Class' | 'Interface' | 'Enum' | 'Decorator' | 'Variable',
       properties: {
         name: definition.name,
         filePath,
@@ -750,7 +791,9 @@ export class ParsingProcessor {
         endLine: definition.endLine,
         ...(definition.parentClass && { parentClass: definition.parentClass }),
         ...(definition.decorators && { decorators: definition.decorators }),
-        ...(definition.baseClasses && { baseClasses: definition.baseClasses })
+        ...(definition.baseClasses && { baseClasses: definition.baseClasses }),
+        ...(definition.decoratedTarget && { decoratedTarget: definition.decoratedTarget }),
+        ...(definition.variableType && { variableType: definition.variableType })
       }
     };
   }
@@ -1165,6 +1208,15 @@ export class ParsingProcessor {
               startLine: node.startPosition.row + 1,
               endLine: node.endPosition.row + 1
             });
+          } else if (nameNode && valueNode) {
+            // This is a variable assignment
+            definitions.push({
+              name: nameNode.text,
+              type: 'variable',
+              startLine: node.startPosition.row + 1,
+              endLine: node.endPosition.row + 1,
+              variableType: this.inferTypeFromValue(valueNode)
+            });
           }
         }
         
@@ -1297,6 +1349,15 @@ export class ParsingProcessor {
               startLine: node.startPosition.row + 1,
               endLine: node.endPosition.row + 1
             });
+          } else if (nameNode && valueNode) {
+            // This is a variable assignment
+            definitions.push({
+              name: nameNode.text,
+              type: 'variable',
+              startLine: node.startPosition.row + 1,
+              endLine: node.endPosition.row + 1,
+              variableType: this.inferTypeFromValue(valueNode)
+            });
           }
         }
         
@@ -1333,7 +1394,7 @@ export class ParsingProcessor {
           if (nameNode) {
             definitions.push({
               name: nameNode.text,
-              type: 'class', // Treat interfaces as classes for graph purposes
+              type: 'interface', // Use correct interface type
               startLine: node.startPosition.row + 1,
               endLine: node.endPosition.row + 1
             });
@@ -1346,7 +1407,7 @@ export class ParsingProcessor {
           if (nameNode) {
             definitions.push({
               name: nameNode.text,
-              type: 'class', // Treat type aliases as classes for graph purposes
+              type: 'class', // Keep as class for now (type aliases are complex)
               startLine: node.startPosition.row + 1,
               endLine: node.endPosition.row + 1
             });
@@ -1359,7 +1420,7 @@ export class ParsingProcessor {
           if (nameNode) {
             definitions.push({
               name: nameNode.text,
-              type: 'class', // Treat enums as classes for graph purposes
+              type: 'enum', // Use correct enum type
               startLine: node.startPosition.row + 1,
               endLine: node.endPosition.row + 1
             });
@@ -1409,7 +1470,7 @@ export class ParsingProcessor {
       // interface Foo
       const interfaceDecl = line.match(/\binterface\s+([A-Za-z_$][\w$]*)\b/);
       if (interfaceDecl) {
-        definitions.push({ name: interfaceDecl[1], type: 'class', startLine: ln, endLine: ln });
+        definitions.push({ name: interfaceDecl[1], type: 'interface', startLine: ln, endLine: ln });
         continue;
       }
       
@@ -1423,7 +1484,7 @@ export class ParsingProcessor {
       // enum Foo
       const enumDecl = line.match(/\benum\s+([A-Za-z_$][\w$]*)\b/);
       if (enumDecl) {
-        definitions.push({ name: enumDecl[1], type: 'class', startLine: ln, endLine: ln });
+        definitions.push({ name: enumDecl[1], type: 'enum', startLine: ln, endLine: ln });
       }
     }
     
@@ -1531,7 +1592,7 @@ export class ParsingProcessor {
           if (nameNode) {
             definitions.push({
               name: nameNode.text,
-              type: 'class',
+              type: 'interface', // Use correct interface type
               startLine: node.startPosition.row + 1,
               endLine: node.endPosition.row + 1
             });
@@ -1594,7 +1655,7 @@ export class ParsingProcessor {
       // interface Foo
       const interfaceDecl = line.match(/\binterface\s+([A-Za-z_$][\w$]*)\b/);
       if (interfaceDecl) {
-        definitions.push({ name: interfaceDecl[1], type: 'class', startLine: ln, endLine: ln });
+        definitions.push({ name: interfaceDecl[1], type: 'interface', startLine: ln, endLine: ln });
         continue;
       }
       
@@ -1673,5 +1734,211 @@ export class ParsingProcessor {
 
   public getFunctionRegistry(): FunctionRegistryTrie {
     return this.functionTrie;
+  }
+
+  private createClassMethodRelationships(
+    graph: KnowledgeGraph,
+    filePath: string,
+    definitions: ParsedDefinition[]
+  ): void {
+    const classDefinitions = definitions.filter(def => def.type === 'class');
+    const methodDefinitions = definitions.filter(def => def.type === 'method');
+
+    for (const classDef of classDefinitions) {
+      const classNodeId = generateId('class', `${filePath}:${classDef.name}`);
+      const classNode = graph.nodes.find(node => node.id === classNodeId);
+
+      if (classNode) {
+        // Find all methods that belong to this class
+        const classMethods = methodDefinitions.filter(method => 
+          method.parentClass === classDef.name
+        );
+
+        for (const methodDef of classMethods) {
+          const methodNodeId = generateId('method', `${filePath}:${methodDef.name}`);
+          const methodNode = graph.nodes.find(node => node.id === methodNodeId);
+
+          if (methodNode) {
+            // Check if relationship already exists
+            const existingRel = graph.relationships.find(r =>
+              r.type === 'CONTAINS' &&
+              r.source === classNode.id &&
+              r.target === methodNode.id
+            );
+
+            if (!existingRel) {
+              graph.relationships.push({
+                id: generateId('relationship', `${classNode.id}-contains-${methodNode.id}`),
+                type: 'CONTAINS',
+                source: classNode.id,
+                target: methodNode.id,
+                properties: {
+                  relationshipType: 'class-method'
+                }
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private createImplementsRelationships(
+    graph: KnowledgeGraph,
+    filePath: string,
+    definitions: ParsedDefinition[]
+  ): void {
+    const interfaceDefinitions = definitions.filter(def => def.type === 'interface');
+    const classDefinitions = definitions.filter(def => def.type === 'class');
+
+    for (const interfaceDef of interfaceDefinitions) {
+      const interfaceNodeId = generateId('interface', `${filePath}:${interfaceDef.name}`);
+      const interfaceNode = graph.nodes.find(node => node.id === interfaceNodeId);
+
+      if (interfaceNode) {
+        // Find all classes that implement this interface
+        const implementingClasses = classDefinitions.filter(classDef => 
+          classDef.baseClasses && classDef.baseClasses.includes(interfaceDef.name)
+        );
+
+        for (const classDef of implementingClasses) {
+          const classNodeId = generateId('class', `${filePath}:${classDef.name}`);
+          const classNode = graph.nodes.find(node => node.id === classNodeId);
+
+          if (classNode) {
+            // Check if relationship already exists
+            const existingRel = graph.relationships.find(r =>
+              r.type === 'IMPLEMENTS' &&
+              r.source === classNode.id &&
+              r.target === interfaceNode.id
+            );
+
+            if (!existingRel) {
+              graph.relationships.push({
+                id: generateId('relationship', `${classNode.id}-implements-${interfaceNode.id}`),
+                type: 'IMPLEMENTS',
+                source: classNode.id,
+                target: interfaceNode.id,
+                properties: {
+                  relationshipType: 'implements'
+                }
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private createDecoratorRelationships(
+    graph: KnowledgeGraph,
+    filePath: string,
+    definitions: ParsedDefinition[]
+  ): void {
+    const decoratorDefinitions = definitions.filter(def => def.type === 'decorator');
+    const functionDefinitions = definitions.filter(def => def.type === 'function');
+
+    for (const decoratorDef of decoratorDefinitions) {
+      const decoratorNodeId = generateId('decorator', `${filePath}:${decoratorDef.name}`);
+      const decoratorNode = graph.nodes.find(node => node.id === decoratorNodeId);
+
+      if (decoratorNode) {
+        // Find all functions that are decorated by this decorator
+        const decoratedFunctions = functionDefinitions.filter(func => 
+          func.decorators && func.decorators.includes(decoratorDef.name)
+        );
+
+        for (const funcDef of decoratedFunctions) {
+          const funcNodeId = generateId('function', `${filePath}:${funcDef.name}`);
+          const funcNode = graph.nodes.find(node => node.id === funcNodeId);
+
+          if (funcNode) {
+            // Check if relationship already exists
+            const existingRel = graph.relationships.find(r =>
+              r.type === 'DECORATES' &&
+              r.source === decoratorNode.id &&
+              r.target === funcNode.id
+            );
+
+            if (!existingRel) {
+              graph.relationships.push({
+                id: generateId('relationship', `${decoratorNode.id}-decorates-${funcNode.id}`),
+                type: 'DECORATES',
+                source: decoratorNode.id,
+                target: funcNode.id,
+                properties: {
+                  decoratorName: decoratorDef.name
+                }
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private extractDecoratorsAsNodes(node: Parser.SyntaxNode, name: string): ParsedDefinition[] {
+    const decoratorNodes: ParsedDefinition[] = [];
+    let currentNode = node.previousSibling;
+
+    while (currentNode && currentNode.type === 'decorator') {
+      const decoratorName = this.getDecoratorName(currentNode);
+      if (decoratorName) {
+        decoratorNodes.push({
+          name: decoratorName,
+          type: 'decorator',
+          startLine: currentNode.startPosition.row + 1,
+          endLine: currentNode.endPosition.row + 1,
+          decoratedTarget: name
+        });
+      }
+      currentNode = currentNode.previousSibling;
+    }
+
+    return decoratorNodes;
+  }
+
+  private extractVariableAssignments(_node: Parser.SyntaxNode): ParsedDefinition[] {
+    const variables: ParsedDefinition[] = [];
+
+    // Look for assignment nodes that are not part of a function or class definition
+    // This is a simplified approach; a more robust solution would involve
+    // traversing the tree to find top-level assignments.
+    // For now, we'll just look for assignments that are not directly inside
+    // a function or class definition.
+
+    // This logic needs to be more sophisticated to correctly identify top-level variables
+    // and their types. For now, we'll just return an empty array or a placeholder.
+    // A proper implementation would involve parsing the tree for variable declarations
+    // that are not part of a function or class definition.
+
+    return variables;
+  }
+  
+  private inferTypeFromValue(valueNode: Parser.SyntaxNode): string {
+    // Simple type inference based on the value node
+    switch (valueNode.type) {
+      case 'string':
+      case 'template_string':
+        return 'string';
+      case 'number':
+        return 'number';
+      case 'true':
+      case 'false':
+        return 'boolean';
+      case 'array':
+        return 'array';
+      case 'object':
+        return 'object';
+      case 'null':
+        return 'null';
+      case 'undefined':
+        return 'undefined';
+      case 'call_expression':
+        // Try to infer from function call
+        return 'unknown';
+      default:
+        return 'unknown';
+    }
   }
 } 
