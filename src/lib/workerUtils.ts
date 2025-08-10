@@ -1,6 +1,7 @@
-// @ts-expect-error -  imports are resolved at runtime in Deno
+// Worker utilities for handling different runtime environments
 import * as Comlink from 'comlink';
-import type { IngestionWorker, IngestionProgress, IngestionResult } from '../workers/ingestion.worker.ts';
+import { IngestionWorker } from '../workers/ingestion.worker.ts';
+import type { IngestionProgress, IngestionResult } from '../workers/ingestion.worker.ts';
 import type { PipelineInput } from '../core/ingestion/pipeline.ts';
 
 // Export types for external use

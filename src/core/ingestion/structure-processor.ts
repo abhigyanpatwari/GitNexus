@@ -4,32 +4,139 @@ import { generateId } from '../../lib/utils.ts';
 export interface StructureInput {
   projectRoot: string;
   projectName: string;
-  filePaths: string[];
+  filePaths: string[];  // Now includes ALL paths: files AND directories
 }
 
 export class StructureProcessor {
   private nodeIdMap: Map<string, string> = new Map();
 
+  // Import ignore patterns from ParsingProcessor
+  private static readonly IGNORE_PATTERNS = new Set([
+    // Version Control
+    '.git', '.svn', '.hg',
+    
+    // Package Managers & Dependencies
+    'node_modules', 'bower_components', 'jspm_packages', 'vendor', 'deps',
+    
+    // Python Virtual Environments & Cache
+    'venv', 'env', '.venv', '.env', 'envs', 'virtualenv', '__pycache__',
+    '.pytest_cache', '.mypy_cache', '.tox',
+    
+    // Build & Distribution Directories
+    'build', 'dist', 'out', 'target', 'bin', 'obj', '.gradle', '_build',
+    
+    // IDE & Editor Directories
+    '.vs', '.vscode', '.idea', '.eclipse', '.settings',
+    
+    // Temporary & Log Directories
+    'tmp', '.tmp', 'temp', 'logs', 'log',
+    
+    // Coverage & Testing
+    'coverage', '.coverage', 'htmlcov', '.nyc_output',
+    
+    // OS & System
+    '.DS_Store', 'Thumbs.db',
+    
+    // Documentation Build Output
+    '_site', '.docusaurus',
+    
+    // Cache Directories
+    '.cache', '.parcel-cache', '.next', '.nuxt'
+  ]);
+
+  /**
+   * Process complete repository structure directly from discovered paths
+   * This is the new robust approach that doesn't infer structure
+   */
   public async process(graph: KnowledgeGraph, input: StructureInput): Promise<void> {
     const { projectRoot, projectName, filePaths } = input;
+    
+    console.log(`StructureProcessor: Processing ${filePaths.length} complete paths`);
     
     // Create project root node
     const projectNode = this.createProjectNode(projectName, projectRoot);
     graph.nodes.push(projectNode);
     
-    // Extract unique folder paths from file paths
-    const folderPaths = this.extractFolderPaths(filePaths);
+    // Separate files and directories from the complete path list
+    const { directories, files } = this.categorizePaths(filePaths);
     
-    // Create folder nodes and establish hierarchy
-    const folderNodes = this.createFolderNodes(folderPaths);
-    graph.nodes.push(...folderNodes);
+    console.log(`StructureProcessor: Found ${directories.length} directories and ${files.length} files`);
     
-    // Create file nodes
-    const fileNodes = this.createFileNodes(filePaths);
+    // Filter out ignored directories from KG display (but keep for internal structure)
+    const visibleDirectories = directories.filter(dir => !this.shouldHideDirectory(dir));
+    const hiddenDirectoriesCount = directories.length - visibleDirectories.length;
+    
+    if (hiddenDirectoriesCount > 0) {
+      console.log(`StructureProcessor: Hiding ${hiddenDirectoriesCount} ignored directories from KG`);
+    }
+    
+    // Create directory nodes only for visible directories
+    const directoryNodes = this.createDirectoryNodes(visibleDirectories);
+    graph.nodes.push(...directoryNodes);
+    
+    // Filter out files that are inside ignored directories
+    const visibleFiles = files.filter(file => !this.shouldHideFile(file));
+    const hiddenFilesCount = files.length - visibleFiles.length;
+    
+    if (hiddenFilesCount > 0) {
+      console.log(`StructureProcessor: Hiding ${hiddenFilesCount} files in ignored directories from KG`);
+    }
+    
+    // Create file nodes only for visible files
+    const fileNodes = this.createFileNodes(visibleFiles);
     graph.nodes.push(...fileNodes);
     
-    // Establish CONTAINS relationships
-    this.createContainsRelationships(graph, projectNode.id, folderPaths, filePaths);
+    // Establish CONTAINS relationships for visible structure only
+    this.createContainsRelationships(graph, projectNode.id, visibleDirectories, visibleFiles);
+    
+    const totalHidden = hiddenDirectoriesCount + hiddenFilesCount;
+    console.log(`StructureProcessor: Created ${graph.nodes.length} nodes total (${totalHidden} items hidden)`);
+  }
+
+  /**
+   * Categorize paths into files and directories
+   * Since we now receive the complete structure, we need to distinguish between them
+   */
+  private categorizePaths(allPaths: string[]): { directories: string[], files: string[] } {
+    const directories: string[] = [];
+    const files: string[] = [];
+    const pathSet = new Set(allPaths);
+    
+    for (const path of allPaths) {
+      // A path is a directory if:
+      // 1. Other paths exist that start with this path + "/"
+      // 2. OR it doesn't have a file extension and other paths are nested under it
+      const isDirectory = allPaths.some(otherPath => 
+        otherPath !== path && otherPath.startsWith(path + '/')
+      );
+      
+      if (isDirectory) {
+        directories.push(path);
+      } else {
+        // It's a file if it's not identified as a directory
+        files.push(path);
+      }
+    }
+    
+    // Also add intermediate directories that might not be explicitly listed
+    const allIntermediateDirs = new Set<string>();
+    for (const path of allPaths) {
+      const parts = path.split('/');
+      for (let i = 1; i < parts.length; i++) {
+        const intermediatePath = parts.slice(0, i).join('/');
+        if (intermediatePath && !pathSet.has(intermediatePath)) {
+          allIntermediateDirs.add(intermediatePath);
+        }
+      }
+    }
+    
+    // Add intermediate directories that weren't explicitly listed
+    directories.push(...Array.from(allIntermediateDirs));
+    
+    return { 
+      directories: [...new Set(directories)].sort(),  // Remove duplicates and sort
+      files: files.sort() 
+    };
   }
 
   private createProjectNode(projectName: string, projectRoot: string): GraphNode {
@@ -47,152 +154,237 @@ export class StructureProcessor {
     };
   }
 
-  private extractFolderPaths(filePaths: string[]): string[] {
-    const folderSet = new Set<string>();
-    
-    for (const filePath of filePaths) {
-      const pathParts = filePath.split('/');
-      
-      // Generate all parent folder paths
-      for (let i = 1; i < pathParts.length; i++) {
-        const folderPath = pathParts.slice(0, i).join('/');
-        if (folderPath) {
-          folderSet.add(folderPath);
-        }
-      }
-    }
-    
-    return Array.from(folderSet).sort();
-  }
-
-  private createFolderNodes(folderPaths: string[]): GraphNode[] {
+  /**
+   * Create nodes for directories directly from discovered directory paths
+   */
+  private createDirectoryNodes(directoryPaths: string[]): GraphNode[] {
     const nodes: GraphNode[] = [];
     
-    for (const folderPath of folderPaths) {
-      const pathParts = folderPath.split('/');
-      const folderName = pathParts[pathParts.length - 1];
-      const id = generateId('folder', folderPath);
+    for (const dirPath of directoryPaths) {
+      if (!dirPath) continue;
       
-      this.nodeIdMap.set(folderPath, id);
+      const id = generateId('folder', dirPath);
+      this.nodeIdMap.set(dirPath, id);
       
-      nodes.push({
+      const pathParts = dirPath.split('/');
+      const dirName = pathParts[pathParts.length - 1];
+      
+      const node: GraphNode = {
         id,
         label: 'Folder',
         properties: {
-          name: folderName,
-          path: folderPath,
+          name: dirName,
+          path: dirPath,
+          fullPath: dirPath,
           depth: pathParts.length
         }
-      });
+      };
+      
+      nodes.push(node);
     }
     
     return nodes;
   }
 
+  /**
+   * Create nodes for files directly from discovered file paths
+   */
   private createFileNodes(filePaths: string[]): GraphNode[] {
     const nodes: GraphNode[] = [];
     
     for (const filePath of filePaths) {
-      const pathParts = filePath.split('/');
-      const fileName = pathParts[pathParts.length - 1];
-      const fileExtension = this.getFileExtension(fileName);
-      const id = generateId('file', filePath);
+      if (!filePath) continue;
       
+      const id = generateId('file', filePath);
       this.nodeIdMap.set(filePath, id);
       
-      nodes.push({
+      const fileName = filePath.split('/').pop() || filePath;
+      const extension = this.getFileExtension(fileName);
+      
+      const node: GraphNode = {
         id,
         label: 'File',
         properties: {
           name: fileName,
-          filePath: filePath, // Use filePath consistently
-          path: filePath, // Keep path for backward compatibility
-          extension: fileExtension,
-          isSourceFile: this.isSourceFile(fileExtension)
+          path: filePath,
+          filePath: filePath,  // For compatibility with existing code
+          extension,
+          // Note: definitionCount will be set later by ParsingProcessor
+          // language will be determined later by ParsingProcessor
         }
-      });
+      };
+      
+      nodes.push(node);
     }
     
     return nodes;
   }
 
+  /**
+   * Create CONTAINS relationships for the complete discovered structure
+   */
   private createContainsRelationships(
     graph: KnowledgeGraph, 
     projectId: string, 
-    folderPaths: string[], 
-    filePaths: string[]
+    directories: string[], 
+    files: string[]
   ): void {
-    const relationships: GraphRelationship[] = [];
+    // Create relationships: directories contain subdirectories and files
+    const allPaths = [...directories, ...files];
     
-    // Project contains root folders
-    const rootFolders = folderPaths.filter(path => path && !path.includes('/'));
-    for (const rootFolder of rootFolders) {
-      const folderId = this.nodeIdMap.get(rootFolder);
-      if (folderId) {
-        relationships.push({
-          id: generateId('relationship', `${projectId}-contains-${folderId}`),
-          type: 'CONTAINS',
-          source: projectId,
-          target: folderId
-        });
-      }
-    }
-    
-    // Folders contain subfolders
-    for (const folderPath of folderPaths) {
-      const parentPath = this.getParentPath(folderPath);
-      const parentId = this.nodeIdMap.get(parentPath);
-      const folderId = this.nodeIdMap.get(folderPath);
+    for (const path of allPaths) {
+      const parentPath = this.getParentPath(path);
+      const parentId = parentPath === '' ? projectId : this.nodeIdMap.get(parentPath);
+      const childId = this.nodeIdMap.get(path);
       
-      if (parentId && folderId && parentPath !== folderPath) {
-        relationships.push({
-          id: generateId('relationship', `${parentId}-contains-${folderId}`),
+      // Only create relationships if both parent and child nodes exist in the graph
+      if (parentId && childId && parentId !== childId) {
+        const relationship: GraphRelationship = {
+          id: generateId('contains', `${parentId}-${childId}`),
           type: 'CONTAINS',
           source: parentId,
-          target: folderId
-        });
+          target: childId,
+          properties: {}
+        };
+        
+        graph.relationships.push(relationship);
+      } else if (!parentId && parentPath !== '') {
+        // If parent directory was hidden, connect directly to project or nearest visible parent
+        const visibleParentId = this.findVisibleParent(parentPath, projectId);
+        if (visibleParentId && childId && visibleParentId !== childId) {
+          const relationship: GraphRelationship = {
+            id: generateId('contains', `${visibleParentId}-${childId}`),
+            type: 'CONTAINS',
+            source: visibleParentId,
+            target: childId,
+            properties: {}
+          };
+          
+          graph.relationships.push(relationship);
+        }
       }
     }
     
-    // Folders and project contain files
-    for (const filePath of filePaths) {
-      const parentPath = this.getParentPath(filePath);
-      const parentId = this.nodeIdMap.get(parentPath);
-      const fileId = this.nodeIdMap.get(filePath);
-      
-      if (parentId && fileId) {
-        relationships.push({
-          id: generateId('relationship', `${parentId}-contains-${fileId}`),
-          type: 'CONTAINS',
-          source: parentId,
-          target: fileId
-        });
-      }
+    console.log(`StructureProcessor: Created ${graph.relationships.length} CONTAINS relationships`);
+  }
+
+  /**
+   * Find the nearest visible parent directory or project root
+   */
+  private findVisibleParent(path: string, projectId: string): string {
+    if (path === '') return projectId;
+    
+    const parentPath = this.getParentPath(path);
+    const parentId = this.nodeIdMap.get(parentPath);
+    
+    if (parentId) {
+      return parentId; // Found visible parent
     }
     
-    graph.relationships.push(...relationships);
+    // Recursively look for visible parent
+    return this.findVisibleParent(parentPath, projectId);
   }
 
   private getParentPath(path: string): string {
-    const pathParts = path.split('/');
-    if (pathParts.length <= 1) return '';
-    return pathParts.slice(0, -1).join('/');
+    if (!path || !path.includes('/')) {
+      return ''; // Root level
+    }
+    
+    const lastSlashIndex = path.lastIndexOf('/');
+    return path.substring(0, lastSlashIndex);
   }
 
   private getFileExtension(fileName: string): string {
     const lastDotIndex = fileName.lastIndexOf('.');
-    return lastDotIndex !== -1 ? fileName.substring(lastDotIndex) : '';
-  }
-
-  private isSourceFile(extension: string): boolean {
-    const sourceExtensions = new Set([
-      '.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.cpp', '.c', '.h', '.hpp',
-      '.cs', '.php', '.rb', '.go', '.rs', '.swift', '.kt', '.scala'
-    ]);
-    return sourceExtensions.has(extension);
+    if (lastDotIndex === -1 || lastDotIndex === 0) {
+      return '';
+    }
+    return fileName.substring(lastDotIndex);
   }
 
   public getNodeId(path: string): string | undefined {
     return this.nodeIdMap.get(path);
+  }
+
+  public clear(): void {
+    this.nodeIdMap.clear();
+  }
+
+  /**
+   * Check if a directory should be hidden from the KG visualization
+   * This matches the ignore patterns used in ParsingProcessor
+   */
+  private shouldHideDirectory(dirPath: string): boolean {
+    const pathSegments = dirPath.split('/');
+    
+    // Check if any segment of the path matches an ignore pattern
+    const hasIgnoredSegment = pathSegments.some(segment => 
+      StructureProcessor.IGNORE_PATTERNS.has(segment.toLowerCase())
+    );
+    
+    if (hasIgnoredSegment) {
+      return true;
+    }
+    
+    // Additional pattern matching
+    const lowerPath = dirPath.toLowerCase();
+    
+    // Hide Python egg-info directories
+    if (lowerPath.includes('.egg-info')) {
+      return true;
+    }
+    
+    // Hide site-packages directories
+    if (lowerPath.includes('site-packages')) {
+      return true;
+    }
+    
+    // Hide most hidden directories (except important ones like .github)
+    for (const segment of pathSegments) {
+      if (segment.startsWith('.') && segment !== '.github') {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  /**
+   * Check if a file should be hidden from the KG visualization
+   * This matches the ignore patterns used in ParsingProcessor
+   */
+  private shouldHideFile(filePath: string): boolean {
+    const pathSegments = filePath.split('/');
+    
+    // Check if any segment of the path matches an ignore pattern
+    const hasIgnoredSegment = pathSegments.some(segment => 
+      StructureProcessor.IGNORE_PATTERNS.has(segment.toLowerCase())
+    );
+    
+    if (hasIgnoredSegment) {
+      return true;
+    }
+    
+    // Additional pattern matching
+    const lowerPath = filePath.toLowerCase();
+    
+    // Hide Python egg-info directories
+    if (lowerPath.includes('.egg-info')) {
+      return true;
+    }
+    
+    // Hide site-packages directories
+    if (lowerPath.includes('site-packages')) {
+      return true;
+    }
+    
+    // Hide most hidden directories (except important ones like .github)
+    for (const segment of pathSegments) {
+      if (segment.startsWith('.') && segment !== '.github') {
+        return true;
+      }
+    }
+    
+    return false;
   }
 } 

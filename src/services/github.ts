@@ -38,6 +38,11 @@ interface GitHubError {
   documentation_url?: string;
 }
 
+export interface CompleteRepositoryStructure {
+  allPaths: string[];  // All file and directory paths
+  fileContents: Map<string, string>;  // Only files with content
+}
+
 export class GitHubService {
   private client: AxiosInstance;
   private baseURL = 'https://api.github.com';
@@ -265,7 +270,6 @@ export class GitHubService {
       // Build, distribution, and temporary directories
       'build',
       'dist', 
-      'docs',
       'logs',
       'tmp',
       '.tmp',
@@ -384,35 +388,116 @@ export class GitHubService {
       return false;
     }
     
-    // Only include Python files and essential config files
-    const extension = '.' + fileName.split('.').pop()?.toLowerCase();
-    
-    // Python source files
-    if (extension === '.py') {
+    // Include common source and important config files
+    const extension = '.' + (fileName.split('.').pop() || '').toLowerCase();
+
+    const includeSourceExts = new Set(['.py', '.js', '.jsx', '.ts', '.tsx']);
+    if (includeSourceExts.has(extension)) {
       return true;
     }
-    
-    // Essential Python config files
-    const importantPythonFiles = [
-      'pyproject.toml',
-      'setup.py',
-      'requirements.txt',
-      'setup.cfg',
-      'tox.ini',
-      'pytest.ini',
-      'Pipfile',
-      'poetry.toml',
-      'README.md',
-      'LICENSE',
-      'CHANGELOG.md',
-      'MANIFEST.in'
-    ];
-    
-    if (importantPythonFiles.includes(fileName)) {
+
+    const importantConfigFiles = new Set([
+      // Python
+      'pyproject.toml', 'setup.py', 'requirements.txt', 'setup.cfg', 'tox.ini', 'pytest.ini', 'pipfile', 'poetry.toml',
+      '__init__.py',
+      // JS/TS ecosystem
+      'package.json', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
+      'tsconfig.json', 'tsconfig.base.json',
+      'vite.config.ts', 'vite.config.js',
+      '.eslintrc', '.eslintrc.json', '.eslintrc.js', '.prettierrc', '.prettierrc.json',
+      // Docs/licenses
+      'readme.md', 'license', 'changelog.md', 'manifest.in'
+    ]);
+    if (importantConfigFiles.has(fileName.toLowerCase())) {
       return true;
     }
-    
+
     return false;
+  }
+
+  public async getAllPathsRecursively(owner: string, repo: string, path: string = ''): Promise<string[]> {
+    const allPaths: string[] = [];
+    const fileContents: Map<string, string> = new Map();
+
+    try {
+      const contents = await this.getRepositoryContents(owner, repo, path);
+
+      for (const item of contents) {
+        const fullPath = item.path;
+        allPaths.push(fullPath);
+
+        if (item.type === 'file' && this.shouldIncludeFile(fullPath)) {
+          const content = await this.getFileContent(owner, repo, fullPath);
+          fileContents.set(fullPath, content);
+        }
+
+        if (item.type === 'dir') {
+          // Skip common directories that shouldn't be processed
+          if (this.shouldSkipDirectory(fullPath)) {
+            console.log(`Skipping directory: ${fullPath}`);
+            continue;
+          }
+          const subPaths = await this.getAllPathsRecursively(owner, repo, fullPath);
+          allPaths.push(...subPaths);
+        }
+      }
+    } catch (error) {
+      console.error(`Error fetching contents for ${path}:`, error);
+    }
+
+    return allPaths;
+  }
+
+  /**
+   * Get complete repository structure including all paths and file contents
+   * This is the new robust method that discovers structure first, then filters during parsing
+   */
+  public async getCompleteRepositoryStructure(owner: string, repo: string): Promise<CompleteRepositoryStructure> {
+    const allPaths: string[] = [];
+    const fileContents: Map<string, string> = new Map();
+
+    await this.collectPathsAndContent(owner, repo, '', allPaths, fileContents);
+
+    console.log(`GitHub: Discovered ${allPaths.length} total paths, ${fileContents.size} files with content`);
+    
+    return {
+      allPaths,
+      fileContents
+    };
+  }
+
+  private async collectPathsAndContent(
+    owner: string, 
+    repo: string, 
+    path: string, 
+    allPaths: string[], 
+    fileContents: Map<string, string>
+  ): Promise<void> {
+    try {
+      const contents = await this.getRepositoryContents(owner, repo, path);
+
+      for (const item of contents) {
+        const fullPath = item.path;
+        allPaths.push(fullPath);
+
+        if (item.type === 'file') {
+          // Always try to get content for files, regardless of filtering
+          // Filtering will happen later in ParsingProcessor
+          try {
+            const content = await this.getFileContent(owner, repo, fullPath);
+            fileContents.set(fullPath, content);
+          } catch (error) {
+            console.warn(`Failed to get content for ${fullPath}:`, error);
+          }
+        } else if (item.type === 'dir') {
+          // REMOVED: shouldSkipDirectory check for complete structure discovery
+          // All directories are now discovered, filtering happens during parsing
+          await this.collectPathsAndContent(owner, repo, fullPath, allPaths, fileContents);
+        }
+      }
+    } catch (error) {
+      console.error(`Error fetching contents for ${path}:`, error);
+    }
   }
 
   public getAuthenticationStatus(): { authenticated: boolean; rateLimitInfo: RateLimitInfo | null } {

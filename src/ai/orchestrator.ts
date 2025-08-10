@@ -1,7 +1,7 @@
 import { HumanMessage, SystemMessage, AIMessage } from '@langchain/core/messages';
 import type { LLMService, LLMConfig } from './llm-service.ts';
 import type { CypherGenerator, CypherQuery } from './cypher-generator.ts';
-import type { KnowledgeGraph, GraphNode } from '../core/graph/types.ts';
+import type { KnowledgeGraph } from '../core/graph/types.ts';
 
 export interface RAGContext {
   graph: KnowledgeGraph;

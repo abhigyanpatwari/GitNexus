@@ -79,9 +79,9 @@ const CodeAssistant: React.FC<CodeAssistantProps> = ({
       case 'graph':
         return (
           <div style={panelStyle}>
-            <GraphExplorer
+            <GraphExplorer 
               graph={graph}
-              style={{ height: '100%' }}
+              isLoading={false}
             />
           </div>
         );
@@ -120,7 +120,7 @@ const CodeAssistant: React.FC<CodeAssistantProps> = ({
               </div>
               <GraphExplorer
                 graph={graph}
-                style={{ height: 'calc(100% - 40px)' }}
+                isLoading={false}
               />
             </div>
           </>

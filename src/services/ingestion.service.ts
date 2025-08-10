@@ -1,6 +1,6 @@
-import { GitHubService } from './github.ts';
-import { ZipService } from './zip.ts';
-import { getIngestionWorker, type IngestionProgress } from '../lib/workerUtils.ts';
+import { GitHubService, type CompleteRepositoryStructure } from './github.ts';
+import { ZipService, type CompleteZipStructure } from './zip.ts';
+import { getIngestionWorker } from '../lib/workerUtils.ts';
 import type { KnowledgeGraph } from '../core/graph/types.ts';
 
 export interface IngestionOptions {
@@ -27,7 +27,7 @@ export class IngestionService {
     githubUrl: string, 
     options: IngestionOptions = {}
   ): Promise<IngestionResult> {
-    const { directoryFilter, fileExtensions, onProgress } = options;
+    const { onProgress } = options;
 
     // Parse GitHub URL
     const match = githubUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)(?:\/.*)?$/);
@@ -37,163 +37,151 @@ export class IngestionService {
 
     const [, owner, repo] = match;
     
-    onProgress?.('Fetching repository structure...');
+    onProgress?.('Discovering complete repository structure...');
     
-    // Get all files from the repository
-    const allFiles = await this.githubService.getAllFilesRecursively(owner, repo);
+    // Get complete repository structure (all paths + file contents)
+    const structure: CompleteRepositoryStructure = await this.githubService.getCompleteRepositoryStructure(owner, repo);
     
-    // Filter files based on options
-    const filteredFiles = this.filterFiles(allFiles, directoryFilter, fileExtensions);
+    onProgress?.(`Discovered ${structure.allPaths.length} paths, ${structure.fileContents.size} files. Processing...`);
     
-    onProgress?.(`Found ${filteredFiles.length} files. Downloading content...`);
+    // Prepare data for pipeline
+    const projectName = `${owner}/${repo}`;
+    const projectRoot = '';
     
-    // Download file contents
-    const fileContents = new Map<string, string>();
-    let processedFiles = 0;
+    // The pipeline now receives ALL paths (files + directories)
+    // Filtering will happen during parsing, not here
+    const filePaths = structure.allPaths;
+    const fileContents = structure.fileContents;
+
+    onProgress?.('Generating knowledge graph...');
+
+    // Create worker and process
+    const worker = await getIngestionWorker();
     
-    for (const file of filteredFiles) {
-      try {
-        const content = await this.githubService.getFileContent(owner, repo, file.path);
-        if (content && content.length <= 1000000) { // Skip files larger than 1MB
-          fileContents.set(file.path, content);
-        }
-        processedFiles++;
-        
-        if (processedFiles % 10 === 0) {
-          onProgress?.(`Downloaded ${processedFiles}/${filteredFiles.length} files...`);
-        }
-      } catch (error) {
-        console.warn(`Failed to download ${file.path}:`, error);
+    try {
+      const result = await worker.processRepository({
+        projectName,
+        projectRoot,
+        filePaths,
+        fileContents: fileContents
+      });
+
+      if (!result.success) {
+        throw new Error(result.error || 'Processing failed');
+      }
+
+      return {
+        graph: result.graph!,
+        fileContents
+      };
+    } finally {
+      // Clean up worker
+      if ('terminate' in worker) {
+        (worker as { terminate: () => void }).terminate();
       }
     }
-
-    onProgress?.('Processing files with knowledge graph engine...');
-    
-    // Process with ingestion worker
-    const graph = await this.processWithWorker(
-      fileContents,
-      `${owner}/${repo}`,
-      Array.from(fileContents.keys()),
-      onProgress
-    );
-
-    return { graph, fileContents };
   }
 
   async processZipFile(
     file: File,
     options: IngestionOptions = {}
   ): Promise<IngestionResult> {
-    const { directoryFilter, fileExtensions, onProgress } = options;
+    const { onProgress } = options;
 
-    onProgress?.('Extracting ZIP file...');
-    
-    // Extract ZIP contents
-    const allFileContents = await this.zipService.extractTextFiles(file);
-    
-    // Filter files based on options
-    const filteredFileContents = new Map<string, string>();
-    const allPaths = Array.from(allFileContents.keys());
-    const filteredPaths = this.filterPaths(allPaths, directoryFilter, fileExtensions);
-    
-    filteredPaths.forEach(path => {
-      const content = allFileContents.get(path);
-      if (content) {
-        filteredFileContents.set(path, content);
-      }
-    });
+    onProgress?.('Discovering complete ZIP structure...');
 
-    onProgress?.(`Extracted ${filteredFileContents.size} files. Processing...`);
+    // Get complete ZIP structure (all paths + file contents)
+    const structure: CompleteZipStructure = await this.zipService.extractCompleteStructure(file);
     
-    // Process with ingestion worker
-    const projectName = file.name.replace(/\.zip$/i, '');
-    const graph = await this.processWithWorker(
-      filteredFileContents,
-      projectName,
-      Array.from(filteredFileContents.keys()),
-      onProgress
-    );
+    // Normalize ZIP paths to remove common top-level folder
+    const normalizedStructure = this.normalizeZipPaths(structure);
+    
+    onProgress?.(`Discovered ${normalizedStructure.allPaths.length} paths, ${normalizedStructure.fileContents.size} files. Processing...`);
 
-    return { graph, fileContents: filteredFileContents };
-  }
+    // Prepare data for pipeline
+    const projectName = file.name.replace('.zip', '');
+    const projectRoot = '';
+    
+    // The pipeline now receives ALL paths (files + directories)
+    // Filtering will happen during parsing, not here
+    const filePaths = normalizedStructure.allPaths;
+    const fileContents = normalizedStructure.fileContents;
 
-  private async processWithWorker(
-    fileContents: Map<string, string>,
-    projectName: string,
-    filePaths: string[],
-    onProgress?: (message: string) => void
-  ): Promise<KnowledgeGraph> {
-    const worker = getIngestionWorker();
+    onProgress?.('Generating knowledge graph...');
+
+    // Create worker and process
+    const worker = await getIngestionWorker();
     
     try {
-      await worker.initialize();
-      
-      // Set up progress callback
-      await worker.setProgressCallback((progress: IngestionProgress) => {
-        onProgress?.(progress.message);
-      });
-
-      onProgress?.('Building knowledge graph...');
-      
-      // Process repository
       const result = await worker.processRepository({
-        projectRoot: '/',
         projectName,
+        projectRoot,
         filePaths,
-        fileContents
+        fileContents: fileContents
       });
 
-      if (!result.success || !result.graph) {
-        throw new Error(result.error || 'Failed to process repository');
+      if (!result.success) {
+        throw new Error(result.error || 'Processing failed');
       }
 
-      return result.graph;
-    } catch (error) {
-      throw new Error(`Processing failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      return {
+        graph: result.graph!,
+        fileContents
+      };
+    } finally {
+      // Clean up worker
+      if ('terminate' in worker) {
+        (worker as { terminate: () => void }).terminate();
+      }
     }
   }
 
-  private filterFiles(files: any[], directoryFilter?: string, fileExtensions?: string): any[] {
-    let filtered = files;
-
-    // Filter by directory
-    if (directoryFilter?.trim()) {
-      const dirPatterns = directoryFilter.toLowerCase().split(',').map(p => p.trim());
-      filtered = filtered.filter(file => 
-        dirPatterns.some(pattern => file.path.toLowerCase().includes(pattern))
-      );
+  private normalizeZipPaths(structure: CompleteZipStructure): CompleteZipStructure {
+    const paths = structure.allPaths;
+    
+    if (paths.length === 0) {
+      return structure;
     }
 
-    // Filter by file extensions
-    if (fileExtensions?.trim()) {
-      const extensions = fileExtensions.toLowerCase().split(',').map(ext => ext.trim());
-      filtered = filtered.filter(file => 
-        extensions.some(ext => file.path.toLowerCase().endsWith(ext))
-      );
+    // Find common prefix to remove (usually the top-level folder)
+    const firstPath = paths[0];
+    const pathParts = firstPath.split('/');
+    
+    if (pathParts.length <= 1) {
+      return structure; // No normalization needed
     }
 
-    return filtered;
-  }
-
-  private filterPaths(paths: string[], directoryFilter?: string, fileExtensions?: string): string[] {
-    let filtered = paths;
-
-    // Filter by directory
-    if (directoryFilter?.trim()) {
-      const dirPatterns = directoryFilter.toLowerCase().split(',').map(p => p.trim());
-      filtered = filtered.filter(path => 
-        dirPatterns.some(pattern => path.toLowerCase().includes(pattern))
-      );
+    // Check if all paths start with the same top-level folder
+    const potentialPrefix = pathParts[0] + '/';
+    const allHaveSamePrefix = paths.every(path => path.startsWith(potentialPrefix));
+    
+    if (!allHaveSamePrefix) {
+      return structure; // No common prefix to remove
     }
 
-    // Filter by file extensions
-    if (fileExtensions?.trim()) {
-      const extensions = fileExtensions.toLowerCase().split(',').map(ext => ext.trim());
-      filtered = filtered.filter(path => 
-        extensions.some(ext => path.toLowerCase().endsWith(ext))
-      );
+    console.log(`Normalizing ZIP paths: removing common prefix "${potentialPrefix}"`);
+
+    // Remove the common prefix from all paths
+    const normalizedPaths = paths.map(path => {
+      const withoutPrefix = path.substring(potentialPrefix.length);
+      return withoutPrefix || path; // Keep original if normalization would result in empty string
+    }).filter(path => path.length > 0); // Remove empty paths
+
+    // Normalize file contents map
+    const normalizedContents = new Map<string, string>();
+    for (const [originalPath, content] of structure.fileContents) {
+      const normalizedPath = originalPath.startsWith(potentialPrefix) 
+        ? originalPath.substring(potentialPrefix.length)
+        : originalPath;
+      
+      if (normalizedPath) {
+        normalizedContents.set(normalizedPath, content);
+      }
     }
 
-    return filtered;
+    return {
+      allPaths: normalizedPaths,
+      fileContents: normalizedContents
+    };
   }
 } 

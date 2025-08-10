@@ -1,0 +1,455 @@
+import type { KnowledgeGraph, GraphRelationship } from '../graph/types.ts';
+import type { ParsedAST } from './parsing-processor.ts';
+import Parser from 'web-tree-sitter';
+
+// Simple path utilities for browser compatibility
+const pathUtils = {
+  extname: (filePath: string): string => {
+    const lastDot = filePath.lastIndexOf('.');
+    return lastDot === -1 ? '' : filePath.substring(lastDot);
+  },
+  dirname: (filePath: string): string => {
+    const lastSlash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+    return lastSlash === -1 ? '.' : filePath.substring(0, lastSlash);
+  },
+  resolve: (basePath: string, relativePath: string): string => {
+    // Simple relative path resolution
+    if (relativePath.startsWith('./')) {
+      return basePath + '/' + relativePath.substring(2);
+    } else if (relativePath.startsWith('../')) {
+      const parts = basePath.split('/');
+      const relativeParts = relativePath.split('/');
+      let upCount = 0;
+      for (const part of relativeParts) {
+        if (part === '..') upCount++;
+        else break;
+      }
+      const resultParts = parts.slice(0, -upCount);
+      const remainingParts = relativeParts.slice(upCount);
+      return [...resultParts, ...remainingParts].join('/');
+    }
+    return basePath + '/' + relativePath;
+  },
+  join: (...parts: string[]): string => {
+    return parts.join('/').replace(/\/+/g, '/');
+  }
+};
+
+interface ImportMap {
+  [importingFile: string]: {
+    [localName: string]: {
+      targetFile: string;
+      exportedName: string;
+      importType: 'default' | 'named' | 'namespace' | 'dynamic';
+    }
+  }
+}
+
+interface ImportInfo {
+  importingFile: string;
+  localName: string;
+  targetFile: string;
+  exportedName: string;
+  importType: 'default' | 'named' | 'namespace' | 'dynamic';
+}
+
+export class ImportProcessor {
+  private importMap: ImportMap = {};
+  private projectFiles: Set<string> = new Set();
+
+  /**
+   * Process all imports after parsing is complete
+   * @param graph The knowledge graph being built
+   * @param astMap Map of file paths to their parsed ASTs
+   * @param fileContents Map of file contents
+   * @returns Updated graph with import relationships
+   */
+  async process(
+    graph: KnowledgeGraph, 
+    astMap: Map<string, ParsedAST>,
+    fileContents: Map<string, string>
+  ): Promise<KnowledgeGraph> {
+    console.log('ImportProcessor: Starting import resolution...');
+    
+    // Build set of all project files for validation
+    this.projectFiles = new Set(fileContents.keys());
+    
+    // Clear previous import map
+    this.importMap = {};
+    
+    // Process imports for each file
+    for (const [filePath, ast] of astMap) {
+      await this.processFileImports(filePath, ast, graph);
+    }
+    
+    console.log('ImportProcessor: Completed import resolution');
+    console.log(`ImportProcessor: Built import map for ${Object.keys(this.importMap).length} files`);
+    
+    return graph;
+  }
+
+  /**
+   * Process imports for a single file
+   */
+  private async processFileImports(
+    filePath: string, 
+    ast: ParsedAST, 
+    graph: KnowledgeGraph
+  ): Promise<void> {
+    if (!ast.tree) return;
+
+    const imports = this.extractImports(ast.tree.rootNode, filePath);
+    
+    if (imports.length === 0) return;
+
+    // Initialize import map for this file
+    this.importMap[filePath] = {};
+
+    for (const importInfo of imports) {
+      // Store in import map
+      this.importMap[filePath][importInfo.localName] = {
+        targetFile: importInfo.targetFile,
+        exportedName: importInfo.exportedName,
+        importType: importInfo.importType
+      };
+
+      // Create IMPORTS relationship in graph
+      this.createImportRelationship(graph, importInfo);
+    }
+  }
+
+  /**
+   * Extract import statements from AST
+   */
+  private extractImports(rootNode: Parser.SyntaxNode, filePath: string): ImportInfo[] {
+    const imports: ImportInfo[] = [];
+    const language = this.detectLanguage(filePath);
+
+    if (language === 'python') {
+      this.extractPythonImports(rootNode, filePath, imports);
+    } else if (language === 'javascript' || language === 'typescript') {
+      this.extractJSImports(rootNode, filePath, imports);
+    }
+
+    return imports;
+  }
+
+  /**
+   * Extract Python imports
+   */
+  private extractPythonImports(
+    node: Parser.SyntaxNode, 
+    filePath: string, 
+    imports: ImportInfo[]
+  ): void {
+    if (node.type === 'import_statement') {
+      // Handle: import module
+      // Handle: import module as alias
+      const moduleNode = node.childForFieldName('name');
+      if (moduleNode) {
+        const moduleName = moduleNode.text;
+        const targetFile = this.resolveModulePath(moduleName, filePath, 'python');
+        
+        imports.push({
+          importingFile: filePath,
+          localName: moduleName.split('.').pop() || moduleName,
+          targetFile,
+          exportedName: moduleName,
+          importType: 'namespace'
+        });
+      }
+    } else if (node.type === 'import_from_statement') {
+      // Handle: from module import name
+      // Handle: from module import name as alias
+      const moduleNode = node.childForFieldName('module_name');
+      const namesNode = node.childForFieldName('name');
+      
+      if (moduleNode && namesNode) {
+        const moduleName = moduleNode.text;
+        const targetFile = this.resolveModulePath(moduleName, filePath, 'python');
+        
+        // Handle multiple imports: from module import a, b, c
+        if (namesNode.type === 'import_list') {
+          for (let i = 0; i < namesNode.childCount; i++) {
+            const nameNode = namesNode.child(i);
+            if (nameNode && nameNode.type === 'import_from_statement') {
+              const importName = nameNode.text;
+              imports.push({
+                importingFile: filePath,
+                localName: importName,
+                targetFile,
+                exportedName: importName,
+                importType: 'named'
+              });
+            }
+          }
+        } else {
+          const importName = namesNode.text;
+          imports.push({
+            importingFile: filePath,
+            localName: importName,
+            targetFile,
+            exportedName: importName,
+            importType: 'named'
+          });
+        }
+      }
+    }
+
+    // Recursively process children
+    for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i);
+      if (child) {
+        this.extractPythonImports(child, filePath, imports);
+      }
+    }
+  }
+
+  /**
+   * Extract JavaScript/TypeScript imports
+   */
+  private extractJSImports(
+    node: Parser.SyntaxNode, 
+    filePath: string, 
+    imports: ImportInfo[]
+  ): void {
+    if (node.type === 'import_statement') {
+      const sourceNode = node.childForFieldName('source');
+      if (!sourceNode) return;
+
+      const sourcePath = sourceNode.text.replace(/['"]/g, '');
+      const targetFile = this.resolveModulePath(sourcePath, filePath, 'javascript');
+
+      // Handle different import patterns
+      const importClauseNode = node.childForFieldName('import_clause');
+      if (importClauseNode) {
+        this.processJSImportClause(importClauseNode, filePath, targetFile, imports);
+      }
+    } else if (node.type === 'variable_declaration') {
+      // Handle CommonJS: const x = require('module')
+      this.processRequireStatement(node, filePath, imports);
+    }
+
+    // Recursively process children
+    for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i);
+      if (child) {
+        this.extractJSImports(child, filePath, imports);
+      }
+    }
+  }
+
+  /**
+   * Process JS import clause (handles named, default, namespace imports)
+   */
+  private processJSImportClause(
+    importClauseNode: Parser.SyntaxNode,
+    filePath: string,
+    targetFile: string,
+    imports: ImportInfo[]
+  ): void {
+    for (let i = 0; i < importClauseNode.childCount; i++) {
+      const child = importClauseNode.child(i);
+      if (!child) continue;
+
+      if (child.type === 'import_specifier') {
+        // Named import: { name } or { name as alias }
+        const nameNode = child.childForFieldName('name');
+        const aliasNode = child.childForFieldName('alias');
+        
+        if (nameNode) {
+          const exportedName = nameNode.text;
+          const localName = aliasNode ? aliasNode.text : exportedName;
+          
+          imports.push({
+            importingFile: filePath,
+            localName,
+            targetFile,
+            exportedName,
+            importType: 'named'
+          });
+        }
+      } else if (child.type === 'namespace_import') {
+        // Namespace import: * as name
+        const nameNode = child.childForFieldName('name');
+        if (nameNode) {
+          imports.push({
+            importingFile: filePath,
+            localName: nameNode.text,
+            targetFile,
+            exportedName: '*',
+            importType: 'namespace'
+          });
+        }
+      } else if (child.type === 'identifier') {
+        // Default import
+        imports.push({
+          importingFile: filePath,
+          localName: child.text,
+          targetFile,
+          exportedName: 'default',
+          importType: 'default'
+        });
+      }
+    }
+  }
+
+  /**
+   * Process CommonJS require statements
+   */
+  private processRequireStatement(
+    node: Parser.SyntaxNode,
+    filePath: string,
+    imports: ImportInfo[]
+  ): void {
+    // Look for: const x = require('module')
+    const declaratorNode = node.child(1); // variable_declarator
+    if (!declaratorNode) return;
+
+    const nameNode = declaratorNode.childForFieldName('name');
+    const valueNode = declaratorNode.childForFieldName('value');
+
+    if (nameNode && valueNode && valueNode.type === 'call_expression') {
+      const functionNode = valueNode.childForFieldName('function');
+      const argumentsNode = valueNode.childForFieldName('arguments');
+
+      if (functionNode?.text === 'require' && argumentsNode) {
+        const firstArg = argumentsNode.child(1); // Skip opening paren
+        if (firstArg && firstArg.type === 'string') {
+          const modulePath = firstArg.text.replace(/['"]/g, '');
+          const targetFile = this.resolveModulePath(modulePath, filePath, 'javascript');
+
+          imports.push({
+            importingFile: filePath,
+            localName: nameNode.text,
+            targetFile,
+            exportedName: 'default',
+            importType: 'dynamic'
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * Resolve module path to actual file path
+   */
+  private resolveModulePath(moduleName: string, importingFile: string, language: 'python' | 'javascript'): string {
+    // Handle relative imports
+    if (moduleName.startsWith('.')) {
+      const importingDir = pathUtils.dirname(importingFile);
+      const resolvedPath = pathUtils.resolve(importingDir, moduleName);
+      
+      // Try different extensions
+      const extensions = language === 'python' ? ['.py'] : ['.js', '.ts', '.tsx', '.jsx'];
+      
+      for (const ext of extensions) {
+        const candidate = resolvedPath + ext;
+        if (this.projectFiles.has(candidate)) {
+          return candidate;
+        }
+      }
+      
+      // Try index files
+      for (const ext of extensions) {
+        const indexCandidate = pathUtils.join(resolvedPath, `index${ext}`);
+        if (this.projectFiles.has(indexCandidate)) {
+          return indexCandidate;
+        }
+      }
+      
+      return resolvedPath; // Return even if not found, for external modules
+    }
+
+    // Handle absolute/package imports
+    if (language === 'python') {
+      // Convert Python module notation to file path
+      const pythonPath = moduleName.replace(/\./g, '/') + '.py';
+      if (this.projectFiles.has(pythonPath)) {
+        return pythonPath;
+      }
+      // Try with __init__.py
+      const initPath = moduleName.replace(/\./g, '/') + '/__init__.py';
+      if (this.projectFiles.has(initPath)) {
+        return initPath;
+      }
+    }
+
+    // For external modules or unresolved, return as-is
+    return moduleName;
+  }
+
+  /**
+   * Create IMPORTS relationship in the graph
+   */
+  private createImportRelationship(graph: KnowledgeGraph, importInfo: ImportInfo): void {
+    // Find source and target nodes
+    const sourceNode = graph.nodes.find(n => 
+      n.label === 'File' && n.properties.filePath === importInfo.importingFile
+    );
+    
+    const targetNode = graph.nodes.find(n => 
+      n.label === 'File' && n.properties.filePath === importInfo.targetFile
+    );
+
+    if (sourceNode && targetNode && sourceNode.id !== targetNode.id) {
+      // Check if relationship already exists
+      const existingRel = graph.relationships.find(r =>
+        r.type === 'IMPORTS' &&
+        r.source === sourceNode.id &&
+        r.target === targetNode.id
+      );
+
+      if (!existingRel) {
+        const relationship: GraphRelationship = {
+          id: `imports_${sourceNode.id}_${targetNode.id}_${Date.now()}`,
+          type: 'IMPORTS',
+          source: sourceNode.id,
+          target: targetNode.id,
+          properties: {
+            importType: importInfo.importType,
+            localName: importInfo.localName,
+            exportedName: importInfo.exportedName
+          }
+        };
+
+        graph.relationships.push(relationship);
+      }
+    }
+  }
+
+  /**
+   * Detect programming language from file extension
+   */
+  private detectLanguage(filePath: string): 'python' | 'javascript' | 'typescript' {
+    const ext = pathUtils.extname(filePath).toLowerCase();
+    
+    if (ext === '.py') return 'python';
+    if (ext === '.ts' || ext === '.tsx') return 'typescript';
+    return 'javascript'; // .js, .jsx, or default
+  }
+
+  /**
+   * Get the complete import map for use by CallProcessor
+   */
+  getImportMap(): ImportMap {
+    return this.importMap;
+  }
+
+  /**
+   * Get import info for a specific file and local name
+   */
+  getImportInfo(filePath: string, localName: string): ImportMap[string][string] | null {
+    return this.importMap[filePath]?.[localName] || null;
+  }
+
+  /**
+   * Clear all data
+   */
+  clear(): void {
+    this.importMap = {};
+    this.projectFiles.clear();
+  }
+}
+
+export type { ImportMap, ImportInfo }; 

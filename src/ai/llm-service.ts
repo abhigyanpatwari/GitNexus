@@ -4,6 +4,7 @@ import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import type { BaseMessage } from '@langchain/core/messages';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { HumanMessage } from '@langchain/core/messages';
 
 export type LLMProvider = 'openai' | 'azure-openai' | 'anthropic' | 'gemini';
 
@@ -53,7 +54,7 @@ export class LLMService {
   /**
    * Initialize or get a chat model for the specified provider
    */
-  public getChatModel(config: LLMConfig): BaseChatModel {
+  public getChatModel(config: LLMConfig): any {
     const cacheKey = this.getCacheKey(config);
     
     if (this.models.has(cacheKey)) {
@@ -229,16 +230,12 @@ export class LLMService {
       const model = this.createChatModel(config);
       
       // Send a simple test message
-      const testMessages = [{
-        role: 'user' as const,
-        content: 'Hello, this is a connection test. Please respond with "OK".'
-      }];
-
-      const response = await model.invoke(testMessages);
+      const testMessages = [
+        new HumanMessage("Test connection")
+      ];
       
-      return {
-        success: true
-      };
+      await model.invoke(testMessages);
+      return { success: true };
     } catch (error) {
       return {
         success: false,
@@ -257,7 +254,7 @@ export class LLMService {
   /**
    * Create a chat model instance based on the provider
    */
-  private createChatModel(config: LLMConfig): BaseChatModel {
+  private createChatModel(config: LLMConfig): any {
     const mergedConfig = { ...this.defaultConfig, ...config };
     const model = mergedConfig.model || LLMService.DEFAULT_MODELS[config.provider];
 
@@ -287,12 +284,10 @@ export class LLMService {
 
       case 'anthropic':
         return new ChatAnthropic({
-          apiKey: config.apiKey,
-          model,
-          temperature: mergedConfig.temperature,
-          maxTokens: mergedConfig.maxTokens,
-          maxRetries: mergedConfig.maxRetries,
-          timeout: 30000
+          model: config.model || 'claude-3-sonnet-20240229',
+          anthropicApiKey: config.apiKey,
+          maxTokens: config.maxTokens || 4096,
+          temperature: config.temperature || 0.7
         });
 
       case 'gemini':

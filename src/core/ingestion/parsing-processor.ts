@@ -1,12 +1,19 @@
 import type { KnowledgeGraph, GraphNode, GraphRelationship } from '../graph/types.ts';
-import { initTreeSitter, loadPythonParser } from '../tree-sitter/parser-loader.ts';
+import { initTreeSitter } from '../tree-sitter/parser-loader.ts';
 import { generateId } from '../../lib/utils.ts';
+import { FunctionRegistryTrie } from '../graph/trie.ts';
 
 import type Parser from 'web-tree-sitter';
+// Add JS/TS loaders
+import { loadJavaScriptParser, loadTypeScriptParser, loadTsxParser } from '../tree-sitter/parser-loader.ts';
 
 export interface ParsingInput {
   filePaths: string[];
   fileContents: Map<string, string>;
+  options?: {
+    directoryFilter?: string;
+    fileExtensions?: string;
+  };
 }
 
 interface ParsedDefinition {
@@ -19,20 +26,108 @@ interface ParsedDefinition {
   baseClasses?: string[];
 }
 
+export interface ParsedAST {
+  tree: Parser.Tree | null;
+  language: string;
+}
+
 export class ParsingProcessor {
   private parser: Parser | null = null;
   private astCache: Map<string, Parser.Tree> = new Map();
+  private langPython: Parser.Language | null = null;
+  private langJavaScript: Parser.Language | null = null;
+  private langTypeScript: Parser.Language | null = null;
+  private langTsx: Parser.Language | null = null;
+  private functionTrie: FunctionRegistryTrie = new FunctionRegistryTrie();
+
+  // Comprehensive ignore patterns for directories that should not be parsed
+  private static readonly IGNORE_PATTERNS = new Set([
+    // Version Control
+    '.git',
+    '.svn',
+    '.hg',
+    
+    // Package Managers & Dependencies
+    'node_modules',
+    'bower_components',
+    'jspm_packages',
+    'vendor',
+    'deps',
+    
+    // Python Virtual Environments & Cache
+    'venv',
+    'env',
+    '.venv',
+    '.env',
+    'envs',
+    'virtualenv',
+    '__pycache__',
+    '.pytest_cache',
+    '.mypy_cache',
+    '.tox',
+    
+    // Build & Distribution Directories
+    'build',
+    'dist',
+    'out',
+    'target',
+    'bin',
+    'obj',
+    '.gradle',
+    '_build',
+    
+    // IDE & Editor Directories
+    '.vs',
+    '.vscode',
+    '.idea',
+    '.eclipse',
+    '.settings',
+    
+    // Temporary & Log Directories
+    'tmp',
+    '.tmp',
+    'temp',
+    'logs',
+    'log',
+    
+    // Coverage & Testing
+    'coverage',
+    '.coverage',
+    'htmlcov',
+    '.nyc_output',
+    
+    // OS & System
+    '.DS_Store',
+    'Thumbs.db',
+    
+    // Documentation Build Output
+    '_site',
+    '.docusaurus',
+    
+    // Cache Directories
+    '.cache',
+    '.parcel-cache',
+    '.next',
+    '.nuxt'
+  ]);
 
   public async process(graph: KnowledgeGraph, input: ParsingInput): Promise<void> {
-    const { filePaths, fileContents } = input;
+    const { filePaths, fileContents, options } = input;
 
-    console.log('ParsingProcessor: Processing', filePaths.length, 'files');
+    console.log(`ParsingProcessor: Processing ${filePaths.length} total paths`);
+
+    // Apply filtering based on user options (this is where filtering now happens!)
+    const filteredFiles = this.applyFiltering(filePaths, fileContents, options);
+    
+    console.log(`ParsingProcessor: After filtering: ${filteredFiles.length} files to parse`);
 
     // Memory optimization: Process files in batches to prevent OOM
-    const BATCH_SIZE = 10; // Process 10 files at a time
-    const sourceFiles = filePaths.filter(path => this.isSourceFile(path));
+    const BATCH_SIZE = 10;
+    const sourceFiles = filteredFiles.filter((path: string) => this.isSourceFile(path));
+    const configFiles = filteredFiles.filter((path: string) => this.isConfigFile(path));
+    const allProcessableFiles = [...sourceFiles, ...configFiles];
     
-    console.log(`ParsingProcessor: Found ${sourceFiles.length} source files, processing in batches of ${BATCH_SIZE}`);
+    console.log(`ParsingProcessor: Found ${sourceFiles.length} source files and ${configFiles.length} config files, processing in batches of ${BATCH_SIZE}`);
 
     // Enable tree-sitter parsing once WASM files are available
     try {
@@ -42,14 +137,14 @@ export class ParsingProcessor {
       let failedToParse = 0;
       
       // Process files in batches
-      for (let i = 0; i < sourceFiles.length; i += BATCH_SIZE) {
-        const batch = sourceFiles.slice(i, i + BATCH_SIZE);
-        console.log(`Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(sourceFiles.length / BATCH_SIZE)} (${batch.length} files)`);
+      for (let i = 0; i < allProcessableFiles.length; i += BATCH_SIZE) {
+        const batch = allProcessableFiles.slice(i, i + BATCH_SIZE);
+        console.log(`Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(allProcessableFiles.length / BATCH_SIZE)} (${batch.length} files)`);
         
         for (const filePath of batch) {
           const fileContent = fileContents.get(filePath);
           if (!fileContent) {
-            console.warn(`No content found for source file: ${filePath}`);
+            console.warn(`No content found for file: ${filePath}`);
             continue;
           }
 
@@ -60,7 +155,13 @@ export class ParsingProcessor {
           }
 
           try {
-            const definitions = this.parseFile(filePath, fileContent);
+            let definitions: ParsedDefinition[] = [];
+            
+            if (this.isSourceFile(filePath)) {
+              definitions = this.parseFile(filePath, fileContent);
+            } else if (this.isConfigFile(filePath)) {
+              definitions = this.parseConfigFile(filePath, fileContent);
+            }
             
             // Find the existing file node created by StructureProcessor
             const existingFileNode = graph.nodes.find(node => 
@@ -200,17 +301,128 @@ export class ParsingProcessor {
     console.log('ParsingProcessor: Created', graph.nodes.filter(n => n.label === 'File').length, 'file nodes');
   }
 
+  /**
+   * Apply user filtering options to determine which files should be parsed
+   * This is where filtering now happens - during parsing, not before structure discovery
+   */
+  private applyFiltering(
+    allPaths: string[], 
+    fileContents: Map<string, string>, 
+    options?: { directoryFilter?: string; fileExtensions?: string }
+  ): string[] {
+    // Only consider files that have content (not directories)
+    let filesToProcess = allPaths.filter(path => fileContents.has(path));
+    
+    console.log(`ParsingProcessor: Starting with ${filesToProcess.length} files with content`);
+    
+    // STAGE 1: Prune ignored directories (NEW - Two-stage filtering)
+    const beforePruning = filesToProcess.length;
+    filesToProcess = this.pruneIgnoredPaths(filesToProcess);
+    console.log(`ParsingProcessor: After pruning ignored directories: ${beforePruning} -> ${filesToProcess.length} files`);
+    
+    if (!options) {
+      return filesToProcess;
+    }
+
+    // STAGE 2: Apply user filters (EXISTING)
+    // Apply directory filtering
+    if (options.directoryFilter?.trim()) {
+      const dirPatterns = options.directoryFilter.toLowerCase().split(',').map(p => p.trim());
+      const beforeCount = filesToProcess.length;
+      
+      filesToProcess = filesToProcess.filter(path => 
+        dirPatterns.some(pattern => path.toLowerCase().includes(pattern))
+      );
+      
+      console.log(`ParsingProcessor: Directory filter applied: ${beforeCount} -> ${filesToProcess.length} files`);
+    }
+
+    // Apply file extension filtering
+    if (options.fileExtensions?.trim()) {
+      const extensions = options.fileExtensions.toLowerCase().split(',').map(ext => ext.trim());
+      const beforeCount = filesToProcess.length;
+      
+      filesToProcess = filesToProcess.filter(path => 
+        extensions.some(ext => path.toLowerCase().endsWith(ext))
+      );
+      
+      console.log(`ParsingProcessor: Extension filter applied: ${beforeCount} -> ${filesToProcess.length} files`);
+    }
+
+    return filesToProcess;
+  }
+
+  /**
+   * Prune paths that contain ignored directory segments
+   * This implements the intelligent filtering to avoid parsing massive directories
+   * like node_modules, .git, etc.
+   */
+  private pruneIgnoredPaths(filePaths: string[]): string[] {
+    return filePaths.filter(path => {
+      const pathSegments = path.split('/');
+      
+      // Check if any segment of the path matches an ignore pattern
+      const hasIgnoredSegment = pathSegments.some(segment => 
+        ParsingProcessor.IGNORE_PATTERNS.has(segment.toLowerCase())
+      );
+      
+      if (hasIgnoredSegment) {
+        console.log(`ParsingProcessor: Pruning ignored path: ${path}`);
+        return false;
+      }
+      
+      // Additional checks for pattern-based ignoring
+      return !this.matchesIgnorePatterns(path);
+    });
+  }
+
+  /**
+   * Check if a path matches additional ignore patterns beyond directory names
+   */
+  private matchesIgnorePatterns(path: string): boolean {
+    const lowerPath = path.toLowerCase();
+    
+    // Ignore Python egg-info directories
+    if (lowerPath.includes('.egg-info/')) {
+      return true;
+    }
+    
+    // Ignore site-packages directories (Python virtual environments)
+    if (lowerPath.includes('site-packages/')) {
+      return true;
+    }
+    
+    // Ignore hidden directories (except specific ones we want)
+    const pathParts = path.split('/');
+    for (const part of pathParts) {
+      if (part.startsWith('.') && !this.isImportantHiddenDirectory(part)) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  /**
+   * Check if a hidden directory is important and should not be ignored
+   */
+  private isImportantHiddenDirectory(dirName: string): boolean {
+    // Allow .github but still ignore .vscode (which is in main ignore patterns)
+    return dirName === '.github';
+  }
+
   private async initializeParser(): Promise<void> {
     if (this.parser) return;
 
     try {
       await initTreeSitter();
-      await loadPythonParser();
-      
       this.parser = await initTreeSitter();
-      const pythonLang = await loadPythonParser();
-      this.parser.setLanguage(pythonLang);
-      
+      // Eagerly try to load languages; missing WASMs will be tolerated
+      try { this.langPython = await (await import('../tree-sitter/parser-loader.ts')).loadPythonParser(); } catch (e) { console.debug('Python grammar not available:', e); }
+      try { this.langJavaScript = await loadJavaScriptParser(); } catch (e) { console.debug('JavaScript grammar not available:', e); }
+      try { this.langTypeScript = await loadTypeScriptParser(); } catch (e) { console.debug('TypeScript grammar not available:', e); }
+      try { this.langTsx = await loadTsxParser(); } catch (e) { console.debug('TSX grammar not available:', e); }
+      // Don't set a fixed language here; we'll set per-file below
       console.log('Tree-sitter parser initialized successfully');
     } catch (error) {
       console.error('Failed to initialize parser:', error);
@@ -220,18 +432,46 @@ export class ParsingProcessor {
 
   private parseFile(filePath: string, fileContent: string): ParsedDefinition[] {
     const extension = this.getFileExtension(filePath);
-    
+
+    // Select language and parse per file using cached languages
+    if (this.parser) {
+      try {
+        const lang = this.getCachedLanguageForExtension(extension);
+        if (lang) this.parser.setLanguage(lang);
+      } catch (e) {
+        console.warn(`Language set failed for ${filePath} (${extension}):`, e);
+      }
+    }
+
     if (extension === '.py') {
-      // Try Tree-sitter first, fallback to regex if it fails
       if (this.parser) {
         return this.parsePythonFile(filePath, fileContent);
       } else {
-        console.warn(`Tree-sitter not available for ${filePath}, using regex fallback`);
         return this.parsePythonFileRegex(filePath, fileContent);
       }
     }
-    
-    // Only Python files are processed now
+
+    if (extension === '.js' || extension === '.mjs' || extension === '.cjs' || extension === '.jsx') {
+      if (this.parser) {
+        return this.parseJavaScriptFile(filePath, fileContent);
+      }
+      return [];
+    }
+
+    if (extension === '.ts') {
+      if (this.parser) {
+        return this.parseTypeScriptFile(filePath, fileContent);
+      }
+      return [];
+    }
+
+    if (extension === '.tsx') {
+      if (this.parser) {
+        return this.parseTsxFile(filePath, fileContent);
+      }
+      return [];
+    }
+
     return [];
   }
 
@@ -410,14 +650,16 @@ export class ParsingProcessor {
       
       const definitions: ParsedDefinition[] = [];
       const rootNode = tree.rootNode;
-      const processedMethodNodes = new Set<Parser.SyntaxNode>();
+      const processedMethodNodes = new Set<string>(); // Use unique identifiers instead of node references
 
-      // First pass: identify all methods inside classes
+      // First pass: identify all methods inside classes and track their positions
       this.traverseNode(rootNode, (currentNode: Parser.SyntaxNode) => {
         if (currentNode.type === 'class_definition') {
           this.traverseNode(currentNode, (methodNode: Parser.SyntaxNode) => {
             if (methodNode.type === 'function_definition' && methodNode !== currentNode) {
-              processedMethodNodes.add(methodNode);
+              // Create unique identifier for this method node
+              const methodId = `${methodNode.startPosition.row}-${methodNode.startPosition.column}-${methodNode.endPosition.row}-${methodNode.endPosition.column}`;
+              processedMethodNodes.add(methodId);
             }
           });
         }
@@ -425,7 +667,14 @@ export class ParsingProcessor {
 
       // Second pass: process all definitions, skipping methods that will be handled as class methods
       this.traverseNode(rootNode, (currentNode: Parser.SyntaxNode) => {
-        if (currentNode.type === 'function_definition' && !processedMethodNodes.has(currentNode)) {
+        if (currentNode.type === 'function_definition') {
+          // Check if this function is actually a method inside a class
+          const nodeId = `${currentNode.startPosition.row}-${currentNode.startPosition.column}-${currentNode.endPosition.row}-${currentNode.endPosition.column}`;
+          if (processedMethodNodes.has(nodeId)) {
+            // Skip this - it's a method that will be processed as part of a class
+            return;
+          }
+          
           const nameNode = currentNode.childForFieldName('name');
           if (nameNode) {
             const decorators = this.extractDecorators(currentNode);
@@ -471,8 +720,28 @@ export class ParsingProcessor {
     const nodeLabel = definition.type === 'function' ? 'Function' : 
                      (definition.type === 'method' ? 'Method' : 'Class');
     
+    const nodeId = generateId(definition.type, `${filePath}:${definition.name}`);
+    
+    // Create qualified name for trie
+    const filePathParts = filePath.replace(/\.(py|js|ts|tsx|jsx)$/, '').split('/');
+    const qualifiedName = definition.parentClass 
+      ? `${filePathParts.join('.')}.${definition.parentClass}.${definition.name}`
+      : `${filePathParts.join('.')}.${definition.name}`;
+    
+    // Add to function registry trie
+    this.functionTrie.addDefinition({
+      nodeId,
+      qualifiedName,
+      filePath,
+      functionName: definition.name,
+      type: definition.type === 'class' ? 'class' : 
+            definition.type === 'method' ? 'method' : 'function',
+      startLine: definition.startLine,
+      endLine: definition.endLine
+    });
+    
     return {
-      id: generateId(definition.type, `${filePath}:${definition.name}`),
+      id: nodeId,
       label: nodeLabel as 'Function' | 'Method' | 'Class',
       properties: {
         name: definition.name,
@@ -584,74 +853,8 @@ export class ParsingProcessor {
     return baseMethod ? baseMethod.id : null;
   }
 
-  private createDefinitionRelationships(
-    graph: KnowledgeGraph,
-    filePath: string,
-    definitions: ParsedDefinition[]
-  ): void {
-    const fileNodeId = generateId('file', filePath);
-    
-    for (const definition of definitions) {
-      const defNodeId = generateId(definition.type, `${filePath}:${definition.name}`);
-      
-      const relationship: GraphRelationship = {
-        id: generateId('relationship', `${fileNodeId}-contains-${defNodeId}`),
-        source: fileNodeId,
-        target: defNodeId,
-        type: 'CONTAINS',
-        properties: {}
-      };
-      
-      graph.relationships.push(relationship);
-      
-      if (definition.type === 'method' && definition.parentClass) {
-        const classNodeId = generateId('class', `${filePath}:${definition.parentClass}`);
-        const methodRelationship: GraphRelationship = {
-          id: generateId('relationship', `${classNodeId}-has-method-${defNodeId}`),
-          source: classNodeId,
-          target: defNodeId,
-          type: 'CONTAINS',
-          properties: {}
-        };
-        
-        graph.relationships.push(methodRelationship);
-      }
-    }
-  }
-
-  private extractDefinitions(node: Parser.SyntaxNode): ParsedDefinition[] {
-    const definitions: ParsedDefinition[] = [];
-    
-    this.traverseNode(node, (currentNode: Parser.SyntaxNode) => {
-      if (currentNode.type === 'function_definition') {
-        const nameNode = currentNode.childForFieldName('name');
-        if (nameNode) {
-          definitions.push({
-            name: nameNode.text,
-            type: 'function',
-            startLine: currentNode.startPosition.row + 1,
-            endLine: currentNode.endPosition.row + 1
-          });
-        }
-      } else if (currentNode.type === 'class_definition') {
-        const nameNode = currentNode.childForFieldName('name');
-        if (nameNode) {
-          const className = nameNode.text;
-          definitions.push({
-            name: className,
-            type: 'class',
-            startLine: currentNode.startPosition.row + 1,
-            endLine: currentNode.endPosition.row + 1
-          });
-          
-          const methods = this.extractMethodsFromClass(currentNode, className);
-          definitions.push(...methods);
-        }
-      }
-    });
-    
-    return definitions;
-  }
+  // Remove unused methods to fix linter warnings
+  // private createDefinitionRelationships and extractDefinitions are not used
 
   private extractMethodsFromClass(classNode: Parser.SyntaxNode, className: string): ParsedDefinition[] {
     const methods: ParsedDefinition[] = [];
@@ -751,10 +954,128 @@ export class ParsingProcessor {
   }
 
   private isSourceFile(filePath: string): boolean {
-    // Only process Python source files
+    // Process Python source files and important Python files
     if (!filePath) return false;
+    const fileName = filePath.split('/').pop() || '';
+    
+    // Include __init__.py files as they're essential for Python packages
+    if (fileName === '__init__.py') return true;
+    
     const extension = this.getFileExtension(filePath).toLowerCase();
-    return extension === '.py';
+    const sourceExtensions = new Set(['.py', '.js', '.jsx', '.ts', '.tsx']);
+    return sourceExtensions.has(extension);
+  }
+
+  private isConfigFile(filePath: string): boolean {
+    if (!filePath) return false;
+    const fileName = filePath.split('/').pop() || '';
+    
+    const configFiles = new Set([
+      'package.json', 'tsconfig.json', 'tsconfig.base.json',
+      'vite.config.ts', 'vite.config.js',
+      '.eslintrc', '.eslintrc.json', '.eslintrc.js',
+      '.prettierrc', '.prettierrc.json',
+      'docker-compose.yml', 'docker-compose.yaml',
+      'dockerfile', 'Dockerfile',
+      '.env', '.env.example', '.env.local',
+      'pyproject.toml', 'setup.py', 'requirements.txt'
+    ]);
+    
+    return configFiles.has(fileName.toLowerCase());
+  }
+
+  private parseConfigFile(filePath: string, fileContent: string): ParsedDefinition[] {
+    const fileName = filePath.split('/').pop() || '';
+    const definitions: ParsedDefinition[] = [];
+    
+    try {
+      if (fileName === 'package.json') {
+        const packageJson = JSON.parse(fileContent);
+        
+        // Extract scripts as functions
+        if (packageJson.scripts) {
+          for (const [scriptName] of Object.entries(packageJson.scripts)) {
+            definitions.push({
+              name: scriptName,
+              type: 'function',
+              startLine: 1,
+              endLine: 1
+            });
+          }
+        }
+        
+        // Extract dependencies as metadata (could be used for import resolution)
+        const allDeps = {
+          ...packageJson.dependencies,
+          ...packageJson.devDependencies,
+          ...packageJson.peerDependencies
+        };
+        
+        for (const depName of Object.keys(allDeps)) {
+          definitions.push({
+            name: depName,
+            type: 'class', // Treat dependencies as classes for graph purposes
+            startLine: 1,
+            endLine: 1
+          });
+        }
+      }
+      
+      else if (fileName.startsWith('tsconfig')) {
+        const tsConfig = JSON.parse(fileContent);
+        
+        // Extract compiler options as configuration metadata
+        if (tsConfig.compilerOptions) {
+          definitions.push({
+            name: 'TypeScriptConfig',
+            type: 'class',
+            startLine: 1,
+            endLine: 1
+          });
+        }
+      }
+      
+      else if (fileName.toLowerCase().includes('docker')) {
+        // Parse Dockerfile for FROM, COPY, RUN commands
+        const lines = fileContent.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (line.startsWith('FROM ')) {
+            const baseImage = line.substring(5).trim();
+            definitions.push({
+              name: `FROM_${baseImage.replace(/[^a-zA-Z0-9]/g, '_')}`,
+              type: 'class',
+              startLine: i + 1,
+              endLine: i + 1
+            });
+          }
+        }
+      }
+      
+      else if (fileName.startsWith('.env')) {
+        // Parse environment variables
+        const lines = fileContent.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (line && !line.startsWith('#') && line.includes('=')) {
+            const [varName] = line.split('=');
+            if (varName) {
+              definitions.push({
+                name: varName.trim(),
+                type: 'function', // Treat env vars as functions for graph purposes
+                startLine: i + 1,
+                endLine: i + 1
+              });
+            }
+          }
+        }
+      }
+      
+    } catch (error) {
+      console.warn(`Failed to parse config file ${filePath}:`, error);
+    }
+    
+    return definitions;
   }
 
   private getFileExtension(filePath: string): string {
@@ -772,9 +1093,544 @@ export class ParsingProcessor {
       case '.pyx':
       case '.pyi':
         return 'python';
+      case '.js':
+      case '.mjs':
+      case '.cjs':
+      case '.jsx':
+        return 'javascript';
+      case '.ts':
+        return 'typescript';
+      case '.tsx':
+        return 'tsx';
       default:
         return 'unknown';
     }
+  }
+
+  private getCachedLanguageForExtension(extension: string): Parser.Language | null {
+    switch (extension) {
+      case '.py':
+        return this.langPython;
+      case '.js':
+      case '.mjs':
+      case '.cjs':
+      case '.jsx':
+        return this.langJavaScript;
+      case '.ts':
+        return this.langTypeScript;
+      case '.tsx':
+        return this.langTsx;
+      default:
+        return null;
+    }
+  }
+
+  private parseJavaScriptFile(filePath: string, fileContent: string): ParsedDefinition[] {
+    if (!this.parser) {
+      console.warn('Parser not initialized. Cannot parse JavaScript file:', filePath);
+      return this.parseJavaScriptFileRegex(filePath, fileContent);
+    }
+
+    try {
+      const tree = this.parser.parse(fileContent);
+      this.astCache.set(filePath, tree);
+      
+      const definitions: ParsedDefinition[] = [];
+      const rootNode = tree.rootNode;
+
+      this.traverseNode(rootNode, (node: Parser.SyntaxNode) => {
+        // Function declarations: function foo() {}
+        if (node.type === 'function_declaration') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) {
+            definitions.push({
+              name: nameNode.text,
+              type: 'function',
+              startLine: node.startPosition.row + 1,
+              endLine: node.endPosition.row + 1
+            });
+          }
+        }
+        
+        // Arrow functions and function expressions: const foo = () => {}
+        else if (node.type === 'variable_declarator') {
+          const nameNode = node.childForFieldName('name');
+          const valueNode = node.childForFieldName('value');
+          
+          if (nameNode && valueNode && 
+              (valueNode.type === 'arrow_function' || valueNode.type === 'function_expression')) {
+            definitions.push({
+              name: nameNode.text,
+              type: 'function',
+              startLine: node.startPosition.row + 1,
+              endLine: node.endPosition.row + 1
+            });
+          }
+        }
+        
+        // Class declarations: class Foo {}
+        else if (node.type === 'class_declaration') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) {
+            const className = nameNode.text;
+            
+            // Extract base class if extends clause exists
+            const baseClasses: string[] = [];
+            const superClassNode = node.childForFieldName('superclass');
+            if (superClassNode && superClassNode.type === 'identifier') {
+              baseClasses.push(superClassNode.text);
+            }
+            
+            definitions.push({
+              name: className,
+              type: 'class',
+              startLine: node.startPosition.row + 1,
+              endLine: node.endPosition.row + 1,
+              baseClasses: baseClasses.length > 0 ? baseClasses : undefined
+            });
+            
+            // Extract methods from class body
+            const methods = this.extractJSMethodsFromClass(node, className);
+            definitions.push(...methods);
+          }
+        }
+      });
+      
+      console.log(`Tree-sitter parsed ${definitions.length} JavaScript definitions from ${filePath}`);
+      return definitions;
+    } catch (error) {
+      console.error(`Error parsing JavaScript file ${filePath}:`, error);
+      console.log(`Falling back to regex parsing for ${filePath}`);
+      return this.parseJavaScriptFileRegex(filePath, fileContent);
+    }
+  }
+
+  private parseJavaScriptFileRegex(_filePath: string, fileContent: string): ParsedDefinition[] {
+    const definitions: ParsedDefinition[] = [];
+    const lines = fileContent.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const ln = i + 1;
+      // function foo(
+      const fnDecl = line.match(/\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/);
+      if (fnDecl) {
+        definitions.push({ name: fnDecl[1], type: 'function', startLine: ln, endLine: ln });
+        continue;
+      }
+      // const foo = (...) => or function expression
+      const constFn = line.match(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*(async\s*)?\(/);
+      if (constFn) {
+        definitions.push({ name: constFn[1], type: 'function', startLine: ln, endLine: ln });
+        continue;
+      }
+      // class Foo
+      const classDecl = line.match(/\bclass\s+([A-Za-z_$][\w$]*)\b/);
+      if (classDecl) {
+        definitions.push({ name: classDecl[1], type: 'class', startLine: ln, endLine: ln });
+      }
+    }
+    return definitions;
+  }
+
+  private extractJSMethodsFromClass(classNode: Parser.SyntaxNode, className: string): ParsedDefinition[] {
+    const methods: ParsedDefinition[] = [];
+    
+    // Find class body
+    const classBody = classNode.childForFieldName('body');
+    if (!classBody) return methods;
+    
+    this.traverseNode(classBody, (node: Parser.SyntaxNode) => {
+      if (node.type === 'method_definition') {
+        const nameNode = node.childForFieldName('name');
+        if (nameNode) {
+          methods.push({
+            name: nameNode.text,
+            type: 'method',
+            startLine: node.startPosition.row + 1,
+            endLine: node.endPosition.row + 1,
+            parentClass: className
+          });
+        }
+      }
+    });
+    
+    return methods;
+  }
+
+  private parseTypeScriptFile(filePath: string, fileContent: string): ParsedDefinition[] {
+    if (!this.parser) {
+      console.warn('Parser not initialized. Cannot parse TypeScript file:', filePath);
+      return this.parseTypeScriptFileRegex(filePath, fileContent);
+    }
+
+    try {
+      const tree = this.parser.parse(fileContent);
+      this.astCache.set(filePath, tree);
+      
+      const definitions: ParsedDefinition[] = [];
+      const rootNode = tree.rootNode;
+
+      this.traverseNode(rootNode, (node: Parser.SyntaxNode) => {
+        // Function declarations: function foo() {}
+        if (node.type === 'function_declaration') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) {
+            definitions.push({
+              name: nameNode.text,
+              type: 'function',
+              startLine: node.startPosition.row + 1,
+              endLine: node.endPosition.row + 1
+            });
+          }
+        }
+        
+        // Arrow functions and function expressions: const foo = () => {}
+        else if (node.type === 'variable_declarator') {
+          const nameNode = node.childForFieldName('name');
+          const valueNode = node.childForFieldName('value');
+          
+          if (nameNode && valueNode && 
+              (valueNode.type === 'arrow_function' || valueNode.type === 'function_expression')) {
+            definitions.push({
+              name: nameNode.text,
+              type: 'function',
+              startLine: node.startPosition.row + 1,
+              endLine: node.endPosition.row + 1
+            });
+          }
+        }
+        
+        // Class declarations: class Foo {}
+        else if (node.type === 'class_declaration') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) {
+            const className = nameNode.text;
+            
+            // Extract base class if extends clause exists
+            const baseClasses: string[] = [];
+            const superClassNode = node.childForFieldName('superclass');
+            if (superClassNode && superClassNode.type === 'identifier') {
+              baseClasses.push(superClassNode.text);
+            }
+            
+            definitions.push({
+              name: className,
+              type: 'class',
+              startLine: node.startPosition.row + 1,
+              endLine: node.endPosition.row + 1,
+              baseClasses: baseClasses.length > 0 ? baseClasses : undefined
+            });
+            
+            // Extract methods from class body
+            const methods = this.extractTSMethodsFromClass(node, className);
+            definitions.push(...methods);
+          }
+        }
+        
+        // Interface declarations: interface Foo {}
+        else if (node.type === 'interface_declaration') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) {
+            definitions.push({
+              name: nameNode.text,
+              type: 'class', // Treat interfaces as classes for graph purposes
+              startLine: node.startPosition.row + 1,
+              endLine: node.endPosition.row + 1
+            });
+          }
+        }
+        
+        // Type aliases: type Foo = string
+        else if (node.type === 'type_alias_declaration') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) {
+            definitions.push({
+              name: nameNode.text,
+              type: 'class', // Treat type aliases as classes for graph purposes
+              startLine: node.startPosition.row + 1,
+              endLine: node.endPosition.row + 1
+            });
+          }
+        }
+        
+        // Enum declarations: enum Foo {}
+        else if (node.type === 'enum_declaration') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) {
+            definitions.push({
+              name: nameNode.text,
+              type: 'class', // Treat enums as classes for graph purposes
+              startLine: node.startPosition.row + 1,
+              endLine: node.endPosition.row + 1
+            });
+          }
+        }
+      });
+      
+      console.log(`Tree-sitter parsed ${definitions.length} TypeScript definitions from ${filePath}`);
+      return definitions;
+    } catch (error) {
+      console.error(`Error parsing TypeScript file ${filePath}:`, error);
+      console.log(`Falling back to regex parsing for ${filePath}`);
+      return this.parseTypeScriptFileRegex(filePath, fileContent);
+    }
+  }
+
+  private parseTypeScriptFileRegex(_filePath: string, fileContent: string): ParsedDefinition[] {
+    // Fallback regex parsing for TypeScript
+    const definitions: ParsedDefinition[] = [];
+    const lines = fileContent.split('\n');
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const ln = i + 1;
+      
+      // function foo(
+      const fnDecl = line.match(/\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/);
+      if (fnDecl) {
+        definitions.push({ name: fnDecl[1], type: 'function', startLine: ln, endLine: ln });
+        continue;
+      }
+      
+      // const foo = (...) => or function expression
+      const constFn = line.match(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*(async\s*)?\(/);
+      if (constFn) {
+        definitions.push({ name: constFn[1], type: 'function', startLine: ln, endLine: ln });
+        continue;
+      }
+      
+      // class Foo
+      const classDecl = line.match(/\bclass\s+([A-Za-z_$][\w$]*)\b/);
+      if (classDecl) {
+        definitions.push({ name: classDecl[1], type: 'class', startLine: ln, endLine: ln });
+        continue;
+      }
+      
+      // interface Foo
+      const interfaceDecl = line.match(/\binterface\s+([A-Za-z_$][\w$]*)\b/);
+      if (interfaceDecl) {
+        definitions.push({ name: interfaceDecl[1], type: 'class', startLine: ln, endLine: ln });
+        continue;
+      }
+      
+      // type Foo =
+      const typeDecl = line.match(/\btype\s+([A-Za-z_$][\w$]*)\s*=/);
+      if (typeDecl) {
+        definitions.push({ name: typeDecl[1], type: 'class', startLine: ln, endLine: ln });
+        continue;
+      }
+      
+      // enum Foo
+      const enumDecl = line.match(/\benum\s+([A-Za-z_$][\w$]*)\b/);
+      if (enumDecl) {
+        definitions.push({ name: enumDecl[1], type: 'class', startLine: ln, endLine: ln });
+      }
+    }
+    
+    return definitions;
+  }
+
+  private extractTSMethodsFromClass(classNode: Parser.SyntaxNode, className: string): ParsedDefinition[] {
+    const methods: ParsedDefinition[] = [];
+    
+    // Find class body
+    const classBody = classNode.childForFieldName('body');
+    if (!classBody) return methods;
+    
+    this.traverseNode(classBody, (node: Parser.SyntaxNode) => {
+      if (node.type === 'method_definition' || node.type === 'method_signature') {
+        const nameNode = node.childForFieldName('name');
+        if (nameNode) {
+          methods.push({
+            name: nameNode.text,
+            type: 'method',
+            startLine: node.startPosition.row + 1,
+            endLine: node.endPosition.row + 1,
+            parentClass: className
+          });
+        }
+      }
+    });
+    
+    return methods;
+  }
+
+  private parseTsxFile(filePath: string, fileContent: string): ParsedDefinition[] {
+    if (!this.parser) {
+      console.warn('Parser not initialized. Cannot parse TSX file:', filePath);
+      return this.parseTsxFileRegex(fileContent);
+    }
+
+    try {
+      const tree = this.parser.parse(fileContent);
+      this.astCache.set(filePath, tree);
+      
+      const definitions: ParsedDefinition[] = [];
+      const rootNode = tree.rootNode;
+
+      this.traverseNode(rootNode, (node: Parser.SyntaxNode) => {
+        // Function declarations: function foo() {}
+        if (node.type === 'function_declaration') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) {
+            definitions.push({
+              name: nameNode.text,
+              type: 'function',
+              startLine: node.startPosition.row + 1,
+              endLine: node.endPosition.row + 1
+            });
+          }
+        }
+        
+        // Arrow functions and function expressions: const foo = () => {}
+        else if (node.type === 'variable_declarator') {
+          const nameNode = node.childForFieldName('name');
+          const valueNode = node.childForFieldName('value');
+          
+          if (nameNode && valueNode && 
+              (valueNode.type === 'arrow_function' || valueNode.type === 'function_expression')) {
+            definitions.push({
+              name: nameNode.text,
+              type: 'function',
+              startLine: node.startPosition.row + 1,
+              endLine: node.endPosition.row + 1
+            });
+          }
+        }
+        
+        // Class declarations: class Foo {}
+        else if (node.type === 'class_declaration') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) {
+            const className = nameNode.text;
+            
+            // Extract base class if extends clause exists
+            const baseClasses: string[] = [];
+            const superClassNode = node.childForFieldName('superclass');
+            if (superClassNode && superClassNode.type === 'identifier') {
+              baseClasses.push(superClassNode.text);
+            }
+            
+            definitions.push({
+              name: className,
+              type: 'class',
+              startLine: node.startPosition.row + 1,
+              endLine: node.endPosition.row + 1,
+              baseClasses: baseClasses.length > 0 ? baseClasses : undefined
+            });
+            
+            // Extract methods from class body
+            const methods = this.extractTSXMethodsFromClass(node, className);
+            definitions.push(...methods);
+          }
+        }
+        
+        // Interface declarations: interface Foo {}
+        else if (node.type === 'interface_declaration') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) {
+            definitions.push({
+              name: nameNode.text,
+              type: 'class',
+              startLine: node.startPosition.row + 1,
+              endLine: node.endPosition.row + 1
+            });
+          }
+        }
+        
+        // Type aliases: type Foo = string
+        else if (node.type === 'type_alias_declaration') {
+          const nameNode = node.childForFieldName('name');
+          if (nameNode) {
+            definitions.push({
+              name: nameNode.text,
+              type: 'class',
+              startLine: node.startPosition.row + 1,
+              endLine: node.endPosition.row + 1
+            });
+          }
+        }
+      });
+      
+      console.log(`Tree-sitter parsed ${definitions.length} TSX definitions from ${filePath}`);
+      return definitions;
+    } catch (error) {
+      console.error(`Error parsing TSX file ${filePath}:`, error);
+      console.log(`Falling back to regex parsing for ${filePath}`);
+      return this.parseTsxFileRegex(fileContent);
+    }
+  }
+
+  private parseTsxFileRegex(/* filePath: string, */ fileContent: string): ParsedDefinition[] {
+    // Fallback regex parsing for TSX (similar to TypeScript but with React components)
+    const definitions: ParsedDefinition[] = [];
+    const lines = fileContent.split('\n');
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const ln = i + 1;
+      
+      // function foo(
+      const fnDecl = line.match(/\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/);
+      if (fnDecl) {
+        definitions.push({ name: fnDecl[1], type: 'function', startLine: ln, endLine: ln });
+        continue;
+      }
+      
+      // const foo = (...) => or function expression (React components)
+      const constFn = line.match(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*(async\s*)?\(/);
+      if (constFn) {
+        definitions.push({ name: constFn[1], type: 'function', startLine: ln, endLine: ln });
+        continue;
+      }
+      
+      // class Foo
+      const classDecl = line.match(/\bclass\s+([A-Za-z_$][\w$]*)\b/);
+      if (classDecl) {
+        definitions.push({ name: classDecl[1], type: 'class', startLine: ln, endLine: ln });
+        continue;
+      }
+      
+      // interface Foo
+      const interfaceDecl = line.match(/\binterface\s+([A-Za-z_$][\w$]*)\b/);
+      if (interfaceDecl) {
+        definitions.push({ name: interfaceDecl[1], type: 'class', startLine: ln, endLine: ln });
+        continue;
+      }
+      
+      // type Foo =
+      const typeDecl = line.match(/\btype\s+([A-Za-z_$][\w$]*)\s*=/);
+      if (typeDecl) {
+        definitions.push({ name: typeDecl[1], type: 'class', startLine: ln, endLine: ln });
+      }
+    }
+    
+    return definitions;
+  }
+
+  private extractTSXMethodsFromClass(classNode: Parser.SyntaxNode, className: string): ParsedDefinition[] {
+    const methods: ParsedDefinition[] = [];
+    
+    // Find class body
+    const classBody = classNode.childForFieldName('body');
+    if (!classBody) return methods;
+    
+    this.traverseNode(classBody, (node: Parser.SyntaxNode) => {
+      if (node.type === 'method_definition' || node.type === 'method_signature') {
+        const nameNode = node.childForFieldName('name');
+        if (nameNode) {
+          methods.push({
+            name: nameNode.text,
+            type: 'method',
+            startLine: node.startPosition.row + 1,
+            endLine: node.endPosition.row + 1,
+            parentClass: className
+          });
+        }
+      }
+    });
+    
+    return methods;
   }
 
   public getAst(filePath: string): Parser.Tree | undefined {
@@ -783,5 +1639,39 @@ export class ParsingProcessor {
 
   public getCachedAsts(): Map<string, Parser.Tree> {
     return new Map(this.astCache);
+  }
+
+  public getASTMap(): Map<string, ParsedAST> {
+    const astMap = new Map<string, ParsedAST>();
+    
+    for (const [filePath, tree] of this.astCache) {
+      const language = this.detectLanguageFromPath(filePath);
+      astMap.set(filePath, {
+        tree,
+        language
+      });
+    }
+    
+    return astMap;
+  }
+
+  private detectLanguageFromPath(filePath: string): string {
+    const ext = filePath.split('.').pop()?.toLowerCase();
+    switch (ext) {
+      case 'py':
+        return 'python';
+      case 'ts':
+      case 'tsx':
+        return 'typescript';
+      case 'js':
+      case 'jsx':
+        return 'javascript';
+      default:
+        return 'unknown';
+    }
+  }
+
+  public getFunctionRegistry(): FunctionRegistryTrie {
+    return this.functionTrie;
   }
 } 

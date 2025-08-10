@@ -65,12 +65,14 @@ export class LangChainRAGOrchestrator {
     const systemMessage = this.buildSystemMessage();
 
     // Create the ReAct agent using LangGraph
-    this.agent = createReactAgent({
-      llm: llm,
-      tools: tools,
-      checkpointSaver: this.memory || undefined,
-      messageModifier: systemMessage
+    const graph = createReactAgent({
+      llm: llm as any,
+      tools: tools as any,
+      // Optional system message
+      messageModifier: systemMessage as any
     });
+    
+    this.agent = graph;
   }
 
   /**

@@ -6,6 +6,7 @@ import SourceViewer from '../components/graph/SourceViewer.tsx';
 import type { KnowledgeGraph } from '../../core/graph/types.ts';
 import { IngestionService } from '../../services/ingestion.service.ts';
 import { LLMService, type LLMProvider } from '../../ai/llm-service.ts';
+import { exportAndDownloadGraph } from '../../lib/export.ts';
 
 interface AppState {
   // Data
@@ -15,6 +16,8 @@ interface AppState {
   // UI State
   selectedNodeId: string | null;
   showWelcome: boolean;
+  isLoading: boolean;
+  showStats: boolean;
   
   // Input State
   githubUrl: string;
@@ -43,6 +46,8 @@ const initialState: AppState = {
   fileContents: new Map(),
   selectedNodeId: null,
   showWelcome: true,
+  isLoading: false,
+  showStats: false,
   githubUrl: '',
   directoryFilter: 'src,lib,components,pages,utils',
   fileExtensions: '.ts,.tsx,.js,.jsx,.py,.java,.cpp,.c,.cs,.php,.rb,.go,.rs,.swift,.kt,.scala,.clj,.hs,.ml,.fs,.elm,.dart,.lua,.r,.m,.sh,.sql,.html,.css,.scss,.less,.vue,.svelte',
@@ -189,24 +194,38 @@ const HomePage: React.FC = () => {
 
   const handleNewProject = () => {
     updateState({
-      graph: null,
-      fileContents: new Map(),
-      selectedNodeId: null,
-      showWelcome: true,
-      githubUrl: '',
-      error: '',
-      progress: ''
+      ...initialState,
+      showStats: false
     });
   };
 
-  const handleNodeSelect = (nodeId: string | null) => {
-    console.log('HomePage - Node selected:', {
-      nodeId,
-      fileContentsSize: state.fileContents.size,
-      fileContentsKeys: Array.from(state.fileContents.keys()).slice(0, 10),
-      graphNodeCount: state.graph?.nodes?.length || 0
-    });
-    updateState({ selectedNodeId: nodeId });
+  const handleDownloadGraph = () => {
+    if (!state.graph) {
+      alert('No knowledge graph to download. Please process a repository first.');
+      return;
+    }
+
+    try {
+      const projectName = state.githubUrl 
+        ? state.githubUrl.split('/').pop()?.replace('.git', '') || 'repository'
+        : 'project';
+
+      exportAndDownloadGraph(
+        state.graph,
+        { 
+          projectName,
+          includeTimestamp: true,
+          prettyPrint: true,
+          includeMetadata: true
+        },
+        state.fileContents
+      );
+      
+      console.log('Knowledge graph exported successfully');
+    } catch (error) {
+      console.error('Failed to export graph:', error);
+      alert('Failed to export knowledge graph. Please try again.');
+    }
   };
 
   const isApiKeyValid = (() => {
@@ -615,19 +634,183 @@ const HomePage: React.FC = () => {
             <span>{state.graph?.nodes.length || 0} nodes</span>
             <span>•</span>
             <span>{state.graph?.relationships.length || 0} relationships</span>
+            <span>•</span>
+            <span>{state.fileContents?.size || 0} files</span>
           </div>
-          <button
-            onClick={handleNewProject}
-            style={{
-              ...styles.navbarButton,
-              position: 'absolute',
-              right: '24px'
-            }}
-          >
-            <span>🔄</span>
-            New Project
-          </button>
+          <div style={{ position: 'absolute', right: '24px', display: 'flex', gap: '12px' }}>
+            <button
+              onClick={() => updateState({ showStats: !state.showStats })}
+              style={{
+                ...styles.navbarButton,
+                backgroundColor: state.showStats ? colors.primary : colors.surfaceWarm,
+                color: state.showStats ? '#fff' : colors.text
+              }}
+            >
+              <span>📊</span>
+              Stats
+            </button>
+            <button
+              onClick={handleDownloadGraph}
+              style={{
+                ...styles.navbarButton,
+                backgroundColor: state.graph ? colors.primary : colors.border,
+                color: state.graph ? '#fff' : colors.textMuted,
+                cursor: state.graph ? 'pointer' : 'not-allowed',
+                opacity: state.graph ? 1 : 0.6
+              }}
+              disabled={!state.graph}
+            >
+              <span>📥</span>
+              Download KG
+            </button>
+            <button
+              onClick={handleNewProject}
+              style={styles.navbarButton}
+            >
+              <span>🔄</span>
+              New Project
+            </button>
+          </div>
         </div>
+
+        {/* Statistics Panel */}
+        {state.showStats && state.graph && (
+          <div style={{
+            backgroundColor: colors.surfaceWarm,
+            borderBottom: `1px solid ${colors.borderLight}`,
+            padding: '16px 24px',
+            fontSize: '14px'
+          }}>
+            <div style={{ 
+              display: 'grid', 
+              gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', 
+              gap: '24px' 
+            }}>
+              {/* Node Statistics */}
+              <div>
+                <div style={{ 
+                  fontWeight: '600', 
+                  color: colors.text, 
+                  marginBottom: '8px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}>
+                  <span>🔵</span>
+                  Node Types
+                </div>
+                {(() => {
+                  const nodeStats: Record<string, number> = {};
+                  state.graph.nodes.forEach(node => {
+                    nodeStats[node.label] = (nodeStats[node.label] || 0) + 1;
+                  });
+                  return Object.entries(nodeStats)
+                    .sort(([,a], [,b]) => b - a)
+                    .map(([type, count]) => (
+                      <div key={type} style={{ 
+                        display: 'flex', 
+                        justifyContent: 'space-between',
+                        color: colors.textSecondary,
+                        marginBottom: '4px'
+                      }}>
+                        <span>{type}:</span>
+                        <span style={{ fontWeight: '500' }}>{count}</span>
+                      </div>
+                    ));
+                })()}
+              </div>
+
+              {/* Relationship Statistics */}
+              <div>
+                <div style={{ 
+                  fontWeight: '600', 
+                  color: colors.text, 
+                  marginBottom: '8px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}>
+                  <span>🔗</span>
+                  Relationship Types
+                </div>
+                {(() => {
+                  const relationshipStats: Record<string, number> = {};
+                  state.graph.relationships.forEach(rel => {
+                    relationshipStats[rel.type] = (relationshipStats[rel.type] || 0) + 1;
+                  });
+                  return Object.entries(relationshipStats)
+                    .sort(([,a], [,b]) => b - a)
+                    .map(([type, count]) => (
+                      <div key={type} style={{ 
+                        display: 'flex', 
+                        justifyContent: 'space-between',
+                        color: colors.textSecondary,
+                        marginBottom: '4px'
+                      }}>
+                        <span>{type}:</span>
+                        <span style={{ fontWeight: '500' }}>{count}</span>
+                      </div>
+                    ));
+                })()}
+              </div>
+
+              {/* File Statistics */}
+              <div>
+                <div style={{ 
+                  fontWeight: '600', 
+                  color: colors.text, 
+                  marginBottom: '8px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}>
+                  <span>📁</span>
+                  File Info
+                </div>
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between',
+                  color: colors.textSecondary,
+                  marginBottom: '4px'
+                }}>
+                  <span>Total Files:</span>
+                  <span style={{ fontWeight: '500' }}>{state.fileContents.size}</span>
+                </div>
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between',
+                  color: colors.textSecondary,
+                  marginBottom: '4px'
+                }}>
+                  <span>Source Files:</span>
+                  <span style={{ fontWeight: '500' }}>
+                    {Array.from(state.fileContents.keys()).filter(path => 
+                      path.endsWith('.py') || path.endsWith('.js') || path.endsWith('.ts') || 
+                      path.endsWith('.tsx') || path.endsWith('.jsx')
+                    ).length}
+                  </span>
+                </div>
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between',
+                  color: colors.textSecondary,
+                  marginBottom: '4px'
+                }}>
+                  <span>Repository:</span>
+                  <span style={{ 
+                    fontWeight: '500',
+                    maxWidth: '120px',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap'
+                  }}>
+                    {state.githubUrl ? state.githubUrl.split('/').slice(-2).join('/') : 'ZIP Upload'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Main Layout */}
         <div style={styles.mainLayout}>
@@ -635,10 +818,7 @@ const HomePage: React.FC = () => {
           <div style={styles.leftPanel}>
             <GraphExplorer
               graph={state.graph!}
-              fileContents={state.fileContents}
-              onNodeSelect={handleNodeSelect}
-              selectedNodeId={state.selectedNodeId}
-              style={{ height: '100%' }}
+              isLoading={state.isLoading}
             />
           </div>
 

@@ -21,6 +21,11 @@ interface ExtractionOptions {
   excludeDirectories?: boolean;
 }
 
+export interface CompleteZipStructure {
+  allPaths: string[];  // All file and directory paths
+  fileContents: Map<string, string>;  // Only files with content
+}
+
 export class ZipService {
   private static readonly DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
   private static readonly DEFAULT_MAX_TOTAL_SIZE = 100 * 1024 * 1024; // 100MB
@@ -34,6 +39,123 @@ export class ZipService {
   ]);
 
   constructor() {}
+
+  /**
+   * Extract complete ZIP structure including all paths and file contents
+   * This is the new robust method that discovers structure first, then filters during parsing
+   */
+  public async extractCompleteStructure(
+    file: File,
+    options: ExtractionOptions = {}
+  ): Promise<CompleteZipStructure> {
+    const {
+      maxFileSize = ZipService.DEFAULT_MAX_FILE_SIZE,
+      maxTotalSize = ZipService.DEFAULT_MAX_TOTAL_SIZE
+    } = options;
+
+    if (!file) {
+      throw new Error('No file provided');
+    }
+
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      throw new Error('File must be a ZIP archive');
+    }
+
+    console.log(`Starting complete ZIP extraction of: ${file.name} (${file.size} bytes)`);
+
+    try {
+      const zip = await JSZip.loadAsync(file);
+      const allPaths: string[] = [];
+      const fileContents: Map<string, string> = new Map();
+      const directories: Set<string> = new Set();
+      let totalExtractedSize = 0;
+
+      // First pass: collect all paths and identify directories
+      zip.forEach((relativePath, zipObject) => {
+        // Normalize path separators
+        const normalizedPath = relativePath.replace(/\\/g, '/');
+        
+        // Add all parent directories
+        const pathParts = normalizedPath.split('/');
+        for (let i = 1; i < pathParts.length; i++) {
+          const dirPath = pathParts.slice(0, i).join('/');
+          if (dirPath && !directories.has(dirPath)) {
+            directories.add(dirPath);
+            allPaths.push(dirPath);
+          }
+        }
+
+        // Add the current path
+        if (!allPaths.includes(normalizedPath)) {
+          allPaths.push(normalizedPath);
+        }
+
+        // If it's a directory entry, mark it
+        if (zipObject.dir) {
+          directories.add(normalizedPath.replace(/\/$/, ''));
+        }
+      });
+
+      // Second pass: extract file contents
+      const filePromises: Promise<void>[] = [];
+
+      zip.forEach((relativePath, zipObject) => {
+        const normalizedPath = relativePath.replace(/\\/g, '/');
+
+        // Skip directories and empty paths
+        if (zipObject.dir || !normalizedPath || normalizedPath.endsWith('/')) {
+          return;
+        }
+
+        // REMOVED: shouldSkipDirectory check for complete structure discovery
+        // All files are now discovered, filtering happens during parsing
+
+        const zipObjectWithData = zipObject as JSZipObjectWithData;
+        const uncompressedSize = zipObjectWithData._data?.uncompressedSize || 0;
+
+        // Check individual file size
+        if (uncompressedSize > maxFileSize) {
+          console.warn(`Skipping large file: ${normalizedPath} (${uncompressedSize} bytes)`);
+          return;
+        }
+
+        // Check total extracted size
+        if (totalExtractedSize + uncompressedSize > maxTotalSize) {
+          console.warn(`Stopping extraction: total size limit reached (${maxTotalSize} bytes)`);
+          return;
+        }
+
+        // Extract file content
+        const promise = zipObject.async('text')
+          .then(content => {
+            if (content.length > 0) {
+              fileContents.set(normalizedPath, content);
+              totalExtractedSize += content.length;
+            }
+          })
+          .catch(error => {
+            console.warn(`Failed to extract ${normalizedPath}:`, error);
+          });
+
+        filePromises.push(promise);
+      });
+
+      // Wait for all file extractions to complete
+      await Promise.all(filePromises);
+
+      console.log(`ZIP: Discovered ${allPaths.length} total paths, ${fileContents.size} files with content`);
+      console.log(`ZIP: Total extracted size: ${totalExtractedSize} bytes`);
+
+      return {
+        allPaths: allPaths.sort(), // Sort for consistent ordering
+        fileContents
+      };
+
+    } catch (error) {
+      console.error('Error extracting ZIP file:', error);
+      throw new Error(`Failed to extract ZIP file: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
 
   public async extractTextFiles(
     file: File,
@@ -283,7 +405,6 @@ export class ZipService {
       // Build, distribution, and temporary directories
       'build',
       'dist', 
-      'docs',
       'logs',
       'tmp',
       '.tmp',
@@ -352,7 +473,7 @@ export class ZipService {
       return false;
     }
     
-    // Skip Python-specific file patterns
+    // Skip common compiled/binary patterns
     const skipPatterns = [
       // Python compiled bytecode
       /\.pyc$/,
@@ -402,34 +523,29 @@ export class ZipService {
       return false;
     }
     
-    // Only include Python files and essential config files
-    const extension = '.' + fileName.split('.').pop()?.toLowerCase();
-    
-    // Python source files
-    if (extension === '.py') {
+    // Include common source and important config files
+    const extension = '.' + (fileName.split('.').pop() || '').toLowerCase();
+    const includeSourceExts = new Set(['.py', '.js', '.jsx', '.ts', '.tsx']);
+    if (includeSourceExts.has(extension)) {
       return true;
     }
-    
-    // Essential Python config files
-    const importantPythonFiles = [
-      'pyproject.toml',
-      'setup.py',
-      'requirements.txt',
-      'setup.cfg',
-      'tox.ini',
-      'pytest.ini',
-      'Pipfile',
-      'poetry.toml',
-      'README.md',
-      'LICENSE',
-      'CHANGELOG.md',
-      'MANIFEST.in'
-    ];
-    
-    if (importantPythonFiles.includes(fileName)) {
+
+    const importantConfigFiles = new Set([
+      // Python
+      'pyproject.toml', 'setup.py', 'requirements.txt', 'setup.cfg', 'tox.ini', 'pytest.ini', 'pipfile', 'poetry.toml',
+      '__init__.py',
+      // JS/TS ecosystem
+      'package.json', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
+      'tsconfig.json', 'tsconfig.base.json',
+      'vite.config.ts', 'vite.config.js',
+      '.eslintrc', '.eslintrc.json', '.eslintrc.js', '.prettierrc', '.prettierrc.json',
+      // Docs/licenses
+      'readme.md', 'license', 'changelog.md', 'manifest.in'
+    ]);
+    if (importantConfigFiles.has(fileName.toLowerCase())) {
       return true;
     }
-    
+
     return false;
   }
 

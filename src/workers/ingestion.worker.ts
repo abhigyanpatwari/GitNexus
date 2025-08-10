@@ -150,10 +150,16 @@ export class IngestionWorker {
         errors.push('No file contents provided');
       }
       
-      // Check for Python files
-      const pythonFiles = input.filePaths.filter(path => path.endsWith('.py'));
-      if (pythonFiles.length === 0) {
-        errors.push('No Python files found in the repository');
+      // Check for source files (Python, JavaScript, TypeScript)
+      const sourceFiles = input.filePaths.filter(path => 
+        path.endsWith('.py') || 
+        path.endsWith('.js') || 
+        path.endsWith('.jsx') || 
+        path.endsWith('.ts') || 
+        path.endsWith('.tsx')
+      );
+      if (sourceFiles.length === 0) {
+        errors.push('No source files found in the repository (Python, JavaScript, or TypeScript)');
       }
       
       // Validate file contents exist
@@ -182,10 +188,15 @@ export class IngestionWorker {
       version: '1.0.0',
       capabilities: [
         'python-parsing',
+        'javascript-parsing',
+        'typescript-parsing',
+        'tsx-parsing',
         'structure-analysis',
         'call-resolution',
         'ast-caching',
-        'progress-reporting'
+        'progress-reporting',
+        'config-file-parsing',
+        'import-resolution'
       ]
     };
   }
@@ -205,17 +216,6 @@ export class IngestionWorker {
     
     if (!(input.fileContents instanceof Map)) {
       throw new Error('File contents must be a Map');
-    }
-  }
-
-  private reportProgress(phase: IngestionProgress['phase'], message: string, progress: number): void {
-    if (this.progressCallback) {
-      this.progressCallback({
-        phase,
-        message,
-        progress,
-        timestamp: Date.now()
-      });
     }
   }
 

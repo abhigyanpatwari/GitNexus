@@ -1,6 +1,7 @@
 import type { KnowledgeGraph, GraphRelationship } from '../graph/types.ts';
 import { StructureProcessor } from './structure-processor.ts';
 import { ParsingProcessor } from './parsing-processor.ts';
+import { ImportProcessor } from './import-processor.ts';
 import { CallProcessor } from './call-processor.ts';
 
 export interface PipelineInput {
@@ -8,51 +9,67 @@ export interface PipelineInput {
   projectName: string;
   filePaths: string[];
   fileContents: Map<string, string>;
+  options?: {
+    directoryFilter?: string;
+    fileExtensions?: string;
+  };
 }
 
 export class GraphPipeline {
   private structureProcessor: StructureProcessor;
   private parsingProcessor: ParsingProcessor;
+  private importProcessor: ImportProcessor;
   private callProcessor: CallProcessor;
 
   constructor() {
     this.structureProcessor = new StructureProcessor();
     this.parsingProcessor = new ParsingProcessor();
-    this.callProcessor = new CallProcessor();
+    this.importProcessor = new ImportProcessor();
+    // CallProcessor will be initialized after ParsingProcessor to get the trie
+    this.callProcessor = new CallProcessor(this.parsingProcessor.getFunctionRegistry());
   }
 
   public async run(input: PipelineInput): Promise<KnowledgeGraph> {
-    const { projectRoot, projectName, filePaths, fileContents } = input;
+    const { projectRoot, projectName, filePaths, fileContents, options } = input;
     
     const graph: KnowledgeGraph = {
       nodes: [],
       relationships: []
     };
 
-    console.log(`Starting 3-pass ingestion for project: ${projectName}`);
+    console.log(`🚀 Starting 4-pass ingestion for project: ${projectName}`);
     
     // Pass 1: Structure Analysis
-    console.log('Pass 1: Analyzing project structure...');
+    console.log('📁 Pass 1: Analyzing project structure...');
     await this.structureProcessor.process(graph, {
       projectRoot,
       projectName,
       filePaths
     });
     
-    // Pass 2: Code Parsing and Definition Extraction
-    console.log('Pass 2: Parsing code and extracting definitions...');
+    // Pass 2: Code Parsing and Definition Extraction (populates FunctionRegistryTrie)
+    console.log('🔍 Pass 2: Parsing code and extracting definitions...');
     await this.parsingProcessor.process(graph, {
       filePaths,
-      fileContents
+      fileContents,
+      options  // Pass filtering options to ParsingProcessor
     });
     
-    // Pass 3: Call Resolution
-    console.log('Pass 3: Resolving function calls and references...');
-    await this.callProcessor.process({
-      graph,
-      astCache: this.parsingProcessor.getCachedAsts(),
-      fileContents
-    });
+    // Get AST map and function registry from parsing processor
+    const astMap = this.parsingProcessor.getASTMap();
+    const functionTrie = this.parsingProcessor.getFunctionRegistry();
+    
+    // Reinitialize CallProcessor with the populated trie
+    this.callProcessor = new CallProcessor(functionTrie);
+    
+    // Pass 3: Import Resolution (builds complete import map)
+    console.log('🔗 Pass 3: Resolving imports and building dependency map...');
+    await this.importProcessor.process(graph, astMap, fileContents);
+    
+    // Pass 4: Call Resolution (uses import map and function trie)
+    console.log('📞 Pass 4: Resolving function calls with 3-stage strategy...');
+    const importMap = this.importProcessor.getImportMap();
+    await this.callProcessor.process(graph, astMap, importMap);
     
     console.log(`Ingestion complete. Graph contains ${graph.nodes.length} nodes and ${graph.relationships.length} relationships.`);
     
@@ -117,7 +134,7 @@ export class GraphPipeline {
     return { nodeStats, relationshipStats };
   }
 
-  public getCallStats(): { totalCalls: number; callTypes: Record<string, number> } {
-    return this.callProcessor.getCallStats();
+  public getCallStats() {
+    return this.callProcessor.getStats();
   }
 } 
