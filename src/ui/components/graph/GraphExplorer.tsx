@@ -3,12 +3,18 @@ import GraphVisualization from './Visualization.tsx';
 import type { KnowledgeGraph } from '../../../core/graph/types.ts';
 
 interface GraphExplorerProps {
-  graph: KnowledgeGraph | null;
+  graph: KnowledgeGraph;
   isLoading: boolean;
+  onNodeSelect?: (nodeId: string | null) => void;
 }
 
-export default function GraphExplorer({ graph, isLoading }: GraphExplorerProps) {
+export default function GraphExplorer({ graph, isLoading, onNodeSelect }: GraphExplorerProps) {
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
+
+  const handleNodeSelect = (nodeId: string | null) => {
+    setSelectedNode(nodeId);
+    onNodeSelect?.(nodeId); // Notify parent component
+  };
 
   const containerStyle: React.CSSProperties = {
     width: '100%',
@@ -39,7 +45,7 @@ export default function GraphExplorer({ graph, isLoading }: GraphExplorerProps) 
     <div style={containerStyle}>
       <GraphVisualization 
         graph={graph}
-        onNodeSelect={setSelectedNode}
+        onNodeSelect={handleNodeSelect}
         selectedNodeId={selectedNode}
       />
     </div>

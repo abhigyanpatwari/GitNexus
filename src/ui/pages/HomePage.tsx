@@ -74,6 +74,10 @@ const HomePage: React.FC = () => {
     setState(prev => ({ ...prev, ...updates }));
   }, []);
 
+  const handleNodeSelect = (nodeId: string | null) => {
+    updateState({ selectedNodeId: nodeId });
+  };
+
   // Save LLM settings to localStorage
   useEffect(() => {
     if (state.llmApiKey) {
@@ -819,6 +823,7 @@ const HomePage: React.FC = () => {
             <GraphExplorer
               graph={state.graph!}
               isLoading={state.isLoading}
+              onNodeSelect={handleNodeSelect}
             />
           </div>
 
