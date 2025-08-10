@@ -23,19 +23,75 @@ export class CypherGenerator {
   private static readonly CYPHER_EXAMPLES = [
     {
       question: "What functions are in the main.py file?",
-      cypher: "MATCH (f:File {name: 'main.py'})-[:CONTAINS]->(func:Function) RETURN func.name"
+      cypher: "MATCH (f:File {name: 'main.py'})-[:CONTAINS]->(func:Function) RETURN func.name, func.startLine"
     },
     {
       question: "Which functions call the authenticate function?",
-      cypher: "MATCH (caller)-[:CALLS]->(target:Function {name: 'authenticate'}) RETURN caller.name"
+      cypher: "MATCH (caller)-[:CALLS]->(target:Function {name: 'authenticate'}) RETURN caller.name, caller.filePath"
     },
     {
       question: "Show me all classes in the project",
       cypher: "MATCH (c:Class) RETURN c.name, c.filePath"
     },
     {
-      question: "What modules import numpy?",
-      cypher: "MATCH (m:Module)-[:IMPORTS]->(lib) WHERE lib.name CONTAINS 'numpy' RETURN m.name"
+      question: "What classes inherit from BaseService?",
+      cypher: "MATCH (child:Class)-[:INHERITS]->(parent:Class {name: 'BaseService'}) RETURN child.name, child.filePath"
+    },
+    {
+      question: "Find all methods in the UserService class",
+      cypher: "MATCH (c:Class {name: 'UserService'})-[:CONTAINS]->(m:Method) RETURN m.name, m.startLine"
+    },
+    {
+      question: "Which methods override the save method?",
+      cypher: "MATCH (child:Method)-[:OVERRIDES]->(parent:Method {name: 'save'}) RETURN child.name, child.parentClass"
+    },
+    {
+      question: "Show all interfaces and the classes that implement them",
+      cypher: "MATCH (c:Class)-[:IMPLEMENTS]->(i:Interface) RETURN i.name, c.name"
+    },
+    {
+      question: "Find functions decorated with @app.route",
+      cypher: "MATCH (d:Decorator {name: 'app.route'})-[:DECORATES]->(f:Function) RETURN f.name, f.filePath"
+    },
+    {
+      question: "What files import the requests module?",
+      cypher: "MATCH (f:File)-[:IMPORTS]->(target) WHERE target.name CONTAINS 'requests' RETURN f.name"
+    },
+    {
+      question: "Show the call chain from main to database functions",
+      cypher: "MATCH (main:Function {name: 'main'})-[:CALLS*1..3]->(db:Function) WHERE db.name CONTAINS 'db' OR db.name CONTAINS 'database' RETURN main.name, db.name"
+    },
+    {
+      question: "Find all functions containing 'user' in their name",
+      cypher: "MATCH (f:Function) WHERE f.name CONTAINS 'user' RETURN f.name, f.filePath"
+    },
+    {
+      question: "What functions are called through a chain of 2-4 calls from the main function?",
+      cypher: "MATCH (main:Function {name: 'main'})-[:CALLS*2..4]->(target:Function) RETURN main.name, target.name"
+    },
+    {
+      question: "How many classes are in each file?",
+      cypher: "MATCH (f:File)-[:CONTAINS]->(c:Class) RETURN f.name, COUNT(c)"
+    },
+    {
+      question: "Count all functions in the project",
+      cypher: "MATCH (f:Function) RETURN COUNT(f)"
+    },
+    {
+      question: "List all function names in alphabetical order",
+      cypher: "MATCH (f:Function) RETURN COLLECT(f.name)"
+    },
+    {
+      question: "Find files that contain both classes and functions",
+      cypher: "MATCH (f:File)-[:CONTAINS]->(c:Class) WHERE EXISTS((f)-[:CONTAINS]->(:Function)) RETURN f.name"
+    },
+    {
+      question: "Show methods that start with 'get'",
+      cypher: "MATCH (m:Method) WHERE m.name CONTAINS 'get' RETURN m.name, m.filePath"
+    },
+    {
+      question: "Find all indirect dependencies (functions that call functions that call a target)",
+      cypher: "MATCH (caller:Function)-[:CALLS*2..2]->(target:Function {name: 'database_query'}) RETURN caller.name, target.name"
     }
   ];
 
@@ -73,7 +129,7 @@ export class CypherGenerator {
         ];
         
         const response = await this.llmService.chat(llmConfig, messages);
-        const result = this.parseResponse(response.content);
+        const result = this.parseResponse(String(response.content || ''));
         
         // Validate the generated query
         const validation = this.validateQuery(result.cypher);
@@ -115,7 +171,7 @@ ${this.graphSchema}
 
 NODE TYPES:
 - Project: Root project node
-- Folder: Directory containers
+- Folder: Directory containers  
 - File: Source code files
 - Module: Python modules (.py files)
 - Class: Class definitions
@@ -129,15 +185,46 @@ RELATIONSHIP TYPES:
 - INHERITS: Class inheritance relationships
 - IMPORTS: Module import relationships
 - OVERRIDES: Method override relationships
+- IMPLEMENTS: Interface implementation
+- DECORATES: Decorator relationships
+
+QUERY PATTERNS SUPPORTED:
+
+1. SIMPLE MATCH: Find nodes by label and properties
+   Pattern: MATCH (n:Label {property: 'value'}) RETURN n.property
+   
+2. WHERE CLAUSE: Filter nodes with complex conditions
+   Pattern: MATCH (n:Label) WHERE n.property CONTAINS 'text' RETURN n.property
+   
+3. RELATIONSHIP TRAVERSAL: Follow direct relationships
+   Pattern: MATCH (a)-[:RELATIONSHIP]->(b:Label) RETURN a.name, b.name
+   
+4. VARIABLE-LENGTH PATHS: Multi-hop relationships
+   Pattern: MATCH (a)-[:RELATIONSHIP*1..3]->(b) RETURN a.name, b.name
+   
+5. AGGREGATION: Count, collect, or summarize data
+   Pattern: MATCH (n:Label) RETURN COUNT(n)
+   Pattern: MATCH (n:Label) RETURN COLLECT(n.name)
+
+QUERY SELECTION GUIDELINES:
+
+- Use SIMPLE MATCH for direct property lookups
+- Use WHERE for text search, pattern matching, or complex conditions  
+- Use RELATIONSHIP TRAVERSAL for direct connections
+- Use VARIABLE-LENGTH PATHS for call chains, dependency analysis
+- Use AGGREGATION for counting, statistics, or collecting lists
 
 IMPORTANT RULES:
 1. Always use MATCH patterns to find nodes
-2. Use WHERE clauses for filtering by properties
-3. Node properties include: name, filePath, startLine, endLine, type
+2. Use WHERE clauses for filtering by text content or complex conditions
+3. Node properties include: name, filePath, startLine, endLine, type, qualifiedName
 4. Return meaningful information, not just node IDs
-5. Use case-insensitive matching when appropriate (e.g., WHERE toLower(n.name) CONTAINS toLower('search'))
+5. Use case-insensitive matching: WHERE toLower(n.name) CONTAINS toLower('search')
 6. Prefer specific node types over generic matches
-7. Always return results in a readable format`;
+7. Always return results in a readable format
+8. Use variable-length paths (*1..3) for call chains and dependency analysis
+9. Use aggregation functions (COUNT, COLLECT) for statistics and summaries
+10. Limit variable-length path depth to avoid performance issues (max *1..5)`;
 
     if (includeExamples) {
       prompt += `\n\nEXAMPLES:`;
@@ -158,7 +245,7 @@ IMPORTANT RULES:
 Provide your response in this exact JSON format:
 {
   "cypher": "your cypher query here",
-  "explanation": "brief explanation of what the query does",
+  "explanation": "brief explanation of what the query does and why this pattern was chosen",
   "confidence": 0.85
 }
 

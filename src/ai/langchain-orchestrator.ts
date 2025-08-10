@@ -6,6 +6,7 @@ import { SystemMessage } from '@langchain/core/messages';
 import type { LLMService, LLMConfig } from './llm-service.ts';
 import type { CypherGenerator } from './cypher-generator.ts';
 import type { KnowledgeGraph } from '../core/graph/types.ts';
+import type { GraphNode } from '../core/graph/types.ts';
 
 export interface LangChainRAGContext {
   graph: KnowledgeGraph;
@@ -158,7 +159,7 @@ export class LangChainRAGOrchestrator {
       func: async (input: { question: string }) => {
         try {
           const cypherQuery = await this.cypherGenerator.generateQuery(input.question, llmConfig);
-          const mockResults = this.simulateGraphQuery(cypherQuery.cypher);
+          const mockResults = await this.executeGraphQuery(cypherQuery.cypher);
           
           return `Query: ${cypherQuery.cypher}\n\nResults:\n${mockResults}\n\nExplanation: ${cypherQuery.explanation}`;
         } catch (error) {
@@ -258,41 +259,41 @@ Your goal is to provide accurate, evidence-based answers about the codebase usin
   }
 
   /**
-   * Simulate graph query execution (same as before)
+   * Execute graph query using the real GraphQueryEngine
    */
-  private simulateGraphQuery(cypher: string): string {
+  private async executeGraphQuery(cypher: string): Promise<string> {
     if (!this.context) return 'No context available';
 
-    const upperCypher = cypher.toUpperCase();
-    
-    if (upperCypher.includes('FUNCTION') && upperCypher.includes('RETURN')) {
-      const functions = this.context.graph.nodes
-        .filter(n => n.label === 'Function')
-        .slice(0, 5)
-        .map(n => `${n.properties.name} (${n.properties.filePath})`)
-        .join('\n');
-      return functions || 'No functions found';
+    try {
+      // Import and use the real GraphQueryEngine
+      const { GraphQueryEngine } = await import('../core/graph/query-engine.ts');
+      const queryEngine = new GraphQueryEngine(this.context.graph);
+      
+      // Execute the actual Cypher query
+      const queryResult = queryEngine.executeQuery(cypher, { limit: 10 });
+      
+      // Format the results for the LLM
+      if (queryResult.data.length > 0) {
+        return queryResult.data.map((row, index) => {
+          const entries = Object.entries(row);
+          if (entries.length === 0) return `Result ${index + 1}: (no data)`;
+          
+          return entries.map(([key, value]) => {
+            if (typeof value === 'object' && value !== null && 'properties' in value) {
+              // This is a node object
+              const node = value as GraphNode;
+              return `${key}: ${node.label} "${node.properties.name || node.properties.filePath || node.id}"`;
+            }
+            return `${key}: ${value}`;
+          }).join(', ');
+        }).join('\n');
+      } else {
+        return 'No results found';
+      }
+    } catch (error) {
+      console.error('Graph query execution failed:', error);
+      return `Query execution failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
     }
-    
-    if (upperCypher.includes('CLASS') && upperCypher.includes('RETURN')) {
-      const classes = this.context.graph.nodes
-        .filter(n => n.label === 'Class')
-        .slice(0, 5)
-        .map(n => `${n.properties.name} (${n.properties.filePath})`)
-        .join('\n');
-      return classes || 'No classes found';
-    }
-    
-    if (upperCypher.includes('FILE') && upperCypher.includes('RETURN')) {
-      const files = this.context.graph.nodes
-        .filter(n => n.label === 'File')
-        .slice(0, 5)
-        .map(n => n.properties.name)
-        .join('\n');
-      return files || 'No files found';
-    }
-
-    return 'Query executed successfully (simulated)';
   }
 
   /**

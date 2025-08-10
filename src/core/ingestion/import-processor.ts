@@ -77,12 +77,18 @@ export class ImportProcessor {
     // Clear previous import map
     this.importMap = {};
     
+    let totalImportsFound = 0;
+    let totalImportsResolved = 0;
+    
     // Process imports for each file
     for (const [filePath, ast] of astMap) {
-      await this.processFileImports(filePath, ast, graph);
+      const fileImports = await this.processFileImports(filePath, ast, graph);
+      totalImportsFound += fileImports.found;
+      totalImportsResolved += fileImports.resolved;
     }
     
     console.log('ImportProcessor: Completed import resolution');
+    console.log(`ImportProcessor: Found ${totalImportsFound} imports, resolved ${totalImportsResolved} (${((totalImportsResolved/totalImportsFound)*100).toFixed(1)}%)`);
     console.log(`ImportProcessor: Built import map for ${Object.keys(this.importMap).length} files`);
     
     return graph;
@@ -95,15 +101,18 @@ export class ImportProcessor {
     filePath: string, 
     ast: ParsedAST, 
     graph: KnowledgeGraph
-  ): Promise<void> {
-    if (!ast.tree) return;
+  ): Promise<{ found: number; resolved: number }> {
+    if (!ast.tree) return { found: 0, resolved: 0 };
 
     const imports = this.extractImports(ast.tree.rootNode, filePath);
     
-    if (imports.length === 0) return;
+    if (imports.length === 0) return { found: 0, resolved: 0 };
 
     // Initialize import map for this file
     this.importMap[filePath] = {};
+
+    let found = 0;
+    let resolved = 0;
 
     for (const importInfo of imports) {
       // Store in import map
@@ -115,7 +124,12 @@ export class ImportProcessor {
 
       // Create IMPORTS relationship in graph
       this.createImportRelationship(graph, importInfo);
+      found++;
+      if (importInfo.targetFile !== importInfo.exportedName) { // Only count as resolved if it's not a default import
+        resolved++;
+      }
     }
+    return { found, resolved };
   }
 
   /**
@@ -361,17 +375,58 @@ export class ImportProcessor {
       return resolvedPath; // Return even if not found, for external modules
     }
 
-    // Handle absolute/package imports
+    // Handle absolute/package imports for Python
     if (language === 'python') {
-      // Convert Python module notation to file path
-      const pythonPath = moduleName.replace(/\./g, '/') + '.py';
-      if (this.projectFiles.has(pythonPath)) {
-        return pythonPath;
+      // First, try to find files that match the module pattern
+      const modulePatterns = [
+        // Direct module.py
+        moduleName.replace(/\./g, '/') + '.py',
+        // Package with __init__.py
+        moduleName.replace(/\./g, '/') + '/__init__.py',
+        // Try within the project structure
+        `src/python/${moduleName.replace(/\./g, '/')}.py`,
+        `src/python/${moduleName.replace(/\./g, '/')}/__init__.py`,
+      ];
+      
+      // Also try to match partial paths for complex project structures
+      for (const filePath of this.projectFiles) {
+        if (filePath.endsWith('.py')) {
+          // Check if this file could match the module name
+          const moduleSegments = moduleName.split('.');
+          const pathSegments = filePath.replace('.py', '').split('/');
+          
+          // Try to match the last few segments
+          if (moduleSegments.length > 0) {
+            const lastSegment = moduleSegments[moduleSegments.length - 1];
+            const fileName = pathSegments[pathSegments.length - 1];
+            
+            // If the last segment matches the filename, this could be it
+            if (fileName === lastSegment) {
+              // Check if the path contains the module structure
+              const modulePathInFile = moduleSegments.slice(0, -1).join('/');
+              if (!modulePathInFile || filePath.includes(modulePathInFile)) {
+                return filePath;
+              }
+            }
+          }
+        }
       }
-      // Try with __init__.py
-      const initPath = moduleName.replace(/\./g, '/') + '/__init__.py';
-      if (this.projectFiles.has(initPath)) {
-        return initPath;
+      
+      // Try the direct patterns
+      for (const pattern of modulePatterns) {
+        if (this.projectFiles.has(pattern)) {
+          return pattern;
+        }
+      }
+      
+      // For complex module paths, try to find any file that ends with the module name
+      const lastModuleSegment = moduleName.split('.').pop();
+      if (lastModuleSegment) {
+        for (const filePath of this.projectFiles) {
+          if (filePath.endsWith(`${lastModuleSegment}.py`)) {
+            return filePath;
+          }
+        }
       }
     }
 

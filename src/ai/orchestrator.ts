@@ -2,6 +2,7 @@ import { HumanMessage, SystemMessage, AIMessage } from '@langchain/core/messages
 import type { LLMService, LLMConfig } from './llm-service.ts';
 import type { CypherGenerator, CypherQuery } from './cypher-generator.ts';
 import type { KnowledgeGraph } from '../core/graph/types.ts';
+import type { GraphNode } from '../core/graph/types.ts';
 
 export interface RAGContext {
   graph: KnowledgeGraph;
@@ -102,7 +103,7 @@ export class RAGOrchestrator {
       while (currentStep <= maxReasoningSteps) {
         // Get reasoning from LLM
         const response = await this.llmService.chat(reasoningConfig, conversation);
-        const reasoning_step = this.parseReasoningStep(response.content, currentStep);
+        const reasoning_step = this.parseReasoningStep(String(response.content || ''), currentStep);
 
         reasoning.push(reasoning_step);
 
@@ -153,7 +154,7 @@ export class RAGOrchestrator {
         reasoning_step.toolResult = toolResult;
 
         // Add the tool result to conversation
-        conversation.push(new AIMessage(response.content));
+        conversation.push(new AIMessage(String(response.content || '')));
         conversation.push(new HumanMessage(`Observation: ${toolResult.output}`));
 
         currentStep++;
@@ -165,7 +166,7 @@ export class RAGOrchestrator {
         conversation.push(new HumanMessage(summaryPrompt));
         
         const summaryResponse = await this.llmService.chat(reasoningConfig, conversation);
-        finalAnswer = summaryResponse.content;
+        finalAnswer = String(summaryResponse.content || '');
         confidence = Math.max(0.3, confidence - 0.2); // Lower confidence for incomplete reasoning
       }
 
@@ -213,9 +214,27 @@ Thought: [Your analysis of the observation]
 Action: [Next action or Final Answer]
 Action Input: [Input for next action or your final answer]
 
+FINAL ANSWER FORMATTING:
+When providing your final answer, use markdown formatting for better readability:
+- Use **bold** for important terms and concepts
+- Use \`inline code\` for function names, file names, and code snippets
+- Use code blocks with language specification for longer code examples
+- Use bullet points or numbered lists for structured information
+- Use headers (##, ###) to organize complex answers
+- Use tables when presenting structured data
+
+Example final answer format:
+## Summary
+The codebase contains **15 functions** across **3 files**.
+
+### Key Functions:
+- \`authenticate()\` - Handles user authentication
+- \`process_data()\` - Main data processing logic
+- \`save_results()\` - Saves processed data to database
+
 ${strictMode ? '\nSTRICT MODE: Only use information explicitly found in the tools. Do not infer or assume anything.' : ''}
 
-Remember: Your goal is to provide accurate, evidence-based answers about the codebase.`;
+Remember: Your goal is to provide accurate, evidence-based, and well-formatted answers about the codebase.`;
 
     return prompt;
   }
@@ -224,9 +243,12 @@ Remember: Your goal is to provide accurate, evidence-based answers about the cod
    * Parse a reasoning step from LLM response
    */
   private parseReasoningStep(response: string, stepNumber: number): ReasoningStep {
-    const thoughtMatch = response.match(/Thought:\s*(.*?)(?=\n|Action:|$)/s);
-    const actionMatch = response.match(/Action:\s*(.*?)(?=\n|Action Input:|$)/s);
-    const inputMatch = response.match(/Action Input:\s*(.*?)(?=\n|$)/s);
+    // Ensure response is a string
+    const responseText = typeof response === 'string' ? response : String(response || '');
+    
+    const thoughtMatch = responseText.match(/Thought:\s*(.*?)(?=\n|Action:|$)/s);
+    const actionMatch = responseText.match(/Action:\s*(.*?)(?=\n|Action Input:|$)/s);
+    const inputMatch = responseText.match(/Action Input:\s*(.*?)(?=\n|$)/s);
 
     return {
       step: stepNumber,
@@ -238,20 +260,43 @@ Remember: Your goal is to provide accurate, evidence-based answers about the cod
   }
 
   /**
-   * Execute a graph query using the Cypher generator
+   * Execute a graph query using the new GraphQueryEngine
    */
   private async executeGraphQuery(question: string, llmConfig: LLMConfig): Promise<ToolResult> {
     try {
       const cypherQuery = await this.cypherGenerator.generateQuery(question, llmConfig);
       
-      // For now, we'll simulate query execution since we don't have a real graph database
-      // In a real implementation, this would execute the Cypher query against Neo4j or similar
-      const mockResults = this.simulateGraphQuery(cypherQuery.cypher);
+      // Import and use the real GraphQueryEngine
+      const { GraphQueryEngine } = await import('../core/graph/query-engine.ts');
+      const queryEngine = new GraphQueryEngine(this.context!.graph);
+      
+      // Execute the actual Cypher query
+      const queryResult = queryEngine.executeQuery(cypherQuery.cypher, { limit: 10 });
+      
+      // Format the results for the LLM
+      let formattedResults = '';
+      if (queryResult.data.length > 0) {
+        formattedResults = queryResult.data.map((row, index) => {
+          const entries = Object.entries(row);
+          if (entries.length === 0) return `Result ${index + 1}: (no data)`;
+          
+          return entries.map(([key, value]) => {
+            if (typeof value === 'object' && value !== null && 'properties' in value) {
+              // This is a node object
+              const node = value as GraphNode;
+              return `${key}: ${node.label} "${node.properties.name || node.properties.filePath || node.id}"`;
+            }
+            return `${key}: ${value}`;
+          }).join(', ');
+        }).join('\n');
+      } else {
+        formattedResults = 'No results found';
+      }
       
       return {
         toolName: 'query_graph',
         input: question,
-        output: `Query: ${cypherQuery.cypher}\n\nResults:\n${mockResults}\n\nExplanation: ${cypherQuery.explanation}`,
+        output: `Query: ${cypherQuery.cypher}\n\nResults (${queryResult.data.length} found):\n${formattedResults}\n\nExplanation: ${cypherQuery.explanation}`,
         success: true
       };
     } catch (error) {
@@ -356,45 +401,6 @@ Remember: Your goal is to provide accurate, evidence-based answers about the cod
   }
 
   /**
-   * Simulate graph query execution (placeholder for real implementation)
-   */
-  private simulateGraphQuery(cypher: string): string {
-    if (!this.context) return 'No context available';
-
-    // Simple simulation based on common patterns
-    const upperCypher = cypher.toUpperCase();
-    
-    if (upperCypher.includes('FUNCTION') && upperCypher.includes('RETURN')) {
-      const functions = this.context.graph.nodes
-        .filter(n => n.label === 'Function')
-        .slice(0, 5)
-        .map(n => `${n.properties.name} (${n.properties.filePath})`)
-        .join('\n');
-      return functions || 'No functions found';
-    }
-    
-    if (upperCypher.includes('CLASS') && upperCypher.includes('RETURN')) {
-      const classes = this.context.graph.nodes
-        .filter(n => n.label === 'Class')
-        .slice(0, 5)
-        .map(n => `${n.properties.name} (${n.properties.filePath})`)
-        .join('\n');
-      return classes || 'No classes found';
-    }
-    
-    if (upperCypher.includes('FILE') && upperCypher.includes('RETURN')) {
-      const files = this.context.graph.nodes
-        .filter(n => n.label === 'File')
-        .slice(0, 5)
-        .map(n => n.properties.name)
-        .join('\n');
-      return files || 'No files found';
-    }
-
-    return 'Query executed successfully (simulated)';
-  }
-
-  /**
    * Extract Cypher queries from tool results
    */
   private extractCypherQueries(toolResult: ToolResult): CypherQuery[] {
@@ -475,5 +481,29 @@ Final Answer:`;
       fileCount: this.context.fileContents.size,
       hasContext: true
     };
+  }
+
+  /**
+   * Test the orchestrator with a simple query (for debugging)
+   */
+  public async testOrchestrator(llmConfig: LLMConfig): Promise<{ success: boolean; error?: string; response?: RAGResponse }> {
+    if (!this.context) {
+      return { success: false, error: 'No context set' };
+    }
+
+    try {
+      const testQuestion = "How many functions are in this project?";
+      const response = await this.answerQuestion(testQuestion, llmConfig, { 
+        maxReasoningSteps: 2, 
+        includeReasoning: true 
+      });
+      
+      return { success: true, response };
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Unknown error' 
+      };
+    }
   }
 } 
