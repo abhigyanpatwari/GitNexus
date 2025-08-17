@@ -3,10 +3,12 @@ import ErrorBoundary from '../components/ErrorBoundary.tsx';
 import { GraphExplorer } from '../components/graph/index.ts';
 import { ChatInterface } from '../components/chat/index.ts';
 import SourceViewer from '../components/graph/SourceViewer.tsx';
+import ExportFormatModal from '../components/ExportFormatModal.tsx';
 import type { KnowledgeGraph } from '../../core/graph/types.ts';
 import { IngestionService } from '../../services/ingestion.service.ts';
 import { LLMService, type LLMProvider } from '../../ai/llm-service.ts';
-import { exportAndDownloadGraph } from '../../lib/export.ts';
+import { exportAndDownloadGraph, exportAndDownloadGraphAsCSV } from '../../lib/export.ts';
+import type { ExportFormat } from '../components/ExportFormatModal.tsx';
 
 interface AppState {
   // Data
@@ -18,6 +20,7 @@ interface AppState {
   showWelcome: boolean;
   isLoading: boolean;
   showStats: boolean;
+  showExportModal: boolean;
   
   // Input State
   githubUrl: string;
@@ -48,6 +51,7 @@ const initialState: AppState = {
   showWelcome: true,
   isLoading: false,
   showStats: false,
+  showExportModal: false,
   githubUrl: '',
   directoryFilter: 'src,lib,components,pages,utils',
   fileExtensions: '.ts,.tsx,.js,.jsx,.py,.java,.cpp,.c,.cs,.php,.rb,.go,.rs,.swift,.kt,.scala,.clj,.hs,.ml,.fs,.elm,.dart,.lua,.r,.m,.sh,.sql,.html,.css,.scss,.less,.vue,.svelte',
@@ -209,27 +213,46 @@ const HomePage: React.FC = () => {
       return;
     }
 
+    // Show the export format modal
+    updateState({ showExportModal: true });
+  };
+
+  const handleExportFormatSelect = (format: ExportFormat) => {
     try {
       const projectName = state.githubUrl 
         ? state.githubUrl.split('/').pop()?.replace('.git', '') || 'repository'
         : 'project';
 
-      exportAndDownloadGraph(
-        state.graph,
-        { 
-          projectName,
-          includeTimestamp: true,
-          prettyPrint: true,
-          includeMetadata: true
-        },
-        state.fileContents
-      );
-      
-      console.log('Knowledge graph exported successfully');
+      if (format === 'csv') {
+        exportAndDownloadGraphAsCSV(
+          state.graph!,
+          { 
+            projectName,
+            includeTimestamp: true
+          }
+        );
+        console.log('Knowledge graph exported as CSV successfully');
+      } else {
+        exportAndDownloadGraph(
+          state.graph!,
+          { 
+            projectName,
+            includeTimestamp: true,
+            prettyPrint: true,
+            includeMetadata: true
+          },
+          state.fileContents
+        );
+        console.log('Knowledge graph exported as JSON successfully');
+      }
     } catch (error) {
       console.error('Failed to export graph:', error);
       alert('Failed to export knowledge graph. Please try again.');
     }
+  };
+
+  const handleCloseExportModal = () => {
+    updateState({ showExportModal: false });
   };
 
   const isApiKeyValid = (() => {
@@ -1143,6 +1166,17 @@ const HomePage: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* Export Format Modal */}
+        <ExportFormatModal
+          isOpen={state.showExportModal}
+          onClose={handleCloseExportModal}
+          onSelectFormat={handleExportFormatSelect}
+          projectName={state.githubUrl 
+            ? state.githubUrl.split('/').pop()?.replace('.git', '') || 'repository'
+            : 'project'
+          }
+        />
       </div>
     </ErrorBoundary>
   );

@@ -10,12 +10,15 @@ export type NodeLabel =
   | 'Variable'
   | 'Interface'
   | 'Enum'
-  | 'Decorator';
+  | 'Decorator'
+  | 'Import'
+  | 'Type'
+  | 'CodeElement';
 
 export interface GraphNode {
   id: string;
   label: NodeLabel;
-  properties: Record<string, unknown>;
+  properties: NodeProperties;
 }
 
 export type RelationshipType = 
@@ -28,17 +31,70 @@ export type RelationshipType =
   | 'DEFINES'
   | 'DECORATES'
   | 'IMPLEMENTS'
-  | 'ACCESSES';
+  | 'ACCESSES'
+  | 'EXTENDS'
+  | 'BELONGS_TO';
 
 export interface GraphRelationship {
   id: string;
   type: RelationshipType;
   source: string;
   target: string;
-  properties?: Record<string, unknown>;
+  properties: RelationshipProperties;
+}
+
+// Type-safe property interfaces
+export interface NodeProperties {
+  // Common properties
+  name?: string;
+  path?: string;
+  filePath?: string;
+  extension?: string;
+  language?: string;
+  size?: number;
+  
+  // Project-specific
+  description?: string;
+  version?: string;
+  
+  // File-specific
+  definitionCount?: number;
+  lineCount?: number;
+  
+  // Definition-specific
+  type?: string;
+  startLine?: number;
+  endLine?: number;
+  qualifiedName?: string;
+  parameters?: string[];
+  returnType?: string;
+  
+  // Relationship-specific
+  relationshipType?: string;
+  [key: string]: string | number | boolean | string[] | undefined;
+}
+
+export interface RelationshipProperties {
+  // Common properties
+  strength?: number;
+  confidence?: number;
+  
+  // Import-specific
+  importType?: 'default' | 'named' | 'namespace';
+  alias?: string;
+  
+  // Call-specific
+  callType?: 'function' | 'method' | 'constructor';
+  arguments?: string[];
+  
+  // Dependency-specific
+  dependencyType?: 'direct' | 'transitive' | 'dev';
+  version?: string;
+  
+  [key: string]: string | number | boolean | string[] | undefined;
 }
 
 export interface KnowledgeGraph {
   nodes: GraphNode[];
   relationships: GraphRelationship[];
-} 
+}

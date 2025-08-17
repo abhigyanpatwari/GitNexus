@@ -1,3 +1,4 @@
+import { SimpleKnowledgeGraph } from '../graph/graph.js';
 import type { KnowledgeGraph } from '../graph/types.ts';
 import { StructureProcessor } from './structure-processor.ts';
 import { ParsingProcessor } from './parsing-processor.ts';
@@ -19,23 +20,19 @@ export class GraphPipeline {
   private structureProcessor: StructureProcessor;
   private parsingProcessor: ParsingProcessor;
   private importProcessor: ImportProcessor;
-  private callProcessor: CallProcessor;
+  private callProcessor!: CallProcessor;
 
   constructor() {
     this.structureProcessor = new StructureProcessor();
     this.parsingProcessor = new ParsingProcessor();
     this.importProcessor = new ImportProcessor();
-    // CallProcessor will be initialized after ParsingProcessor to get the trie
-    this.callProcessor = new CallProcessor(this.parsingProcessor.getFunctionRegistry());
+    
   }
 
   public async run(input: PipelineInput): Promise<KnowledgeGraph> {
     const { projectRoot, projectName, filePaths, fileContents, options } = input;
     
-    const graph: KnowledgeGraph = {
-      nodes: [],
-      relationships: []
-    };
+    const graph = new SimpleKnowledgeGraph();
 
     console.log(`🚀 Starting 4-pass ingestion for project: ${projectName}`);
     
@@ -59,7 +56,6 @@ export class GraphPipeline {
     const astMap = this.parsingProcessor.getASTMap();
     const functionTrie = this.parsingProcessor.getFunctionRegistry();
     
-    // Reinitialize CallProcessor with the populated trie
     this.callProcessor = new CallProcessor(functionTrie);
     
     // Pass 3: Import Resolution (builds complete import map)

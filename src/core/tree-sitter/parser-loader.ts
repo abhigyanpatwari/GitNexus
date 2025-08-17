@@ -1,6 +1,11 @@
-
 // Import tree-sitter explicitly to ensure Vite pre-optimizes it
 import Parser from "web-tree-sitter";
+
+const getWasmPath = (path: string) => {
+  const baseUrl = import.meta.env.BASE_URL || '/';
+  const finalBaseUrl = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+  return `${finalBaseUrl}wasm/${path}`;
+};
 
 let parserInstance: Parser | null = null;
 const parserCache = new Map<string, Parser.Language>();
@@ -14,7 +19,7 @@ export async function initTreeSitter(): Promise<Parser> {
       locateFile(scriptName: string, scriptDirectory: string) {
         // Return the correct path for WASM files
         if (scriptName.endsWith('.wasm')) {
-          return `/wasm/${scriptName}`;
+          return getWasmPath(scriptName);
         }
         return scriptDirectory + scriptName;
       }
@@ -34,7 +39,7 @@ export async function loadPythonParser(): Promise<Parser.Language> {
   
   try {
     // Load Python language from WASM file
-    const wasmPath = '/wasm/python/tree-sitter-python.wasm';
+    const wasmPath = getWasmPath('python/tree-sitter-python.wasm');
     console.log('Loading Python parser from:', wasmPath);
     
     const pythonLang = await Parser.Language.load(wasmPath);
@@ -53,7 +58,7 @@ export async function loadJavaScriptParser(): Promise<Parser.Language> {
     return parserCache.get('javascript')!;
   }
   try {
-    const wasmPath = '/wasm/javascript/tree-sitter-javascript.wasm';
+    const wasmPath = getWasmPath('javascript/tree-sitter-javascript.wasm');
     console.log('Loading JavaScript parser from:', wasmPath);
     const jsLang = await Parser.Language.load(wasmPath);
     parserCache.set('javascript', jsLang);
@@ -70,7 +75,7 @@ export async function loadTypeScriptParser(): Promise<Parser.Language> {
     return parserCache.get('typescript')!;
   }
   try {
-    const wasmPath = '/wasm/typescript/tree-sitter-typescript.wasm';
+    const wasmPath = getWasmPath('typescript/tree-sitter-typescript.wasm');
     console.log('Loading TypeScript parser from:', wasmPath);
     const tsLang = await Parser.Language.load(wasmPath);
     parserCache.set('typescript', tsLang);
@@ -87,7 +92,7 @@ export async function loadTsxParser(): Promise<Parser.Language> {
     return parserCache.get('tsx')!;
   }
   try {
-    const wasmPath = '/wasm/typescript/tree-sitter-tsx.wasm';
+    const wasmPath = getWasmPath('typescript/tree-sitter-tsx.wasm');
     console.log('Loading TSX parser from:', wasmPath);
     const tsxLang = await Parser.Language.load(wasmPath);
     parserCache.set('tsx', tsxLang);
@@ -97,4 +102,4 @@ export async function loadTsxParser(): Promise<Parser.Language> {
     console.error('Failed to load TSX parser:', error);
     throw new Error(`TSX parser loading failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
-} 
+}

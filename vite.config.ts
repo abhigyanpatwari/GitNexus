@@ -20,15 +20,7 @@ export default defineConfig({
       overlay: false
     }
   },
-  build: {
-    target: 'esnext',
-    assetsInlineLimit: 0,
-    commonjsOptions: {
-      include: [/node_modules/],
-      transformMixedEsModules: true,
-      defaultIsModuleExports: true
-    }
-  },
+
   define: {
     global: 'globalThis',
   },
@@ -60,9 +52,27 @@ export default defineConfig({
       'p-finally',
       'eventemitter3',
       'web-tree-sitter',
-      'comlink'
+      'comlink',
+      'kuzu-wasm'
     ],
     force: true,
     holdUntilCrawlEnd: true
+  },
+  build: {
+    target: 'esnext',
+    assetsInlineLimit: 0,
+    commonjsOptions: {
+      include: [/node_modules/],
+      transformMixedEsModules: true,
+      defaultIsModuleExports: true
+    },
+    rollupOptions: {
+      external: ['kuzu-wasm'],
+      output: {
+        manualChunks: {
+          kuzu: ['kuzu-wasm']
+        }
+      }
+    }
   }
 })

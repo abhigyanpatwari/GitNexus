@@ -22,6 +22,12 @@ export interface ExportedGraph {
   fileContents?: Record<string, string>;
 }
 
+export interface CSVExportData {
+  nodes: string;
+  relationships: string;
+  filename: string;
+}
+
 /**
  * Export a KnowledgeGraph to JSON format
  */
@@ -62,6 +68,115 @@ export function exportGraphToJSON(
 }
 
 /**
+ * Export a KnowledgeGraph to CSV format
+ */
+export function exportGraphToCSV(
+  graph: KnowledgeGraph,
+  options: ExportOptions & { projectName?: string } = {}
+): CSVExportData {
+  const { projectName, includeTimestamp = true } = options;
+
+  // Generate CSV content for nodes
+  const nodesCSV = generateNodesCSV(graph.nodes);
+  
+  // Generate CSV content for relationships
+  const relationshipsCSV = generateRelationshipsCSV(graph.relationships);
+  
+  // Generate filename
+  const filename = generateCSVFilename(projectName, includeTimestamp);
+
+  return {
+    nodes: nodesCSV,
+    relationships: relationshipsCSV,
+    filename
+  };
+}
+
+/**
+ * Generate CSV content for nodes
+ */
+function generateNodesCSV(nodes: KnowledgeGraph['nodes']): string {
+  if (nodes.length === 0) {
+    return ':ID,name,filePath,startLine,endLine,type,language,qualifiedName,:LABEL\n';
+  }
+
+  const headers = ':ID,name,filePath,startLine,endLine,type,language,qualifiedName,:LABEL';
+  const rows = nodes.map(node => {
+    const properties = node.properties;
+    const values = [
+      escapeCSVValue(node.id),
+      escapeCSVValue(properties.name || ''),
+      escapeCSVValue(properties.filePath || ''),
+      properties.startLine || '',
+      properties.endLine || '',
+      escapeCSVValue(properties.type || ''),
+      escapeCSVValue(properties.language || ''),
+      escapeCSVValue(properties.qualifiedName || ''),
+      node.label
+    ];
+    return values.join(',');
+  });
+
+  return [headers, ...rows].join('\n');
+}
+
+/**
+ * Generate CSV content for relationships
+ */
+function generateRelationshipsCSV(relationships: KnowledgeGraph['relationships']): string {
+  if (relationships.length === 0) {
+    return ':START_ID,:TYPE,:END_ID,source,target\n';
+  }
+
+  const headers = ':START_ID,:TYPE,:END_ID,source,target';
+  const rows = relationships.map(rel => {
+    const values = [
+      escapeCSVValue(rel.source),
+      rel.type,
+      escapeCSVValue(rel.target),
+      escapeCSVValue(rel.source),
+      escapeCSVValue(rel.target)
+    ];
+    return values.join(',');
+  });
+
+  return [headers, ...rows].join('\n');
+}
+
+/**
+ * Escape CSV values (handle commas, quotes, newlines)
+ */
+function escapeCSVValue(value: string): string {
+  if (!value) return '';
+  
+  // If value contains comma, quote, or newline, wrap in quotes and escape internal quotes
+  if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  
+  return value;
+}
+
+/**
+ * Generate filename for CSV export
+ */
+function generateCSVFilename(projectName?: string, includeTimestamp: boolean = true): string {
+  const baseName = projectName 
+    ? `gitnexus-${projectName.replace(/[^a-zA-Z0-9-_]/g, '-')}`
+    : 'gitnexus-graph';
+  
+  if (includeTimestamp) {
+    const timestamp = new Date().toISOString()
+      .replace(/[:.]/g, '-')
+      .replace('T', '_')
+      .split('.')[0];
+    return `${baseName}_${timestamp}`;
+  }
+  
+  return baseName;
+}
+
+/**
  * Trigger download of a JSON file
  */
 export function downloadJSON(content: string, filename: string): void {
@@ -87,6 +202,36 @@ export function downloadJSON(content: string, filename: string): void {
     URL.revokeObjectURL(url);
   } catch (error) {
     console.error('Failed to download JSON file:', error);
+    throw new Error('Failed to download file. Please check your browser permissions.');
+  }
+}
+
+/**
+ * Trigger download of CSV files
+ */
+export function downloadCSV(content: string, filename: string): void {
+  try {
+    // Create blob with CSV content
+    const blob = new Blob([content], { type: 'text/csv' });
+    
+    // Create download URL
+    const url = URL.createObjectURL(blob);
+    
+    // Create temporary download link
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.style.display = 'none';
+    
+    // Add to DOM, click, and remove
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    // Clean up URL
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    console.error('Failed to download CSV file:', error);
     throw new Error('Failed to download file. Please check your browser permissions.');
   }
 }
@@ -142,6 +287,30 @@ export function exportAndDownloadGraph(
     console.log(`Successfully exported graph to ${finalFilename}`);
   } catch (error) {
     console.error('Export failed:', error);
+    throw error;
+  }
+}
+
+/**
+ * Export and download a KnowledgeGraph as CSV
+ */
+export function exportAndDownloadGraphAsCSV(
+  graph: KnowledgeGraph,
+  options: ExportOptions & { projectName?: string } = {}
+): void {
+  try {
+    // Export to CSV
+    const csvData = exportGraphToCSV(graph, options);
+    
+    // Download nodes CSV
+    downloadCSV(csvData.nodes, `${csvData.filename}_nodes.csv`);
+    
+    // Download relationships CSV
+    downloadCSV(csvData.relationships, `${csvData.filename}_relationships.csv`);
+    
+    console.log(`Successfully exported graph to CSV files: ${csvData.filename}_nodes.csv, ${csvData.filename}_relationships.csv`);
+  } catch (error) {
+    console.error('CSV export failed:', error);
     throw error;
   }
 }

@@ -260,13 +260,41 @@ Remember: Your goal is to provide accurate, evidence-based, and well-formatted a
   }
 
   /**
-   * Execute a graph query using the new GraphQueryEngine
+   * Execute a graph query using KuzuDB when available, fallback to in-memory
    */
   private async executeGraphQuery(question: string, llmConfig: LLMConfig): Promise<ToolResult> {
     try {
       const cypherQuery = await this.cypherGenerator.generateQuery(question, llmConfig);
       
-      // Import and use the real GraphQueryEngine
+      // Try to use KuzuDB if available
+      try {
+        const { isKuzuDBEnabled } = await import('../config/feature-flags.js');
+        if (isKuzuDBEnabled()) {
+          const { KuzuQueryEngine } = await import('../core/graph/kuzu-query-engine.js');
+          const kuzuQueryEngine = new KuzuQueryEngine();
+          
+          if (kuzuQueryEngine.isReady()) {
+            const kuzuResult = await kuzuQueryEngine.executeQuery(cypherQuery.cypher, {
+              timeout: 30000,
+              maxResults: 100,
+              includeExecutionTime: true
+            });
+            
+            const formattedResults = this.formatKuzuResults(kuzuResult);
+            
+            return {
+              toolName: 'kuzu_query_graph',
+              input: question,
+              output: `Query: ${cypherQuery.cypher}\n\nResults (${kuzuResult.nodes.length} nodes, ${kuzuResult.relationships.length} relationships, execution time: ${kuzuResult.executionTime.toFixed(2)}ms):\n${formattedResults}\n\nExplanation: ${cypherQuery.explanation}`,
+              success: true
+            };
+          }
+        }
+      } catch (kuzuError) {
+        console.warn('KuzuDB query failed, falling back to in-memory:', kuzuError);
+      }
+      
+      // Fallback to in-memory GraphQueryEngine
       const { GraphQueryEngine } = await import('../core/graph/query-engine.ts');
       const queryEngine = new GraphQueryEngine(this.context!.graph);
       
@@ -308,6 +336,33 @@ Remember: Your goal is to provide accurate, evidence-based, and well-formatted a
         error: error instanceof Error ? error.message : 'Query execution failed'
       };
     }
+  }
+
+  /**
+   * Format KuzuDB query results for display
+   */
+  private formatKuzuResults(result: { nodes: Array<{ label: string; properties: Record<string, unknown>; id: string }>; relationships: Array<{ type: string; source: string; target: string }> }): string {
+    const nodeResults = result.nodes.slice(0, 10).map((node, index) => 
+      `${index + 1}. ${node.label}: "${(node.properties.name as string) || node.id}"`
+    ).join('\n');
+    
+    const relResults = result.relationships.slice(0, 10).map((rel, index) => 
+      `${index + 1}. ${rel.type}: ${rel.source} -> ${rel.target}`
+    ).join('\n');
+    
+    let output = '';
+    if (result.nodes.length > 0) {
+      output += `Nodes (${result.nodes.length}):\n${nodeResults}`;
+      if (result.nodes.length > 10) output += '\n... (more nodes)';
+    }
+    
+    if (result.relationships.length > 0) {
+      if (output) output += '\n\n';
+      output += `Relationships (${result.relationships.length}):\n${relResults}`;
+      if (result.relationships.length > 10) output += '\n... (more relationships)';
+    }
+    
+    return output || 'No results found';
   }
 
   /**

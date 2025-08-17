@@ -1,16 +1,8 @@
-export { LLMService, type LLMProvider, type LLMConfig, type ChatResponse } from './llm-service.ts';
-export { CypherGenerator, type CypherQuery, type CypherGenerationOptions } from './cypher-generator.ts';
-export { 
-  RAGOrchestrator, 
-  type RAGContext, 
-  type RAGResponse, 
-  type RAGOptions, 
-  type ToolResult, 
-  type ReasoningStep 
-} from './orchestrator.ts';
-export {
-  LangChainRAGOrchestrator,
-  type LangChainRAGContext,
-  type LangChainRAGResponse,
-  type LangChainRAGOptions
-} from './langchain-orchestrator.ts'; 
+export * from './llm-service.js';
+export * from './cypher-generator.js';
+export * from './orchestrator.js';
+export * from './langchain-orchestrator.js';
+export * from './kuzu-rag-orchestrator.js';
+
+// Export KuzuDB performance prompts
+export * from './prompts/kuzu-performance-prompts.js'; 

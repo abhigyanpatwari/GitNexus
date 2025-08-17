@@ -164,7 +164,7 @@ export class CypherGenerator {
    * Build the system prompt with schema and examples
    */
   private buildSystemPrompt(includeExamples: boolean, strictMode: boolean, lastError?: string | null): string {
-    let prompt = `You are a Cypher query expert for a code knowledge graph. Your task is to convert natural language questions into valid Cypher queries.
+    let prompt = `You are a Cypher query expert for a code knowledge graph using KuzuDB (a high-performance graph database). Your task is to convert natural language questions into valid Cypher queries optimized for KuzuDB.
 
 GRAPH SCHEMA:
 ${this.graphSchema}
@@ -188,30 +188,43 @@ RELATIONSHIP TYPES:
 - IMPLEMENTS: Interface implementation
 - DECORATES: Decorator relationships
 
-QUERY PATTERNS SUPPORTED:
+KUZUDB OPTIMIZATION GUIDELINES:
 
-1. SIMPLE MATCH: Find nodes by label and properties
+1. PERFORMANCE: KuzuDB excels at complex graph traversals and pattern matching
+   - Use variable-length paths (*1..5) for call chains and dependency analysis
+   - Leverage WHERE clauses for efficient filtering
+   - Use aggregation functions (COUNT, COLLECT) for statistics
+
+2. QUERY PATTERNS SUPPORTED:
+
+   SIMPLE MATCH: Find nodes by label and properties
    Pattern: MATCH (n:Label {property: 'value'}) RETURN n.property
    
-2. WHERE CLAUSE: Filter nodes with complex conditions
+   WHERE CLAUSE: Filter nodes with complex conditions
    Pattern: MATCH (n:Label) WHERE n.property CONTAINS 'text' RETURN n.property
    
-3. RELATIONSHIP TRAVERSAL: Follow direct relationships
+   RELATIONSHIP TRAVERSAL: Follow direct relationships
    Pattern: MATCH (a)-[:RELATIONSHIP]->(b:Label) RETURN a.name, b.name
    
-4. VARIABLE-LENGTH PATHS: Multi-hop relationships
+   VARIABLE-LENGTH PATHS: Multi-hop relationships (KuzuDB strength)
    Pattern: MATCH (a)-[:RELATIONSHIP*1..3]->(b) RETURN a.name, b.name
    
-5. AGGREGATION: Count, collect, or summarize data
+   AGGREGATION: Count, collect, or summarize data
    Pattern: MATCH (n:Label) RETURN COUNT(n)
    Pattern: MATCH (n:Label) RETURN COLLECT(n.name)
+
+3. KUZUDB-SPECIFIC FEATURES:
+   - Use variable-length paths for dependency analysis: (start)-[:CALLS*1..5]->(end)
+   - Leverage pattern matching for complex relationships
+   - Use aggregation for performance statistics
+   - Optimize for read-heavy workloads
 
 QUERY SELECTION GUIDELINES:
 
 - Use SIMPLE MATCH for direct property lookups
 - Use WHERE for text search, pattern matching, or complex conditions  
 - Use RELATIONSHIP TRAVERSAL for direct connections
-- Use VARIABLE-LENGTH PATHS for call chains, dependency analysis
+- Use VARIABLE-LENGTH PATHS for call chains, dependency analysis (KuzuDB excels here)
 - Use AGGREGATION for counting, statistics, or collecting lists
 
 IMPORTANT RULES:
@@ -222,9 +235,10 @@ IMPORTANT RULES:
 5. Use case-insensitive matching: WHERE toLower(n.name) CONTAINS toLower('search')
 6. Prefer specific node types over generic matches
 7. Always return results in a readable format
-8. Use variable-length paths (*1..3) for call chains and dependency analysis
+8. Use variable-length paths (*1..5) for call chains and dependency analysis - KuzuDB handles these efficiently
 9. Use aggregation functions (COUNT, COLLECT) for statistics and summaries
-10. Limit variable-length path depth to avoid performance issues (max *1..5)`;
+10. Limit variable-length path depth to avoid performance issues (max *1..5)
+11. Leverage KuzuDB's strength in complex graph traversals for dependency analysis`;
 
     if (includeExamples) {
       prompt += `\n\nEXAMPLES:`;

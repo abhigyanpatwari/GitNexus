@@ -55,7 +55,7 @@ export class StructureProcessor {
     
     // Create project root node
     const projectNode = this.createProjectNode(projectName, projectRoot);
-    graph.nodes.push(projectNode);
+    graph.addNode(projectNode);
     
     // Separate files and directories from the complete path list
     const { directories, files } = this.categorizePaths(filePaths);
@@ -72,7 +72,7 @@ export class StructureProcessor {
     
     // Create directory nodes only for visible directories
     const directoryNodes = this.createDirectoryNodes(visibleDirectories);
-    graph.nodes.push(...directoryNodes);
+    directoryNodes.forEach(node => graph.addNode(node));
     
     // Filter out files that are inside ignored directories
     const visibleFiles = files.filter(file => !this.shouldHideFile(file));
@@ -84,7 +84,7 @@ export class StructureProcessor {
     
     // Create file nodes only for visible files
     const fileNodes = this.createFileNodes(visibleFiles);
-    graph.nodes.push(...fileNodes);
+    fileNodes.forEach(node => graph.addNode(node));
     
     // Establish CONTAINS relationships for visible structure only
     this.createContainsRelationships(graph, projectNode.id, visibleDirectories, visibleFiles);
@@ -247,7 +247,7 @@ export class StructureProcessor {
           properties: {}
         };
         
-        graph.relationships.push(relationship);
+        graph.addRelationship(relationship);
       } else if (!parentId && parentPath !== '') {
         // If parent directory was hidden, connect directly to project or nearest visible parent
         const visibleParentId = this.findVisibleParent(parentPath, projectId);
@@ -260,7 +260,7 @@ export class StructureProcessor {
             properties: {}
           };
           
-          graph.relationships.push(relationship);
+          graph.addRelationship(relationship);
         }
       }
     }
@@ -387,4 +387,4 @@ export class StructureProcessor {
     
     return false;
   }
-} 
+}
