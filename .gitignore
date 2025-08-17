@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# AI/Development tool directories
+.kilocode/
+.gemini/
+.cursor/
+.clinerules/
