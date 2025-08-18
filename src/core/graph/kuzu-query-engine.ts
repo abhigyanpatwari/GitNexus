@@ -1,4 +1,4 @@
-import { KuzuService, type KuzuQueryResult } from '../../services/kuzu.service.js';
+import { KuzuService } from '../../services/kuzu.service.js';
 import type { KnowledgeGraph, GraphNode, GraphRelationship } from './types.js';
 
 export interface KuzuQueryOptions {
@@ -85,7 +85,7 @@ export class KuzuQueryEngine {
 
     for (const result of kuzuResults) {
       // Extract nodes from result
-      for (const [key, value] of Object.entries(result)) {
+      for (const [, value] of Object.entries(result)) {
         if (this.isNodeResult(value)) {
           const node = this.convertKuzuNodeToGraphNode(value);
           if (!nodeMap.has(node.id)) {
@@ -96,7 +96,7 @@ export class KuzuQueryEngine {
       }
 
       // Extract relationships from result
-      for (const [key, value] of Object.entries(result)) {
+      for (const [, value] of Object.entries(result)) {
         if (this.isRelationshipResult(value)) {
           const rel = this.convertKuzuRelToGraphRel(value);
           if (!relMap.has(rel.id)) {

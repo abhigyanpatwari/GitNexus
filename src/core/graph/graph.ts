@@ -2,7 +2,7 @@
  * Graph interfaces and types
  */
 
-import { GraphNode, GraphRelationship, NodeProperties, RelationshipProperties } from './types.js';
+import { GraphNode, GraphRelationship } from './types.js';
 
 export interface KnowledgeGraph {
   nodes: GraphNode[];

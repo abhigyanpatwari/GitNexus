@@ -80,7 +80,7 @@ export interface RelationshipProperties {
   confidence?: number;
   
   // Import-specific
-  importType?: 'default' | 'named' | 'namespace';
+  importType?: 'default' | 'named' | 'namespace' | 'dynamic';
   alias?: string;
   
   // Call-specific

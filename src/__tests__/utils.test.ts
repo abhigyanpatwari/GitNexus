@@ -1,5 +1,5 @@
 
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach } from '@jest/globals';
 import { ValidationService } from '../lib/validation';
 import { ConfigService } from '../config/config';
 

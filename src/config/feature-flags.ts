@@ -18,6 +18,9 @@ export interface FeatureFlags {
   enableWebWorkers: boolean;
   enableBatchProcessing: boolean;
   enableCaching: boolean;
+  enableWorkerPool: boolean;
+  enableParallelParsing: boolean;
+  enableParallelProcessing: boolean;
   
   // Debug Features
   enableDebugMode: boolean;
@@ -40,6 +43,9 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   enableWebWorkers: true,
   enableBatchProcessing: true,
   enableCaching: true,
+  enableWorkerPool: true,
+  enableParallelParsing: true,
+  enableParallelProcessing: true,
   
   // Debug Features
   enableDebugMode: false,
@@ -147,6 +153,28 @@ class FeatureFlagManager {
   }
 
   /**
+   * Enable worker pool and parallel processing
+   */
+  enableWorkerPool(): void {
+    this.setFlags({
+      enableWorkerPool: true,
+      enableParallelParsing: true,
+      enableParallelProcessing: true
+    });
+  }
+
+  /**
+   * Disable worker pool and parallel processing
+   */
+  disableWorkerPool(): void {
+    this.setFlags({
+      enableWorkerPool: false,
+      enableParallelParsing: false,
+      enableParallelProcessing: false
+    });
+  }
+
+  /**
    * Enable debug mode
    */
   enableDebugMode(): void {
@@ -230,3 +258,6 @@ export const setFeatureFlag = <K extends keyof FeatureFlags>(key: K, value: Feat
 export const isKuzuDBEnabled = (): boolean => featureFlags.isKuzuDBEnabled();
 export const isDebugModeEnabled = (): boolean => featureFlags.isDebugModeEnabled();
 export const isPerformanceMonitoringEnabled = (): boolean => featureFlags.isPerformanceMonitoringEnabled();
+export const isWorkerPoolEnabled = (): boolean => featureFlags.getFlag('enableWorkerPool');
+export const isParallelParsingEnabled = (): boolean => featureFlags.getFlag('enableParallelParsing');
+export const isParallelProcessingEnabled = (): boolean => featureFlags.getFlag('enableParallelProcessing');

@@ -134,7 +134,7 @@ export class KuzuPerformanceBenchmark {
     description: string;
   }): Promise<BenchmarkResult> {
     const startTime = performance.now();
-    const startMemory = performance.memory?.usedJSHeapSize;
+    const startMemory = (performance as any).memory?.usedJSHeapSize;
 
     try {
       const result = await this.kuzuQueryEngine.executeQuery(testQuery.query, {
@@ -142,7 +142,7 @@ export class KuzuPerformanceBenchmark {
       });
 
       const executionTime = performance.now() - startTime;
-      const endMemory = performance.memory?.usedJSHeapSize;
+      const endMemory = (performance as any).memory?.usedJSHeapSize;
       const memoryUsage = endMemory && startMemory ? endMemory - startMemory : undefined;
 
       return {
@@ -174,15 +174,15 @@ export class KuzuPerformanceBenchmark {
     graph: KnowledgeGraph
   ): Promise<BenchmarkResult> {
     const startTime = performance.now();
-    const startMemory = performance.memory?.usedJSHeapSize;
+    const startMemory = (performance as any).memory?.usedJSHeapSize;
 
     try {
       // Simulate in-memory query execution
       // This is a simplified simulation - real implementation would be more complex
-      await this.simulateInMemoryQuery(testQuery.query, graph);
+      await this.simulateInMemoryQuery(testQuery.query);
 
       const executionTime = performance.now() - startTime;
-      const endMemory = performance.memory?.usedJSHeapSize;
+      const endMemory = (performance as any).memory?.usedJSHeapSize;
       const memoryUsage = endMemory && startMemory ? endMemory - startMemory : undefined;
 
       // Simulate result count based on query complexity
@@ -212,7 +212,7 @@ export class KuzuPerformanceBenchmark {
   /**
    * Simulate in-memory query execution
    */
-  private async simulateInMemoryQuery(query: string, graph: KnowledgeGraph): Promise<void> {
+  private async simulateInMemoryQuery(query: string): Promise<void> {
     // Simulate processing time based on query complexity
     const complexity = this.estimateQueryComplexity(query);
     const baseTime = 10; // Base processing time in ms

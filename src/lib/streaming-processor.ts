@@ -212,7 +212,7 @@ export class StreamingProcessor {
 
     return new Transform({
       objectMode: true,
-      async transform(chunk: T, encoding, callback) {
+      async transform(chunk: T, _encoding: BufferEncoding, callback) {
         try {
           if (parallel) {
             const semaphore = new Semaphore(maxConcurrency);

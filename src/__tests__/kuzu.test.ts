@@ -1,4 +1,4 @@
-import { initKuzuDB, getKuzuDBInstance, resetKuzuDB } from '../core/kuzu/kuzu-loader.js';
+import { initKuzuDB, resetKuzuDB } from '../core/kuzu/kuzu-loader.js';
 import { KuzuQueryEngine } from '../core/graph/kuzu-query-engine.js';
 import { KuzuPerformanceBenchmark } from '../lib/kuzu-performance-benchmark.js';
 import { kuzuPerformanceMonitor } from '../lib/kuzu-performance-monitor.js';
@@ -180,8 +180,6 @@ describe('KuzuDB Integration Tests', () => {
 
   describe('Feature Flags', () => {
     test('should enable/disable KuzuDB features', () => {
-      const initialState = isKuzuDBEnabled();
-      
       setFeatureFlag('enableKuzuDB', false);
       expect(isKuzuDBEnabled()).toBe(false);
       

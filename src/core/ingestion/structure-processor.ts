@@ -1,4 +1,5 @@
-import type { KnowledgeGraph, GraphNode, GraphRelationship } from '../graph/types.ts';
+import type { KnowledgeGraph } from '../graph/graph.ts';
+import type { GraphNode, GraphRelationship } from '../graph/types.ts';
 import { generateId } from '../../lib/utils.ts';
 
 export interface StructureInput {
@@ -140,7 +141,7 @@ export class StructureProcessor {
   }
 
   private createProjectNode(projectName: string, projectRoot: string): GraphNode {
-    const id = generateId('project', projectName);
+    const id = generateId('project');
     this.nodeIdMap.set('', id); // Empty path represents project root
     
     return {
@@ -163,7 +164,7 @@ export class StructureProcessor {
     for (const dirPath of directoryPaths) {
       if (!dirPath) continue;
       
-      const id = generateId('folder', dirPath);
+      const id = generateId('folder');
       this.nodeIdMap.set(dirPath, id);
       
       const pathParts = dirPath.split('/');
@@ -195,7 +196,7 @@ export class StructureProcessor {
     for (const filePath of filePaths) {
       if (!filePath) continue;
       
-      const id = generateId('file', filePath);
+      const id = generateId('file');
       this.nodeIdMap.set(filePath, id);
       
       const fileName = filePath.split('/').pop() || filePath;
@@ -240,7 +241,7 @@ export class StructureProcessor {
       // Only create relationships if both parent and child nodes exist in the graph
       if (parentId && childId && parentId !== childId) {
         const relationship: GraphRelationship = {
-          id: generateId('contains', `${parentId}-${childId}`),
+          id: generateId('contains'),
           type: 'CONTAINS',
           source: parentId,
           target: childId,
@@ -253,7 +254,7 @@ export class StructureProcessor {
         const visibleParentId = this.findVisibleParent(parentPath, projectId);
         if (visibleParentId && childId && visibleParentId !== childId) {
           const relationship: GraphRelationship = {
-            id: generateId('contains', `${visibleParentId}-${childId}`),
+            id: generateId('contains'),
             type: 'CONTAINS',
             source: visibleParentId,
             target: childId,

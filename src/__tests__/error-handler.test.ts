@@ -1,9 +1,7 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { 
   GitNexusError, 
-  ValidationError, 
   NetworkError, 
-  MemoryError, 
   ErrorRecoveryService,
   createSafeAsync,
   createSafe

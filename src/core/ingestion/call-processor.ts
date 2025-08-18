@@ -587,12 +587,12 @@ export class CallProcessor {
     
     if (callerNode) {
       const relationship: GraphRelationship = {
-        id: generateId('calls', `${callerNode.id}-calls-${targetNodeId}`),
+        id: generateId('calls'),
         type: 'CALLS',
         source: callerNode.id,
         target: targetNodeId,
         properties: {
-          callType: call.callType,
+          callType: this.convertCallType(call.callType),
           functionName: call.functionName,
           startLine: call.startLine,
           endLine: call.endLine
@@ -609,6 +609,17 @@ export class CallProcessor {
       if (!existingRel) {
         graph.relationships.push(relationship);
       }
+    }
+  }
+
+  private convertCallType(callType: 'function_call' | 'method_call' | 'constructor_call'): 'function' | 'method' | 'constructor' {
+    switch (callType) {
+      case 'function_call':
+        return 'function';
+      case 'method_call':
+        return 'method';
+      case 'constructor_call':
+        return 'constructor';
     }
   }
 

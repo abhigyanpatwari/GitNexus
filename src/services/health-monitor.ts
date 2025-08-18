@@ -2,10 +2,11 @@
  * Health monitoring and metrics collection service
  */
 
-import { performance } from 'perf_hooks';
+
 import { ConfigService } from '../config/config';
 import { MemoryManager } from './memory-manager.js';
 import { ErrorRecoveryService } from '../lib/error-handler.js';
+import { LRUCacheService } from '../lib/lru-cache-service.js';
 
 export interface HealthMetrics {
   timestamp: Date;
@@ -49,7 +50,8 @@ export class HealthMonitor {
   private static instance: HealthMonitor;
   private readonly config: ConfigService;
   private readonly memoryManager: MemoryManager;
-  private readonly errorService: ErrorRecoveryService;
+  private readonly lruCache: LRUCacheService;
+  
   private metrics: Map<string, MetricPoint[]> = new Map();
   private alerts: AlertThreshold[] = [];
   private startTime: Date;
@@ -66,7 +68,8 @@ export class HealthMonitor {
   private constructor() {
     this.config = ConfigService.getInstance();
     this.memoryManager = MemoryManager.getInstance();
-    this.errorService = ErrorRecoveryService.getInstance();
+    this.lruCache = LRUCacheService.getInstance();
+    
     this.startTime = new Date();
     this.setupDefaultAlerts();
   }
@@ -82,7 +85,7 @@ export class HealthMonitor {
    * Start health monitoring
    */
   start(): void {
-    const interval = this.config.get('monitoring.interval', 30000); // 30 seconds
+    const interval = this.config.logging.monitoringIntervalMs;
     
     this.monitoringInterval = setInterval(() => {
       this.collectMetrics();
@@ -288,10 +291,10 @@ export class HealthMonitor {
     this.recordMetric('active_connections', this.activeConnections);
     
     // Memory manager metrics
-    const cacheStats = this.memoryManager.getCacheStats();
-    this.recordMetric('cache_size', cacheStats.size);
-    this.recordMetric('cache_hits', cacheStats.hits);
-    this.recordMetric('cache_misses', cacheStats.misses);
+    const cacheStats = this.lruCache.getStats();
+    const hitRate = this.lruCache.getCacheHitRate();
+    this.recordMetric('lru_cache_size', cacheStats.fileCache.size);
+    this.recordMetric('lru_cache_hit_rate', hitRate.fileCache);
   }
 
   /**

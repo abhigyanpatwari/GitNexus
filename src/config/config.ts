@@ -77,7 +77,8 @@ const LoggingConfigSchema = z.object({
   level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   enableMetrics: z.boolean().default(true),
   enablePerformanceTracking: z.boolean().default(true),
-  maxLogEntries: z.number().min(100).max(10000).default(1000)
+  maxLogEntries: z.number().min(100).max(10000).default(1000),
+  monitoringIntervalMs: z.number().min(5000).max(60000).default(30000)
 });
 
 // Main configuration schema
@@ -169,7 +170,8 @@ export class ConfigService {
           level: (this.getEnvString('LOG_LEVEL', 'info') as 'debug' | 'info' | 'warn' | 'error') ?? 'info',
           enableMetrics: this.getEnvBoolean('LOG_ENABLE_METRICS', true),
           enablePerformanceTracking: this.getEnvBoolean('LOG_ENABLE_PERFORMANCE', true),
-          maxLogEntries: this.getEnvNumber('LOG_MAX_ENTRIES', 1000)
+          maxLogEntries: this.getEnvNumber('LOG_MAX_ENTRIES', 1000),
+          monitoringIntervalMs: this.getEnvNumber('LOG_MONITORING_INTERVAL_MS', 30000)
         },
         environment: (this.getEnvString('NODE_ENV', 'development') as 'development' | 'staging' | 'production') ?? 'development'
       };

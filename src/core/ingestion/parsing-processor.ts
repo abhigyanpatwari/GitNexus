@@ -9,9 +9,11 @@ import {
 } from '../../lib/shared-utils.js';
 import { IGNORE_PATTERNS } from '../../config/language-config.js';
 import Parser from 'web-tree-sitter';
-import { TYPESCRIPT_QUERIES, PYTHON_QUERIES, JAVA_QUERIES } from './tree-sitter-queries.ts';
+import { TYPESCRIPT_QUERIES, PYTHON_QUERIES, JAVA_QUERIES } from './tree-sitter-queries';
 import { initTreeSitter, loadTypeScriptParser, loadPythonParser, loadJavaScriptParser } from '../tree-sitter/parser-loader.js';
 import { FunctionRegistryTrie, FunctionDefinition } from '../graph/trie.js';
+import { LRUCacheService } from '../../lib/lru-cache-service.js';
+import { generateId } from '../../lib/utils';
 
 export interface ParsingInput {
 	filePaths: string[];
@@ -43,15 +45,7 @@ export interface ParsedAST {
   tree: Parser.Tree;
 }
 
-function generateId(prefix: string, identifier: string): string {
-	let hash = 0;
-	for (let i = 0; i < identifier.length; i++) {
-		const char = identifier.charCodeAt(i);
-		hash = ((hash << 5) - hash) + char;
-		hash = hash & hash;
-	}
-	return `${prefix}-${Math.abs(hash)}-${identifier.replace(/[^a-zA-Z0-9]/g, '_')}`;
-}
+
 
 export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 	private memoryManager: MemoryManager;
@@ -61,9 +55,11 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
   private languageParsers: Map<string, Parser.Language> = new Map();
   private astMap: Map<string, ParsedAST> = new Map();
   private functionTrie: FunctionRegistryTrie = new FunctionRegistryTrie();
+  private lruCache: LRUCacheService;
 
 	constructor() {
 		this.memoryManager = MemoryManager.getInstance();
+		this.lruCache = LRUCacheService.getInstance();
 	}
 
   public getASTMap(): Map<string, ParsedAST> {
@@ -72,6 +68,14 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 
   public getFunctionRegistry(): FunctionRegistryTrie {
     return this.functionTrie;
+  }
+
+  public getCacheStats() {
+    return this.lruCache.getStats();
+  }
+
+  public getCacheHitRate() {
+    return this.lruCache.getCacheHitRate();
   }
 
 	public async process(graph: KnowledgeGraph, input: ParsingInput): Promise<void> {
@@ -122,6 +126,24 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 			await batchProcessor.processAll(allProcessableFiles);
 			
 			console.log(`ParsingProcessor: Successfully processed ${this.processedFiles.size} files`);
+			
+			// Log cache statistics
+			const cacheStats = this.getCacheStats();
+			const hitRate = this.getCacheHitRate();
+			console.log('ParsingProcessor: Cache Statistics:', {
+				fileCache: {
+					size: cacheStats.fileCache.size,
+					hitRate: `${(hitRate.fileCache * 100).toFixed(1)}%`
+				},
+				queryCache: {
+					size: cacheStats.queryCache.size,
+					hitRate: `${(hitRate.queryCache * 100).toFixed(1)}%`
+				},
+				parserCache: {
+					size: cacheStats.parserCache.size,
+					hitRate: `${(hitRate.parserCache * 100).toFixed(1)}%`
+				}
+			});
 		} catch (error) {
 			console.error('Error initializing parser:', error);
 		}
@@ -186,9 +208,16 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 
     for (const [lang, loader] of Object.entries(languageLoaders)) {
       try {
-        const languageParser = await loader();
+        // Check cache first
+        let languageParser = this.lruCache.getParser(lang);
+        if (!languageParser) {
+          languageParser = await loader();
+          this.lruCache.setParser(lang, languageParser);
+          console.log(`${lang} parser loaded and cached successfully.`);
+        } else {
+          console.log(`${lang} parser loaded from cache.`);
+        }
         this.languageParsers.set(lang, languageParser);
-        console.log(`${lang} parser loaded successfully.`);
       } catch (error) {
         console.error(`Failed to load ${lang} parser:`, error);
       }
@@ -197,6 +226,18 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 
 	private async parseFile(graph: KnowledgeGraph, filePath: string, content: string): Promise<void> {
     const language = this.detectLanguage(filePath);
+    const contentHash = this.generateContentHash(content);
+    const cacheKey = this.lruCache.generateFileCacheKey(filePath, contentHash);
+
+    // Check cache first
+    const cachedResult = this.lruCache.getParsedFile(cacheKey);
+    if (cachedResult) {
+      console.log(`Cache hit for file: ${filePath}`);
+      this.astMap.set(filePath, { tree: cachedResult.ast });
+      await this.addDefinitionsToGraph(graph, filePath, cachedResult.definitions);
+      return;
+    }
+
     const langParser = this.languageParsers.get(language);
 
     if (!langParser || !this.parser) {
@@ -216,11 +257,28 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
       return;
     }
 
+    // Process queries with caching
     for (const [queryName, queryString] of Object.entries(queries)) {
-      const query = langParser.query(queryString as string);
-      const matches = query.matches(tree.rootNode);
+      const queryCacheKey = this.lruCache.generateQueryCacheKey(language, queryString);
+      let queryResults: Parser.QueryMatch[] = [];
 
-      for (const match of matches) {
+      // Check query cache
+      const cachedQuery = this.lruCache.getQueryResult(queryCacheKey);
+      if (cachedQuery) {
+        queryResults = cachedQuery.results;
+      } else {
+        const query = langParser.query(queryString as string);
+        queryResults = query.matches(tree.rootNode);
+        
+        // Cache query results
+        this.lruCache.setQueryResult(queryCacheKey, {
+          query: queryString,
+          results: queryResults,
+          timestamp: Date.now()
+        });
+      }
+
+      for (const match of queryResults) {
         for (const capture of match.captures) {
           const node = capture.node;
           const definition = this.extractDefinition(node, queryName, filePath);
@@ -230,6 +288,15 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
         }
       }
     }
+
+    // Cache the parsed file results
+    this.lruCache.setParsedFile(cacheKey, {
+      ast: tree,
+      definitions,
+      language,
+      lastModified: Date.now(),
+      fileSize: content.length
+    });
 
     await this.addDefinitionsToGraph(graph, filePath, definitions);
 	}
@@ -292,7 +359,7 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 
 	private async parseGenericFile(graph: KnowledgeGraph, filePath: string, _content: string): Promise<void> {
 		const fileNode: GraphNode = {
-			id: generateId('file', filePath),
+			id: generateId('file'),
 			label: 'File' as NodeLabel,
 			properties: {
 				name: pathUtils.getFileName(filePath),
@@ -311,7 +378,7 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 		definitions: ParsedDefinition[]
 	): Promise<void> {
 		const fileNode: GraphNode = { 
-			id: generateId('file', filePath),
+			id: generateId('file'),
 			label: 'File' as NodeLabel,
 			properties: {
 				name: pathUtils.getFileName(filePath),
@@ -323,7 +390,7 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 		graph.addNode(fileNode);
 
 		for (const def of definitions) {
-			const nodeId = generateId(def.type, `${filePath}:${def.name}`);
+			const nodeId = generateId(def.type);
 
 			if (this.duplicateDetector.checkAndMark(nodeId)) continue;
 
@@ -367,7 +434,7 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
       }
 
 			const definesRelationship: GraphRelationship = {
-				id: generateId('defines', `${fileNode.id}:${node.id}`),
+				id: generateId('defines'),
 				type: 'DEFINES' as RelationshipType,
 				source: fileNode.id,
 				target: node.id,
@@ -380,39 +447,39 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 			graph.addRelationship(definesRelationship);
 
 			if (def.extends && def.extends.length > 0) {
-				for (const extend of def.extends) {
+				def.extends.forEach(() => {
 					const extendsRelationship: GraphRelationship = { 
-						id: generateId('extends', `${node.id}:${extend}`),
+						id: generateId('extends'),
 						type: 'EXTENDS' as RelationshipType,
 						source: node.id,
-						target: generateId('class', extend),
+						target: generateId('class'),
 						properties: {}
 					};
 
 					graph.addRelationship(extendsRelationship);
-				}
+				});
 			}
 
 			if (def.implements && def.implements.length > 0) {
-				for (const interfaceName of def.implements) {
+				def.implements.forEach(() => {
 					const implementsRelationship: GraphRelationship = {
-						id: generateId('implements', `${node.id}:${interfaceName}`),
+						id: generateId('implements'),
 						type: 'IMPLEMENTS' as RelationshipType,
 						source: node.id,
-						target: generateId('interface', interfaceName),
+						target: generateId('interface'),
 						properties: {}
 					};
 
 					graph.addRelationship(implementsRelationship);
-				}
+				});
 			}
 
 			if (def.importPath) {
 				const importRelationship: GraphRelationship = { 
-					id: generateId('imports', `${node.id}:${def.importPath}`),
+					id: generateId('imports'),
 					type: 'IMPORTS' as RelationshipType,
 					source: node.id, 
-					target: generateId('file', def.importPath),
+					target: generateId('file'),
 					properties: { 
 						importPath: def.importPath 
 					}
@@ -422,10 +489,10 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 
 			if (def.parentClass) {			  
 				const parentRelationship: GraphRelationship = {
-					id: generateId('belongs_to', `${node.id}:${def.parentClass}`),
+					id: generateId('belongs_to'),
 					type: 'BELONGS_TO' as RelationshipType,
 					source: node.id,
-					target: generateId('class', `${filePath}:${def.parentClass}`), 
+					target: generateId('class'), 
 					properties: {}
 				};
 				graph.addRelationship(parentRelationship);
@@ -447,9 +514,20 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 		}
 	}
 
+	private generateContentHash(content: string): string {
+		let hash = 0;
+		for (let i = 0; i < content.length; i++) {
+			const char = content.charCodeAt(i);
+			hash = ((hash << 5) - hash) + char;
+			hash = hash & hash;
+		}
+		return Math.abs(hash).toString(36);
+	}
+
 	public reset(): void {
 		this.processedFiles.clear();
 		this.duplicateDetector.clear();
 		this.memoryManager.clearCache();
+		this.lruCache.clearAll();
 	}
 }

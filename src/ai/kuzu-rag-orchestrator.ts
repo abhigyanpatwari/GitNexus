@@ -2,7 +2,7 @@ import { HumanMessage, SystemMessage, AIMessage } from '@langchain/core/messages
 import type { LLMService, LLMConfig } from './llm-service.ts';
 import type { CypherGenerator, CypherQuery } from './cypher-generator.ts';
 import type { KnowledgeGraph } from '../core/graph/types.ts';
-import type { GraphNode } from '../core/graph/types.ts';
+
 import { KuzuQueryEngine, type KuzuQueryResponse } from '../core/graph/kuzu-query-engine.js';
 import { isKuzuDBEnabled } from '../config/feature-flags.js';
 
@@ -160,7 +160,6 @@ export class KuzuRAGOrchestrator {
 
         try {
           if (action === 'query_graph') {
-            const queryStartTime = performance.now();
 
             if (useKuzuDB && this.kuzuQueryEngine.isReady()) {
               // Use KuzuDB for faster query execution
@@ -185,7 +184,7 @@ export class KuzuRAGOrchestrator {
 
             } else {
               // Fallback to in-memory graph query
-              const result = await this.executeGraphQuery(actionInput);
+              const result = await this.executeGraphQuery();
               observation = JSON.stringify(result, null, 2);
               toolResult = {
                 toolName: 'query_graph',
@@ -378,7 +377,7 @@ When using query_graph, focus on:
   /**
    * Execute graph query (fallback to in-memory)
    */
-  private async executeGraphQuery(query: string): Promise<any> {
+  private async executeGraphQuery(): Promise<any> {
     if (!this.context) {
       throw new Error('Context not set');
     }
