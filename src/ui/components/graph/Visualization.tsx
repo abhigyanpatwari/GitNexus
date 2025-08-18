@@ -4,7 +4,7 @@ import type { KnowledgeGraph, GraphNode, GraphRelationship } from '../../../core
 
 interface GraphVisualizationProps {
   graph: KnowledgeGraph;
-  onNodeSelect?: (nodeId: string | null) => void;
+  onNodeSelect?: (nodeId: string | null, event?: MouseEvent) => void;
   selectedNodeId?: string | null;
   className?: string;
   style?: React.CSSProperties;
@@ -469,7 +469,7 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
       label.filter(nodeData => nodeData.id === d.id).attr('opacity', 1);
       
       if (onNodeSelectRef.current) {
-        onNodeSelectRef.current(d.id);
+        onNodeSelectRef.current(d.id, event);
       }
     });
 
@@ -484,7 +484,7 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
         label.attr('opacity', 1);
         
         if (onNodeSelectRef.current) {
-          onNodeSelectRef.current(null);
+          onNodeSelectRef.current(null, event);
         }
       }
     });

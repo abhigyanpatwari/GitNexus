@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import ErrorBoundary from '../components/ErrorBoundary.tsx';
 import { GraphExplorer } from '../components/graph/index.ts';
 import { ChatInterface } from '../components/chat/index.ts';
-import SourceViewer from '../components/graph/SourceViewer.tsx';
+
 import ExportFormatModal from '../components/ExportFormatModal.tsx';
 import type { KnowledgeGraph } from '../../core/graph/types.ts';
 import { IngestionService } from '../../services/ingestion.service.ts';
@@ -466,25 +466,12 @@ const HomePage: React.FC = () => {
       overflow: 'hidden'
     },
 
-    // Right side - Chat and Source (30% width)
-    rightPanel: {
-      flex: '0 0 30%',
-      display: 'flex',
-      flexDirection: 'column' as const,
-      backgroundColor: colors.surfaceWarm
-    },
-
-    // Right panel sections
-    chatSection: {
-      flex: '0 0 60%',
-      borderBottom: `1px solid ${colors.borderLight}`,
-      overflow: 'hidden'
-    },
-
-    sourceSection: {
-      flex: '0 0 40%',
-      overflow: 'hidden'
-    },
+         // Right side - Chat (30% width)
+     rightPanel: {
+       flex: '0 0 30%',
+       backgroundColor: colors.surfaceWarm,
+       overflow: 'hidden'
+     },
 
     // Error and progress styles
     errorBanner: {
@@ -847,53 +834,41 @@ const HomePage: React.FC = () => {
               graph={state.graph!}
               isLoading={state.isLoading}
               onNodeSelect={handleNodeSelect}
+              fileContents={state.fileContents}
             />
           </div>
 
-          {/* Right Panel - Chat and Source */}
-          <div style={styles.rightPanel}>
-            {/* Chat Section */}
-            <div style={styles.chatSection}>
-              {isApiKeyValid ? (
-                <ChatInterface
-                  graph={state.graph!}
-                  fileContents={state.fileContents}
-                  style={{ height: '100%' }}
-                />
-              ) : (
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  height: '100%',
-                  flexDirection: 'column',
-                  gap: '16px',
-                  padding: '24px',
-                  textAlign: 'center',
-                  color: colors.textMuted
-                }}>
-                  <div style={{ fontSize: '48px', opacity: 0.3 }}>🔑</div>
-                  <div>Configure your API key to use the chat interface</div>
-                  <button
-                    onClick={() => updateState({ showSettings: true })}
-                    style={styles.secondaryButton}
-                  >
-                    Open Settings
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Source Section */}
-            <div style={styles.sourceSection}>
-              <SourceViewer
-                graph={state.graph!}
-                selectedNodeId={state.selectedNodeId}
-                fileContents={state.fileContents}
-                style={{ height: '100%' }}
-              />
-            </div>
-          </div>
+                     {/* Right Panel - Chat */}
+           <div style={styles.rightPanel}>
+             {isApiKeyValid ? (
+               <ChatInterface
+                 graph={state.graph!}
+                 fileContents={state.fileContents}
+                 style={{ height: '100%' }}
+               />
+             ) : (
+               <div style={{
+                 display: 'flex',
+                 alignItems: 'center',
+                 justifyContent: 'center',
+                 height: '100%',
+                 flexDirection: 'column',
+                 gap: '16px',
+                 padding: '24px',
+                 textAlign: 'center',
+                 color: colors.textMuted
+               }}>
+                 <div style={{ fontSize: '48px', opacity: 0.3 }}>🔑</div>
+                 <div>Configure your API key to use the chat interface</div>
+                 <button
+                   onClick={() => updateState({ showSettings: true })}
+                   style={styles.secondaryButton}
+                 >
+                   Open Settings
+                 </button>
+               </div>
+             )}
+           </div>
         </div>
       </>
     );
