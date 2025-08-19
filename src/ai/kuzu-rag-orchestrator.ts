@@ -1,15 +1,23 @@
-import { HumanMessage, SystemMessage, AIMessage } from '@langchain/core/messages';
+import { HumanMessage, SystemMessage } from '@langchain/core/messages';
+import { z } from 'zod';
+import { tool } from '@langchain/core/tools';
 import type { LLMService, LLMConfig } from './llm-service.ts';
-import type { CypherGenerator, CypherQuery } from './cypher-generator.ts';
+import type { KuzuQueryEngine } from '../core/graph/kuzu-query-engine.ts';
 import type { KnowledgeGraph } from '../core/graph/types.ts';
 
-import { KuzuQueryEngine, type KuzuQueryResponse } from '../core/graph/kuzu-query-engine.js';
 import { isKuzuDBEnabled } from '../config/feature-flags.js';
 
 export interface KuzuRAGContext {
   graph: KnowledgeGraph;
   fileContents: Map<string, string>;
-  kuzuQueryEngine: KuzuQueryEngine;
+  projectName: string;
+}
+
+export interface KuzuQueryResponse {
+  nodes: any[];
+  relationships: any[];
+  executionTime: number;
+  resultCount: number;
 }
 
 export interface KuzuToolResult {
@@ -17,25 +25,15 @@ export interface KuzuToolResult {
   input: string;
   output: string;
   success: boolean;
-  error?: string;
   executionTime?: number;
   resultCount?: number;
+  error?: string;
 }
 
-export interface KuzuReasoningStep {
-  step: number;
-  thought: string;
-  action: string;
-  actionInput: string;
-  observation: string;
-  toolResult?: KuzuToolResult;
-  cypherQuery?: string;
-}
-
-export interface KuzuRAGResponse {
+export interface KuzuRAGResult {
   answer: string;
-  reasoning: KuzuReasoningStep[];
-  cypherQueries: CypherQuery[];
+  reasoning: any[];
+  cypherQueries: any[];
   confidence: number;
   sources: string[];
   performance: {
@@ -45,26 +43,34 @@ export interface KuzuRAGResponse {
   };
 }
 
-export interface KuzuRAGOptions {
-  maxReasoningSteps?: number;
-  includeReasoning?: boolean;
-  strictMode?: boolean;
-  temperature?: number;
-  useKuzuDB?: boolean;
-  queryTimeout?: number;
-  maxResults?: number;
-}
+// Define tool schemas using Zod
+const QueryGraphSchema = z.object({
+  query: z.string().describe("The Cypher query to execute on the knowledge graph")
+});
+
+const GetCodeSchema = z.object({
+  filePath: z.string().describe("The file path to retrieve code from")
+});
+
+const SearchFilesSchema = z.object({
+  pattern: z.string().describe("The search pattern to find files")
+});
+
+const FinalAnswerSchema = z.object({
+  answer: z.string().describe("The final answer to the user's question")
+});
 
 export class KuzuRAGOrchestrator {
   private llmService: LLMService;
-  private cypherGenerator: CypherGenerator;
-  private context: KuzuRAGContext | null = null;
   private kuzuQueryEngine: KuzuQueryEngine;
+  private context: KuzuRAGContext | null = null;
 
-  constructor(llmService: LLMService, cypherGenerator: CypherGenerator) {
+  constructor(
+    llmService: LLMService,
+    kuzuQueryEngine: KuzuQueryEngine
+  ) {
     this.llmService = llmService;
-    this.cypherGenerator = cypherGenerator;
-    this.kuzuQueryEngine = new KuzuQueryEngine();
+    this.kuzuQueryEngine = kuzuQueryEngine;
   }
 
   /**
@@ -77,205 +83,260 @@ export class KuzuRAGOrchestrator {
   }
 
   /**
-   * Set the current context (graph, file contents, and KuzuDB query engine)
+   * Set the context for RAG operations
    */
-  public async setContext(context: Omit<KuzuRAGContext, 'kuzuQueryEngine'>): Promise<void> {
-    this.context = {
-      ...context,
-      kuzuQueryEngine: this.kuzuQueryEngine
-    };
-
-    this.cypherGenerator.updateSchema(context.graph);
-
-    // Import graph into KuzuDB for faster queries if enabled
-    if (isKuzuDBEnabled() && this.kuzuQueryEngine.isReady()) {
-      await this.kuzuQueryEngine.importGraph(context.graph);
-    }
+  public setContext(context: KuzuRAGContext): void {
+    this.context = context;
   }
 
   /**
-   * Answer a question using ReAct pattern with KuzuDB integration
+   * Process a question using KuzuDB-enhanced RAG with tool calling
    */
-  public async answerQuestion(
+  public async processQuestion(
     question: string,
     llmConfig: LLMConfig,
-    options: KuzuRAGOptions = {}
-  ): Promise<KuzuRAGResponse> {
-    if (!this.context) {
-      throw new Error('Context not set. Call setContext() first.');
-    }
-
+    options: {
+      maxReasoningSteps?: number;
+      temperature?: number;
+      strictMode?: boolean;
+      useKuzuDB?: boolean;
+      includeReasoning?: boolean;
+      queryTimeout?: number;
+      maxResults?: number;
+    } = {}
+  ): Promise<KuzuRAGResult> {
     const {
-      maxReasoningSteps = 5,
-      includeReasoning = true,
       strictMode = false,
-      temperature = 0.1,
-      useKuzuDB = isKuzuDBEnabled(),
+      useKuzuDB = true,
+      includeReasoning = true,
       queryTimeout = 30000,
       maxResults = 100
     } = options;
 
-    const reasoning: KuzuReasoningStep[] = [];
-    const cypherQueries: CypherQuery[] = [];
+    if (!this.context) {
+      throw new Error('Context not set. Call setContext() before processing questions.');
+    }
+
+    // Define tools using LangChain's tool calling
+    const queryGraphTool = tool(
+      async ({ query }: { query: string }) => {
+        if (useKuzuDB && this.kuzuQueryEngine.isReady()) {
+          const kuzuResult = await this.kuzuQueryEngine.executeQuery(query, {
+            timeout: queryTimeout,
+            maxResults,
+            includeExecutionTime: true
+          });
+          return this.formatKuzuQueryResult(kuzuResult);
+        } else {
+          const result = await this.executeGraphQuery();
+          return JSON.stringify(result, null, 2);
+        }
+      },
+      {
+        name: "query_graph",
+        description: "Execute Cypher queries on the knowledge graph for code analysis",
+        schema: QueryGraphSchema
+      }
+    );
+
+    const getCodeTool = tool(
+      async ({ filePath }: { filePath: string }) => {
+        return await this.getCodeSnippet(filePath);
+      },
+      {
+        name: "get_code",
+        description: "Retrieve specific code snippets from files",
+        schema: GetCodeSchema
+      }
+    );
+
+    const searchFilesTool = tool(
+      async ({ pattern }: { pattern: string }) => {
+        const result = await this.searchFiles(pattern);
+        return JSON.stringify(result, null, 2);
+      },
+      {
+        name: "search_files",
+        description: "Find files by name or content patterns",
+        schema: SearchFilesSchema
+      }
+    );
+
+    const finalAnswerTool = tool(
+      async ({ answer }: { answer: string }) => {
+        return answer;
+      },
+      {
+        name: "final_answer",
+        description: "Provide the final answer to the user's question",
+        schema: FinalAnswerSchema
+      }
+    );
+
+    // Bind tools to the LLM
+    const model = this.llmService.getModel(llmConfig);
+    if (!model) {
+      throw new Error('Failed to get LLM model');
+    }
+    
+    // Check if bindTools method exists
+    if (typeof model.bindTools !== 'function') {
+      throw new Error('LLM model does not support tool binding');
+    }
+    
+    const modelWithTools = model.bindTools([
+      queryGraphTool,
+      getCodeTool,
+      searchFilesTool,
+      finalAnswerTool
+    ]);
+
+    // Build system prompt
+    const systemPrompt = this.buildKuzuReActSystemPrompt(strictMode, useKuzuDB);
+    const conversation = [new SystemMessage(systemPrompt), new HumanMessage(question)];
+
+    // Execute with tool calling
+    const response = await modelWithTools.invoke(conversation);
+    
+    // Process tool calls
+    const toolResults: KuzuToolResult[] = [];
+    const cypherQueries: any[] = [];
+    const reasoning: any[] = [];
     const sources: string[] = [];
     const queryExecutionTimes: number[] = [];
     let kuzuQueryCount = 0;
 
-    const reasoningConfig: LLMConfig = {
-      ...llmConfig,
-      temperature: temperature
-    };
-
-    let currentStep = 1;
-    let finalAnswer = '';
-    let confidence = 0.5;
-    const startTime = performance.now();
-
-    try {
-      const systemPrompt = this.buildKuzuReActSystemPrompt(strictMode, useKuzuDB);
-      const conversation = [new SystemMessage(systemPrompt)];
-
-      // Add the user question
-      conversation.push(new HumanMessage(question));
-
-      while (currentStep <= maxReasoningSteps) {
-        // Get LLM response with reasoning
-        const response = await this.llmService.chat(reasoningConfig, conversation);
-        const content = response.content;
-
-        // Parse the response for thought, action, and observation
-        const parsed = this.parseReActResponse(content);
-
-        if (!parsed) {
-          // If we can't parse the response, assume it's the final answer
-          finalAnswer = content;
-          break;
-        }
-
-        const { thought, action, actionInput } = parsed;
-
-        // Execute the action
-        let observation = '';
-        let toolResult: KuzuToolResult | undefined;
-
-        try {
-          if (action === 'query_graph') {
-
-            if (useKuzuDB && this.kuzuQueryEngine.isReady()) {
-              // Use KuzuDB for faster query execution
-              const kuzuResult = await this.kuzuQueryEngine.executeQuery(actionInput, {
-                timeout: queryTimeout,
-                maxResults,
-                includeExecutionTime: true
-              });
-
-              observation = this.formatKuzuQueryResult(kuzuResult);
-              toolResult = {
-                toolName: 'kuzu_query_graph',
-                input: actionInput,
-                output: observation,
-                success: true,
-                executionTime: kuzuResult.executionTime,
-                resultCount: kuzuResult.resultCount
-              };
-
-              queryExecutionTimes.push(kuzuResult.executionTime);
+    if (response.tool_calls && response.tool_calls.length > 0) {
+      for (const toolCall of response.tool_calls) {
+        const toolResult = await this.executeToolCall(toolCall, {
+          useKuzuDB,
+          queryTimeout,
+          maxResults,
+          strictMode
+        });
+        
+        if (toolResult) {
+          toolResults.push(toolResult);
+          
+          if (toolCall.name === 'query_graph') {
+            cypherQueries.push({ cypher: toolCall.args.query, explanation: 'Generated via tool calling' });
+            if (toolResult.executionTime) {
+              queryExecutionTimes.push(toolResult.executionTime);
               kuzuQueryCount++;
-
-            } else {
-              // Fallback to in-memory graph query
-              const result = await this.executeGraphQuery();
-              observation = JSON.stringify(result, null, 2);
-              toolResult = {
-                toolName: 'query_graph',
-                input: actionInput,
-                output: observation,
-                success: true
-              };
             }
+          }
+          
+          if (toolResult.output) {
+            sources.push(toolResult.output);
+          }
+        }
+      }
+    }
 
-            // Generate Cypher query for logging
-            const cypherQuery = await this.cypherGenerator.generateQuery(actionInput, reasoningConfig, {
-              includeExamples: false,
-              strictMode: strictMode
+    // Convert response content to string
+    const answer = typeof response.content === 'string' 
+      ? response.content 
+      : Array.isArray(response.content) 
+        ? response.content.map(item => typeof item === 'string' ? item : JSON.stringify(item)).join(' ')
+        : JSON.stringify(response.content);
+
+    return {
+      answer,
+      reasoning: includeReasoning ? reasoning : [],
+      cypherQueries,
+      confidence: 0.8, // Could be calculated based on tool results
+      sources,
+      performance: {
+        totalExecutionTime: 0, // Will be calculated
+        queryExecutionTimes,
+        kuzuQueryCount
+      }
+    };
+  }
+
+  /**
+   * Execute a tool call and return the result
+   */
+  private async executeToolCall(
+    toolCall: any,
+    options: {
+      useKuzuDB: boolean;
+      queryTimeout: number;
+      maxResults: number;
+      strictMode: boolean;
+    }
+  ): Promise<KuzuToolResult | null> {
+    try {
+      switch (toolCall.name) {
+        case 'query_graph':
+          if (options.useKuzuDB && this.kuzuQueryEngine.isReady()) {
+            const kuzuResult = await this.kuzuQueryEngine.executeQuery(toolCall.args.query, {
+              timeout: options.queryTimeout,
+              maxResults: options.maxResults,
+              includeExecutionTime: true
             });
-
-            if (cypherQuery) {
-              cypherQueries.push(cypherQuery);
-            }
-
-          } else if (action === 'get_code') {
-            const result = await this.getCodeSnippet(actionInput);
-            observation = result;
-            toolResult = {
-              toolName: 'get_code',
-              input: actionInput,
-              output: observation,
+            
+            return {
+              toolName: 'kuzu_query_graph',
+              input: toolCall.args.query,
+              output: this.formatKuzuQueryResult(kuzuResult),
+              success: true,
+              executionTime: kuzuResult.executionTime,
+              resultCount: kuzuResult.resultCount
+            };
+          } else {
+            const result = await this.executeGraphQuery();
+            return {
+              toolName: 'query_graph',
+              input: toolCall.args.query,
+              output: JSON.stringify(result, null, 2),
               success: true
             };
-
-          } else if (action === 'search_files') {
-            const result = await this.searchFiles(actionInput);
-            observation = JSON.stringify(result, null, 2);
-            toolResult = {
-              toolName: 'search_files',
-              input: actionInput,
-              output: observation,
-              success: true
-            };
-
-          } else if (action === 'final_answer') {
-            finalAnswer = actionInput;
-            break;
           }
 
-        } catch (error) {
-          observation = `Error executing ${action}: ${error instanceof Error ? error.message : 'Unknown error'}`;
-          toolResult = {
-            toolName: action,
-            input: actionInput,
-            output: observation,
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error'
+        case 'get_code':
+          const codeResult = await this.getCodeSnippet(toolCall.args.filePath);
+          return {
+            toolName: 'get_code',
+            input: toolCall.args.filePath,
+            output: codeResult,
+            success: true
           };
-        }
 
-        // Add reasoning step
-        reasoning.push({
-          step: currentStep,
-          thought,
-          action,
-          actionInput,
-          observation,
-          toolResult,
-          cypherQuery: action === 'query_graph' ? actionInput : undefined
-        });
+        case 'search_files':
+          const searchResult = await this.searchFiles(toolCall.args.pattern);
+          return {
+            toolName: 'search_files',
+            input: toolCall.args.pattern,
+            output: JSON.stringify(searchResult, null, 2),
+            success: true
+          };
 
-        // Add to conversation for next iteration
-        conversation.push(new AIMessage(content));
-        conversation.push(new HumanMessage(`Observation: ${observation}\n\nWhat should I do next?`));
+        case 'final_answer':
+          return {
+            toolName: 'final_answer',
+            input: toolCall.args.answer,
+            output: toolCall.args.answer,
+            success: true
+          };
 
-        currentStep++;
+        default:
+          return {
+            toolName: 'unknown',
+            input: JSON.stringify(toolCall.args),
+            output: `Unknown tool: ${toolCall.name}`,
+            success: false,
+            error: `Unknown tool: ${toolCall.name}`
+          };
       }
-
-      const totalExecutionTime = performance.now() - startTime;
-
-      return {
-        answer: finalAnswer,
-        reasoning: includeReasoning ? reasoning : [],
-        cypherQueries,
-        confidence,
-        sources,
-        performance: {
-          totalExecutionTime,
-          queryExecutionTimes,
-          kuzuQueryCount
-        }
-      };
-
     } catch (error) {
-      console.error('KuzuRAG orchestrator error:', error);
-      throw new Error(`RAG orchestration failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      return {
+        toolName: toolCall.name,
+        input: JSON.stringify(toolCall.args),
+        output: `Error executing tool: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
     }
   }
 
@@ -332,25 +393,6 @@ When using query_graph, focus on:
 - Relationship exploration between code entities`;
 
     return basePrompt;
-  }
-
-  /**
-   * Parse ReAct response format
-   */
-  private parseReActResponse(content: string): { thought: string; action: string; actionInput: string } | null {
-    const thoughtMatch = content.match(/Thought:\s*(.+?)(?=\nAction:)/s);
-    const actionMatch = content.match(/Action:\s*(.+?)(?=\nAction Input:)/);
-    const actionInputMatch = content.match(/Action Input:\s*(.+?)(?=\nObservation:|\nThought:|$)/s);
-
-    if (thoughtMatch && actionMatch && actionInputMatch) {
-      return {
-        thought: thoughtMatch[1].trim(),
-        action: actionMatch[1].trim(),
-        actionInput: actionInputMatch[1].trim()
-      };
-    }
-
-    return null;
   }
 
   /**

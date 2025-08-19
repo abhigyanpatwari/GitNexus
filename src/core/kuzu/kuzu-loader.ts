@@ -3,7 +3,33 @@
  * Handles loading and initialization of KuzuDB WebAssembly module using the official npm package
  */
 
-import kuzu from 'kuzu-wasm';
+import kuzuWasm from 'kuzu-wasm';
+
+// Define types for Kuzu query results
+export interface KuzuQueryResult {
+  results: unknown[];
+  count: number;
+}
+
+// Define types for database info
+export interface KuzuDatabaseInfo {
+  tables: unknown[];
+  nodeCount: number;
+  relCount: number;
+}
+
+// Define types for Kuzu module (since it's from WASM)
+type KuzuModule = {
+  Database: new (path: string) => unknown;
+  Connection: new (database: unknown) => unknown;
+  FS: {
+    mkdir: (path: string) => Promise<void>;
+    mountIdbfs: (path: string) => Promise<void>;
+    syncfs: (flag: boolean) => Promise<void>;
+    unmount: (path: string) => Promise<void>;
+  };
+  setWorkerPath?: (path: string) => void;
+};
 
 export interface KuzuDBInstance {
   // Basic database operations
@@ -12,25 +38,25 @@ export interface KuzuDBInstance {
   closeDatabase(): Promise<void>;
   
   // Query execution
-  executeQuery(query: string): Promise<any>;
+  executeQuery(query: string): Promise<KuzuQueryResult>;
   
   // Schema operations
   createNodeTable(tableName: string, properties: Record<string, string>): Promise<void>;
-  createRelTable(tableName: string, properties: Record<string, string>): Promise<void>;
+  createRelTable(tableName: string, properties: Record<string, string>, sourceTable?: string, targetTable?: string): Promise<void>;
   
   // Data operations
-  insertNode(tableName: string, properties: Record<string, any>): Promise<void>;
-  insertRel(tableName: string, sourceId: string, targetId: string, properties: Record<string, any>): Promise<void>;
+  insertNode(tableName: string, properties: Record<string, unknown>): Promise<void>;
+  insertRel(tableName: string, sourceId: string, targetId: string, properties: Record<string, unknown>): Promise<void>;
   
   // Utility
-  getDatabaseInfo(): Promise<any>;
+  getDatabaseInfo(): Promise<KuzuDatabaseInfo>;
   clearDatabase(): Promise<void>;
 }
 
 let kuzuInstance: KuzuDBInstance | null = null;
-let kuzuModule: any = null;
-let database: any = null;
-let connection: any = null;
+let kuzuModule: KuzuModule | null = null;
+let database: unknown = null;
+let connection: unknown = null;
 
 export async function initKuzuDB(): Promise<KuzuDBInstance> {
   if (kuzuInstance) {
@@ -40,17 +66,26 @@ export async function initKuzuDB(): Promise<KuzuDBInstance> {
   try {
     console.log('Loading KuzuDB WASM...');
     
-    // Set worker path for browser environment
-    if (typeof window !== 'undefined') {
-      kuzu.setWorkerPath('/node_modules/kuzu-wasm/dist/worker.js');
+    // Initialize KuzuDB module - it's a function that returns a promise
+    if (typeof kuzuWasm === 'function') {
+      kuzuModule = await kuzuWasm();
+    } else {
+      // If it's already an object, use it directly
+      kuzuModule = kuzuWasm;
     }
     
-    // Initialize KuzuDB module
-    kuzuModule = await kuzu();
+    console.log('KuzuDB WASM loaded successfully', kuzuModule);
     
-    console.log('KuzuDB WASM loaded successfully');
+    // Set worker path for multithreaded operations
+    if (kuzuModule && kuzuModule.setWorkerPath) {
+      kuzuModule.setWorkerPath('/kuzu/kuzu_wasm_worker.js');
+      console.log('KuzuDB worker path set');
+    }
     
     // Create KuzuDB instance wrapper
+    if (!kuzuModule) {
+      throw new Error('KuzuDB module not loaded');
+    }
     kuzuInstance = createKuzuDBInstance(kuzuModule);
     
     return kuzuInstance;
@@ -61,7 +96,7 @@ export async function initKuzuDB(): Promise<KuzuDBInstance> {
   }
 }
 
-function createKuzuDBInstance(kuzuModule: any): KuzuDBInstance {
+function createKuzuDBInstance(kuzuModule: KuzuModule): KuzuDBInstance {
   return {
     async createDatabase(path: string): Promise<void> {
       console.log(`Creating database at: ${path}`);
@@ -98,12 +133,14 @@ function createKuzuDBInstance(kuzuModule: any): KuzuDBInstance {
       console.log('Closing database');
       
       if (connection) {
-        await connection.close();
+        const conn = connection as { close: () => Promise<void> };
+        await conn.close();
         connection = null;
       }
       
       if (database) {
-        await database.close();
+        const db = database as { close: () => Promise<void> };
+        await db.close();
         database = null;
       }
       
@@ -114,14 +151,21 @@ function createKuzuDBInstance(kuzuModule: any): KuzuDBInstance {
       }
     },
     
-    async executeQuery(query: string): Promise<any> {
+    async executeQuery(query: string): Promise<KuzuQueryResult> {
       console.log(`Executing query: ${query}`);
       
       if (!connection) {
         throw new Error('Database not initialized. Call createDatabase() or openDatabase() first.');
       }
       
-      const queryResult = await connection.query(query);
+      // Type assertion for connection since it comes from WASM
+      interface QueryResult {
+        getAllObjects: () => Promise<unknown[]>;
+        close: () => Promise<void>;
+      }
+      
+      const conn = connection as { query: (q: string) => Promise<QueryResult> };
+      const queryResult = await conn.query(query);
       const results = await queryResult.getAllObjects();
       const count = results.length;
       
@@ -141,18 +185,18 @@ function createKuzuDBInstance(kuzuModule: any): KuzuDBInstance {
       await this.executeQuery(query);
     },
     
-    async createRelTable(tableName: string, properties: Record<string, string>): Promise<void> {
-      console.log(`Creating relationship table: ${tableName}`, properties);
-      
-      const propertyDefs = Object.entries(properties)
-        .map(([name, type]) => `${name} ${type}`)
-        .join(', ');
-      
-      const query = `CREATE REL TABLE ${tableName}(FROM Node TO Node, ${propertyDefs})`;
-      await this.executeQuery(query);
-    },
+         async createRelTable(tableName: string, properties: Record<string, string>, sourceTable: string = 'Node_File', targetTable: string = 'Node_File'): Promise<void> {
+       console.log(`Creating relationship table: ${tableName}`, properties);
+       
+       const propertyDefs = Object.entries(properties)
+         .map(([name, type]) => `${name} ${type}`)
+         .join(', ');
+       
+       const query = `CREATE REL TABLE ${tableName}(FROM ${sourceTable} TO ${targetTable}, ${propertyDefs})`;
+       await this.executeQuery(query);
+     },
     
-    async insertNode(tableName: string, properties: Record<string, any>): Promise<void> {
+    async insertNode(tableName: string, properties: Record<string, unknown>): Promise<void> {
       console.log(`Inserting node into ${tableName}:`, properties);
       
       const columns = Object.keys(properties).join(', ');
@@ -164,7 +208,7 @@ function createKuzuDBInstance(kuzuModule: any): KuzuDBInstance {
       await this.executeQuery(query);
     },
     
-    async insertRel(tableName: string, sourceId: string, targetId: string, properties: Record<string, any>): Promise<void> {
+    async insertRel(tableName: string, sourceId: string, targetId: string, properties: Record<string, unknown>): Promise<void> {
       console.log(`Inserting relationship into ${tableName}: ${sourceId} -> ${targetId}`, properties);
       
       const columns = ['FROM', 'TO', ...Object.keys(properties)].join(', ');
@@ -176,7 +220,7 @@ function createKuzuDBInstance(kuzuModule: any): KuzuDBInstance {
       await this.executeQuery(query);
     },
     
-    async getDatabaseInfo(): Promise<any> {
+    async getDatabaseInfo(): Promise<KuzuDatabaseInfo> {
       console.log('Getting database info');
       
       // Get table information
@@ -193,8 +237,8 @@ function createKuzuDBInstance(kuzuModule: any): KuzuDBInstance {
       
       return {
         tables: tablesResult.results,
-        nodeCount: nodeResult.results[0]?.count || 0,
-        relCount: relResult.results[0]?.count || 0
+        nodeCount: (nodeResult.results[0] as { count?: number })?.count || 0,
+        relCount: (relResult.results[0] as { count?: number })?.count || 0
       };
     },
     
@@ -206,7 +250,7 @@ function createKuzuDBInstance(kuzuModule: any): KuzuDBInstance {
       const tablesResult = await this.executeQuery(tablesQuery);
       
       for (const table of tablesResult.results) {
-        const tableName = table.name;
+        const tableName = (table as { name: string }).name;
         await this.executeQuery(`DROP TABLE ${tableName}`);
       }
     }

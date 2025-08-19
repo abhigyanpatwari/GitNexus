@@ -36,7 +36,7 @@ export class KuzuService {
       nodeTables: new Map(),
       relTables: new Map()
     };
-    this.databasePath = '/kuzu/gitnexus.db';
+    this.databasePath = '/database/gitnexus.db';
   }
 
   /**
@@ -155,7 +155,9 @@ export class KuzuService {
         properties
       });
 
-      await this.kuzuInstance.createRelTable(tableName, properties);
+      // For now, use Node_File as the default source and target table
+      // In a more sophisticated implementation, we would determine the correct tables based on relationship type
+      await this.kuzuInstance.createRelTable(tableName, properties, 'Node_File', 'Node_File');
     }
 
     console.log('KuzuDB schema created successfully');

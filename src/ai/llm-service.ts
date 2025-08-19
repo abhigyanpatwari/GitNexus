@@ -52,6 +52,13 @@ export class LLMService {
   constructor() {}
 
   /**
+   * Get the chat model instance for tool binding
+   */
+  public getModel(config: LLMConfig): BaseChatModel {
+    return this.getChatModel(config);
+  }
+
+  /**
    * Initialize or get a chat model for the specified provider
    */
   public getChatModel(config: LLMConfig): any {

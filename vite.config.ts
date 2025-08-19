@@ -31,7 +31,7 @@ export default defineConfig({
     }
   },
   optimizeDeps: {
-    exclude: ['@langchain/langgraph'],
+    exclude: ['@langchain/langgraph', 'kuzu-wasm'],
     include: [
       'camelcase', 
       'decamelize', 
@@ -52,8 +52,7 @@ export default defineConfig({
       'p-finally',
       'eventemitter3',
       'web-tree-sitter',
-      'comlink',
-      'kuzu-wasm'
+      'comlink'
     ],
     force: true,
     holdUntilCrawlEnd: true
@@ -67,7 +66,6 @@ export default defineConfig({
       defaultIsModuleExports: true
     },
     rollupOptions: {
-      external: ['kuzu-wasm'],
       output: {
         manualChunks: {
           kuzu: ['kuzu-wasm']

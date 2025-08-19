@@ -5,7 +5,10 @@ import rehypeHighlight from 'rehype-highlight';
 import type { KnowledgeGraph } from '../../../core/graph/types.ts';
 import { LLMService, type LLMProvider, type LLMConfig } from '../../../ai/llm-service.ts';
 import { CypherGenerator } from '../../../ai/cypher-generator.ts';
-import { RAGOrchestrator, type RAGResponse, type RAGOptions } from '../../../ai/orchestrator.ts';
+import { ReActAgent, type ReActResult, type ReActOptions } from '../../../ai/react-agent.ts';
+import { KuzuQueryEngine } from '../../../core/graph/kuzu-query-engine.ts';
+import { sessionManager, type SessionInfo } from '../../../lib/session-manager.ts';
+import { ChatSessionManager } from '../../../lib/chat-history.ts';
 
 interface ChatMessage {
   id: string;
@@ -32,7 +35,7 @@ interface ChatMessage {
     }>;
     debugInfo?: {
       llmConfig: LLMConfig;
-      ragOptions: RAGOptions;
+      ragOptions: ReActOptions;
       contextInfo: {
         nodeCount: number;
         fileCount: number;
@@ -47,6 +50,7 @@ interface ChatMessage {
 interface ChatInterfaceProps {
   graph: KnowledgeGraph;
   fileContents: Map<string, string>;
+  projectName?: string;
   className?: string;
   style?: React.CSSProperties;
 }
@@ -66,6 +70,7 @@ interface LLMSettings {
 const ChatInterface: React.FC<ChatInterfaceProps> = ({
   graph,
   fileContents,
+  projectName = 'Unknown Project',
   className = '',
   style = {}
 }) => {
@@ -75,6 +80,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [showSettings, setShowSettings] = useState(false);
   const [showReasoning, setShowReasoning] = useState(false);
   const [debugMode, setDebugMode] = useState(false);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [showSessionManager, setShowSessionManager] = useState(false);
   
   // LLM Configuration
   const [llmSettings, setLLMSettings] = useState<LLMSettings>({
@@ -91,15 +99,70 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   // Services
   const [llmService] = useState(new LLMService());
   const [cypherGenerator] = useState(new CypherGenerator(llmService));
-  const [ragOrchestrator] = useState(new RAGOrchestrator(llmService, cypherGenerator));
+  const [kuzuQueryEngine] = useState(new KuzuQueryEngine());
+  const [ragOrchestrator] = useState(new ReActAgent(llmService, cypherGenerator, kuzuQueryEngine));
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // Initialize RAG context when graph or fileContents change
   useEffect(() => {
-    ragOrchestrator.setContext({ graph, fileContents });
-  }, [graph, fileContents, ragOrchestrator]);
+    const initializeOrchestrator = async () => {
+      try {
+        await ragOrchestrator.initialize();
+        
+        // Only set context if we have valid graph data
+        if (graph && graph.nodes && graph.nodes.length > 0) {
+          // Get or create session
+          let sessionId = ChatSessionManager.getCurrentSession();
+          if (!sessionId) {
+            sessionId = ChatSessionManager.createSession(projectName);
+          }
+          
+          // Set context with graph data
+          const llmConfig: LLMConfig = {
+            provider: llmSettings.provider,
+            model: llmSettings.model,
+            temperature: llmSettings.temperature,
+            maxTokens: llmSettings.maxTokens,
+            apiKey: llmSettings.apiKey,
+            azureOpenAIEndpoint: llmSettings.azureOpenAIEndpoint,
+            azureOpenAIDeploymentName: llmSettings.azureOpenAIDeploymentName,
+            azureOpenAIApiVersion: llmSettings.azureOpenAIApiVersion
+          };
+          
+          await ragOrchestrator.setContext({ 
+            graph, 
+            fileContents, 
+            projectName,
+            sessionId 
+          }, llmConfig);
+          
+          setCurrentSessionId(sessionId);
+          
+          // Load conversation history
+          const conversationHistory = await ragOrchestrator.getConversationHistory();
+          const chatMessages = conversationHistory.map((msg, index) => ({
+            id: `history_${index}`,
+            role: msg.constructor.name === 'HumanMessage' ? 'user' as const : 'assistant' as const,
+            content: msg.content.toString(),
+            timestamp: new Date((msg.additional_kwargs?.metadata as any)?.timestamp || Date.now())
+          }));
+          
+          setMessages(chatMessages);
+          
+          // Load sessions list
+          refreshSessions();
+        } else {
+          console.log('No valid graph data available yet, skipping context initialization');
+        }
+      } catch (error) {
+        console.error('Failed to initialize orchestrator:', error);
+      }
+    };
+    
+    initializeOrchestrator();
+  }, [graph, fileContents, projectName, ragOrchestrator]);
 
   // Load settings from localStorage on mount
   useEffect(() => {
@@ -165,6 +228,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       }
     }
 
+    // Check if we have a valid graph context
+    if (!graph || !graph.nodes || graph.nodes.length === 0) {
+      alert('No codebase loaded yet. Please load a repository first to analyze.');
+      return;
+    }
+
     const userMessage: ChatMessage = {
       id: generateId(),
       role: 'user',
@@ -191,14 +260,15 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         azureOpenAIApiVersion: llmSettings.azureOpenAIApiVersion
       };
 
-      const ragOptions: RAGOptions = {
-        maxReasoningSteps: 5,
+      const ragOptions: ReActOptions = {
+        maxIterations: 5,
         includeReasoning: debugMode || showReasoning, // Always include reasoning in debug mode
-        strictMode: false,
-        temperature: llmSettings.temperature
+        temperature: llmSettings.temperature,
+        enableQueryCaching: true,
+        similarityThreshold: 0.8
       };
 
-      const response: RAGResponse = await ragOrchestrator.answerQuestion(
+      const response: ReActResult = await ragOrchestrator.processQuestion(
         userMessage.content,
         llmConfig,
         ragOptions
@@ -231,7 +301,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           debugInfo: debugMode ? {
             llmConfig,
             ragOptions,
-            contextInfo: ragOrchestrator.getContextInfo(),
+            contextInfo: {
+              nodeCount: 0, // TODO: Implement getContextInfo
+              fileCount: fileContents.size,
+              hasContext: true
+            },
             totalExecutionTime: executionTime,
             queryExecutionTimes: response.cypherQueries.map(q => ({
               query: q.cypher,
@@ -265,9 +339,82 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   };
 
-  // Clear conversation
-  const clearConversation = () => {
+  // Session management functions
+  const refreshSessions = () => {
+    const allSessions = sessionManager.getAllSessions();
+    setSessions(allSessions);
+  };
+
+  const createNewSession = () => {
+    const sessionId = sessionManager.createSession({ 
+      name: `Chat ${new Date().toLocaleString()}`,
+      projectName,
+      switchToSession: true
+    });
+    setCurrentSessionId(sessionId);
     setMessages([]);
+    refreshSessions();
+  };
+
+  const switchSession = async (sessionId: string) => {
+    if (sessionManager.switchToSession(sessionId)) {
+      setCurrentSessionId(sessionId);
+      
+      // Load conversation history for the new session
+      const llmConfig: LLMConfig = {
+        provider: llmSettings.provider,
+        model: llmSettings.model,
+        temperature: llmSettings.temperature,
+        maxTokens: llmSettings.maxTokens,
+        apiKey: llmSettings.apiKey,
+        azureOpenAIEndpoint: llmSettings.azureOpenAIEndpoint,
+        azureOpenAIDeploymentName: llmSettings.azureOpenAIDeploymentName,
+        azureOpenAIApiVersion: llmSettings.azureOpenAIApiVersion
+      };
+      
+      await ragOrchestrator.setContext({ 
+        graph, 
+        fileContents, 
+        projectName,
+        sessionId 
+      }, llmConfig);
+      
+      const conversationHistory = await ragOrchestrator.getConversationHistory();
+      const chatMessages = conversationHistory.map((msg, index) => ({
+        id: `history_${index}`,
+        role: msg.constructor.name === 'HumanMessage' ? 'user' as const : 'assistant' as const,
+        content: msg.content.toString(),
+        timestamp: new Date((msg.additional_kwargs?.metadata as any)?.timestamp || Date.now())
+      }));
+      
+      setMessages(chatMessages);
+      refreshSessions();
+    }
+  };
+
+  const deleteSession = (sessionId: string) => {
+    if (confirm('Are you sure you want to delete this conversation?')) {
+      if (sessionManager.deleteSession(sessionId)) {
+        if (currentSessionId === sessionId) {
+          createNewSession();
+        }
+        refreshSessions();
+      }
+    }
+  };
+
+  const renameSession = (sessionId: string, newName: string) => {
+    if (sessionManager.renameSession(sessionId, newName)) {
+      refreshSessions();
+    }
+  };
+
+  // Clear conversation
+  const clearConversation = async () => {
+    if (confirm('Are you sure you want to clear this conversation?')) {
+      await ragOrchestrator.clearConversationHistory();
+      setMessages([]);
+    }
   };
 
   // Toggle debug mode and save to localStorage
@@ -279,7 +426,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   // Graph diagnostics
   const runGraphDiagnostics = () => {
-    const contextInfo = ragOrchestrator.getContextInfo();
+    const contextInfo = {
+      nodeCount: 0, // TODO: Implement getContextInfo
+      fileCount: fileContents.size,
+      hasContext: true
+    };
     
     if (!contextInfo.hasContext) {
       alert('No graph loaded yet. Please load a repository first.');
@@ -499,7 +650,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
               <div className="border border-gray-200 rounded-lg p-4 bg-white">
                 <h4 className="font-semibold text-gray-900 mb-3">RAG Options</h4>
                 <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div><span className="font-medium">Max Reasoning Steps:</span> {message.metadata.debugInfo.ragOptions.maxReasoningSteps}</div>
+                  <div><span className="font-medium">Max Iterations:</span> {message.metadata.debugInfo.ragOptions.maxIterations}</div>
                   <div><span className="font-medium">Include Reasoning:</span> {message.metadata.debugInfo.ragOptions.includeReasoning ? 'Yes' : 'No'}</div>
                   <div><span className="font-medium">Strict Mode:</span> {message.metadata.debugInfo.ragOptions.strictMode ? 'Yes' : 'No'}</div>
                   <div><span className="font-medium">Temperature:</span> {message.metadata.debugInfo.ragOptions.temperature}</div>
@@ -778,6 +929,30 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         
         <div style={{ display: 'flex', gap: '8px' }}>
           <button
+            onClick={() => setShowSessionManager(!showSessionManager)}
+            style={{
+              ...buttonStyle,
+              backgroundColor: showSessionManager ? '#28a745' : '#6c757d',
+              fontSize: '12px',
+              padding: '6px 12px'
+            }}
+            title="Manage chat sessions"
+          >
+            💬 Sessions ({sessions.length})
+          </button>
+          <button
+            onClick={createNewSession}
+            style={{
+              ...buttonStyle,
+              backgroundColor: '#17a2b8',
+              fontSize: '12px',
+              padding: '6px 12px'
+            }}
+            title="Start new conversation"
+          >
+            ➕ New
+          </button>
+          <button
             onClick={() => setShowReasoning(!showReasoning)}
             style={{
               ...buttonStyle,
@@ -1006,6 +1181,125 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </div>
       )}
 
+      {/* Session Manager Panel */}
+      {showSessionManager && (
+        <div style={{
+          padding: '16px',
+          backgroundColor: '#f8f9fa',
+          borderBottom: '1px solid #eee',
+          maxHeight: '300px',
+          overflowY: 'auto'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+            <h4 style={{ margin: '0', fontSize: '14px' }}>Chat Sessions</h4>
+            <button
+              onClick={createNewSession}
+              style={{
+                ...buttonStyle,
+                backgroundColor: '#28a745',
+                fontSize: '12px',
+                padding: '4px 8px'
+              }}
+            >
+              ➕ New Session
+            </button>
+          </div>
+          
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {sessions.map((session) => (
+              <div
+                key={session.id}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  padding: '8px',
+                  backgroundColor: session.isActive ? '#e3f2fd' : '#fff',
+                  border: session.isActive ? '2px solid #2196f3' : '1px solid #ddd',
+                  borderRadius: '4px',
+                  cursor: 'pointer'
+                }}
+                onClick={() => switchSession(session.id)}
+              >
+                <div style={{ flex: 1 }}>
+                  <div style={{ 
+                    fontSize: '13px', 
+                    fontWeight: session.isActive ? '600' : '400',
+                    marginBottom: '2px'
+                  }}>
+                    {session.name}
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#666' }}>
+                    {session.messageCount} messages • {new Date(session.lastAccessed).toLocaleDateString()}
+                    {session.projectName && ` • ${session.projectName}`}
+                  </div>
+                </div>
+                
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const newName = prompt('Enter new name:', session.name);
+                      if (newName && newName.trim()) {
+                        renameSession(session.id, newName.trim());
+                      }
+                    }}
+                    style={{
+                      ...buttonStyle,
+                      backgroundColor: '#ffc107',
+                      color: '#000',
+                      fontSize: '10px',
+                      padding: '2px 6px'
+                    }}
+                    title="Rename session"
+                  >
+                    ✏️
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteSession(session.id);
+                    }}
+                    style={{
+                      ...buttonStyle,
+                      backgroundColor: '#dc3545',
+                      fontSize: '10px',
+                      padding: '2px 6px'
+                    }}
+                    title="Delete session"
+                  >
+                    🗑️
+                  </button>
+                </div>
+              </div>
+            ))}
+            
+            {sessions.length === 0 && (
+              <div style={{ 
+                textAlign: 'center', 
+                color: '#666', 
+                fontSize: '12px', 
+                padding: '20px' 
+              }}>
+                No chat sessions yet. Start a new conversation!
+              </div>
+            )}
+          </div>
+          
+          <div style={{ 
+            marginTop: '12px', 
+            padding: '8px', 
+            backgroundColor: '#e9ecef', 
+            borderRadius: '4px',
+            fontSize: '11px',
+            color: '#666'
+          }}>
+            💡 Sessions are automatically saved to your browser's local storage. 
+            Each session maintains its own conversation history and can cache query results for faster responses.
+          </div>
+        </div>
+      )}
+
       {/* Messages */}
       <div style={messagesStyle}>
         {messages.length === 0 && (
@@ -1020,6 +1314,22 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             <div style={{ fontSize: '12px', marginTop: '8px', color: '#999' }}>
               I can help you understand functions, classes, dependencies, and more.
             </div>
+                         {(!graph || !graph.nodes || graph.nodes.length === 0) && (
+               <div style={{ 
+                 marginTop: '20px', 
+                 padding: '12px', 
+                 backgroundColor: '#fff3cd', 
+                 border: '1px solid #ffeaa7',
+                 borderRadius: '4px',
+                 color: '#856404'
+               }}>
+                 <strong>⚠️ No codebase loaded</strong><br />
+                 Please load a repository first to start analyzing code.<br />
+                 <small style={{ fontSize: '11px', opacity: 0.8 }}>
+                   The knowledge graph is being built in the background. Once complete, you'll be able to ask questions.
+                 </small>
+               </div>
+             )}
           </div>
         )}
 

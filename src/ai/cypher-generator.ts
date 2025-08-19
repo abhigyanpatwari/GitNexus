@@ -1,4 +1,6 @@
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
+import { z } from 'zod';
+import { StructuredOutputParser } from '@langchain/core/output_parsers';
 import type { LLMService, LLMConfig } from './llm-service.ts';
 import type { KnowledgeGraph } from '../core/graph/types.ts';
 
@@ -15,9 +17,17 @@ export interface CypherGenerationOptions {
   strictMode?: boolean;
 }
 
+// Define Zod schema for structured output
+const CypherQuerySchema = z.object({
+  cypher: z.string().describe("The Cypher query to execute"),
+  explanation: z.string().describe("Brief explanation of what the query does and why this pattern was chosen"),
+  confidence: z.number().min(0).max(1).describe("Confidence level between 0 and 1")
+});
+
 export class CypherGenerator {
   private llmService: LLMService;
   private graphSchema: string = '';
+  private outputParser: StructuredOutputParser<typeof CypherQuerySchema>;
   
   // Common Cypher patterns and examples
   private static readonly CYPHER_EXAMPLES = [
@@ -97,6 +107,7 @@ export class CypherGenerator {
 
   constructor(llmService: LLMService) {
     this.llmService = llmService;
+    this.outputParser = StructuredOutputParser.fromZodSchema(CypherQuerySchema);
   }
 
   /**
@@ -107,7 +118,7 @@ export class CypherGenerator {
   }
 
   /**
-   * Generate a Cypher query from natural language
+   * Generate a Cypher query from natural language using structured output parsing
    */
   public async generateQuery(
     question: string,
@@ -120,7 +131,10 @@ export class CypherGenerator {
     
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        const systemPrompt = this.buildSystemPrompt(includeExamples, strictMode, lastError);
+        // Get the format instructions for structured output
+        const formatInstructions = this.outputParser.getFormatInstructions();
+        
+        const systemPrompt = this.buildSystemPrompt(includeExamples, strictMode, lastError, formatInstructions);
         const userPrompt = this.buildUserPrompt(question);
         
         const messages = [
@@ -128,8 +142,45 @@ export class CypherGenerator {
           new HumanMessage(userPrompt)
         ];
         
-        const response = await this.llmService.chat(llmConfig, messages);
-        const result = this.parseResponse(String(response.content || ''));
+        // Get the model from the service
+        const model = this.llmService.getModel(llmConfig);
+        if (!model) {
+          throw new Error('Failed to get LLM model');
+        }
+        
+        // Invoke the model directly first
+        const response = await model.invoke(messages);
+        
+        // Parse the response content
+        let result;
+        try {
+          // Extract the content from the response
+          const content = typeof response.content === 'string'
+            ? response.content
+            : JSON.stringify(response.content);
+          
+          // Try to parse the structured output
+          result = await this.outputParser.parse(content);
+        } catch (parseError) {
+          // If parsing fails, try to extract the query manually
+          console.warn('Failed to parse structured output, attempting manual extraction:', parseError);
+          
+          const content = typeof response.content === 'string'
+            ? response.content
+            : JSON.stringify(response.content);
+          
+          // Try to extract Cypher query from the response
+          const cypherMatch = content.match(/```(?:cypher|sql)?\n?(.*?)\n?```/s) ||
+                             content.match(/MATCH.*?(?:RETURN|$)/si);
+          
+          const cypherQuery = cypherMatch ? cypherMatch[1] || cypherMatch[0] : content.trim();
+          
+          result = {
+            cypher: cypherQuery,
+            explanation: 'Generated query from natural language',
+            confidence: 0.7
+          };
+        }
         
         // Validate the generated query
         const validation = this.validateQuery(result.cypher);
@@ -163,7 +214,12 @@ export class CypherGenerator {
   /**
    * Build the system prompt with schema and examples
    */
-  private buildSystemPrompt(includeExamples: boolean, strictMode: boolean, lastError?: string | null): string {
+  private buildSystemPrompt(
+    includeExamples: boolean, 
+    strictMode: boolean, 
+    lastError?: string | null,
+    formatInstructions?: string
+  ): string {
     let prompt = `You are a Cypher query expert for a code knowledge graph using KuzuDB (a high-performance graph database). Your task is to convert natural language questions into valid Cypher queries optimized for KuzuDB.
 
 GRAPH SCHEMA:
@@ -198,53 +254,47 @@ KUZUDB OPTIMIZATION GUIDELINES:
 2. QUERY PATTERNS SUPPORTED:
 
    SIMPLE MATCH: Find nodes by label and properties
-   Pattern: MATCH (n:Label {property: 'value'}) RETURN n.property
-   
-   WHERE CLAUSE: Filter nodes with complex conditions
-   Pattern: MATCH (n:Label) WHERE n.property CONTAINS 'text' RETURN n.property
-   
-   RELATIONSHIP TRAVERSAL: Follow direct relationships
-   Pattern: MATCH (a)-[:RELATIONSHIP]->(b:Label) RETURN a.name, b.name
-   
-   VARIABLE-LENGTH PATHS: Multi-hop relationships (KuzuDB strength)
-   Pattern: MATCH (a)-[:RELATIONSHIP*1..3]->(b) RETURN a.name, b.name
-   
-   AGGREGATION: Count, collect, or summarize data
-   Pattern: MATCH (n:Label) RETURN COUNT(n)
-   Pattern: MATCH (n:Label) RETURN COLLECT(n.name)
+   MATCH (f:Function {name: 'main'}) RETURN f
 
-3. KUZUDB-SPECIFIC FEATURES:
-   - Use variable-length paths for dependency analysis: (start)-[:CALLS*1..5]->(end)
-   - Leverage pattern matching for complex relationships
-   - Use aggregation for performance statistics
-   - Optimize for read-heavy workloads
+   RELATIONSHIP TRAVERSAL: Follow relationships between nodes
+   MATCH (caller)-[:CALLS]->(target:Function) RETURN caller.name, target.name
 
-QUERY SELECTION GUIDELINES:
+   VARIABLE-LENGTH PATHS: Find chains of relationships
+   MATCH (start:Function)-[:CALLS*1..3]->(end:Function) RETURN start.name, end.name
 
-- Use SIMPLE MATCH for direct property lookups
-- Use WHERE for text search, pattern matching, or complex conditions  
-- Use RELATIONSHIP TRAVERSAL for direct connections
-- Use VARIABLE-LENGTH PATHS for call chains, dependency analysis (KuzuDB excels here)
-- Use AGGREGATION for counting, statistics, or collecting lists
+   AGGREGATION: Count and collect results
+   MATCH (f:File)-[:CONTAINS]->(func:Function) RETURN f.name, COUNT(func)
 
-IMPORTANT RULES:
-1. Always use MATCH patterns to find nodes
-2. Use WHERE clauses for filtering by text content or complex conditions
-3. Node properties include: name, filePath, startLine, endLine, type, qualifiedName
-4. Return meaningful information, not just node IDs
-5. Use case-insensitive matching: WHERE toLower(n.name) CONTAINS toLower('search')
-6. Prefer specific node types over generic matches
-7. Always return results in a readable format
-8. Use variable-length paths (*1..5) for call chains and dependency analysis - KuzuDB handles these efficiently
-9. Use aggregation functions (COUNT, COLLECT) for statistics and summaries
-10. Limit variable-length path depth to avoid performance issues (max *1..5)
-11. Leverage KuzuDB's strength in complex graph traversals for dependency analysis`;
+   PATTERN MATCHING: Use WHERE clauses for filtering
+   MATCH (f:Function) WHERE f.name CONTAINS 'user' RETURN f.name, f.filePath
+
+3. COMMON PATTERNS:
+
+   FIND FUNCTIONS IN FILE:
+   MATCH (f:File {name: 'filename.py'})-[:CONTAINS]->(func:Function) RETURN func.name
+
+   FIND CALLERS OF FUNCTION:
+   MATCH (caller)-[:CALLS]->(target:Function {name: 'functionName'}) RETURN caller.name
+
+   FIND INHERITANCE CHAIN:
+   MATCH (child:Class)-[:INHERITS*1..5]->(parent:Class) RETURN child.name, parent.name
+
+   FIND IMPORTS:
+   MATCH (f:File)-[:IMPORTS]->(module) WHERE module.name CONTAINS 'requests' RETURN f.name
+
+   COUNT ENTITIES:
+   MATCH (f:Function) RETURN COUNT(f) as functionCount
+
+   COMPLEX DEPENDENCY ANALYSIS:
+   MATCH (start:Function)-[:CALLS*1..5]->(target:Function) 
+   WHERE start.name = 'main' AND target.name CONTAINS 'db'
+   RETURN start.name, target.name, LENGTH(shortestPath((start)-[:CALLS*]->(target))) as depth`;
 
     if (includeExamples) {
-      prompt += `\n\nEXAMPLES:`;
-      for (const example of CypherGenerator.CYPHER_EXAMPLES) {
-        prompt += `\nQ: "${example.question}"\nA: ${example.cypher}\n`;
-      }
+      prompt += `\n\nEXAMPLE QUERIES:\n`;
+      CypherGenerator.CYPHER_EXAMPLES.forEach((example, index) => {
+        prompt += `${index + 1}. Question: "${example.question}"\n   Cypher: ${example.cypher}\n\n`;
+      });
     }
 
     if (strictMode) {
@@ -255,15 +305,9 @@ IMPORTANT RULES:
       prompt += `\n\nPREVIOUS ERROR: The last query attempt failed with: "${lastError}". Please fix this issue in your new query.`;
     }
 
-    prompt += `\n\nRESPONSE FORMAT:
-Provide your response in this exact JSON format:
-{
-  "cypher": "your cypher query here",
-  "explanation": "brief explanation of what the query does and why this pattern was chosen",
-  "confidence": 0.85
-}
-
-The confidence should be a number between 0 and 1 indicating how confident you are in the query.`;
+    if (formatInstructions) {
+      prompt += `\n\n${formatInstructions}`;
+    }
 
     return prompt;
   }
@@ -273,44 +317,6 @@ The confidence should be a number between 0 and 1 indicating how confident you a
    */
   private buildUserPrompt(question: string): string {
     return `Please convert this question to a Cypher query: "${question}"`;
-  }
-
-  /**
-   * Parse the LLM response to extract Cypher query
-   */
-  private parseResponse(response: string): { cypher: string; explanation: string; confidence: number } {
-    try {
-      // Try to extract JSON from the response
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        return {
-          cypher: parsed.cypher || '',
-          explanation: parsed.explanation || '',
-          confidence: parsed.confidence || 0.5
-        };
-      }
-      
-      // Fallback: try to extract Cypher from code blocks
-      const cypherMatch = response.match(/```(?:cypher)?\s*(.*?)\s*```/s);
-      if (cypherMatch) {
-        return {
-          cypher: cypherMatch[1].trim(),
-          explanation: 'Generated Cypher query',
-          confidence: 0.7
-        };
-      }
-      
-      // Last resort: use the entire response as cypher
-      return {
-        cypher: response.trim(),
-        explanation: 'Raw LLM response',
-        confidence: 0.3
-      };
-      
-    } catch (error) {
-      throw new Error(`Failed to parse LLM response: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
   }
 
   /**
@@ -421,7 +427,7 @@ The confidence should be a number between 0 and 1 indicating how confident you a
     return cypher
       .trim()
       .replace(/\s+/g, ' ')
-      .replace(/\s*([(),\[\]{}])\s*/g, '$1')
+      .replace(/\s*([(),[\]{}])\s*/g, '$1')
       .replace(/\s*([=<>!]+)\s*/g, ' $1 ')
       .replace(/\s+/g, ' ')
       .trim();
