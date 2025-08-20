@@ -8,7 +8,9 @@ import { CypherGenerator } from '../../../ai/cypher-generator.ts';
 import { ReActAgent, type ReActResult, type ReActOptions } from '../../../ai/react-agent.ts';
 import { KuzuQueryEngine } from '../../../core/graph/kuzu-query-engine.ts';
 import { sessionManager, type SessionInfo } from '../../../lib/session-manager.ts';
-import { ChatSessionManager } from '../../../lib/chat-history.ts';
+import { ChatSessionManager, LocalStorageChatHistory, type ChatHistoryMetadata } from '../../../lib/chat-history.ts';
+import { AIMessage } from '@langchain/core/messages';
+import { QueryCacheService } from '../../../lib/query-cache.ts';
 
 interface ChatMessage {
   id: string;
@@ -44,6 +46,12 @@ interface ChatMessage {
       totalExecutionTime?: number;
       queryExecutionTimes?: Array<{ query: string; time: number }>;
     };
+    cacheSuggestions?: Array<{
+      cypherQuery: string;
+      confidence: number;
+      similarity: number;
+      sourceQuestion: string;
+    }>;
   };
 }
 
@@ -78,11 +86,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [showReasoning, setShowReasoning] = useState(false);
-  const [debugMode, setDebugMode] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [showSessionManager, setShowSessionManager] = useState(false);
+  const [chatHistory, setChatHistory] = useState<LocalStorageChatHistory | null>(null);
+  const [queryCache] = useState(() => QueryCacheService.getInstance());
   
   // LLM Configuration
   const [llmSettings, setLLMSettings] = useState<LLMSettings>({
@@ -111,6 +119,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       try {
         await ragOrchestrator.initialize();
         
+        // Load existing queries from chat history into cache
+        await queryCache.loadFromChatHistory();
+        
         // Only set context if we have valid graph data
         if (graph && graph.nodes && graph.nodes.length > 0) {
           // Get or create session
@@ -118,6 +129,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           if (!sessionId) {
             sessionId = ChatSessionManager.createSession(projectName);
           }
+          
+          // Initialize chat history
+          const history = new LocalStorageChatHistory(sessionId);
+          setChatHistory(history);
+          setCurrentSessionId(sessionId);
           
           // Set context with graph data
           const llmConfig: LLMConfig = {
@@ -138,18 +154,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             sessionId 
           }, llmConfig);
           
-          setCurrentSessionId(sessionId);
+          // Set chat history for conversation context
+          ragOrchestrator.setChatHistory(history);
           
-          // Load conversation history
-          const conversationHistory = await ragOrchestrator.getConversationHistory();
-          const chatMessages = conversationHistory.map((msg, index) => ({
-            id: `history_${index}`,
-            role: msg.constructor.name === 'HumanMessage' ? 'user' as const : 'assistant' as const,
-            content: msg.content.toString(),
-            timestamp: new Date((msg.additional_kwargs?.metadata as any)?.timestamp || Date.now())
-          }));
-          
-          setMessages(chatMessages);
+          // Load conversation history from chat history
+          await loadConversationHistory(history);
           
           // Load sessions list
           refreshSessions();
@@ -164,6 +173,24 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     initializeOrchestrator();
   }, [graph, fileContents, projectName, ragOrchestrator]);
 
+  // Load conversation history from chat history
+  const loadConversationHistory = async (history: LocalStorageChatHistory) => {
+    try {
+      const langchainMessages = await history.getMessages();
+      const chatMessages = langchainMessages.map((msg, index) => ({
+        id: `history_${index}`,
+        role: msg.constructor.name === 'HumanMessage' ? 'user' as const : 'assistant' as const,
+        content: msg.content.toString(),
+        timestamp: new Date((msg.additional_kwargs?.metadata as ChatHistoryMetadata)?.timestamp || Date.now()),
+        metadata: (msg.additional_kwargs?.metadata as ChatHistoryMetadata) || undefined
+      }));
+      
+      setMessages(chatMessages);
+    } catch (error) {
+      console.error('Failed to load conversation history:', error);
+    }
+  };
+
   // Load settings from localStorage on mount
   useEffect(() => {
     const savedProvider = localStorage.getItem('llm_provider') as LLMProvider;
@@ -171,7 +198,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     const savedAzureEndpoint = localStorage.getItem('azure_openai_endpoint');
     const savedAzureDeployment = localStorage.getItem('azure_openai_deployment');
     const savedAzureApiVersion = localStorage.getItem('azure_openai_api_version');
-    const savedDebugMode = localStorage.getItem('debug_mode') === 'true';
 
     if (savedProvider || savedApiKey || savedAzureEndpoint) {
       setLLMSettings(prev => ({
@@ -187,8 +213,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           : (savedProvider ? llmService.getAvailableModels(savedProvider)[0] : prev.model)
       }));
     }
-
-    setDebugMode(savedDebugMode);
   }, [llmService]);
 
   // Auto-scroll to bottom when new messages arrive
@@ -199,7 +223,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   // Handle form submission
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputValue.trim() || isLoading) return;
+    if (!inputValue.trim() || isLoading || !chatHistory) return;
 
     // Validate API key
     if (!llmSettings.apiKey.trim()) {
@@ -241,6 +265,15 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       timestamp: new Date()
     };
 
+    // Check for cached query suggestions
+    const cachedSuggestions = queryCache.findSimilarQueries(userMessage.content, {
+      minSimilarity: 0.8,
+      maxResults: 3,
+      minConfidence: 0.7
+    });
+
+    // Save user message to chat history
+    await chatHistory.addUserMessage(userMessage.content);
     setMessages(prev => [...prev, userMessage]);
     setInputValue('');
     setIsLoading(true);
@@ -262,7 +295,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
       const ragOptions: ReActOptions = {
         maxIterations: 5,
-        includeReasoning: debugMode || showReasoning, // Always include reasoning in debug mode
+        includeReasoning: true, // Always include reasoning for better UX
         temperature: llmSettings.temperature,
         enableQueryCaching: true,
         similarityThreshold: 0.8
@@ -290,15 +323,15 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           })),
           sources: response.sources,
           confidence: response.confidence,
-          reasoning: (debugMode || showReasoning) ? response.reasoning.map(r => ({
+          reasoning: response.reasoning.map(r => ({
             step: r.step,
             thought: r.thought,
             action: r.action,
             actionInput: r.actionInput,
             observation: r.observation,
             toolResult: r.toolResult
-          })) : undefined,
-          debugInfo: debugMode ? {
+          })),
+          debugInfo: {
             llmConfig,
             ragOptions,
             contextInfo: {
@@ -311,9 +344,50 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
               query: q.cypher,
               time: 0 // We'd need to instrument the query engine for this
             }))
-          } : undefined
+          }
         }
       };
+
+      // Save assistant message with metadata to chat history for learning and caching
+      const metadata: ChatHistoryMetadata = {
+        cypherQuery: response.cypherQueries.length > 0 ? response.cypherQueries[0].cypher : undefined,
+        queryResult: response.cypherQueries.length > 0 ? response.cypherQueries as unknown : undefined,
+        executionTime: executionTime,
+        timestamp: Date.now(),
+        confidence: response.confidence,
+        sources: response.sources
+      };
+
+      await chatHistory.addMessageWithMetadata(
+        new AIMessage(response.answer),
+        metadata
+      );
+
+      // Learn from this query for future improvements
+      if (response.cypherQueries.length > 0) {
+        const success = response.confidence > 0.5;
+        queryCache.addQuery(
+          userMessage.content,
+          response.cypherQueries[0].cypher,
+          response.confidence,
+          executionTime,
+          0, // We don't have result count
+          success
+        );
+      }
+
+      // Add cache suggestions to the message if available
+      if (cachedSuggestions.length > 0) {
+        assistantMessage.metadata = {
+          ...assistantMessage.metadata,
+          cacheSuggestions: cachedSuggestions.map(s => ({
+            cypherQuery: s.cypherQuery,
+            confidence: s.confidence,
+            similarity: s.similarity,
+            sourceQuestion: s.sourceQuestion
+          }))
+        };
+      }
 
       setMessages(prev => [...prev, assistantMessage]);
 
@@ -325,6 +399,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         timestamp: new Date()
       };
 
+      // Save error message to chat history
+      await chatHistory.addAIChatMessage(errorMessage.content);
       setMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
@@ -360,6 +436,10 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     if (sessionManager.switchToSession(sessionId)) {
       setCurrentSessionId(sessionId);
       
+      // Initialize new chat history
+      const history = new LocalStorageChatHistory(sessionId);
+      setChatHistory(history);
+      
       // Load conversation history for the new session
       const llmConfig: LLMConfig = {
         provider: llmSettings.provider,
@@ -379,15 +459,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         sessionId 
       }, llmConfig);
       
-      const conversationHistory = await ragOrchestrator.getConversationHistory();
-      const chatMessages = conversationHistory.map((msg, index) => ({
-        id: `history_${index}`,
-        role: msg.constructor.name === 'HumanMessage' ? 'user' as const : 'assistant' as const,
-        content: msg.content.toString(),
-        timestamp: new Date((msg.additional_kwargs?.metadata as any)?.timestamp || Date.now())
-      }));
+      // Set chat history for conversation context
+      ragOrchestrator.setChatHistory(history);
       
-      setMessages(chatMessages);
+      // Load conversation history from chat history
+      await loadConversationHistory(history);
       refreshSessions();
     }
   };
@@ -411,301 +487,153 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   // Clear conversation
   const clearConversation = async () => {
-    if (confirm('Are you sure you want to clear this conversation?')) {
-      await ragOrchestrator.clearConversationHistory();
+    if (confirm('Are you sure you want to clear this conversation?') && chatHistory) {
+      await chatHistory.clear();
       setMessages([]);
     }
   };
 
-  // Toggle debug mode and save to localStorage
-  const toggleDebugMode = () => {
-    const newDebugMode = !debugMode;
-    setDebugMode(newDebugMode);
-    localStorage.setItem('debug_mode', newDebugMode.toString());
-  };
+  // Reasoning Component for Assistant Messages
+  const ReasoningSection: React.FC<{ reasoning: NonNullable<ChatMessage['metadata']>['reasoning'] }> = ({ reasoning }) => {
+    const [isExpanded, setIsExpanded] = useState(false);
 
-  // Graph diagnostics
-  const runGraphDiagnostics = () => {
-    const contextInfo = {
-      nodeCount: 0, // TODO: Implement getContextInfo
-      fileCount: fileContents.size,
-      hasContext: true
-    };
-    
-    if (!contextInfo.hasContext) {
-      alert('No graph loaded yet. Please load a repository first.');
-      return;
-    }
-
-    // Basic statistics
-    const stats = [
-      `📊 Graph Statistics:`,
-      `• Nodes: ${contextInfo.nodeCount}`,
-      `• Files: ${contextInfo.fileCount}`,
-      ``,
-      `🔍 Diagnostic Tips:`,
-      `• Check browser console for detailed ingestion logs`,
-      `• Look for warnings about isolated nodes or parsing failures`,
-      `• Verify that source files contain recognizable functions/classes`,
-      ``,
-      `If you see isolated nodes:`,
-      `1. Check if files failed to parse (console warnings)`,
-      `2. Ensure files contain valid code syntax`,
-      `3. Check if file extensions are supported (.js, .ts, .py, etc.)`,
-      `4. Look for import/export syntax errors`
-    ].join('\n');
-
-    alert(stats);
-    
-    // Also log to console for more details
-    console.log('🔍 Graph Diagnostics Requested');
-    console.log('Context Info:', contextInfo);
-  };
-
-  // Debug Panel Component
-  const DebugPanel: React.FC<{ message: ChatMessage }> = ({ message }) => {
-    if (!message.metadata?.debugInfo && !message.metadata?.reasoning && !message.metadata?.cypherQueries) {
+    if (!reasoning || reasoning.length === 0) {
       return null;
     }
 
-    const [activeTab, setActiveTab] = useState<'reasoning' | 'queries' | 'config' | 'context'>('reasoning');
-
     return (
-      <div className="mt-4 border border-gray-200 rounded-lg bg-gray-50">
-        <div className="border-b border-gray-200">
-          <nav className="flex space-x-8 px-4" aria-label="Tabs">
-            {message.metadata?.reasoning && (
-              <button
-                onClick={() => setActiveTab('reasoning')}
-                className={`py-2 px-1 border-b-2 font-medium text-sm ${
-                  activeTab === 'reasoning'
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
-              >
-                Reasoning Steps ({message.metadata.reasoning.length})
-              </button>
-            )}
-            {message.metadata?.cypherQueries && message.metadata.cypherQueries.length > 0 && (
-              <button
-                onClick={() => setActiveTab('queries')}
-                className={`py-2 px-1 border-b-2 font-medium text-sm ${
-                  activeTab === 'queries'
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
-              >
-                Cypher Queries ({message.metadata.cypherQueries.length})
-              </button>
-            )}
-            {message.metadata?.debugInfo && (
-              <>
-                <button
-                  onClick={() => setActiveTab('config')}
-                  className={`py-2 px-1 border-b-2 font-medium text-sm ${
-                    activeTab === 'config'
-                      ? 'border-blue-500 text-blue-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  }`}
-                >
-                  Configuration
-                </button>
-                <button
-                  onClick={() => setActiveTab('context')}
-                  className={`py-2 px-1 border-b-2 font-medium text-sm ${
-                    activeTab === 'context'
-                      ? 'border-blue-500 text-blue-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  }`}
-                >
-                  Context Info
-                </button>
-              </>
-            )}
-          </nav>
-        </div>
-
-        <div className="p-4">
-          {/* Reasoning Steps Tab */}
-          {activeTab === 'reasoning' && message.metadata?.reasoning && (
-            <div className="space-y-4">
-              {message.metadata.reasoning.map((step, index) => (
-                <div key={index} className="border border-gray-200 rounded-lg p-4 bg-white">
-                  <div className="flex items-center justify-between mb-2">
-                    <h4 className="font-semibold text-gray-900">Step {step.step}</h4>
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                      step.toolResult?.success 
-                        ? 'bg-green-100 text-green-800' 
-                        : step.toolResult?.success === false
-                        ? 'bg-red-100 text-red-800'
-                        : 'bg-gray-100 text-gray-800'
-                    }`}>
-                      {step.action}
-                    </span>
+      <div style={{ 
+        marginTop: '12px', 
+        borderTop: '1px solid rgba(0,0,0,0.1)', 
+        paddingTop: '12px' 
+      }}>
+        <button
+          onClick={() => setIsExpanded(!isExpanded)}
+          style={{
+            background: 'none',
+            border: 'none',
+            color: '#007bff',
+            cursor: 'pointer',
+            fontSize: '12px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            padding: '0',
+            textDecoration: 'underline'
+          }}
+        >
+          {isExpanded ? '▼' : '▶'} Show thought process ({reasoning.length} steps)
+        </button>
+        
+        {isExpanded && (
+          <div style={{ 
+            marginTop: '8px',
+            padding: '12px',
+            backgroundColor: 'rgba(0,123,255,0.05)',
+            borderRadius: '6px',
+            border: '1px solid rgba(0,123,255,0.2)'
+          }}>
+            <div style={{ fontSize: '11px', color: '#666', marginBottom: '8px', fontWeight: '500' }}>
+              🤔 Reasoning Process:
+            </div>
+                         {reasoning.map((step, index: number) => (
+               <div key={index} style={{ 
+                 marginBottom: index < reasoning.length - 1 ? '12px' : '0',
+                 padding: '8px',
+                 backgroundColor: 'rgba(255,255,255,0.7)',
+                 borderRadius: '4px',
+                 border: '1px solid rgba(0,0,0,0.1)'
+               }}>
+                <div style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: '8px', 
+                  marginBottom: '6px',
+                  fontSize: '11px'
+                }}>
+                  <span style={{ 
+                    backgroundColor: '#007bff', 
+                    color: 'white', 
+                    borderRadius: '50%', 
+                    width: '16px', 
+                    height: '16px', 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    justifyContent: 'center',
+                    fontSize: '10px',
+                    fontWeight: 'bold'
+                  }}>
+                    {step.step}
+                  </span>
+                  <span style={{ 
+                    backgroundColor: step.toolResult?.success 
+                      ? 'rgba(40,167,69,0.2)' 
+                      : step.toolResult?.success === false
+                      ? 'rgba(220,53,69,0.2)'
+                      : 'rgba(108,117,125,0.2)',
+                    color: step.toolResult?.success 
+                      ? '#28a745' 
+                      : step.toolResult?.success === false
+                      ? '#dc3545'
+                      : '#6c757d',
+                    padding: '2px 6px',
+                    borderRadius: '12px',
+                    fontSize: '10px',
+                    fontWeight: '500'
+                  }}>
+                    {step.action}
+                  </span>
+                </div>
+                
+                <div style={{ fontSize: '12px', lineHeight: '1.4' }}>
+                  <div style={{ marginBottom: '4px' }}>
+                    <strong>Thought:</strong> {step.thought}
                   </div>
                   
-                  <div className="space-y-3">
-                    <div>
-                      <h5 className="font-medium text-gray-700 mb-1">Thought:</h5>
-                      <p className="text-gray-600 text-sm bg-blue-50 p-2 rounded">{step.thought}</p>
+                  {step.actionInput && (
+                    <div style={{ marginBottom: '4px' }}>
+                      <strong>Input:</strong> 
+                      <code style={{ 
+                        backgroundColor: 'rgba(0,0,0,0.1)', 
+                        padding: '1px 4px', 
+                        borderRadius: '2px',
+                        fontSize: '11px',
+                        marginLeft: '4px'
+                      }}>
+                        {step.actionInput}
+                      </code>
                     </div>
-                    
-                    {step.actionInput && (
-                      <div>
-                        <h5 className="font-medium text-gray-700 mb-1">Action Input:</h5>
-                        <p className="text-gray-600 text-sm bg-yellow-50 p-2 rounded font-mono">{step.actionInput}</p>
-                      </div>
-                    )}
-                    
-                    {step.observation && (
-                      <div>
-                        <h5 className="font-medium text-gray-700 mb-1">Observation:</h5>
-                        <div className="text-gray-600 text-sm bg-green-50 p-2 rounded overflow-x-auto">
-                          <MarkdownContent content={step.observation} role="assistant" />
-                        </div>
-                      </div>
-                    )}
-                    
-                    {step.toolResult && (
-                      <div className="border-t pt-3">
-                        <h5 className="font-medium text-gray-700 mb-2">Tool Result:</h5>
-                        <div className="grid grid-cols-2 gap-4 text-sm">
-                          <div>
-                            <span className="font-medium">Tool:</span> {step.toolResult.toolName}
-                          </div>
-                          <div>
-                            <span className="font-medium">Success:</span> 
-                            <span className={`ml-1 ${step.toolResult.success ? 'text-green-600' : 'text-red-600'}`}>
-                              {step.toolResult.success ? 'Yes' : 'No'}
-                            </span>
-                          </div>
-                          {step.toolResult.error && (
-                            <div className="col-span-2">
-                              <span className="font-medium text-red-600">Error:</span>
-                              <p className="text-red-600 bg-red-50 p-2 rounded mt-1">{step.toolResult.error}</p>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Cypher Queries Tab */}
-          {activeTab === 'queries' && message.metadata?.cypherQueries && (
-            <div className="space-y-4">
-              {message.metadata.cypherQueries.map((query, index) => (
-                <div key={index} className="border border-gray-200 rounded-lg p-4 bg-white">
-                  <div className="flex items-center justify-between mb-3">
-                    <h4 className="font-semibold text-gray-900">Query {index + 1}</h4>
-                    {query.confidence && (
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        query.confidence > 0.8 
-                          ? 'bg-green-100 text-green-800' 
-                          : query.confidence > 0.6
-                          ? 'bg-yellow-100 text-yellow-800'
-                          : 'bg-red-100 text-red-800'
-                      }`}>
-                        Confidence: {(query.confidence * 100).toFixed(0)}%
-                      </span>
-                    )}
-                  </div>
+                  )}
                   
-                  <div className="space-y-3">
-                    <div>
-                      <h5 className="font-medium text-gray-700 mb-2">Cypher Query:</h5>
-                      <pre className="bg-gray-900 text-green-400 p-3 rounded-lg text-sm overflow-x-auto font-mono">
-                        {query.cypher}
-                      </pre>
+                  {step.observation && (
+                    <div style={{ 
+                      marginTop: '6px',
+                      padding: '6px',
+                      backgroundColor: 'rgba(40,167,69,0.1)',
+                      borderRadius: '3px',
+                      fontSize: '11px'
+                    }}>
+                      <strong>Result:</strong> {step.observation}
                     </div>
-                    
-                    <div>
-                      <h5 className="font-medium text-gray-700 mb-2">Explanation:</h5>
-                      <div className="text-gray-600 text-sm bg-blue-50 p-3 rounded">
-                        <MarkdownContent content={query.explanation} role="assistant" />
-                      </div>
+                  )}
+                  
+                  {step.toolResult && step.toolResult.error && (
+                    <div style={{ 
+                      marginTop: '6px',
+                      padding: '6px',
+                      backgroundColor: 'rgba(220,53,69,0.1)',
+                      borderRadius: '3px',
+                      fontSize: '11px',
+                      color: '#dc3545'
+                    }}>
+                      <strong>Error:</strong> {step.toolResult.error}
                     </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Configuration Tab */}
-          {activeTab === 'config' && message.metadata?.debugInfo && (
-            <div className="space-y-6">
-              <div className="border border-gray-200 rounded-lg p-4 bg-white">
-                <h4 className="font-semibold text-gray-900 mb-3">LLM Configuration</h4>
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div><span className="font-medium">Provider:</span> {message.metadata.debugInfo.llmConfig.provider}</div>
-                  <div><span className="font-medium">Model:</span> {message.metadata.debugInfo.llmConfig.model}</div>
-                  <div><span className="font-medium">Temperature:</span> {message.metadata.debugInfo.llmConfig.temperature}</div>
-                  <div><span className="font-medium">Max Tokens:</span> {message.metadata.debugInfo.llmConfig.maxTokens}</div>
+                  )}
                 </div>
               </div>
-              
-              <div className="border border-gray-200 rounded-lg p-4 bg-white">
-                <h4 className="font-semibold text-gray-900 mb-3">RAG Options</h4>
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div><span className="font-medium">Max Iterations:</span> {message.metadata.debugInfo.ragOptions.maxIterations}</div>
-                  <div><span className="font-medium">Include Reasoning:</span> {message.metadata.debugInfo.ragOptions.includeReasoning ? 'Yes' : 'No'}</div>
-                  <div><span className="font-medium">Strict Mode:</span> {message.metadata.debugInfo.ragOptions.strictMode ? 'Yes' : 'No'}</div>
-                  <div><span className="font-medium">Temperature:</span> {message.metadata.debugInfo.ragOptions.temperature}</div>
-                </div>
-              </div>
-
-              <div className="border border-gray-200 rounded-lg p-4 bg-white">
-                <h4 className="font-semibold text-gray-900 mb-3">Performance</h4>
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div><span className="font-medium">Total Execution Time:</span> {message.metadata.debugInfo.totalExecutionTime}ms</div>
-                  <div><span className="font-medium">Confidence Score:</span> {message.metadata.confidence ? (message.metadata.confidence * 100).toFixed(1) + '%' : 'N/A'}</div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Context Info Tab */}
-          {activeTab === 'context' && message.metadata?.debugInfo && (
-            <div className="space-y-4">
-              <div className="border border-gray-200 rounded-lg p-4 bg-white">
-                <h4 className="font-semibold text-gray-900 mb-3">Knowledge Graph Context</h4>
-                <div className="grid grid-cols-3 gap-4 text-sm">
-                  <div className="text-center p-4 bg-blue-50 rounded">
-                    <div className="text-2xl font-bold text-blue-600">{message.metadata.debugInfo.contextInfo.nodeCount}</div>
-                    <div className="text-gray-600">Graph Nodes</div>
-                  </div>
-                  <div className="text-center p-4 bg-green-50 rounded">
-                    <div className="text-2xl font-bold text-green-600">{message.metadata.debugInfo.contextInfo.fileCount}</div>
-                    <div className="text-gray-600">Files Indexed</div>
-                  </div>
-                  <div className="text-center p-4 bg-purple-50 rounded">
-                    <div className="text-2xl font-bold text-purple-600">{message.metadata.sources?.length || 0}</div>
-                    <div className="text-gray-600">Sources Used</div>
-                  </div>
-                </div>
-              </div>
-
-              {message.metadata.sources && message.metadata.sources.length > 0 && (
-                <div className="border border-gray-200 rounded-lg p-4 bg-white">
-                  <h4 className="font-semibold text-gray-900 mb-3">Sources Referenced</h4>
-                  <div className="space-y-2">
-                    {message.metadata.sources.map((source, index) => (
-                      <div key={index} className="flex items-center space-x-2 text-sm">
-                        <span className="w-6 h-6 bg-gray-200 rounded-full flex items-center justify-center text-xs font-medium">
-                          {index + 1}
-                        </span>
-                        <code className="bg-gray-100 px-2 py-1 rounded text-gray-800">{source}</code>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   };
@@ -951,43 +879,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             title="Start new conversation"
           >
             ➕ New
-          </button>
-          <button
-            onClick={() => setShowReasoning(!showReasoning)}
-            style={{
-              ...buttonStyle,
-              backgroundColor: showReasoning ? '#28a745' : '#6c757d',
-              fontSize: '12px',
-              padding: '6px 12px'
-            }}
-            title="Toggle reasoning display"
-          >
-            🧠 Reasoning
-          </button>
-          <button
-            onClick={toggleDebugMode}
-            style={{
-              ...buttonStyle,
-              backgroundColor: debugMode ? '#17a2b8' : '#6c757d',
-              fontSize: '12px',
-              padding: '6px 12px'
-            }}
-            title="Toggle debug mode - shows detailed internal workings"
-          >
-            🔍 Debug
-          </button>
-          <button
-            onClick={runGraphDiagnostics}
-            style={{
-              ...buttonStyle,
-              backgroundColor: '#ffc107',
-              color: '#000',
-              fontSize: '12px',
-              padding: '6px 12px'
-            }}
-            title="Run graph diagnostics to check for issues"
-          >
-            🩺 Diagnose
           </button>
           <button
             onClick={() => setShowSettings(!showSettings)}
@@ -1340,14 +1231,14 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 <MarkdownContent content={message.content} role={message.role} />
               </div>
               
-              {/* Debug Panel (when debug mode is enabled) */}
-              {debugMode && message.role === 'assistant' && (
-                <DebugPanel message={message} />
+              {/* Reasoning Section for Assistant Messages */}
+              {message.role === 'assistant' && message.metadata?.reasoning && (
+                <ReasoningSection reasoning={message.metadata.reasoning} />
               )}
               
-              {/* Simple Metadata (when debug mode is disabled) */}
-              {!debugMode && message.metadata && (
-                <div style={{ fontSize: '12px', opacity: 0.8 }}>
+              {/* Simple Metadata */}
+              {message.metadata && (
+                <div style={{ fontSize: '12px', opacity: 0.8, marginTop: '8px' }}>
                   {message.metadata.confidence && (
                     <div style={{ marginBottom: '4px' }}>
                       Confidence: {Math.round(message.metadata.confidence * 100)}%
@@ -1362,7 +1253,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   
                   {message.metadata.cypherQueries && message.metadata.cypherQueries.length > 0 && (
                     <details style={{ marginTop: '8px' }}>
-                      <summary style={{ cursor: 'pointer' }}>View Queries ({message.metadata.cypherQueries.length})</summary>
+                      <summary style={{ cursor: 'pointer', fontSize: '11px' }}>
+                        View Queries ({message.metadata.cypherQueries.length})
+                      </summary>
                       {message.metadata.cypherQueries.map((query, index) => (
                         <div key={index} style={{ 
                           marginTop: '4px', 
@@ -1374,24 +1267,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                         }}>
                           <div><strong>Query:</strong> {query.cypher}</div>
                           <div><strong>Explanation:</strong> {query.explanation}</div>
-                        </div>
-                      ))}
-                    </details>
-                  )}
-
-                  {message.metadata.reasoning && message.metadata.reasoning.length > 0 && (
-                    <details style={{ marginTop: '8px' }}>
-                      <summary style={{ cursor: 'pointer' }}>View Reasoning ({message.metadata.reasoning.length} steps)</summary>
-                      {message.metadata.reasoning.map((step, index) => (
-                        <div key={index} style={{ 
-                          marginTop: '4px', 
-                          padding: '8px', 
-                          backgroundColor: 'rgba(0,0,0,0.1)', 
-                          borderRadius: '4px',
-                          fontSize: '11px'
-                        }}>
-                          <div><strong>Step {step.step}:</strong> {step.thought}</div>
-                          <div><strong>Action:</strong> {step.action}</div>
                         </div>
                       ))}
                     </details>

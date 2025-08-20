@@ -3,7 +3,7 @@ import { BaseMessage, HumanMessage, AIMessage, SystemMessage } from '@langchain/
 
 export interface ChatHistoryMetadata {
   cypherQuery?: string;
-  queryResult?: any;
+  queryResult?: unknown;
   executionTime?: number;
   timestamp: number;
   similarity?: number;
