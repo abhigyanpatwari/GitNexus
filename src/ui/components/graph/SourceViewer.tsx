@@ -371,6 +371,37 @@ def hasattr(obj: Any, name: str) -> bool:
     }
   };
 
+  // Helper function to determine if a file should be skipped during search
+  const shouldSkipFileForSearch = (filePath: string): boolean => {
+    const pathLower = filePath.toLowerCase();
+    
+    // Skip .git files and directories
+    if (pathLower.includes('/.git/') || pathLower.startsWith('.git/')) {
+      return true;
+    }
+    
+    // Skip other unwanted directories
+    const skipPatterns = [
+      'node_modules/',
+      '__pycache__/',
+      '.venv/',
+      'venv/',
+      'env/',
+      'build/',
+      'dist/',
+      'coverage/',
+      '.cache/',
+      '.tmp/',
+      'tmp/',
+      'logs/',
+      '.vs/',
+      '.vscode/',
+      '.idea/'
+    ];
+    
+    return skipPatterns.some(pattern => pathLower.includes(pattern));
+  };
+
   // Get source info for selected node
   const sourceInfo = useMemo((): SourceInfo | null => {
     if (!selectedNodeId || !graph?.nodes) return null;
@@ -426,6 +457,11 @@ def hasattr(obj: Any, name: str) -> bool:
         ];
         
         for (const [path, content] of fileContents) {
+          // Skip .git files, node_modules, and other unwanted directories
+          if (shouldSkipFileForSearch(path)) {
+            continue;
+          }
+          
           console.log(`SourceViewer - Checking file: ${path}`);
           
           // Check if any pattern matches
@@ -448,6 +484,11 @@ def hasattr(obj: Any, name: str) -> bool:
         if (!filePath) {
           console.log('SourceViewer - Trying case-insensitive search for:', nodeName);
           for (const [path, content] of fileContents) {
+            // Skip .git files, node_modules, and other unwanted directories
+            if (shouldSkipFileForSearch(path)) {
+              continue;
+            }
+            
             const lowerContent = content.toLowerCase();
             const lowerNodeName = nodeName.toLowerCase();
             

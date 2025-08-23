@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tree-sitter Worker Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .test-result {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .success {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .error {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .info {
+            background-color: #d1ecf1;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        pre {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>Tree-sitter Worker Test</h1>
+    <p>This page tests the tree-sitter worker to verify it can initialize and parse code properly.</p>
+    
+    <button onclick="testWorker()">Test Tree-sitter Worker</button>
+    <button onclick="clearResults()">Clear Results</button>
+    
+    <div id="results"></div>
+
+    <script>
+        function addResult(message, type = 'info') {
+            const resultsDiv = document.getElementById('results');
+            const resultDiv = document.createElement('div');
+            resultDiv.className = `test-result ${type}`;
+            resultDiv.innerHTML = `<strong>${new Date().toLocaleTimeString()}:</strong> ${message}`;
+            resultsDiv.appendChild(resultDiv);
+        }
+
+        function clearResults() {
+            document.getElementById('results').innerHTML = '';
+        }
+
+        async function testWorker() {
+            addResult('Starting tree-sitter worker test...', 'info');
+            
+            try {
+                // Create a worker
+                const worker = new Worker('/workers/tree-sitter-worker.js');
+                
+                addResult('Worker created successfully', 'success');
+                
+                // Test initialization
+                const initPromise = new Promise((resolve, reject) => {
+                    worker.onmessage = function(event) {
+                        if (event.data.type === 'initialized') {
+                            if (event.data.success) {
+                                resolve('Worker initialized successfully');
+                            } else {
+                                reject('Worker initialization failed');
+                            }
+                        }
+                    };
+                    
+                    worker.onerror = function(error) {
+                        reject(`Worker error: ${error.message}`);
+                    };
+                    
+                    // Send init message
+                    worker.postMessage({ type: 'init' });
+                });
+                
+                await initPromise;
+                addResult('Worker initialization completed', 'success');
+                
+                // Test parsing a simple TypeScript file
+                const testFile = {
+                    filePath: 'test.ts',
+                    content: `
+                        function testFunction() {
+                            console.log('Hello World');
+                        }
+                        
+                        class TestClass {
+                            constructor() {
+                                this.value = 42;
+                            }
+                            
+                            getValue() {
+                                return this.value;
+                            }
+                        }
+                    `
+                };
+                
+                addResult('Testing file parsing...', 'info');
+                
+                const parsePromise = new Promise((resolve, reject) => {
+                    worker.onmessage = function(event) {
+                        if (event.data.result) {
+                            resolve(event.data.result);
+                        } else if (event.data.error) {
+                            reject(event.data.error);
+                        }
+                    };
+                    
+                    // Send parse message
+                    worker.postMessage({
+                        type: 'parse',
+                        taskId: 'test-1',
+                        input: testFile
+                    });
+                });
+                
+                const result = await parsePromise;
+                addResult('File parsing completed successfully', 'success');
+                
+                // Display the result
+                addResult(`Parsed ${result.definitions.length} definitions:`, 'info');
+                result.definitions.forEach((def, index) => {
+                    addResult(`  ${index + 1}. ${def.type}: ${def.name} (line ${def.startLine})`, 'info');
+                });
+                
+                // Clean up
+                worker.terminate();
+                addResult('Worker terminated successfully', 'success');
+                
+            } catch (error) {
+                addResult(`Test failed: ${error}`, 'error');
+                console.error('Test error:', error);
+            }
+        }
+    </script>
+</body>
+</html>

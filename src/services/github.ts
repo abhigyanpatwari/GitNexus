@@ -415,6 +415,25 @@ export class GitHubService {
     return false;
   }
 
+  private shouldSkipFileForContent(path: string): boolean {
+    const pathLower = path.toLowerCase();
+    
+    // Skip .git files and directories (these can be massive and not useful for code analysis)
+    if (pathLower.includes('/.git/') || pathLower.startsWith('.git/')) {
+      return true;
+    }
+    
+    // Skip binary files that shouldn't have content
+    const binaryExtensions = [
+      '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2',
+      '.ttf', '.eot', '.pdf', '.zip', '.tar', '.gz', '.rar', '.7z',
+      '.exe', '.dll', '.so', '.dylib', '.class', '.pyc', '.o', '.a',
+      '.mp4', '.mp3', '.wav', '.avi', '.mov', '.webm', '.webp'
+    ];
+    
+    return binaryExtensions.some(ext => pathLower.endsWith(ext));
+  }
+
   public async getAllPathsRecursively(owner: string, repo: string, path: string = ''): Promise<string[]> {
     const allPaths: string[] = [];
     const fileContents: Map<string, string> = new Map();
@@ -481,13 +500,17 @@ export class GitHubService {
         allPaths.push(fullPath);
 
         if (item.type === 'file') {
-          // Always try to get content for files, regardless of filtering
-          // Filtering will happen later in ParsingProcessor
-          try {
-            const content = await this.getFileContent(owner, repo, fullPath);
-            fileContents.set(fullPath, content);
-          } catch (error) {
-            console.warn(`Failed to get content for ${fullPath}:`, error);
+          // Always try to get content for files, but skip unwanted files like .git files
+          // Filtering will happen later in ParsingProcessor, but we can skip obvious files
+          if (this.shouldSkipFileForContent(fullPath)) {
+            console.log(`Skipping file content for: ${fullPath}`);
+          } else {
+            try {
+              const content = await this.getFileContent(owner, repo, fullPath);
+              fileContents.set(fullPath, content);
+            } catch (error) {
+              console.warn(`Failed to get content for ${fullPath}:`, error);
+            }
           }
         } else if (item.type === 'dir') {
           // REMOVED: shouldSkipDirectory check for complete structure discovery

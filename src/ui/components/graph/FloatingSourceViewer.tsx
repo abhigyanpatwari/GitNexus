@@ -197,6 +197,37 @@ const FloatingSourceViewer: React.FC<FloatingSourceViewerProps> = ({
     return null;
   };
 
+  // Helper function to determine if a file should be skipped during search
+  const shouldSkipFileForSearch = (filePath: string): boolean => {
+    const pathLower = filePath.toLowerCase();
+    
+    // Skip .git files and directories
+    if (pathLower.includes('/.git/') || pathLower.startsWith('.git/')) {
+      return true;
+    }
+    
+    // Skip other unwanted directories
+    const skipPatterns = [
+      'node_modules/',
+      '__pycache__/',
+      '.venv/',
+      'venv/',
+      'env/',
+      'build/',
+      'dist/',
+      'coverage/',
+      '.cache/',
+      '.tmp/',
+      'tmp/',
+      'logs/',
+      '.vs/',
+      '.vscode/',
+      '.idea/'
+    ];
+    
+    return skipPatterns.some(pattern => pathLower.includes(pattern));
+  };
+
   // Get source information for the selected node
   const sourceInfo = useMemo((): SourceInfo | null => {
     if (!nodeId || !graph) return null;
@@ -223,6 +254,11 @@ const FloatingSourceViewer: React.FC<FloatingSourceViewerProps> = ({
     // If not found through relationships, search through file contents
     if (!filePath && fileContents) {
       for (const [path, content] of fileContents) {
+        // Skip .git files, node_modules, and other unwanted directories
+        if (shouldSkipFileForSearch(path)) {
+          continue;
+        }
+        
         if (content.includes(nodeName)) {
           filePath = path;
           break;

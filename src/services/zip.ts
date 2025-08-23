@@ -107,6 +107,12 @@ export class ZipService {
           return;
         }
 
+        // Skip .git files and other unwanted files during content extraction
+        if (this.shouldSkipFileForContent(normalizedPath)) {
+          console.log(`Skipping file content for: ${normalizedPath}`);
+          return;
+        }
+
         // REMOVED: shouldSkipDirectory check for complete structure discovery
         // All files are now discovered, filtering happens during parsing
 
@@ -547,6 +553,25 @@ export class ZipService {
     }
 
     return false;
+  }
+
+  private shouldSkipFileForContent(path: string): boolean {
+    const pathLower = path.toLowerCase();
+    
+    // Skip .git files and directories (these can be massive and not useful for code analysis)
+    if (pathLower.includes('/.git/') || pathLower.startsWith('.git/')) {
+      return true;
+    }
+    
+    // Skip binary files that shouldn't have content
+    const binaryExtensions = [
+      '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2',
+      '.ttf', '.eot', '.pdf', '.zip', '.tar', '.gz', '.rar', '.7z',
+      '.exe', '.dll', '.so', '.dylib', '.class', '.pyc', '.o', '.a',
+      '.mp4', '.mp3', '.wav', '.avi', '.mov', '.webm', '.webp'
+    ];
+    
+    return binaryExtensions.some(ext => pathLower.endsWith(ext));
   }
 
   public getDefaultTextExtensions(): string[] {
