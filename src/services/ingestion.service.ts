@@ -153,35 +153,44 @@ export class IngestionService {
 
     // Check if all paths start with the same top-level folder
     const potentialPrefix = pathParts[0] + '/';
-    const allHaveSamePrefix = paths.every(path => path.startsWith(potentialPrefix));
+    const pathsWithPrefix = paths.filter(path => path.startsWith(potentialPrefix));
     
-    if (!allHaveSamePrefix) {
-      return structure; // No common prefix to remove
-    }
+    // If most paths (>80%) have the common prefix, normalize all paths
+    if (pathsWithPrefix.length > paths.length * 0.8) {
+      console.log(`Normalizing ZIP paths: removing common prefix "${potentialPrefix}" from ${pathsWithPrefix.length}/${paths.length} paths`);
 
-    console.log(`Normalizing ZIP paths: removing common prefix "${potentialPrefix}"`);
+      // Remove the common prefix from all paths
+      const normalizedPaths = paths.map(path => {
+        if (path.startsWith(potentialPrefix)) {
+          const withoutPrefix = path.substring(potentialPrefix.length);
+          return withoutPrefix || path; // Keep original if normalization would result in empty string
+        }
+        // For paths without prefix, keep as-is but filter out the bare container name
+        return path === pathParts[0] ? '' : path;
+      }).filter(path => path.length > 0); // Remove empty paths
 
-    // Remove the common prefix from all paths
-    const normalizedPaths = paths.map(path => {
-      const withoutPrefix = path.substring(potentialPrefix.length);
-      return withoutPrefix || path; // Keep original if normalization would result in empty string
-    }).filter(path => path.length > 0); // Remove empty paths
-
-    // Normalize file contents map
-    const normalizedContents = new Map<string, string>();
-    for (const [originalPath, content] of structure.fileContents) {
-      const normalizedPath = originalPath.startsWith(potentialPrefix) 
-        ? originalPath.substring(potentialPrefix.length)
-        : originalPath;
-      
-      if (normalizedPath) {
-        normalizedContents.set(normalizedPath, content);
+      // Normalize file contents map
+      const normalizedContents = new Map<string, string>();
+      for (const [originalPath, content] of structure.fileContents) {
+        let normalizedPath = originalPath;
+        if (originalPath.startsWith(potentialPrefix)) {
+          normalizedPath = originalPath.substring(potentialPrefix.length);
+        } else if (originalPath === pathParts[0]) {
+          // Skip the bare container directory
+          continue;
+        }
+        
+        if (normalizedPath && normalizedPath.length > 0) {
+          normalizedContents.set(normalizedPath, content);
+        }
       }
+
+      return {
+        allPaths: normalizedPaths,
+        fileContents: normalizedContents
+      };
     }
 
-    return {
-      allPaths: normalizedPaths,
-      fileContents: normalizedContents
-    };
+    return structure; // No normalization if prefix isn't common enough
   }
 } 

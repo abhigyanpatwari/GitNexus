@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Export Functionality Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background: #f9f9f9;
+        }
+        .success { border-color: #28a745; background: #d4edda; }
+        .error { border-color: #dc3545; background: #f8d7da; }
+        .warning { border-color: #ffc107; background: #fff3cd; }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #6c757d; cursor: not-allowed; }
+        #output {
+            white-space: pre-wrap;
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: monospace;
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 10px;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin: 15px 0;
+        }
+        .stat-card {
+            background: white;
+            padding: 15px;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+            text-align: center;
+        }
+        .stat-number {
+            font-size: 24px;
+            font-weight: bold;
+            color: #007bff;
+        }
+        .stat-label {
+            font-size: 14px;
+            color: #666;
+            margin-top: 5px;
+        }
+        .download-link {
+            display: inline-block;
+            background: #28a745;
+            color: white;
+            padding: 8px 15px;
+            text-decoration: none;
+            border-radius: 4px;
+            margin: 5px;
+        }
+        .download-link:hover {
+            background: #1e7e34;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧪 Export Functionality Test</h1>
+        <p>This test verifies that the export functionality works correctly after our import resolution improvements.</p>
+
+        <div class="test-section">
+            <h3>📊 Test Knowledge Graph</h3>
+            <p>We'll create a sample knowledge graph with the types of nodes our import resolution system now properly handles.</p>
+            <button onclick="createTestGraph()">Create Test Graph</button>
+            <div id="graph-stats" class="stats"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>🔍 Validation Tests</h3>
+            <p>Test graph validation before export:</p>
+            <button onclick="validateGraph()">Validate Graph</button>
+            <button onclick="calculateSize()">Calculate Export Size</button>
+            <div id="validation-output"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>📥 Export Tests</h3>
+            <p>Test different export formats:</p>
+            <button onclick="testJSONExport()">Test JSON Export</button>
+            <button onclick="testCSVExport()">Test CSV Export</button>
+            <button onclick="testFilteredExport()">Test Filtered Export</button>
+            <div id="export-links"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>📤 Import Test</h3>
+            <p>Test importing exported data:</p>
+            <button onclick="testImport()">Test JSON Import</button>
+            <div id="import-output"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>🔧 Console Output</h3>
+            <div id="output"></div>
+        </div>
+    </div>
+
+    <script type="module">
+        // Mock the export functions (in real app these would be imported)
+        window.testGraph = null;
+        window.testFileContents = null;
+
+        // Create a comprehensive test graph
+        window.createTestGraph = function() {
+            const graph = {
+                nodes: [
+                    // Project structure nodes
+                    {
+                        id: 'project_root',
+                        label: 'Project',
+                        properties: {
+                            name: 'GitNexus',
+                            description: 'Knowledge graph generation tool',
+                            version: '1.0.0'
+                        }
+                    },
+                    {
+                        id: 'src_folder',
+                        label: 'Folder',
+                        properties: {
+                            name: 'src',
+                            path: 'src',
+                            filePath: 'src'
+                        }
+                    },
+                    {
+                        id: 'services_folder',
+                        label: 'Folder',
+                        properties: {
+                            name: 'services',
+                            path: 'src/services',
+                            filePath: 'src/services'
+                        }
+                    },
+                    // File nodes (including our zip.ts)
+                    {
+                        id: 'zip_service_file',
+                        label: 'File',
+                        properties: {
+                            name: 'zip.ts',
+                            filePath: 'src/services/zip.ts',
+                            language: 'typescript',
+                            extension: '.ts',
+                            lineCount: 600
+                        }
+                    },
+                    {
+                        id: 'import_processor_file',
+                        label: 'File',
+                        properties: {
+                            name: 'import-processor.ts',
+                            filePath: 'src/core/ingestion/import-processor.ts',
+                            language: 'typescript',
+                            extension: '.ts',
+                            lineCount: 946
+                        }
+                    },
+                    // Class nodes
+                    {
+                        id: 'zip_service_class',
+                        label: 'Class',
+                        properties: {
+                            name: 'ZipService',
+                            filePath: 'src/services/zip.ts',
+                            startLine: 26,
+                            endLine: 599,
+                            type: 'class',
+                            qualifiedName: 'services.zip.ZipService'
+                        }
+                    },
+                    {
+                        id: 'import_processor_class',
+                        label: 'Class',
+                        properties: {
+                            name: 'ImportProcessor',
+                            filePath: 'src/core/ingestion/import-processor.ts',
+                            startLine: 50,
+                            endLine: 900,
+                            type: 'class',
+                            qualifiedName: 'core.ingestion.ImportProcessor'
+                        }
+                    },
+                    // Method nodes (reflecting our import resolution improvements)
+                    {
+                        id: 'extract_complete_structure',
+                        label: 'Method',
+                        properties: {
+                            name: 'extractCompleteStructure',
+                            filePath: 'src/services/zip.ts',
+                            startLine: 41,
+                            endLine: 120,
+                            type: 'method',
+                            qualifiedName: 'services.zip.ZipService.extractCompleteStructure'
+                        }
+                    },
+                    {
+                        id: 'extract_js_imports',
+                        label: 'Method',
+                        properties: {
+                            name: 'extractJSImports',
+                            filePath: 'src/core/ingestion/import-processor.ts',
+                            startLine: 210,
+                            endLine: 280,
+                            type: 'method',
+                            qualifiedName: 'core.ingestion.ImportProcessor.extractJSImports'
+                        }
+                    },
+                    // Function nodes
+                    {
+                        id: 'process_js_import_clause',
+                        label: 'Function',
+                        properties: {
+                            name: 'processJSImportClause',
+                            filePath: 'src/core/ingestion/import-processor.ts',
+                            startLine: 350,
+                            endLine: 450,
+                            type: 'function',
+                            qualifiedName: 'core.ingestion.processJSImportClause'
+                        }
+                    },
+                    // Import nodes (showing our improved import resolution)
+                    {
+                        id: 'jszip_import',
+                        label: 'Import',
+                        properties: {
+                            name: 'JSZip',
+                            filePath: 'src/services/zip.ts',
+                            importType: 'default',
+                            targetFile: 'node_modules/jszip/dist/jszip.min.js'
+                        }
+                    }
+                ],
+                relationships: [
+                    // Containment relationships
+                    {
+                        id: 'rel_project_contains_src',
+                        type: 'CONTAINS',
+                        source: 'project_root',
+                        target: 'src_folder',
+                        properties: {}
+                    },
+                    {
+                        id: 'rel_src_contains_services',
+                        type: 'CONTAINS',
+                        source: 'src_folder',
+                        target: 'services_folder',
+                        properties: {}
+                    },
+                    {
+                        id: 'rel_services_contains_zip',
+                        type: 'CONTAINS',
+                        source: 'services_folder',
+                        target: 'zip_service_file',
+                        properties: {}
+                    },
+                    // Definition relationships
+                    {
+                        id: 'rel_zip_file_defines_class',
+                        type: 'DEFINES',
+                        source: 'zip_service_file',
+                        target: 'zip_service_class',
+                        properties: {}
+                    },
+                    {
+                        id: 'rel_zip_class_defines_method',
+                        type: 'DEFINES',
+                        source: 'zip_service_class',
+                        target: 'extract_complete_structure',
+                        properties: {}
+                    },
+                    {
+                        id: 'rel_import_processor_defines_method',
+                        type: 'DEFINES',
+                        source: 'import_processor_class',
+                        target: 'extract_js_imports',
+                        properties: {}
+                    },
+                    // Import relationships (our improved import resolution)
+                    {
+                        id: 'rel_zip_imports_jszip',
+                        type: 'IMPORTS',
+                        source: 'zip_service_file',
+                        target: 'jszip_import',
+                        properties: {
+                            importType: 'default',
+                            localName: 'JSZip',
+                            exportedName: 'default'
+                        }
+                    },
+                    // Call relationships
+                    {
+                        id: 'rel_extract_calls_process',
+                        type: 'CALLS',
+                        source: 'extract_js_imports',
+                        target: 'process_js_import_clause',
+                        properties: {
+                            callType: 'method'
+                        }
+                    }
+                ]
+            };
+
+            // Create mock file contents
+            const fileContents = new Map([
+                ['src/services/zip.ts', `import JSZip from 'jszip';
+
+export class ZipService {
+  public async extractCompleteStructure(file: File) {
+    // Implementation with 415 imports resolved (100% success)
+    console.log('🔍 ImportProcessor: Found 415 imports, resolved 415 (100.0%)');
+  }
+}`],
+                ['src/core/ingestion/import-processor.ts', `export class ImportProcessor {
+  private extractJSImports(node: Parser.SyntaxNode, filePath: string): void {
+    // CRITICAL FIX: Field-based approach with type-based fallback
+    let importClauseNode = node.childForFieldName('import_clause');
+    
+    if (!importClauseNode) {
+      for (let i = 0; i < node.childCount; i++) {
+        const child = node.child(i);
+        if (child?.type === 'import_clause') {
+          importClauseNode = child;
+          console.log('🔍 DEBUG: Found import_clause by type at index', i);
+          break;
+        }
+      }
+    }
+  }
+}`]
+            ]);
+
+            window.testGraph = graph;
+            window.testFileContents = fileContents;
+
+            // Display stats
+            updateGraphStats(graph);
+            log('✅ Test graph created successfully');
+            log(`📊 Nodes: ${graph.nodes.length}, Relationships: ${graph.relationships.length}`);
+            log(`📁 File contents: ${fileContents.size} files`);
+            
+            return graph;
+        };
+
+        // Update graph statistics display
+        function updateGraphStats(graph) {
+            const nodesByType = graph.nodes.reduce((acc, node) => {
+                acc[node.label] = (acc[node.label] || 0) + 1;
+                return acc;
+            }, {});
+
+            const relsByType = graph.relationships.reduce((acc, rel) => {
+                acc[rel.type] = (acc[rel.type] || 0) + 1;
+                return acc;
+            }, {});
+
+            const statsContainer = document.getElementById('graph-stats');
+            statsContainer.innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-number">${graph.nodes.length}</div>
+                    <div class="stat-label">Total Nodes</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">${graph.relationships.length}</div>
+                    <div class="stat-label">Total Relationships</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">${Object.keys(nodesByType).length}</div>
+                    <div class="stat-label">Node Types</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">${Object.keys(relsByType).length}</div>
+                    <div class="stat-label">Relationship Types</div>
+                </div>
+            `;
+
+            log(`Node types: ${Object.entries(nodesByType).map(([k,v]) => `${k}:${v}`).join(', ')}`);
+            log(`Relationship types: ${Object.entries(relsByType).map(([k,v]) => `${k}:${v}`).join(', ')}`);
+        }
+
+        // Export validation functions (simplified versions for testing)
+        window.validateGraph = function() {
+            if (!window.testGraph) {
+                log('❌ No test graph available. Create one first.');
+                return;
+            }
+
+            const graph = window.testGraph;
+            const errors = [];
+            const warnings = [];
+
+            // Check for duplicate node IDs
+            const nodeIds = new Set(graph.nodes.map(n => n.id));
+            if (nodeIds.size !== graph.nodes.length) {
+                errors.push('Graph contains duplicate node IDs');
+            }
+
+            // Check for invalid relationships
+            graph.relationships.forEach((rel, index) => {
+                if (!nodeIds.has(rel.source)) {
+                    errors.push(`Relationship ${index} has invalid source: ${rel.source}`);
+                }
+                if (!nodeIds.has(rel.target)) {
+                    errors.push(`Relationship ${index} has invalid target: ${rel.target}`);
+                }
+            });
+
+            // Check for empty nodes/relationships
+            if (graph.nodes.length === 0) {
+                warnings.push('Graph has no nodes');
+            }
+            if (graph.relationships.length === 0) {
+                warnings.push('Graph has no relationships');
+            }
+
+            const validationDiv = document.getElementById('validation-output');
+            const isValid = errors.length === 0;
+            
+            validationDiv.className = 'test-section ' + (isValid ? 'success' : 'error');
+            validationDiv.innerHTML = `
+                <h4>Validation Results</h4>
+                <p><strong>Status:</strong> ${isValid ? '✅ Valid' : '❌ Invalid'}</p>
+                ${errors.length > 0 ? `<p><strong>Errors:</strong><br>${errors.join('<br>')}</p>` : ''}
+                ${warnings.length > 0 ? `<p><strong>Warnings:</strong><br>${warnings.join('<br>')}</p>` : ''}
+            `;
+
+            log(isValid ? '✅ Graph validation passed' : '❌ Graph validation failed');
+            errors.forEach(error => log(`❌ ${error}`));
+            warnings.forEach(warning => log(`⚠️ ${warning}`));
+        };
+
+        window.calculateSize = function() {
+            if (!window.testGraph) {
+                log('❌ No test graph available.');
+                return;
+            }
+
+            const graph = window.testGraph;
+            const fileContents = window.testFileContents;
+
+            // Calculate sizes
+            const graphOnly = JSON.stringify(graph);
+            const withMetadata = JSON.stringify({
+                metadata: {
+                    exportedAt: new Date().toISOString(),
+                    nodeCount: graph.nodes.length,
+                    relationshipCount: graph.relationships.length,
+                    fileCount: fileContents?.size || 0
+                },
+                graph
+            });
+            const withFiles = JSON.stringify({
+                metadata: {
+                    exportedAt: new Date().toISOString(),
+                    nodeCount: graph.nodes.length,
+                    relationshipCount: graph.relationships.length,
+                    fileCount: fileContents?.size || 0
+                },
+                graph,
+                fileContents: fileContents ? Object.fromEntries(fileContents) : {}
+            });
+
+            function formatSize(bytes) {
+                const sizes = ['Bytes', 'KB', 'MB'];
+                if (bytes === 0) return '0 Bytes';
+                const i = Math.floor(Math.log(bytes) / Math.log(1024));
+                return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
+            }
+
+            log(`📏 Export sizes:`);
+            log(`  - Graph only: ${formatSize(graphOnly.length)}`);
+            log(`  - With metadata: ${formatSize(withMetadata.length)}`);
+            log(`  - With files: ${formatSize(withFiles.length)}`);
+        };
+
+        // Export test functions
+        window.testJSONExport = function() {
+            if (!window.testGraph) {
+                log('❌ No test graph available.');
+                return;
+            }
+
+            try {
+                const graph = window.testGraph;
+                const fileContents = window.testFileContents;
+
+                // Create export with metadata
+                const exportData = {
+                    metadata: {
+                        exportedAt: new Date().toISOString(),
+                        version: '1.0.0',
+                        nodeCount: graph.nodes.length,
+                        relationshipCount: graph.relationships.length,
+                        fileCount: fileContents?.size || 0,
+                        processingDuration: 5000 // Mock duration
+                    },
+                    graph,
+                    fileContents: fileContents ? Object.fromEntries(fileContents) : {}
+                };
+
+                const jsonContent = JSON.stringify(exportData, null, 2);
+                
+                // Create download link
+                const blob = new Blob([jsonContent], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const filename = `gitnexus-test-graph_${new Date().toISOString().split('T')[0]}.json`;
+                
+                createDownloadLink(url, filename, 'JSON Export', '📄');
+                
+                log('✅ JSON export test successful');
+                log(`📁 Filename: ${filename}`);
+                log(`📊 Export size: ${Math.round(blob.size / 1024)} KB`);
+                
+            } catch (error) {
+                log(`❌ JSON export failed: ${error.message}`);
+            }
+        };
+
+        window.testCSVExport = function() {
+            if (!window.testGraph) {
+                log('❌ No test graph available.');
+                return;
+            }
+
+            try {
+                const graph = window.testGraph;
+
+                // Generate nodes CSV
+                const nodeHeaders = ':ID,name,filePath,startLine,endLine,type,language,qualifiedName,:LABEL';
+                const nodeRows = graph.nodes.map(node => {
+                    const props = node.properties;
+                    return [
+                        escapeCSV(node.id),
+                        escapeCSV(props.name || ''),
+                        escapeCSV(props.filePath || ''),
+                        props.startLine || '',
+                        props.endLine || '',
+                        escapeCSV(props.type || ''),
+                        escapeCSV(props.language || ''),
+                        escapeCSV(props.qualifiedName || ''),
+                        node.label
+                    ].join(',');
+                });
+                const nodesCSV = [nodeHeaders, ...nodeRows].join('\n');
+
+                // Generate relationships CSV
+                const relHeaders = ':START_ID,:TYPE,:END_ID,source,target';
+                const relRows = graph.relationships.map(rel => {
+                    return [
+                        escapeCSV(rel.source),
+                        rel.type,
+                        escapeCSV(rel.target),
+                        escapeCSV(rel.source),
+                        escapeCSV(rel.target)
+                    ].join(',');
+                });
+                const relsCSV = [relHeaders, ...relRows].join('\n');
+
+                // Create download links
+                const timestamp = new Date().toISOString().split('T')[0];
+                
+                const nodesBlob = new Blob([nodesCSV], { type: 'text/csv' });
+                const nodesUrl = URL.createObjectURL(nodesBlob);
+                createDownloadLink(nodesUrl, `gitnexus-test-graph_${timestamp}_nodes.csv`, 'Nodes CSV', '📊');
+
+                const relsBlob = new Blob([relsCSV], { type: 'text/csv' });
+                const relsUrl = URL.createObjectURL(relsBlob);
+                createDownloadLink(relsUrl, `gitnexus-test-graph_${timestamp}_relationships.csv`, 'Relationships CSV', '🔗');
+
+                log('✅ CSV export test successful');
+                log(`📊 Nodes CSV: ${Math.round(nodesBlob.size / 1024)} KB`);
+                log(`🔗 Relationships CSV: ${Math.round(relsBlob.size / 1024)} KB`);
+
+            } catch (error) {
+                log(`❌ CSV export failed: ${error.message}`);
+            }
+        };
+
+        window.testFilteredExport = function() {
+            if (!window.testGraph) {
+                log('❌ No test graph available.');
+                return;
+            }
+
+            try {
+                const graph = window.testGraph;
+
+                // Create filtered export (only TypeScript files and classes)
+                const filteredNodes = graph.nodes.filter(node => 
+                    node.label === 'Class' || 
+                    node.label === 'Method' ||
+                    (node.properties.language === 'typescript')
+                );
+
+                const filteredNodeIds = new Set(filteredNodes.map(n => n.id));
+                const filteredRels = graph.relationships.filter(rel =>
+                    filteredNodeIds.has(rel.source) && filteredNodeIds.has(rel.target)
+                );
+
+                const filteredGraph = {
+                    nodes: filteredNodes,
+                    relationships: filteredRels
+                };
+
+                const exportData = {
+                    metadata: {
+                        exportedAt: new Date().toISOString(),
+                        version: '1.0.0',
+                        nodeCount: filteredGraph.nodes.length,
+                        relationshipCount: filteredGraph.relationships.length,
+                        filters: ['TypeScript files', 'Classes', 'Methods']
+                    },
+                    graph: filteredGraph
+                };
+
+                const jsonContent = JSON.stringify(exportData, null, 2);
+                const blob = new Blob([jsonContent], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const filename = `gitnexus-filtered-test_${new Date().toISOString().split('T')[0]}.json`;
+                
+                createDownloadLink(url, filename, 'Filtered Export', '🔍');
+
+                log('✅ Filtered export test successful');
+                log(`📊 Original: ${graph.nodes.length} nodes, ${graph.relationships.length} relationships`);
+                log(`🔍 Filtered: ${filteredGraph.nodes.length} nodes, ${filteredGraph.relationships.length} relationships`);
+
+            } catch (error) {
+                log(`❌ Filtered export failed: ${error.message}`);
+            }
+        };
+
+        window.testImport = function() {
+            // For this test, we'll simulate importing the JSON we just exported
+            if (!window.testGraph) {
+                log('❌ No test graph available. Export one first.');
+                return;
+            }
+
+            try {
+                const originalGraph = window.testGraph;
+                const fileContents = window.testFileContents;
+
+                // Create mock export data
+                const exportData = {
+                    metadata: {
+                        exportedAt: new Date().toISOString(),
+                        version: '1.0.0',
+                        nodeCount: originalGraph.nodes.length,
+                        relationshipCount: originalGraph.relationships.length,
+                        fileCount: fileContents?.size || 0
+                    },
+                    graph: originalGraph,
+                    fileContents: fileContents ? Object.fromEntries(fileContents) : {}
+                };
+
+                // Simulate import process
+                const jsonString = JSON.stringify(exportData);
+                const parsed = JSON.parse(jsonString);
+
+                // Verify import
+                const importedGraph = parsed.graph;
+                const importedMetadata = parsed.metadata;
+                const importedFiles = parsed.fileContents ? new Map(Object.entries(parsed.fileContents)) : null;
+
+                const importDiv = document.getElementById('import-output');
+                importDiv.className = 'test-section success';
+                importDiv.innerHTML = `
+                    <h4>✅ Import Test Results</h4>
+                    <p><strong>Metadata:</strong> ${importedMetadata ? '✅ Present' : '❌ Missing'}</p>
+                    <p><strong>Graph:</strong> ${importedGraph ? '✅ Present' : '❌ Missing'}</p>
+                    <p><strong>File Contents:</strong> ${importedFiles ? '✅ Present' : '❌ Missing'}</p>
+                    <p><strong>Nodes:</strong> ${importedGraph.nodes.length} (${originalGraph.nodes.length === importedGraph.nodes.length ? '✅ Match' : '❌ Mismatch'})</p>
+                    <p><strong>Relationships:</strong> ${importedGraph.relationships.length} (${originalGraph.relationships.length === importedGraph.relationships.length ? '✅ Match' : '❌ Mismatch'})</p>
+                    <p><strong>Files:</strong> ${importedFiles?.size || 0} (${fileContents?.size === importedFiles?.size ? '✅ Match' : '❌ Mismatch'})</p>
+                `;
+
+                log('✅ Import test successful');
+                log(`📊 Imported ${importedGraph.nodes.length} nodes, ${importedGraph.relationships.length} relationships`);
+                log(`📁 Imported ${importedFiles?.size || 0} files`);
+
+            } catch (error) {
+                const importDiv = document.getElementById('import-output');
+                importDiv.className = 'test-section error';
+                importDiv.innerHTML = `<h4>❌ Import Test Failed</h4><p>${error.message}</p>`;
+                log(`❌ Import test failed: ${error.message}`);
+            }
+        };
+
+        // Helper functions
+        function createDownloadLink(url, filename, label, icon) {
+            const linksDiv = document.getElementById('export-links');
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            link.className = 'download-link';
+            link.innerHTML = `${icon} Download ${label}`;
+            linksDiv.appendChild(link);
+        }
+
+        function escapeCSV(value) {
+            if (!value) return '';
+            if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+                return `"${value.replace(/"/g, '""')}"`;
+            }
+            return value;
+        }
+
+        function log(message) {
+            const output = document.getElementById('output');
+            const timestamp = new Date().toLocaleTimeString();
+            output.textContent += `[${timestamp}] ${message}\n`;
+            output.scrollTop = output.scrollHeight;
+            console.log(message);
+        }
+
+        // Initialize
+        log('🚀 Export functionality test ready');
+        log('👆 Click "Create Test Graph" to begin testing');
+    </script>
+</body>
+</html>

@@ -244,22 +244,43 @@ const FloatingSourceViewer: React.FC<FloatingSourceViewerProps> = ({
       rel.type === 'CONTAINS' && rel.target === nodeId
     );
     
-    if (containsRel) {
-      const sourceNode = graph.nodes.find(n => n.id === containsRel.source);
+    // If no CONTAINS relationship found, try DEFINES relationship (fallback)
+    const definesRel = !containsRel ? graph.relationships.find(rel => 
+      rel.type === 'DEFINES' && rel.target === nodeId
+    ) : null;
+    
+    const fileRel = containsRel || definesRel;
+    
+    if (fileRel) {
+      const sourceNode = graph.nodes.find(n => n.id === fileRel.source);
       if (sourceNode && sourceNode.properties.filePath) {
         filePath = sourceNode.properties.filePath as string;
       }
     }
 
     // If not found through relationships, search through file contents
-    if (!filePath && fileContents) {
+    // BUT ONLY for Function, Method, Class, and Variable nodes - NOT for Folder or File nodes
+    if (!filePath && fileContents && ['Function', 'Method', 'Class', 'Variable'].includes(nodeType)) {
+      console.log('FloatingSourceViewer - Searching file contents for node:', nodeName, 'of type:', nodeType);
+      
+      // Use more specific search patterns instead of just checking if content includes nodeName
+      const searchPatterns = [
+        `def ${nodeName}(`,           // Python function
+        `function ${nodeName}(`,      // JavaScript function
+        `const ${nodeName} =`,        // JavaScript const
+        `class ${nodeName}`,          // Class definition
+      ];
+      
       for (const [path, content] of fileContents) {
         // Skip .git files, node_modules, and other unwanted directories
         if (shouldSkipFileForSearch(path)) {
           continue;
         }
         
-        if (content.includes(nodeName)) {
+        // Check if any specific pattern matches instead of just nodeName
+        const foundPattern = searchPatterns.find(pattern => content.includes(pattern));
+        if (foundPattern) {
+          console.log(`FloatingSourceViewer - Found pattern "${foundPattern}" in ${path}`);
           filePath = path;
           break;
         }
@@ -267,25 +288,73 @@ const FloatingSourceViewer: React.FC<FloatingSourceViewerProps> = ({
     }
 
     if (!filePath) {
+      // Special handling for Folder nodes
+      if (nodeType === 'Folder') {
+        const folderPath = node.properties.path as string || nodeName;
+        const childFiles = graph?.nodes?.filter(n => 
+          n.label === 'File' && 
+          (n.properties.filePath as string || n.properties.path as string || '').startsWith(folderPath + '/')
+        ) || [];
+        
+        const childFolders = graph?.nodes?.filter(n => 
+          n.label === 'Folder' && 
+          (n.properties.path as string || '').startsWith(folderPath + '/') &&
+          (n.properties.path as string || '').split('/').length === folderPath.split('/').length + 1
+        ) || [];
+        
+        let directoryContent = `# Directory: ${folderPath}\n`;
+        directoryContent += `# This folder contains ${childFiles.length} files and ${childFolders.length} subfolders\n\n`;
+        
+        if (childFolders.length > 0) {
+          directoryContent += '## Subdirectories:\n';
+          childFolders.forEach(folder => {
+            const name = folder.properties.name as string || 'Unknown';
+            directoryContent += `- 📁 ${name}\n`;
+          });
+          directoryContent += '\n';
+        }
+        
+        if (childFiles.length > 0) {
+          directoryContent += '## Files:\n';
+          childFiles.slice(0, 15).forEach(file => {
+            const name = file.properties.name as string || 'Unknown';
+            const ext = file.properties.extension as string || '';
+            const icon = ext === '.py' ? '🐍' : ext === '.js' ? '📜' : ext === '.ts' ? '📘' : '📄';
+            directoryContent += `- ${icon} ${name}\n`;
+          });
+          if (childFiles.length > 15) {
+            directoryContent += `... and ${childFiles.length - 15} more files\n`;
+          }
+        }
+        
+        return {
+          fileName: folderPath.split('/').pop() || folderPath,
+          filePath: 'folder-listing',
+          content: directoryContent,
+          nodeType,
+          nodeName,
+          language: 'markdown'
+        };
+      }
+      
       // Return mock content for nodes without file association
       const mockContent = `// ${nodeType}: ${nodeName}
-// This ${nodeType.toLowerCase()} is part of the knowledge graph
-// File path not available in the current context
+// This is a ${nodeType.toLowerCase()} definition in the knowledge graph
 
 ${nodeType === 'Function' ? `function ${nodeName}() {
-  // Implementation details would be here
-  return true;
+  // Function implementation not available in current context
+  // This may be an external library function or incomplete parsing
 }` : nodeType === 'Class' ? `class ${nodeName} {
-  constructor() {
-    // Constructor implementation
-  }
-  
-  // Class methods would be here
-}` : `// ${nodeType} definition for ${nodeName}`}`;
+  // Class definition not available in current context
+  // This may be an external library class or incomplete parsing
+}` : nodeType === 'Method' ? `${nodeName}() {
+  // Method implementation not available in current context
+}` : `// ${nodeType} definition for ${nodeName}
+// Content not available in current context`}`;
 
       return {
-        fileName: `${nodeName}.${nodeType.toLowerCase()}`,
-        filePath: 'graph-node',
+        fileName: `${nodeName}`,
+        filePath: 'virtual-node',
         content: mockContent,
         nodeType,
         nodeName,
@@ -293,20 +362,52 @@ ${nodeType === 'Function' ? `function ${nodeName}() {
       };
     }
 
-    const content = fileContents.get(filePath);
-    if (!content) return null;
+    // Try to find the file content using various path resolution strategies
+    const nodeFilePath = node.properties.filePath as string || 
+                    node.properties.path as string ||
+                    node.properties.name as string;
+                    
+    if (nodeFilePath) {
+      // Try exact match first
+      let content = fileContents.get(nodeFilePath);
+      
+      // If not found, try different path variations
+      if (!content) {
+        // Try relative paths starting from different roots
+        const pathVariations = [
+          nodeFilePath,
+          nodeFilePath.replace(/^[./]*/, ''), // Remove leading ./ or /
+          nodeFilePath.startsWith('/') ? nodeFilePath.substring(1) : `/${nodeFilePath}`, // Toggle leading slash
+          `src/${nodeFilePath}`, // Try under src/
+          nodeFilePath.replace(/\\/g, '/'), // Convert backslashes to forward slashes
+          nodeFilePath.replace(/\//g, '\\') // Convert forward slashes to backslashes
+        ];
+        
+        for (const variation of pathVariations) {
+          content = fileContents.get(variation);
+          if (content) {
+            break;
+          }
+        }
+      }
+      
+      if (content) {
+        const extractedContent = extractRelevantContent(content, nodeName, nodeType);
+        const language = nodeFilePath.split('.').pop() || 'text';
 
-    const extractedContent = extractRelevantContent(content, nodeName, nodeType);
-    const language = filePath.split('.').pop() || 'text';
-
-    return {
-      fileName: filePath.split('/').pop() || filePath,
-      filePath,
-      content: extractedContent || content.substring(0, 500) + '...',
-      nodeType,
-      nodeName,
-      language
-    };
+        return {
+          fileName: nodeFilePath.split('/').pop() || nodeFilePath,
+          filePath: nodeFilePath,
+          content: extractedContent || content.substring(0, 500) + '...',
+          nodeType,
+          nodeName,
+          language
+        };
+      }
+    }
+    
+    // If no content found, return null to trigger the mock content generation above
+    return null;
   }, [nodeId, graph, fileContents]);
 
   // Dragging functionality

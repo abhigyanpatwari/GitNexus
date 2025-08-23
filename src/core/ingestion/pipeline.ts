@@ -113,10 +113,10 @@ export class GraphPipeline {
     const filesWithoutDefinitions = fileNodes.filter(fileNode => {
       const hasDefinitions = graph.relationships.some(rel => 
         rel.source === fileNode.id && 
-        rel.type === 'CONTAINS' && 
+        rel.type === 'DEFINES' && 
         graph.nodes.some(targetNode => 
           targetNode.id === rel.target && 
-          ['Function', 'Class', 'Method'].includes(targetNode.label)
+          ['Function', 'Class', 'Method', 'Variable'].includes(targetNode.label)
         )
       );
       return !hasDefinitions;
@@ -181,7 +181,7 @@ export class GraphPipeline {
     const sourceFilesWithoutDefinitions = sourceFiles.filter(fileNode => {
       const hasDefinitions = graph.relationships.some(rel =>
         rel.source === fileNode.id && 
-        rel.type === 'CONTAINS' &&
+        rel.type === 'DEFINES' &&
         graph.nodes.some(n => 
           n.id === rel.target && 
           ['Function', 'Class', 'Method', 'Variable'].includes(n.label)
@@ -205,7 +205,7 @@ export class GraphPipeline {
     const definitionsWithoutFiles = definitionNodes.filter(defNode => {
       const hasFileParent = graph.relationships.some(rel =>
         rel.target === defNode.id &&
-        rel.type === 'CONTAINS' &&
+        rel.type === 'DEFINES' &&
         graph.nodes.some(n => n.id === rel.source && n.label === 'File')
       );
       return !hasFileParent;

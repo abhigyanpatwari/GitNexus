@@ -477,7 +477,7 @@ export class GitHubService {
 
     await this.collectPathsAndContent(owner, repo, '', allPaths, fileContents);
 
-    console.log(`GitHub: Discovered ${allPaths.length} total paths, ${fileContents.size} files with content`);
+    console.log(`GitHub: Extracted ${allPaths.length} paths, ${fileContents.size} files`);
     
     return {
       allPaths,
@@ -503,7 +503,7 @@ export class GitHubService {
           // Always try to get content for files, but skip unwanted files like .git files
           // Filtering will happen later in ParsingProcessor, but we can skip obvious files
           if (this.shouldSkipFileForContent(fullPath)) {
-            console.log(`Skipping file content for: ${fullPath}`);
+            // Reduced logging to avoid console spam
           } else {
             try {
               const content = await this.getFileContent(owner, repo, fullPath);

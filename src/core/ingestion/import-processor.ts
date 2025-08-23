@@ -102,9 +102,15 @@ export class ImportProcessor {
     ast: ParsedAST, 
     graph: KnowledgeGraph
   ): Promise<{ found: number; resolved: number }> {
-    if (!ast.tree) return { found: 0, resolved: 0 };
+    if (!ast.tree) {
+      return { found: 0, resolved: 0 };
+    }
 
+
+    
     const imports = this.extractImports(ast.tree.rootNode, filePath);
+    
+
     
     if (imports.length === 0) return { found: 0, resolved: 0 };
 
@@ -227,17 +233,81 @@ export class ImportProcessor {
     filePath: string, 
     imports: ImportInfo[]
   ): void {
+
+    
     if (node.type === 'import_statement') {
-      const sourceNode = node.childForFieldName('source');
-      if (!sourceNode) return;
+
+      
+      // Try different approaches to find the source
+      let sourceNode = node.childForFieldName('source');
+      if (!sourceNode) {
+        // Try finding string literal directly
+        for (let i = 0; i < node.childCount; i++) {
+          const child = node.child(i);
+          if (child && (child.type === 'string' || child.type === 'string_literal')) {
+            sourceNode = child;
+            break;
+          }
+        }
+      }
+      
+      if (!sourceNode) {
+        return;
+      }
 
       const sourcePath = sourceNode.text.replace(/['"]/g, '');
       const targetFile = this.resolveModulePath(sourcePath, filePath, 'javascript');
+      
+
 
       // Handle different import patterns
-      const importClauseNode = node.childForFieldName('import_clause');
+      let importClauseNode: Parser.SyntaxNode | null = node.childForFieldName('import_clause');
+      
+      // CRITICAL FIX: If field-based approach fails, search by node type 
+      if (!importClauseNode) {
+        for (let i = 0; i < node.childCount; i++) {
+          const child = node.child(i);
+          if (child?.type === 'import_clause') {
+            importClauseNode = child;
+            break;
+          }
+        }
+      }
+      
       if (importClauseNode) {
         this.processJSImportClause(importClauseNode, filePath, targetFile, imports);
+      } else {
+        
+        // Handle simple imports like: import 'module'
+        if (node.text.trim().startsWith('import') && !node.text.includes('{') && !node.text.includes('from')) {
+          imports.push({
+            importingFile: filePath,
+            localName: '_side_effect_',
+            targetFile,
+            exportedName: '*',
+            importType: 'namespace'
+          });
+
+        } else {
+          // Try to extract import manually from text as fallback
+          const importText = node.text.trim();
+          const match = importText.match(/import\s+(.+?)\s+from\s+['"]([^'"]+)['"]/);;
+          if (match) {
+            const importPart = match[1].trim();
+            
+            // Handle simple default import
+            if (!importPart.includes('{') && !importPart.includes('*')) {
+              imports.push({
+                importingFile: filePath,
+                localName: importPart,
+                targetFile,
+                exportedName: 'default',
+                importType: 'default'
+              });
+
+            }
+          }
+        }
       }
     } else if (node.type === 'variable_declaration') {
       // Handle CommonJS: const x = require('module')
@@ -262,13 +332,44 @@ export class ImportProcessor {
     targetFile: string,
     imports: ImportInfo[]
   ): void {
+    // Track what we've processed to ensure we don't miss anything
+    let processedSomething = false;
+    
     for (let i = 0; i < importClauseNode.childCount; i++) {
       const child = importClauseNode.child(i);
       if (!child) continue;
+      if (child.type === 'identifier') {
+        // Default import - this is the most common case we're missing
+        imports.push({
+          importingFile: filePath,
+          localName: child.text,
+          targetFile,
+          exportedName: 'default',
+          importType: 'default'
+        });
 
-      if (child.type === 'import_specifier') {
-        // Named import: { name } or { name as alias }
+        processedSomething = true;
+      } else if (child.type === 'named_imports') {
+        // Process named imports: { a, b, c }
+        this.processNamedImportsNode(child, filePath, targetFile, imports);
+        processedSomething = true;
+      } else if (child.type === 'namespace_import') {
+        // Namespace import: * as name
         const nameNode = child.childForFieldName('name');
+        if (nameNode) {
+          imports.push({
+            importingFile: filePath,
+            localName: nameNode.text,
+            targetFile,
+            exportedName: '*',
+            importType: 'namespace'
+          });
+
+          processedSomething = true;
+        }
+      } else if (child.type === 'import_specifier') {
+        // Direct import specifier (should be handled by named_imports, but just in case)
+        const nameNode = child.childForFieldName('name') || child.child(0);
         const aliasNode = child.childForFieldName('alias');
         
         if (nameNode) {
@@ -282,28 +383,98 @@ export class ImportProcessor {
             exportedName,
             importType: 'named'
           });
+
+          processedSomething = true;
         }
-      } else if (child.type === 'namespace_import') {
-        // Namespace import: * as name
-        const nameNode = child.childForFieldName('name');
-        if (nameNode) {
+      }
+    }
+    
+    // Fallback: If structured processing didn't work, try text parsing
+    if (!processedSomething) {
+      const clauseText = importClauseNode.text.trim();
+      
+      if (clauseText.startsWith('{') && clauseText.endsWith('}')) {
+        // Named imports like { foo, bar }
+        const namedImports = clauseText.slice(1, -1)
+          .split(',')
+          .map(s => s.trim())
+          .filter(s => s.length > 0);
+        
+        namedImports.forEach(importName => {
           imports.push({
             importingFile: filePath,
-            localName: nameNode.text,
+            localName: importName,
+            targetFile,
+            exportedName: importName,
+            importType: 'named'
+          });
+        });
+
+      } else if (clauseText.includes(' as ')) {
+        // Namespace import like * as foo
+        const namespaceMatch = clauseText.match(/\*\s+as\s+(\w+)/);
+        if (namespaceMatch) {
+          imports.push({
+            importingFile: filePath,
+            localName: namespaceMatch[1],
             targetFile,
             exportedName: '*',
             importType: 'namespace'
           });
+
         }
-      } else if (child.type === 'identifier') {
-        // Default import
+      } else {
+        // Simple default import
+        const defaultName = clauseText.split(',')[0].trim(); // Handle mixed imports
+        if (defaultName && !defaultName.includes('{') && !defaultName.includes('*')) {
+          imports.push({
+            importingFile: filePath,
+            localName: defaultName,
+            targetFile,
+            exportedName: 'default',
+            importType: 'default'
+          });
+
+        }
+      }
+    }
+  }
+
+  private processNamedImportsNode(
+    namedImportsNode: Parser.SyntaxNode,
+    filePath: string,
+    targetFile: string,
+    imports: ImportInfo[]
+  ): void {
+    for (let j = 0; j < namedImportsNode.childCount; j++) {
+      const namedChild = namedImportsNode.child(j);
+      if (namedChild && namedChild.type === 'import_specifier') {
+        
+        const nameNode = namedChild.childForFieldName('name') || namedChild.child(0);
+        const aliasNode = namedChild.childForFieldName('alias');
+        
+        if (nameNode) {
+          const exportedName = nameNode.text;
+          const localName = aliasNode ? aliasNode.text : exportedName;
+          
+          imports.push({
+            importingFile: filePath,
+            localName,
+            targetFile,
+            exportedName,
+            importType: 'named'
+          });
+
+        }
+      } else if (namedChild && namedChild.type === 'identifier') {
         imports.push({
           importingFile: filePath,
-          localName: child.text,
+          localName: namedChild.text,
           targetFile,
-          exportedName: 'default',
-          importType: 'default'
+          exportedName: namedChild.text,
+          importType: 'named'
         });
+
       }
     }
   }

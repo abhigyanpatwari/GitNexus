@@ -109,7 +109,7 @@ export class ZipService {
 
         // Skip .git files and other unwanted files during content extraction
         if (this.shouldSkipFileForContent(normalizedPath)) {
-          console.log(`Skipping file content for: ${normalizedPath}`);
+          // Reduced logging - only log summary at the end
           return;
         }
 
@@ -149,8 +149,7 @@ export class ZipService {
       // Wait for all file extractions to complete
       await Promise.all(filePromises);
 
-      console.log(`ZIP: Discovered ${allPaths.length} total paths, ${fileContents.size} files with content`);
-      console.log(`ZIP: Total extracted size: ${totalExtractedSize} bytes`);
+      console.log(`ZIP: Extracted ${allPaths.length} paths, ${fileContents.size} files (${totalExtractedSize} bytes)`);
 
       return {
         allPaths: allPaths.sort(), // Sort for consistent ordering

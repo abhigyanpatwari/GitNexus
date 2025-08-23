@@ -423,17 +423,25 @@ def hasattr(obj: Any, name: str) -> bool:
         rel.type === 'CONTAINS' && rel.target === selectedNodeId
       );
       
-      if (containsRelationship) {
-        const fileNode = graph.nodes.find(n => n.id === containsRelationship.source);
+      // If no CONTAINS relationship found, try DEFINES relationship (fallback)
+      const definesRelationship = !containsRelationship ? graph.relationships?.find(rel => 
+        rel.type === 'DEFINES' && rel.target === selectedNodeId
+      ) : null;
+      
+      const fileRelationship = containsRelationship || definesRelationship;
+      
+      if (fileRelationship) {
+        const fileNode = graph.nodes.find(n => n.id === fileRelationship.source);
         if (fileNode && fileNode.label === 'File') {
           filePath = fileNode.properties.path as string || fileNode.properties.filePath as string;
-          console.log('SourceViewer - Found file through CONTAINS relationship:', filePath);
+          console.log('SourceViewer - Found file through relationship:', filePath, 'via', fileRelationship.type);
         }
       }
       
       // If still no file path, try reverse lookup by searching for the node name in file contents
-      if (!filePath && fileContents) {
-        console.log('SourceViewer - Searching file contents for node:', nodeName);
+      // BUT ONLY for Function, Method, Class, and Variable nodes - NOT for Folder or File nodes
+      if (!filePath && fileContents && ['Function', 'Method', 'Class', 'Variable'].includes(node.label)) {
+        console.log('SourceViewer - Searching file contents for node:', nodeName, 'of type:', node.label);
         
         // Try multiple search patterns for the function
         const searchPatterns = [
@@ -481,8 +489,9 @@ def hasattr(obj: Any, name: str) -> bool:
         }
         
         // If still not found, try a more lenient search (case-insensitive)
-        if (!filePath) {
-          console.log('SourceViewer - Trying case-insensitive search for:', nodeName);
+        // BUT ONLY for Function, Method, Class, and Variable nodes
+        if (!filePath && ['Function', 'Method', 'Class', 'Variable'].includes(node.label)) {
+          console.log('SourceViewer - Trying case-insensitive search for:', nodeName, 'of type:', node.label);
           for (const [path, content] of fileContents) {
             // Skip .git files, node_modules, and other unwanted directories
             if (shouldSkipFileForSearch(path)) {
@@ -510,10 +519,20 @@ def hasattr(obj: Any, name: str) -> bool:
     console.log('SourceViewer - Final node details:', {
       nodeId: selectedNodeId,
       nodeName,
+      nodeLabel: node.label,
+      nodeType: node.label,
       filePath,
       fileName,
-      nodeLabel: node.label,
       nodeProperties: node.properties,
+      // CRITICAL DEBUG: Show what type this node actually is
+      actualNodeInfo: {
+        isFolder: node.label === 'Folder',
+        isFile: node.label === 'File', 
+        isFunction: node.label === 'Function',
+        isClass: node.label === 'Class',
+        nodeLabel: node.label,
+        nodeName: nodeName
+      },
       fileContentsSize: fileContents?.size || 0,
       // Add detailed relationship debugging
       allRelationships: graph?.relationships?.length || 0,
@@ -536,7 +555,55 @@ def hasattr(obj: Any, name: str) -> bool:
     // Try to get actual file content
     let content = '';
     
-    if (filePath && fileContents && fileContents.has(filePath)) {
+    // Special handling for Folder nodes
+    if (node.label === 'Folder') {
+      const folderPath = filePath || nodeName || 'Unknown Folder';
+      console.log('SourceViewer - Processing folder node:', {
+        folderPath,
+        nodeName,
+        nodeProperties: node.properties
+      });
+      
+      const childFiles = graph?.nodes?.filter(n => 
+        n.label === 'File' && 
+        (n.properties.filePath as string || n.properties.path as string || '').startsWith(folderPath + '/')
+      ) || [];
+      
+      const childFolders = graph?.nodes?.filter(n => 
+        n.label === 'Folder' && 
+        (n.properties.path as string || '').startsWith(folderPath + '/') &&
+        (n.properties.path as string || '').split('/').length === folderPath.split('/').length + 1
+      ) || [];
+      
+      content = `# Directory: ${folderPath}\n`;
+      content += `# Node Type: ${node.label}\n`;
+      content += `# This folder contains ${childFiles.length} files and ${childFolders.length} subfolders\n\n`;
+      
+      if (childFolders.length > 0) {
+        content += '## Subdirectories:\n';
+        childFolders.forEach(folder => {
+          const name = folder.properties.name as string || 'Unknown';
+          content += `- 📁 ${name}\n`;
+        });
+        content += '\n';
+      }
+      
+      if (childFiles.length > 0) {
+        content += '## Files:\n';
+        childFiles.slice(0, 20).forEach(file => {
+          const name = file.properties.name as string || 'Unknown';
+          const ext = file.properties.extension as string || '';
+          const icon = ext === '.py' ? '🐍' : ext === '.js' ? '📜' : ext === '.ts' ? '📘' : '📄';
+          content += `- ${icon} ${name}\n`;
+        });
+        if (childFiles.length > 20) {
+          content += `... and ${childFiles.length - 20} more files\n`;
+        }
+      }
+      
+      console.log('SourceViewer - Generated directory content for folder:', folderPath);
+    }
+    else if (filePath && fileContents && fileContents.has(filePath)) {
       content = fileContents.get(filePath)!;
       console.log('SourceViewer - Found file content for:', filePath);
       

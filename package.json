@@ -4,8 +4,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev": "npm run compile-queries && vite",
+    "build": "npm run compile-queries && tsc -b && vite build",
+    "compile-queries": "node scripts/compile-queries.js",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "jest",

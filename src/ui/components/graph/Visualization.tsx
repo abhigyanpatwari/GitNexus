@@ -195,7 +195,7 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
       
       return {
         id: node.id,
-        label: node.properties.name as string || node.id,
+        label: getNodeDisplayName(node),
         nodeType: node.label.toLowerCase(),
         properties: node.properties,
         color,
@@ -256,6 +256,50 @@ const GraphVisualization: React.FC<GraphVisualizationProps> = ({
     });
 
     return { nodes, links };
+  };
+
+  // Helper function to get proper display name for nodes
+  const getNodeDisplayName = (node: GraphNode): string => {
+    // Use the name property if available
+    if (node.properties.name && typeof node.properties.name === 'string') {
+      const name = node.properties.name;
+      
+      // For file nodes, show just the filename without path
+      if (node.label.toLowerCase() === 'file') {
+        const fileName = name.split('/').pop() || name;
+        return fileName;
+      }
+      
+      // For other nodes, use the name as-is
+      return name;
+    }
+    
+    // Fallback to filePath for file nodes
+    if (node.label.toLowerCase() === 'file' && node.properties.filePath) {
+      const filePath = node.properties.filePath as string;
+      const fileName = filePath.split('/').pop() || filePath;
+      return fileName;
+    }
+    
+    // For function/method/class nodes, try common property names
+    if (['function', 'method', 'class', 'interface'].includes(node.label.toLowerCase())) {
+      const functionName = node.properties.functionName || 
+                          node.properties.methodName || 
+                          node.properties.className || 
+                          node.properties.interfaceName;
+      if (functionName && typeof functionName === 'string') {
+        return functionName;
+      }
+    }
+    
+    // Last resort: use a cleaned version of the node ID
+    let displayName = node.id;
+    
+    // Remove common prefixes that might make it look like placeholder text
+    displayName = displayName.replace(/^(file|function|method|class)_?/i, '');
+    displayName = displayName.replace(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i, 'Unknown');
+    
+    return displayName;
   };
 
   // Helper function to adjust color brightness

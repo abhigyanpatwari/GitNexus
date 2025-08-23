@@ -67,10 +67,6 @@ export class StructureProcessor {
     const visibleDirectories = directories.filter(dir => !this.shouldHideDirectory(dir));
     const hiddenDirectoriesCount = directories.length - visibleDirectories.length;
     
-    if (hiddenDirectoriesCount > 0) {
-      console.log(`StructureProcessor: Hiding ${hiddenDirectoriesCount} ignored directories from KG`);
-    }
-    
     // Create directory nodes only for visible directories
     const directoryNodes = this.createDirectoryNodes(visibleDirectories);
     directoryNodes.forEach(node => graph.addNode(node));
@@ -78,10 +74,6 @@ export class StructureProcessor {
     // Filter out files that are inside ignored directories
     const visibleFiles = files.filter(file => !this.shouldHideFile(file));
     const hiddenFilesCount = files.length - visibleFiles.length;
-    
-    if (hiddenFilesCount > 0) {
-      console.log(`StructureProcessor: Hiding ${hiddenFilesCount} files in ignored directories from KG`);
-    }
     
     // Create file nodes only for visible files
     const fileNodes = this.createFileNodes(visibleFiles);
@@ -91,7 +83,7 @@ export class StructureProcessor {
     this.createContainsRelationships(graph, projectNode.id, visibleDirectories, visibleFiles);
     
     const totalHidden = hiddenDirectoriesCount + hiddenFilesCount;
-    console.log(`StructureProcessor: Created ${graph.nodes.length} nodes total (${totalHidden} items hidden)`);
+    console.log(`StructureProcessor: Created ${graph.nodes.length} nodes total (${totalHidden} items filtered)`);
   }
 
   /**
@@ -164,7 +156,7 @@ export class StructureProcessor {
     for (const dirPath of directoryPaths) {
       if (!dirPath) continue;
       
-      const id = generateId('folder');
+      const id = generateId(`folder_${dirPath}`);
       this.nodeIdMap.set(dirPath, id);
       
       const pathParts = dirPath.split('/');
@@ -196,7 +188,7 @@ export class StructureProcessor {
     for (const filePath of filePaths) {
       if (!filePath) continue;
       
-      const id = generateId('file');
+      const id = generateId(`file_${filePath}`);
       this.nodeIdMap.set(filePath, id);
       
       const fileName = filePath.split('/').pop() || filePath;

@@ -83,3 +83,51 @@ export const cleanup = () => {
   jest.clearAllTimers();
   jest.clearAllMocks();
 };
+
+/**
+ * Jest test setup for WASM verification
+ * TEMPORARY FILE - DELETE after WASM verification
+ */
+
+// Mock fetch for WASM file loading
+global.fetch = jest.fn();
+
+// Mock URL.createObjectURL and revokeObjectURL for worker tests
+global.URL.createObjectURL = jest.fn(() => 'mock-blob-url');
+global.URL.revokeObjectURL = jest.fn();
+
+// Mock Worker for worker tests
+global.Worker = jest.fn().mockImplementation(() => ({
+  postMessage: jest.fn(),
+  terminate: jest.fn(),
+  addEventListener: jest.fn(),
+  removeEventListener: jest.fn(),
+  onmessage: null,
+  onerror: null
+}));
+
+// Setup console for test output
+const originalConsoleLog = console.log;
+console.log = (...args) => {
+  // Allow our test messages through
+  if (args[0] && typeof args[0] === 'string' && (
+    args[0].includes('✅') || 
+    args[0].includes('❌') || 
+    args[0].includes('🔍') ||
+    args[0].includes('🧪')
+  )) {
+    originalConsoleLog(...args);
+  }
+};
+
+// Mock WebAssembly for basic checks
+if (typeof WebAssembly === 'undefined') {
+  global.WebAssembly = {
+    compile: jest.fn(),
+    instantiate: jest.fn(),
+    Module: jest.fn(),
+    Instance: jest.fn()
+  };
+}
+
+console.log('🔧 Jest setup completed for WASM verification tests');

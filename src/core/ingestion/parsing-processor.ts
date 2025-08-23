@@ -9,7 +9,7 @@ import {
 } from '../../lib/shared-utils.js';
 import { IGNORE_PATTERNS } from '../../config/language-config.js';
 import Parser from 'web-tree-sitter';
-import { TYPESCRIPT_QUERIES, PYTHON_QUERIES, JAVA_QUERIES } from './tree-sitter-queries';
+import { TYPESCRIPT_QUERIES, JAVASCRIPT_QUERIES, PYTHON_QUERIES, JAVA_QUERIES } from './tree-sitter-queries';
 import { initTreeSitter, loadTypeScriptParser, loadPythonParser, loadJavaScriptParser } from '../tree-sitter/parser-loader.js';
 import { FunctionRegistryTrie, FunctionDefinition } from '../graph/trie.js';
 import { LRUCacheService } from '../../lib/lru-cache-service.js';
@@ -226,11 +226,19 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 
 	private async parseFile(graph: KnowledgeGraph, filePath: string, content: string): Promise<void> {
     const language = this.detectLanguage(filePath);
+    
+    // Skip compiled/minified files for JavaScript
+    if (language === 'javascript' && this.isCompiledOrMinified(content, filePath)) {
+      console.log(`Skipping compiled/minified file: ${filePath}`);
+      await this.parseGenericFile(graph, filePath, content);
+      return;
+    }
+    
     const contentHash = this.generateContentHash(content);
     const cacheKey = this.lruCache.generateFileCacheKey(filePath, contentHash);
 
-    // Check cache first
-    const cachedResult = this.lruCache.getParsedFile(cacheKey);
+    // Check cache first - TEMPORARILY DISABLED FOR DEBUGGING
+    const cachedResult = null; // this.lruCache.getParsedFile(cacheKey);
     if (cachedResult) {
       console.log(`Cache hit for file: ${filePath}`);
       this.astMap.set(filePath, { tree: cachedResult.ast });
@@ -241,7 +249,7 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
     const langParser = this.languageParsers.get(language);
 
     if (!langParser || !this.parser) {
-      console.warn(`No parser available for language: ${language}. Skipping file: ${filePath}`);
+      // Skip file with reduced logging to avoid console spam
       await this.parseGenericFile(graph, filePath, content);
       return;
     }
@@ -262,8 +270,8 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
       const queryCacheKey = this.lruCache.generateQueryCacheKey(language, queryString);
       let queryResults: Parser.QueryMatch[] = [];
 
-      // Check query cache
-      const cachedQuery = this.lruCache.getQueryResult(queryCacheKey);
+      // Check query cache - TEMPORARILY DISABLED FOR DEBUGGING
+      const cachedQuery = null; // this.lruCache.getQueryResult(queryCacheKey);
       if (cachedQuery) {
         queryResults = cachedQuery.results;
       } else {
@@ -284,6 +292,11 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
           const definition = this.extractDefinition(node, queryName, filePath);
           if (definition) {
             definitions.push(definition);
+            
+            // Debug: Log what specific definitions we're finding
+            if (language === 'python' && filePath.endsWith('.py')) {
+              console.log(`🔍 DEBUG: Found ${queryName} -> ${definition.type}: "${definition.name}" in ${filePath.split('/').pop()}`);
+            }
           }
         }
       }
@@ -298,12 +311,39 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
       fileSize: content.length
     });
 
+    // Debug: Log definition extraction results for Python files
+    if (language === 'python' && filePath.endsWith('.py')) {
+      console.log(`🔍 DEBUG: ${filePath.split('/').pop()} -> ${definitions.length} definitions extracted (content: ${content.length} chars, hash: ${contentHash.substring(0, 8)})`);
+      
+      // Log definition types for debugging
+      const definitionTypes = definitions.reduce((acc, def) => {
+        acc[def.type] = (acc[def.type] || 0) + 1;
+        return acc;
+      }, {});
+      
+      if (definitions.length > 0) {
+        console.log(`🔍 DEBUG: Definition types: ${JSON.stringify(definitionTypes)}`);
+      }
+      
+      if (definitions.length === 0 && content.length > 100) {
+        console.log(`🚨 DEBUG: Large Python file with no definitions: ${filePath} (${content.length} chars)`);
+        // Log first few lines to understand the content
+        const firstLines = content.split('\n').slice(0, 3).join('\\n');
+        console.log(`🔍 DEBUG: File starts with: ${firstLines}`);
+      }
+    }
+
     await this.addDefinitionsToGraph(graph, filePath, definitions);
 	}
 
   private extractDefinition(node: Parser.SyntaxNode, queryName: string, filePath: string): ParsedDefinition | null {
     const nameNode = node.childForFieldName('name');
-    const name = nameNode ? nameNode.text : 'anonymous';
+    const name = nameNode ? nameNode.text : null;
+    
+    // Skip anonymous definitions - they're usually from compiled/minified code
+    if (!name || name === 'anonymous' || name.trim().length === 0) {
+      return null;
+    }
 
     return {
       name,
@@ -319,14 +359,53 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
       case 'classes': return 'class';
       case 'methods': return 'method';
       case 'functions':
-      case 'arrowFunctions': return 'function';
+      case 'arrowFunctions':
+      case 'variableAssignments':
+      case 'objectMethods': return 'function';
       case 'imports':
       case 'from_imports': return 'import';
+      case 'exports':
+      case 'defaultExports': return 'function'; // Exports usually export functions
       case 'interfaces': return 'interface';
       case 'types': return 'type';
       case 'decorators': return 'decorator';
-      default: return 'variable';
+      default: 
+        console.warn(`Unknown query type: ${queryName}, defaulting to 'function'`);
+        return 'function'; // Better default than 'variable'
     }
+  }
+
+  private isCompiledOrMinified(content: string, filePath: string): boolean {
+    // Check file name patterns for known compiled files
+    const fileName = filePath.split('/').pop()?.toLowerCase() || '';
+    if (fileName.includes('.min.') || 
+        fileName.includes('.bundle.') ||
+        fileName.includes('tree-sitter.js') ||
+        fileName.includes('kuzu_wasm_worker.js')) {
+      return true;
+    }
+    
+    // Check content characteristics for minified code
+    const lines = content.split('\n');
+    if (lines.length > 0) {
+      const firstLine = lines[0];
+      
+      // Very long first line (typical of minified code)
+      if (firstLine.length > 500) {
+        return true;
+      }
+      
+      // Contains typical minified patterns
+      if (firstLine.includes('var Module=void 0!==Module?Module:{}') ||
+          firstLine.includes('__webpack_require__') ||
+          firstLine.includes('!function(') ||
+          content.includes('/*! ') || // Webpack/build tool comments
+          content.match(/^\s*!function\s*\(/)) { // IIFE patterns
+        return true;
+      }
+    }
+    
+    return false;
   }
 
 	private detectLanguage(filePath: string): string {
@@ -346,8 +425,9 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
   private getQueriesForLanguage(language: string): Record<string, string> | null {
     switch (language) {
       case 'typescript':
-      case 'javascript':
         return TYPESCRIPT_QUERIES;
+      case 'javascript':
+        return JAVASCRIPT_QUERIES; // Use separate JavaScript queries
       case 'python':
         return PYTHON_QUERIES;
       case 'java':
@@ -358,18 +438,31 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
   }
 
 	private async parseGenericFile(graph: KnowledgeGraph, filePath: string, _content: string): Promise<void> {
-		const fileNode: GraphNode = {
-			id: generateId('file'),
-			label: 'File' as NodeLabel,
-			properties: {
-				name: pathUtils.getFileName(filePath),
-				path: filePath,
-				size: _content.length,
-				language: this.detectLanguage(filePath)
-			}
-		};
+		// Find existing file node created by StructureProcessor
+		let fileNode = graph.nodes.find(node => 
+			node.label === 'File' && 
+			(node.properties.filePath === filePath || node.properties.path === filePath)
+		);
 
-		graph.addNode(fileNode);
+		// If no existing file node found, create one (fallback)
+		if (!fileNode) {
+			fileNode = {
+				id: generateId(`file_${filePath}`),
+				label: 'File' as NodeLabel,
+				properties: {
+					name: pathUtils.getFileName(filePath),
+					path: filePath,
+					filePath: filePath,
+					size: _content.length,
+					language: this.detectLanguage(filePath)
+				}
+			};
+			graph.addNode(fileNode);
+		} else {
+			// Update existing file node with additional properties
+			fileNode.properties.size = _content.length;
+			fileNode.properties.language = this.detectLanguage(filePath);
+		}
 	}
 
 	private async addDefinitionsToGraph(
@@ -377,20 +470,30 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 		filePath: string, 
 		definitions: ParsedDefinition[]
 	): Promise<void> {
-		const fileNode: GraphNode = { 
-			id: generateId('file'),
-			label: 'File' as NodeLabel,
-			properties: {
-				name: pathUtils.getFileName(filePath),
-				path: filePath,
-				language: this.detectLanguage(filePath)
-			}
-		};
+		// Find existing file node created by StructureProcessor
+		let fileNode = graph.nodes.find(node => 
+			node.label === 'File' && 
+			(node.properties.filePath === filePath || node.properties.path === filePath)
+		);
 
-		graph.addNode(fileNode);
+		// If no existing file node found, create one (fallback)
+		if (!fileNode) {
+			fileNode = { 
+				id: generateId(`file_${filePath}`),
+				label: 'File' as NodeLabel,
+				properties: {
+					name: pathUtils.getFileName(filePath),
+					path: filePath,
+					filePath: filePath,
+					language: this.detectLanguage(filePath)
+				}
+			};
+			graph.addNode(fileNode);
+		}
 
 		for (const def of definitions) {
-			const nodeId = generateId(def.type);
+			// Generate unique ID based on file path and definition name
+			const nodeId = generateId(`${def.type}_${filePath}_${def.name}_${def.startLine}`);
 
 			if (this.duplicateDetector.checkAndMark(nodeId)) continue;
 

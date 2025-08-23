@@ -5,6 +5,8 @@
 
 // Import tree-sitter and language parsers
 import Parser from 'web-tree-sitter';
+// Import compiled queries (generated from TypeScript)
+import { getQueriesForLanguage } from './compiled-queries.js';
 
 // Initialize tree-sitter
 let parser = null;
@@ -98,109 +100,61 @@ function extractDefinitions(tree, filePath) {
   return definitions;
 }
 
-// Get queries for specific language
-function getQueriesForLanguage(language) {
-  const queries = {
-    typescript: {
-      function_declaration: `
-        (function_declaration
-          name: (identifier) @function.name
-          parameters: (formal_parameters) @function.parameters
-          body: (statement_block) @function.body
-        )
-      `,
-      class_declaration: `
-        (class_declaration
-          name: (identifier) @class.name
-          body: (class_body) @class.body
-        )
-      `,
-      method_definition: `
-        (method_definition
-          name: (property_identifier) @method.name
-          parameters: (formal_parameters) @method.parameters
-          body: (statement_block) @method.body
-        )
-      `,
-      import_statement: `
-        (import_statement
-          source: (string) @import.source
-        )
-      `
-    },
-    javascript: {
-      function_declaration: `
-        (function_declaration
-          name: (identifier) @function.name
-          parameters: (formal_parameters) @function.parameters
-          body: (statement_block) @function.body
-        )
-      `,
-      arrow_function: `
-        (arrow_function
-          parameters: (formal_parameters) @function.parameters
-          body: (statement_block) @function.body
-        )
-      `,
-      class_declaration: `
-        (class_declaration
-          name: (identifier) @class.name
-          body: (class_body) @class.body
-        )
-      `
-    },
-    python: {
-      function_definition: `
-        (function_definition
-          name: (identifier) @function.name
-          parameters: (parameters) @function.parameters
-          body: (block) @function.body
-        )
-      `,
-      class_definition: `
-        (class_definition
-          name: (identifier) @class.name
-          body: (block) @class.body
-        )
-      `,
-      import_statement: `
-        (import_statement
-          name: (dotted_name) @import.name
-        )
-      `
-    }
-  };
+// Get queries for specific language - now uses imported compiled queries
+// This ensures consistency with the main thread parsing logic
 
-  return queries[language] || null;
+// Helper function to map query names to definition types (matches main thread)
+function getDefinitionType(queryName) {
+  switch (queryName) {
+    case 'classes': return 'class';
+    case 'methods': return 'method';
+    case 'functions':
+    case 'arrowFunctions': return 'function';
+    case 'imports':
+    case 'from_imports': return 'import';
+    case 'interfaces': return 'interface';
+    case 'types': return 'type';
+    case 'decorators': return 'decorator';
+    default: return 'variable';
+  }
 }
 
 // Process a query match into a definition
+// Updated to match main thread's extractDefinition logic exactly
 function processMatch(match, filePath, queryType) {
   try {
-    const captures = match.captures;
-    const definition = {
-      type: queryType,
-      filePath,
-      startLine: match.node.startPosition.row,
-      endLine: match.node.endPosition.row,
-      startColumn: match.node.startPosition.column,
-      endColumn: match.node.endPosition.column
-    };
-
-    // Extract specific information based on query type
-    for (const capture of captures) {
-      const { name, node } = capture;
+    // Main thread processes each capture individually
+    // For each match, process all captures
+    const definitions = [];
+    
+    for (const capture of match.captures) {
+      const node = capture.node;
       
-      if (name.includes('name')) {
-        definition.name = node.text;
-      } else if (name.includes('parameters')) {
-        definition.parameters = node.text;
-      } else if (name.includes('source')) {
-        definition.importSource = node.text.replace(/['"]/g, '');
-      }
-    }
+      // Extract name from the node (same logic as main thread)
+      const nameNode = node.childForFieldName('name');
+      const name = nameNode ? nameNode.text : 'anonymous';
 
-    return definition;
+      const definition = {
+        name: name,
+        type: getDefinitionType(queryType), // Use proper type mapping
+        filePath: filePath,
+        startLine: node.startPosition.row + 1,
+        endLine: node.endPosition.row + 1,
+        startColumn: node.startPosition.column,
+        endColumn: node.endPosition.column
+      };
+
+      // Extract additional fields if available
+      const parametersNode = node.childForFieldName('parameters');
+      if (parametersNode) {
+        definition.parameters = parametersNode.text;
+      }
+
+      definitions.push(definition);
+    }
+    
+    // Return the first definition (main thread processes one capture at a time)
+    return definitions.length > 0 ? definitions[0] : null;
   } catch (error) {
     console.warn('Worker: Error processing match:', error);
     return null;

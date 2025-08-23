@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Auto-generated files
+public/workers/compiled-queries.js
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

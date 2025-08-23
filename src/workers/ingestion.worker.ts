@@ -70,8 +70,8 @@ export class IngestionWorker {
         fileContents: fileContentsMap
       });
       
-      // Clear file contents to free memory after processing
-      fileContentsMap.clear();
+      // Note: Keeping file contents available for UI components
+      // fileContentsMap.clear(); // Commented out to preserve file contents for SourceViewer
       
       const duration = Date.now() - startTime;
       

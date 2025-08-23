@@ -46,7 +46,13 @@ export class CallProcessor {
     sameFileMatches: 0,
     heuristicMatches: 0,
     failed: 0,
-    callTypes: {} as Record<string, number>
+    callTypes: {} as Record<string, number>,
+    // Failure categorization
+    failuresByCategory: {
+      externalLibraries: 0,    // Calls to external/stdlib functions (expected)
+      pythonBuiltins: 0,       // Python built-in functions (expected)
+      actualFailures: 0        // Real resolution failures (unexpected)
+    }
   };
 
   constructor(functionTrie: FunctionRegistryTrie) {
@@ -92,26 +98,10 @@ export class CallProcessor {
     if (calls.length === 0) {
       // Only log for source files that should have function calls
       if (this.isSourceFile(filePath)) {
-        console.log(`⚠️ CallProcessor: No function calls found in source file: ${filePath}`);
-        
-        // Debug: Check if this file has any 'call' nodes at all
-        if (filePath.endsWith('.py')) {
-          const callNodeCount = this.countNodeType(ast.tree!.rootNode, 'call');
-          const definitionCount = graph.nodes.filter(n => 
-            (n.label === 'Function' || n.label === 'Class' || n.label === 'Method') && 
-            n.properties.filePath === filePath
-          ).length;
-          
-          console.log(`  📊 Debug: ${filePath.split('/').pop()} has ${callNodeCount} call nodes, ${definitionCount} definitions`);
-          
-          // If we have definitions but no calls, that's suspicious
-          if (definitionCount > 0 && callNodeCount === 0) {
-            console.log(`  🚨 Suspicious: File has definitions but no call nodes - possible AST parsing issue`);
-          }
-        }
+        // Reduced logging - track but don't spam console for each file
       }
     } else {
-      console.log(`CallProcessor: Found ${calls.length} function calls in ${filePath}`);
+      // Reduced logging - only log summary instead of per-file details
     }
     
     for (const call of calls) {
@@ -137,7 +127,8 @@ export class CallProcessor {
         }
       } else {
         this.stats.failed++;
-        console.log(`❌ Failed to resolve call: ${call.functionName} in ${call.callerFile}:${call.startLine}`);
+        // Categorize the failure for better statistics
+        this.categorizeFailureWithReason(call, this.diagnoseFailure(call));
       }
     }
   }
@@ -192,16 +183,44 @@ export class CallProcessor {
     
     if (importInfo) {
       // We have an import for this function name
-      const targetDefinitions = this.functionTrie.getAllDefinitions().filter(def =>
-        def.filePath === importInfo.targetFile && 
-        (def.functionName === importInfo.exportedName || 
-         (importInfo.exportedName === 'default' && def.functionName === call.functionName))
-      );
+      const targetDefinitions = this.functionTrie.getAllDefinitions().filter(def => {
+        // Match file path
+        if (def.filePath !== importInfo.targetFile) {
+          return false;
+        }
+        
+        // Handle different import types
+        if (importInfo.importType === 'default') {
+          // For default imports, the function name could be anything
+          // Look for functions that could be the default export
+          return def.functionName === call.functionName || 
+                 def.functionName === importInfo.exportedName ||
+                 // Common default export patterns
+                 (def.type === 'function' && def.startLine === 1) ||
+                 (def.type === 'class' && def.functionName === 'default');
+        } else if (importInfo.importType === 'named') {
+          // For named imports, match the exported name
+          return def.functionName === importInfo.exportedName;
+        } else if (importInfo.importType === 'namespace') {
+          // For namespace imports like * as utils, 
+          // the call would be utils.someFunction, so we need to handle this differently
+          return def.functionName === call.functionName;
+        }
+        
+        return false;
+      });
 
       if (targetDefinitions.length > 0) {
+        // Prefer functions over other types for function calls
+        const preferred = targetDefinitions.find(def => 
+          call.callType === 'function_call' ? def.type === 'function' :
+          call.callType === 'method_call' ? def.type === 'method' :
+          call.callType === 'constructor_call' ? def.type === 'class' : true
+        ) || targetDefinitions[0];
+        
         return {
           success: true,
-          targetNodeId: targetDefinitions[0].nodeId,
+          targetNodeId: preferred.nodeId,
           stage: 'exact',
           confidence: 'high'
         };
@@ -407,6 +426,101 @@ export class CallProcessor {
       return true;
     }
 
+    // JavaScript/TypeScript built-ins and common library functions
+    const jsBuiltins = new Set([
+      // Core JavaScript functions
+      'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'encodeURI', 'decodeURI',
+      'encodeURIComponent', 'decodeURIComponent', 'escape', 'unescape',
+      // Array methods
+      'push', 'pop', 'shift', 'unshift', 'slice', 'splice', 'concat', 'join',
+      'reverse', 'sort', 'indexOf', 'lastIndexOf', 'includes', 'find', 'findIndex',
+      'filter', 'map', 'reduce', 'reduceRight', 'forEach', 'some', 'every',
+      'flat', 'flatMap', 'fill', 'copyWithin', 'from', 'of', 'isArray',
+      // Object methods
+      'keys', 'values', 'entries', 'assign', 'create', 'defineProperty',
+      'defineProperties', 'freeze', 'seal', 'preventExtensions', 'hasOwnProperty',
+      'isPrototypeOf', 'propertyIsEnumerable', 'toString', 'valueOf', 'toLocaleString',
+      // String methods
+      'charAt', 'charCodeAt', 'codePointAt', 'concat', 'endsWith', 'includes',
+      'indexOf', 'lastIndexOf', 'localeCompare', 'match', 'normalize', 'padEnd',
+      'padStart', 'repeat', 'replace', 'search', 'slice', 'split', 'startsWith',
+      'substring', 'substr', 'toLowerCase', 'toUpperCase', 'trim', 'trimEnd',
+      'trimStart', 'trimLeft', 'trimRight',
+      // Number methods
+      'toFixed', 'toExponential', 'toPrecision', 'isInteger', 'isSafeInteger',
+      'isFinite', 'isNaN', 'parseFloat', 'parseInt',
+      // Date methods
+      'getTime', 'getDate', 'getDay', 'getFullYear', 'getHours', 'getMinutes',
+      'getSeconds', 'getMilliseconds', 'getMonth', 'setDate', 'setFullYear',
+      'setHours', 'setMinutes', 'setSeconds', 'setMilliseconds', 'setMonth',
+      'toDateString', 'toTimeString', 'toISOString', 'toJSON', 'now', 'parse',
+      // Promise methods
+      'then', 'catch', 'finally', 'resolve', 'reject', 'all', 'race', 'allSettled',
+      // Console methods
+      'log', 'error', 'warn', 'info', 'debug', 'trace', 'assert', 'clear',
+      'count', 'dir', 'dirxml', 'group', 'groupCollapsed', 'groupEnd', 'table',
+      'time', 'timeEnd', 'timeLog', 'profile', 'profileEnd',
+      // DOM methods (common ones)
+      'getElementById', 'getElementsByClassName', 'getElementsByTagName',
+      'querySelector', 'querySelectorAll', 'createElement', 'createTextNode',
+      'appendChild', 'removeChild', 'insertBefore', 'replaceChild', 'cloneNode',
+      'getAttribute', 'setAttribute', 'removeAttribute', 'hasAttribute',
+      'addEventListener', 'removeEventListener', 'dispatchEvent',
+      'preventDefault', 'stopPropagation', 'stopImmediatePropagation',
+      'focus', 'blur', 'click', 'submit', 'reset', 'scrollIntoView',
+      // Common library methods (React, etc.)
+      'useState', 'useEffect', 'useContext', 'useReducer', 'useCallback',
+      'useMemo', 'useRef', 'useImperativeHandle', 'useLayoutEffect', 'useDebugValue',
+      'memo', 'forwardRef', 'lazy', 'Suspense', 'Fragment', 'createElement',
+      'cloneElement', 'isValidElement', 'render', 'hydrate', 'unmountComponentAtNode',
+      // HTTP/Fetch
+      'fetch', 'get', 'post', 'put', 'delete', 'patch', 'head', 'options',
+      // JSON
+      'stringify', 'parse',
+      // Math
+      'abs', 'acos', 'asin', 'atan', 'atan2', 'ceil', 'cos', 'exp', 'floor',
+      'log', 'max', 'min', 'pow', 'random', 'round', 'sin', 'sqrt', 'tan',
+      // Common testing functions
+      'describe', 'it', 'test', 'expect', 'beforeEach', 'afterEach', 'beforeAll', 'afterAll',
+      'mock', 'spy', 'stub', 'restore', 'reset', 'resetAllMocks', 'clearAllMocks',
+      // Node.js specific
+      'require', 'module', 'exports', '__dirname', '__filename', 'process', 'global',
+      'Buffer', 'setImmediate', 'clearImmediate', 'setInterval', 'clearInterval',
+      'setTimeout', 'clearTimeout',
+      // Worker API
+      'postMessage', 'onmessage', 'onerror', 'close', 'importScripts',
+      // JavaScript constructors and built-ins
+      'Array', 'Object', 'String', 'Number', 'Boolean', 'Function', 'Date',
+      'RegExp', 'Error', 'TypeError', 'ReferenceError', 'SyntaxError',
+      'RangeError', 'EvalError', 'URIError', 'AggregateError',
+      'Set', 'Map', 'WeakSet', 'WeakMap', 'Symbol', 'BigInt',
+      'Promise', 'Proxy', 'Reflect', 'ArrayBuffer', 'SharedArrayBuffer',
+      'DataView', 'Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array',
+      'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array',
+      'BigInt64Array', 'BigUint64Array',
+      // Configuration and build tools
+      'config', 'define', 'plugin', 'preset', 'loader', 'rule',
+      'extend', 'override', 'merge', 'concat', 'apply',
+      // ESLint specific
+      'rules', 'extends', 'parser', 'parserOptions', 'env', 'globals',
+      // Bundler/build tools
+      'bundle', 'chunk', 'entry', 'output', 'optimization', 'resolve',
+      'devtool', 'target', 'externals', 'stats', 'performance',
+      // Process and execution
+      'exec', 'spawn', 'fork', 'execSync', 'spawnSync',
+      // File system operations
+      'readFile', 'writeFile', 'readdir', 'stat', 'mkdir', 'rmdir',
+      'unlink', 'rename', 'copyFile', 'access', 'watch', 'createReadStream',
+      'createWriteStream'
+    ]);
+
+    // Check if it's a JS/TS file and the function is a built-in
+    if ((filePath.endsWith('.js') || filePath.endsWith('.ts') || 
+         filePath.endsWith('.jsx') || filePath.endsWith('.tsx')) && 
+        jsBuiltins.has(functionName)) {
+      return true;
+    }
+
     // Ignore very short function names (likely built-ins or operators)
     if (functionName.length <= 2) {
       return true;
@@ -453,26 +567,19 @@ export class CallProcessor {
         const functionName = this.extractPythonCallName(functionNode);
         
         // Debug: Log what we're finding vs filtering
-        if (functionName) {
-          const shouldIgnore = this.shouldIgnoreCall(functionName, filePath);
-          if (shouldIgnore) {
-            // Only log a few examples to avoid spam
-            if (calls.length < 3) {
-              console.log(`🔍 Filtered out: ${functionName} in ${filePath.split('/').pop()}`);
-            }
-          } else {
-            calls.push({
-              callerFile: filePath,
-              functionName,
-              startLine: node.startPosition.row + 1,
-              endLine: node.endPosition.row + 1,
-              callType: 'function_call'
-            });
-          }
+        if (functionName && !this.shouldIgnoreCall(functionName, filePath)) {
+          // Don't filter here - let all calls through to resolution
+          calls.push({
+            callerFile: filePath,
+            functionName,
+            startLine: node.startPosition.row + 1,
+            endLine: node.endPosition.row + 1,
+            callType: 'function_call'
+          });
         } else {
-          // Debug: Log when we can't extract function name
+          // Reduced logging - don't log every individual extraction failure
           if (calls.length < 3) {
-            console.log(`🔍 Could not extract function name from: ${functionNode.type} in ${filePath.split('/').pop()}`);
+            // Only log first few failures per file to understand patterns
           }
         }
       }
@@ -509,13 +616,16 @@ export class CallProcessor {
       const constructorNode = node.childForFieldName('constructor');
       if (constructorNode) {
         const constructorName = constructorNode.text;
-        calls.push({
-          callerFile: filePath,
-          functionName: constructorName,
-          startLine: node.startPosition.row + 1,
-          endLine: node.endPosition.row + 1,
-          callType: 'constructor_call'
-        });
+        // Don't filter constructor calls as strictly - they're important for the graph
+        if (!this.shouldIgnoreCall(constructorName, filePath)) {
+          calls.push({
+            callerFile: filePath,
+            functionName: constructorName,
+            startLine: node.startPosition.row + 1,
+            endLine: node.endPosition.row + 1,
+            callType: 'constructor_call'
+          });
+        }
       }
     }
 
@@ -552,9 +662,22 @@ export class CallProcessor {
       }
     }
     
-    // Debug: Log unhandled node types (but limit spam)
-    if (Math.random() < 0.1) { // Only log 10% of cases to avoid spam
-      console.log(`🔍 Unhandled Python call node type: ${node.type} (text: "${node.text}")`);
+    // Handle additional Python call patterns
+    if (node.text && node.text.length > 0 && node.text.length < 100) {
+      // For simple cases, try using the text directly if it looks like a function name
+      const text = node.text.trim();
+      if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(text)) {
+        return text;
+      }
+      
+      // For attribute access, try to extract the last part
+      const parts = text.split('.');
+      if (parts.length > 1) {
+        const lastPart = parts[parts.length - 1];
+        if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(lastPart)) {
+          return lastPart;
+        }
+      }
     }
     
     return null;
@@ -570,7 +693,40 @@ export class CallProcessor {
       // For method calls like obj.method(), we want just 'method'
       const propertyNode = node.childForFieldName('property');
       return propertyNode ? propertyNode.text : null;
+    } else if (node.type === 'call_expression') {
+      // Handle nested calls like getData().process()
+      const functionNode = node.childForFieldName('function');
+      if (functionNode) {
+        return this.extractJSCallName(functionNode);
+      }
+    } else if (node.type === 'subscript_expression') {
+      // Handle array/object access like obj['method']()
+      const propertyNode = node.childForFieldName('index');
+      if (propertyNode && propertyNode.type === 'string') {
+        // Extract string literal content
+        const propText = propertyNode.text.replace(/['"`]/g, '');
+        if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(propText)) {
+          return propText;
+        }
+      }
     }
+    
+    // Fallback: try to extract from text for simple patterns
+    if (node.text && node.text.length > 0 && node.text.length < 50) {
+      const text = node.text.trim();
+      
+      // Handle simple function calls
+      if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(text)) {
+        return text;
+      }
+      
+      // Handle member expressions like obj.method
+      const memberMatch = text.match(/([a-zA-Z_][a-zA-Z0-9_]*)\s*$/);
+      if (memberMatch) {
+        return memberMatch[1];
+      }
+    }
+    
     return null;
   }
 
@@ -677,7 +833,12 @@ export class CallProcessor {
       sameFileMatches: 0,
       heuristicMatches: 0,
       failed: 0,
-      callTypes: {}
+      callTypes: {},
+      failuresByCategory: {
+        externalLibraries: 0,
+        pythonBuiltins: 0,
+        actualFailures: 0
+      }
     };
   }
 
@@ -691,6 +852,18 @@ export class CallProcessor {
     console.log(`  ✅ Same-file matches (Stage 2): ${this.stats.sameFileMatches} (${((this.stats.sameFileMatches / this.stats.totalCalls) * 100).toFixed(1)}%)`);
     console.log(`  🎯 Heuristic matches (Stage 3): ${this.stats.heuristicMatches} (${((this.stats.heuristicMatches / this.stats.totalCalls) * 100).toFixed(1)}%)`);
     console.log(`  ❌ Failed resolutions: ${this.stats.failed} (${((this.stats.failed / this.stats.totalCalls) * 100).toFixed(1)}%)`);
+    
+    // Enhanced failure breakdown
+    if (this.stats.failed > 0) {
+      const { externalLibraries, pythonBuiltins, actualFailures } = this.stats.failuresByCategory;
+      console.log(`     📦 External libraries (expected): ${externalLibraries} (${((externalLibraries / this.stats.failed) * 100).toFixed(1)}% of failures)`);
+      console.log(`     🐍 Python built-ins (expected): ${pythonBuiltins} (${((pythonBuiltins / this.stats.failed) * 100).toFixed(1)}% of failures)`);
+      console.log(`     🚨 Actual failures (unexpected): ${actualFailures} (${((actualFailures / this.stats.failed) * 100).toFixed(1)}% of failures)`);
+      
+      const expectedFailures = externalLibraries + pythonBuiltins;
+      console.log(`  Real success rate (excluding expected failures): ${(((this.stats.totalCalls - actualFailures) / this.stats.totalCalls) * 100).toFixed(1)}%`);
+    }
+    
     console.log(`  Success rate: ${(((this.stats.totalCalls - this.stats.failed) / this.stats.totalCalls) * 100).toFixed(1)}%`);
   }
 
@@ -708,6 +881,57 @@ export class CallProcessor {
     this.importMap = {};
     this.astMap.clear();
     this.resetStats();
+  }
+
+  /**
+   * Categorize a failed call for statistics with detailed reason
+   */
+  private categorizeFailureWithReason(call: CallInfo, reason: string): void {
+    // Check if this is an expected failure (external library or built-in)
+    if (this.shouldIgnoreCall(call.functionName, call.callerFile)) {
+      // It's a call we expect to fail (external library or built-in)
+      if (call.callerFile.endsWith('.py')) {
+        this.stats.failuresByCategory.pythonBuiltins++;
+      } else {
+        this.stats.failuresByCategory.externalLibraries++;
+      }
+    } else {
+      // It's a call to user code that we failed to resolve (unexpected)
+      this.stats.failuresByCategory.actualFailures++;
+    }
+  }
+
+  /**
+   * Diagnose why a specific call failed
+   */
+  private diagnoseFailure(call: CallInfo): string {
+    // Check if it's in import map but target not found
+    const importInfo = this.importMap[call.callerFile]?.[call.functionName];
+    if (importInfo) {
+      const targetDefinitions = this.functionTrie.getAllDefinitions().filter(def =>
+        def.filePath === importInfo.targetFile && 
+        (def.functionName === importInfo.exportedName || 
+         (importInfo.exportedName === 'default' && def.functionName === call.functionName))
+      );
+      
+      if (targetDefinitions.length === 0) {
+        return `Imported from ${importInfo.targetFile} but definition not found`;
+      }
+    }
+    
+    // Check if function exists in same file
+    const sameFileDefinitions = this.functionTrie.findInSameFile(call.callerFile, call.functionName);
+    if (sameFileDefinitions.length === 0) {
+      // Check if any similar functions exist
+      const candidates = this.functionTrie.findEndingWith(call.functionName);
+      if (candidates.length === 0) {
+        return `No function named '${call.functionName}' found anywhere`;
+      } else {
+        return `Function '${call.functionName}' not in same file, ${candidates.length} candidates in other files`;
+      }
+    }
+    
+    return 'Unknown failure reason';
   }
 
   /**
