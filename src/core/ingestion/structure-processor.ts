@@ -26,6 +26,9 @@ export class StructureProcessor {
     // Build & Distribution Directories
     'build', 'dist', 'out', 'target', 'bin', 'obj', '.gradle', '_build',
     
+    // Static Assets and Public Directories
+    'public', 'assets', 'static',
+    
     // IDE & Editor Directories
     '.vs', '.vscode', '.idea', '.eclipse', '.settings',
     

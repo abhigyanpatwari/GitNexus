@@ -413,6 +413,10 @@ export class ZipService {
       'logs',
       'tmp',
       '.tmp',
+      // Static assets and public files
+      'public',
+      'assets',
+      'static',
       // Additional common directories to skip
       'coverage',
       '.coverage',
@@ -506,13 +510,15 @@ export class ZipService {
       /\.7z$/,
       /\.gz$/,
       // Media files
-      /\.(jpg|jpeg|png|gif|bmp|svg|ico)$/i,
-      /\.(mp4|avi|mov|wmv|flv|webm)$/i,
-      /\.(mp3|wav|flac|aac|ogg)$/i,
+      /\.(jpg|jpeg|png|gif|bmp|svg|ico|tiff|webp)$/i,
+      /\.(mp4|avi|mov|wmv|flv|webm|mkv|m4v)$/i,
+      /\.(mp3|wav|flac|aac|ogg|m4a|wma)$/i,
       // Document files
       /\.(pdf|doc|docx|xls|xlsx|ppt|pptx)$/i,
       // Other binary files
-      /\.(exe|dll|dylib)$/i,
+      /\.(exe|dll|dylib|wasm|jar|war|ear|deb|rpm|dmg|msi|pkg|apk|ipa)$/i,
+      // Font files
+      /\.(woff|woff2|ttf|eot|otf)$/i,
       // Minified files and source maps
       /\.min\.(js|css)$/,
       /\.map$/,
@@ -564,10 +570,21 @@ export class ZipService {
     
     // Skip binary files that shouldn't have content
     const binaryExtensions = [
-      '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2',
-      '.ttf', '.eot', '.pdf', '.zip', '.tar', '.gz', '.rar', '.7z',
-      '.exe', '.dll', '.so', '.dylib', '.class', '.pyc', '.o', '.a',
-      '.mp4', '.mp3', '.wav', '.avi', '.mov', '.webm', '.webp'
+      // Images
+      '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.bmp', '.tiff', '.webp',
+      // Fonts
+      '.woff', '.woff2', '.ttf', '.eot', '.otf',
+      // Documents
+      '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+      // Archives
+      '.zip', '.tar', '.gz', '.rar', '.7z', '.bz2', '.xz', '.lzma',
+      // Executables & Libraries
+      '.exe', '.dll', '.so', '.dylib', '.class', '.pyc', '.o', '.a', '.lib', '.wasm',
+      // Package formats
+      '.jar', '.war', '.ear', '.deb', '.rpm', '.dmg', '.msi', '.pkg', '.apk', '.ipa',
+      // Media
+      '.mp4', '.mp3', '.wav', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', '.m4v',
+      '.aac', '.ogg', '.flac', '.m4a', '.wma'
     ];
     
     return binaryExtensions.some(ext => pathLower.endsWith(ext));

@@ -136,6 +136,20 @@ export class GraphPipeline {
   }
 
   /**
+   * Get detailed diagnostic information about parsing results
+   */
+  public getParsingDiagnostics() {
+    return this.parsingProcessor.getDiagnosticInfo();
+  }
+
+  /**
+   * Analyze a specific file to understand why it might not have definitions
+   */
+  public async analyzeSpecificFile(filePath: string, content: string) {
+    return await this.parsingProcessor.analyzeFile(filePath, content);
+  }
+
+  /**
    * Validate graph integrity and identify potential issues
    */
   private validateGraphIntegrity(graph: KnowledgeGraph): void {

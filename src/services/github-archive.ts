@@ -236,10 +236,21 @@ export class GitHubArchiveService {
    */
   private isBinaryFile(path: string): boolean {
     const binaryExtensions = [
-      '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2',
-      '.ttf', '.eot', '.pdf', '.zip', '.tar', '.gz', '.rar', '.7z',
-      '.exe', '.dll', '.so', '.dylib', '.class', '.pyc', '.o', '.a',
-      '.mp4', '.mp3', '.wav', '.avi', '.mov', '.webm', '.webp'
+      // Images
+      '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.bmp', '.tiff', '.webp',
+      // Fonts
+      '.woff', '.woff2', '.ttf', '.eot', '.otf',
+      // Documents
+      '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+      // Archives
+      '.zip', '.tar', '.gz', '.rar', '.7z', '.bz2', '.xz', '.lzma',
+      // Executables & Libraries
+      '.exe', '.dll', '.so', '.dylib', '.class', '.pyc', '.o', '.a', '.lib', '.wasm',
+      // Package formats
+      '.jar', '.war', '.ear', '.deb', '.rpm', '.dmg', '.msi', '.pkg', '.apk', '.ipa',
+      // Media
+      '.mp4', '.mp3', '.wav', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', '.m4v',
+      '.aac', '.ogg', '.flac', '.m4a', '.wma'
     ];
     
     return binaryExtensions.some(ext => path.toLowerCase().endsWith(ext));

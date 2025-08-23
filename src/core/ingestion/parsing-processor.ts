@@ -155,41 +155,202 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 		options?: { directoryFilter?: string; fileExtensions?: string }): string[] {
 
 		let filtered = filePaths;
+		let filteringStats = {
+			initial: filtered.length,
+			afterDirectoryFilter: 0,
+			afterExtensionFilter: 0,
+			afterIgnorePatterns: 0,
+			afterContentFilter: 0,
+			final: 0
+		};
 
+		// Apply directory filter if specified
 		if (options?.directoryFilter) {
 			filtered = filtered.filter(path => path.includes(options.directoryFilter ?? ''));
+			console.log(`Filtering by directory '${options.directoryFilter}': ${filteringStats.initial} -> ${filtered.length} files`);
 		}
+		filteringStats.afterDirectoryFilter = filtered.length;
 
+		// Apply extension filter if specified
 		if (options?.fileExtensions) {
 			const extensions = options.fileExtensions.split(',').map(ext => ext.trim()).filter(ext => ext.length);
 			filtered = filtered.filter(path => extensions.some(ext => path.endsWith(ext)));
+			console.log(`Filtering by extensions [${extensions.join(', ')}]: ${filteringStats.afterDirectoryFilter} -> ${filtered.length} files`);
 		}
+		filteringStats.afterExtensionFilter = filtered.length;
 
-		filtered = filtered.filter(path => 
-		  ![...IGNORE_PATTERNS].some(pattern => {
-		    if (typeof pattern === 'string') {
-		      return path.includes(pattern);
-		    }
-		    return false;
-		  })
-		);
-
+		// Apply ignore patterns (be more selective to avoid over-filtering)
+		const beforeIgnoreFilter = filtered.length;
 		filtered = filtered.filter(path => {
-		  const content = fileContents.get(path);
-		  return content && content.trim().length > 0;
+			// More precise ignore pattern matching
+			for (const pattern of IGNORE_PATTERNS) {
+				if (typeof pattern === 'string') {
+					// Only ignore if the pattern is a complete directory component
+					if (path.includes(`/${pattern}/`) || 
+						path.startsWith(`${pattern}/`) || 
+						path.endsWith(`/${pattern}`) ||
+						path === pattern) {
+						return false;
+					}
+				}
+			}
+			
+			// Additional filtering for files that shouldn't be in KG
+			const fileName = path.split('/').pop()?.toLowerCase() || '';
+			
+			// Skip documentation and readme files
+			if (fileName.includes('readme') || 
+				fileName.includes('license') ||
+				fileName.includes('changelog') ||
+				fileName.includes('contributing') ||
+				fileName.includes('authors') ||
+				fileName.includes('maintainers')) {
+				return false;
+			}
+			
+			// Skip git and version control files
+			if (fileName.startsWith('.git') || 
+				fileName.includes('.gitignore') ||
+				fileName.includes('.gitattributes')) {
+				return false;
+			}
+			
+			// Skip common non-source files
+			if (fileName.includes('dockerfile') ||
+				fileName.includes('docker-compose') ||
+				fileName.endsWith('.md') ||
+				fileName.endsWith('.txt') ||
+				fileName.endsWith('.log') ||
+				fileName.endsWith('.lock')) {
+				return false;
+			}
+			
+			return true;
 		});
+		if (beforeIgnoreFilter !== filtered.length) {
+			const excludedCount = beforeIgnoreFilter - filtered.length;
+			console.log(`Filtering by ignore patterns and file types: ${beforeIgnoreFilter} -> ${filtered.length} files (${excludedCount} excluded)`);
+			
+			// Log what types of files were excluded for transparency
+			if (excludedCount <= 10) {
+				const excluded = filePaths.slice(0, beforeIgnoreFilter).filter(path => !filtered.includes(path));
+				console.log('📋 Excluded files sample:', excluded.slice(0, 5).map(p => p.split('/').pop()));
+			}
+		}
+		filteringStats.afterIgnorePatterns = filtered.length;
+
+		// Apply content filter (only exclude truly empty files)
+		const beforeContentFilter = filtered.length;
+		const emptyFiles: string[] = [];
+		filtered = filtered.filter(path => {
+			const content = fileContents.get(path);
+			if (!content || content.trim().length === 0) {
+				emptyFiles.push(path);
+				return false;
+			}
+			return true;
+		});
+		if (emptyFiles.length > 0) {
+			console.log(`Filtering empty files: ${beforeContentFilter} -> ${filtered.length} files (${emptyFiles.length} empty)`);
+			if (emptyFiles.length <= 5) {
+				console.log('Empty files:', emptyFiles);
+			}
+		}
+		filteringStats.afterContentFilter = filtered.length;
+		filteringStats.final = filtered.length;
+
+		// Log comprehensive filtering summary
+		console.log('📊 File Filtering Summary:', filteringStats);
+		
+		// Show sample of filtered files by type
+		const filesByExtension = filtered.reduce((acc, path) => {
+			const ext = pathUtils.extname(path).toLowerCase() || 'no-extension';
+			acc[ext] = (acc[ext] || 0) + 1;
+			return acc;
+		}, {} as Record<string, number>);
+		console.log('📋 Files by extension:', filesByExtension);
+		
+		// Debug: Check for specific TSX/TS files
+		const tsxFiles = filtered.filter(path => path.endsWith('.tsx'));
+		const tsFiles = filtered.filter(path => path.endsWith('.ts'));
+		if (tsxFiles.length > 0) {
+			console.log(`🔍 TSX FILES: Found ${tsxFiles.length} TSX files:`, tsxFiles.slice(0, 5).map(p => p.split('/').pop()));
+		}
+		if (tsFiles.length > 0) {
+			console.log(`🔍 TS FILES: Found ${tsFiles.length} TS files:`, tsFiles.slice(0, 5).map(p => p.split('/').pop()));
+		}
+		
+		// Specifically check for ChatInterface.tsx
+		const chatInterface = filtered.find(path => path.includes('ChatInterface.tsx'));
+		if (chatInterface) {
+			console.log(`🎯 FOUND ChatInterface.tsx in filtered files: ${chatInterface}`);
+		} else {
+			const originalChatInterface = filePaths.find(path => path.includes('ChatInterface.tsx'));
+			if (originalChatInterface) {
+				console.warn(`⚠️ ChatInterface.tsx was FILTERED OUT: ${originalChatInterface}`);
+			}
+		}
+		
+		// Warn about potentially inappropriate files
+		const suspiciousFiles = filtered.filter(path => {
+			const fileName = path.split('/').pop()?.toLowerCase() || '';
+			return fileName.includes('test') || 
+				fileName.includes('spec') ||
+				fileName.includes('mock') ||
+				fileName.includes('fixture') ||
+				path.includes('/test/') ||
+				path.includes('/tests/') ||
+				path.includes('/__tests__/') ||
+				path.includes('/spec/');
+		});
+		
+		if (suspiciousFiles.length > 0) {
+			console.warn(`⚠️ Found ${suspiciousFiles.length} test/spec files that will be processed:`);
+			console.warn('Test files sample:', suspiciousFiles.slice(0, 3).map(p => p.split('/').pop()));
+			console.warn('Consider if these should be excluded from the knowledge graph');
+		}
 
 		return filtered;
 	}
 
 	private isSourceFile(filePath: string): boolean {
-		const sourceExtensions = ['.js', '.ts', '.jsx', '.tsx', '.py', '.java', '.cpp', '.c', '.h', '.hpp', '.cs', '.php', '.rb', '.go', '.rs'];
+		// Only include actual programming language source files
+		const sourceExtensions = [
+			// JavaScript/TypeScript (core web technologies)
+			'.js', '.ts', '.jsx', '.tsx',
+			// Python
+			'.py',
+			// Java
+			'.java',
+			// C/C++
+			'.cpp', '.c', '.cc', '.cxx', '.h', '.hpp', '.hxx',
+			// C#
+			'.cs',
+			// Only include other languages if they're commonly used
+			'.php', '.rb', '.go', '.rs'
+			// Removed: .mjs, .cjs (might be build artifacts)
+			// Removed: .html, .htm, .xml (markup, not source code)
+			// Removed: .vue, .svelte (framework-specific)
+			// Removed: .kt, .scala, .swift (less common)
+		];
 		return sourceExtensions.some(ext => filePath.toLowerCase().endsWith(ext));
 	}
 
 	private isConfigFile(filePath: string): boolean {
-		const configFiles = ['package.json', 'tsconfig.json', 'webpack.config.js', 'vite.config.ts', '.eslintrc.js', '.prettierrc'];
-		const configExtensions = ['.json', '.yaml', '.yml', '.toml'];
+		// Only include config files that might contain meaningful definitions
+		const configFiles = [
+			'package.json', 'tsconfig.json', 'jsconfig.json',
+			'webpack.config.js', 'vite.config.ts', 'vite.config.js',
+			'.eslintrc.js', '.eslintrc.json',
+			'babel.config.js', 'rollup.config.js'
+			// Removed: .prettierrc (formatting, no definitions)
+			// Removed: pyproject.toml, setup.py (might be worth including if Python project)
+			// Removed: requirements.txt (just dependencies)
+			// Removed: Dockerfile, docker-compose.yml (deployment, not source)
+			// Removed: .gitignore, .gitattributes (git config, no definitions)
+			// Removed: README.md, LICENSE (documentation, no definitions)
+		];
+		const configExtensions = ['.json']; // Only JSON configs, removed .yaml, .yml, .toml, .ini, .cfg
 
 		return configFiles.some(name => filePath.endsWith(name)) ||
 			configExtensions.some(ext => filePath.toLowerCase().endsWith(ext));
@@ -226,10 +387,11 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 
 	private async parseFile(graph: KnowledgeGraph, filePath: string, content: string): Promise<void> {
     const language = this.detectLanguage(filePath);
+    const fileName = pathUtils.getFileName(filePath);
     
     // Skip compiled/minified files for JavaScript
     if (language === 'javascript' && this.isCompiledOrMinified(content, filePath)) {
-      console.log(`Skipping compiled/minified file: ${filePath}`);
+      console.log(`Skipping compiled/minified file: ${fileName}`);
       await this.parseGenericFile(graph, filePath, content);
       return;
     }
@@ -240,7 +402,7 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
     // Check cache first - TEMPORARILY DISABLED FOR DEBUGGING
     const cachedResult = null; // this.lruCache.getParsedFile(cacheKey);
     if (cachedResult) {
-      console.log(`Cache hit for file: ${filePath}`);
+      console.log(`Cache hit for file: ${fileName}`);
       this.astMap.set(filePath, { tree: cachedResult.ast });
       await this.addDefinitionsToGraph(graph, filePath, cachedResult.definitions);
       return;
@@ -249,125 +411,278 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
     const langParser = this.languageParsers.get(language);
 
     if (!langParser || !this.parser) {
-      // Skip file with reduced logging to avoid console spam
+      console.warn(`⚠️ SKIPPING: ${fileName} - No parser available (language: ${language}, hasLangParser: ${!!langParser}, hasMainParser: ${!!this.parser})`);
       await this.parseGenericFile(graph, filePath, content);
       return;
     }
 
-    this.parser.setLanguage(langParser);
-    const tree = this.parser.parse(content);
-    this.astMap.set(filePath, { tree });
-    const definitions: ParsedDefinition[] = [];
+    try {
+      this.parser.setLanguage(langParser);
+      const tree = this.parser.parse(content);
+      this.astMap.set(filePath, { tree });
+      const definitions: ParsedDefinition[] = [];
 
-    const queries = this.getQueriesForLanguage(language);
-    if (!queries) {
-      console.warn(`No queries available for language: ${language}.`);
-      return;
-    }
-
-    // Process queries with caching
-    for (const [queryName, queryString] of Object.entries(queries)) {
-      const queryCacheKey = this.lruCache.generateQueryCacheKey(language, queryString);
-      let queryResults: Parser.QueryMatch[] = [];
-
-      // Check query cache - TEMPORARILY DISABLED FOR DEBUGGING
-      const cachedQuery = null; // this.lruCache.getQueryResult(queryCacheKey);
-      if (cachedQuery) {
-        queryResults = cachedQuery.results;
-      } else {
-        const query = langParser.query(queryString as string);
-        queryResults = query.matches(tree.rootNode);
-        
-        // Cache query results
-        this.lruCache.setQueryResult(queryCacheKey, {
-          query: queryString,
-          results: queryResults,
-          timestamp: Date.now()
-        });
+      const queries = this.getQueriesForLanguage(language);
+      if (!queries) {
+        console.warn(`No queries available for language: ${language} (${fileName}).`);
+        await this.parseGenericFile(graph, filePath, content);
+        return;
       }
 
-      for (const match of queryResults) {
-        for (const capture of match.captures) {
-          const node = capture.node;
-          const definition = this.extractDefinition(node, queryName, filePath);
-          if (definition) {
-            definitions.push(definition);
+      let totalMatches = 0;
+      // Process queries with caching
+      for (const [queryName, queryString] of Object.entries(queries)) {
+        const queryCacheKey = this.lruCache.generateQueryCacheKey(language, queryString);
+        let queryResults: Parser.QueryMatch[] = [];
+
+        try {
+          // Check query cache - TEMPORARILY DISABLED FOR DEBUGGING
+          const cachedQuery = null; // this.lruCache.getQueryResult(queryCacheKey);
+          if (cachedQuery) {
+            queryResults = cachedQuery.results;
+          } else {
+            const query = langParser.query(queryString as string);
+            queryResults = query.matches(tree.rootNode);
+            totalMatches += queryResults.length;
             
-            // Debug: Log what specific definitions we're finding
-            if (language === 'python' && filePath.endsWith('.py')) {
-              console.log(`🔍 DEBUG: Found ${queryName} -> ${definition.type}: "${definition.name}" in ${filePath.split('/').pop()}`);
+            // Cache query results
+            this.lruCache.setQueryResult(queryCacheKey, {
+              query: queryString,
+              results: queryResults,
+              timestamp: Date.now()
+            });
+          }
+
+          for (const match of queryResults) {
+            for (const capture of match.captures) {
+              const node = capture.node;
+              const definition = this.extractDefinition(node, queryName, filePath);
+              if (definition) {
+                definitions.push(definition);
+                
+                // Debug: Log what specific definitions we're finding for certain files
+                if (fileName.endsWith('.py') || fileName.endsWith('.ts') || fileName.endsWith('.js')) {
+                  console.log(`🔍 DEBUG: Found ${queryName} -> ${definition.type}: "${definition.name}" in ${fileName}:${definition.startLine}`);
+                }
+              }
             }
           }
+        } catch (queryError) {
+          console.warn(`Query error in ${fileName} for ${queryName}:`, queryError);
         }
       }
-    }
 
-    // Cache the parsed file results
-    this.lruCache.setParsedFile(cacheKey, {
-      ast: tree,
-      definitions,
-      language,
-      lastModified: Date.now(),
-      fileSize: content.length
-    });
+      // Cache the parsed file results
+      this.lruCache.setParsedFile(cacheKey, {
+        ast: tree,
+        definitions,
+        language,
+        lastModified: Date.now(),
+        fileSize: content.length
+      });
 
-    // Debug: Log definition extraction results for Python files
-    if (language === 'python' && filePath.endsWith('.py')) {
-      console.log(`🔍 DEBUG: ${filePath.split('/').pop()} -> ${definitions.length} definitions extracted (content: ${content.length} chars, hash: ${contentHash.substring(0, 8)})`);
+      // Enhanced debug logging
+      console.log(`🔍 PARSING: ${fileName} (${language}) -> ${definitions.length} definitions from ${totalMatches} matches (content: ${content.length} chars)`);
       
       // Log definition types for debugging
-      const definitionTypes = definitions.reduce((acc, def) => {
-        acc[def.type] = (acc[def.type] || 0) + 1;
-        return acc;
-      }, {});
-      
       if (definitions.length > 0) {
-        console.log(`🔍 DEBUG: Definition types: ${JSON.stringify(definitionTypes)}`);
-      }
-      
-      if (definitions.length === 0 && content.length > 100) {
-        console.log(`🚨 DEBUG: Large Python file with no definitions: ${filePath} (${content.length} chars)`);
+        const definitionTypes = definitions.reduce((acc, def) => {
+          acc[def.type] = (acc[def.type] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>);
+        console.log(`🔍 TYPES: ${fileName} -> ${JSON.stringify(definitionTypes)}`);
+      } else if (content.length > 100 && language !== 'generic') {
+        console.warn(`🚨 NO DEFINITIONS: ${fileName} (${language}, ${content.length} chars, ${totalMatches} total matches)`);
         // Log first few lines to understand the content
-        const firstLines = content.split('\n').slice(0, 3).join('\\n');
-        console.log(`🔍 DEBUG: File starts with: ${firstLines}`);
+        const firstLines = content.split('\n').slice(0, 3).join('\\n').substring(0, 150);
+        console.warn(`🔍 CONTENT PREVIEW: ${firstLines}...`);
       }
-    }
 
-    await this.addDefinitionsToGraph(graph, filePath, definitions);
+      await this.addDefinitionsToGraph(graph, filePath, definitions);
+    } catch (parseError) {
+      console.error(`Error parsing ${fileName}:`, parseError);
+      await this.parseGenericFile(graph, filePath, content);
+    }
 	}
 
   private extractDefinition(node: Parser.SyntaxNode, queryName: string, filePath: string): ParsedDefinition | null {
-    const nameNode = node.childForFieldName('name');
-    const name = nameNode ? nameNode.text : null;
+    let nameNode = node.childForFieldName('name');
+    let name = nameNode ? nameNode.text : null;
+    
+    // Handle different naming patterns for different query types
+    if (!name) {
+      // Try alternative naming strategies based on query type
+      switch (queryName) {
+        case 'variables':
+        case 'constDeclarations':
+        case 'global_variables':
+          // For variable assignments, look for identifier in left side
+          const leftChild = node.namedChildren.find(child => child.type === 'identifier');
+          if (leftChild) name = leftChild.text;
+          break;
+          
+        case 'hookCalls':
+        case 'hookDestructuring':
+          // For React hooks, try to get the variable name
+          const hookVar = node.namedChildren.find(child => child.type === 'variable_declarator');
+          if (hookVar) {
+            const hookName = hookVar.childForFieldName('name');
+            if (hookName) {
+              // Handle array destructuring for useState pattern
+              if (hookName.type === 'array_pattern') {
+                const elements = hookName.namedChildren.filter(child => child.type === 'identifier');
+                if (elements.length > 0) {
+                  name = elements.map(el => el.text).join(', ');
+                }
+              } else {
+                name = hookName.text;
+              }
+            }
+          }
+          break;
+          
+        case 'reactComponents':
+        case 'reactConstComponents':
+        case 'defaultExportArrows':
+          // For React components, get the component name
+          const componentVar = node.namedChildren.find(child => child.type === 'variable_declarator');
+          if (componentVar) {
+            const componentName = componentVar.childForFieldName('name');
+            if (componentName) name = componentName.text;
+          }
+          break;
+          
+        case 'moduleExports':
+          // For module.exports = something, get the property name
+          const memberExpr = node.namedChildren.find(child => child.type === 'member_expression');
+          if (memberExpr) {
+            const property = memberExpr.childForFieldName('property');
+            if (property) name = property.text;
+          }
+          break;
+          
+        case 'decorators':
+          // For decorators, get the decorator name
+          const decoratorChild = node.namedChildren.find(child => child.type === 'identifier');
+          if (decoratorChild) name = decoratorChild.text;
+          break;
+          
+        default:
+          // Try to find any identifier child
+          const identifierChild = node.namedChildren.find(child => child.type === 'identifier');
+          if (identifierChild) name = identifierChild.text;
+      }
+    }
     
     // Skip anonymous definitions - they're usually from compiled/minified code
     if (!name || name === 'anonymous' || name.trim().length === 0) {
       return null;
     }
+    
+    // Skip very short names that are likely noise (but keep single-letter variables like 'i', 'x')
+    if (name.length === 1 && queryName !== 'variables' && queryName !== 'constDeclarations') {
+      return null;
+    }
+    
+    // Skip common noise patterns
+    const noisePatterns = ['_', '__', '___', 'temp', 'tmp'];
+    if (noisePatterns.includes(name.toLowerCase())) {
+      return null;
+    }
 
-    return {
+    const definition: ParsedDefinition = {
       name,
       type: this.getDefinitionType(queryName),
       startLine: node.startPosition.row + 1,
       endLine: node.endPosition.row + 1,
-      filePath,
-    } as ParsedDefinition;
+    };
+    
+    // Extract additional metadata based on definition type
+    if (definition.type === 'function' || definition.type === 'method') {
+      // Try to extract parameters
+      const parametersNode = node.childForFieldName('parameters');
+      if (parametersNode) {
+        const params: string[] = [];
+        for (const param of parametersNode.namedChildren) {
+          if (param.type === 'identifier' || param.type === 'formal_parameter') {
+            params.push(param.text);
+          }
+        }
+        if (params.length > 0) {
+          definition.parameters = params;
+        }
+      }
+      
+      // Check for async functions - removed async queries as they were causing Tree-sitter errors
+      // if (queryName === 'async_functions' || queryName === 'async_methods') {
+      //   definition.isAsync = true;
+      // }
+      
+      // Mark React components
+      if (queryName === 'reactComponents' || queryName === 'reactConstComponents') {
+        definition.isAsync = false; // React components are not async by default
+        definition.exportType = 'default'; // Most React components are default exports
+      }
+    }
+    
+    if (definition.type === 'class') {
+      // Try to extract inheritance information
+      const superclassNode = node.childForFieldName('superclass');
+      if (superclassNode) {
+        definition.extends = [superclassNode.text];
+      }
+    }
+    
+    // Handle variable types with additional context
+    if (definition.type === 'variable') {
+      if (queryName === 'hookCalls' || queryName === 'hookDestructuring') {
+        definition.exportType = 'named'; // React hooks are typically named exports
+        
+        // Try to extract hook type from call expression
+        const callExpr = node.descendantsOfType('call_expression')[0];
+        if (callExpr) {
+          const funcNode = callExpr.childForFieldName('function');
+          if (funcNode && funcNode.type === 'identifier') {
+            definition.returnType = funcNode.text; // Store hook function name
+          }
+        }
+      }
+    }
+    
+    return definition;
   }
 
   private getDefinitionType(queryName: string): ParsedDefinition['type'] {
     switch (queryName) {
-      case 'classes': return 'class';
-      case 'methods': return 'method';
+      case 'classes': 
+      case 'exportClasses': return 'class';
+      case 'methods': 
+      case 'properties':
+      case 'staticmethods':
+      case 'classmethods': return 'method';
       case 'functions':
       case 'arrowFunctions':
+      case 'reactComponents':
+      case 'reactConstComponents':
+      case 'defaultExportArrows':
       case 'variableAssignments':
-      case 'objectMethods': return 'function';
+      case 'objectMethods':
+      case 'exportFunctions':
+      case 'defaultExportFunctions':
+      case 'functionExpressions': return 'function';
+      case 'variables':
+      case 'constDeclarations':
+      case 'hookCalls':
+      case 'hookDestructuring':
+      case 'global_variables': return 'variable';
       case 'imports':
       case 'from_imports': return 'import';
       case 'exports':
-      case 'defaultExports': return 'function'; // Exports usually export functions
+      case 'defaultExports':
+      case 'moduleExports': return 'function'; // Exports usually export functions
       case 'interfaces': return 'interface';
       case 'types': return 'type';
+      case 'enums': return 'type';
       case 'decorators': return 'decorator';
       default: 
         console.warn(`Unknown query type: ${queryName}, defaulting to 'function'`);
@@ -413,12 +728,22 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 
 		switch (extension) {
 			case '.ts':
-			case '.tsx': return 'typescript';
+			case '.tsx': 
+				console.log(`🔍 LANGUAGE: ${filePath.split('/').pop()} -> typescript (${extension})`);
+				return 'typescript';
 			case '.js':
-			case '.jsx': return 'javascript';
-			case '.py': return 'python';
-			case '.java': return 'java';
-			default: return 'generic';
+			case '.jsx': 
+				console.log(`🔍 LANGUAGE: ${filePath.split('/').pop()} -> javascript (${extension})`);
+				return 'javascript';
+			case '.py': 
+				console.log(`🔍 LANGUAGE: ${filePath.split('/').pop()} -> python (${extension})`);
+				return 'python';
+			case '.java': 
+				console.log(`🔍 LANGUAGE: ${filePath.split('/').pop()} -> java (${extension})`);
+				return 'java';
+			default: 
+				console.log(`🔍 LANGUAGE: ${filePath.split('/').pop()} -> generic (${extension})`);
+				return 'generic';
 		}
 	}
 
@@ -632,5 +957,107 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 		this.duplicateDetector.clear();
 		this.memoryManager.clearCache();
 		this.lruCache.clearAll();
+	}
+
+	/**
+	 * Diagnostic method to analyze why files might not have definitions
+	 */
+	public getDiagnosticInfo(): {
+		processedFiles: number;
+		skippedFiles: number;
+		totalDefinitions: number;
+		definitionsByType: Record<string, number>;
+		definitionsByFile: Record<string, number>;
+		processingErrors: string[];
+	} {
+		const definitionsByType: Record<string, number> = {};
+		const definitionsByFile: Record<string, number> = {};
+		let totalDefinitions = 0;
+
+		// Analyze function registry
+		const allDefs = this.functionTrie.getAllDefinitions();
+		allDefs.forEach(def => {
+			totalDefinitions++;
+			definitionsByType[def.type] = (definitionsByType[def.type] || 0) + 1;
+			definitionsByFile[def.filePath] = (definitionsByFile[def.filePath] || 0) + 1;
+		});
+
+		return {
+			processedFiles: this.processedFiles.size,
+			skippedFiles: 0, // Would need to track this during processing
+			totalDefinitions,
+			definitionsByType,
+			definitionsByFile,
+			processingErrors: [] // Would need to track errors during processing
+		};
+	}
+
+	/**
+	 * Method to analyze a specific file and explain why it might not have definitions
+	 */
+	public async analyzeFile(filePath: string, content: string): Promise<{
+		language: string;
+		isSourceFile: boolean;
+		isConfigFile: boolean;
+		isCompiled: boolean;
+		contentLength: number;
+		queryResults: Record<string, number>;
+		extractionIssues: string[];
+	}> {
+		const language = this.detectLanguage(filePath);
+		const isSourceFile = this.isSourceFile(filePath);
+		const isConfigFile = this.isConfigFile(filePath);
+		const isCompiled = language === 'javascript' && this.isCompiledOrMinified(content, filePath);
+		const extractionIssues: string[] = [];
+		const queryResults: Record<string, number> = {};
+
+		if (!isSourceFile && !isConfigFile) {
+			extractionIssues.push('File is not recognized as a source or config file');
+		}
+
+		if (isCompiled) {
+			extractionIssues.push('File appears to be compiled/minified and is skipped');
+		}
+
+		if (content.trim().length === 0) {
+			extractionIssues.push('File is empty');
+		}
+
+		const langParser = this.languageParsers.get(language);
+		if (!langParser || !this.parser) {
+			extractionIssues.push(`No parser available for language: ${language}`);
+		} else {
+			try {
+				this.parser.setLanguage(langParser);
+				const tree = this.parser.parse(content);
+				
+				const queries = this.getQueriesForLanguage(language);
+				if (queries) {
+					for (const [queryName, queryString] of Object.entries(queries)) {
+						try {
+							const query = langParser.query(queryString as string);
+							const matches = query.matches(tree.rootNode);
+							queryResults[queryName] = matches.length;
+						} catch (queryError) {
+							extractionIssues.push(`Query '${queryName}' failed: ${queryError}`);
+						}
+					}
+				} else {
+					extractionIssues.push(`No queries available for language: ${language}`);
+				}
+			} catch (parseError) {
+				extractionIssues.push(`Parse error: ${parseError}`);
+			}
+		}
+
+		return {
+			language,
+			isSourceFile,
+			isConfigFile,
+			isCompiled,
+			contentLength: content.length,
+			queryResults,
+			extractionIssues
+		};
 	}
 }

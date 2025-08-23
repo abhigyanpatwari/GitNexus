@@ -259,8 +259,8 @@ const FloatingSourceViewer: React.FC<FloatingSourceViewerProps> = ({
     }
 
     // If not found through relationships, search through file contents
-    // BUT ONLY for Function, Method, Class, and Variable nodes - NOT for Folder or File nodes
-    if (!filePath && fileContents && ['Function', 'Method', 'Class', 'Variable'].includes(nodeType)) {
+    // For Function, Method, Class, Variable nodes OR if this is a File node that doesn't have proper path
+    if (!filePath && fileContents && (['Function', 'Method', 'Class', 'Variable'].includes(nodeType) || nodeType === 'File')) {
       console.log('FloatingSourceViewer - Searching file contents for node:', nodeName, 'of type:', nodeType);
       
       // Use more specific search patterns instead of just checking if content includes nodeName
@@ -337,28 +337,165 @@ const FloatingSourceViewer: React.FC<FloatingSourceViewerProps> = ({
         };
       }
       
-      // Return mock content for nodes without file association
-      const mockContent = `// ${nodeType}: ${nodeName}
-// This is a ${nodeType.toLowerCase()} definition in the knowledge graph
+      // Special handling for File nodes - display actual file content
+      if (nodeType === 'File') {
+        const fileNodePath = node.properties.filePath as string || node.properties.path as string || nodeName;
+        
+        // Try to find the file content using various path resolution strategies
+        let content = fileContents.get(fileNodePath);
+        
+        if (!content) {
+          // Try different path variations
+          const pathVariations = [
+            fileNodePath,
+            fileNodePath.replace(/^[./]*/, ''), // Remove leading ./ or /
+            fileNodePath.startsWith('/') ? fileNodePath.substring(1) : `/${fileNodePath}`, // Toggle leading slash
+            `src/${fileNodePath}`, // Try under src/
+            fileNodePath.replace(/\\/g, '/'), // Convert backslashes to forward slashes
+            fileNodePath.replace(/\//g, '\\') // Convert forward slashes to backslashes
+          ];
+          
+          for (const variation of pathVariations) {
+            content = fileContents.get(variation);
+            if (content) {
+              break;
+            }
+          }
+        }
+        
+        if (content) {
+          // Found file content - display it
+          const language = fileNodePath.split('.').pop() || 'text';
+          return {
+            fileName: fileNodePath.split('/').pop() || fileNodePath,
+            filePath: fileNodePath,
+            content: content,
+            nodeType,
+            nodeName,
+            language
+          };
+        }
+        
+        // If no content found, show file info with explanation
+        return {
+          fileName: fileNodePath.split('/').pop() || fileNodePath,
+          filePath: 'file-not-found',
+          content: `# File: ${nodeName}
 
+⚠️ **File Content Not Available**
+
+This file was detected in the project structure but its content could not be loaded.
+
+## Possible Reasons:
+
+1. **File Filtering**: The file may have been filtered out during upload
+2. **File Size**: Large files might be excluded from processing
+3. **Path Mismatch**: The file path in the graph doesn't match the uploaded content
+4. **Upload Issues**: The file might not have been included in the ZIP upload
+
+## File Information:
+- **Expected Path**: \`${fileNodePath}\`
+- **Node Type**: ${nodeType}
+- **Available Files**: ${fileContents.size} files in memory
+
+## Debug Information:
+Tried these path variations:
+${['- `' + fileNodePath + '`', '- `' + fileNodePath.replace(/^[./]*/, '') + '`', '- `' + (fileNodePath.startsWith('/') ? fileNodePath.substring(1) : `/${fileNodePath}`) + '`'].join('\n')}`,
+          nodeType,
+          nodeName,
+          language: 'markdown'
+        };
+      }
+      
+      // Return detailed information for nodes without file association
+      const isStructuralNode = ['Project', 'Folder'].includes(nodeType); // File nodes should show content, not placeholders
+      const isDefinitionNode = ['Function', 'Class', 'Method', 'Variable', 'Interface', 'Type'].includes(nodeType);
+      
+      let mockContent = '';
+      
+      if (isStructuralNode) {
+        mockContent = `# ${nodeType}: ${nodeName}
+
+This is a structural node in the knowledge graph representing ${nodeType.toLowerCase()} organization.
+
+## Information:
+- **Type**: ${nodeType}
+- **Name**: ${nodeName}
+- **Status**: Structural element (no source code content)
+
+## Why no content?
+Structural nodes like projects, folders, and some files represent organizational elements rather than code definitions. They help organize the knowledge graph but don't contain executable code.
+
+## To view code content:
+1. Look for definition nodes (Function, Class, Method) within this ${nodeType.toLowerCase()}
+2. Check if this ${nodeType.toLowerCase()} contains any parsed source files
+3. Verify that the ingestion pipeline successfully processed files in this location`;
+      } else if (isDefinitionNode) {
+        mockContent = `# ${nodeType}: ${nodeName}
+
+⚠️ **Content Not Available**
+
+This ${nodeType.toLowerCase()} definition was found in the knowledge graph but the source content is not accessible.
+
+## Possible Reasons:
+
+### 1. External Library
+This may be a function/class from an external library or framework that wasn't included in the project analysis.
+
+### 2. Parsing Issues
+The source file might have:
+- Syntax errors that prevented parsing
+- Unsupported language features
+- Complex code patterns not captured by Tree-sitter queries
+
+### 3. File Access Issues
+The original source file might be:
+- Missing from the uploaded content
+- Filtered out during ingestion
+- Located in an ignored directory
+
+### 4. Incomplete Ingestion
+The ingestion pipeline might have:
+- Skipped this file due to size limits
+- Failed to process this specific definition
+- Encountered errors during Tree-sitter parsing
+
+## Debugging Tips:
+1. Check the browser console for parsing errors
+2. Verify the file was included in the upload
+3. Look for related files that might contain this definition
+4. Try re-running the ingestion process
+
+## Mock Implementation:
+\`\`\`${nodeType === 'Function' ? 'javascript' : nodeType === 'Class' ? 'typescript' : 'text'}
 ${nodeType === 'Function' ? `function ${nodeName}() {
-  // Function implementation not available in current context
-  // This may be an external library function or incomplete parsing
+  // Implementation not available
+  // This may be an external library function
+  // or incomplete parsing result
 }` : nodeType === 'Class' ? `class ${nodeName} {
-  // Class definition not available in current context
-  // This may be an external library class or incomplete parsing
-}` : nodeType === 'Method' ? `${nodeName}() {
-  // Method implementation not available in current context
+  // Class definition not available
+  // This may be an external library class
+  // or incomplete parsing result
 }` : `// ${nodeType} definition for ${nodeName}
-// Content not available in current context`}`;
+// Content not available in current context`}
+\`\`\``;
+      } else {
+        mockContent = `# ${nodeType}: ${nodeName}
+
+This node represents a ${nodeType.toLowerCase()} in the knowledge graph.
+
+**Status**: Content not available
+
+**Note**: This may be a specialized node type or an element that doesn't have direct source code representation.`;
+      }
 
       return {
-        fileName: `${nodeName}`,
+        fileName: `${nodeName} (${nodeType})`,
         filePath: 'virtual-node',
         content: mockContent,
         nodeType,
         nodeName,
-        language: 'javascript'
+        language: 'markdown'
       };
     }
 
