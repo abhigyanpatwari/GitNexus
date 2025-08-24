@@ -31,3 +31,4 @@ public/workers/compiled-queries.js
 .gemini/
 .cursor/
 .clinerules/
+.qoder/
