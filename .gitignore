@@ -31,4 +31,7 @@ public/workers/compiled-queries.js
 .gemini/
 .cursor/
 .clinerules/
-.qoder/
+
+# Large JSON files
+gitnexus-project_*.json
+*-project_*.json
