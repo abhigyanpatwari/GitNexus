@@ -68,8 +68,6 @@ export class CallProcessor {
     astMap: Map<string, ParsedAST>,
     importMap: ImportMap
   ): Promise<KnowledgeGraph> {
-    console.log('CallProcessor: Starting call resolution with 3-stage strategy...');
-    
     this.importMap = importMap;
     this.astMap = astMap;
     this.resetStats();
@@ -85,24 +83,12 @@ export class CallProcessor {
     return graph;
   }
 
-  /**
-   * Process function calls in a single file
-   */
   private async processFileCalls(
     filePath: string,
     ast: ParsedAST,
     graph: KnowledgeGraph
   ): Promise<void> {
     const calls = this.extractFunctionCalls(ast.tree!.rootNode, filePath);
-    
-    if (calls.length === 0) {
-      // Only log for source files that should have function calls
-      if (this.isSourceFile(filePath)) {
-        // Reduced logging - track but don't spam console for each file
-      }
-    } else {
-      // Reduced logging - only log summary instead of per-file details
-    }
     
     for (const call of calls) {
       this.stats.totalCalls++;
@@ -846,25 +832,7 @@ export class CallProcessor {
    * Log resolution statistics
    */
   private logStats(): void {
-    console.log('📊 CallProcessor Resolution Statistics:');
-    console.log(`  Total calls processed: ${this.stats.totalCalls}`);
-    console.log(`  ✅ Exact matches (Stage 1): ${this.stats.exactMatches} (${((this.stats.exactMatches / this.stats.totalCalls) * 100).toFixed(1)}%)`);
-    console.log(`  ✅ Same-file matches (Stage 2): ${this.stats.sameFileMatches} (${((this.stats.sameFileMatches / this.stats.totalCalls) * 100).toFixed(1)}%)`);
-    console.log(`  🎯 Heuristic matches (Stage 3): ${this.stats.heuristicMatches} (${((this.stats.heuristicMatches / this.stats.totalCalls) * 100).toFixed(1)}%)`);
-    console.log(`  ❌ Failed resolutions: ${this.stats.failed} (${((this.stats.failed / this.stats.totalCalls) * 100).toFixed(1)}%)`);
-    
-    // Enhanced failure breakdown
-    if (this.stats.failed > 0) {
-      const { externalLibraries, pythonBuiltins, actualFailures } = this.stats.failuresByCategory;
-      console.log(`     📦 External libraries (expected): ${externalLibraries} (${((externalLibraries / this.stats.failed) * 100).toFixed(1)}% of failures)`);
-      console.log(`     🐍 Python built-ins (expected): ${pythonBuiltins} (${((pythonBuiltins / this.stats.failed) * 100).toFixed(1)}% of failures)`);
-      console.log(`     🚨 Actual failures (unexpected): ${actualFailures} (${((actualFailures / this.stats.failed) * 100).toFixed(1)}% of failures)`);
-      
-      const expectedFailures = externalLibraries + pythonBuiltins;
-      console.log(`  Real success rate (excluding expected failures): ${(((this.stats.totalCalls - actualFailures) / this.stats.totalCalls) * 100).toFixed(1)}%`);
-    }
-    
-    console.log(`  Success rate: ${(((this.stats.totalCalls - this.stats.failed) / this.stats.totalCalls) * 100).toFixed(1)}%`);
+    // Keeping minimal essential logging
   }
 
   /**

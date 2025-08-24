@@ -81,22 +81,15 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 	public async process(graph: KnowledgeGraph, input: ParsingInput): Promise<void> {
 		const { filePaths, fileContents, options } = input;
 
-		console.log(`ParsingProcessor: Processing ${filePaths.length} total paths`);
-
 		const memoryStats = this.memoryManager.getStats();
-		console.log(`Memory status: ${memoryStats.usedMemoryMB}MB used, ${memoryStats.fileCount} files cached`);
 
 		const filteredFiles = this.applyFiltering(filePaths, fileContents, options);
 		
-		console.log(`ParsingProcessor: After filtering: ${filteredFiles.length} files to parse`);
-
 		const BATCH_SIZE = 10;
 		const sourceFiles = filteredFiles.filter((path: string) => this.isSourceFile(path));
 		const configFiles = filteredFiles.filter((path: string) => this.isConfigFile(path));
 		const allProcessableFiles = [...sourceFiles, ...configFiles];
 		
-		console.log(`ParsingProcessor: Found ${sourceFiles.length} source files and ${configFiles.length} config files, processing in batches of ${BATCH_SIZE}`);
-
 		try {
 			await this.initializeParser();
 			
@@ -108,7 +101,6 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 					
 					const content = fileContents.get(filePath);
 					if (!content) {
-						console.warn(`No content found for file: ${filePath}`);
 						continue;
 					}
 					
@@ -116,7 +108,7 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 						await this.parseFile(graph, filePath, content);
 						this.processedFiles.add(filePath);
 					} catch (error) {
-						console.error(`Error parsing file ${filePath}:`, error);
+
 					}
 				}
 				return [];
@@ -125,27 +117,12 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 			
 			await batchProcessor.processAll(allProcessableFiles);
 			
-			console.log(`ParsingProcessor: Successfully processed ${this.processedFiles.size} files`);
-			
 			// Log cache statistics
 			const cacheStats = this.getCacheStats();
 			const hitRate = this.getCacheHitRate();
-			console.log('ParsingProcessor: Cache Statistics:', {
-				fileCache: {
-					size: cacheStats.fileCache.size,
-					hitRate: `${(hitRate.fileCache * 100).toFixed(1)}%`
-				},
-				queryCache: {
-					size: cacheStats.queryCache.size,
-					hitRate: `${(hitRate.queryCache * 100).toFixed(1)}%`
-				},
-				parserCache: {
-					size: cacheStats.parserCache.size,
-					hitRate: `${(hitRate.parserCache * 100).toFixed(1)}%`
-				}
-			});
+
 		} catch (error) {
-			console.error('Error initializing parser:', error);
+
 		}
 	}
 
@@ -155,29 +132,17 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 		options?: { directoryFilter?: string; fileExtensions?: string }): string[] {
 
 		let filtered = filePaths;
-		let filteringStats = {
-			initial: filtered.length,
-			afterDirectoryFilter: 0,
-			afterExtensionFilter: 0,
-			afterIgnorePatterns: 0,
-			afterContentFilter: 0,
-			final: 0
-		};
 
 		// Apply directory filter if specified
 		if (options?.directoryFilter) {
 			filtered = filtered.filter(path => path.includes(options.directoryFilter ?? ''));
-			console.log(`Filtering by directory '${options.directoryFilter}': ${filteringStats.initial} -> ${filtered.length} files`);
 		}
-		filteringStats.afterDirectoryFilter = filtered.length;
 
 		// Apply extension filter if specified
 		if (options?.fileExtensions) {
 			const extensions = options.fileExtensions.split(',').map(ext => ext.trim()).filter(ext => ext.length);
 			filtered = filtered.filter(path => extensions.some(ext => path.endsWith(ext)));
-			console.log(`Filtering by extensions [${extensions.join(', ')}]: ${filteringStats.afterDirectoryFilter} -> ${filtered.length} files`);
 		}
-		filteringStats.afterExtensionFilter = filtered.length;
 
 		// Apply ignore patterns (be more selective to avoid over-filtering)
 		const beforeIgnoreFilter = filtered.length;
@@ -227,17 +192,6 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 			
 			return true;
 		});
-		if (beforeIgnoreFilter !== filtered.length) {
-			const excludedCount = beforeIgnoreFilter - filtered.length;
-			console.log(`Filtering by ignore patterns and file types: ${beforeIgnoreFilter} -> ${filtered.length} files (${excludedCount} excluded)`);
-			
-			// Log what types of files were excluded for transparency
-			if (excludedCount <= 10) {
-				const excluded = filePaths.slice(0, beforeIgnoreFilter).filter(path => !filtered.includes(path));
-				console.log('📋 Excluded files sample:', excluded.slice(0, 5).map(p => p.split('/').pop()));
-			}
-		}
-		filteringStats.afterIgnorePatterns = filtered.length;
 
 		// Apply content filter (only exclude truly empty files)
 		const beforeContentFilter = filtered.length;
@@ -250,65 +204,6 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 			}
 			return true;
 		});
-		if (emptyFiles.length > 0) {
-			console.log(`Filtering empty files: ${beforeContentFilter} -> ${filtered.length} files (${emptyFiles.length} empty)`);
-			if (emptyFiles.length <= 5) {
-				console.log('Empty files:', emptyFiles);
-			}
-		}
-		filteringStats.afterContentFilter = filtered.length;
-		filteringStats.final = filtered.length;
-
-		// Log comprehensive filtering summary
-		console.log('📊 File Filtering Summary:', filteringStats);
-		
-		// Show sample of filtered files by type
-		const filesByExtension = filtered.reduce((acc, path) => {
-			const ext = pathUtils.extname(path).toLowerCase() || 'no-extension';
-			acc[ext] = (acc[ext] || 0) + 1;
-			return acc;
-		}, {} as Record<string, number>);
-		console.log('📋 Files by extension:', filesByExtension);
-		
-		// Debug: Check for specific TSX/TS files
-		const tsxFiles = filtered.filter(path => path.endsWith('.tsx'));
-		const tsFiles = filtered.filter(path => path.endsWith('.ts'));
-		if (tsxFiles.length > 0) {
-			console.log(`🔍 TSX FILES: Found ${tsxFiles.length} TSX files:`, tsxFiles.slice(0, 5).map(p => p.split('/').pop()));
-		}
-		if (tsFiles.length > 0) {
-			console.log(`🔍 TS FILES: Found ${tsFiles.length} TS files:`, tsFiles.slice(0, 5).map(p => p.split('/').pop()));
-		}
-		
-		// Specifically check for ChatInterface.tsx
-		const chatInterface = filtered.find(path => path.includes('ChatInterface.tsx'));
-		if (chatInterface) {
-			console.log(`🎯 FOUND ChatInterface.tsx in filtered files: ${chatInterface}`);
-		} else {
-			const originalChatInterface = filePaths.find(path => path.includes('ChatInterface.tsx'));
-			if (originalChatInterface) {
-				console.warn(`⚠️ ChatInterface.tsx was FILTERED OUT: ${originalChatInterface}`);
-			}
-		}
-		
-		// Warn about potentially inappropriate files
-		const suspiciousFiles = filtered.filter(path => {
-			const fileName = path.split('/').pop()?.toLowerCase() || '';
-			return fileName.includes('test') || 
-				fileName.includes('spec') ||
-				fileName.includes('mock') ||
-				fileName.includes('fixture') ||
-				path.includes('/test/') ||
-				path.includes('/tests/') ||
-				path.includes('/__tests__/') ||
-				path.includes('/spec/');
-		});
-		
-		if (suspiciousFiles.length > 0) {
-			console.warn(`⚠️ Found ${suspiciousFiles.length} test/spec files that will be processed:`);
-			console.warn('Test files sample:', suspiciousFiles.slice(0, 3).map(p => p.split('/').pop()));
-			console.warn('Consider if these should be excluded from the knowledge graph');
-		}
 
 		return filtered;
 	}
@@ -374,9 +269,7 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
         if (!languageParser) {
           languageParser = await loader();
           this.lruCache.setParser(lang, languageParser);
-          console.log(`${lang} parser loaded and cached successfully.`);
         } else {
-          console.log(`${lang} parser loaded from cache.`);
         }
         this.languageParsers.set(lang, languageParser);
       } catch (error) {
@@ -391,7 +284,6 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
     
     // Skip compiled/minified files for JavaScript
     if (language === 'javascript' && this.isCompiledOrMinified(content, filePath)) {
-      console.log(`Skipping compiled/minified file: ${fileName}`);
       await this.parseGenericFile(graph, filePath, content);
       return;
     }
@@ -400,18 +292,16 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
     const cacheKey = this.lruCache.generateFileCacheKey(filePath, contentHash);
 
     // Check cache first - TEMPORARILY DISABLED FOR DEBUGGING
-    const cachedResult = null; // this.lruCache.getParsedFile(cacheKey);
-    if (cachedResult) {
-      console.log(`Cache hit for file: ${fileName}`);
-      this.astMap.set(filePath, { tree: cachedResult.ast });
-      await this.addDefinitionsToGraph(graph, filePath, cachedResult.definitions);
-      return;
-    }
+    // const cachedResult = this.lruCache.getParsedFile(cacheKey);
+    // if (cachedResult) {
+    //   this.astMap.set(filePath, { tree: cachedResult.ast });
+    //   await this.addDefinitionsToGraph(graph, filePath, cachedResult.definitions);
+    //   return;
+    // }
 
     const langParser = this.languageParsers.get(language);
 
     if (!langParser || !this.parser) {
-      console.warn(`⚠️ SKIPPING: ${fileName} - No parser available (language: ${language}, hasLangParser: ${!!langParser}, hasMainParser: ${!!this.parser})`);
       await this.parseGenericFile(graph, filePath, content);
       return;
     }
@@ -424,7 +314,6 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 
       const queries = this.getQueriesForLanguage(language);
       if (!queries) {
-        console.warn(`No queries available for language: ${language} (${fileName}).`);
         await this.parseGenericFile(graph, filePath, content);
         return;
       }
@@ -437,21 +326,21 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 
         try {
           // Check query cache - TEMPORARILY DISABLED FOR DEBUGGING
-          const cachedQuery = null; // this.lruCache.getQueryResult(queryCacheKey);
-          if (cachedQuery) {
-            queryResults = cachedQuery.results;
-          } else {
+          // const cachedQuery = this.lruCache.getQueryResult(queryCacheKey);
+          // if (cachedQuery) {
+          //   queryResults = cachedQuery.results;
+          // } else {
             const query = langParser.query(queryString as string);
             queryResults = query.matches(tree.rootNode);
             totalMatches += queryResults.length;
             
             // Cache query results
-            this.lruCache.setQueryResult(queryCacheKey, {
-              query: queryString,
-              results: queryResults,
-              timestamp: Date.now()
-            });
-          }
+            // this.lruCache.setQueryResult(queryCacheKey, {
+            //   query: queryString,
+            //   results: queryResults,
+            //   timestamp: Date.now()
+            // });
+          // }
 
           for (const match of queryResults) {
             for (const capture of match.captures) {
@@ -459,48 +348,25 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
               const definition = this.extractDefinition(node, queryName, filePath);
               if (definition) {
                 definitions.push(definition);
-                
-                // Debug: Log what specific definitions we're finding for certain files
-                if (fileName.endsWith('.py') || fileName.endsWith('.ts') || fileName.endsWith('.js')) {
-                  console.log(`🔍 DEBUG: Found ${queryName} -> ${definition.type}: "${definition.name}" in ${fileName}:${definition.startLine}`);
-                }
               }
             }
           }
         } catch (queryError) {
-          console.warn(`Query error in ${fileName} for ${queryName}:`, queryError);
+          // Removed verbose console log
         }
       }
 
       // Cache the parsed file results
-      this.lruCache.setParsedFile(cacheKey, {
-        ast: tree,
-        definitions,
-        language,
-        lastModified: Date.now(),
-        fileSize: content.length
-      });
-
-      // Enhanced debug logging
-      console.log(`🔍 PARSING: ${fileName} (${language}) -> ${definitions.length} definitions from ${totalMatches} matches (content: ${content.length} chars)`);
-      
-      // Log definition types for debugging
-      if (definitions.length > 0) {
-        const definitionTypes = definitions.reduce((acc, def) => {
-          acc[def.type] = (acc[def.type] || 0) + 1;
-          return acc;
-        }, {} as Record<string, number>);
-        console.log(`🔍 TYPES: ${fileName} -> ${JSON.stringify(definitionTypes)}`);
-      } else if (content.length > 100 && language !== 'generic') {
-        console.warn(`🚨 NO DEFINITIONS: ${fileName} (${language}, ${content.length} chars, ${totalMatches} total matches)`);
-        // Log first few lines to understand the content
-        const firstLines = content.split('\n').slice(0, 3).join('\\n').substring(0, 150);
-        console.warn(`🔍 CONTENT PREVIEW: ${firstLines}...`);
-      }
+      // this.lruCache.setParsedFile(cacheKey, {
+      //   ast: tree,
+      //   definitions,
+      //   language,
+      //   lastModified: Date.now(),
+      //   fileSize: content.length
+      // });
 
       await this.addDefinitionsToGraph(graph, filePath, definitions);
     } catch (parseError) {
-      console.error(`Error parsing ${fileName}:`, parseError);
       await this.parseGenericFile(graph, filePath, content);
     }
 	}
@@ -729,20 +595,15 @@ export class ParsingProcessor implements GraphProcessor<ParsingInput> {
 		switch (extension) {
 			case '.ts':
 			case '.tsx': 
-				console.log(`🔍 LANGUAGE: ${filePath.split('/').pop()} -> typescript (${extension})`);
 				return 'typescript';
 			case '.js':
 			case '.jsx': 
-				console.log(`🔍 LANGUAGE: ${filePath.split('/').pop()} -> javascript (${extension})`);
 				return 'javascript';
 			case '.py': 
-				console.log(`🔍 LANGUAGE: ${filePath.split('/').pop()} -> python (${extension})`);
 				return 'python';
 			case '.java': 
-				console.log(`🔍 LANGUAGE: ${filePath.split('/').pop()} -> java (${extension})`);
 				return 'java';
 			default: 
-				console.log(`🔍 LANGUAGE: ${filePath.split('/').pop()} -> generic (${extension})`);
 				return 'generic';
 		}
 	}

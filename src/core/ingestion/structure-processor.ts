@@ -55,16 +55,12 @@ export class StructureProcessor {
   public async process(graph: KnowledgeGraph, input: StructureInput): Promise<void> {
     const { projectRoot, projectName, filePaths } = input;
     
-    console.log(`StructureProcessor: Processing ${filePaths.length} complete paths`);
-    
     // Create project root node
     const projectNode = this.createProjectNode(projectName, projectRoot);
     graph.addNode(projectNode);
     
     // Separate files and directories from the complete path list
     const { directories, files } = this.categorizePaths(filePaths);
-    
-    console.log(`StructureProcessor: Found ${directories.length} directories and ${files.length} files`);
     
     // Filter out ignored directories from KG display (but keep for internal structure)
     const visibleDirectories = directories.filter(dir => !this.shouldHideDirectory(dir));
@@ -86,13 +82,8 @@ export class StructureProcessor {
     this.createContainsRelationships(graph, projectNode.id, visibleDirectories, visibleFiles);
     
     const totalHidden = hiddenDirectoriesCount + hiddenFilesCount;
-    console.log(`StructureProcessor: Created ${graph.nodes.length} nodes total (${totalHidden} items filtered)`);
   }
 
-  /**
-   * Categorize paths into files and directories
-   * Since we now receive the complete structure, we need to distinguish between them
-   */
   private categorizePaths(allPaths: string[]): { directories: string[], files: string[] } {
     const directories: string[] = [];
     const files: string[] = [];
@@ -261,7 +252,6 @@ export class StructureProcessor {
       }
     }
     
-    console.log(`StructureProcessor: Created ${graph.relationships.length} CONTAINS relationships`);
   }
 
   /**
