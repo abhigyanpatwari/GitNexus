@@ -69,7 +69,7 @@ GitNexus is a client-side knowledge graph creator that runs entirely in your bro
 ### **Four-Pass Ingestion Pipeline**
 The GitNexus processing pipeline follows a consistent four-phase execution model:
 
-```mermaid
+```
 flowchart TD
     A[Start Pipeline] --> B[Pass 1: Structure Analysis]
     B --> C[Pass 2: Code Parsing & Definition Extraction]
@@ -112,7 +112,7 @@ flowchart TD
 ### **Dual-Engine Architecture**
 GitNexus implements a dual-engine architecture to support both current stable and next-generation processing:
 
-```mermaid
+```
 graph TD
     UI[User Interface] --> EM[Engine Manager]
     EM --> LEG[Legacy Engine]
@@ -378,3 +378,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **React**: UI framework with error boundaries
 - **Vite**: Build tool and dev server
 - **KuzuDB**: Embedded graph database
+- **[code-graph-rag](https://github.com/vitali87/code-graph-rag)**: Reference implementation that was very helpful during development
