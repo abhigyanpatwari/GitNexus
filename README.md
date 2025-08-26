@@ -9,7 +9,7 @@ GitNexus is a client-side knowledge graph creator that runs entirely in your bro
 ### 📊 **Code Analysis & Visualization**
 - **GitHub Integration**: Analyze any public GitHub repository directly from URL
 - **ZIP File Support**: Upload and analyze local code archives
-- **Interactive Knowledge Graph**: Visualize code structure with Cytoscape.js
+- **Interactive Knowledge Graph**: Visualize code structure with D3.js
 - **Multi-language Support**: TypeScript, JavaScript, Python, and more with extensible architecture
 - **Smart Filtering**: Directory and file pattern filters to focus analysis scope
 - **Performance Optimization**: Configurable file limits with confirmation dialogs for large repositories
@@ -44,7 +44,7 @@ GitNexus is a client-side knowledge graph creator that runs entirely in your bro
 ### **Frontend Stack**
 - **React 18** with TypeScript
 - **Vite** for fast development and building
-- **Cytoscape.js** for graph visualization
+- **D3.js** for graph visualization
 - **Custom CSS** with modern design patterns
 - **Error Boundaries** for robust error handling
 
@@ -374,7 +374,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **Tree-sitter**: Syntax parsing infrastructure
 - **LangChain.js**: AI agent framework
-- **Cytoscape.js**: Graph visualization
+- **D3.js**: Graph visualization
 - **React**: UI framework with error boundaries
 - **Vite**: Build tool and dev server
 - **KuzuDB**: Embedded graph database

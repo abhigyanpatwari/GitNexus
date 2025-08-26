@@ -21,7 +21,7 @@ The project is built with a modern web technology stack:
 - **Code Parsing**: **Tree-sitter** compiled to **WebAssembly (WASM)**. This allows for fast and accurate Abstract Syntax Tree (AST) parsing directly in the browser.
 - **AI & RAG**: **LangChain.js** is used to orchestrate the AI agent, supporting multiple LLM providers (OpenAI, Anthropic, Google Gemini).
 - **Concurrency**: **Web Workers** are used to run the entire code ingestion process in a background thread, preventing the UI from freezing. **Comlink** is used for simplifying communication with the worker.
-- **Graph Visualization**: The UI likely uses a library like Cytoscape.js or D3.js to render the interactive graph (inferred from dependencies and functionality).
+- **Graph Visualization**: The UI uses D3.js to render the interactive graph (as seen in dependencies and implementation).
 - **Styling**: A custom CSS-in-JS solution implemented directly within the `HomePage.tsx` component.
 
 ## 3. Architecture
