@@ -62,6 +62,7 @@ export class EngineManager {
   async process(input: ProcessingInput, callbacks?: ProcessingCallbacks): Promise<ProcessingResult> {
     const selectedEngine = featureFlagManager.getProcessingEngine();
     console.log(`🎯 Engine Manager: Selected engine - ${selectedEngine}`);
+    console.log(`ENGINE-CHECK: Currently using ${selectedEngine} engine - this engine is set from .env`);
     
     try {
       // First, try the selected engine
