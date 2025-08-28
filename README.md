@@ -4,6 +4,12 @@
 
 GitNexus is a client-side knowledge graph creator that runs entirely in your browser. Drop in a GitHub repo or ZIP file, and get an interactive knowledge graph with AI-powered chat interface. Perfect for code exploration, documentation, and understanding complex codebases through Graph RAG (Retrieval-Augmented Generation).
 
+
+
+
+https://github.com/user-attachments/assets/dfd352b0-e3d1-4202-ba4b-399518df916d
+
+
 ## ✨ Features
 
 ### 📊 **Code Analysis & Visualization**
