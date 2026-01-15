@@ -151,6 +151,42 @@ CALL CREATE_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', 'code_embedding_idx', 'embed
 `;
 
 // ============================================================================
+// DATABASE INDEXES FOR QUERY PERFORMANCE
+// ============================================================================
+// These indexes significantly improve query performance for common operations
+// like searching by name or filePath. Without indexes, KuzuDB performs full
+// table scans for WHERE clauses on these columns.
+
+export const INDEX_QUERIES = [
+  // File table indexes
+  'CREATE INDEX IF NOT EXISTS idx_file_name ON File (name)',
+  'CREATE INDEX IF NOT EXISTS idx_file_filepath ON File (filePath)',
+
+  // Function table indexes
+  'CREATE INDEX IF NOT EXISTS idx_function_name ON Function (name)',
+  'CREATE INDEX IF NOT EXISTS idx_function_filepath ON Function (filePath)',
+
+  // Class table indexes
+  'CREATE INDEX IF NOT EXISTS idx_class_name ON Class (name)',
+  'CREATE INDEX IF NOT EXISTS idx_class_filepath ON Class (filePath)',
+
+  // Interface table indexes
+  'CREATE INDEX IF NOT EXISTS idx_interface_name ON Interface (name)',
+  'CREATE INDEX IF NOT EXISTS idx_interface_filepath ON Interface (filePath)',
+
+  // Method table indexes
+  'CREATE INDEX IF NOT EXISTS idx_method_name ON Method (name)',
+  'CREATE INDEX IF NOT EXISTS idx_method_filepath ON Method (filePath)',
+
+  // CodeElement table indexes
+  'CREATE INDEX IF NOT EXISTS idx_codeelement_name ON CodeElement (name)',
+  'CREATE INDEX IF NOT EXISTS idx_codeelement_filepath ON CodeElement (filePath)',
+
+  // Folder table index (no filePath needed, name is enough)
+  'CREATE INDEX IF NOT EXISTS idx_folder_name ON Folder (name)',
+];
+
+// ============================================================================
 // ALL SCHEMA QUERIES IN ORDER
 // Node tables must be created before relationship tables that reference them
 // ============================================================================
@@ -173,4 +209,10 @@ export const SCHEMA_QUERIES = [
   ...NODE_SCHEMA_QUERIES,
   ...REL_SCHEMA_QUERIES,
   EMBEDDING_SCHEMA,
+];
+
+// Full initialization includes indexes for optimal query performance
+export const ALL_SCHEMA_QUERIES = [
+  ...SCHEMA_QUERIES,
+  ...INDEX_QUERIES,
 ];

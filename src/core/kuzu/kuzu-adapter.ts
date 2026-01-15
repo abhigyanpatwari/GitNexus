@@ -8,10 +8,11 @@
  */
 
 import { KnowledgeGraph } from '../graph/types';
-import { 
-  NODE_TABLES, 
+import {
+  NODE_TABLES,
   REL_TABLE_NAME,
-  SCHEMA_QUERIES, 
+  SCHEMA_QUERIES,
+  INDEX_QUERIES,
   EMBEDDING_TABLE_NAME,
   NodeTableName,
 } from './schema';
@@ -58,8 +59,22 @@ export const initKuzu = async () => {
         }
       }
     }
-    
+
     if (import.meta.env.DEV) console.log('✅ KuzuDB Multi-Table Schema Created');
+
+    // 6. Create indexes for query performance optimization
+    for (const indexQuery of INDEX_QUERIES) {
+      try {
+        await conn.query(indexQuery);
+      } catch (e) {
+        // Index might already exist, skip
+        if (import.meta.env.DEV) {
+          console.warn('Index creation skipped (may already exist):', e);
+        }
+      }
+    }
+
+    if (import.meta.env.DEV) console.log('✅ KuzuDB Indexes Created');
 
     return { db, conn, kuzu };
   } catch (error) {
