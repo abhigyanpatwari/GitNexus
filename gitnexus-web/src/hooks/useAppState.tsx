@@ -14,6 +14,7 @@ import { DEFAULT_VISIBLE_EDGES, type EdgeType } from '../lib/constants';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
+export type GraphDimension = '2d' | '3d';
 export type EmbeddingStatus = 'idle' | 'loading' | 'embedding' | 'indexing' | 'ready' | 'error';
 
 export interface QueryResult {
@@ -160,6 +161,10 @@ interface AppState {
   clearAICodeReferences: () => void;
   clearCodeReferences: () => void;
   codeReferenceFocus: CodeReferenceFocus | null;
+
+  // Graph dimension (2D / 3D)
+  graphDimension: GraphDimension;
+  setGraphDimension: (dim: GraphDimension) => void;
 }
 
 const AppStateContext = createContext<AppState | null>(null);
@@ -290,6 +295,9 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const [codeReferences, setCodeReferences] = useState<CodeReference[]>([]);
   const [isCodePanelOpen, setCodePanelOpen] = useState(false);
   const [codeReferenceFocus, setCodeReferenceFocus] = useState<CodeReferenceFocus | null>(null);
+
+  // Graph dimension state
+  const [graphDimension, setGraphDimension] = useState<GraphDimension>('2d');
 
   const normalizePath = useCallback((p: string) => {
     return p.replace(/\\/g, '/').replace(/^\.?\//, '');
@@ -1092,6 +1100,9 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     clearAICodeReferences,
     clearCodeReferences,
     codeReferenceFocus,
+    // Graph dimension
+    graphDimension,
+    setGraphDimension,
   };
 
   return (

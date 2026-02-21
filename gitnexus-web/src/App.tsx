@@ -4,6 +4,7 @@ import { DropZone } from './components/DropZone';
 import { LoadingOverlay } from './components/LoadingOverlay';
 import { Header } from './components/Header';
 import { GraphCanvas, GraphCanvasHandle } from './components/GraphCanvas';
+import { GraphCanvas3D, GraphCanvas3DHandle } from './components/GraphCanvas3D';
 import { RightPanel } from './components/RightPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { StatusBar } from './components/StatusBar';
@@ -11,6 +12,7 @@ import { FileTreePanel } from './components/FileTreePanel';
 import { CodeReferencesPanel } from './components/CodeReferencesPanel';
 import { FileEntry } from './services/zip';
 import { getActiveProviderConfig } from './core/llm/settings-service';
+import { Box, Layers } from 'lucide-react';
 
 const AppContent = () => {
   const {
@@ -33,9 +35,12 @@ const AppContent = () => {
     codeReferences,
     selectedNode,
     isCodePanelOpen,
+    graphDimension,
+    setGraphDimension,
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
+  const graphCanvas3DRef = useRef<GraphCanvas3DHandle>(null);
 
   const handleFileSelect = useCallback(async (file: File) => {
     const projectName = file.name.replace('.zip', '');
@@ -127,6 +132,7 @@ const AppContent = () => {
 
   const handleFocusNode = useCallback((nodeId: string) => {
     graphCanvasRef.current?.focusNode(nodeId);
+    graphCanvas3DRef.current?.focusNode(nodeId);
   }, []);
 
   // Handle settings saved - refresh and reinitialize agent
@@ -156,7 +162,41 @@ const AppContent = () => {
 
         {/* Graph area - takes remaining space */}
         <div className="flex-1 relative min-w-0">
-          <GraphCanvas ref={graphCanvasRef} />
+          {graphDimension === '2d' ? (
+            <GraphCanvas ref={graphCanvasRef} />
+          ) : (
+            <GraphCanvas3D ref={graphCanvas3DRef} />
+          )}
+
+          {/* 2D / 3D toggle */}
+          <div className="absolute bottom-4 left-4 z-20">
+            <div className="flex bg-elevated border border-border-subtle rounded-lg overflow-hidden">
+              <button
+                onClick={() => setGraphDimension('2d')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors ${
+                  graphDimension === '2d'
+                    ? 'bg-accent/20 text-accent border-r border-accent/30'
+                    : 'text-text-secondary hover:text-text-primary hover:bg-hover border-r border-border-subtle'
+                }`}
+                title="2D Graph (Sigma.js)"
+              >
+                <Layers className="w-3.5 h-3.5" />
+                2D
+              </button>
+              <button
+                onClick={() => setGraphDimension('3d')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors ${
+                  graphDimension === '3d'
+                    ? 'bg-accent/20 text-accent'
+                    : 'text-text-secondary hover:text-text-primary hover:bg-hover'
+                }`}
+                title="3D Graph (PlayCanvas)"
+              >
+                <Box className="w-3.5 h-3.5" />
+                3D
+              </button>
+            </div>
+          </div>
 
           {/* Code References Panel (overlay) - does NOT resize the graph, it overlaps on top */}
           {isCodePanelOpen && (codeReferences.length > 0 || !!selectedNode) && (
