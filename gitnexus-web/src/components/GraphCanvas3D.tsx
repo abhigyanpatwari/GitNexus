@@ -140,10 +140,10 @@ export const GraphCanvas3D = forwardRef<GraphCanvas3DHandle>((_, ref) => {
         />
       </div>
 
-      {/* PlayCanvas canvas */}
+      {/* PlayCanvas canvas — absolute so inline styles from PlayCanvas don't break layout */}
       <canvas
         ref={canvasRef}
-        className="w-full h-full cursor-grab active:cursor-grabbing"
+        className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing"
         style={{ display: 'block' }}
       />
 

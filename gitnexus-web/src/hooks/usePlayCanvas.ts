@@ -259,17 +259,19 @@ export const usePlayCanvas = (options: UsePlayCanvasOptions = {}): UsePlayCanvas
     fillLight.setEulerAngles(60, 120, 0);
     app.root.addChild(fillLight);
 
-    // Resize handler
+    // Resize handler — read from parent since PlayCanvas sets inline styles on the canvas
+    const parent = canvas.parentElement;
     const resize = () => {
-      const w = canvas.clientWidth;
-      const h = canvas.clientHeight;
+      const el = parent || canvas;
+      const w = el.clientWidth;
+      const h = el.clientHeight;
       if (w > 0 && h > 0) {
         app.resizeCanvas(w, h);
       }
     };
     resize();
     const resizeObserver = new ResizeObserver(resize);
-    resizeObserver.observe(canvas.parentElement || canvas);
+    resizeObserver.observe(parent || canvas);
 
     // Initial camera position
     updateCameraFromOrbit();
