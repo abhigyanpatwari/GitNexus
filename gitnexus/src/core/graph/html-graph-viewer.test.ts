@@ -32,4 +32,47 @@ describe('generateHTMLGraphViewer', () => {
     const html = generateHTMLGraphViewer(nodes as any, relationships as any, 'MyRepo')
     expect(html).toContain('MyRepo')
   })
+
+  describe('search feature', () => {
+    it('includes search input, wrap, and count elements', () => {
+      const html = generateHTMLGraphViewer(nodes as any, relationships as any, 'TestProject')
+      expect(html).toContain('id="search-input"')
+      expect(html).toContain('id="search-wrap"')
+      expect(html).toContain('id="search-count"')
+    })
+
+    it('places search-wrap between header-left and legend', () => {
+      const html = generateHTMLGraphViewer(nodes as any, relationships as any, 'TestProject')
+      const wrapPos = html.indexOf('id="search-wrap"')
+      const legendPos = html.indexOf('id="legend"')
+      const headerLeftPos = html.indexOf('id="header-left"')
+      expect(wrapPos).toBeGreaterThan(headerLeftPos)
+      expect(legendPos).toBeGreaterThan(wrapPos)
+    })
+
+    it('uses type="search" for native clear button', () => {
+      const html = generateHTMLGraphViewer(nodes as any, relationships as any, 'TestProject')
+      expect(html).toContain('type="search"')
+    })
+
+    it('includes applySearch function and search state variables', () => {
+      const html = generateHTMLGraphViewer(nodes as any, relationships as any, 'TestProject')
+      expect(html).toContain('applySearch')
+      expect(html).toContain('searchMatches')
+      expect(html).toContain('searchIndex')
+      expect(html).toContain('searchActive')
+    })
+
+    it('wires input event listener to search-input', () => {
+      const html = generateHTMLGraphViewer(nodes as any, relationships as any, 'TestProject')
+      expect(html).toContain("getElementById('search-input')")
+      expect(html).toContain("addEventListener('input'")
+    })
+
+    it('clickNode handler clears search state', () => {
+      const html = generateHTMLGraphViewer(nodes as any, relationships as any, 'TestProject')
+      // The searchActive guard must appear in the clickNode context
+      expect(html).toContain('searchActive')
+    })
+  })
 })

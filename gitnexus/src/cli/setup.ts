@@ -162,7 +162,10 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
       // Script not found in source — skip
     }
 
-    const hookCmd = `node "${path.join(destHooksDir, 'gitnexus-hook.cjs').replace(/\\/g, '/')}"`;
+    // Point the registered command at the *source* hook in the package, not the copy.
+    // The hook resolves the CLI via __dirname — it must run from the package root
+    // so that ../../dist/cli/index.js resolves correctly.
+    const hookCmd = `node "${src.replace(/\\/g, '/')}"`;
 
     // Merge hook config into ~/.claude/settings.json
     const existing = await readJsonFile(settingsPath) || {};

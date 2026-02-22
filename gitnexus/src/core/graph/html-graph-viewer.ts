@@ -83,6 +83,10 @@ export function generateHTMLGraphViewer(
   parts.push('<span id="title">' + esc(projectName) + '</span>')
   parts.push('<span id="stats"></span>')
   parts.push('</div>')
+  parts.push('<div id="search-wrap">')
+  parts.push('<input id="search-input" type="search" placeholder="Search nodes\u2026" autocomplete="off">')
+  parts.push('<span id="search-count"></span>')
+  parts.push('</div>')
   parts.push('<div id="legend"></div>')
   parts.push('</div>')
   parts.push('<div id="main">')
@@ -148,6 +152,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .info-badge{display:inline-block;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;color:#0d0e17}
 #tooltip{position:fixed;pointer-events:none;background:#12131f;border:1px solid #1e2035;border-radius:6px;padding:6px 10px;font-size:11px;color:#94a3b8;z-index:100;display:none;max-width:260px;line-height:1.6}
 #tooltip strong{color:#c4b5fd;font-size:12px;display:block}
+#search-wrap{display:flex;align-items:center;gap:6px;flex:0 0 auto}
+#search-input{background:#0d0e17;border:1px solid #1e2035;border-radius:6px;color:#e2e8f0;font-size:11px;font-family:inherit;padding:4px 8px;width:200px;outline:none;transition:border-color .15s}
+#search-input:focus{border-color:#6366f1}
+#search-input::-webkit-search-cancel-button{cursor:pointer}
+#search-count{font-size:10px;color:#6366f1;white-space:nowrap;min-width:60px}
 `;
 
 // The client-side JS is kept as a plain string to avoid template literal conflicts
@@ -414,6 +423,15 @@ document.addEventListener('DOMContentLoaded', function() {
     zIndex: true,
   });
 
+  // ── Search index ───────────────────────────────────────────────────────
+  // Build search index from graphology graph (visible nodes only)
+  var searchIndex = {};
+  graph.forEachNode(function(nodeId, attrs) {
+    var terms = (attrs.label || '').toLowerCase();
+    if (attrs.filePath) terms += ' ' + attrs.filePath.toLowerCase();
+    searchIndex[nodeId] = terms;
+  });
+
   // ── Hover tooltip ──────────────────────────────────────────────────────
 
   var tooltip = document.getElementById('tooltip');
@@ -455,7 +473,58 @@ document.addEventListener('DOMContentLoaded', function() {
     sigma.setSetting('edgeReducer', null);
   }
 
+  // ── Search ─────────────────────────────────────────────────────────────
+  var searchActive = false;
+  var searchMatches = {};
+
+  function applySearch(query) {
+    var q = query.trim().toLowerCase();
+    if (!q) {
+      searchActive = false;
+      searchMatches = {};
+      sigma.setSetting('nodeReducer', null);
+      sigma.setSetting('edgeReducer', null);
+      document.getElementById('search-count').textContent = '';
+      return;
+    }
+    searchActive = true;
+    searchMatches = {};
+    graph.forEachNode(function(nodeId) {
+      if (searchIndex[nodeId] && searchIndex[nodeId].indexOf(q) !== -1) {
+        searchMatches[nodeId] = true;
+      }
+    });
+    var n = Object.keys(searchMatches).length;
+    document.getElementById('search-count').textContent =
+      n === 0 ? 'no matches' : n === 1 ? '1 match' : n + ' matches';
+    sigma.setSetting('nodeReducer', function(node, data) {
+      if (searchMatches[node]) return Object.assign({}, data, { zIndex: 1 });
+      return Object.assign({}, data, { color: '#1a1b2e', label: null, zIndex: 0 });
+    });
+    sigma.setSetting('edgeReducer', function(edge, data) {
+      if (searchMatches[graph.source(edge)] || searchMatches[graph.target(edge)]) return data;
+      return Object.assign({}, data, { color: '#151520' });
+    });
+  }
+
+  document.getElementById('search-input').addEventListener('input', function(e) {
+    if (e.target.value.trim()) {
+      // Clear click-highlight when search activates
+      highlightedNode = null;
+      highlightedNeighbors = {};
+      panel.classList.add('hidden');
+    }
+    applySearch(e.target.value);
+  });
+
   sigma.on('clickNode', function(e) {
+    // Clear search when click-highlight activates
+    if (searchActive) {
+      searchActive = false;
+      searchMatches = {};
+      document.getElementById('search-input').value = '';
+      document.getElementById('search-count').textContent = '';
+    }
     highlightedNode = e.node;
     highlightedNeighbors = {};
     graph.neighbors(e.node).forEach(function(n) { highlightedNeighbors[n] = true; });
