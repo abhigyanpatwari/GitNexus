@@ -10,7 +10,8 @@ import { setupCommand } from './setup.js';
 import { augmentCommand } from './augment.js';
 import { wikiCommand } from './wiki.js';
 import { queryCommand, contextCommand, impactCommand, cypherCommand } from './tool.js';
-import { evalServerCommand } from './eval-server.js';
+import { evalServerCommand } from './eval-server.js'
+import { viewCommand } from './view.js';
 const program = new Command();
 
 program
@@ -110,6 +111,16 @@ program
   .description('Execute raw Cypher query against the knowledge graph')
   .option('-r, --repo <name>', 'Target repository')
   .action(cypherCommand);
+
+// ─── Graph Visualization ────────────────────────────────────────────
+
+program
+  .command('view [path]')
+  .description('Open interactive graph visualization in browser')
+  .option('--output <file>', 'Output HTML path (default: .gitnexus/graph.html)')
+  .option('--no-open', 'Generate HTML without opening browser')
+  .addHelpText('before', '⚠ Experimental feature\n')
+  .action(viewCommand)
 
 // ─── Eval Server (persistent daemon for SWE-bench) ─────────────────
 

@@ -17,7 +17,7 @@ import { hybridSearch } from '../core/search/hybrid-search.js';
 import { semanticSearch } from '../core/embeddings/embedding-pipeline.js';
 import { isEmbedderReady } from '../core/embeddings/embedder.js';
 
-const buildGraph = async (): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
+export const buildGraph = async (): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
   const nodes: GraphNode[] = [];
   for (const table of NODE_TABLES) {
     try {
