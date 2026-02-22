@@ -71,7 +71,12 @@
       "Bash(du:*)",
       "mcp__desktop-commander__list_directory",
       "Bash(python3 -c \":*)",
-      "mcp__gitnexus__detect_changes"
+      "mcp__gitnexus__detect_changes",
+      "Bash(git checkout:*)",
+      "Bash(git commit:*)",
+      "Bash(find:*)",
+      "Bash(npm test:*)",
+      "Bash(GIT_SEQUENCE_EDITOR='sed -i \"\" \"2s/^pick/squash/\"' git rebase:*)"
     ]
   },
   "enableAllProjectMcpServers": true,
