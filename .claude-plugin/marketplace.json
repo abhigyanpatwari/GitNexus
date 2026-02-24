@@ -1,0 +1,11 @@
+{
+  "name": "gitnexus",
+  "description": "GitNexus plugins for Claude Code",
+  "plugins": [
+    {
+      "name": "gitnexus",
+      "source": "./gitnexus-claude-plugin",
+      "description": "Workflow skills for GitNexus code intelligence — exploring, debugging, impact analysis, and refactoring"
+    }
+  ]
+}
