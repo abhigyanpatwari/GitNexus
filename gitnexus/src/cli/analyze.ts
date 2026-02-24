@@ -12,7 +12,6 @@ import { runEmbeddingPipeline } from '../core/embeddings/embedding-pipeline.js';
 // disposeEmbedder intentionally not called — ONNX Runtime segfaults on cleanup (see #38)
 import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath } from '../storage/repo-manager.js';
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
-import { generateAIContextFiles } from './ai-context.js';
 import fs from 'fs/promises';
 import { registerClaudeHook } from './claude-hooks.js';
 
@@ -242,26 +241,6 @@ export const analyzeCommand = async (
 
   const hookResult = await registerClaudeHook();
 
-  const projectName = path.basename(repoPath);
-  let aggregatedClusterCount = 0;
-  if (pipelineResult.communityResult?.communities) {
-    const groups = new Map<string, number>();
-    for (const c of pipelineResult.communityResult.communities) {
-      const label = c.heuristicLabel || c.label || 'Unknown';
-      groups.set(label, (groups.get(label) || 0) + c.symbolCount);
-    }
-    aggregatedClusterCount = Array.from(groups.values()).filter(count => count >= 5).length;
-  }
-
-  const aiContext = await generateAIContextFiles(repoPath, storagePath, projectName, {
-    files: pipelineResult.fileContents.size,
-    nodes: stats.nodes,
-    edges: stats.edges,
-    communities: pipelineResult.communityResult?.stats.totalCommunities,
-    clusters: aggregatedClusterCount,
-    processes: pipelineResult.processResult?.stats.totalProcesses,
-  });
-
   await closeKuzu();
   // Note: we intentionally do NOT call disposeEmbedder() here.
   // ONNX Runtime's native cleanup segfaults on macOS and some Linux configs.
@@ -283,10 +262,6 @@ export const analyzeCommand = async (
   console.log(`  ${stats.nodes.toLocaleString()} nodes | ${stats.edges.toLocaleString()} edges | ${pipelineResult.communityResult?.stats.totalCommunities || 0} clusters | ${pipelineResult.processResult?.stats.totalProcesses || 0} flows`);
   console.log(`  KuzuDB ${kuzuTime}s | FTS ${ftsTime}s | Embeddings ${embeddingSkipped ? embeddingSkipReason : embeddingTime + 's'}`);
   console.log(`  ${repoPath}`);
-
-  if (aiContext.files.length > 0) {
-    console.log(`  Context: ${aiContext.files.join(', ')}`);
-  }
 
   if (hookResult.registered) {
     console.log(`  Hooks: ${hookResult.message}`);
