@@ -66,6 +66,12 @@ claude mcp add gitnexus -- cmd /c npx -y gitnexus@latest mcp
 codex mcp add gitnexus -- npx -y gitnexus@latest mcp
 ```
 
+### Codex (full support — MCP + skills)
+
+```bash
+codex mcp add gitnexus -- npx -y gitnexus@latest mcp
+```
+
 ### Cursor / Windsurf
 
 Add to `~/.cursor/mcp.json` (global — works for all projects):

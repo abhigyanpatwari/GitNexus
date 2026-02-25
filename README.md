@@ -119,7 +119,6 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 | **Codex**       | Yes | Yes    | —                   | MCP + Skills   |
 | **Windsurf**    | Yes | —     | —                   | MCP            |
 | **OpenCode**    | Yes | Yes    | —                   | MCP + Skills   |
-| **Codex**       | Yes | —     | —                   | MCP            |
 
 > **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that enrich searches with graph context + PostToolUse hooks that auto-reindex after commits.
 
@@ -144,6 +143,12 @@ claude mcp add gitnexus -- npx -y gitnexus@latest mcp
 
 # Windows
 claude mcp add gitnexus -- cmd /c npx -y gitnexus@latest mcp
+```
+
+**Codex** (full support — MCP + skills):
+
+```bash
+codex mcp add gitnexus -- npx -y gitnexus@latest mcp
 ```
 
 **Codex** (full support — MCP + skills):
