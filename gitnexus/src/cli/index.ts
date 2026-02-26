@@ -37,7 +37,7 @@ const program = new Command();
 program
   .name('gitnexus')
   .description('GitNexus local CLI and MCP server')
-  .version('1.2.0');
+  .version('1.3.3');
 
 program
   .command('setup')
