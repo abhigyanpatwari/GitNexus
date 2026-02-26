@@ -44,7 +44,7 @@ function ensureHeap(): boolean {
 
 export interface AnalyzeOptions {
   force?: boolean;
-  embeddings?: boolean;
+  embeddings?: boolean | string | number;
 }
 
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
@@ -248,8 +248,16 @@ export const analyzeCommand = async (
   let embeddingSkipReason = 'off (use --embeddings to enable)';
 
   if (options?.embeddings) {
-    if (stats.nodes > EMBEDDING_NODE_LIMIT) {
-      embeddingSkipReason = `skipped (${stats.nodes.toLocaleString()} nodes > ${EMBEDDING_NODE_LIMIT.toLocaleString()} limit)`;
+    let limit = EMBEDDING_NODE_LIMIT;
+    if (typeof options.embeddings === 'string') {
+      const parsed = parseInt(options.embeddings, 10);
+      if (!isNaN(parsed)) limit = parsed;
+    } else if (typeof options.embeddings === 'number') {
+      limit = options.embeddings;
+    }
+
+    if (stats.nodes > limit) {
+      embeddingSkipReason = `skipped (${stats.nodes.toLocaleString()} nodes > ${limit.toLocaleString()} limit)`;
     } else {
       embeddingSkipped = false;
     }
