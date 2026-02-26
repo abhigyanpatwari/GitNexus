@@ -32,7 +32,7 @@ import { augmentCommand } from './augment.js';
 import { wikiCommand } from './wiki.js';
 import { queryCommand, contextCommand, impactCommand, cypherCommand } from './tool.js';
 import { evalServerCommand } from './eval-server.js';
-import { createNebularFromRegistry } from '../nebular/index.js';
+import { createNebularFromRegistry, scanForIndexedRepos } from '../nebular/index.js';
 
 const program = new Command();
 
@@ -172,6 +172,27 @@ program
       console.log(`      ${node.properties.filePath}\n`);
     }
     console.log(`   Found ${results.length} total matches\n`);
+  });
+
+program
+  .command('nebular:scan [path]')
+  .description('Scan a folder for GitNexus-indexed repositories')
+  .action(async (scanPath: string) => {
+    const targetPath = scanPath || process.cwd();
+    console.log(`\n🔍 Scanning for GitNexus-indexed repos in: ${targetPath}\n`);
+    
+    const indexedRepos = await scanForIndexedRepos(targetPath);
+    
+    if (indexedRepos.length === 0) {
+      console.log('⚠️  No GitNexus-indexed repositories found.');
+      console.log('   Run "gitnexus analyze" in each repo first.\n');
+    } else {
+      console.log(`✅ Found ${indexedRepos.length} indexed repos:\n`);
+      for (const repo of indexedRepos) {
+        console.log(`   - ${repo}`);
+      }
+      console.log('\n💡 To create a Nebular graph, add these repos to the registry.');
+    }
   });
 
 program.parse(process.argv);

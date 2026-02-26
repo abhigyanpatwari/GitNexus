@@ -249,4 +249,46 @@ export async function createNebularFromRegistry(): Promise<NebularGraph> {
   return nebular;
 }
 
+/**
+ * Scan a directory for GitNexus-indexed repositories
+ * Walks subdirectories to find all repos with .gitnexus/ meta.json
+ */
+export async function scanForIndexedRepos(scanPath: string): Promise<string[]> {
+  const { hasIndex } = await import('../storage/repo-manager.js');
+  const indexedRepos: string[] = [];
+  
+  const scanDir = async (dirPath: string, depth: number = 0): Promise<void> => {
+    if (depth > 2) return; // Max 2 levels deep
+    
+    try {
+      const entries = await fs.readdir(dirPath, { withFileTypes: true });
+      
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (entry.name === 'node_modules' || entry.name === '.git') continue;
+        
+        const fullPath = path.join(dirPath, entry.name);
+        
+        // Check if this directory has a GitNexus index
+        try {
+          const hasGitNexus = await hasIndex(fullPath);
+          if (hasGitNexus) {
+            indexedRepos.push(fullPath);
+          }
+        } catch {
+          // Skip errors
+        }
+        
+        // Recursively scan subdirectories
+        await scanDir(fullPath, depth + 1);
+      }
+    } catch {
+      // Skip inaccessible directories
+    }
+  };
+  
+  await scanDir(scanPath);
+  return indexedRepos;
+}
+
 export default NebularGraph;
