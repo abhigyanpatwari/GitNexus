@@ -130,6 +130,23 @@ gitnexus wiki --model <model>    # Wiki with custom LLM model (default: gpt-4o-m
 gitnexus wiki --base-url <url>   # Wiki with custom LLM API base URL
 ```
 
+### Custom Ignore Patterns
+
+By default, GitNexus excludes common non-source files (dependencies, build outputs, binaries, etc.). To exclude additional paths, create a `.gitnexusignore` file at your repo root using standard [gitignore syntax](https://git-scm.com/docs/gitignore):
+
+```gitignore
+# Vendored frontend bundles
+vendor/assets/js/
+
+# Generated protocol buffers
+src/generated/
+
+# Specific large file
+data/fixtures/seed.sql
+```
+
+The file is applied on top of the built-in defaults — you don't need to re-specify things like `node_modules` or `dist`. If no `.gitnexusignore` exists, behavior is unchanged. Re-run `gitnexus analyze --force` after creating or updating the file.
+
 ### What Your AI Agent Gets
 
 **7 tools** exposed via MCP:
