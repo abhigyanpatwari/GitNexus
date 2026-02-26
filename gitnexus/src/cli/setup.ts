@@ -222,6 +222,61 @@ async function setupOpenCode(result: SetupResult): Promise<void> {
   }
 }
 
+/**
+ * Setup Google Antigravity MCP configuration.
+ * Antigravity uses ~/.config/google-antigravity/mcp_config.json for MCP servers.
+ * Reference: https://antigravity.google/docs/mcp
+ */
+async function setupAntigravity(result: SetupResult): Promise<void> {
+  // Check for Antigravity config directory
+  const antigravityDir = process.platform === 'win32'
+    ? path.join(os.homedir(), 'AppData', 'Roaming', 'google-antigravity')
+    : process.platform === 'darwin'
+      ? path.join(os.homedir(), 'Library', 'Application Support', 'google-antigravity')
+      : path.join(os.homedir(), '.config', 'google-antigravity');
+
+  if (!(await dirExists(antigravityDir))) {
+    result.skipped.push('Antigravity (not installed)');
+    return;
+  }
+
+  const mcpConfigPath = path.join(antigravityDir, 'mcp_config.json');
+  try {
+    const existing = await readJsonFile(mcpConfigPath);
+    const config = existing || {};
+    if (!config.mcpServers) config.mcpServers = {};
+    config.mcpServers.gitnexus = getMcpEntry();
+    await writeJsonFile(mcpConfigPath, config);
+    result.configured.push('Antigravity');
+  } catch (err: any) {
+    result.errors.push(`Antigravity: ${err.message}`);
+  }
+}
+
+/**
+ * Install GitNexus skills to Antigravity.
+ * Antigravity supports MCP skills - copy skills to the config directory.
+ */
+async function installAntigravitySkills(result: SetupResult): Promise<void> {
+  const antigravityDir = process.platform === 'win32'
+    ? path.join(os.homedir(), 'AppData', 'Roaming', 'google-antigravity')
+    : process.platform === 'darwin'
+      ? path.join(os.homedir(), 'Library', 'Application Support', 'google-antigravity')
+      : path.join(os.homedir(), '.config', 'google-antigravity');
+
+  if (!(await dirExists(antigravityDir))) return;
+
+  const skillsDir = path.join(antigravityDir, 'skills', 'gitnexus');
+  try {
+    const installed = await installSkillsTo(skillsDir);
+    if (installed.length > 0) {
+      result.configured.push(`Antigravity skills (${installed.length} skills → ~/.config/google-antigravity/skills/)`);
+    }
+  } catch (err: any) {
+    result.errors.push(`Antigravity skills: ${err.message}`);
+  }
+}
+
 // ─── Skill Installation ───────────────────────────────────────────
 
 const SKILL_NAMES = ['gitnexus-exploring', 'gitnexus-debugging', 'gitnexus-impact-analysis', 'gitnexus-refactoring', 'gitnexus-guide', 'gitnexus-cli'];
@@ -347,12 +402,14 @@ export const setupCommand = async () => {
   await setupCursor(result);
   await setupClaudeCode(result);
   await setupOpenCode(result);
+  await setupAntigravity(result);
   
   // Install global skills for platforms that support them
   await installClaudeCodeSkills(result);
   await installClaudeCodeHooks(result);
   await installCursorSkills(result);
   await installOpenCodeSkills(result);
+  await installAntigravitySkills(result);
 
   // Print results
   if (result.configured.length > 0) {
