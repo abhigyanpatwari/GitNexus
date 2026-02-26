@@ -51,6 +51,7 @@
     "graphology": "^0.25.4",
     "graphology-indices": "^0.17.0",
     "graphology-utils": "^2.3.0",
+    "ignore": "^7.0.5",
     "kuzu": "^0.11.3",
     "lru-cache": "^11.0.0",
     "mnemonist": "^0.39.0",

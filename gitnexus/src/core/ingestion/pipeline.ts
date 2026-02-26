@@ -12,6 +12,7 @@ import { PipelineProgress, PipelineResult } from '../../types/pipeline.js';
 import { walkRepositoryPaths, readFileContents } from './filesystem-walker.js';
 import { getLanguageFromFilename } from './utils.js';
 import { createWorkerPool, WorkerPool } from './workers/worker-pool.js';
+import { loadCustomIgnore } from '../../config/ignore-service.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -39,6 +40,9 @@ export const runPipelineFromRepo = async (
   };
 
   try {
+    // ── Phase 0: Load .gitnexusignore (if present) ─────────────────────
+    const customIgnore = loadCustomIgnore(repoPath);
+
     // ── Phase 1: Scan paths only (no content read) ─────────────────────
     onProgress({
       phase: 'extracting',
@@ -55,7 +59,7 @@ export const runPipelineFromRepo = async (
         detail: filePath,
         stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
       });
-    });
+    }, customIgnore);
 
     const totalFiles = scannedFiles.length;
 

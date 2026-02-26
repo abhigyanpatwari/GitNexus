@@ -1,3 +1,26 @@
+import fs from 'fs';
+import path from 'path';
+import ignore from 'ignore';
+
+const GITNEXUS_IGNORE_FILE = '.gitnexusignore';
+
+/**
+ * Load a .gitnexusignore file from the repo root and return a predicate
+ * that tests whether a relative path should be ignored.
+ * Returns null if no .gitnexusignore file exists.
+ */
+export const loadCustomIgnore = (repoPath: string): ((filePath: string) => boolean) | null => {
+  const ignorePath = path.join(repoPath, GITNEXUS_IGNORE_FILE);
+  let content: string;
+  try {
+    content = fs.readFileSync(ignorePath, 'utf-8');
+  } catch {
+    return null;
+  }
+  const ig = ignore().add(content);
+  return (filePath: string) => ig.ignores(filePath);
+};
+
 const DEFAULT_IGNORE_LIST = new Set([
     // Version Control
     '.git',

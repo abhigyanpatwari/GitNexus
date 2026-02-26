@@ -30,7 +30,8 @@ const MAX_FILE_SIZE = 512 * 1024;
  */
 export const walkRepositoryPaths = async (
   repoPath: string,
-  onProgress?: (current: number, total: number, filePath: string) => void
+  onProgress?: (current: number, total: number, filePath: string) => void,
+  customIgnore?: ((filePath: string) => boolean) | null,
 ): Promise<ScannedFile[]> => {
   const files = await glob('**/*', {
     cwd: repoPath,
@@ -38,7 +39,7 @@ export const walkRepositoryPaths = async (
     dot: false,
   });
 
-  const filtered = files.filter(file => !shouldIgnorePath(file));
+  const filtered = files.filter(file => !shouldIgnorePath(file) && !customIgnore?.(file));
   const entries: ScannedFile[] = [];
   let processed = 0;
   let skippedLarge = 0;
