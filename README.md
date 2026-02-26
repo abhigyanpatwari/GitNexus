@@ -69,11 +69,8 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 | **Cursor**      | Yes | Yes    | —                   | MCP + Skills   |
 | **Windsurf**    | Yes | —     | —                   | MCP            |
 | **OpenCode**    | Yes | Yes    | —                   | MCP + Skills   |
-| **Antigravity** | Yes | Yes    | —                   | MCP + Skills   |
 
 > **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that automatically enrich grep/glob/bash calls with knowledge graph context.
-
-> **Antigravity** (Google's AI agent platform) uses `~/.config/google-antigravity/mcp_config.json`. Run `gitnexus setup` to auto-configure.
 
 ### Community Integrations
 
@@ -107,19 +104,6 @@ claude mcp add gitnexus -- npx -y gitnexus@latest mcp
 ```json
 {
   "mcp": {
-    "gitnexus": {
-      "command": "npx",
-      "args": ["-y", "gitnexus@latest", "mcp"]
-    }
-  }
-}
-```
-
-**Antigravity** (`~/.config/google-antigravity/mcp_config.json`):
-
-```json
-{
-  "mcpServers": {
     "gitnexus": {
       "command": "npx",
       "args": ["-y", "gitnexus@latest", "mcp"]
