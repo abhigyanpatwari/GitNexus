@@ -317,6 +317,72 @@ export const RUST_QUERIES = `
 (impl_item trait: (generic_type type: (type_identifier) @heritage.trait) type: (type_identifier) @heritage.class) @heritage
 `;
 
+// Julia queries - works with tree-sitter-julia
+export const JULIA_QUERIES = `
+; Modules
+(module_definition name: (identifier) @name) @definition.module
+
+; Functions (long form)
+(function_definition
+  (signature
+    (call_expression
+      (identifier) @name))) @definition.function
+
+(function_definition
+  (signature
+    (identifier) @name)) @definition.function
+
+; Functions (short form assignment)
+(assignment
+  (call_expression
+    (identifier) @name)
+  .
+  (operator)) @definition.function
+
+; Structs
+(struct_definition
+  (type_head
+    (identifier) @name)) @definition.struct
+
+(struct_definition
+  (type_head
+    (curly_expression
+      (identifier) @name))) @definition.struct
+
+; Macros
+(macro_definition
+  (signature
+    (call_expression
+      (identifier) @name))) @definition.macro
+
+; Calls
+(call_expression
+  (identifier) @call.name) @call
+
+; Imports
+(using_statement
+  (identifier) @import.source) @import
+
+(import_statement
+  (identifier) @import.source) @import
+
+(using_statement
+  (import_path
+    (identifier) @import.source)) @import
+
+(import_statement
+  (import_path
+    (identifier) @import.source)) @import
+
+(using_statement
+  (selected_import
+    (identifier) @import.source)) @import
+
+(import_statement
+  (selected_import
+    (identifier) @import.source)) @import
+`;
+
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.TypeScript]: TYPESCRIPT_QUERIES,
   [SupportedLanguages.JavaScript]: JAVASCRIPT_QUERIES,
@@ -327,5 +393,6 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.CPlusPlus]: CPP_QUERIES,
   [SupportedLanguages.CSharp]: CSHARP_QUERIES,
   [SupportedLanguages.Rust]: RUST_QUERIES,
+  [SupportedLanguages.Julia]: JULIA_QUERIES,
 };
  

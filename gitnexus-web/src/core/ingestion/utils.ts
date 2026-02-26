@@ -25,6 +25,8 @@ export const getLanguageFromFilename = (filename: string): SupportedLanguages | 
   if (filename.endsWith('.go')) return SupportedLanguages.Go;
   // Rust
   if (filename.endsWith('.rs')) return SupportedLanguages.Rust;
+  // Julia
+  if (filename.endsWith('.jl')) return SupportedLanguages.Julia;
   return null;
 };
 
