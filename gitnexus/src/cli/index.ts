@@ -32,6 +32,8 @@ import { augmentCommand } from './augment.js';
 import { wikiCommand } from './wiki.js';
 import { queryCommand, contextCommand, impactCommand, cypherCommand } from './tool.js';
 import { evalServerCommand } from './eval-server.js';
+import { createNebularFromRegistry } from '../nebular/index.js';
+
 const program = new Command();
 
 program
@@ -140,5 +142,36 @@ program
   .option('-p, --port <port>', 'Port number', '4848')
   .option('--idle-timeout <seconds>', 'Auto-shutdown after N seconds idle (0 = disabled)', '0')
   .action(evalServerCommand);
+
+// ─── Nebular (Multi-Repo Knowledge Graph) ───────────────────────────
+
+program
+  .command('nebular')
+  .description('Multi-repository knowledge graph commands')
+  .action(async () => {
+    const nebular = await createNebularFromRegistry();
+    const stats = nebular.getStats();
+    
+    console.log('\n🌌 GitNexus Nebular - Multi-Repo Knowledge Graph\n');
+    console.log(`   Repositories: ${stats.repoCount}`);
+    console.log(`   Total Nodes: ${stats.nodeCount}`);
+    console.log(`   Cross-repo Links: ${stats.crossRepoLinks}\n`);
+  });
+
+program
+  .command('nebular:search <query>')
+  .description('Search across all indexed repositories')
+  .action(async (query: string) => {
+    const nebular = await createNebularFromRegistry();
+    const results = nebular.search(query);
+    
+    console.log(`\n🔍 Search results for "${query}":\n`);
+    for (const node of results.slice(0, 20)) {
+      const repo = node.properties._repo || 'unknown';
+      console.log(`   [${repo}] ${node.properties.name} (${node.label})`);
+      console.log(`      ${node.properties.filePath}\n`);
+    }
+    console.log(`   Found ${results.length} total matches\n`);
+  });
 
 program.parse(process.argv);
