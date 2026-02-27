@@ -15,7 +15,7 @@ import {
   AnthropicConfig,
   OllamaConfig,
   OpenRouterConfig,
-  ClaudeCodeConfig,
+  CLIConfig,
   ProviderConfig,
 } from './types';
 
@@ -31,8 +31,17 @@ export const loadSettings = (): LLMSettings => {
       return DEFAULT_LLM_SETTINGS;
     }
     
-    const parsed = JSON.parse(stored) as Partial<LLMSettings>;
-    
+    const parsed = JSON.parse(stored) as Partial<LLMSettings> & { claudeCode?: any };
+
+    // Migrate legacy 'claude-code' provider → 'cli'
+    if ((parsed.activeProvider as string) === 'claude-code') {
+      parsed.activeProvider = 'cli';
+    }
+    if (parsed.claudeCode && !parsed.cli) {
+      parsed.cli = parsed.claudeCode;
+      delete parsed.claudeCode;
+    }
+
     // Merge with defaults to handle new fields
     return {
       ...DEFAULT_LLM_SETTINGS,
@@ -61,9 +70,9 @@ export const loadSettings = (): LLMSettings => {
         ...DEFAULT_LLM_SETTINGS.openrouter,
         ...parsed.openrouter,
       },
-      claudeCode: {
-        ...DEFAULT_LLM_SETTINGS.claudeCode,
-        ...parsed.claudeCode,
+      cli: {
+        ...DEFAULT_LLM_SETTINGS.cli,
+        ...parsed.cli,
       },
     };
   } catch (error) {
@@ -95,7 +104,7 @@ export const updateProviderSettings = <T extends LLMProvider>(
     T extends 'anthropic' ? Omit<AnthropicConfig, 'provider'> :
     T extends 'ollama' ? Omit<OllamaConfig, 'provider'> :
     T extends 'openrouter' ? Omit<OpenRouterConfig, 'provider'> :
-    T extends 'claude-code' ? Omit<ClaudeCodeConfig, 'provider'> :
+    T extends 'cli' ? Omit<CLIConfig, 'provider'> :
     never
   >
 ): LLMSettings => {
@@ -169,12 +178,12 @@ export const updateProviderSettings = <T extends LLMProvider>(
       saveSettings(updated);
       return updated;
     }
-    case 'claude-code': {
+    case 'cli': {
       const updated: LLMSettings = {
         ...current,
-        claudeCode: {
-          ...(current.claudeCode ?? {}),
-          ...(updates as Partial<Omit<ClaudeCodeConfig, 'provider'>>),
+        cli: {
+          ...(current.cli ?? {}),
+          ...(updates as Partial<Omit<CLIConfig, 'provider'>>),
         },
       };
       saveSettings(updated);
@@ -264,12 +273,12 @@ export const getActiveProviderConfig = (): ProviderConfig | null => {
         maxTokens: settings.openrouter.maxTokens,
       } as OpenRouterConfig;
 
-    case 'claude-code':
+    case 'cli':
       return {
-        provider: 'claude-code',
-        cliTool: settings.claudeCode?.cliTool || 'claude',
-        model: settings.claudeCode?.model || 'claude (CLI)',
-      } as ClaudeCodeConfig;
+        provider: 'cli',
+        cliTool: settings.cli?.cliTool || 'claude',
+        model: settings.cli?.model || 'claude (CLI)',
+      } as CLIConfig;
 
     default:
       return null;
@@ -307,8 +316,8 @@ export const getProviderDisplayName = (provider: LLMProvider): string => {
       return 'Ollama (Local)';
     case 'openrouter':
       return 'OpenRouter';
-    case 'claude-code':
-      return 'Claude Code / Codex';
+    case 'cli':
+      return 'CLI';
     default:
       return provider;
   }
@@ -332,7 +341,7 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
       return ['llama3.2', 'llama3.1', 'mistral', 'codellama', 'deepseek-coder'];
     case 'openrouter':
       return []; // Models fetched dynamically via fetchOpenRouterModels()
-    case 'claude-code':
+    case 'cli':
       return []; // CLI tool is selected in settings, not as a model
     default:
       return [];

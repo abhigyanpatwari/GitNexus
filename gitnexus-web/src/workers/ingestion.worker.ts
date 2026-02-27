@@ -750,14 +750,14 @@ const workerApi = {
   },
 
   /**
-   * Chat with CLI tool (claude/codex) via backend SSE proxy.
-   * Bypasses LangChain — the CLI itself acts as the agent with MCP tools.
+   * Chat with CLI tool (claude/codex/gemini) via backend SSE proxy.
+   * Bypasses LangChain — the CLI itself acts as the agent.
    */
   async chatStreamViaCLI(
     messages: AgentMessage[],
     backendUrl: string,
     systemPrompt: string | undefined,
-    cliTool: 'claude' | 'codex',
+    cliTool: 'claude' | 'codex' | 'gemini',
     onChunk: (chunk: AgentStreamChunk) => void,
   ): Promise<void> {
     chatCancelled = false;
@@ -962,8 +962,8 @@ const workerApi = {
       }
     });
 
-    // claude-code provider can't be used for cluster enrichment (needs LangChain)
-    if (providerConfig.provider === 'claude-code') {
+    // CLI provider can't be used for cluster enrichment (needs LangChain)
+    if (providerConfig.provider === 'cli') {
       throw new Error('Cluster enrichment is not supported with CLI providers. Select an API-based provider (e.g., Gemini, OpenAI) in settings.');
     }
 

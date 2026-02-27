@@ -3,7 +3,7 @@
  *
  * OpenAI-compatible API client using native fetch.
  * Supports OpenAI, Azure, LiteLLM, Ollama, and any OpenAI-compatible endpoint.
- * Falls back to locally installed CLI (claude/codex) when no API key is configured.
+ * Falls back to locally installed CLI (claude/codex/gemini) when no API key is configured.
  *
  * Config priority: CLI flags > env vars > defaults
  */
@@ -66,15 +66,15 @@ export function estimateTokens(text: string): number {
 /**
  * Detect which CLI tool is available locally.
  */
-function detectCLI(): 'claude' | 'codex' | null {
-  for (const tool of ['claude', 'codex'] as const) {
+function detectCLI(): 'claude' | 'codex' | 'gemini' | null {
+  for (const tool of ['claude', 'codex', 'gemini'] as const) {
     if (isCLIAvailable(tool)) return tool;
   }
   return null;
 }
 
 /**
- * Call LLM via locally installed CLI (claude or codex).
+ * Call LLM via locally installed CLI (claude, codex, or gemini).
  * No API key required — CLI handles auth.
  */
 const CLI_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -83,11 +83,11 @@ const MAX_STDOUT = 1024 * 1024; // 1 MB
 async function callLLMViaCLI(
   prompt: string,
   systemPrompt?: string,
-  cliTool?: 'claude' | 'codex',
+  cliTool?: 'claude' | 'codex' | 'gemini',
 ): Promise<LLMResponse> {
   const tool = cliTool || detectCLI();
   if (!tool) {
-    throw new Error('No CLI tool found. Install "claude" or "codex", or provide an API key.');
+    throw new Error('No CLI tool found. Install "claude", "codex", or "gemini", or provide an API key.');
   }
 
   let args: string[];
@@ -96,6 +96,8 @@ async function callLLMViaCLI(
     if (systemPrompt) {
       args.push('--system-prompt', systemPrompt);
     }
+  } else if (tool === 'gemini') {
+    args = ['-p', prompt, '-o', 'text'];
   } else {
     args = ['--quiet', '--full-auto', '--', prompt];
   }

@@ -131,6 +131,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   await backend.init();
   const cleanupMcp = mountMCPEndpoints(app, backend);
 
+  const mcpServerUrl = `http://127.0.0.1:${port}/api/mcp`;
+
   // Helper: resolve a repo by name from the global registry, or default to first
   const resolveRepo = async (repoName?: string) => {
     const repos = await listRegisteredRepos();
@@ -351,9 +353,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     }
 
     const tools = detectCLITools();
-    const tool = cliTool || (tools.claude ? 'claude' : tools.codex ? 'codex' : null);
+    const tool = cliTool || (tools.claude ? 'claude' : tools.codex ? 'codex' : tools.gemini ? 'gemini' : null);
     if (!tool || !tools[tool]) {
-      res.status(400).json({ error: `CLI tool "${tool || 'none'}" not found. Install claude or codex.` });
+      res.status(400).json({ error: `CLI tool "${tool || 'none'}" not found. Install claude, codex, or gemini.` });
       return;
     }
 
@@ -365,7 +367,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     });
 
     const child = spawnCLIStream(
-      { messages, systemPrompt, cliTool: tool },
+      { messages, systemPrompt, cliTool: tool, mcpServerUrl },
       (event) => {
         if (!res.writableEnded) {
           res.write(`data: ${JSON.stringify(event)}\n\n`);

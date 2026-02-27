@@ -1,7 +1,7 @@
 /**
  * CLI LLM Integration
  *
- * Spawns claude / codex CLI as a subprocess and streams parsed events.
+ * Spawns claude / codex / gemini CLI as a subprocess and streams parsed events.
  * Used by the /api/llm/chat endpoint to proxy LLM calls through
  * locally installed CLI tools (no API keys needed).
  */
@@ -9,7 +9,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { isCLIAvailable, getCleanEnv } from '../lib/cli.js';
 
-export type CLITool = 'claude' | 'codex';
+export type CLITool = 'claude' | 'codex' | 'gemini';
 
 export interface CLIStreamEvent {
   type: 'text' | 'tool_start' | 'tool_result' | 'error' | 'done';
@@ -24,25 +24,31 @@ export interface CLIChatRequest {
   messages: Array<{ role: string; content: string }>;
   systemPrompt?: string;
   cliTool?: CLITool;
+  /** URL of the GitNexus MCP server (e.g. http://127.0.0.1:4747/api/mcp) */
+  mcpServerUrl?: string;
 }
 
 /**
  * Detect which CLI tools are available on the system.
  * Cached for 60s (positive) / 10s (negative, user may install mid-session).
  */
-let cachedTools: { claude: boolean; codex: boolean } | null = null;
+let cachedTools: { claude: boolean; codex: boolean; gemini: boolean } | null = null;
 let cachedAt = 0;
 const POSITIVE_TTL_MS = 60_000;
 const NEGATIVE_TTL_MS = 10_000;
 
-export function detectCLITools(): { claude: boolean; codex: boolean } {
+export function detectCLITools(): { claude: boolean; codex: boolean; gemini: boolean } {
   const now = Date.now();
   if (cachedTools) {
-    const hasAny = cachedTools.claude || cachedTools.codex;
+    const hasAny = cachedTools.claude || cachedTools.codex || cachedTools.gemini;
     const ttl = hasAny ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS;
     if (now - cachedAt < ttl) return cachedTools;
   }
-  cachedTools = { claude: isCLIAvailable('claude'), codex: isCLIAvailable('codex') };
+  cachedTools = {
+    claude: isCLIAvailable('claude'),
+    codex: isCLIAvailable('codex'),
+    gemini: isCLIAvailable('gemini'),
+  };
   cachedAt = now;
   return cachedTools;
 }
@@ -134,11 +140,60 @@ function parseClaudeLine(line: string): CLIStreamEvent[] {
   return [];
 }
 
-const ALLOWED_TOOLS = new Set<CLITool>(['claude', 'codex']);
+/**
+ * Parse a single NDJSON line from gemini -o stream-json.
+ * Gemini CLI streams NDJSON with different event types than Claude.
+ */
+function parseGeminiLine(line: string): CLIStreamEvent[] {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return [];
+  }
+
+  // Text content from assistant message delta
+  if (parsed.type === 'message' && parsed.role === 'assistant' && parsed.delta) {
+    return [{ type: 'text', content: parsed.delta }];
+  }
+
+  // Tool use start
+  if (parsed.type === 'tool_use') {
+    return [{
+      type: 'tool_start',
+      toolName: parsed.name || 'unknown',
+      toolCallId: parsed.id,
+      toolInput: parsed.input ? (typeof parsed.input === 'string' ? parsed.input : JSON.stringify(parsed.input)) : undefined,
+    }];
+  }
+
+  // Tool result
+  if (parsed.type === 'tool_result') {
+    return [{
+      type: 'tool_result',
+      toolCallId: parsed.tool_use_id || parsed.id,
+      toolResult: typeof parsed.content === 'string' ? parsed.content : JSON.stringify(parsed.content ?? ''),
+    }];
+  }
+
+  // Final result — signals completion
+  if (parsed.type === 'result') {
+    const events: CLIStreamEvent[] = [];
+    if (parsed.result && typeof parsed.result === 'string') {
+      events.push({ type: 'text', content: parsed.result });
+    }
+    events.push({ type: 'done' });
+    return events;
+  }
+
+  return [];
+}
+
+const ALLOWED_TOOLS = new Set<CLITool>(['claude', 'codex', 'gemini']);
 const CLI_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
- * Spawn claude/codex CLI and stream parsed events.
+ * Spawn a CLI tool (claude/codex/gemini) and stream parsed events.
  * Returns the child process (caller can kill it to abort).
  */
 export function spawnCLIStream(
@@ -162,12 +217,25 @@ export function spawnCLIStream(
       '--verbose',
       '--no-session-persistence',
     ];
+    if (request.mcpServerUrl) {
+      const mcpConfig = JSON.stringify({
+        mcpServers: { gitnexus: { url: request.mcpServerUrl } },
+      });
+      args.push('--mcp-config', mcpConfig, '--allowedTools', 'mcp__gitnexus__*');
+    }
     if (request.systemPrompt) {
       args.push('--system-prompt', request.systemPrompt);
     }
+  } else if (tool === 'gemini') {
+    // Gemini CLI: text-only streaming, no MCP support
+    args = ['-p', prompt, '-o', 'stream-json'];
   } else {
-    // codex: simpler invocation ('--' prevents prompt from being parsed as flags)
-    args = ['--quiet', '--full-auto', '--', prompt];
+    // codex: '-c' injects MCP server config inline, '--' separates prompt from flags
+    args = ['--quiet', '--full-auto'];
+    if (request.mcpServerUrl) {
+      args.push('-c', `mcp_servers.gitnexus.url="${request.mcpServerUrl}"`);
+    }
+    args.push('--', prompt);
   }
 
   const child = spawn(tool, args, {
@@ -216,6 +284,9 @@ export function spawnCLIStream(
       if (tool === 'claude') {
         const trimmed = line.trim();
         if (trimmed) emitEvents(parseClaudeLine(trimmed));
+      } else if (tool === 'gemini') {
+        const trimmed = line.trim();
+        if (trimmed) emitEvents(parseGeminiLine(trimmed));
       } else {
         // codex outputs plain text — preserve newlines
         if (line) onEvent({ type: 'text', content: line + '\n' });
@@ -243,6 +314,8 @@ export function spawnCLIStream(
     if (buffer.trim()) {
       if (tool === 'claude') {
         emitEvents(parseClaudeLine(buffer.trim()));
+      } else if (tool === 'gemini') {
+        emitEvents(parseGeminiLine(buffer.trim()));
       } else {
         onEvent({ type: 'text', content: buffer.trim() });
       }

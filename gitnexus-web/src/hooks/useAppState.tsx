@@ -7,7 +7,7 @@ import { DEFAULT_VISIBLE_LABELS } from '../lib/constants';
 import type { IngestionWorkerApi } from '../workers/ingestion.worker';
 import type { FileEntry } from '../services/zip';
 import type { EmbeddingProgress, SemanticSearchResult } from '../core/embeddings/types';
-import type { LLMSettings, ProviderConfig, AgentStreamChunk, ChatMessage, ToolCallInfo, MessageStep, ClaudeCodeConfig } from '../core/llm/types';
+import type { LLMSettings, ProviderConfig, AgentStreamChunk, ChatMessage, ToolCallInfo, MessageStep, CLIConfig } from '../core/llm/types';
 import { loadSettings, getActiveProviderConfig, saveSettings } from '../core/llm/settings-service';
 import type { AgentMessage } from '../core/llm/agent';
 import { BASE_SYSTEM_PROMPT } from '../core/llm/agent';
@@ -589,7 +589,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
     try {
       // CLI-based provider: no LangChain initialization needed — the CLI is the agent
-      if (config.provider === 'claude-code') {
+      if (config.provider === 'cli') {
         let backendUrl = serverBaseUrlRef.current;
 
         // Auto-detect local backend if not explicitly connected
@@ -604,7 +604,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
         }
 
         if (!backendUrl) {
-          setAgentError('Claude Code provider requires a running backend. Run: npx gitnexus serve');
+          setAgentError('CLI provider requires a running backend. Run: npx gitnexus serve');
           setIsAgentReady(false);
           return;
         }
@@ -614,7 +614,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
           const statusRes = await fetch(`${backendUrl}/api/llm/cli-status`);
           if (statusRes.ok) {
             const status = await statusRes.json();
-            const selectedTool = (config as ClaudeCodeConfig).cliTool || 'claude';
+            const selectedTool = (config as CLIConfig).cliTool || 'claude';
             if (!status[selectedTool]) {
               setAgentError(`CLI tool "${selectedTool}" not found on the server. Install it first.`);
               setIsAgentReady(false);
@@ -681,8 +681,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
     // If embeddings are running and we're currently creating the vector index,
     // avoid a confusing "Embeddings not ready" error and give a clear wait message.
-    // Skip for claude-code — CLI doesn't use local embeddings, it queries via MCP.
-    if (embeddingStatus === 'indexing' && loadSettings().activeProvider !== 'claude-code') {
+    // Skip for CLI provider — CLI doesn't use local embeddings, it queries via MCP.
+    if (embeddingStatus === 'indexing' && loadSettings().activeProvider !== 'cli') {
       const assistantMessage: ChatMessage = {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
@@ -999,8 +999,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       // Route to CLI streaming or LangChain depending on provider
       const activeConfig = getActiveProviderConfig();
       const backendUrl = serverBaseUrlRef.current;
-      if (activeConfig?.provider === 'claude-code' && backendUrl) {
-        const cliConfig = activeConfig as ClaudeCodeConfig;
+      if (activeConfig?.provider === 'cli' && backendUrl) {
+        const cliConfig = activeConfig as CLIConfig;
         await api.chatStreamViaCLI(
           history,
           backendUrl,
