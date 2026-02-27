@@ -97,8 +97,11 @@ async function callLLMViaCLI(
     args = ['--quiet', '--full-auto', '--', prompt];
   }
 
+  // Strip all Claude Code env vars to avoid "nested session" detection
   const env = { ...process.env };
-  delete env.CLAUDECODE; // avoid nested session error
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('CLAUDE')) delete env[key];
+  }
 
   return new Promise((resolve, reject) => {
     let finished = false;
