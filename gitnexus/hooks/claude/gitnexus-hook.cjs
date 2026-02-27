@@ -101,9 +101,28 @@ function main() {
     const pattern = extractPattern(toolName, toolInput);
     if (!pattern || pattern.length < 3) return;
 
-    // Resolve CLI path relative to this hook script (same package)
-    // hooks/claude/gitnexus-hook.cjs → dist/cli/index.js
-    const cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');
+    // Resolve CLI path: try relative first (running from inside the package),
+    // then fall back to dynamic discovery (running from ~/.claude/hooks/ after setup).
+    let cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');
+
+    if (!fs.existsSync(cliPath)) {
+      // Hook was copied outside the package (e.g. by `gitnexus setup`).
+      // Resolve from the system-installed gitnexus binary.
+      const { execFileSync: efs } = require('child_process');
+      const whichCmd = process.platform === 'win32' ? 'where' : 'which';
+      try {
+        const binPath = efs(whichCmd, ['gitnexus'], { encoding: 'utf-8' }).trim().split('\n')[0];
+        cliPath = fs.realpathSync(binPath);
+      } catch {
+        try {
+          const globalRoot = efs('npm', ['root', '-g'], { encoding: 'utf-8' }).trim();
+          cliPath = path.join(globalRoot, 'gitnexus', 'dist', 'cli', 'index.js');
+        } catch {
+          return; // Cannot locate gitnexus CLI — skip silently
+        }
+      }
+      if (!fs.existsSync(cliPath)) return;
+    }
 
     // augment CLI writes result to stderr (KuzuDB's native module captures
     // stdout fd at OS level, making it unusable in subprocess contexts).
