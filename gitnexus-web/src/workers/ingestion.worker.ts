@@ -53,6 +53,7 @@ let enrichmentCancelled = false;
 
 // Chat cancellation flag
 let chatCancelled = false;
+let cliAbortController: AbortController | null = null;
 
 // ============================================================
 // HTTP helpers for backend mode
@@ -760,24 +761,28 @@ const workerApi = {
     onChunk: (chunk: AgentStreamChunk) => void,
   ): Promise<void> {
     chatCancelled = false;
-    const abortController = new AbortController();
+    cliAbortController = new AbortController();
+    let doneEmitted = false;
+    const emitDone = () => { if (!doneEmitted) { doneEmitted = true; onChunk({ type: 'done' }); } };
 
     try {
       const response = await fetch(`${backendUrl}/api/llm/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages, systemPrompt, cliTool }),
-        signal: abortController.signal,
+        signal: cliAbortController.signal,
       });
 
       if (!response.ok) {
         const errText = await response.text().catch(() => 'Unknown error');
         onChunk({ type: 'error', error: `Backend error (${response.status}): ${errText}` });
+        emitDone();
         return;
       }
 
       if (!response.body) {
         onChunk({ type: 'error', error: 'No response body from backend' });
+        emitDone();
         return;
       }
 
@@ -785,12 +790,13 @@ const workerApi = {
       const decoder = new TextDecoder();
       let buffer = '';
       let toolCounter = 0;
+      // Map tool_start counter values to IDs for tool_result matching
+      const toolIdMap = new Map<number, string>();
 
       while (true) {
         if (chatCancelled) {
-          abortController.abort();
           reader.cancel();
-          onChunk({ type: 'done' });
+          emitDone();
           break;
         }
 
@@ -806,7 +812,7 @@ const workerApi = {
               }
             } catch { /* ignore */ }
           }
-          onChunk({ type: 'done' });
+          emitDone();
           break;
         }
 
@@ -828,23 +834,30 @@ const workerApi = {
                 }
                 break;
 
-              case 'tool_start':
+              case 'tool_start': {
+                const idx = toolCounter++;
+                const id = event.toolCallId || `cli-tool-${idx}`;
+                toolIdMap.set(idx, id);
                 onChunk({
                   type: 'tool_call',
                   toolCall: {
-                    id: event.toolCallId || `cli-tool-${toolCounter++}`,
+                    id,
                     name: event.toolName || 'unknown',
                     args: event.toolInput ? tryParseJSON(event.toolInput) : {},
                     status: 'running',
                   },
                 });
                 break;
+              }
 
-              case 'tool_result':
+              case 'tool_result': {
+                // Match to the most recent tool_start if no explicit ID
+                const lastIdx = toolCounter - 1;
+                const id = event.toolCallId || toolIdMap.get(lastIdx) || `cli-tool-${lastIdx}`;
                 onChunk({
                   type: 'tool_result',
                   toolCall: {
-                    id: event.toolCallId || `cli-tool-${toolCounter}`,
+                    id,
                     name: '',
                     args: {},
                     result: event.toolResult || event.content || '',
@@ -852,13 +865,14 @@ const workerApi = {
                   },
                 });
                 break;
+              }
 
               case 'error':
                 onChunk({ type: 'error', error: event.content || 'CLI error' });
                 break;
 
               case 'done':
-                onChunk({ type: 'done' });
+                emitDone();
                 break;
             }
           } catch {
@@ -868,7 +882,13 @@ const workerApi = {
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      onChunk({ type: 'error', error: msg });
+      // Don't emit error for intentional abort
+      if (!msg.includes('abort')) {
+        onChunk({ type: 'error', error: msg });
+      }
+      emitDone();
+    } finally {
+      cliAbortController = null;
     }
   },
 
@@ -877,6 +897,7 @@ const workerApi = {
    */
   stopChat(): void {
     chatCancelled = true;
+    cliAbortController?.abort();
   },
 
   /**
@@ -940,6 +961,11 @@ const workerApi = {
         }
       }
     });
+
+    // claude-code provider can't be used for cluster enrichment (needs LangChain)
+    if (providerConfig.provider === 'claude-code') {
+      throw new Error('Cluster enrichment is not supported with CLI providers. Select an API-based provider (e.g., Gemini, OpenAI) in settings.');
+    }
 
     // Create LLM client adapter for LangChain model
     const chatModel = createChatModel(providerConfig);

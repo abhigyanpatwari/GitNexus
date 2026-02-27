@@ -11,3 +11,16 @@ export function isCLIAvailable(tool: string): boolean {
     return false;
   }
 }
+
+/**
+ * Return a copy of process.env with all CLAUDE* vars removed.
+ * Prevents "nested session" detection when spawning claude CLI
+ * from inside a Claude Code session.
+ */
+export function getCleanEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('CLAUDE')) delete env[key];
+  }
+  return env;
+}

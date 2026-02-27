@@ -9,7 +9,7 @@
  */
 
 import { spawn as nodeSpawn } from 'child_process';
-import { isCLIAvailable } from '../../lib/cli.js';
+import { isCLIAvailable, getCleanEnv } from '../../lib/cli.js';
 
 export interface LLMConfig {
   apiKey: string;
@@ -77,6 +77,9 @@ function detectCLI(): 'claude' | 'codex' | null {
  * Call LLM via locally installed CLI (claude or codex).
  * No API key required — CLI handles auth.
  */
+const CLI_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_STDOUT = 1024 * 1024; // 1 MB
+
 async function callLLMViaCLI(
   prompt: string,
   systemPrompt?: string,
@@ -97,21 +100,24 @@ async function callLLMViaCLI(
     args = ['--quiet', '--full-auto', '--', prompt];
   }
 
-  // Strip all Claude Code env vars to avoid "nested session" detection
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (key.startsWith('CLAUDE')) delete env[key];
-  }
-
   return new Promise((resolve, reject) => {
     let finished = false;
-    const done = (fn: () => void) => { if (!finished) { finished = true; fn(); } };
+    const done = (fn: () => void) => { if (!finished) { finished = true; clearTimeout(timer); fn(); } };
 
-    const child = nodeSpawn(tool, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = nodeSpawn(tool, args, { env: getCleanEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      done(() => reject(new Error(`CLI "${tool}" timed out after ${CLI_TIMEOUT_MS / 1000}s`)));
+    }, CLI_TIMEOUT_MS);
+
     let stdout = '';
     let stderr = '';
 
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+      if (stdout.length > MAX_STDOUT) child.kill('SIGTERM');
+    });
     child.stderr.on('data', (chunk: Buffer) => {
       if (stderr.length < 4096) stderr += chunk.toString();
     });

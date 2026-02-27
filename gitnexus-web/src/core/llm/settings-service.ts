@@ -333,7 +333,7 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
     case 'openrouter':
       return []; // Models fetched dynamically via fetchOpenRouterModels()
     case 'claude-code':
-      return ['claude (CLI)', 'codex (CLI)'];
+      return []; // CLI tool is selected in settings, not as a model
     default:
       return [];
   }

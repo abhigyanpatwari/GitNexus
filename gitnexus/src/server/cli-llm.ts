@@ -7,7 +7,7 @@
  */
 
 import { spawn, type ChildProcess } from 'child_process';
-import { isCLIAvailable } from '../lib/cli.js';
+import { isCLIAvailable, getCleanEnv } from '../lib/cli.js';
 
 export type CLITool = 'claude' | 'codex';
 
@@ -28,24 +28,24 @@ export interface CLIChatRequest {
 
 /**
  * Detect which CLI tools are available on the system.
- * Cached for 60s when tools are found; re-checked every time if none found
- * (user may install one mid-session).
+ * Cached for 60s (positive) / 10s (negative, user may install mid-session).
  */
 let cachedTools: { claude: boolean; codex: boolean } | null = null;
 let cachedAt = 0;
-const CACHE_TTL_MS = 60_000;
+const POSITIVE_TTL_MS = 60_000;
+const NEGATIVE_TTL_MS = 10_000;
 
 export function detectCLITools(): { claude: boolean; codex: boolean } {
   const now = Date.now();
-  if (cachedTools && (cachedTools.claude || cachedTools.codex) && now - cachedAt < CACHE_TTL_MS) {
-    return cachedTools;
+  if (cachedTools) {
+    const hasAny = cachedTools.claude || cachedTools.codex;
+    const ttl = hasAny ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS;
+    if (now - cachedAt < ttl) return cachedTools;
   }
   cachedTools = { claude: isCLIAvailable('claude'), codex: isCLIAvailable('codex') };
   cachedAt = now;
   return cachedTools;
 }
-
-
 
 /**
  * Build a single prompt string from message history.
@@ -65,7 +65,7 @@ function buildPrompt(messages: Array<{ role: string; content: string }>): string
 
 /**
  * Parse a single NDJSON line from claude --output-format stream-json.
- * Returns an array of CLIStreamEvents (a single line can contain multiple content blocks).
+ * Returns an array of CLIStreamEvents (a single line can produce multiple events).
  */
 function parseClaudeLine(line: string): CLIStreamEvent[] {
   let parsed: any;
@@ -78,6 +78,23 @@ function parseClaudeLine(line: string): CLIStreamEvent[] {
   // Skip system events (hooks, init, rate limits)
   if (parsed.type === 'system' || parsed.type === 'rate_limit_event') {
     return [];
+  }
+
+  // Incremental streaming text (most common during generation)
+  if (parsed.type === 'content_block_delta') {
+    if (parsed.delta?.type === 'text_delta' && parsed.delta.text) {
+      return [{ type: 'text', content: parsed.delta.text }];
+    }
+    return [];
+  }
+
+  // Content block start — tool_use blocks carry name and id
+  if (parsed.type === 'content_block_start' && parsed.content_block?.type === 'tool_use') {
+    return [{
+      type: 'tool_start',
+      toolName: parsed.content_block.name,
+      toolCallId: parsed.content_block.id,
+    }];
   }
 
   // Final result — always includes done; text is only for non-streamed output
@@ -118,6 +135,7 @@ function parseClaudeLine(line: string): CLIStreamEvent[] {
 }
 
 const ALLOWED_TOOLS = new Set<CLITool>(['claude', 'codex']);
+const CLI_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Spawn claude/codex CLI and stream parsed events.
@@ -152,21 +170,27 @@ export function spawnCLIStream(
     args = ['--quiet', '--full-auto', '--', prompt];
   }
 
-  // Strip all Claude Code env vars to avoid "nested session" detection
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (key.startsWith('CLAUDE')) delete env[key];
-  }
-
   const child = spawn(tool, args, {
-    env,
+    env: getCleanEnv(),
     stdio: ['ignore', 'pipe', 'pipe'],
     cwd: process.cwd(),
   });
 
+  // Timeout — kill the child if it takes too long
+  const timeout = setTimeout(() => {
+    child.kill('SIGTERM');
+  }, CLI_TIMEOUT_MS);
+
   let buffer = '';
   let hasStreamedContent = false;
   let doneEmitted = false;
+
+  const emitDone = () => {
+    if (!doneEmitted) {
+      doneEmitted = true;
+      onEvent({ type: 'done' });
+    }
+  };
 
   const emitEvents = (events: CLIStreamEvent[]) => {
     // A batch containing 'done' comes from a 'result' line —
@@ -175,8 +199,8 @@ export function spawnCLIStream(
     for (const event of events) {
       if (isResultBatch && event.type === 'text' && hasStreamedContent) continue;
       if (event.type === 'done') {
-        if (doneEmitted) continue;
-        doneEmitted = true;
+        emitDone();
+        continue;
       }
       if (event.type === 'text') hasStreamedContent = true;
       onEvent(event);
@@ -189,14 +213,12 @@ export function spawnCLIStream(
     buffer = lines.pop() || '';
 
     for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-
       if (tool === 'claude') {
-        emitEvents(parseClaudeLine(trimmed));
+        const trimmed = line.trim();
+        if (trimmed) emitEvents(parseClaudeLine(trimmed));
       } else {
-        // codex outputs plain text
-        onEvent({ type: 'text', content: trimmed });
+        // codex outputs plain text — preserve newlines
+        if (line) onEvent({ type: 'text', content: line + '\n' });
       }
     }
   });
@@ -213,6 +235,7 @@ export function spawnCLIStream(
   let finished = false;
 
   child.on('close', (code) => {
+    clearTimeout(timeout);
     if (finished) return;
     finished = true;
 
@@ -229,21 +252,19 @@ export function spawnCLIStream(
       onEvent({ type: 'error', content: `${tool} exited with code ${code}: ${stderr.slice(0, 300)}` });
     }
 
-    if (!doneEmitted) {
-      doneEmitted = true;
-      onEvent({ type: 'done' });
-    }
+    emitDone();
 
     onDone(code !== 0 && code !== null
       ? new Error(`${tool} exited with code ${code}`)
       : undefined);
-
   });
 
   child.on('error', (err) => {
+    clearTimeout(timeout);
     if (finished) return;
     finished = true;
     onEvent({ type: 'error', content: err.message });
+    emitDone();
     onDone(err);
   });
 

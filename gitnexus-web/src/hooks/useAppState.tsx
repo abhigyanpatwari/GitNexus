@@ -281,7 +281,12 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const [projectName, setProjectName] = useState<string>('');
 
   // Multi-repo switching
-  const [serverBaseUrl, setServerBaseUrl] = useState<string | null>(null);
+  const [serverBaseUrl, _setServerBaseUrl] = useState<string | null>(null);
+  const serverBaseUrlRef = useRef<string | null>(null);
+  const setServerBaseUrl = useCallback((url: string | null) => {
+    serverBaseUrlRef.current = url;
+    _setServerBaseUrl(url);
+  }, []);
   const [availableRepos, setAvailableRepos] = useState<RepoSummary[]>([]);
 
   // Embedding state
@@ -585,7 +590,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     try {
       // CLI-based provider: no LangChain initialization needed — the CLI is the agent
       if (config.provider === 'claude-code') {
-        let backendUrl = serverBaseUrl;
+        let backendUrl = serverBaseUrlRef.current;
 
         // Auto-detect local backend if not explicitly connected
         if (!backendUrl) {
@@ -603,6 +608,20 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
           setIsAgentReady(false);
           return;
         }
+
+        // Verify the selected CLI tool is actually available
+        try {
+          const statusRes = await fetch(`${backendUrl}/api/llm/cli-status`);
+          if (statusRes.ok) {
+            const status = await statusRes.json();
+            const selectedTool = (config as ClaudeCodeConfig).cliTool || 'claude';
+            if (!status[selectedTool]) {
+              setAgentError(`CLI tool "${selectedTool}" not found on the server. Install it first.`);
+              setIsAgentReady(false);
+              return;
+            }
+          }
+        } catch { /* non-fatal — will fail at chat time */ }
 
         // Dispose stale LangChain agent from a previous provider
         api.disposeAgent();
@@ -979,11 +998,12 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
       // Route to CLI streaming or LangChain depending on provider
       const activeConfig = getActiveProviderConfig();
-      if (activeConfig?.provider === 'claude-code' && serverBaseUrl) {
+      const backendUrl = serverBaseUrlRef.current;
+      if (activeConfig?.provider === 'claude-code' && backendUrl) {
         const cliConfig = activeConfig as ClaudeCodeConfig;
         await api.chatStreamViaCLI(
           history,
-          serverBaseUrl,
+          backendUrl,
           BASE_SYSTEM_PROMPT,
           cliConfig.cliTool || 'claude',
           onChunk,
@@ -998,7 +1018,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       setIsChatLoading(false);
       setCurrentToolCalls([]);
     }
-  }, [chatMessages, isAgentReady, initializeAgent, resolveFilePath, findFileNodeId, addCodeReference, clearAICodeReferences, clearAIToolHighlights, graph, embeddingStatus, serverBaseUrl]);
+  }, [chatMessages, isAgentReady, initializeAgent, resolveFilePath, findFileNodeId, addCodeReference, clearAICodeReferences, clearAIToolHighlights, graph, embeddingStatus]);
 
   const stopChatResponse = useCallback(() => {
     const api = apiRef.current;
