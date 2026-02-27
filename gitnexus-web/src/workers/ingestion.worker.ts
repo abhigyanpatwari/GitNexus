@@ -145,6 +145,11 @@ const createHttpHybridSearch = (backendUrl: string, repo: string) => {
  * Note: The onProgress callback is passed as a Comlink.proxy() from the main thread,
  * allowing it to be called from the worker and have it execute on the main thread.
  */
+/** Try to parse JSON, returning the object or a key-value with the raw string. */
+const tryParseJSON = (s: string): Record<string, unknown> => {
+  try { return JSON.parse(s); } catch { return { raw: s }; }
+};
+
 const workerApi = {
   /**
    * Run the ingestion pipeline in the worker thread
@@ -740,6 +745,130 @@ const workerApi = {
       }
       const message = error instanceof Error ? error.message : String(error);
       onChunk({ type: 'error', error: message });
+    }
+  },
+
+  /**
+   * Chat with CLI tool (claude/codex) via backend SSE proxy.
+   * Bypasses LangChain — the CLI itself acts as the agent with MCP tools.
+   */
+  async chatStreamViaCLI(
+    messages: AgentMessage[],
+    backendUrl: string,
+    systemPrompt: string | undefined,
+    cliTool: 'claude' | 'codex',
+    onChunk: (chunk: AgentStreamChunk) => void,
+  ): Promise<void> {
+    chatCancelled = false;
+    const abortController = new AbortController();
+
+    try {
+      const response = await fetch(`${backendUrl}/api/llm/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages, systemPrompt, cliTool }),
+        signal: abortController.signal,
+      });
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => 'Unknown error');
+        onChunk({ type: 'error', error: `Backend error (${response.status}): ${errText}` });
+        return;
+      }
+
+      if (!response.body) {
+        onChunk({ type: 'error', error: 'No response body from backend' });
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let toolCounter = 0;
+
+      while (true) {
+        if (chatCancelled) {
+          abortController.abort();
+          reader.cancel();
+          onChunk({ type: 'done' });
+          break;
+        }
+
+        const { done: readerDone, value } = await reader.read();
+        if (readerDone) {
+          // Flush remaining buffer (last line may lack trailing newline)
+          const remaining = buffer.trim();
+          if (remaining && remaining.startsWith('data: ')) {
+            try {
+              const event = JSON.parse(remaining.slice(6));
+              if (event.type === 'error' && event.content) {
+                onChunk({ type: 'error', error: event.content });
+              }
+            } catch { /* ignore */ }
+          }
+          onChunk({ type: 'done' });
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
+          try {
+            const event = JSON.parse(trimmed.slice(6));
+
+            switch (event.type) {
+              case 'text':
+                if (event.content) {
+                  onChunk({ type: 'content', content: event.content });
+                }
+                break;
+
+              case 'tool_start':
+                onChunk({
+                  type: 'tool_call',
+                  toolCall: {
+                    id: event.toolCallId || `cli-tool-${toolCounter++}`,
+                    name: event.toolName || 'unknown',
+                    args: event.toolInput ? tryParseJSON(event.toolInput) : {},
+                    status: 'running',
+                  },
+                });
+                break;
+
+              case 'tool_result':
+                onChunk({
+                  type: 'tool_result',
+                  toolCall: {
+                    id: event.toolCallId || `cli-tool-${toolCounter}`,
+                    name: '',
+                    args: {},
+                    result: event.toolResult || event.content || '',
+                    status: 'completed',
+                  },
+                });
+                break;
+
+              case 'error':
+                onChunk({ type: 'error', error: event.content || 'CLI error' });
+                break;
+
+              case 'done':
+                onChunk({ type: 'done' });
+                break;
+            }
+          } catch {
+            // Skip malformed SSE lines
+          }
+        }
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      onChunk({ type: 'error', error: msg });
     }
   },
 

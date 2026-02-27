@@ -7,9 +7,10 @@ import { DEFAULT_VISIBLE_LABELS } from '../lib/constants';
 import type { IngestionWorkerApi } from '../workers/ingestion.worker';
 import type { FileEntry } from '../services/zip';
 import type { EmbeddingProgress, SemanticSearchResult } from '../core/embeddings/types';
-import type { LLMSettings, ProviderConfig, AgentStreamChunk, ChatMessage, ToolCallInfo, MessageStep } from '../core/llm/types';
+import type { LLMSettings, ProviderConfig, AgentStreamChunk, ChatMessage, ToolCallInfo, MessageStep, ClaudeCodeConfig } from '../core/llm/types';
 import { loadSettings, getActiveProviderConfig, saveSettings } from '../core/llm/settings-service';
 import type { AgentMessage } from '../core/llm/agent';
+import { BASE_SYSTEM_PROMPT } from '../core/llm/agent';
 import { DEFAULT_VISIBLE_EDGES, type EdgeType } from '../lib/constants';
 import type { RepoSummary, ConnectToServerResult } from '../services/server-connection';
 import { fetchRepos, connectToServer } from '../services/server-connection';
@@ -582,6 +583,34 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setAgentError(null);
 
     try {
+      // CLI-based provider: no LangChain initialization needed — the CLI is the agent
+      if (config.provider === 'claude-code') {
+        let backendUrl = serverBaseUrl;
+
+        // Auto-detect local backend if not explicitly connected
+        if (!backendUrl) {
+          try {
+            const res = await fetch('http://localhost:4747/api/llm/cli-status');
+            if (res.ok) {
+              backendUrl = 'http://localhost:4747';
+              setServerBaseUrl(backendUrl);
+            }
+          } catch { /* not running */ }
+        }
+
+        if (!backendUrl) {
+          setAgentError('Claude Code provider requires a running backend. Run: npx gitnexus serve');
+          setIsAgentReady(false);
+          return;
+        }
+
+        // Dispose stale LangChain agent from a previous provider
+        api.disposeAgent();
+        setIsAgentReady(true);
+        setAgentError(null);
+        return;
+      }
+
       // Use override if provided (for fresh loads), fallback to state (for re-init)
       const effectiveProjectName = overrideProjectName || projectName || 'project';
       const result = await api.initializeAgent(config, effectiveProjectName);
@@ -602,7 +631,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     } finally {
       setIsAgentInitializing(false);
     }
-  }, [projectName]);
+  }, [projectName, serverBaseUrl]);
 
   const sendChatMessage = useCallback(async (message: string): Promise<void> => {
     const api = apiRef.current;
@@ -633,7 +662,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
     // If embeddings are running and we're currently creating the vector index,
     // avoid a confusing "Embeddings not ready" error and give a clear wait message.
-    if (embeddingStatus === 'indexing') {
+    // Skip for claude-code — CLI doesn't use local embeddings, it queries via MCP.
+    if (embeddingStatus === 'indexing' && loadSettings().activeProvider !== 'claude-code') {
       const assistantMessage: ChatMessage = {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
@@ -947,7 +977,20 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
         }
       });
 
-      await api.chatStream(history, onChunk);
+      // Route to CLI streaming or LangChain depending on provider
+      const activeConfig = getActiveProviderConfig();
+      if (activeConfig?.provider === 'claude-code' && serverBaseUrl) {
+        const cliConfig = activeConfig as ClaudeCodeConfig;
+        await api.chatStreamViaCLI(
+          history,
+          serverBaseUrl,
+          BASE_SYSTEM_PROMPT,
+          cliConfig.cliTool || 'claude',
+          onChunk,
+        );
+      } else {
+        await api.chatStream(history, onChunk);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setAgentError(message);
@@ -955,7 +998,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       setIsChatLoading(false);
       setCurrentToolCalls([]);
     }
-  }, [chatMessages, isAgentReady, initializeAgent, resolveFilePath, findFileNodeId, addCodeReference, clearAICodeReferences, clearAIToolHighlights, graph, embeddingStatus]);
+  }, [chatMessages, isAgentReady, initializeAgent, resolveFilePath, findFileNodeId, addCodeReference, clearAICodeReferences, clearAIToolHighlights, graph, embeddingStatus, serverBaseUrl]);
 
   const stopChatResponse = useCallback(() => {
     const api = apiRef.current;

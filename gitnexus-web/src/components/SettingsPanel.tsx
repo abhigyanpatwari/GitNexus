@@ -281,7 +281,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
 
   if (!isOpen) return null;
 
-  const providers: LLMProvider[] = ['openai', 'gemini', 'anthropic', 'azure-openai', 'ollama', 'openrouter'];
+  const providers: LLMProvider[] = ['claude-code', 'openai', 'gemini', 'anthropic', 'azure-openai', 'ollama', 'openrouter'];
 
 
   return (
@@ -366,7 +366,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
                     w-8 h-8 rounded-lg flex items-center justify-center text-lg
                     ${settings.activeProvider === provider ? 'bg-accent/20' : 'bg-surface'}
                   `}>
-                    {provider === 'openai' ? '🤖' : provider === 'gemini' ? '💎' : provider === 'anthropic' ? '🧠' : provider === 'ollama' ? '🦙' : provider === 'openrouter' ? '🌐' : '☁️'}
+                    {provider === 'claude-code' ? '⌨' : provider === 'openai' ? '🤖' : provider === 'gemini' ? '💎' : provider === 'anthropic' ? '🧠' : provider === 'ollama' ? '🦙' : provider === 'openrouter' ? '🌐' : '☁️'}
                   </div>
                   <span className="font-medium">{getProviderDisplayName(provider)}</span>
                 </button>
@@ -815,6 +815,48 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
           )}
 
 
+
+          {settings.activeProvider === 'claude-code' && (
+            <div className="space-y-4 animate-fade-in">
+              <div className="p-3 bg-accent/10 border border-accent/30 rounded-xl">
+                <p className="text-xs text-accent leading-relaxed">
+                  <span className="font-medium">No API key needed.</span> Uses your
+                  locally installed <code className="px-1 py-0.5 bg-black/30 rounded">claude</code> or{' '}
+                  <code className="px-1 py-0.5 bg-black/30 rounded">codex</code> CLI.
+                  The CLI handles authentication.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-secondary">CLI Tool</label>
+                <div className="grid grid-cols-2 gap-3">
+                  {(['claude', 'codex'] as const).map(tool => (
+                    <button
+                      key={tool}
+                      type="button"
+                      onClick={() => setSettings(prev => ({
+                        ...prev,
+                        claudeCode: { ...prev.claudeCode, cliTool: tool }
+                      }))}
+                      className={`p-3 rounded-xl border-2 transition-all ${
+                        (settings.claudeCode?.cliTool || 'claude') === tool
+                          ? 'border-accent bg-accent/10 text-text-primary'
+                          : 'border-border-subtle bg-elevated text-text-secondary hover:border-accent/50'
+                      }`}
+                    >
+                      <span className="font-mono text-sm">{tool}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <p className="text-xs text-text-muted leading-relaxed">
+                Requires <code className="px-1 py-0.5 bg-elevated rounded">claude</code> or{' '}
+                <code className="px-1 py-0.5 bg-elevated rounded">codex</code> installed and{' '}
+                <code className="px-1 py-0.5 bg-elevated rounded">gitnexus serve</code> running for MCP tools.
+              </p>
+            </div>
+          )}
 
           {/* Privacy Note */}
           <div className="p-4 bg-elevated/50 border border-border-subtle rounded-xl">

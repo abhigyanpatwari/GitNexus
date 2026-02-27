@@ -5,9 +5,9 @@
  * All API keys are stored locally - never sent to any server except the LLM provider.
  */
 
-import { 
-  LLMSettings, 
-  DEFAULT_LLM_SETTINGS, 
+import {
+  LLMSettings,
+  DEFAULT_LLM_SETTINGS,
   LLMProvider,
   OpenAIConfig,
   AzureOpenAIConfig,
@@ -15,6 +15,7 @@ import {
   AnthropicConfig,
   OllamaConfig,
   OpenRouterConfig,
+  ClaudeCodeConfig,
   ProviderConfig,
 } from './types';
 
@@ -60,6 +61,10 @@ export const loadSettings = (): LLMSettings => {
         ...DEFAULT_LLM_SETTINGS.openrouter,
         ...parsed.openrouter,
       },
+      claudeCode: {
+        ...DEFAULT_LLM_SETTINGS.claudeCode,
+        ...parsed.claudeCode,
+      },
     };
   } catch (error) {
     console.warn('Failed to load LLM settings:', error);
@@ -84,11 +89,13 @@ export const saveSettings = (settings: LLMSettings): void => {
 export const updateProviderSettings = <T extends LLMProvider>(
   provider: T,
   updates: Partial<
-    T extends 'openai' ? Partial<Omit<OpenAIConfig, 'provider'>> :
-    T extends 'azure-openai' ? Partial<Omit<AzureOpenAIConfig, 'provider'>> :
-    T extends 'gemini' ? Partial<Omit<GeminiConfig, 'provider'>> :
-    T extends 'anthropic' ? Partial<Omit<AnthropicConfig, 'provider'>> :
-    T extends 'ollama' ? Partial<Omit<OllamaConfig, 'provider'>> :
+    T extends 'openai' ? Omit<OpenAIConfig, 'provider'> :
+    T extends 'azure-openai' ? Omit<AzureOpenAIConfig, 'provider'> :
+    T extends 'gemini' ? Omit<GeminiConfig, 'provider'> :
+    T extends 'anthropic' ? Omit<AnthropicConfig, 'provider'> :
+    T extends 'ollama' ? Omit<OllamaConfig, 'provider'> :
+    T extends 'openrouter' ? Omit<OpenRouterConfig, 'provider'> :
+    T extends 'claude-code' ? Omit<ClaudeCodeConfig, 'provider'> :
     never
   >
 ): LLMSettings => {
@@ -157,6 +164,17 @@ export const updateProviderSettings = <T extends LLMProvider>(
         openrouter: {
           ...(current.openrouter ?? {}),
           ...(updates as Partial<Omit<OpenRouterConfig, 'provider'>>),
+        },
+      };
+      saveSettings(updated);
+      return updated;
+    }
+    case 'claude-code': {
+      const updated: LLMSettings = {
+        ...current,
+        claudeCode: {
+          ...(current.claudeCode ?? {}),
+          ...(updates as Partial<Omit<ClaudeCodeConfig, 'provider'>>),
         },
       };
       saveSettings(updated);
@@ -245,7 +263,14 @@ export const getActiveProviderConfig = (): ProviderConfig | null => {
         temperature: settings.openrouter.temperature,
         maxTokens: settings.openrouter.maxTokens,
       } as OpenRouterConfig;
-      
+
+    case 'claude-code':
+      return {
+        provider: 'claude-code',
+        cliTool: settings.claudeCode?.cliTool || 'claude',
+        model: settings.claudeCode?.model || 'claude (CLI)',
+      } as ClaudeCodeConfig;
+
     default:
       return null;
   }
@@ -282,6 +307,8 @@ export const getProviderDisplayName = (provider: LLMProvider): string => {
       return 'Ollama (Local)';
     case 'openrouter':
       return 'OpenRouter';
+    case 'claude-code':
+      return 'Claude Code / Codex';
     default:
       return provider;
   }
@@ -303,6 +330,10 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
       return ['claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'];
     case 'ollama':
       return ['llama3.2', 'llama3.1', 'mistral', 'codellama', 'deepseek-coder'];
+    case 'openrouter':
+      return []; // Models fetched dynamically via fetchOpenRouterModels()
+    case 'claude-code':
+      return ['claude (CLI)', 'codex (CLI)'];
     default:
       return [];
   }
