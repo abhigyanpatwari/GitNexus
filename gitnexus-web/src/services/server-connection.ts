@@ -69,7 +69,14 @@ export async function fetchRepoInfo(baseUrl: string, repoName?: string): Promise
   if (!response.ok) {
     throw new Error(`Server returned ${response.status}: ${response.statusText}`);
   }
-  return response.json();
+  const data = await response.json();
+  // API returns "path" but ServerRepoInfo expects "repoPath"
+  return {
+    name: data.name,
+    repoPath: data.repoPath ?? data.path,
+    indexedAt: data.indexedAt,
+    stats: data.stats,
+  };
 }
 
 export async function fetchGraph(
