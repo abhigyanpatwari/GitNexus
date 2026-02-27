@@ -18,7 +18,6 @@ export const RightPanel = () => {
     // LLM / chat state
     chatMessages,
     isChatLoading,
-    currentToolCalls,
     agentError,
     isAgentReady,
     isAgentInitializing,
@@ -388,6 +387,23 @@ export const RightPanel = () => {
 
               </div>
             )}
+
+            {/* Typing indicator: shows when loading and no assistant message yet */}
+            {isChatLoading && chatMessages.length > 0 && chatMessages[chatMessages.length - 1].role === 'user' && (
+              <div className="px-4 py-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <Sparkles className="w-4 h-4 text-accent" />
+                  <span className="text-xs font-medium text-text-muted uppercase tracking-wide">Nexus AI</span>
+                </div>
+                <div className="pl-6 flex items-center gap-1.5">
+                  <span className="w-2 h-2 bg-accent/60 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                  <span className="w-2 h-2 bg-accent/60 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                  <span className="w-2 h-2 bg-accent/60 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                  <span className="text-xs text-text-muted ml-2">Thinking...</span>
+                </div>
+              </div>
+            )}
+
             {/* Scroll anchor for auto-scroll */}
             <div ref={messagesEndRef} />
           </div>

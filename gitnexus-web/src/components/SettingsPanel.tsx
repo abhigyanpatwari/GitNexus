@@ -222,6 +222,9 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
   // OpenRouter models state
   const [openRouterModels, setOpenRouterModels] = useState<Array<{ id: string; name: string }>>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
+  // CLI status state
+  const [cliStatus, setCliStatus] = useState<{ claude: boolean; codex: boolean } | null>(null);
+  const [isCheckingCli, setIsCheckingCli] = useState(false);
 
   // Load settings when panel opens
   useEffect(() => {
@@ -259,6 +262,21 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
       return () => clearTimeout(timer);
     }
   }, [settings.ollama?.baseUrl, settings.activeProvider, checkOllamaConnection]);
+
+  // Check CLI availability when claude-code provider is selected
+  useEffect(() => {
+    if (settings.activeProvider !== 'claude-code') return;
+    let cancelled = false;
+    setIsCheckingCli(true);
+
+    const checkUrl = backendUrl || 'http://localhost:4747';
+    fetch(`${checkUrl}/api/llm/cli-status`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (!cancelled && data) { setCliStatus(data); setIsCheckingCli(false); } })
+      .catch(() => { if (!cancelled) { setCliStatus(null); setIsCheckingCli(false); } });
+
+    return () => { cancelled = true; };
+  }, [settings.activeProvider, backendUrl]);
 
   const handleProviderChange = (provider: LLMProvider) => {
     setSettings(prev => ({ ...prev, activeProvider: provider }));
@@ -830,31 +848,50 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
               <div className="space-y-2">
                 <label className="text-sm font-medium text-text-secondary">CLI Tool</label>
                 <div className="grid grid-cols-2 gap-3">
-                  {(['claude', 'codex'] as const).map(tool => (
-                    <button
-                      key={tool}
-                      type="button"
-                      onClick={() => setSettings(prev => ({
-                        ...prev,
-                        claudeCode: { ...prev.claudeCode, cliTool: tool }
-                      }))}
-                      className={`p-3 rounded-xl border-2 transition-all ${
-                        (settings.claudeCode?.cliTool || 'claude') === tool
-                          ? 'border-accent bg-accent/10 text-text-primary'
-                          : 'border-border-subtle bg-elevated text-text-secondary hover:border-accent/50'
-                      }`}
-                    >
-                      <span className="font-mono text-sm">{tool}</span>
-                    </button>
-                  ))}
+                  {(['claude', 'codex'] as const).map(tool => {
+                    const isAvailable = cliStatus ? cliStatus[tool] : null;
+                    const isSelected = (settings.claudeCode?.cliTool || 'claude') === tool;
+                    return (
+                      <button
+                        key={tool}
+                        type="button"
+                        onClick={() => setSettings(prev => ({
+                          ...prev,
+                          claudeCode: { ...prev.claudeCode, cliTool: tool }
+                        }))}
+                        className={`p-3 rounded-xl border-2 transition-all ${
+                          isSelected
+                            ? 'border-accent bg-accent/10 text-text-primary'
+                            : 'border-border-subtle bg-elevated text-text-secondary hover:border-accent/50'
+                        }`}
+                      >
+                        <span className="font-mono text-sm">{tool}</span>
+                        {isAvailable !== null && (
+                          <span className={`block text-[10px] mt-1 ${isAvailable ? 'text-green-400' : 'text-red-400'}`}>
+                            {isAvailable ? 'installed' : 'not found'}
+                          </span>
+                        )}
+                        {isCheckingCli && isAvailable === null && (
+                          <span className="block text-[10px] mt-1 text-text-muted">checking...</span>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
-              <p className="text-xs text-text-muted leading-relaxed">
-                Requires <code className="px-1 py-0.5 bg-elevated rounded">claude</code> or{' '}
-                <code className="px-1 py-0.5 bg-elevated rounded">codex</code> installed and{' '}
-                <code className="px-1 py-0.5 bg-elevated rounded">gitnexus serve</code> running for MCP tools.
-              </p>
+              {cliStatus === null && !isCheckingCli && (
+                <p className="text-xs text-amber-300 leading-relaxed">
+                  Cannot connect to backend. Run: <code className="px-1 py-0.5 bg-elevated rounded">npx gitnexus serve</code>
+                </p>
+              )}
+
+              {cliStatus && !cliStatus.claude && !cliStatus.codex && (
+                <p className="text-xs text-red-400 leading-relaxed">
+                  No CLI tools found. Install <code className="px-1 py-0.5 bg-elevated rounded">claude</code> or{' '}
+                  <code className="px-1 py-0.5 bg-elevated rounded">codex</code>.
+                </p>
+              )}
             </div>
           )}
 
