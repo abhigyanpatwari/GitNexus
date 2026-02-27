@@ -1,11 +1,15 @@
 /**
  * LLM Client for Wiki Generation
- * 
+ *
  * OpenAI-compatible API client using native fetch.
  * Supports OpenAI, Azure, LiteLLM, Ollama, and any OpenAI-compatible endpoint.
- * 
+ * Falls back to locally installed CLI (claude/codex) when no API key is configured.
+ *
  * Config priority: CLI flags > env vars > defaults
  */
+
+import { spawn as nodeSpawn } from 'child_process';
+import { isCLIAvailable } from '../../lib/cli.js';
 
 export interface LLMConfig {
   apiKey: string;
@@ -59,6 +63,75 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+/**
+ * Detect which CLI tool is available locally.
+ */
+function detectCLI(): 'claude' | 'codex' | null {
+  for (const tool of ['claude', 'codex'] as const) {
+    if (isCLIAvailable(tool)) return tool;
+  }
+  return null;
+}
+
+/**
+ * Call LLM via locally installed CLI (claude or codex).
+ * No API key required — CLI handles auth.
+ */
+async function callLLMViaCLI(
+  prompt: string,
+  systemPrompt?: string,
+  cliTool?: 'claude' | 'codex',
+): Promise<LLMResponse> {
+  const tool = cliTool || detectCLI();
+  if (!tool) {
+    throw new Error('No CLI tool found. Install "claude" or "codex", or provide an API key.');
+  }
+
+  let args: string[];
+  if (tool === 'claude') {
+    args = ['-p', prompt, '--output-format', 'text', '--no-session-persistence'];
+    if (systemPrompt) {
+      args.push('--system-prompt', systemPrompt);
+    }
+  } else {
+    args = ['--quiet', '--full-auto', '--', prompt];
+  }
+
+  const env = { ...process.env };
+  delete env.CLAUDECODE; // avoid nested session error
+
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    const done = (fn: () => void) => { if (!finished) { finished = true; fn(); } };
+
+    const child = nodeSpawn(tool, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk: Buffer) => {
+      if (stderr.length < 4096) stderr += chunk.toString();
+    });
+
+    child.on('close', (code) => done(() => {
+      if (code !== 0) {
+        reject(new Error(`CLI "${tool}" exited with code ${code}: ${stderr.slice(0, 500)}`));
+        return;
+      }
+      const content = stdout.trim();
+      if (!content) {
+        reject(new Error(`CLI "${tool}" returned empty output`));
+        return;
+      }
+      resolve({ content });
+    }));
+
+    child.on('error', (err) => done(() => {
+      reject(new Error(`Failed to spawn "${tool}": ${err.message}`));
+    }));
+  });
+}
+
 export interface CallLLMOptions {
   onChunk?: (charsReceived: number) => void;
 }
@@ -74,6 +147,11 @@ export async function callLLM(
   systemPrompt?: string,
   options?: CallLLMOptions,
 ): Promise<LLMResponse> {
+  // CLI fallback when no API key is configured
+  if (!config.apiKey || config.apiKey.trim() === '') {
+    return callLLMViaCLI(prompt, systemPrompt);
+  }
+
   const messages: Array<{ role: string; content: string }> = [];
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });
