@@ -30,6 +30,9 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
   const [serverUrl, setServerUrl] = useState(() =>
     localStorage.getItem('gitnexus-server-url') || ''
   );
+  const [serverRepoName, setServerRepoName] = useState(() =>
+    localStorage.getItem('gitnexus-server-repo') || ''
+  );
   const [isConnecting, setIsConnecting] = useState(false);
   const [serverProgress, setServerProgress] = useState<{
     phase: string;
@@ -127,6 +130,7 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
 
   const handleServerConnect = async () => {
     const urlToUse = serverUrl.trim() || window.location.origin;
+    const repoNameToUse = serverRepoName.trim() || undefined;
     if (!urlToUse) {
       setError('Please enter a server URL');
       return;
@@ -134,6 +138,7 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
 
     // Persist URL to localStorage
     localStorage.setItem('gitnexus-server-url', serverUrl);
+    localStorage.setItem('gitnexus-server-repo', serverRepoName.trim());
 
     setError(null);
     setIsConnecting(true);
@@ -148,7 +153,8 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
         (phase, downloaded, total) => {
           setServerProgress({ phase, downloaded, total });
         },
-        abortController.signal
+        abortController.signal,
+        repoNameToUse
       );
 
       if (onServerConnect) {
@@ -465,6 +471,27 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
                 onChange={(e) => setServerUrl(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && !isConnecting && handleServerConnect()}
                 placeholder={window.location.origin}
+                disabled={isConnecting}
+                autoComplete="off"
+                data-lpignore="true"
+                data-1p-ignore="true"
+                data-form-type="other"
+                className="
+                  w-full px-4 py-3
+                  bg-elevated border border-border-default rounded-xl
+                  text-text-primary placeholder-text-muted
+                  focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent
+                  disabled:opacity-50 disabled:cursor-not-allowed
+                  transition-all duration-200
+                "
+              />
+              <input
+                type="text"
+                name="server-repo-name-input"
+                value={serverRepoName}
+                onChange={(e) => setServerRepoName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && !isConnecting && handleServerConnect()}
+                placeholder="Repo name (optional)"
                 disabled={isConnecting}
                 autoComplete="off"
                 data-lpignore="true"
