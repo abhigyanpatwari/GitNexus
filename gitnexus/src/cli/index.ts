@@ -32,6 +32,7 @@ import { augmentCommand } from './augment.js';
 import { wikiCommand } from './wiki.js';
 import { queryCommand, contextCommand, impactCommand, cypherCommand } from './tool.js';
 import { evalServerCommand } from './eval-server.js';
+import { uninstallCommand } from './uninstall.js';
 const program = new Command();
 
 program
@@ -79,6 +80,14 @@ program
   .option('-f, --force', 'Skip confirmation prompt')
   .option('--all', 'Clean all indexed repos')
   .action(cleanCommand);
+
+program
+  .command('uninstall')
+  .description('Fully remove GitNexus from current repo and/or global editor configs')
+  .option('-n, --dry-run', 'Preview what would be removed without deleting')
+  .option('--global', 'Remove only global setup (editor configs, hooks, skills, MCP)')
+  .option('--all', 'Remove everything (current repo + global)')
+  .action(uninstallCommand);
 
 program
   .command('wiki [path]')
