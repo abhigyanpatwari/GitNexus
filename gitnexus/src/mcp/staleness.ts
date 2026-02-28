@@ -19,6 +19,10 @@ export interface StalenessInfo {
  */
 export function checkStaleness(repoPath: string, lastCommit: string): StalenessInfo {
   try {
+    // Validate lastCommit is a hex hash to prevent command injection
+    if (!/^[0-9a-f]{7,40}$/i.test(lastCommit)) {
+      return { isStale: false, commitsBehind: 0 };
+    }
     // Get count of commits between lastCommit and HEAD
     const result = execFileSync(
       'git', ['rev-list', '--count', `${lastCommit}..HEAD`],

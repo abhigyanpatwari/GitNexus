@@ -1042,6 +1042,10 @@ export class LocalBackend {
         break;
       case 'compare':
         if (!params.base_ref) return { error: 'base_ref is required for "compare" scope' };
+        // Validate base_ref to prevent command injection
+        if (!/^[a-zA-Z0-9._\-~^/]+$/.test(params.base_ref)) {
+          return { error: 'Invalid base_ref format — only alphanumeric, dots, dashes, tildes, carets, and slashes allowed' };
+        }
         diffArgs = ['diff', params.base_ref, '--name-only'];
         break;
       case 'unstaged':
