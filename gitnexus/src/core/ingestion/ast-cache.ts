@@ -10,10 +10,13 @@ export interface ASTCache {
 }
 
 export const createASTCache = (maxSize: number = 50): ASTCache => {
+  // Ensure max is at least 1 — LRUCache throws if max/maxSize/ttl are all 0 or unset.
+  // This happens when the pipeline has no parseable files (e.g., unsupported languages only).
+  const safeMax = Math.max(maxSize, 1);
   // Initialize the cache with a 'dispose' handler
   // This is the magic: When an item is evicted (dropped), this runs automatically.
   const cache = new LRUCache<string, Parser.Tree>({
-    max: maxSize,
+    max: safeMax,
     dispose: (tree) => {
       try {
         // NOTE: web-tree-sitter has tree.delete(); native tree-sitter trees are GC-managed.

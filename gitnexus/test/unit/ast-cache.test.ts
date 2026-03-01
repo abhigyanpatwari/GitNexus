@@ -83,4 +83,23 @@ describe('ASTCache', () => {
       expect(defaultCache.stats().maxSize).toBe(50);
     });
   });
+
+  describe('edge cases', () => {
+    it('does not throw when maxSize is 0', () => {
+      expect(() => createASTCache(0)).not.toThrow();
+      const zeroCache = createASTCache(0);
+      expect(zeroCache.stats().maxSize).toBe(0);
+    });
+
+    it('does not throw when maxSize is negative', () => {
+      expect(() => createASTCache(-5)).not.toThrow();
+    });
+
+    it('still functions with maxSize 0 (clamped to 1 internally)', () => {
+      const zeroCache = createASTCache(0);
+      const tree = mockTree('test');
+      zeroCache.set('a.ts', tree);
+      expect(zeroCache.get('a.ts')).toBe(tree);
+    });
+  });
 });
