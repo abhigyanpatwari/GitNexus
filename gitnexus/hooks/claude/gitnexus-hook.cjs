@@ -101,9 +101,46 @@ function main() {
     const pattern = extractPattern(toolName, toolInput);
     if (!pattern || pattern.length < 3) return;
 
-    // Resolve CLI path relative to this hook script (same package)
-    // hooks/claude/gitnexus-hook.cjs → dist/cli/index.js
-    const cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');
+    // Resolve CLI path - try multiple strategies for robustness
+    let cliPath;
+    let found = false;
+
+    // Strategy 1: Use 'which' to find gitnexus command (works for global installs)
+    try {
+      const binPath = execFileSync('which', ['gitnexus'], { encoding: 'utf-8' }).trim();
+      const resolvedBin = fs.realpathSync(binPath);
+      // The bin is a symlink like "node_modules/.bin/gitnexus" -> "../dist/cli/index.js"
+      // We need to resolve from the package root
+      const packageRoot = path.resolve(path.dirname(resolvedBin), '..');
+      cliPath = path.join(packageRoot, 'dist', 'cli', 'index.js');
+      if (fs.existsSync(cliPath)) {
+        found = true;
+      }
+    } catch {}
+
+    // Strategy 2: Check relative path from hook location (works for local dev)
+    if (!found) {
+      const relativePath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');
+      if (fs.existsSync(relativePath)) {
+        cliPath = relativePath;
+        found = true;
+      }
+    }
+
+    // Strategy 3: Try global npm root
+    if (!found) {
+      try {
+        const globalRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf-8' }).trim();
+        const globalCliPath = path.join(globalRoot, 'gitnexus', 'dist', 'cli', 'index.js');
+        if (fs.existsSync(globalCliPath)) {
+          cliPath = globalCliPath;
+          found = true;
+        }
+      } catch {}
+    }
+
+    // If we can't find the CLI, bail silently
+    if (!found) return;
 
     // augment CLI writes result to stderr (KuzuDB's native module captures
     // stdout fd at OS level, making it unusable in subprocess contexts).
