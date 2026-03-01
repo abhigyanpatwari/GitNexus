@@ -140,12 +140,16 @@ const extractContent = async (
 class BufferedCSVWriter {
   private ws: WriteStream;
   private buffer: string[] = [];
+  private streamError: Error | null = null;
   rows = 0;
 
   constructor(filePath: string, header: string) {
     this.ws = createWriteStream(filePath, 'utf-8');
     // Large repos flush many times — raise listener cap to avoid MaxListenersExceededWarning
     this.ws.setMaxListeners(50);
+    this.ws.on('error', (err) => {
+      this.streamError = err;
+    });
     this.buffer.push(header);
   }
 
@@ -159,13 +163,25 @@ class BufferedCSVWriter {
   }
 
   flush(): Promise<void> {
+    if (this.streamError) return Promise.reject(this.streamError);
     if (this.buffer.length === 0) return Promise.resolve();
     const chunk = this.buffer.join('\n') + '\n';
     this.buffer.length = 0;
     return new Promise((resolve, reject) => {
       const ok = this.ws.write(chunk);
       if (ok) resolve();
-      else this.ws.once('drain', resolve);
+      else {
+        const onError = (err: Error) => {
+          this.ws.removeListener('drain', onDrain);
+          reject(err);
+        };
+        const onDrain = () => {
+          this.ws.removeListener('error', onError);
+          resolve();
+        };
+        this.ws.once('drain', onDrain);
+        this.ws.once('error', onError);
+      }
     });
   }
 
