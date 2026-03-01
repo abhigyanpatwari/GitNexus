@@ -350,7 +350,7 @@ export const analyzeCommand = async (
   if (kuzuWarnings.length > 0) {
     const totalFallback = kuzuWarnings.reduce((sum, w) => {
       const m = w.match(/\((\d+) edges\)/);
-      return sum + (m ? parseInt(m[1]) : 0);
+      return sum + (m ? parseInt(m[1], 10) : 0);
     }, 0);
     console.log(`  Note: ${totalFallback} edges across ${kuzuWarnings.length} types inserted via fallback (schema will be updated in next release)`);
   }

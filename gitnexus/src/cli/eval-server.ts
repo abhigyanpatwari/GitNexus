@@ -297,8 +297,8 @@ function getNextStepHint(toolName: string): string {
 // ─── Server ───────────────────────────────────────────────────────────
 
 export async function evalServerCommand(options?: EvalServerOptions): Promise<void> {
-  const port = parseInt(options?.port || '4848');
-  const idleTimeoutSec = parseInt(options?.idleTimeout || '0');
+  const port = parseInt(options?.port || '4848', 10);
+  const idleTimeoutSec = parseInt(options?.idleTimeout || '0', 10);
 
   const backend = new LocalBackend();
   const ok = await backend.init();

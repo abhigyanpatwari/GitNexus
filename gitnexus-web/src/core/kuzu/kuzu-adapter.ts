@@ -149,7 +149,7 @@ export const loadGraphToKuzu = async (
         }
 
         const confidence = parseFloat(confidenceStr) || 1.0;
-        const step = parseInt(stepStr) || 0;
+        const step = parseInt(stepStr, 10) || 0;
         
         const insertQuery = `
           MATCH (a:${escapeLabel(fromLabel)} {id: '${fromId.replace(/'/g, "''")}'}),

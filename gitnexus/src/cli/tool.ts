@@ -52,7 +52,7 @@ export async function queryCommand(queryText: string, options?: {
     query: queryText,
     task_context: options?.context,
     goal: options?.goal,
-    limit: options?.limit ? parseInt(options.limit) : undefined,
+    limit: options?.limit ? parseInt(options.limit, 10) : undefined,
     include_content: options?.content ?? false,
     repo: options?.repo,
   });
@@ -96,7 +96,7 @@ export async function impactCommand(target: string, options?: {
   const result = await backend.callTool('impact', {
     target,
     direction: options?.direction || 'upstream',
-    maxDepth: options?.depth ? parseInt(options.depth) : undefined,
+    maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
     includeTests: options?.includeTests ?? false,
     repo: options?.repo,
   });

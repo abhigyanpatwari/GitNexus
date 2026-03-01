@@ -298,7 +298,7 @@ const fallbackRelationshipInserts = async (
       if (!validTables.has(fromLabel) || !validTables.has(toLabel)) continue;
 
       const confidence = parseFloat(confidenceStr) || 1.0;
-      const step = parseInt(stepStr) || 0;
+      const step = parseInt(stepStr, 10) || 0;
 
       await conn.query(`
         MATCH (a:${escapeLabel(fromLabel)} {id: '${fromId.replace(/'/g, "''")}' }),
