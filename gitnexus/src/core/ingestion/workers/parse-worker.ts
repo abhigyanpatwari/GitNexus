@@ -63,6 +63,7 @@ export interface ExtractedImport {
   filePath: string;
   rawImportPath: string;
   language: string;
+  symbolNames?: string[];
 }
 
 export interface ExtractedCall {
@@ -267,6 +268,47 @@ const FUNCTION_NODE_TYPES = new Set([
   // Swift initializers/deinitializers
   'init_declaration', 'deinit_declaration',
 ]);
+
+/** Extract the specific symbol names from an import AST node.
+ *  Python:  `from X import foo, bar`  → ['foo', 'bar']
+ *  JS/TS:   `import { foo, bar } from 'X'`  → ['foo', 'bar']
+ *  Returns empty array for bare module imports or unsupported patterns. */
+const extractImportedSymbolNames = (importNode: any, language: string): string[] => {
+  const names: string[] = [];
+
+  if (language === SupportedLanguages.Python) {
+    // import_from_statement children: module_name (dotted_name) + name fields (dotted_name | aliased_import)
+    for (const child of importNode.namedChildren) {
+      if (child.type === 'module_name') continue;
+      if (child.type === 'wildcard_import') continue;
+      if (child.type === 'dotted_name' || child.type === 'identifier') {
+        names.push(child.text);
+      } else if (child.type === 'aliased_import') {
+        // from X import foo as bar — use original name 'foo'
+        const nameNode = child.childForFieldName?.('name') || child.namedChildren?.[0];
+        if (nameNode) names.push(nameNode.text);
+      }
+    }
+    return names;
+  }
+
+  if (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) {
+    // import_statement > import_clause > named_imports > import_specifier*
+    const importClause = importNode.namedChildren?.find((c: any) => c.type === 'import_clause');
+    const namedImports = importClause?.namedChildren?.find((c: any) => c.type === 'named_imports');
+    if (namedImports) {
+      for (const spec of namedImports.namedChildren) {
+        if (spec.type === 'import_specifier') {
+          const nameNode = spec.childForFieldName?.('name');
+          if (nameNode) names.push(nameNode.text);
+        }
+      }
+    }
+    return names;
+  }
+
+  return names;
+};
 
 /** Walk up AST to find enclosing function, return its generateId or null for top-level */
 const findEnclosingFunctionId = (node: any, filePath: string): string | null => {
@@ -740,10 +782,15 @@ const processFileGroup = (
         const rawImportPath = language === SupportedLanguages.Kotlin
           ? appendKotlinWildcard(captureMap['import.source'].text.replace(/['"<>]/g, ''), captureMap['import'])
           : captureMap['import.source'].text.replace(/['"<>]/g, '');
+
+        // Extract imported symbol names from the AST node
+        const symbolNames = extractImportedSymbolNames(captureMap['import'], language);
+
         result.imports.push({
           filePath: file.path,
           rawImportPath,
           language: language,
+          symbolNames: symbolNames.length > 0 ? symbolNames : undefined,
         });
         continue;
       }

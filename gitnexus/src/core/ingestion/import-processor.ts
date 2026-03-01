@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
+import { SymbolTable } from './symbol-table.js';
 import Parser from 'tree-sitter';
 import { loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
@@ -728,6 +729,7 @@ export const processImports = async (
   onProgress?: (current: number, total: number) => void,
   repoRoot?: string,
   allPaths?: string[],
+  symbolTable?: SymbolTable,
 ) => {
   // Use allPaths (full repo) when available for cross-chunk resolution, else fall back to chunk files
   const allFileList = allPaths ?? files.map(f => f.path);
@@ -771,6 +773,57 @@ export const processImports = async (
       importMap.set(filePath, new Set());
     }
     importMap.get(filePath)!.add(resolvedPath);
+  };
+
+  // Helper: add symbol-level IMPORTS edges for named imports
+  const addSymbolImportEdges = (filePath: string, resolvedPath: string, symbolNames?: string[]) => {
+    if (!symbolNames || !symbolTable) return;
+    const sourceId = generateId('File', filePath);
+    for (const name of symbolNames) {
+      const targetNodeId = symbolTable.lookupExact(resolvedPath, name);
+      if (!targetNodeId) continue;
+      const relId = generateId('IMPORTS', `${filePath}:${name}->${resolvedPath}`);
+      graph.addRelationship({
+        id: relId,
+        sourceId,
+        targetId: targetNodeId,
+        type: 'IMPORTS',
+        confidence: 1.0,
+        reason: '',
+      });
+    }
+  };
+
+  // Helper: extract imported symbol names from AST node (for sequential path)
+  const extractSymbolNames = (importNode: any, language: string): string[] => {
+    const names: string[] = [];
+    if (language === SupportedLanguages.Python) {
+      for (const child of importNode.namedChildren) {
+        if (child.type === 'module_name') continue;
+        if (child.type === 'wildcard_import') continue;
+        if (child.type === 'dotted_name' || child.type === 'identifier') {
+          names.push(child.text);
+        } else if (child.type === 'aliased_import') {
+          const nameNode = child.childForFieldName?.('name') || child.namedChildren?.[0];
+          if (nameNode) names.push(nameNode.text);
+        }
+      }
+      return names;
+    }
+    if (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) {
+      const importClause = importNode.namedChildren?.find((c: any) => c.type === 'import_clause');
+      const namedImports = importClause?.namedChildren?.find((c: any) => c.type === 'named_imports');
+      if (namedImports) {
+        for (const spec of namedImports.namedChildren) {
+          if (spec.type === 'import_specifier') {
+            const nameNode = spec.childForFieldName?.('name');
+            if (nameNode) names.push(nameNode.text);
+          }
+        }
+      }
+      return names;
+    }
+    return names;
   };
 
   for (let i = 0; i < files.length; i++) {
@@ -843,6 +896,9 @@ export const processImports = async (
           ? appendKotlinWildcard(sourceNode.text.replace(/['"<>]/g, ''), captureMap['import'])
           : sourceNode.text.replace(/['"<>]/g, '');
         totalImportsFound++;
+
+        // Extract imported symbol names for symbol-level edges
+        const symbolNames = extractSymbolNames(captureMap['import'], language);
 
         // ---- JVM languages (Java + Kotlin): handle wildcards and member imports ----
         if (language === SupportedLanguages.Java || language === SupportedLanguages.Kotlin) {
@@ -932,6 +988,7 @@ export const processImports = async (
 
         if (resolvedPath) {
           addImportEdge(file.path, resolvedPath);
+          addSymbolImportEdges(file.path, resolvedPath, symbolNames);
         }
       }
     });
@@ -956,6 +1013,7 @@ export const processImportsFromExtracted = async (
   onProgress?: (current: number, total: number) => void,
   repoRoot?: string,
   prebuiltCtx?: ImportResolutionContext,
+  symbolTable?: SymbolTable,
 ) => {
   const ctx = prebuiltCtx ?? buildImportResolutionContext(files.map(f => f.path));
   const { allFilePaths, allFileList, normalizedFileList, suffixIndex: index, resolveCache } = ctx;
@@ -989,6 +1047,25 @@ export const processImportsFromExtracted = async (
       importMap.set(filePath, new Set());
     }
     importMap.get(filePath)!.add(resolvedPath);
+  };
+
+  // Helper: add symbol-level IMPORTS edges for named imports
+  const addSymbolImportEdges = (filePath: string, resolvedPath: string, symbolNames?: string[]) => {
+    if (!symbolNames || !symbolTable) return;
+    const sourceId = generateId('File', filePath);
+    for (const name of symbolNames) {
+      const targetNodeId = symbolTable.lookupExact(resolvedPath, name);
+      if (!targetNodeId) continue;
+      const relId = generateId('IMPORTS', `${filePath}:${name}->${resolvedPath}`);
+      graph.addRelationship({
+        id: relId,
+        sourceId,
+        targetId: targetNodeId,
+        type: 'IMPORTS',
+        confidence: 1.0,
+        reason: '',
+      });
+    }
   };
 
   // Group by file for progress reporting (users see file count, not import count)
@@ -1027,7 +1104,7 @@ export const processImportsFromExtracted = async (
       await yieldToEventLoop();
     }
 
-    for (const { rawImportPath, language } of fileImports) {
+    for (const { rawImportPath, language, symbolNames } of fileImports) {
       totalImportsFound++;
 
       // Check resolve cache first
@@ -1120,6 +1197,7 @@ export const processImportsFromExtracted = async (
 
       if (resolvedPath) {
         addImportEdge(filePath, resolvedPath);
+        addSymbolImportEdges(filePath, resolvedPath, symbolNames);
       }
     }
   }
