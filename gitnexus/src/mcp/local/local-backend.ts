@@ -346,7 +346,7 @@ export class LocalBackend {
     for (let i = 0; i < bm25Results.length; i++) {
       const result = bm25Results[i];
       const key = result.nodeId || result.filePath;
-      const rrfScore = 1 / (60 + i);
+      const rrfScore = 1 / (60 + i + 1);  // i+1 because rank starts at 1
       const existing = scoreMap.get(key);
       if (existing) {
         existing.score += rrfScore;
@@ -358,7 +358,7 @@ export class LocalBackend {
     for (let i = 0; i < semanticResults.length; i++) {
       const result = semanticResults[i];
       const key = result.nodeId || result.filePath;
-      const rrfScore = 1 / (60 + i);
+      const rrfScore = 1 / (60 + i + 1);  // i+1 because rank starts at 1
       const existing = scoreMap.get(key);
       if (existing) {
         existing.score += rrfScore;
