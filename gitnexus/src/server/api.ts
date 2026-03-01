@@ -187,12 +187,20 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     }
   });
 
+  // Reject Cypher queries that attempt to mutate the graph
+  const WRITE_PATTERN = /\b(CREATE|DELETE|SET|REMOVE|MERGE|DROP|ALTER|DETACH|COPY|CALL)\b/i;
+
   // Execute Cypher query
   app.post('/api/query', async (req, res) => {
     try {
       const cypher = req.body.cypher as string;
       if (!cypher) {
         res.status(400).json({ error: 'Missing "cypher" in request body' });
+        return;
+      }
+
+      if (WRITE_PATTERN.test(cypher)) {
+        res.status(403).json({ error: 'Write operations are not allowed. Only read-only MATCH/RETURN queries are permitted.' });
         return;
       }
 

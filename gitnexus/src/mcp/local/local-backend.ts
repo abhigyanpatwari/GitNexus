@@ -652,8 +652,15 @@ export class LocalBackend {
     return this.cypher(repo, { query });
   }
 
+  /** Reject Cypher queries that attempt to mutate the graph. */
+  private static readonly WRITE_PATTERN = /\b(CREATE|DELETE|SET|REMOVE|MERGE|DROP|ALTER|DETACH|COPY|CALL)\b/i;
+
   private async cypher(repo: RepoHandle, params: { query: string }): Promise<any> {
     await this.ensureInitialized(repo.id);
+
+    if (LocalBackend.WRITE_PATTERN.test(params.query)) {
+      return { error: 'Write operations are not allowed. Only read-only MATCH/RETURN queries are permitted.' };
+    }
 
     if (!isKuzuReady(repo.id)) {
       return { error: 'KuzuDB not ready. Index may be corrupted.' };
