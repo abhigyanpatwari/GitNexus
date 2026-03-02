@@ -10,6 +10,7 @@ import {
   DEFAULT_LLM_SETTINGS, 
   LLMProvider,
   OpenAIConfig,
+  NovitaConfig,
   AzureOpenAIConfig,
   GeminiConfig,
   AnthropicConfig,
@@ -39,6 +40,10 @@ export const loadSettings = (): LLMSettings => {
       openai: {
         ...DEFAULT_LLM_SETTINGS.openai,
         ...parsed.openai,
+      },
+      novita: {
+        ...DEFAULT_LLM_SETTINGS.novita,
+        ...parsed.novita,
       },
       azureOpenAI: {
         ...DEFAULT_LLM_SETTINGS.azureOpenAI,
@@ -85,10 +90,12 @@ export const updateProviderSettings = <T extends LLMProvider>(
   provider: T,
   updates: Partial<
     T extends 'openai' ? Partial<Omit<OpenAIConfig, 'provider'>> :
+    T extends 'novita' ? Partial<Omit<NovitaConfig, 'provider'>> :
     T extends 'azure-openai' ? Partial<Omit<AzureOpenAIConfig, 'provider'>> :
     T extends 'gemini' ? Partial<Omit<GeminiConfig, 'provider'>> :
     T extends 'anthropic' ? Partial<Omit<AnthropicConfig, 'provider'>> :
     T extends 'ollama' ? Partial<Omit<OllamaConfig, 'provider'>> :
+    T extends 'openrouter' ? Partial<Omit<OpenRouterConfig, 'provider'>> :
     never
   >
 ): LLMSettings => {
@@ -102,6 +109,17 @@ export const updateProviderSettings = <T extends LLMProvider>(
         openai: {
           ...(current.openai ?? {}),
           ...(updates as Partial<Omit<OpenAIConfig, 'provider'>>),
+        },
+      };
+      saveSettings(updated);
+      return updated;
+    }
+    case 'novita': {
+      const updated: LLMSettings = {
+        ...current,
+        novita: {
+          ...(current.novita ?? {}),
+          ...(updates as Partial<Omit<NovitaConfig, 'provider'>>),
         },
       };
       saveSettings(updated);
@@ -199,6 +217,18 @@ export const getActiveProviderConfig = (): ProviderConfig | null => {
         provider: 'openai',
         ...settings.openai,
       } as OpenAIConfig;
+    case 'novita':
+      if (!settings.novita?.apiKey || settings.novita.apiKey.trim() === '') {
+        return null;
+      }
+      return {
+        provider: 'novita',
+        apiKey: settings.novita.apiKey,
+        model: settings.novita.model || 'meta-llama/llama-3.1-8b-instruct',
+        baseUrl: settings.novita.baseUrl || 'https://api.novita.ai/openai',
+        temperature: settings.novita.temperature,
+        maxTokens: settings.novita.maxTokens,
+      } as NovitaConfig;
       
     case 'azure-openai':
       if (!settings.azureOpenAI?.apiKey || !settings.azureOpenAI?.endpoint) {
@@ -272,6 +302,8 @@ export const getProviderDisplayName = (provider: LLMProvider): string => {
   switch (provider) {
     case 'openai':
       return 'OpenAI';
+    case 'novita':
+      return 'Novita AI';
     case 'azure-openai':
       return 'Azure OpenAI';
     case 'gemini':
@@ -294,6 +326,8 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
   switch (provider) {
     case 'openai':
       return ['gpt-4.5-preview', 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo'];
+    case 'novita':
+      return ['meta-llama/llama-3.1-8b-instruct', 'deepseek/deepseek-v3', 'qwen/qwen2.5-72b-instruct'];
     case 'azure-openai':
       // Azure models depend on deployment, so we show common ones
       return ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-35-turbo'];
@@ -325,4 +359,3 @@ export const fetchOpenRouterModels = async (): Promise<Array<{ id: string; name:
     return [];
   }
 };
-

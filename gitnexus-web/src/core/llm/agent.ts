@@ -16,6 +16,7 @@ import { createGraphRAGTools } from './tools';
 import type { 
   ProviderConfig, 
   OpenAIConfig,
+  NovitaConfig,
   AzureOpenAIConfig, 
   GeminiConfig,
   AnthropicConfig,
@@ -141,6 +142,26 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
         configuration: {
           apiKey: openaiConfig.apiKey,
           ...(openaiConfig.baseUrl ? { baseURL: openaiConfig.baseUrl } : {}),
+        },
+        streaming: true,
+      });
+    }
+
+    case 'novita': {
+      const novitaConfig = config as NovitaConfig;
+
+      if (!novitaConfig.apiKey || novitaConfig.apiKey.trim() === '') {
+        throw new Error('Novita API key is required but was not provided');
+      }
+
+      return new ChatOpenAI({
+        apiKey: novitaConfig.apiKey,
+        modelName: novitaConfig.model,
+        temperature: novitaConfig.temperature ?? 0.1,
+        maxTokens: novitaConfig.maxTokens,
+        configuration: {
+          apiKey: novitaConfig.apiKey,
+          baseURL: novitaConfig.baseUrl ?? 'https://api.novita.ai/openai',
         },
         streaming: true,
       });
@@ -543,4 +564,3 @@ export const invokeAgent = async (
   const lastMessage = result.messages[result.messages.length - 1];
   return lastMessage?.content?.toString() ?? 'No response generated.';
 };
-

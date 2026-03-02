@@ -8,7 +8,7 @@
 /**
  * Supported LLM providers
  */
-export type LLMProvider = 'openai' | 'azure-openai' | 'gemini' | 'anthropic' | 'ollama' | 'openrouter';
+export type LLMProvider = 'openai' | 'novita' | 'azure-openai' | 'gemini' | 'anthropic' | 'ollama' | 'openrouter';
 
 /**
  * Base configuration shared by all providers
@@ -28,6 +28,16 @@ export interface OpenAIConfig extends BaseProviderConfig {
   apiKey: string;
   model: string;  // e.g., 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'
   baseUrl?: string;  // optional, for custom endpoints or proxies
+}
+
+/**
+ * Novita configuration (OpenAI-compatible endpoint)
+ */
+export interface NovitaConfig extends BaseProviderConfig {
+  provider: 'novita';
+  apiKey: string;
+  model: string;
+  baseUrl?: string;  // defaults to https://api.novita.ai/openai
 }
 
 /**
@@ -81,7 +91,7 @@ export interface OpenRouterConfig extends BaseProviderConfig {
 /**
  * Union type for all provider configurations
  */
-export type ProviderConfig = OpenAIConfig | AzureOpenAIConfig | GeminiConfig | AnthropicConfig | OllamaConfig | OpenRouterConfig;
+export type ProviderConfig = OpenAIConfig | NovitaConfig | AzureOpenAIConfig | GeminiConfig | AnthropicConfig | OllamaConfig | OpenRouterConfig;
 
 /**
  * Stored settings (what goes to localStorage)
@@ -93,6 +103,7 @@ export interface LLMSettings {
    * We validate required fields at runtime before creating a ProviderConfig.
    */
   openai?: Partial<Omit<OpenAIConfig, 'provider'>>;
+  novita?: Partial<Omit<NovitaConfig, 'provider'>>;
   azureOpenAI?: Partial<Omit<AzureOpenAIConfig, 'provider'>>;
   gemini?: Partial<Omit<GeminiConfig, 'provider'>>;
   anthropic?: Partial<Omit<AnthropicConfig, 'provider'>>;
@@ -117,6 +128,12 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
   openai: {
     apiKey: '',
     model: 'gpt-4o',
+    temperature: 0.1,
+  },
+  novita: {
+    apiKey: '',
+    model: 'meta-llama/llama-3.1-8b-instruct',
+    baseUrl: 'https://api.novita.ai/openai',
     temperature: 0.1,
   },
   gemini: {
@@ -347,4 +364,3 @@ NOTES:
 - For vector search, join CodeEmbedding.nodeId to the appropriate table's id
 - Use LIMIT to avoid returning too many results
 `;
-
