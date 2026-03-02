@@ -281,7 +281,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
 
   if (!isOpen) return null;
 
-  const providers: LLMProvider[] = ['openai', 'gemini', 'anthropic', 'azure-openai', 'ollama', 'openrouter'];
+  const providers: LLMProvider[] = ['openai', 'novita', 'gemini', 'anthropic', 'azure-openai', 'ollama', 'openrouter'];
 
 
   return (
@@ -366,7 +366,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
                     w-8 h-8 rounded-lg flex items-center justify-center text-lg
                     ${settings.activeProvider === provider ? 'bg-accent/20' : 'bg-surface'}
                   `}>
-                    {provider === 'openai' ? '🤖' : provider === 'gemini' ? '💎' : provider === 'anthropic' ? '🧠' : provider === 'ollama' ? '🦙' : provider === 'openrouter' ? '🌐' : '☁️'}
+                    {provider === 'openai' ? '🤖' : provider === 'novita' ? '🚀' : provider === 'gemini' ? '💎' : provider === 'anthropic' ? '🧠' : provider === 'ollama' ? '🦙' : provider === 'openrouter' ? '🌐' : '☁️'}
                   </div>
                   <span className="font-medium">{getProviderDisplayName(provider)}</span>
                 </button>
@@ -445,6 +445,71 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
                 />
                 <p className="text-xs text-text-muted">
                   Leave empty to use the default OpenAI API. Set a custom URL for proxies or compatible APIs.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Novita Settings */}
+          {settings.activeProvider === 'novita' && (
+            <div className="space-y-4 animate-fade-in">
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-text-secondary">
+                  <Key className="w-4 h-4" />
+                  API Key
+                </label>
+                <div className="relative">
+                  <input
+                    type={showApiKey['novita'] ? 'text' : 'password'}
+                    value={settings.novita?.apiKey ?? ''}
+                    onChange={e => setSettings(prev => ({
+                      ...prev,
+                      novita: { ...prev.novita!, apiKey: e.target.value }
+                    }))}
+                    placeholder="Enter your Novita API key"
+                    className="w-full px-4 py-3 pr-12 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleApiKeyVisibility('novita')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary transition-colors"
+                  >
+                    {showApiKey['novita'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-secondary">Model</label>
+                <input
+                  type="text"
+                  value={settings.novita?.model ?? 'meta-llama/llama-3.1-8b-instruct'}
+                  onChange={e => setSettings(prev => ({
+                    ...prev,
+                    novita: { ...prev.novita!, model: e.target.value }
+                  }))}
+                  placeholder="e.g., deepseek/deepseek-v3, qwen/qwen2.5-72b-instruct"
+                  className="w-full px-4 py-3 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all font-mono text-sm"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-text-secondary">
+                  <Server className="w-4 h-4" />
+                  Base URL
+                </label>
+                <input
+                  type="url"
+                  value={settings.novita?.baseUrl ?? 'https://api.novita.ai/openai'}
+                  onChange={e => setSettings(prev => ({
+                    ...prev,
+                    novita: { ...prev.novita!, baseUrl: e.target.value }
+                  }))}
+                  placeholder="https://api.novita.ai/openai"
+                  className="w-full px-4 py-3 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all"
+                />
+                <p className="text-xs text-text-muted">
+                  Novita OpenAI-compatible endpoint default: <code className="px-1 py-0.5 bg-elevated rounded">https://api.novita.ai/openai</code>
                 </p>
               </div>
             </div>
@@ -865,4 +930,3 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
     </div>
   );
 };
-
