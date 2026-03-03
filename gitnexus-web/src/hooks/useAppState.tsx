@@ -116,6 +116,8 @@ interface AppState {
   // Multi-repo switching
   serverBaseUrl: string | null;
   setServerBaseUrl: (url: string | null) => void;
+  currentRepoName: string | null;
+  setCurrentRepoName: (name: string | null) => void;
   availableRepos: RepoSummary[];
   setAvailableRepos: (repos: RepoSummary[]) => void;
   switchRepo: (repoName: string) => Promise<void>;
@@ -155,7 +157,7 @@ interface AppState {
 
   // LLM methods
   refreshLLMSettings: () => void;
-  initializeAgent: (overrideProjectName?: string) => Promise<void>;
+  initializeAgent: (overrideProjectName?: string, overrideRepoName?: string) => Promise<void>;
   sendChatMessage: (message: string) => Promise<void>;
   stopChatResponse: () => void;
   clearChat: () => void;
@@ -281,6 +283,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
   // Multi-repo switching
   const [serverBaseUrl, setServerBaseUrl] = useState<string | null>(null);
+  const [currentRepoName, setCurrentRepoName] = useState<string | null>(null);
   const [availableRepos, setAvailableRepos] = useState<RepoSummary[]>([]);
 
   // Embedding state
@@ -467,12 +470,43 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const runQuery = useCallback(async (cypher: string): Promise<any[]> => {
+    // Server mode: use HTTP API
+    if (serverBaseUrl) {
+      try {
+        const body: any = { cypher };
+        if (currentRepoName) {
+          body.repo = currentRepoName;
+        }
+        const response = await fetch(`${serverBaseUrl}/query`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error || `Server returned ${response.status}`);
+        }
+        const data = await response.json();
+        return data.result ?? data;
+      } catch (err) {
+        console.error('Server query failed:', err);
+        throw err;
+      }
+    }
+    
+    // Local mode: use worker
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
     return api.runQuery(cypher);
-  }, []);
+  }, [serverBaseUrl, currentRepoName]);
 
   const isDatabaseReady = useCallback(async (): Promise<boolean> => {
+    // Server mode: always ready if connected
+    if (serverBaseUrl) {
+      return true;
+    }
+    
+    // Local mode: check worker
     const api = apiRef.current;
     if (!api) return false;
     try {
@@ -480,7 +514,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     } catch {
       return false;
     }
-  }, []);
+  }, [serverBaseUrl]);
 
   // Embedding methods
   const startEmbeddings = useCallback(async (forceDevice?: 'webgpu' | 'wasm'): Promise<void> => {
@@ -565,7 +599,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setLLMSettings(loadSettings());
   }, []);
 
-  const initializeAgent = useCallback(async (overrideProjectName?: string): Promise<void> => {
+  const initializeAgent = useCallback(async (overrideProjectName?: string, overrideRepoName?: string): Promise<void> => {
     const api = apiRef.current;
     if (!api) {
       setAgentError('Worker not initialized');
@@ -584,7 +618,25 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     try {
       // Use override if provided (for fresh loads), fallback to state (for re-init)
       const effectiveProjectName = overrideProjectName || projectName || 'project';
-      const result = await api.initializeAgent(config, effectiveProjectName);
+      const effectiveRepoName = overrideRepoName !== undefined ? overrideRepoName : currentRepoName;
+      
+      let result;
+      // Server mode: use backend agent
+      if (serverBaseUrl) {
+        // Convert fileContents Map to entries array for Comlink transfer
+        const fileContentsEntries = Array.from(fileContents.entries());
+        result = await api.initializeBackendAgent(
+          config,
+          serverBaseUrl,
+          effectiveRepoName || '',
+          fileContentsEntries,
+          effectiveProjectName
+        );
+      } else {
+        // Local mode: use local agent
+        result = await api.initializeAgent(config, effectiveProjectName);
+      }
+      
       if (result.success) {
         setIsAgentReady(true);
         setAgentError(null);
@@ -602,7 +654,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     } finally {
       setIsAgentInitializing(false);
     }
-  }, [projectName]);
+  }, [projectName, serverBaseUrl, currentRepoName, fileContents]);
 
   const sendChatMessage = useCallback(async (message: string): Promise<void> => {
     const api = apiRef.current;
@@ -1007,6 +1059,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       const repoPath = result.repoInfo.repoPath;
       const pName = result.repoInfo.name || repoPath.split('/').pop() || 'server-project';
       setProjectName(pName);
+      setCurrentRepoName(repoName || null);
 
       const graph = createKnowledgeGraph();
       for (const node of result.nodes) graph.addNode(node);
@@ -1019,7 +1072,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
       setViewMode('exploring');
 
-      if (getActiveProviderConfig()) initializeAgent(pName);
+      if (getActiveProviderConfig()) initializeAgent(pName, repoName);
 
       startEmbeddings().catch((err) => {
         if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
@@ -1135,6 +1188,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     // Multi-repo switching
     serverBaseUrl,
     setServerBaseUrl,
+    currentRepoName,
+    setCurrentRepoName,
     availableRepos,
     setAvailableRepos,
     switchRepo,

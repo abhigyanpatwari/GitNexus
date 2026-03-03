@@ -37,6 +37,8 @@ const AppContent = () => {
     isCodePanelOpen,
     serverBaseUrl,
     setServerBaseUrl,
+    currentRepoName,
+    setCurrentRepoName,
     availableRepos,
     setAvailableRepos,
     switchRepo,
@@ -132,11 +134,12 @@ const AppContent = () => {
     }
   }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles, startEmbeddings, initializeAgent]);
 
-  const handleServerConnect = useCallback((result: ConnectToServerResult) => {
+  const handleServerConnect = useCallback((result: ConnectToServerResult, repoName?: string) => {
     // Extract project name from repoPath
     const repoPath = result.repoInfo.repoPath;
-    const projectName = repoPath.split('/').pop() || 'server-project';
+    const projectName = result.repoInfo.name || repoPath.split('/').pop() || 'server-project';
     setProjectName(projectName);
+    setCurrentRepoName(repoName || null);
 
     // Build KnowledgeGraph from server data (bypasses WASM pipeline entirely)
     const graph = createKnowledgeGraph();
@@ -171,7 +174,7 @@ const AppContent = () => {
         console.warn('Embeddings auto-start failed:', err);
       }
     });
-  }, [setViewMode, setGraph, setFileContents, setProjectName, initializeAgent, startEmbeddings]);
+  }, [setViewMode, setGraph, setFileContents, setProjectName, setCurrentRepoName, initializeAgent, startEmbeddings]);
 
   // Auto-connect when ?server query param is present (bookmarkable shortcut)
   const autoConnectRan = useRef(false);

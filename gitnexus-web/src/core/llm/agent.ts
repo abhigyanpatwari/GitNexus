@@ -327,7 +327,8 @@ export async function* streamAgentResponse(
       {
         streamMode: ['values', 'messages'] as any,
         // Allow longer tool/reasoning loops (more Cursor-like persistence)
-        recursionLimit: 50,
+        // Increased from 50 to 200 to handle complex multi-step reasoning
+        recursionLimit: 200,
       } as any
     );
     
