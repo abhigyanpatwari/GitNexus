@@ -221,6 +221,18 @@ export interface AgentStep {
 }
 
 /**
+ * Chat conversation session for history management
+ */
+export interface ChatSession {
+  id: string;
+  name: string;
+  repoName?: string;  // Associated repository name
+  createdAt: number;
+  updatedAt: number;
+  messages: ChatMessage[];
+}
+
+/**
  * Graph schema information for LLM context
  */
 export const GRAPH_SCHEMA_DESCRIPTION = `

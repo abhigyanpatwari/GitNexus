@@ -12,6 +12,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
+import os from 'os';
 import { loadMeta, listRegisteredRepos } from '../storage/repo-manager.js';
 import { executeQuery, closeKuzu, withKuzuDb } from '../core/kuzu/kuzu-adapter.js';
 import { NODE_TABLES } from '../core/kuzu/schema.js';
@@ -334,6 +335,148 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       res.json(result);
     } catch (err: any) {
       res.status(statusFromError(err)).json({ error: err.message || 'Failed to query cluster detail' });
+    }
+  });
+
+  // ── Chat Session Management ──────────────────────────────────────────────
+
+  // Helper: get sessions directory path
+  const getSessionsDir = () => {
+    const homeDir = os.homedir();
+    return path.join(homeDir, '.gitnexus', 'sessions');
+  };
+
+  // Helper: get sessions file path for a specific repo
+  const getSessionsFilePath = (repoName?: string) => {
+    const sessionsDir = getSessionsDir();
+    // If no repo specified, use 'global' as default
+    const safeRepoName = repoName || 'global';
+    // Sanitize repo name to be filesystem-safe
+    const safeFileName = safeRepoName.replace(/[^a-zA-Z0-9_-]/g, '_');
+    return path.join(sessionsDir, `${safeFileName}.json`);
+  };
+
+  // Helper: ensure sessions directory exists
+  const ensureSessionsDir = async () => {
+    await fs.mkdir(getSessionsDir(), { recursive: true });
+  };
+
+  // Helper: read sessions from a specific repo file
+  const readSessions = async (repoName?: string) => {
+    try {
+      const filePath = getSessionsFilePath(repoName);
+      const data = await fs.readFile(filePath, 'utf-8');
+      const sessions = JSON.parse(data);
+      return Array.isArray(sessions) ? sessions : [];
+    } catch (err: any) {
+      if (err.code === 'ENOENT') return [];
+      throw err;
+    }
+  };
+
+  // Helper: write sessions to a specific repo file
+  const writeSessions = async (sessions: any[], repoName?: string) => {
+    await ensureSessionsDir();
+    const filePath = getSessionsFilePath(repoName);
+    await fs.writeFile(filePath, JSON.stringify(sessions, null, 2), 'utf-8');
+  };
+
+  // Helper: get repo name from request query or body
+  const getRepoFromRequest = (req: express.Request): string | undefined => {
+    const fromQuery = typeof req.query.repo === 'string' ? req.query.repo : undefined;
+    if (fromQuery) return fromQuery;
+    if (req.body && typeof req.body === 'object' && typeof req.body.repoName === 'string') {
+      return req.body.repoName;
+    }
+    if (req.body && typeof req.body === 'object' && typeof req.body.repo === 'string') {
+      return req.body.repo;
+    }
+    return undefined;
+  };
+
+  // Get all chat sessions (optionally filtered by repo)
+  app.get('/api/sessions', async (req, res) => {
+    try {
+      const repoName = getRepoFromRequest(req);
+      const sessions = await readSessions(repoName);
+      res.json(sessions);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to load sessions' });
+    }
+  });
+
+  // Get a specific session by ID (optionally from a specific repo)
+  app.get('/api/sessions/:id', async (req, res) => {
+    try {
+      const repoName = getRepoFromRequest(req);
+      const sessions = await readSessions(repoName);
+      const session = sessions.find((s: any) => s.id === req.params.id);
+      if (!session) {
+        res.status(404).json({ error: 'Session not found' });
+        return;
+      }
+      res.json(session);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to load session' });
+    }
+  });
+
+  // Create or update a session
+  app.post('/api/sessions', async (req, res) => {
+    try {
+      const session = req.body;
+      if (!session || !session.id) {
+        res.status(400).json({ error: 'Invalid session data' });
+        return;
+      }
+
+      const repoName = session.repoName;
+      const sessions = await readSessions(repoName);
+      const index = sessions.findIndex((s: any) => s.id === session.id);
+      
+      if (index >= 0) {
+        // Update existing session
+        sessions[index] = { ...session, updatedAt: Date.now() };
+      } else {
+        // Add new session
+        sessions.push({ ...session, updatedAt: Date.now() });
+      }
+
+      // No limit - store all sessions per repo
+      await writeSessions(sessions, repoName);
+      res.json(session);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to save session' });
+    }
+  });
+
+  // Delete a session
+  app.delete('/api/sessions/:id', async (req, res) => {
+    try {
+      const repoName = getRepoFromRequest(req);
+      const sessions = await readSessions(repoName);
+      const filtered = sessions.filter((s: any) => s.id !== req.params.id);
+      
+      if (filtered.length === sessions.length) {
+        res.status(404).json({ error: 'Session not found' });
+        return;
+      }
+      
+      await writeSessions(filtered, repoName);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to delete session' });
+    }
+  });
+
+  // Clear all sessions (optionally for a specific repo)
+  app.delete('/api/sessions', async (req, res) => {
+    try {
+      const repoName = getRepoFromRequest(req);
+      await writeSessions([], repoName);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to clear sessions' });
     }
   });
 

@@ -1,14 +1,20 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Send, Square, Sparkles, User,
-  PanelRightClose, Loader2, AlertTriangle, GitBranch
+  PanelRightClose, Loader2, AlertTriangle, GitBranch,
+  History, Save
 } from 'lucide-react';
 import { useAppState } from '../hooks/useAppState';
 import { ToolCallCard } from './ToolCallCard';
 import { isProviderConfigured } from '../core/llm/settings-service';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ProcessesPanel } from './ProcessesPanel';
-export const RightPanel = () => {
+import { ChatSessionList } from './ChatSessionList';
+interface RightPanelProps {
+  width: number;
+}
+
+export const RightPanel = ({ width }: RightPanelProps) => {
   const {
     isRightPanelOpen,
     setRightPanelOpen,
@@ -25,10 +31,12 @@ export const RightPanel = () => {
     sendChatMessage,
     stopChatResponse,
     clearChat,
+    saveCurrentSession,
+    currentSessionId,
   } = useAppState();
 
   const [chatInput, setChatInput] = useState('');
-  const [activeTab, setActiveTab] = useState<'chat' | 'processes'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'processes' | 'history'>('chat');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -208,7 +216,10 @@ export const RightPanel = () => {
   if (!isRightPanelOpen) return null;
 
   return (
-    <aside className="w-[40%] min-w-[400px] max-w-[600px] flex flex-col bg-deep border-l border-border-subtle animate-slide-in relative z-30 flex-shrink-0">
+    <aside
+      className="flex flex-col bg-deep border-l border-border-subtle animate-slide-in relative z-30 flex-shrink-0"
+      style={{ width: `${width}px` }}
+    >
       {/* Header with Tabs */}
       <div className="flex items-center justify-between px-4 py-2 bg-surface border-b border-border-subtle">
         <div className="flex items-center gap-1">
@@ -238,22 +249,54 @@ export const RightPanel = () => {
               NEW
             </span>
           </button>
+
+          {/* History Tab */}
+          <button
+            onClick={() => setActiveTab('history')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'history'
+              ? 'bg-accent/15 text-accent'
+              : 'text-text-muted hover:text-text-primary hover:bg-hover'
+              }`}
+          >
+            <History className="w-3.5 h-3.5" />
+            <span>History</span>
+          </button>
         </div>
 
-        {/* Close button */}
-        <button
-          onClick={() => setRightPanelOpen(false)}
-          className="p-1.5 text-text-muted hover:text-text-primary hover:bg-hover rounded transition-colors"
-          title="Close Panel"
-        >
-          <PanelRightClose className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          {/* Save button - only show when there are messages and not in a session */}
+          {chatMessages.length > 0 && !currentSessionId && (
+            <button
+              onClick={saveCurrentSession}
+              className="p-1.5 text-text-muted hover:text-accent hover:bg-hover rounded transition-colors"
+              title="Save current session"
+            >
+              <Save className="w-4 h-4" />
+            </button>
+          )}
+
+          {/* Close button */}
+          <button
+            onClick={() => setRightPanelOpen(false)}
+            className="p-1.5 text-text-muted hover:text-text-primary hover:bg-hover rounded transition-colors"
+            title="Close Panel"
+          >
+            <PanelRightClose className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* Processes Tab */}
       {activeTab === 'processes' && (
         <div className="flex-1 flex flex-col overflow-hidden">
           <ProcessesPanel />
+        </div>
+      )}
+
+      {/* History Tab - Session List */}
+      {activeTab === 'history' && (
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <ChatSessionList onSessionSelect={() => setActiveTab('chat')} />
         </div>
       )}
 

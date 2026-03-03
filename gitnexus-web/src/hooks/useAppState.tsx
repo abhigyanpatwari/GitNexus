@@ -7,12 +7,23 @@ import { DEFAULT_VISIBLE_LABELS } from '../lib/constants';
 import type { IngestionWorkerApi } from '../workers/ingestion.worker';
 import type { FileEntry } from '../services/zip';
 import type { EmbeddingProgress, SemanticSearchResult } from '../core/embeddings/types';
-import type { LLMSettings, ProviderConfig, AgentStreamChunk, ChatMessage, ToolCallInfo, MessageStep } from '../core/llm/types';
+import type { LLMSettings, ProviderConfig, AgentStreamChunk, ChatMessage, ToolCallInfo, MessageStep, ChatSession } from '../core/llm/types';
 import { loadSettings, getActiveProviderConfig, saveSettings } from '../core/llm/settings-service';
 import type { AgentMessage } from '../core/llm/agent';
+import { saveSession, loadSession, getAllSessions, deleteSession, getSessionsByRepo } from '../core/llm/chat-session-service';
 import { DEFAULT_VISIBLE_EDGES, type EdgeType } from '../lib/constants';
 import type { RepoSummary, ConnectToServerResult } from '../services/server-connection';
 import { fetchRepos, connectToServer } from '../services/server-connection';
+
+/**
+ * Helper function to get sessions filtered by repo if available
+ */
+async function getFilteredSessions(repoName: string | null): Promise<ChatSession[]> {
+  if (repoName) {
+    return await getSessionsByRepo(repoName);
+  }
+  return await getAllSessions();
+}
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
@@ -74,6 +85,12 @@ interface AppState {
   setRightPanelTab: (tab: RightPanelTab) => void;
   openCodePanel: () => void;
   openChatPanel: () => void;
+
+  // Panel widths (resizable)
+  leftPanelWidth: number;
+  setLeftPanelWidth: (width: number | ((prev: number) => number)) => void;
+  rightPanelWidth: number;
+  setRightPanelWidth: (width: number | ((prev: number) => number)) => void;
 
   // Filters
   visibleLabels: NodeLabel[];
@@ -154,6 +171,8 @@ interface AppState {
   chatMessages: ChatMessage[];
   isChatLoading: boolean;
   currentToolCalls: ToolCallInfo[];
+  currentSessionId: string | null;
+  chatSessions: ChatSession[];
 
   // LLM methods
   refreshLLMSettings: () => void;
@@ -161,6 +180,10 @@ interface AppState {
   sendChatMessage: (message: string) => Promise<void>;
   stopChatResponse: () => void;
   clearChat: () => void;
+  saveCurrentSession: () => void;
+  loadSession: (sessionId: string) => void;
+  deleteSession: (sessionId: string) => void;
+  refreshChatSessions: () => void;
 
   // Code References Panel
   codeReferences: CodeReference[];
@@ -189,6 +212,10 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   // Right Panel
   const [isRightPanelOpen, setRightPanelOpen] = useState(false);
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('code');
+
+  // Panel widths (resizable)
+  const [leftPanelWidth, setLeftPanelWidth] = useState(280); // Default 280px
+  const [rightPanelWidth, setRightPanelWidth] = useState(480); // Default 480px (40% of 1200px)
 
   const openCodePanel = useCallback(() => {
     // Legacy API: used by graph/tree selection.
@@ -301,6 +328,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [currentToolCalls, setCurrentToolCalls] = useState<ToolCallInfo[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
 
   // Code References Panel state
   const [codeReferences, setCodeReferences] = useState<CodeReference[]>([]);
@@ -883,6 +912,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
               if (idx >= 0) {
                 toolCallsForMessage[idx] = {
                   ...toolCallsForMessage[idx],
+                  args: tc.args || toolCallsForMessage[idx].args, // Preserve args from result
                   result: tc.result,
                   status: 'completed'
                 };
@@ -900,6 +930,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                   ...stepsForMessage[stepIdx],
                   toolCall: {
                     ...stepsForMessage[stepIdx].toolCall!,
+                    args: tc.args || stepsForMessage[stepIdx].toolCall!.args, // Preserve args from result
                     result: tc.result,
                     status: 'completed',
                   },
@@ -917,7 +948,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                 }
                 if (targetIdx >= 0) {
                   return prev.map((t, i) => i === targetIdx
-                    ? { ...t, result: tc.result, status: 'completed' }
+                    ? { ...t, args: tc.args || t.args, result: tc.result, status: 'completed' }
                     : t
                   );
                 }
@@ -995,6 +1026,19 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
           case 'done':
             // Finalize the assistant message - just call updateMessage one more time
             updateMessage();
+            // Auto-save session when task completes
+            // Use setTimeout to ensure the final message update is processed first
+            setTimeout(() => {
+              setChatMessages(prev => {
+                if (prev.length > 0) {
+                  saveSession(currentSessionId, prev, currentRepoName || undefined).then(session => {
+                    setCurrentSessionId(session.id);
+                    getFilteredSessions(currentRepoName).then(setChatSessions);
+                  }).catch(err => console.error('Failed to save session:', err));
+                }
+                return prev;
+              });
+            }, 100);
             break;
         }
       });
@@ -1007,7 +1051,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       setIsChatLoading(false);
       setCurrentToolCalls([]);
     }
-  }, [chatMessages, isAgentReady, initializeAgent, resolveFilePath, findFileNodeId, addCodeReference, clearAICodeReferences, clearAIToolHighlights, graph, embeddingStatus]);
+  }, [chatMessages, isAgentReady, initializeAgent, resolveFilePath, findFileNodeId, addCodeReference, clearAICodeReferences, clearAIToolHighlights, graph, embeddingStatus, currentSessionId, currentRepoName]);
 
   const stopChatResponse = useCallback(() => {
     const api = apiRef.current;
@@ -1019,14 +1063,82 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   }, [isChatLoading]);
 
   const clearChat = useCallback(() => {
+    // Save current session before clearing if there are messages
+    if (chatMessages.length > 0) {
+      saveCurrentSession();
+    }
     setChatMessages([]);
     setCurrentToolCalls([]);
     setAgentError(null);
-  }, []);
+    setCurrentSessionId(null);
+  }, [chatMessages]);
+
+  const saveCurrentSession = useCallback(async () => {
+    if (chatMessages.length === 0) return;
+    
+    try {
+      const session = await saveSession(currentSessionId, chatMessages, currentRepoName || undefined);
+      setCurrentSessionId(session.id);
+      const sessions = await getFilteredSessions(currentRepoName);
+      setChatSessions(sessions);
+    } catch (err) {
+      console.error('Failed to save session:', err);
+    }
+  }, [chatMessages, currentSessionId, currentRepoName]);
+
+  const loadChatSession = useCallback(async (sessionId: string) => {
+    try {
+      const session = await loadSession(sessionId);
+      if (session) {
+        // Save current session first if it has messages
+        if (chatMessages.length > 0 && !currentSessionId) {
+          await saveCurrentSession();
+        }
+        setChatMessages(session.messages);
+        setCurrentSessionId(sessionId);
+        setRightPanelTab('chat');
+        setRightPanelOpen(true);
+      }
+    } catch (err) {
+      console.error('Failed to load session:', err);
+    }
+  }, [chatMessages, currentSessionId, saveCurrentSession]);
+
+  const deleteChatSession = useCallback(async (sessionId: string) => {
+    try {
+      await deleteSession(sessionId);
+      const sessions = await getFilteredSessions(currentRepoName);
+      setChatSessions(sessions);
+      if (currentSessionId === sessionId) {
+        setCurrentSessionId(null);
+      }
+    } catch (err) {
+      console.error('Failed to delete session:', err);
+    }
+  }, [currentSessionId, currentRepoName]);
+
+  const refreshChatSessions = useCallback(async () => {
+    try {
+      const sessions = await getFilteredSessions(currentRepoName);
+      setChatSessions(sessions);
+    } catch (err) {
+      console.error('Failed to refresh sessions:', err);
+    }
+  }, [currentRepoName]);
+
+  // Load chat sessions from localStorage on mount
+  useEffect(() => {
+    refreshChatSessions();
+  }, [refreshChatSessions]);
 
   // Switch to a different repo on the connected server
   const switchRepo = useCallback(async (repoName: string) => {
     if (!serverBaseUrl) return;
+
+    // Save current session before switching if there are messages
+    if (chatMessages.length > 0) {
+      saveCurrentSession();
+    }
 
     setProgress({ phase: 'extracting', percent: 0, message: 'Switching repository...', detail: `Loading ${repoName}` });
     setViewMode('loading');
@@ -1071,6 +1183,11 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       setFileContents(fileMap);
 
       setViewMode('exploring');
+
+      // Clear chat and session when switching repos
+      setChatMessages([]);
+      setCurrentSessionId(null);
+      setCurrentToolCalls([]);
 
       if (getActiveProviderConfig()) initializeAgent(pName, repoName);
 
@@ -1159,6 +1276,10 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setRightPanelTab,
     openCodePanel,
     openChatPanel,
+    leftPanelWidth,
+    setLeftPanelWidth,
+    rightPanelWidth,
+    setRightPanelWidth,
     visibleLabels,
     toggleLabelVisibility,
     visibleEdgeTypes,
@@ -1218,12 +1339,18 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     chatMessages,
     isChatLoading,
     currentToolCalls,
+    currentSessionId,
+    chatSessions,
     // LLM methods
     refreshLLMSettings,
     initializeAgent,
     sendChatMessage,
     stopChatResponse,
     clearChat,
+    saveCurrentSession,
+    loadSession: loadChatSession,
+    deleteSession: deleteChatSession,
+    refreshChatSessions,
     // Code References Panel
     codeReferences,
     isCodePanelOpen,

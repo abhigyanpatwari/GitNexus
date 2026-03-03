@@ -99,7 +99,7 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const status = getStatusDisplay(toolCall.status);
   const formattedArgs = formatArgs(toolCall.args);
-
+  
   return (
     <div className={`rounded-lg border ${status.borderColor} ${status.bgColor} overflow-hidden transition-all`}>
       {/* Header - always visible */}
@@ -130,13 +130,13 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
       {/* Expanded content */}
       {isExpanded && (
         <div className="border-t border-border-subtle/50">
-          {/* Arguments/Query */}
+          {/* Parameters/Input - always shown for all tool types */}
           {formattedArgs && (
             <div className="px-3 py-2 border-b border-border-subtle/50">
-              <div className="text-[10px] uppercase tracking-wider text-text-muted mb-1.5">
-                {toolCall.name === 'cypher' ? 'Query' : 'Input'}
+              <div className="text-[10px] uppercase tracking-wider text-accent mb-1.5 flex items-center gap-1.5">
+                <span>Parameters</span>
               </div>
-              <pre className="text-xs text-text-secondary bg-surface/50 rounded p-2 overflow-x-auto whitespace-pre-wrap font-mono">
+              <pre className="text-xs text-text-secondary bg-surface/50 rounded p-2 overflow-x-auto whitespace-pre-wrap font-mono border border-accent/20">
                 {formattedArgs}
               </pre>
             </div>

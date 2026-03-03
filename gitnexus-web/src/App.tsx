@@ -9,6 +9,7 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { StatusBar } from './components/StatusBar';
 import { FileTreePanel } from './components/FileTreePanel';
 import { CodeReferencesPanel } from './components/CodeReferencesPanel';
+import { ResizableDivider } from './components/ResizableDivider';
 import { FileEntry } from './services/zip';
 import { getActiveProviderConfig } from './core/llm/settings-service';
 import { createKnowledgeGraph } from './core/graph/graph';
@@ -42,6 +43,10 @@ const AppContent = () => {
     availableRepos,
     setAvailableRepos,
     switchRepo,
+    leftPanelWidth,
+    setLeftPanelWidth,
+    rightPanelWidth,
+    setRightPanelWidth,
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
@@ -235,6 +240,15 @@ const AppContent = () => {
     graphCanvasRef.current?.focusNode(nodeId);
   }, []);
 
+  // Handle panel resize
+  const handleLeftPanelResize = useCallback((delta: number) => {
+    setLeftPanelWidth(prev => Math.max(200, Math.min(600, prev + delta)));
+  }, [setLeftPanelWidth]);
+
+  const handleRightPanelResize = useCallback((delta: number) => {
+    setRightPanelWidth(prev => Math.max(400, Math.min(800, prev + delta)));
+  }, [setRightPanelWidth]);
+
   // Handle settings saved - refresh and reinitialize agent
   // NOTE: Must be defined BEFORE any conditional returns (React hooks rule)
   const handleSettingsSaved = useCallback(() => {
@@ -276,7 +290,15 @@ const AppContent = () => {
 
       <main className="flex-1 flex min-h-0">
         {/* Left Panel - File Tree */}
-        <FileTreePanel onFocusNode={handleFocusNode} />
+        <FileTreePanel onFocusNode={handleFocusNode} width={leftPanelWidth} />
+
+        {/* Left Divider */}
+        <ResizableDivider
+          onResize={handleLeftPanelResize}
+          minWidth={200}
+          maxWidth={600}
+          side="left"
+        />
 
         {/* Graph area - takes remaining space */}
         <div className="flex-1 relative min-w-0">
@@ -290,8 +312,18 @@ const AppContent = () => {
           )}
         </div>
 
+        {/* Right Divider */}
+        {isRightPanelOpen && (
+          <ResizableDivider
+            onResize={handleRightPanelResize}
+            minWidth={400}
+            maxWidth={800}
+            side="right"
+          />
+        )}
+
         {/* Right Panel - Code & Chat (tabbed) */}
-        {isRightPanelOpen && <RightPanel />}
+        {isRightPanelOpen && <RightPanel width={rightPanelWidth} />}
       </main>
 
       <StatusBar />

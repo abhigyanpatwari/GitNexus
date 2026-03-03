@@ -192,9 +192,10 @@ const getNodeTypeIcon = (label: NodeLabel) => {
 
 interface FileTreePanelProps {
   onFocusNode: (nodeId: string) => void;
+  width: number;
 }
 
-export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
+export const FileTreePanel = ({ onFocusNode, width }: FileTreePanelProps) => {
   const { graph, visibleLabels, toggleLabelVisibility, visibleEdgeTypes, toggleEdgeVisibility, selectedNode, setSelectedNode, openCodePanel, depthFilter, setDepthFilter } = useAppState();
 
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -297,7 +298,10 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
   }
 
   return (
-    <div className="h-full w-64 bg-surface border-r border-border-subtle flex flex-col animate-slide-in">
+    <div
+      className="h-full bg-surface border-r border-border-subtle flex flex-col animate-slide-in"
+      style={{ width: `${width}px` }}
+    >
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-border-subtle">
         <div className="flex items-center gap-1">

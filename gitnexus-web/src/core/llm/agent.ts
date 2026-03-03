@@ -335,6 +335,7 @@ export async function* streamAgentResponse(
     // Track what we've yielded to avoid duplicates
     const yieldedToolCalls = new Set<string>();
     const yieldedToolResults = new Set<string>();
+    const toolCallArgsMap = new Map<string, { name: string; args: Record<string, unknown> }>();
     let lastProcessedMsgCount = formattedMessages.length;
     // Track if all tools are done (for distinguishing reasoning vs final content)
     let allToolsDone = true;
@@ -416,12 +417,32 @@ export async function* streamAgentResponse(
               const toolId = tc.id || `tool-${Date.now()}-${Math.random().toString(36).slice(2)}`;
               if (!yieldedToolCalls.has(toolId)) {
                 yieldedToolCalls.add(toolId);
+                const toolName = tc.name || tc.function?.name || 'unknown';
+                
+                // Try multiple possible locations for args
+                let toolArgs: Record<string, unknown> = {};
+                if (tc.args && Object.keys(tc.args).length > 0) {
+                  toolArgs = tc.args;
+                } else if ((tc as any).input) {
+                  // LangChain might use 'input' field
+                  toolArgs = (tc as any).input;
+                } else if (tc.function?.arguments) {
+                  try {
+                    toolArgs = JSON.parse(tc.function.arguments);
+                  } catch {
+                    toolArgs = {};
+                  }
+                }
+                
+                // Store args for later use when result comes back
+                toolCallArgsMap.set(toolId, { name: toolName, args: toolArgs });
+                
                 yield {
                   type: 'tool_call',
                   toolCall: {
                     id: toolId,
-                    name: tc.name || tc.function?.name || 'unknown',
-                    args: tc.args || (tc.function?.arguments ? JSON.parse(tc.function.arguments) : {}),
+                    name: toolName,
+                    args: toolArgs,
                     status: 'running',
                   },
                 };
@@ -436,12 +457,16 @@ export async function* streamAgentResponse(
           if (toolCallId && !yieldedToolResults.has(toolCallId)) {
             yieldedToolResults.add(toolCallId);
             const result = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+            
+            // Retrieve stored args from the original tool call
+            const storedToolInfo = toolCallArgsMap.get(toolCallId);
+            
             yield {
               type: 'tool_result',
               toolCall: {
                 id: toolCallId,
-                name: msg.name || 'tool',
-                args: {},
+                name: storedToolInfo?.name || msg.name || 'tool',
+                args: storedToolInfo?.args || {},
                 result: result,
                 status: 'completed',
               },
@@ -462,19 +487,30 @@ export async function* streamAgentResponse(
           const msgType = msg._getType?.() || msg.type || 'unknown';
           
           // Catch tool calls from values mode (backup)
-          if ((msgType === 'ai' || msgType === 'AIMessage') && !yieldedToolCalls.size) {
+          if ((msgType === 'ai' || msgType === 'AIMessage')) {
             const toolCalls = msg.tool_calls || [];
+
             for (const tc of toolCalls) {
               const toolId = tc.id || `tool-${Date.now()}`;
+              const toolName = tc.name || 'unknown';
+              const toolArgs = tc.args || {};
+              
+              // Always update the map with values mode data (it has complete args)
+              // This will overwrite any incomplete data from messages mode
+              if (Object.keys(toolArgs).length > 0) {
+                toolCallArgsMap.set(toolId, { name: toolName, args: toolArgs });
+              }
+              
               if (!yieldedToolCalls.has(toolId)) {
                 allToolsDone = false;
                 yieldedToolCalls.add(toolId);
+                
                 yield {
                   type: 'tool_call',
                   toolCall: {
                     id: toolId,
-                    name: tc.name || 'unknown',
-                    args: tc.args || {},
+                    name: toolName,
+                    args: toolArgs,
                     status: 'running',
                   },
                 };
@@ -488,12 +524,16 @@ export async function* streamAgentResponse(
             if (toolCallId && !yieldedToolResults.has(toolCallId)) {
               yieldedToolResults.add(toolCallId);
               const result = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+              
+              // Retrieve stored args from the original tool call
+              const storedToolInfo = toolCallArgsMap.get(toolCallId);
+              
               yield {
                 type: 'tool_result',
                 toolCall: {
                   id: toolCallId,
-                  name: msg.name || 'tool',
-                  args: {},
+                  name: storedToolInfo?.name || msg.name || 'tool',
+                  args: storedToolInfo?.args || {},
                   result: result,
                   status: 'completed',
                 },

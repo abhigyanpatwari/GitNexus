@@ -228,3 +228,65 @@ export const fetchClusterDetail = async (
   await assertOk(response);
   return response.json();
 };
+
+// ── Chat Session Management ────────────────────────────────────────────────
+
+export interface ChatSession {
+  id: string;
+  name: string;
+  repoName?: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: any[];
+}
+
+/**
+ * Fetch all chat sessions from the server.
+ */
+export const fetchAllSessions = async (): Promise<ChatSession[]> => {
+  const response = await fetchWithTimeout(`${backendUrl}/api/sessions`);
+  await assertOk(response);
+  return response.json() as Promise<ChatSession[]>;
+};
+
+/**
+ * Fetch a specific session by ID.
+ */
+export const fetchSession = async (sessionId: string): Promise<ChatSession> => {
+  const response = await fetchWithTimeout(`${backendUrl}/api/sessions/${encodeURIComponent(sessionId)}`);
+  await assertOk(response);
+  return response.json() as Promise<ChatSession>;
+};
+
+/**
+ * Save or update a session on the server.
+ */
+export const saveSessionToServer = async (session: ChatSession): Promise<ChatSession> => {
+  const response = await fetchWithTimeout(`${backendUrl}/api/sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(session),
+  });
+  await assertOk(response);
+  return response.json() as Promise<ChatSession>;
+};
+
+/**
+ * Delete a session from the server.
+ */
+export const deleteSessionFromServer = async (sessionId: string): Promise<void> => {
+  const response = await fetchWithTimeout(`${backendUrl}/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  });
+  await assertOk(response);
+};
+
+/**
+ * Clear all sessions from the server.
+ */
+export const clearAllSessionsFromServer = async (): Promise<void> => {
+  const response = await fetchWithTimeout(`${backendUrl}/api/sessions`, {
+    method: 'DELETE',
+  });
+  await assertOk(response);
+};
