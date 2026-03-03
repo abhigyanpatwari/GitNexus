@@ -67,7 +67,12 @@ export async function fetchRepoInfo(baseUrl: string, repoName?: string): Promise
   const url = repoName ? `${baseUrl}/repo?repo=${encodeURIComponent(repoName)}` : `${baseUrl}/repo`;
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+    let message = `Server returned ${response.status}: ${response.statusText}`;
+    try {
+      const body = await response.json();
+      if (body?.error) message = body.error;
+    } catch { /* ignore parse errors */ }
+    throw new Error(message);
   }
   const data = await response.json();
   // npm gitnexus@1.3.3 returns "path"; git HEAD returns "repoPath"

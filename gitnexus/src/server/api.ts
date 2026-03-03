@@ -156,7 +156,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     try {
       const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
-        res.status(404).json({ error: 'Repository not found. Run: gitnexus analyze' });
+        res.status(404).json({ error: 'No repository indexed. Run `gitnexus analyze` in your project directory first, then restart the server.' });
         return;
       }
       const meta = await loadMeta(entry.storagePath);
