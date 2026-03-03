@@ -303,6 +303,10 @@ export const generateAllCSVs = (
   
   // Generate node CSVs
   const nodeCSVs = new Map<NodeTableName, string>();
+  nodeCSVs.set('Struct', generateCodeElementCSV(nodes, 'Struct', fileContents));
+  nodeCSVs.set('Enum', generateCodeElementCSV(nodes, 'Enum', fileContents));
+  nodeCSVs.set('Macro', generateCodeElementCSV(nodes, 'Macro', fileContents));
+  
   nodeCSVs.set('File', generateFileCSV(nodes, fileContents));
   nodeCSVs.set('Folder', generateFolderCSV(nodes));
   nodeCSVs.set('Function', generateCodeElementCSV(nodes, 'Function', fileContents));

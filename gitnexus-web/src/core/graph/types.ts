@@ -15,7 +15,9 @@ export type NodeLabel =
   | 'Type'
   | 'CodeElement'
   | 'Community'
-  | 'Process';
+  | 'Process'
+  | 'Struct'
+  | 'Macro';
 
 
 export type NodeProperties = {

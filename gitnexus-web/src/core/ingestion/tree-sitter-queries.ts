@@ -227,6 +227,8 @@ export const CPP_QUERIES = `
 (struct_specifier name: (type_identifier) @name) @definition.struct
 (namespace_definition name: (namespace_identifier) @name) @definition.namespace
 (enum_specifier name: (type_identifier) @name) @definition.enum
+(preproc_def name: (identifier) @name) @definition.macro
+(preproc_function_def name: (identifier) @name) @definition.macro
 
 ; Functions & Methods
 (function_definition declarator: (function_declarator declarator: (identifier) @name)) @definition.function

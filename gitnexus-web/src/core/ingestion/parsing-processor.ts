@@ -195,6 +195,8 @@ export const processParsing = async (
       // Namespace/Module (C++, C#, Rust)
       else if (captureMap['definition.namespace']) nodeLabel = 'Namespace';
       else if (captureMap['definition.module']) nodeLabel = 'Module';
+      // Define (C, C++)
+      else if (captureMap['definition.macro']) nodeLabel = 'Macro';
       // Rust-specific
       else if (captureMap['definition.trait']) nodeLabel = 'Trait';
       else if (captureMap['definition.impl']) nodeLabel = 'Impl';
