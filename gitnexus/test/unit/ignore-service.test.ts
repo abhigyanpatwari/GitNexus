@@ -175,6 +175,73 @@ describe('filterRepositoryPathsSync', () => {
     }
   });
 
+  it('treats null ignore options as explicit no override (no env fallback)', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ignore-null-explicit-'));
+    const previousIgnoreFileEnv = process.env.GITNEXUS_IGNORE_FILE;
+    const previousIgnoreProfileEnv = process.env.GITNEXUS_IGNORE_PROFILE;
+    try {
+      execFileSync('git', ['init'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      await fs.writeFile(path.join(tmpDir, '.gitnexusignore.env'), 'tmp-ignore/\n');
+      process.env.GITNEXUS_IGNORE_FILE = '.gitnexusignore.env';
+      process.env.GITNEXUS_IGNORE_PROFILE = 'env-profile';
+
+      const input = [
+        'src/index.ts',
+        'tmp-ignore/value.ts',
+      ];
+
+      const envDriven = filterRepositoryPathsSync(tmpDir, input);
+      expect(envDriven).toEqual(['src/index.ts']);
+
+      const explicitNull = filterRepositoryPathsSync(tmpDir, input, {
+        ignoreFile: null,
+        ignoreProfile: null,
+      });
+      expect(explicitNull).toEqual([
+        'src/index.ts',
+        'tmp-ignore/value.ts',
+      ]);
+    } finally {
+      if (previousIgnoreFileEnv === undefined) delete process.env.GITNEXUS_IGNORE_FILE;
+      else process.env.GITNEXUS_IGNORE_FILE = previousIgnoreFileEnv;
+
+      if (previousIgnoreProfileEnv === undefined) delete process.env.GITNEXUS_IGNORE_PROFILE;
+      else process.env.GITNEXUS_IGNORE_PROFILE = previousIgnoreProfileEnv;
+
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('invalidates cached custom patterns when ignore file contents change', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ignore-cache-invalidate-'));
+    try {
+      execFileSync('git', ['init'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), 'docs/\n');
+
+      const input = [
+        'src/index.ts',
+        'docs/architecture.md',
+        'tests/unit.ts',
+      ];
+
+      const first = filterRepositoryPathsSync(tmpDir, input);
+      expect(first).toEqual([
+        'src/index.ts',
+        'tests/unit.ts',
+      ]);
+
+      await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), 'tests/\n');
+
+      const second = filterRepositoryPathsSync(tmpDir, input);
+      expect(second).toEqual([
+        'src/index.ts',
+        'docs/architecture.md',
+      ]);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps directory-only semantics for custom rules', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ignore-dironly-test-'));
     try {

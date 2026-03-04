@@ -211,20 +211,48 @@ const normalizePath = (value: string): string => (
   value.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+/g, '/')
 );
 
+const resolveIgnoreOverride = (
+  optionValue: string | null | undefined,
+  envValue: string | undefined,
+): string | null => {
+  if (optionValue === null) {
+    return null;
+  }
+
+  if (optionValue === undefined) {
+    const trimmedEnv = envValue?.trim();
+    return trimmedEnv || null;
+  }
+
+  const trimmedOption = optionValue.trim();
+  return trimmedOption || null;
+};
+
 const getProfileIgnoreFiles = (options: RepoIgnoreOptions = {}): string[] => {
   const files = [DEFAULT_REPO_IGNORE_FILE];
 
-  const profile = (options.ignoreProfile ?? process.env.GITNEXUS_IGNORE_PROFILE)?.trim();
+  const profile = resolveIgnoreOverride(options.ignoreProfile, process.env.GITNEXUS_IGNORE_PROFILE);
   if (profile) {
     files.push(`.gitnexusignore.${profile}`);
   }
 
-  const explicit = (options.ignoreFile ?? process.env.GITNEXUS_IGNORE_FILE)?.trim();
+  const explicit = resolveIgnoreOverride(options.ignoreFile, process.env.GITNEXUS_IGNORE_FILE);
   if (explicit) {
     files.push(explicit);
   }
 
   return Array.from(new Set(files));
+};
+
+const getIgnoreFileCacheToken = (repoPath: string, fileName: string): string => {
+  const absolute = path.resolve(repoPath, fileName);
+  const normalizedName = normalizePath(fileName);
+  try {
+    const stats = fs.statSync(absolute);
+    return `${normalizedName}:${stats.size}:${stats.mtimeMs}`;
+  } catch {
+    return `${normalizedName}:missing`;
+  }
 };
 
 const readPatternFile = (repoPath: string, fileName: string): string[] => {
@@ -373,7 +401,8 @@ const matchesPattern = (compiled: CompiledCustomPattern, normalizedPath: string)
 
 const loadCustomPatterns = (repoPath: string, options: RepoIgnoreOptions = {}): CompiledCustomPattern[] => {
   const ignoreFiles = getProfileIgnoreFiles(options);
-  const key = `${path.resolve(repoPath)}::${ignoreFiles.join('|')}`;
+  const fileTokens = ignoreFiles.map((fileName) => getIgnoreFileCacheToken(repoPath, fileName));
+  const key = `${path.resolve(repoPath)}::${fileTokens.join('|')}`;
   const cached = customPatternCache.get(key);
   if (cached) {
     return cached;
