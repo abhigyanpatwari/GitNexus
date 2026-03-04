@@ -238,13 +238,19 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   messages: any[];
+  modelProvider?: string;  // LLM provider used (e.g., 'openai', 'gemini', 'anthropic')
+  modelName?: string;      // Model name used (e.g., 'gpt-4o', 'gemini-2.0-flash')
 }
 
 /**
  * Fetch all chat sessions from the server.
+ * @param repoName - Optional repo name to filter sessions. If not provided, loads from global.json
  */
-export const fetchAllSessions = async (): Promise<ChatSession[]> => {
-  const response = await fetchWithTimeout(`${backendUrl}/api/sessions`);
+export const fetchAllSessions = async (repoName?: string): Promise<ChatSession[]> => {
+  const url = repoName
+    ? `${backendUrl}/api/sessions?repo=${encodeURIComponent(repoName)}`
+    : `${backendUrl}/api/sessions`;
+  const response = await fetchWithTimeout(url);
   await assertOk(response);
   return response.json() as Promise<ChatSession[]>;
 };

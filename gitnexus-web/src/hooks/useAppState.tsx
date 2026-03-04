@@ -22,6 +22,8 @@ async function getFilteredSessions(repoName: string | null): Promise<ChatSession
   if (repoName) {
     return await getSessionsByRepo(repoName);
   }
+  // When no repo is selected, show all sessions from all repo files
+  // This reads from all known repo session files
   return await getAllSessions();
 }
 
@@ -330,6 +332,14 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const [currentToolCalls, setCurrentToolCalls] = useState<ToolCallInfo[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
+  // Refs to always hold the latest values — bypasses React stale-closure issues
+  // in Comlink proxy callbacks and post-stream save logic.
+  const currentSessionIdRef = useRef<string | null>(null);
+  const currentRepoNameRef = useRef<string | null>(null);
+
+  // Keep refs in sync with state
+  useEffect(() => { currentSessionIdRef.current = currentSessionId; }, [currentSessionId]);
+  useEffect(() => { currentRepoNameRef.current = currentRepoName; }, [currentRepoName]);
 
   // Code References Panel state
   const [codeReferences, setCodeReferences] = useState<CodeReference[]>([]);
@@ -744,6 +754,9 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     // Keep toolCalls for backwards compat and currentToolCalls state
     const toolCallsForMessage: ToolCallInfo[] = [];
     let stepCounter = 0;
+    // Track the full message list locally (independent of React state) for session saving.
+    // This avoids stale-closure and async-render-timing issues when saving after stream ends.
+    const localMessages: ChatMessage[] = [...chatMessages, userMessage];
 
     // Helper to update the message with current steps
     const updateMessage = () => {
@@ -754,20 +767,34 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
         .filter(Boolean);
       const content = contentParts.join('\n\n');
 
+      const existingLocal = localMessages.find(m => m.id === assistantMessageId);
+      const newMessage: ChatMessage = {
+        id: assistantMessageId,
+        role: 'assistant' as const,
+        content,
+        steps: [...stepsForMessage],
+        toolCalls: [...toolCallsForMessage],
+        timestamp: existingLocal?.timestamp ?? Date.now(),
+      };
+
+      // Update localMessages (used for session saving — independent of React state)
+      if (existingLocal) {
+        const idx = localMessages.findIndex(m => m.id === assistantMessageId);
+        localMessages[idx] = newMessage;
+      } else {
+        localMessages.push(newMessage);
+      }
+
       setChatMessages(prev => {
         const existing = prev.find(m => m.id === assistantMessageId);
-        const newMessage: ChatMessage = {
-          id: assistantMessageId,
-          role: 'assistant' as const,
-          content,
-          steps: [...stepsForMessage],
-          toolCalls: [...toolCallsForMessage],
-          timestamp: existing?.timestamp ?? Date.now(),
+        const msg: ChatMessage = {
+          ...newMessage,
+          timestamp: existing?.timestamp ?? newMessage.timestamp,
         };
         if (existing) {
-          return prev.map(m => m.id === assistantMessageId ? newMessage : m);
+          return prev.map(m => m.id === assistantMessageId ? msg : m);
         } else {
-          return [...prev, newMessage];
+          return [...prev, msg];
         }
       });
     };
@@ -1026,24 +1053,36 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
           case 'done':
             // Finalize the assistant message - just call updateMessage one more time
             updateMessage();
-            // Auto-save session when task completes
-            // Use setTimeout to ensure the final message update is processed first
-            setTimeout(() => {
-              setChatMessages(prev => {
-                if (prev.length > 0) {
-                  saveSession(currentSessionId, prev, currentRepoName || undefined).then(session => {
-                    setCurrentSessionId(session.id);
-                    getFilteredSessions(currentRepoName).then(setChatSessions);
-                  }).catch(err => console.error('Failed to save session:', err));
-                }
-                return prev;
-              });
-            }, 100);
             break;
         }
       });
 
       await api.chatStream(history, onChunk);
+
+      // Auto-save session after stream completes.
+      // Use localMessages (built locally in this function scope) and refs for sessionId/repoName
+      // to completely avoid React state stale-closure issues.
+      if (localMessages.length > 0) {
+        try {
+          const config = getActiveProviderConfig();
+          const latestSessionId = currentSessionIdRef.current;
+          const latestRepoName = currentRepoNameRef.current;
+          const session = await saveSession(
+            latestSessionId,
+            localMessages,
+            latestRepoName || undefined,
+            config?.provider,
+            config?.model
+          );
+          // Update both the ref and the state so subsequent messages use the correct session ID
+          currentSessionIdRef.current = session.id;
+          setCurrentSessionId(session.id);
+          const sessions = await getFilteredSessions(latestRepoName);
+          setChatSessions(sessions);
+        } catch (err) {
+          console.error('Failed to save session:', err);
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setAgentError(message);
@@ -1051,7 +1090,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       setIsChatLoading(false);
       setCurrentToolCalls([]);
     }
-  }, [chatMessages, isAgentReady, initializeAgent, resolveFilePath, findFileNodeId, addCodeReference, clearAICodeReferences, clearAIToolHighlights, graph, embeddingStatus, currentSessionId, currentRepoName]);
+  }, [chatMessages, isAgentReady, initializeAgent, resolveFilePath, findFileNodeId, addCodeReference, clearAICodeReferences, clearAIToolHighlights, graph, embeddingStatus]);
 
   const stopChatResponse = useCallback(() => {
     const api = apiRef.current;
@@ -1062,22 +1101,18 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [isChatLoading]);
 
-  const clearChat = useCallback(() => {
-    // Save current session before clearing if there are messages
-    if (chatMessages.length > 0) {
-      saveCurrentSession();
-    }
-    setChatMessages([]);
-    setCurrentToolCalls([]);
-    setAgentError(null);
-    setCurrentSessionId(null);
-  }, [chatMessages]);
-
   const saveCurrentSession = useCallback(async () => {
     if (chatMessages.length === 0) return;
     
     try {
-      const session = await saveSession(currentSessionId, chatMessages, currentRepoName || undefined);
+      const config = getActiveProviderConfig();
+      const session = await saveSession(
+        currentSessionId,
+        chatMessages,
+        currentRepoName || undefined,
+        config?.provider,
+        config?.model
+      );
       setCurrentSessionId(session.id);
       const sessions = await getFilteredSessions(currentRepoName);
       setChatSessions(sessions);
@@ -1086,12 +1121,30 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [chatMessages, currentSessionId, currentRepoName]);
 
+  const clearChat = useCallback(async () => {
+    // Save current session before clearing only if there are unsaved messages
+    // (i.e., there are messages but no currentSessionId yet — the auto-save on 'done'
+    // hasn't run yet, or the user manually started a chat without sending a full message)
+    if (chatMessages.length > 0 && !currentSessionId) {
+      try {
+        await saveCurrentSession();
+      } catch (err) {
+        console.error('Failed to save session before clearing:', err);
+      }
+    }
+    // Clear everything and reset session ID to start fresh
+    setChatMessages([]);
+    setCurrentToolCalls([]);
+    setAgentError(null);
+    setCurrentSessionId(null);
+  }, [chatMessages, currentSessionId, saveCurrentSession]);
+
   const loadChatSession = useCallback(async (sessionId: string) => {
     try {
       const session = await loadSession(sessionId);
       if (session) {
-        // Save current session first if it has messages
-        if (chatMessages.length > 0 && !currentSessionId) {
+        // Save current session first if it has messages and is different from the one being loaded
+        if (chatMessages.length > 0 && currentSessionId && currentSessionId !== sessionId) {
           await saveCurrentSession();
         }
         setChatMessages(session.messages);

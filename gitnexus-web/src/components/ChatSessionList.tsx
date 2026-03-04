@@ -87,6 +87,13 @@ export const ChatSessionList = ({ onSessionSelect }: ChatSessionListProps) => {
                   {formatSessionDate(session.updatedAt)}
                 </span>
               </div>
+              {session.modelProvider && session.modelName && (
+                <div className="mt-1">
+                  <span className="text-xs text-text-muted bg-surface px-1.5 py-0.5 rounded">
+                    {session.modelProvider}/{session.modelName}
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Delete Button */}

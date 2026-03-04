@@ -230,6 +230,8 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  modelProvider?: string;  // LLM provider used (e.g., 'openai', 'gemini', 'anthropic')
+  modelName?: string;      // Model name used (e.g., 'gpt-4o', 'gemini-2.0-flash')
 }
 
 /**

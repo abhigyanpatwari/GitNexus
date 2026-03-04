@@ -23,10 +23,11 @@ function generateSessionId(): string {
 
 /**
  * Get all sessions from server
+ * @param repoName - Optional repo name to filter sessions
  */
-export async function getAllSessions(): Promise<ChatSession[]> {
+export async function getAllSessions(repoName?: string): Promise<ChatSession[]> {
   try {
-    return await fetchAllSessions();
+    return await fetchAllSessions(repoName);
   } catch (error) {
     console.error('Failed to load chat sessions:', error);
     return [];
@@ -39,16 +40,30 @@ export async function getAllSessions(): Promise<ChatSession[]> {
 export async function createSession(
   messages: ChatMessage[],
   repoName?: string,
-  customName?: string
+  customName?: string,
+  modelProvider?: string,
+  modelName?: string
 ): Promise<ChatSession> {
   const now = Date.now();
+  const timestamp = new Date(now).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).replace(/\//g, '-').replace(/\s/g, '_');
+  const baseName = customName || generateSessionName(messages);
   const session: ChatSession = {
     id: generateSessionId(),
-    name: customName || generateSessionName(messages),
+    name: `${baseName}[${timestamp}]`,
     repoName,
     createdAt: now,
     updatedAt: now,
     messages,
+    modelProvider,
+    modelName,
   };
   
   try {
@@ -75,14 +90,20 @@ function generateSessionName(messages: ChatMessage[]): string {
 /**
  * Update an existing session
  */
-export async function updateSession(sessionId: string, messages: ChatMessage[]): Promise<ChatSession | null> {
+export async function updateSession(
+  sessionId: string,
+  messages: ChatMessage[],
+  repoName?: string
+): Promise<ChatSession | null> {
   try {
-    const sessions = await getAllSessions();
-    const existing = sessions.find(s => s.id === sessionId);
+    // Try to fetch the specific session first by ID
+    const existing = await loadSession(sessionId);
     
     if (!existing) {
-      // Session not found, create new one
-      return await createSession(messages);
+      // Session not found — return null so the caller can decide what to do.
+      // Do NOT silently create a new session here, as that causes duplicates.
+      console.warn(`Session ${sessionId} not found for update`);
+      return null;
     }
     
     const updated: ChatSession = {
@@ -104,13 +125,18 @@ export async function updateSession(sessionId: string, messages: ChatMessage[]):
 export async function saveSession(
   sessionId: string | null,
   messages: ChatMessage[],
-  repoName?: string
+  repoName?: string,
+  modelProvider?: string,
+  modelName?: string
 ): Promise<ChatSession> {
   if (sessionId) {
-    const updated = await updateSession(sessionId, messages);
+    const updated = await updateSession(sessionId, messages, repoName);
     if (updated) return updated;
+    // updateSession failed (e.g. network error) — do NOT fall through to createSession
+    // to avoid creating a duplicate. Re-throw so the caller can handle it.
+    throw new Error(`Failed to update session ${sessionId}`);
   }
-  return await createSession(messages, repoName);
+  return await createSession(messages, repoName, undefined, modelProvider, modelName);
 }
 
 /**
@@ -152,9 +178,10 @@ export async function clearAllSessions(): Promise<void> {
 
 /**
  * Get sessions for a specific repository
+ * @param repoName - The repository name to filter sessions
  */
 export async function getSessionsByRepo(repoName: string): Promise<ChatSession[]> {
-  const sessions = await getAllSessions();
+  const sessions = await getAllSessions(repoName);
   return sessions.filter(s => s.repoName === repoName);
 }
 

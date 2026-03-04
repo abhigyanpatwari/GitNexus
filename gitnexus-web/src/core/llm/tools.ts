@@ -429,7 +429,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         pattern: z.string().describe('Regex pattern to search for (e.g., "TODO", "console\\.log", "API_KEY")'),
         fileFilter: z.string().optional().nullable().describe('Only search files containing this string (e.g., ".ts", "src/api")'),
         caseSensitive: z.boolean().optional().nullable().describe('Case-sensitive search (default: false)'),
-        maxResults: z.number().optional().nullable().describe('Max results (default: 100)'),
+        maxResults: z.union([z.number(), z.string().transform(Number)]).optional().nullable().describe('Max results (default: 100)'),
       }),
     }
   );

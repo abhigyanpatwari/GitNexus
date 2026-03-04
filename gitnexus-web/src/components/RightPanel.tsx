@@ -451,9 +451,9 @@ export const RightPanel = ({ width }: RightPanelProps) => {
               <button
                 onClick={clearChat}
                 className="px-2 py-1 text-xs text-text-muted hover:text-text-primary transition-colors"
-                title="Clear chat"
+                title="Start new chat session"
               >
-                Clear
+                New
               </button>
               {isChatLoading ? (
                 <button

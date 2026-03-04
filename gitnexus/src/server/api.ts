@@ -13,6 +13,7 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
 import os from 'os';
+import crypto from 'crypto';
 import { loadMeta, listRegisteredRepos } from '../storage/repo-manager.js';
 import { executeQuery, closeKuzu, withKuzuDb } from '../core/kuzu/kuzu-adapter.js';
 import { NODE_TABLES } from '../core/kuzu/schema.js';
@@ -340,45 +341,135 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // ── Chat Session Management ──────────────────────────────────────────────
 
-  // Helper: get sessions directory path
-  const getSessionsDir = () => {
+  // Helper: get base sessions directory path
+  const getSessionsBaseDir = () => {
     const homeDir = os.homedir();
     return path.join(homeDir, '.gitnexus', 'sessions');
   };
 
-  // Helper: get sessions file path for a specific repo
-  const getSessionsFilePath = (repoName?: string) => {
-    const sessionsDir = getSessionsDir();
+  // Helper: generate a unique repo identifier from name and path
+  const getRepoUniqueId = async (repoName: string): Promise<string> => {
+    const repos = await listRegisteredRepos();
+    const repo = repos.find(r => r.name === repoName);
+    
+    if (repo && repo.path) {
+      // Use first 8 characters of MD5 hash of the full path
+      const hash = crypto.createHash('md5').update(repo.path).digest('hex').substring(0, 8);
+      return `${repoName}_${hash}`;
+    }
+    
+    // Fallback: just use the name
+    return repoName;
+  };
+
+  // Helper: get sessions directory for a specific repo
+  const getRepoSessionsDir = async (repoName?: string): Promise<string> => {
+    const baseDir = getSessionsBaseDir();
+    
     // If no repo specified, use 'global' as default
-    const safeRepoName = repoName || 'global';
-    // Sanitize repo name to be filesystem-safe
-    const safeFileName = safeRepoName.replace(/[^a-zA-Z0-9_-]/g, '_');
-    return path.join(sessionsDir, `${safeFileName}.json`);
+    if (!repoName) {
+      return path.join(baseDir, 'global');
+    }
+    
+    // Generate unique identifier using repo name + path hash
+    const uniqueId = await getRepoUniqueId(repoName);
+    // Sanitize to be filesystem-safe
+    const safeFileName = uniqueId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    return path.join(baseDir, safeFileName);
   };
 
-  // Helper: ensure sessions directory exists
-  const ensureSessionsDir = async () => {
-    await fs.mkdir(getSessionsDir(), { recursive: true });
+  // Helper: get session file path for a specific session
+  const getSessionFilePath = async (sessionId: string, repoName?: string): Promise<string> => {
+    const repoDir = await getRepoSessionsDir(repoName);
+    // Sanitize session ID to be filesystem-safe
+    const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    return path.join(repoDir, `${safeSessionId}.json`);
   };
 
-  // Helper: read sessions from a specific repo file
+  // Helper: ensure repo sessions directory exists
+  const ensureRepoSessionsDir = async (repoName?: string) => {
+    const repoDir = await getRepoSessionsDir(repoName);
+    await fs.mkdir(repoDir, { recursive: true });
+  };
+
+  // Helper: read all sessions from a specific repo directory
   const readSessions = async (repoName?: string) => {
+    // If no repo specified, read ALL repo directories and combine sessions
+    if (!repoName) {
+      try {
+        const baseDir = getSessionsBaseDir();
+        const repoDirs = await fs.readdir(baseDir);
+        const allSessions: any[] = [];
+        
+        for (const repoDir of repoDirs) {
+          try {
+            const repoDirPath = path.join(baseDir, repoDir);
+            const stat = await fs.stat(repoDirPath);
+            if (!stat.isDirectory()) continue;
+            
+            const sessionFiles = await fs.readdir(repoDirPath);
+            for (const file of sessionFiles) {
+              if (file.endsWith('.json')) {
+                try {
+                  const filePath = path.join(repoDirPath, file);
+                  const data = await fs.readFile(filePath, 'utf-8');
+                  const session = JSON.parse(data);
+                  allSessions.push(session);
+                } catch {
+                  // Skip files that can't be read
+                }
+              }
+            }
+          } catch {
+            // Skip directories that can't be read
+          }
+        }
+        
+        // Sort by updatedAt descending
+        return allSessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      } catch {
+        return [];
+      }
+    }
+    
+    // Read all session files from the specific repo directory
     try {
-      const filePath = getSessionsFilePath(repoName);
-      const data = await fs.readFile(filePath, 'utf-8');
-      const sessions = JSON.parse(data);
-      return Array.isArray(sessions) ? sessions : [];
+      const repoDir = await getRepoSessionsDir(repoName);
+      const files = await fs.readdir(repoDir);
+      const sessions: any[] = [];
+      
+      for (const file of files) {
+        if (file.endsWith('.json')) {
+          try {
+            const filePath = path.join(repoDir, file);
+            const data = await fs.readFile(filePath, 'utf-8');
+            const session = JSON.parse(data);
+            sessions.push(session);
+          } catch {
+            // Skip files that can't be read
+          }
+        }
+      }
+      
+      // Sort by updatedAt descending
+      return sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     } catch (err: any) {
       if (err.code === 'ENOENT') return [];
       throw err;
     }
   };
 
-  // Helper: write sessions to a specific repo file
-  const writeSessions = async (sessions: any[], repoName?: string) => {
-    await ensureSessionsDir();
-    const filePath = getSessionsFilePath(repoName);
-    await fs.writeFile(filePath, JSON.stringify(sessions, null, 2), 'utf-8');
+  // Helper: write a single session to its own file
+  const writeSession = async (session: any) => {
+    await ensureRepoSessionsDir(session.repoName);
+    const filePath = await getSessionFilePath(session.id, session.repoName);
+    await fs.writeFile(filePath, JSON.stringify(session, null, 2), 'utf-8');
+  };
+
+  // Helper: delete a single session file
+  const deleteSessionFile = async (sessionId: string, repoName?: string) => {
+    const filePath = await getSessionFilePath(sessionId, repoName);
+    await fs.unlink(filePath);
   };
 
   // Helper: get repo name from request query or body
@@ -408,8 +499,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Get a specific session by ID (optionally from a specific repo)
   app.get('/api/sessions/:id', async (req, res) => {
     try {
-      const repoName = getRepoFromRequest(req);
-      const sessions = await readSessions(repoName);
+      // Search across all repos to find the session by ID
+      // Don't filter by repoName since we need to find the session regardless of which repo it belongs to
+      const sessions = await readSessions();
       const session = sessions.find((s: any) => s.id === req.params.id);
       if (!session) {
         res.status(404).json({ error: 'Session not found' });
@@ -430,21 +522,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      const repoName = session.repoName;
-      const sessions = await readSessions(repoName);
-      const index = sessions.findIndex((s: any) => s.id === session.id);
+      // Update timestamp
+      const updatedSession = { ...session, updatedAt: Date.now() };
       
-      if (index >= 0) {
-        // Update existing session
-        sessions[index] = { ...session, updatedAt: Date.now() };
-      } else {
-        // Add new session
-        sessions.push({ ...session, updatedAt: Date.now() });
-      }
-
-      // No limit - store all sessions per repo
-      await writeSessions(sessions, repoName);
-      res.json(session);
+      // Write session to its own file
+      await writeSession(updatedSession);
+      res.json(updatedSession);
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to save session' });
     }
@@ -453,16 +536,19 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Delete a session
   app.delete('/api/sessions/:id', async (req, res) => {
     try {
-      const repoName = getRepoFromRequest(req);
-      const sessions = await readSessions(repoName);
-      const filtered = sessions.filter((s: any) => s.id !== req.params.id);
+      const sessionId = req.params.id;
       
-      if (filtered.length === sessions.length) {
+      // Search across all repos to find the session
+      const sessions = await readSessions();
+      const session = sessions.find((s: any) => s.id === sessionId);
+      
+      if (!session) {
         res.status(404).json({ error: 'Session not found' });
         return;
       }
       
-      await writeSessions(filtered, repoName);
+      // Delete the session file using the session's repoName
+      await deleteSessionFile(sessionId, session.repoName);
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to delete session' });
@@ -473,7 +559,21 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   app.delete('/api/sessions', async (req, res) => {
     try {
       const repoName = getRepoFromRequest(req);
-      await writeSessions([], repoName);
+      const repoDir = await getRepoSessionsDir(repoName);
+      
+      // Delete all session files in the repo directory
+      try {
+        const files = await fs.readdir(repoDir);
+        for (const file of files) {
+          if (file.endsWith('.json')) {
+            await fs.unlink(path.join(repoDir, file));
+          }
+        }
+      } catch (err: any) {
+        if (err.code !== 'ENOENT') throw err;
+        // Directory doesn't exist, nothing to clear
+      }
+      
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to clear sessions' });
