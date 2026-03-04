@@ -8,6 +8,10 @@
  * the dispatch and error handling logic in isolation.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'child_process';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 
 // We need to mock the KuzuDB adapter and repo-manager BEFORE importing LocalBackend
 vi.mock('../../src/mcp/core/kuzu-adapter.js', () => ({
@@ -578,5 +582,59 @@ describe('cypher result formatting', () => {
     });
     expect(result).toHaveProperty('error');
     expect(result.error).toContain('Syntax error');
+  });
+});
+
+describe('detect_changes deleted tracked files', () => {
+  let backend: LocalBackend;
+  let repoPath: string;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+
+    repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-detect-deleted-tracked-'));
+    execFileSync('git', ['init'], { cwd: repoPath, stdio: ['pipe', 'pipe', 'pipe'] });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoPath, stdio: ['pipe', 'pipe', 'pipe'] });
+    execFileSync('git', ['config', 'user.name', 'GitNexus Test'], { cwd: repoPath, stdio: ['pipe', 'pipe', 'pipe'] });
+
+    await fs.writeFile(path.join(repoPath, '.gitignore'), 'force-added.ts\n', 'utf-8');
+    await fs.writeFile(path.join(repoPath, 'force-added.ts'), 'export const tracked = true;\n', 'utf-8');
+
+    execFileSync('git', ['add', '-A'], { cwd: repoPath, stdio: ['pipe', 'pipe', 'pipe'] });
+    execFileSync('git', ['add', '-f', 'force-added.ts'], { cwd: repoPath, stdio: ['pipe', 'pipe', 'pipe'] });
+    execFileSync('git', ['commit', '-m', 'initial tracked file'], { cwd: repoPath, stdio: ['pipe', 'pipe', 'pipe'] });
+
+    await fs.rm(path.join(repoPath, 'force-added.ts'));
+    execFileSync('git', ['add', '-A'], { cwd: repoPath, stdio: ['pipe', 'pipe', 'pipe'] });
+
+    (listRegisteredRepos as any).mockResolvedValue([
+      {
+        name: 'detect-deleted-tracked',
+        path: repoPath,
+        storagePath: '/tmp/.gitnexus/detect-deleted-tracked',
+        indexedAt: '2024-06-01T12:00:00Z',
+        lastCommit: 'abc1234567890',
+        stats: { files: 2, nodes: 1, edges: 0, communities: 0, processes: 0 },
+      },
+    ]);
+    (executeParameterized as any).mockResolvedValue([]);
+
+    backend = new LocalBackend();
+    await backend.init();
+  });
+
+  afterEach(async () => {
+    await fs.rm(repoPath, { recursive: true, force: true });
+  });
+
+  it.each([
+    { label: 'staged', args: { scope: 'staged' as const } },
+    { label: 'all', args: { scope: 'all' as const } },
+    { label: 'compare', args: { scope: 'compare' as const, base_ref: 'HEAD' } },
+  ])('keeps deleted force-added paths as relevant changes in $label scope', async ({ args }) => {
+    const result = await backend.callTool('detect_changes', args);
+    expect(result.error).toBeUndefined();
+    expect(result.summary.changed_files).toBe(1);
+    expect(result.summary.changed_count).toBe(0);
   });
 });

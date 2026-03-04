@@ -1054,20 +1054,25 @@ export class LocalBackend {
 
     // Build git diff args based on scope (using execFileSync to avoid shell injection)
     let diffArgs: string[];
+    let deletedDiffArgs: string[];
     switch (scope) {
       case 'staged':
         diffArgs = ['diff', '--staged', '--name-only'];
+        deletedDiffArgs = ['diff', '--staged', '--name-only', '--diff-filter=D'];
         break;
       case 'all':
         diffArgs = ['diff', 'HEAD', '--name-only'];
+        deletedDiffArgs = ['diff', 'HEAD', '--name-only', '--diff-filter=D'];
         break;
       case 'compare':
         if (!params.base_ref) return { error: 'base_ref is required for "compare" scope' };
         diffArgs = ['diff', params.base_ref, '--name-only'];
+        deletedDiffArgs = ['diff', params.base_ref, '--name-only', '--diff-filter=D'];
         break;
       case 'unstaged':
       default:
         diffArgs = ['diff', '--name-only'];
+        deletedDiffArgs = ['diff', '--name-only', '--diff-filter=D'];
         break;
     }
 
@@ -1087,7 +1092,21 @@ export class LocalBackend {
       };
     }
 
-    const relevantChangedFiles = filterRepositoryPathsSync(repo.repoPath, changedFiles, repo.ignoreConfig || {});
+    let deletedPaths = new Set<string>();
+    try {
+      const deletedOutput = execFileSync('git', deletedDiffArgs, { cwd: repo.repoPath, encoding: 'utf-8' });
+      deletedPaths = new Set(
+        deletedOutput
+          .trim()
+          .split('\n')
+          .filter(f => f.length > 0)
+          .map(f => f.replace(/\\/g, '/')),
+      );
+    } catch {
+      // Fail open for deletion allowlist derivation; filtering still applies.
+    }
+
+    const relevantChangedFiles = filterRepositoryPathsSync(repo.repoPath, changedFiles, repo.ignoreConfig || {}, deletedPaths);
     if (relevantChangedFiles.length === 0) {
       return {
         summary: {
