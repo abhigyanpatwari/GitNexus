@@ -120,7 +120,7 @@ export const analyzeCommand = async (
     if (ignoreConfigChanged) {
       console.log('  Ignore profile changed since last index — re-indexing\n');
     } else {
-      const staleness = checkStaleness(repoPath, existingMeta.lastCommit || currentCommit, activeIgnoreConfig);
+      const staleness = checkStaleness(repoPath, existingMeta.lastCommit ?? '', activeIgnoreConfig);
       if (!staleness.isStale) {
         if (staleness.ignoredOnlyChanges && existingMeta.lastCommit !== currentCommit) {
           console.log('  Already up to date (only ignored-path changes detected)\n');

@@ -449,7 +449,7 @@ const getGitIgnoredSet = (repoPath: string, relativePaths: string[]): Set<string
   }
 
   const input = `${relativePaths.join('\0')}\0`;
-  const result = spawnSync('git', ['check-ignore', '--no-index', '--stdin', '-z'], {
+  const result = spawnSync('git', ['check-ignore', '--stdin', '-z'], {
     cwd: repoPath,
     encoding: 'utf-8',
     input,

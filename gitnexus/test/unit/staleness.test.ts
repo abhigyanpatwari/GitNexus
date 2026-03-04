@@ -41,6 +41,22 @@ describe('checkStaleness', () => {
     }
   });
 
+  it('marks stale when indexed commit marker is unknown and HEAD exists', async () => {
+    const repoPath = await initRepo('gn-stale-unknown-baseline-');
+    try {
+      await fs.mkdir(path.join(repoPath, 'src'), { recursive: true });
+      await fs.writeFile(path.join(repoPath, 'src', 'index.ts'), 'export const v = 1;\n');
+      commitAll(repoPath, 'initial');
+
+      const result = checkStaleness(repoPath, '');
+      expect(result.isStale).toBe(true);
+      expect(result.commitsBehind).toBeGreaterThan(0);
+      expect(result.hint).toContain('baseline is unknown');
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
   it('returns stale when relevant files changed', async () => {
     const repoPath = await initRepo('gn-stale-relevant-');
     try {

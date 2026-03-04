@@ -21,6 +21,21 @@ const normalizePath = (value: string): string => (
   value.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+/g, '/')
 );
 
+const resolveIgnoreOverride = (
+  optionValue: string | null | undefined,
+  envValue: string | undefined,
+): string | null => {
+  if (optionValue === null) {
+    return null;
+  }
+  if (optionValue === undefined) {
+    const trimmedEnv = envValue?.trim();
+    return trimmedEnv || null;
+  }
+  const trimmedOption = optionValue.trim();
+  return trimmedOption || null;
+};
+
 const isIgnoreRuleFile = (
   changedFile: string,
   ignoreOptions: RepoIgnoreOptions = {},
@@ -38,7 +53,7 @@ const isIgnoreRuleFile = (
     return true;
   }
 
-  const explicitIgnoreFile = (ignoreOptions.ignoreFile ?? process.env.GITNEXUS_IGNORE_FILE)?.trim();
+  const explicitIgnoreFile = resolveIgnoreOverride(ignoreOptions.ignoreFile, process.env.GITNEXUS_IGNORE_FILE);
   if (!explicitIgnoreFile) {
     return false;
   }
@@ -54,20 +69,46 @@ export function checkStaleness(
   ignoreOptions: RepoIgnoreOptions = {},
 ): StalenessInfo {
   try {
-    if (!lastCommit || lastCommit === 'HEAD') {
+    const normalizedLastCommit = (lastCommit || '').trim();
+
+    if (normalizedLastCommit === 'HEAD') {
       return { isStale: false, commitsBehind: 0 };
+    }
+
+    if (!normalizedLastCommit) {
+      // Indexed metadata can store an empty commit marker when analyze runs
+      // before the repository's first commit. Once HEAD exists, that index is stale.
+      const headCommit = execFileSync(
+        'git', ['rev-parse', '--verify', 'HEAD'],
+        { cwd: repoPath, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+      ).trim();
+      if (!headCommit) {
+        return { isStale: false, commitsBehind: 0 };
+      }
+
+      const headCountResult = execFileSync(
+        'git', ['rev-list', '--count', 'HEAD'],
+        { cwd: repoPath, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+      ).trim();
+      const commitsBehind = parseInt(headCountResult, 10) || 1;
+
+      return {
+        isStale: true,
+        commitsBehind,
+        hint: `⚠️ Indexed commit baseline is unknown while repository has ${commitsBehind} commit${commitsBehind > 1 ? 's' : ''}. Run analyze tool to update.`,
+      };
     }
 
     // Get count of commits between lastCommit and HEAD
     const result = execFileSync(
-      'git', ['rev-list', '--count', `${lastCommit}..HEAD`],
+      'git', ['rev-list', '--count', `${normalizedLastCommit}..HEAD`],
       { cwd: repoPath, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
     ).trim();
     
     const commitsBehind = parseInt(result, 10) || 0;
     
     if (commitsBehind > 0) {
-      const { allChangedFiles, relevantChangedFiles } = getRelevantChangedFilesSinceCommit(repoPath, lastCommit, ignoreOptions);
+      const { allChangedFiles, relevantChangedFiles } = getRelevantChangedFilesSinceCommit(repoPath, normalizedLastCommit, ignoreOptions);
       const changedIgnoreRuleFiles = allChangedFiles.filter((file) => isIgnoreRuleFile(file, ignoreOptions));
       if (relevantChangedFiles.length === 0) {
         if (changedIgnoreRuleFiles.length > 0) {

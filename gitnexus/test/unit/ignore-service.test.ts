@@ -158,6 +158,21 @@ describe('filterRepositoryPathsSync', () => {
     }
   });
 
+  it('keeps tracked files even when they match .gitignore patterns', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ignore-tracked-test-'));
+    try {
+      execFileSync('git', ['init'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      await fs.writeFile(path.join(tmpDir, '.gitignore'), 'force-added.ts\n');
+      await fs.writeFile(path.join(tmpDir, 'force-added.ts'), 'export const x = 1;\n');
+      execFileSync('git', ['add', '-f', 'force-added.ts'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+
+      const filtered = filterRepositoryPathsSync(tmpDir, ['force-added.ts']);
+      expect(filtered).toEqual(['force-added.ts']);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('supports custom profile ignore files', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ignore-profile-test-'));
     try {
