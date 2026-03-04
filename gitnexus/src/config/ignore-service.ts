@@ -189,6 +189,7 @@ const IGNORED_FILES = new Set([
 ]);
 
 const DEFAULT_REPO_IGNORE_FILE = '.gitnexusignore';
+const GIT_IO_MAX_BUFFER = 64 * 1024 * 1024; // 64 MiB for large monorepo diffs/path sets
 
 export interface RepoIgnoreOptions {
   ignoreFile?: string | null;
@@ -454,6 +455,7 @@ const getGitIgnoredSet = (repoPath: string, relativePaths: string[]): Set<string
     encoding: 'utf-8',
     input,
     stdio: ['pipe', 'pipe', 'pipe'],
+    maxBuffer: GIT_IO_MAX_BUFFER,
   });
 
   if (result.error || (result.status !== 0 && result.status !== 1)) {
@@ -560,6 +562,7 @@ export const getRelevantChangedFilesSinceCommit = (
       cwd: repoPath,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
+      maxBuffer: GIT_IO_MAX_BUFFER,
     });
     if (diff.error || diff.status !== 0) {
       return { allChangedFiles: [], relevantChangedFiles: [] };

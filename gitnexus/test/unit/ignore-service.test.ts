@@ -3,7 +3,11 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { execFileSync } from 'child_process';
-import { shouldIgnorePath, filterRepositoryPathsSync } from '../../src/config/ignore-service.js';
+import {
+  shouldIgnorePath,
+  filterRepositoryPathsSync,
+  getRelevantChangedFilesSinceCommit,
+} from '../../src/config/ignore-service.js';
 
 describe('shouldIgnorePath', () => {
   describe('version control directories', () => {
@@ -279,4 +283,64 @@ describe('filterRepositoryPathsSync', () => {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
+});
+
+describe('large git outputs', () => {
+  it('handles large git diff outputs in change filtering', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-large-diff-test-'));
+    try {
+      execFileSync('git', ['init'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      execFileSync('git', ['config', 'user.name', 'GitNexus Test'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+
+      await fs.writeFile(path.join(tmpDir, 'src.ts'), 'export const base = 1;\n');
+      execFileSync('git', ['add', '-A'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      execFileSync('git', ['commit', '-q', '-m', 'base'], { cwd: tmpDir, stdio: 'ignore' });
+      const lastCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: tmpDir,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim();
+
+      const longDir = path.join(tmpDir, 'src');
+      await fs.mkdir(longDir, { recursive: true });
+      const fileCount = 5000;
+      const longNameCore = 'segmentwithlotsofcharacters1234567890'.repeat(6); // 216 chars
+      for (let i = 0; i < fileCount; i += 1) {
+        await fs.writeFile(
+          path.join(longDir, `${longNameCore}-${String(i).padStart(5, '0')}.ts`),
+          'export const x = 1;\n',
+        );
+      }
+
+      execFileSync('git', ['add', '-A'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      execFileSync('git', ['commit', '-q', '-m', 'large change set'], { cwd: tmpDir, stdio: 'ignore' });
+
+      const result = getRelevantChangedFilesSinceCommit(tmpDir, lastCommit);
+      expect(result.allChangedFiles.length).toBe(fileCount);
+      expect(result.relevantChangedFiles.length).toBe(fileCount);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('handles large git check-ignore outputs for path filtering', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-large-ignore-test-'));
+    try {
+      execFileSync('git', ['init'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      await fs.writeFile(path.join(tmpDir, '.gitignore'), 'ignored-large/**\n');
+
+      const input = ['src/index.ts'];
+      const fileCount = 3500;
+      const longPrefix = `ignored-large/${'segmentwithlotsofcharacters1234567890-'.repeat(8)}`;
+      for (let i = 0; i < fileCount; i += 1) {
+        input.push(`${longPrefix}/file-${String(i).padStart(4, '0')}.ts`);
+      }
+
+      const filtered = filterRepositoryPathsSync(tmpDir, input);
+      expect(filtered).toEqual(['src/index.ts']);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
 });
