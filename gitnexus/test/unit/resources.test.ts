@@ -9,6 +9,10 @@
  * - Resource handlers with mocked backend
  */
 import { describe, it, expect, vi } from 'vitest';
+import { execFileSync } from 'child_process';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import {
   getResourceDefinitions,
   getResourceTemplates,
@@ -143,6 +147,38 @@ describe('readResource', () => {
     expect(backend.resolveRepo).toHaveBeenCalledWith('test-project');
     expect(result).toContain('test-project');
     expect(result).toContain('files: 10');
+  });
+
+  it('preserves empty indexed commit in context staleness checks', async () => {
+    const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-resources-empty-lastcommit-'));
+    try {
+      execFileSync('git', ['init'], { cwd: repoPath, stdio: ['pipe', 'pipe', 'pipe'] });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoPath, stdio: ['pipe', 'pipe', 'pipe'] });
+      execFileSync('git', ['config', 'user.name', 'GitNexus Test'], { cwd: repoPath, stdio: ['pipe', 'pipe', 'pipe'] });
+      await fs.mkdir(path.join(repoPath, 'src'), { recursive: true });
+      await fs.writeFile(path.join(repoPath, 'src', 'index.ts'), 'export const x = 1;\n');
+      execFileSync('git', ['add', '-A'], { cwd: repoPath, stdio: ['pipe', 'pipe', 'pipe'] });
+      execFileSync('git', ['commit', '-m', 'initial'], { cwd: repoPath, stdio: ['pipe', 'pipe', 'pipe'] });
+
+      const backend = createMockBackend({
+        resolvedRepo: {
+          name: 'test-project',
+          repoPath,
+          lastCommit: '',
+          ignoreConfig: {},
+        },
+        context: {
+          projectName: 'test-project',
+          stats: { fileCount: 1, functionCount: 1, communityCount: 1, processCount: 1 },
+        },
+      });
+
+      const result = await readResource('gitnexus://repo/test-project/context', backend);
+      expect(result).toContain('staleness:');
+      expect(result).toContain('baseline is unknown');
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
   });
 
   it('returns error when context has no codebase loaded', async () => {

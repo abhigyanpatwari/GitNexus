@@ -24,7 +24,7 @@ export const statusCommand = async () => {
   }
 
   const currentCommit = getCurrentCommit(repo.repoPath);
-  const staleness = checkStaleness(repo.repoPath, repo.meta.lastCommit || 'HEAD', repo.meta.ignoreConfig || {});
+  const staleness = checkStaleness(repo.repoPath, repo.meta.lastCommit ?? '', repo.meta.ignoreConfig || {});
 
   console.log(`Repository: ${repo.repoPath}`);
   console.log(`Indexed: ${new Date(repo.meta.indexedAt).toLocaleString()}`);
