@@ -198,7 +198,7 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   // Check staleness
   const repoPath = repo.repoPath;
   const lastCommit = repo.lastCommit || 'HEAD';
-  const staleness = repoPath ? checkStaleness(repoPath, lastCommit) : { isStale: false, commitsBehind: 0 };
+  const staleness = repoPath ? checkStaleness(repoPath, lastCommit, repo.ignoreConfig || {}) : { isStale: false, commitsBehind: 0 };
   
   const lines: string[] = [
     `project: ${context.projectName}`,

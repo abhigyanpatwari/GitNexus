@@ -139,7 +139,9 @@ Your AI agent gets these tools automatically:
 gitnexus setup                    # Configure MCP for your editors (one-time)
 gitnexus analyze [path]           # Index a repository (or update stale index)
 gitnexus analyze --force          # Force full re-index
-gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
+gitnexus analyze --embeddings     # Enable embedding generation (off by default)
+gitnexus analyze --ignore-file .gitnexusignore.focused  # Use custom ignore profile
+gitnexus analyze --ignore-profile focused  # Use .gitnexusignore.focused
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI
 gitnexus list                    # List all indexed repositories
@@ -173,6 +175,17 @@ Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setu
 
 - Node.js >= 18
 - Git repository (uses git for commit tracking)
+
+## Ignore Configuration
+
+GitNexus supports layered ignore configuration for indexing and stale checks:
+
+1. Built-in default ignore rules
+2. `.gitignore` (via `git check-ignore`)
+3. `.gitnexusignore` (repo-local overrides)
+4. Optional profile file (`.gitnexusignore.<name>`)
+
+You can select a profile with `--ignore-profile <name>` or provide a specific file with `--ignore-file <path>`.
 
 ## Privacy
 

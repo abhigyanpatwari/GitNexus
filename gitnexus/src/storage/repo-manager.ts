@@ -10,10 +10,16 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 
+export interface RepoIgnoreConfig {
+  ignoreFile?: string | null;
+  ignoreProfile?: string | null;
+}
+
 export interface RepoMeta {
   repoPath: string;
   lastCommit: string;
   indexedAt: string;
+  ignoreConfig?: RepoIgnoreConfig;
   stats?: {
     files?: number;
     nodes?: number;
@@ -41,6 +47,7 @@ export interface RegistryEntry {
   storagePath: string;
   indexedAt: string;
   lastCommit: string;
+  ignoreConfig?: RepoIgnoreConfig;
   stats?: RepoMeta['stats'];
 }
 
@@ -215,6 +222,7 @@ export const registerRepo = async (repoPath: string, meta: RepoMeta): Promise<vo
     storagePath,
     indexedAt: meta.indexedAt,
     lastCommit: meta.lastCommit,
+    ignoreConfig: meta.ignoreConfig,
     stats: meta.stats,
   };
 

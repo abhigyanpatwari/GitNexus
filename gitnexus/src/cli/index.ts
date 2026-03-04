@@ -35,6 +35,8 @@ program
   .description('Index a repository (full analysis)')
   .option('-f, --force', 'Force full re-index even if up to date')
   .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
+  .option('--ignore-file <file>', 'Use a custom GitNexus ignore file (e.g. .gitnexusignore.focused)')
+  .option('--ignore-profile <name>', 'Use profile file .gitnexusignore.<name>')
   .action(analyzeCommand);
 
 program

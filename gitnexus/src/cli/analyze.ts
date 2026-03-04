@@ -17,6 +17,7 @@ import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReuse
 import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath } from '../storage/repo-manager.js';
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
+import { checkStaleness } from '../mcp/staleness.js';
 import fs from 'fs/promises';
 
 
@@ -45,6 +46,8 @@ function ensureHeap(): boolean {
 export interface AnalyzeOptions {
   force?: boolean;
   embeddings?: boolean;
+  ignoreFile?: string;
+  ignoreProfile?: string;
 }
 
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
@@ -95,11 +98,38 @@ export const analyzeCommand = async (
 
   const { storagePath, kuzuPath } = getStoragePaths(repoPath);
   const currentCommit = getCurrentCommit(repoPath);
+  if (options?.ignoreFile !== undefined) {
+    if (options.ignoreFile) process.env.GITNEXUS_IGNORE_FILE = options.ignoreFile;
+    else delete process.env.GITNEXUS_IGNORE_FILE;
+  }
+  if (options?.ignoreProfile !== undefined) {
+    if (options.ignoreProfile) process.env.GITNEXUS_IGNORE_PROFILE = options.ignoreProfile;
+    else delete process.env.GITNEXUS_IGNORE_PROFILE;
+  }
+  const activeIgnoreConfig = {
+    ignoreFile: process.env.GITNEXUS_IGNORE_FILE || null,
+    ignoreProfile: process.env.GITNEXUS_IGNORE_PROFILE || null,
+  };
   const existingMeta = await loadMeta(storagePath);
 
-  if (existingMeta && !options?.force && existingMeta.lastCommit === currentCommit) {
-    console.log('  Already up to date\n');
-    return;
+  if (existingMeta && !options?.force) {
+    const existingIgnoreConfig = existingMeta.ignoreConfig || { ignoreFile: null, ignoreProfile: null };
+    const ignoreConfigChanged = existingIgnoreConfig.ignoreFile !== activeIgnoreConfig.ignoreFile
+      || existingIgnoreConfig.ignoreProfile !== activeIgnoreConfig.ignoreProfile;
+
+    if (ignoreConfigChanged) {
+      console.log('  Ignore profile changed since last index — re-indexing\n');
+    } else {
+      const staleness = checkStaleness(repoPath, existingMeta.lastCommit || currentCommit, activeIgnoreConfig);
+      if (!staleness.isStale) {
+        if (staleness.ignoredOnlyChanges && existingMeta.lastCommit !== currentCommit) {
+          console.log('  Already up to date (only ignored-path changes detected)\n');
+        } else {
+          console.log('  Already up to date\n');
+        }
+        return;
+      }
+    }
   }
 
   // Single progress bar for entire pipeline
@@ -280,6 +310,7 @@ export const analyzeCommand = async (
     repoPath,
     lastCommit: currentCommit,
     indexedAt: new Date().toISOString(),
+    ignoreConfig: activeIgnoreConfig,
     stats: {
       files: pipelineResult.totalFileCount,
       nodes: stats.nodes,

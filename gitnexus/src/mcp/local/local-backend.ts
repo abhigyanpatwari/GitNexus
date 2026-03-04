@@ -9,6 +9,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { initKuzu, executeQuery, executeParameterized, closeKuzu, isKuzuReady } from '../core/kuzu-adapter.js';
+import { filterRepositoryPathsSync } from '../../config/ignore-service.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
@@ -79,6 +80,7 @@ interface RepoHandle {
   kuzuPath: string;
   indexedAt: string;
   lastCommit: string;
+  ignoreConfig?: RegistryEntry['ignoreConfig'];
   stats?: RegistryEntry['stats'];
 }
 
@@ -122,6 +124,7 @@ export class LocalBackend {
         kuzuPath,
         indexedAt: entry.indexedAt,
         lastCommit: entry.lastCommit,
+        ignoreConfig: entry.ignoreConfig,
         stats: entry.stats,
       };
 
@@ -273,13 +276,14 @@ export class LocalBackend {
    * Re-reads the global registry so newly indexed repos are discovered
    * without restarting the MCP server.
    */
-  async listRepos(): Promise<Array<{ name: string; path: string; indexedAt: string; lastCommit: string; stats?: any }>> {
+  async listRepos(): Promise<Array<{ name: string; path: string; indexedAt: string; lastCommit: string; ignoreConfig?: any; stats?: any }>> {
     await this.refreshRepos();
     return [...this.repos.values()].map(h => ({
       name: h.name,
       path: h.repoPath,
       indexedAt: h.indexedAt,
       lastCommit: h.lastCommit,
+      ignoreConfig: h.ignoreConfig,
       stats: h.stats,
     }));
   }
@@ -1082,10 +1086,25 @@ export class LocalBackend {
         affected_processes: [],
       };
     }
+
+    const relevantChangedFiles = filterRepositoryPathsSync(repo.repoPath, changedFiles, repo.ignoreConfig || {});
+    if (relevantChangedFiles.length === 0) {
+      return {
+        summary: {
+          changed_count: 0,
+          affected_count: 0,
+          risk_level: 'none',
+          changed_files: 0,
+          message: 'No relevant changes detected (only ignored paths changed).',
+        },
+        changed_symbols: [],
+        affected_processes: [],
+      };
+    }
     
     // Map changed files to indexed symbols
     const changedSymbols: any[] = [];
-    for (const file of changedFiles) {
+    for (const file of relevantChangedFiles) {
       const normalizedFile = file.replace(/\\/g, '/');
       try {
         const symbols = await executeParameterized(repo.id, `
@@ -1139,7 +1158,7 @@ export class LocalBackend {
       summary: {
         changed_count: changedSymbols.length,
         affected_count: processCount,
-        changed_files: changedFiles.length,
+        changed_files: relevantChangedFiles.length,
         risk_level: risk,
       },
       changed_symbols: changedSymbols,

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { shouldIgnorePath } from '../../src/config/ignore-service.js';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
+import { execFileSync } from 'child_process';
+import { shouldIgnorePath, filterRepositoryPathsSync } from '../../src/config/ignore-service.js';
 
 describe('shouldIgnorePath', () => {
   describe('version control directories', () => {
@@ -133,5 +137,41 @@ describe('shouldIgnorePath', () => {
     ])('does not ignore source file %s', (filePath) => {
       expect(shouldIgnorePath(filePath)).toBe(false);
     });
+  });
+});
+
+describe('filterRepositoryPathsSync', () => {
+  it('respects .gitignore via git check-ignore', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ignore-test-'));
+    try {
+      execFileSync('git', ['init'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      await fs.writeFile(path.join(tmpDir, '.gitignore'), 'cdk.out/\n**/deploy-v1/\n');
+      const input = [
+        'src/index.ts',
+        'cdk.out/template.json',
+        'apps/product-suite-web/deploy-v1/apps/index.html',
+      ];
+      const filtered = filterRepositoryPathsSync(tmpDir, input);
+      expect(filtered).toEqual(['src/index.ts']);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('supports custom profile ignore files', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ignore-profile-test-'));
+    try {
+      execFileSync('git', ['init'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      await fs.writeFile(path.join(tmpDir, '.gitnexusignore.focused'), 'test/\ndocs/internal/atlas/\n');
+      const input = [
+        'src/index.ts',
+        'test/unit/foo.test.ts',
+        'docs/internal/atlas/system-topology.mdx',
+      ];
+      const filtered = filterRepositoryPathsSync(tmpDir, input, { ignoreFile: '.gitnexusignore.focused' });
+      expect(filtered).toEqual(['src/index.ts']);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });

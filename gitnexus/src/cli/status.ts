@@ -6,6 +6,7 @@
 
 import { findRepo } from '../storage/repo-manager.js';
 import { getCurrentCommit, isGitRepo } from '../storage/git.js';
+import { checkStaleness } from '../mcp/staleness.js';
 
 export const statusCommand = async () => {
   const cwd = process.cwd();
@@ -23,11 +24,17 @@ export const statusCommand = async () => {
   }
 
   const currentCommit = getCurrentCommit(repo.repoPath);
-  const isUpToDate = currentCommit === repo.meta.lastCommit;
+  const staleness = checkStaleness(repo.repoPath, repo.meta.lastCommit || 'HEAD', repo.meta.ignoreConfig || {});
 
   console.log(`Repository: ${repo.repoPath}`);
   console.log(`Indexed: ${new Date(repo.meta.indexedAt).toLocaleString()}`);
   console.log(`Indexed commit: ${repo.meta.lastCommit?.slice(0, 7)}`);
   console.log(`Current commit: ${currentCommit?.slice(0, 7)}`);
-  console.log(`Status: ${isUpToDate ? '✅ up-to-date' : '⚠️ stale (re-run gitnexus analyze)'}`);
+  if (staleness.isStale) {
+    console.log('Status: ⚠️ stale (re-run gitnexus analyze)');
+  } else if (staleness.ignoredOnlyChanges && currentCommit !== repo.meta.lastCommit) {
+    console.log('Status: ✅ up-to-date (changes only in ignored paths)');
+  } else {
+    console.log('Status: ✅ up-to-date');
+  }
 };
