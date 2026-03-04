@@ -13,8 +13,37 @@ export interface StalenessInfo {
   commitsBehind: number;
   changedFiles?: number;
   ignoredOnlyChanges?: boolean;
+  ignoreRulesChanged?: boolean;
   hint?: string;
 }
+
+const normalizePath = (value: string): string => (
+  value.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+/g, '/')
+);
+
+const isIgnoreRuleFile = (
+  changedFile: string,
+  ignoreOptions: RepoIgnoreOptions = {},
+): boolean => {
+  const normalized = normalizePath(changedFile);
+  if (!normalized) {
+    return false;
+  }
+
+  const fileName = normalized.split('/').pop()?.toLowerCase() ?? '';
+  if (fileName === '.gitignore') {
+    return true;
+  }
+  if (fileName === '.gitnexusignore' || fileName.startsWith('.gitnexusignore.')) {
+    return true;
+  }
+
+  const explicitIgnoreFile = (ignoreOptions.ignoreFile ?? process.env.GITNEXUS_IGNORE_FILE)?.trim();
+  if (!explicitIgnoreFile) {
+    return false;
+  }
+  return normalized === normalizePath(explicitIgnoreFile);
+};
 
 /**
  * Check how many commits the index is behind HEAD
@@ -38,8 +67,19 @@ export function checkStaleness(
     const commitsBehind = parseInt(result, 10) || 0;
     
     if (commitsBehind > 0) {
-      const { relevantChangedFiles } = getRelevantChangedFilesSinceCommit(repoPath, lastCommit, ignoreOptions);
+      const { allChangedFiles, relevantChangedFiles } = getRelevantChangedFilesSinceCommit(repoPath, lastCommit, ignoreOptions);
+      const changedIgnoreRuleFiles = allChangedFiles.filter((file) => isIgnoreRuleFile(file, ignoreOptions));
       if (relevantChangedFiles.length === 0) {
+        if (changedIgnoreRuleFiles.length > 0) {
+          return {
+            isStale: true,
+            commitsBehind,
+            changedFiles: changedIgnoreRuleFiles.length,
+            ignoreRulesChanged: true,
+            hint: `⚠️ Index is ${commitsBehind} commit${commitsBehind > 1 ? 's' : ''} behind HEAD and ignore rules changed in ${changedIgnoreRuleFiles.length} file${changedIgnoreRuleFiles.length > 1 ? 's' : ''}. Run analyze tool to update.`,
+          };
+        }
+
         return {
           isStale: false,
           commitsBehind: 0,

@@ -200,6 +200,7 @@ interface CompiledCustomPattern {
   negate: boolean;
   anchored: boolean;
   hasSlash: boolean;
+  directoryOnly: boolean;
   segments: string[];
 }
 
@@ -275,21 +276,25 @@ const parseCustomPattern = (rawPattern: string): CompiledCustomPattern | null =>
     return null;
   }
 
-  const hasSlash = normalized.includes('/');
   const segments = normalized.split('/').filter(Boolean);
   if (segments.length === 0) {
     return null;
   }
 
   if (directoryOnly) {
-    segments.push('**');
+    // Directory-only rules should require at least one descendant segment.
+    // "build/" should match "build/x" but not a file named "build".
+    segments.push('*', '**');
   }
+
+  const hasSlash = normalized.includes('/') || directoryOnly;
 
   return {
     rawPattern,
     negate,
     anchored,
     hasSlash,
+    directoryOnly,
     segments,
   };
 };

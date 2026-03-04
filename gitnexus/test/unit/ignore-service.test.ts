@@ -174,4 +174,27 @@ describe('filterRepositoryPathsSync', () => {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('keeps directory-only semantics for custom rules', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ignore-dironly-test-'));
+    try {
+      execFileSync('git', ['init'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), 'deploy-v1/\n');
+      const input = [
+        'src/index.ts',
+        'src/deploy-v1',
+        'src/deploy-v1/runtime.json',
+        'apps/site/deploy-v1',
+        'apps/site/deploy-v1/bundle.js',
+      ];
+      const filtered = filterRepositoryPathsSync(tmpDir, input);
+      expect(filtered).toEqual([
+        'src/index.ts',
+        'src/deploy-v1',
+        'apps/site/deploy-v1',
+      ]);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

@@ -61,22 +61,42 @@ describe('checkStaleness', () => {
     }
   });
 
-  it('treats ignored-only changes as up-to-date', async () => {
+  it('treats ignored artifact-only changes as up-to-date', async () => {
     const repoPath = await initRepo('gn-stale-ignored-');
     try {
-      await fs.mkdir(path.join(repoPath, 'src'), { recursive: true });
-      await fs.writeFile(path.join(repoPath, 'src', 'index.ts'), 'export const version = 1;\n');
-      await fs.writeFile(path.join(repoPath, '.gitignore'), 'cdk.out/\n');
+      await fs.mkdir(path.join(repoPath, 'dist'), { recursive: true });
+      await fs.writeFile(path.join(repoPath, 'dist', 'bundle.min.js'), 'console.log(1);\n');
       const previousCommit = commitAll(repoPath, 'initial');
 
-      await fs.writeFile(path.join(repoPath, '.gitignore'), 'cdk.out/\n*.tmp\n');
-      commitAll(repoPath, 'ignored-only update');
+      await fs.writeFile(path.join(repoPath, 'dist', 'bundle.min.js'), 'console.log(2);\n');
+      commitAll(repoPath, 'artifact-only update');
 
       const result = checkStaleness(repoPath, previousCommit);
       expect(result.isStale).toBe(false);
       expect(result.commitsBehind).toBe(0);
       expect(result.ignoredOnlyChanges).toBe(true);
       expect(result.hint).toContain('ignored paths');
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
+  it('marks index stale when ignore rules change between commits', async () => {
+    const repoPath = await initRepo('gn-stale-ignore-rules-');
+    try {
+      await fs.mkdir(path.join(repoPath, 'src'), { recursive: true });
+      await fs.writeFile(path.join(repoPath, 'src', 'index.ts'), 'export const version = 1;\n');
+      await fs.writeFile(path.join(repoPath, '.gitignore'), 'dist/\n');
+      const previousCommit = commitAll(repoPath, 'initial');
+
+      await fs.writeFile(path.join(repoPath, '.gitignore'), 'dist/\n!dist/keep.ts\n');
+      commitAll(repoPath, 'update ignore rules');
+
+      const result = checkStaleness(repoPath, previousCommit);
+      expect(result.isStale).toBe(true);
+      expect(result.commitsBehind).toBeGreaterThan(0);
+      expect(result.ignoreRulesChanged).toBe(true);
+      expect(result.hint).toContain('ignore rules changed');
     } finally {
       await fs.rm(repoPath, { recursive: true, force: true });
     }
