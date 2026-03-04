@@ -177,6 +177,49 @@ describe('filterRepositoryPathsSync', () => {
     }
   });
 
+  it('lets custom unignore rules override built-in ignore defaults', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ignore-custom-over-builtins-'));
+    try {
+      execFileSync('git', ['init'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      await fs.mkdir(path.join(tmpDir, 'dist'), { recursive: true });
+      await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!dist/keep.ts\n');
+      await fs.writeFile(path.join(tmpDir, 'dist', 'keep.ts'), 'export const keep = true;\n');
+      await fs.writeFile(path.join(tmpDir, 'dist', 'drop.ts'), 'export const drop = true;\n');
+
+      const filtered = filterRepositoryPathsSync(tmpDir, [
+        'dist/keep.ts',
+        'dist/drop.ts',
+      ]);
+      expect(filtered).toEqual(['dist/keep.ts']);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('honors custom unignore rules before .gitignore exclusion', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ignore-custom-over-gitignore-'));
+    try {
+      execFileSync('git', ['init'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      await fs.mkdir(path.join(tmpDir, 'generated'), { recursive: true });
+      await fs.writeFile(path.join(tmpDir, '.gitignore'), 'generated/\n');
+      await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!generated/typed-client.ts\n');
+      await fs.writeFile(path.join(tmpDir, 'generated', 'typed-client.ts'), 'export const typed = true;\n');
+      await fs.writeFile(path.join(tmpDir, 'generated', 'other.ts'), 'export const other = true;\n');
+
+      const filtered = filterRepositoryPathsSync(tmpDir, [
+        'generated/typed-client.ts',
+        'generated/other.ts',
+        'src/index.ts',
+      ]);
+      expect(filtered).toEqual([
+        'generated/typed-client.ts',
+        'src/index.ts',
+      ]);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('supports custom profile ignore files', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ignore-profile-test-'));
     try {
@@ -279,6 +322,36 @@ describe('filterRepositoryPathsSync', () => {
         'src/deploy-v1',
         'apps/site/deploy-v1',
       ]);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps deleted tracked paths in relevance filtering', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ignore-deleted-tracked-'));
+    try {
+      execFileSync('git', ['init'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      execFileSync('git', ['config', 'user.name', 'GitNexus Test'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      await fs.writeFile(path.join(tmpDir, '.gitignore'), 'force-added.ts\n');
+      await fs.writeFile(path.join(tmpDir, 'force-added.ts'), 'export const tracked = true;\n');
+
+      execFileSync('git', ['add', '-A'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      execFileSync('git', ['add', '-f', 'force-added.ts'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      execFileSync('git', ['commit', '-q', '-m', 'initial tracked file'], { cwd: tmpDir, stdio: 'ignore' });
+      const previousCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: tmpDir,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim();
+
+      await fs.rm(path.join(tmpDir, 'force-added.ts'));
+      execFileSync('git', ['add', '-A'], { cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      execFileSync('git', ['commit', '-q', '-m', 'delete tracked file'], { cwd: tmpDir, stdio: 'ignore' });
+
+      const result = getRelevantChangedFilesSinceCommit(tmpDir, previousCommit);
+      expect(result.allChangedFiles).toContain('force-added.ts');
+      expect(result.relevantChangedFiles).toContain('force-added.ts');
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }

@@ -99,6 +99,29 @@ export function checkStaleness(
       };
     }
 
+    try {
+      execFileSync(
+        'git', ['cat-file', '-e', `${normalizedLastCommit}^{commit}`],
+        { cwd: repoPath, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+      );
+    } catch {
+      try {
+        const isRepo = execFileSync(
+          'git', ['rev-parse', '--is-inside-work-tree'],
+          { cwd: repoPath, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+        ).trim();
+        if (isRepo === 'true') {
+          return {
+            isStale: true,
+            commitsBehind: 1,
+            hint: `⚠️ Indexed commit ${normalizedLastCommit.slice(0, 12)} is no longer available in repository history. Run analyze tool to update.`,
+          };
+        }
+      } catch {
+        throw new Error('Repository validation failed');
+      }
+    }
+
     // Get count of commits between lastCommit and HEAD
     const result = execFileSync(
       'git', ['rev-list', '--count', `${normalizedLastCommit}..HEAD`],

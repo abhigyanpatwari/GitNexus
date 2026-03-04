@@ -205,6 +205,8 @@ interface CompiledCustomPattern {
   segments: string[];
 }
 
+type CustomPatternDecision = 'none' | 'ignore' | 'unignore';
+
 const customPatternCache = new Map<string, CompiledCustomPattern[]>();
 const segmentRegexCache = new Map<string, RegExp>();
 
@@ -424,24 +426,24 @@ const loadCustomPatterns = (repoPath: string, options: RepoIgnoreOptions = {}): 
   return compiled;
 };
 
-const isIgnoredByCustomPatterns = (
+const getCustomPatternDecision = (
   repoPath: string,
   normalizedPath: string,
   options: RepoIgnoreOptions = {},
-): boolean => {
+): CustomPatternDecision => {
   const patterns = loadCustomPatterns(repoPath, options);
   if (patterns.length === 0) {
-    return false;
+    return 'none';
   }
 
-  let ignored = false;
+  let decision: CustomPatternDecision = 'none';
   for (const pattern of patterns) {
     if (matchesPattern(pattern, normalizedPath)) {
-      ignored = !pattern.negate;
+      decision = pattern.negate ? 'unignore' : 'ignore';
     }
   }
 
-  return ignored;
+  return decision;
 };
 
 const getGitIgnoredSet = (repoPath: string, relativePaths: string[]): Set<string> => {
@@ -528,9 +530,15 @@ export const filterRepositoryPathsSync = (
   repoPath: string,
   relativePaths: string[],
   options: RepoIgnoreOptions = {},
+  forceIncludePaths: Set<string> = new Set(),
 ): string[] => {
+  // Deterministic precedence:
+  // 1) custom ignore rules (`.gitnexusignore*`) can force ignore or unignore
+  // 2) built-in defaults apply only when no custom unignore matched
+  // 3) `.gitignore` applies last, except custom unignore and deleted paths
   const kept: string[] = [];
   const seen = new Set<string>();
+  const customDecisions = new Map<string, CustomPatternDecision>();
 
   for (const rawPath of relativePaths) {
     const normalized = normalizePath(rawPath || '');
@@ -539,17 +547,36 @@ export const filterRepositoryPathsSync = (
     }
     seen.add(normalized);
 
-    if (shouldIgnorePath(normalized)) {
+    if (forceIncludePaths.has(normalized)) {
+      kept.push(normalized);
       continue;
     }
-    if (isIgnoredByCustomPatterns(repoPath, normalized, options)) {
+
+    const customDecision = getCustomPatternDecision(repoPath, normalized, options);
+    customDecisions.set(normalized, customDecision);
+
+    if (customDecision === 'ignore') {
+      continue;
+    }
+    if (customDecision !== 'unignore' && shouldIgnorePath(normalized)) {
       continue;
     }
     kept.push(normalized);
   }
 
   const gitIgnored = getGitIgnoredSet(repoPath, kept);
-  return kept.filter(file => !gitIgnored.has(file));
+  return kept.filter((file) => {
+    if (forceIncludePaths.has(file)) {
+      return true;
+    }
+
+    const customDecision = customDecisions.get(file);
+    if (customDecision === 'unignore') {
+      return true;
+    }
+
+    return !gitIgnored.has(file);
+  });
 };
 
 export const getRelevantChangedFilesSinceCommit = (
@@ -572,7 +599,24 @@ export const getRelevantChangedFilesSinceCommit = (
       .split(/\r?\n/g)
       .map(normalizePath)
       .filter(Boolean);
-    const relevantChangedFiles = filterRepositoryPathsSync(repoPath, allChangedFiles, options);
+
+    let deletedPaths = new Set<string>();
+    const deletedDiff = spawnSync('git', ['diff', '--name-only', '--diff-filter=D', `${lastCommit}..HEAD`], {
+      cwd: repoPath,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      maxBuffer: GIT_IO_MAX_BUFFER,
+    });
+    if (!deletedDiff.error && deletedDiff.status === 0) {
+      deletedPaths = new Set(
+        deletedDiff.stdout
+          .split(/\r?\n/g)
+          .map(normalizePath)
+          .filter(Boolean),
+      );
+    }
+
+    const relevantChangedFiles = filterRepositoryPathsSync(repoPath, allChangedFiles, options, deletedPaths);
     return { allChangedFiles, relevantChangedFiles };
   } catch {
     return { allChangedFiles: [], relevantChangedFiles: [] };

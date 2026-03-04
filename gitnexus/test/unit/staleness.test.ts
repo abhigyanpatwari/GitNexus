@@ -77,6 +77,21 @@ describe('checkStaleness', () => {
     }
   });
 
+  it('marks stale when indexed commit hash is no longer valid', async () => {
+    const repoPath = await initRepo('gn-stale-invalid-commit-');
+    try {
+      await fs.mkdir(path.join(repoPath, 'src'), { recursive: true });
+      await fs.writeFile(path.join(repoPath, 'src', 'index.ts'), 'export const version = 1;\n');
+      commitAll(repoPath, 'initial');
+
+      const result = checkStaleness(repoPath, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+      expect(result.isStale).toBe(true);
+      expect(result.hint).toContain('no longer available');
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
   it('treats ignored artifact-only changes as up-to-date', async () => {
     const repoPath = await initRepo('gn-stale-ignored-');
     try {
