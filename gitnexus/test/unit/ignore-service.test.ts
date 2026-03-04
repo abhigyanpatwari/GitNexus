@@ -375,10 +375,16 @@ describe('large git outputs', () => {
         stdio: ['pipe', 'pipe', 'pipe'],
       }).trim();
 
-      const longDir = path.join(tmpDir, 'src');
+      const longDir = path.join(
+        tmpDir,
+        'src',
+        'segment-a-1234567890',
+        'segment-b-1234567890',
+        'segment-c-1234567890',
+      );
       await fs.mkdir(longDir, { recursive: true });
-      const fileCount = 5000;
-      const longNameCore = 'segmentwithlotsofcharacters1234567890'.repeat(6); // 216 chars
+      const fileCount = 9000;
+      const longNameCore = 'segmentwithlotsofcharacters1234567890'.repeat(2); // 72 chars
       for (let i = 0; i < fileCount; i += 1) {
         await fs.writeFile(
           path.join(longDir, `${longNameCore}-${String(i).padStart(5, '0')}.ts`),
