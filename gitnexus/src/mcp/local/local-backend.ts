@@ -846,7 +846,7 @@ export class LocalBackend {
       let whereClause: string;
       let queryParams: Record<string, any>;
       if (file_path) {
-        whereClause = `WHERE n.name = $symName AND n.filePath CONTAINS $filePath`;
+        whereClause = `WHERE n.name = $symName AND n.filePath ENDS WITH $filePath`;
         queryParams = { symName: name!, filePath: file_path };
       } else if (isQualified) {
         whereClause = `WHERE n.id = $symName OR n.name = $symName`;
@@ -1089,7 +1089,7 @@ export class LocalBackend {
       const normalizedFile = file.replace(/\\/g, '/');
       try {
         const symbols = await executeParameterized(repo.id, `
-          MATCH (n) WHERE n.filePath CONTAINS $filePath
+          MATCH (n) WHERE n.filePath = $filePath
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
           LIMIT 20
         `, { filePath: normalizedFile });

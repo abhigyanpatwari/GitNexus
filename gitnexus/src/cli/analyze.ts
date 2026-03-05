@@ -284,8 +284,8 @@ export const analyzeCommand = async (
       files: pipelineResult.totalFileCount,
       nodes: stats.nodes,
       edges: stats.edges,
-      communities: pipelineResult.communityResult?.stats.totalCommunities,
-      processes: pipelineResult.processResult?.stats.totalProcesses,
+      communities: pipelineResult.communityResult?.stats.totalCommunities || 0,
+      processes: pipelineResult.processResult?.stats.totalProcesses || 0,
     },
   };
   await saveMeta(storagePath, meta);
@@ -307,9 +307,9 @@ export const analyzeCommand = async (
     files: pipelineResult.totalFileCount,
     nodes: stats.nodes,
     edges: stats.edges,
-    communities: pipelineResult.communityResult?.stats.totalCommunities,
+    communities: pipelineResult.communityResult?.stats.totalCommunities || 0,
     clusters: aggregatedClusterCount,
-    processes: pipelineResult.processResult?.stats.totalProcesses,
+    processes: pipelineResult.processResult?.stats.totalProcesses || 0,
   });
 
   await closeKuzu();
