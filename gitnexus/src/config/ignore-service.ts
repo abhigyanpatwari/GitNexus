@@ -237,3 +237,32 @@ export const shouldIgnorePath = (filePath: string): boolean => {
   return false;
 }
 
+/**
+ * Build glob ignore patterns from the same ignore sources used by shouldIgnorePath.
+ * This lets scanners prune ignored paths earlier and avoid post-filter passes.
+ */
+export const buildGlobIgnorePatterns = (): string[] => {
+  const patterns = new Set<string>();
+
+  for (const entry of DEFAULT_IGNORE_LIST) {
+    patterns.add(`**/${entry}`);
+    patterns.add(`**/${entry}/**`);
+  }
+
+  for (const fileName of IGNORED_FILES) {
+    patterns.add(`**/${fileName}`);
+  }
+
+  for (const ext of IGNORED_EXTENSIONS) {
+    patterns.add(`**/*${ext}`);
+  }
+
+  // Keep shouldIgnorePath's generated-file heuristics aligned for glob pre-filtering.
+  patterns.add('**/*.bundle.*');
+  patterns.add('**/*.chunk.*');
+  patterns.add('**/*.generated.*');
+  patterns.add('**/*.d.ts');
+
+  return Array.from(patterns);
+};
+

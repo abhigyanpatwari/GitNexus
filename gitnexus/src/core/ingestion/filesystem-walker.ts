@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { glob } from 'glob';
-import { shouldIgnorePath } from '../../config/ignore-service.js';
+import { buildGlobIgnorePatterns } from '../../config/ignore-service.js';
 
 export interface FileEntry {
   path: string;
@@ -36,15 +36,17 @@ export const walkRepositoryPaths = async (
     cwd: repoPath,
     nodir: true,
     dot: false,
+    posix: true,
+    nocase: true,
+    ignore: buildGlobIgnorePatterns(),
   });
 
-  const filtered = files.filter(file => !shouldIgnorePath(file));
   const entries: ScannedFile[] = [];
   let processed = 0;
   let skippedLarge = 0;
 
-  for (let start = 0; start < filtered.length; start += READ_CONCURRENCY) {
-    const batch = filtered.slice(start, start + READ_CONCURRENCY);
+  for (let start = 0; start < files.length; start += READ_CONCURRENCY) {
+    const batch = files.slice(start, start + READ_CONCURRENCY);
     const results = await Promise.allSettled(
       batch.map(async relativePath => {
         const fullPath = path.join(repoPath, relativePath);
@@ -53,17 +55,18 @@ export const walkRepositoryPaths = async (
           skippedLarge++;
           return null;
         }
-        return { path: relativePath.replace(/\\/g, '/'), size: stat.size };
+        return { path: relativePath, size: stat.size };
       })
     );
 
-    for (const result of results) {
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
       processed++;
       if (result.status === 'fulfilled' && result.value !== null) {
         entries.push(result.value);
-        onProgress?.(processed, filtered.length, result.value.path);
+        onProgress?.(processed, files.length, result.value.path);
       } else {
-        onProgress?.(processed, filtered.length, batch[results.indexOf(result)]);
+        onProgress?.(processed, files.length, batch[i]);
       }
     }
   }
