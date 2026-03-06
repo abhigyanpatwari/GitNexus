@@ -45,6 +45,7 @@ function ensureHeap(): boolean {
 export interface AnalyzeOptions {
   force?: boolean;
   embeddings?: boolean;
+  mpcOnly?: boolean;
 }
 
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
@@ -303,14 +304,17 @@ export const analyzeCommand = async (
     aggregatedClusterCount = Array.from(groups.values()).filter(count => count >= 5).length;
   }
 
-  const aiContext = await generateAIContextFiles(repoPath, storagePath, projectName, {
-    files: pipelineResult.totalFileCount,
-    nodes: stats.nodes,
-    edges: stats.edges,
-    communities: pipelineResult.communityResult?.stats.totalCommunities,
-    clusters: aggregatedClusterCount,
-    processes: pipelineResult.processResult?.stats.totalProcesses,
-  });
+  // Skip AI context file generation when --mcp-only is set
+  const aiContext = options.mpcOnly
+    ? { files: [], hooks: [] }
+    : await generateAIContextFiles(repoPath, storagePath, projectName, {
+        files: pipelineResult.totalFileCount,
+        nodes: stats.nodes,
+        edges: stats.edges,
+        communities: pipelineResult.communityResult?.stats.totalCommunities,
+        clusters: aggregatedClusterCount,
+        processes: pipelineResult.processResult?.stats.totalProcesses,
+      });
 
   await closeKuzu();
   // Note: we intentionally do NOT call disposeEmbedder() here.
