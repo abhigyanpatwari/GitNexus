@@ -46,6 +46,7 @@ export interface AnalyzeOptions {
   force?: boolean;
   embeddings?: boolean;
   verbose?: boolean;
+  userIgnore?: boolean;
 }
 
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
@@ -189,11 +190,17 @@ export const analyzeCommand = async (
   }
 
   // ── Phase 1: Full Pipeline (0–60%) ─────────────────────────────────
-  const pipelineResult = await runPipelineFromRepo(repoPath, (progress) => {
-    const phaseLabel = PHASE_LABELS[progress.phase] || progress.phase;
-    const scaled = Math.round(progress.percent * 0.6);
-    updateBar(scaled, phaseLabel);
-  });
+  const pipelineResult = await runPipelineFromRepo(
+    repoPath,
+    (progress) => {
+      const phaseLabel = PHASE_LABELS[progress.phase] || progress.phase;
+      const scaled = Math.round(progress.percent * 0.6);
+      updateBar(scaled, phaseLabel);
+    },
+    {
+      useUserIgnoreFile: options?.userIgnore ?? true,
+    },
+  );
 
   // ── Phase 2: KuzuDB (60–85%) ──────────────────────────────────────
   updateBar(60, 'Loading into KuzuDB...');

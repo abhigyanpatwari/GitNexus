@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { shouldIgnorePath } from '../../src/config/ignore-service.js';
+import { describe, it, expect, vi } from 'vitest';
+import fs from 'fs/promises';
+import { loadUserIgnoreRules, parseUserIgnoreRules, shouldIgnorePath, shouldIgnorePathByUserRules } from '../../src/config/ignore-service.js';
 
 describe('shouldIgnorePath', () => {
   describe('version control directories', () => {
@@ -74,6 +75,7 @@ describe('shouldIgnorePath', () => {
       'composer.lock', 'Cargo.lock', 'go.sum',
       '.gitignore', '.gitattributes', '.npmrc', '.editorconfig',
       '.prettierrc', '.eslintignore', '.dockerignore',
+      '.gitnexusignore',
       'LICENSE', 'LICENSE.md', 'CHANGELOG.md',
       '.env', '.env.local', '.env.production',
     ])('ignores %s', (fileName) => {
@@ -133,5 +135,62 @@ describe('shouldIgnorePath', () => {
     ])('does not ignore source file %s', (filePath) => {
       expect(shouldIgnorePath(filePath)).toBe(false);
     });
+  });
+});
+
+describe('user ignore rules', () => {
+  it('supports comments, blank lines, directory patterns and glob patterns', () => {
+    const rules = parseUserIgnoreRules(`
+# comment
+data/
+**/*.json
+`);
+
+    expect(shouldIgnorePathByUserRules('data/sample.txt', rules)).toBe(true);
+    expect(shouldIgnorePathByUserRules('nested/data/sample.txt', rules)).toBe(true);
+    expect(shouldIgnorePathByUserRules('src/config.json', rules)).toBe(true);
+    expect(shouldIgnorePathByUserRules('src/index.ts', rules)).toBe(false);
+  });
+
+  it('supports negation rules', () => {
+    const rules = parseUserIgnoreRules(`
+**/*.json
+!src/keep.json
+`);
+
+    expect(shouldIgnorePathByUserRules('src/skip.json', rules)).toBe(true);
+    expect(shouldIgnorePathByUserRules('src/keep.json', rules)).toBe(false);
+  });
+
+  it('supports root anchored rules with leading slash', () => {
+    const rules = parseUserIgnoreRules('/root-only/**');
+
+    expect(shouldIgnorePathByUserRules('root-only/file.txt', rules)).toBe(true);
+    expect(shouldIgnorePathByUserRules('nested/root-only/file.txt', rules)).toBe(false);
+  });
+
+  it('treats bare patterns as matching both the target and descendants', () => {
+    const rules = parseUserIgnoreRules('data');
+
+    expect(shouldIgnorePathByUserRules('data', rules)).toBe(true);
+    expect(shouldIgnorePathByUserRules('data/sample.json', rules)).toBe(true);
+    expect(shouldIgnorePathByUserRules('nested/data/sample.json', rules)).toBe(true);
+  });
+});
+
+describe('loadUserIgnoreRules', () => {
+  it('returns empty rules when ignore file does not exist', async () => {
+    const rules = await loadUserIgnoreRules('/definitely/does-not-exist');
+    expect(rules).toEqual([]);
+  });
+
+  it('rethrows non-missing file system errors', async () => {
+    const readFileSpy = vi.spyOn(fs, 'readFile').mockRejectedValueOnce(
+      Object.assign(new Error('permission denied'), { code: 'EACCES' }),
+    );
+
+    await expect(loadUserIgnoreRules('/tmp/repo')).rejects.toThrow('permission denied');
+
+    readFileSpy.mockRestore();
   });
 });

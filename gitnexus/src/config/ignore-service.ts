@@ -1,3 +1,7 @@
+import fs from 'fs/promises';
+import path from 'path';
+import { minimatch } from 'minimatch';
+
 const DEFAULT_IGNORE_LIST = new Set([
     // Version Control
     '.git',
@@ -147,6 +151,8 @@ const IGNORED_EXTENSIONS = new Set([
     '.iso', '.img', '.dmg',
 ]);
 
+export const USER_IGNORE_FILE = '.gitnexusignore';
+
 // Files to ignore by exact name
 const IGNORED_FILES = new Set([
     'package-lock.json',
@@ -166,6 +172,7 @@ const IGNORED_FILES = new Set([
     '.prettierignore',
     '.eslintignore',
     '.dockerignore',
+    USER_IGNORE_FILE,
     'Thumbs.db',
     '.DS_Store',
     'LICENSE',
@@ -184,6 +191,102 @@ const IGNORED_FILES = new Set([
     '.env.example',
 ]);
 
+interface UserIgnoreRule {
+  negated: boolean;
+  patterns: string[];
+}
+
+const USER_IGNORE_MATCH_OPTIONS = {
+  dot: true,
+  nocase: process.platform === 'win32',
+};
+
+const normalizeGlobPath = (value: string): string =>
+  value.replace(/\\/g, '/').replace(/^\.\/+/, '');
+
+const parseUserIgnoreRule = (line: string): UserIgnoreRule | null => {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('#')) return null;
+
+  const negated = trimmed.startsWith('!');
+  let pattern = negated ? trimmed.slice(1).trim() : trimmed;
+  if (!pattern) return null;
+
+  const anchored = pattern.startsWith('/');
+  pattern = normalizeGlobPath(pattern.replace(/^\/+/, ''));
+  if (!pattern) return null;
+
+  const patterns = new Set<string>();
+  const addPattern = (candidate: string) => {
+    if (!candidate) return;
+    patterns.add(candidate);
+    if (!anchored && !candidate.startsWith('**/')) {
+      patterns.add(`**/${candidate}`);
+    }
+  };
+
+  if (pattern.endsWith('/')) {
+    const base = pattern.replace(/\/+$/, '');
+    if (!base) return null;
+    addPattern(base);
+    addPattern(`${base}/**`);
+  } else {
+    addPattern(pattern);
+
+    // For non-glob patterns, also match directory descendants.
+    const hasGlobMagic = /[*?[\]{}()!+@]/.test(pattern);
+    if (!hasGlobMagic) {
+      addPattern(`${pattern}/**`);
+    }
+  }
+
+  return {
+    negated,
+    patterns: Array.from(patterns),
+  };
+};
+
+export const parseUserIgnoreRules = (content: string): UserIgnoreRule[] =>
+  content
+    .split(/\r?\n/)
+    .map(parseUserIgnoreRule)
+    .filter((rule): rule is UserIgnoreRule => rule !== null);
+
+export const loadUserIgnoreRules = async (
+  repoPath: string,
+  opts?: { enabled?: boolean; fileName?: string },
+): Promise<UserIgnoreRule[]> => {
+  if (opts?.enabled === false) return [];
+
+  const fileName = opts?.fileName || USER_IGNORE_FILE;
+  const filePath = path.join(repoPath, fileName);
+  try {
+    const content = await fs.readFile(filePath, 'utf-8');
+    return parseUserIgnoreRules(content);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return [];
+    }
+    throw error;
+  }
+};
+
+export const shouldIgnorePathByUserRules = (filePath: string, rules: UserIgnoreRule[]): boolean => {
+  if (rules.length === 0) return false;
+
+  const normalizedPath = normalizeGlobPath(filePath);
+  let ignored = false;
+
+  for (const rule of rules) {
+    const matched = rule.patterns.some(pattern => minimatch(normalizedPath, pattern, USER_IGNORE_MATCH_OPTIONS));
+    if (matched) {
+      ignored = !rule.negated;
+    }
+  }
+
+  return ignored;
+};
 
 
 export const shouldIgnorePath = (filePath: string): boolean => {
@@ -236,4 +339,3 @@ export const shouldIgnorePath = (filePath: string): boolean => {
 
   return false;
 }
-

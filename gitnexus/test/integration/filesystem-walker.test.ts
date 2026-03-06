@@ -13,12 +13,15 @@ describe('filesystem-walker', () => {
     // Create test directory structure
     await fs.mkdir(path.join(tmpDir, 'src'), { recursive: true });
     await fs.mkdir(path.join(tmpDir, 'src', 'components'), { recursive: true });
+    await fs.mkdir(path.join(tmpDir, 'data'), { recursive: true });
     await fs.mkdir(path.join(tmpDir, 'node_modules', 'lodash'), { recursive: true });
     await fs.mkdir(path.join(tmpDir, '.git'), { recursive: true });
 
     await fs.writeFile(path.join(tmpDir, 'src', 'index.ts'), 'export const main = () => {}');
     await fs.writeFile(path.join(tmpDir, 'src', 'utils.ts'), 'export const helper = () => {}');
     await fs.writeFile(path.join(tmpDir, 'src', 'components', 'Button.tsx'), 'export const Button = () => <div/>');
+    await fs.writeFile(path.join(tmpDir, 'src', 'keep.json'), '{"keep": true}');
+    await fs.writeFile(path.join(tmpDir, 'data', 'sample.json'), '{"sample": true}');
     await fs.writeFile(path.join(tmpDir, 'node_modules', 'lodash', 'index.js'), 'module.exports = {}');
     await fs.writeFile(path.join(tmpDir, '.git', 'HEAD'), 'ref: refs/heads/main');
     await fs.writeFile(path.join(tmpDir, 'package.json'), '{}');
@@ -104,6 +107,26 @@ describe('filesystem-walker', () => {
       } finally {
         await fs.rm(emptyDir, { recursive: true, force: true });
       }
+    });
+
+    it('applies .gitnexusignore rules by default', async () => {
+      await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), 'data/\n**/*.json\n!src/keep.json\n');
+
+      const files = await walkRepositoryPaths(tmpDir);
+      const paths = files.map(f => f.path.replace(/\\/g, '/'));
+
+      expect(paths).not.toContain('data/sample.json');
+      expect(paths).toContain('src/keep.json');
+    });
+
+    it('can disable user ignore file rules', async () => {
+      await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), 'data/\n**/*.json\n');
+
+      const files = await walkRepositoryPaths(tmpDir, undefined, { useUserIgnoreFile: false });
+      const paths = files.map(f => f.path.replace(/\\/g, '/'));
+
+      expect(paths).toContain('data/sample.json');
+      expect(paths).toContain('src/keep.json');
     });
   });
 

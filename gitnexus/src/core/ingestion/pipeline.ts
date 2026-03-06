@@ -28,9 +28,15 @@ const CHUNK_BYTE_BUDGET = 20 * 1024 * 1024; // 20MB
 /** Max AST trees to keep in LRU cache */
 const AST_CACHE_CAP = 50;
 
+export interface PipelineOptions {
+  useUserIgnoreFile?: boolean;
+  userIgnoreFileName?: string;
+}
+
 export const runPipelineFromRepo = async (
   repoPath: string,
-  onProgress: (progress: PipelineProgress) => void
+  onProgress: (progress: PipelineProgress) => void,
+  options?: PipelineOptions,
 ): Promise<PipelineResult> => {
   const graph = createKnowledgeGraph();
   const symbolTable = createSymbolTable();
@@ -50,16 +56,23 @@ export const runPipelineFromRepo = async (
       message: 'Scanning repository...',
     });
 
-    const scannedFiles = await walkRepositoryPaths(repoPath, (current, total, filePath) => {
-      const scanProgress = Math.round((current / total) * 15);
-      onProgress({
-        phase: 'extracting',
-        percent: scanProgress,
-        message: 'Scanning repository...',
-        detail: filePath,
-        stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
-      });
-    });
+    const scannedFiles = await walkRepositoryPaths(
+      repoPath,
+      (current, total, filePath) => {
+        const scanProgress = Math.round((current / total) * 15);
+        onProgress({
+          phase: 'extracting',
+          percent: scanProgress,
+          message: 'Scanning repository...',
+          detail: filePath,
+          stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+        });
+      },
+      {
+        useUserIgnoreFile: options?.useUserIgnoreFile ?? true,
+        userIgnoreFileName: options?.userIgnoreFileName,
+      },
+    );
 
     const totalFiles = scannedFiles.length;
 

@@ -137,6 +137,7 @@ gitnexus analyze [path]           # Index a repository (or update stale index)
 gitnexus analyze --force          # Force full re-index
 gitnexus analyze --embeddings     # Enable embedding generation (slower, better search)
 gitnexus analyze --verbose        # Log skipped files when parsers are unavailable
+gitnexus analyze --no-user-ignore # Ignore .gitnexusignore and use built-in ignore rules only
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI connection
 gitnexus list                    # List all indexed repositories
@@ -237,6 +238,33 @@ flowchart TD
 ```
 
 **How it works:** Each `gitnexus analyze` stores the index in `.gitnexus/` inside the repo (portable, gitignored) and registers a pointer in `~/.gitnexus/registry.json`. When an AI agent starts, the MCP server reads the registry and can serve any indexed repo. KuzuDB connections are opened lazily on first query and evicted after 5 minutes of inactivity (max 5 concurrent). If only one repo is indexed, the `repo` parameter is optional on all tools — agents don't need to change anything.
+
+### Index Scope Control (`.gitnexusignore`)
+
+By default, `gitnexus analyze` applies:
+
+1. Built-in ignore rules (for example `node_modules`, build artifacts, binary formats)
+2. Your repo's optional `.gitnexusignore` file (if present)
+
+Use `.gitnexusignore` to exclude non-core paths from indexing without changing GitNexus defaults.
+
+Example:
+
+```gitignore
+# Ignore domain data / artifacts
+data/
+exports/
+**/*.json
+
+# Keep a specific JSON config indexed
+!src/config/critical-schema.json
+```
+
+If you want to temporarily ignore `.gitnexusignore` and index using built-in rules only:
+
+```bash
+gitnexus analyze --no-user-ignore
+```
 
 ---
 

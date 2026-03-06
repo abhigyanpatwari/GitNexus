@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { glob } from 'glob';
-import { shouldIgnorePath } from '../../config/ignore-service.js';
+import { loadUserIgnoreRules, shouldIgnorePath, shouldIgnorePathByUserRules, USER_IGNORE_FILE } from '../../config/ignore-service.js';
 
 export interface FileEntry {
   path: string;
@@ -19,6 +19,11 @@ export interface FilePath {
   path: string;
 }
 
+export interface WalkRepositoryOptions {
+  useUserIgnoreFile?: boolean;
+  userIgnoreFileName?: string;
+}
+
 const READ_CONCURRENCY = 32;
 
 /** Skip files larger than 512KB — they're usually generated/vendored and crash tree-sitter */
@@ -30,15 +35,24 @@ const MAX_FILE_SIZE = 512 * 1024;
  */
 export const walkRepositoryPaths = async (
   repoPath: string,
-  onProgress?: (current: number, total: number, filePath: string) => void
+  onProgress?: (current: number, total: number, filePath: string) => void,
+  options?: WalkRepositoryOptions,
 ): Promise<ScannedFile[]> => {
+  const userIgnoreRules = await loadUserIgnoreRules(repoPath, {
+    enabled: options?.useUserIgnoreFile ?? true,
+    fileName: options?.userIgnoreFileName || USER_IGNORE_FILE,
+  });
+
   const files = await glob('**/*', {
     cwd: repoPath,
     nodir: true,
     dot: false,
   });
 
-  const filtered = files.filter(file => !shouldIgnorePath(file));
+  const filtered = files.filter(file =>
+    !shouldIgnorePath(file) &&
+    !shouldIgnorePathByUserRules(file, userIgnoreRules),
+  );
   const entries: ScannedFile[] = [];
   let processed = 0;
   let skippedLarge = 0;
