@@ -13,6 +13,9 @@
   "bugs": {
     "url": "https://github.com/abhigyanpatwari/GitNexus/issues"
   },
+  "overrides": {
+    "onnxruntime-node": "1.24.3"
+  },
   "keywords": [
     "mcp",
     "model-context-protocol",
