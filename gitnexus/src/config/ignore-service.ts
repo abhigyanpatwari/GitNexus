@@ -186,13 +186,65 @@ const IGNORED_FILES = new Set([
 
 
 
+// User-defined ignore patterns loaded from .gitnexusignore
+let userIgnorePatterns: string[] = [];
+let userIgnoreLoaded = false;
+
+/**
+ * Load .gitnexusignore from the repo root. Called once per analysis.
+ * Format: one pattern per line, # comments, blank lines ignored.
+ * Patterns are path prefixes (e.g., "app/engine/source/") or
+ * directory names (e.g., "workspace") matched against path segments.
+ */
+export const loadIgnoreFile = async (repoPath: string): Promise<void> => {
+  if (userIgnoreLoaded) return;
+  userIgnoreLoaded = true;
+
+  const fs = await import('fs/promises');
+  const path = await import('path');
+  const ignorePath = path.join(repoPath, '.gitnexusignore');
+
+  try {
+    const content = await fs.readFile(ignorePath, 'utf-8');
+    userIgnorePatterns = content
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0 && !line.startsWith('#'));
+  } catch {
+    // No .gitnexusignore file — that's fine
+    userIgnorePatterns = [];
+  }
+};
+
+/** Reset loaded state (for testing or re-indexing) */
+export const resetIgnoreFile = (): void => {
+  userIgnorePatterns = [];
+  userIgnoreLoaded = false;
+};
+
 export const shouldIgnorePath = (filePath: string): boolean => {
   const normalizedPath = filePath.replace(/\\/g, '/');
   const parts = normalizedPath.split('/');
   const fileName = parts[parts.length - 1];
   const fileNameLower = fileName.toLowerCase();
 
-  // Check if any path segment is in ignore list
+  // Check user-defined .gitnexusignore patterns first
+  for (const pattern of userIgnorePatterns) {
+    // Path prefix match: "app/engine/source/" matches "app/engine/source/foo.ts"
+    if (pattern.includes('/')) {
+      const cleanPattern = pattern.replace(/\/+$/, '');
+      if (normalizedPath.startsWith(cleanPattern + '/') || normalizedPath === cleanPattern) {
+        return true;
+      }
+    } else {
+      // Directory name match: "workspace" matches any path segment
+      if (parts.includes(pattern)) {
+        return true;
+      }
+    }
+  }
+
+  // Check if any path segment is in default ignore list
   for (const part of parts) {
     if (DEFAULT_IGNORE_LIST.has(part)) {
       return true;
