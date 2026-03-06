@@ -1,5 +1,6 @@
-import { Search, Settings, HelpCircle, Sparkles, Github, Star, ChevronDown, Activity } from 'lucide-react';
+import { Search, Settings, HelpCircle, ChevronDown, Activity, Sun, Moon } from 'lucide-react';
 import { useAppState } from '../hooks/useAppState';
+import { useTheme } from '../context/ThemeContext';
 import type { RepoSummary } from '../services/server-connection';
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { GraphNode } from '../core/graph/types';
@@ -28,12 +29,10 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
   const {
     projectName,
     graph,
-    openChatPanel,
-    isRightPanelOpen,
-    rightPanelTab,
     setSettingsPanelOpen,
     setTracePanelOpen,
   } = useAppState();
+  const { theme, toggleTheme } = useTheme();
   const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
   const repoDropdownRef = useRef<HTMLDivElement>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -114,15 +113,25 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
   };
 
   return (
-    <header className="flex items-center justify-between px-5 py-3 bg-deep border-b border-dashed border-border-subtle">
+    <header className="flex items-center justify-between px-5 py-3 bg-deep border-b border-border-subtle">
       {/* Left section */}
       <div className="flex items-center gap-4">
         {/* Logo */}
         <div className="flex items-center gap-2.5">
-          <div className="w-7 h-7 flex items-center justify-center bg-gradient-to-br from-accent to-node-interface rounded-md shadow-glow text-white text-sm font-bold">
-            ◇
-          </div>
-          <span className="font-semibold text-[15px] tracking-tight">GitNexus</span>
+          {/* Analog sphere icon */}
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="14" cy="14" r="12" stroke="#0f0f1a" strokeWidth="1.5" fill="none" />
+            <ellipse cx="14" cy="14" rx="6" ry="12" stroke="#0f0f1a" strokeWidth="1" fill="none" />
+            <line x1="2" y1="14" x2="26" y2="14" stroke="#0f0f1a" strokeWidth="1" />
+            <line x1="5" y1="7.5" x2="23" y2="7.5" stroke="#0f0f1a" strokeWidth="0.75" strokeDasharray="1.5 1.5" />
+            <line x1="5" y1="20.5" x2="23" y2="20.5" stroke="#0f0f1a" strokeWidth="0.75" strokeDasharray="1.5 1.5" />
+          </svg>
+          <span
+            className="text-[15px] tracking-widest uppercase text-text-primary"
+            style={{ fontFamily: "'Courier New', Courier, monospace", letterSpacing: '0.18em', fontWeight: 400 }}
+          >
+            Darksphere
+          </span>
         </div>
 
         {/* Project badge / Repo selector dropdown */}
@@ -130,7 +139,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
           <div className="relative" ref={repoDropdownRef}>
             <button
               onClick={() => availableRepos.length >= 2 && setIsRepoDropdownOpen(prev => !prev)}
-              className={`flex items-center gap-2 px-3 py-1.5 bg-surface border border-border-subtle rounded-lg text-sm text-text-secondary transition-colors ${availableRepos.length >= 2 ? 'hover:bg-hover cursor-pointer' : ''}`}
+              className={`flex items-center gap-2 px-3 py-1.5 bg-surface border border-border-subtle text-sm text-text-secondary transition-colors ${availableRepos.length >= 2 ? 'hover:bg-hover cursor-pointer' : ''}`}
             >
               <span className="w-1.5 h-1.5 bg-node-function rounded-full animate-pulse" />
               <span className="truncate max-w-[200px]">{projectName}</span>
@@ -141,7 +150,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
 
             {/* Repo dropdown */}
             {isRepoDropdownOpen && availableRepos.length >= 2 && (
-              <div className="absolute top-full left-0 mt-1 w-72 bg-surface border border-border-subtle rounded-lg shadow-xl overflow-hidden z-50">
+              <div className="absolute top-full left-0 mt-1 w-72 bg-surface border border-border-subtle shadow-xl overflow-hidden z-50">
                 {availableRepos.map((repo) => {
                   const isCurrent = repo.name === projectName;
                   return (
@@ -175,7 +184,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
 
       {/* Center - Search */}
       <div className="flex-1 max-w-md mx-6 relative" ref={searchRef}>
-        <div className="flex items-center gap-2.5 px-3.5 py-2 bg-surface border border-border-subtle rounded-lg transition-all focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
+        <div className="flex items-center gap-2.5 px-3.5 py-2 bg-surface border border-border-subtle transition-all focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
           <Search className="w-4 h-4 text-text-muted flex-shrink-0" />
           <input
             ref={inputRef}
@@ -191,14 +200,14 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
             onKeyDown={handleKeyDown}
             className="flex-1 bg-transparent border-none outline-none text-sm text-text-primary placeholder:text-text-muted"
           />
-          <kbd className="px-1.5 py-0.5 bg-elevated border border-border-subtle rounded text-[10px] text-text-muted font-mono">
+          <kbd className="px-1.5 py-0.5 bg-elevated border border-border-subtle text-[10px] text-text-muted font-mono">
             ⌘K
           </kbd>
         </div>
 
         {/* Search Results Dropdown */}
         {isSearchOpen && searchQuery.trim() && (
-          <div className="absolute top-full left-0 right-0 mt-1 bg-surface border border-border-subtle rounded-lg shadow-xl overflow-hidden z-50">
+          <div className="absolute top-full left-0 right-0 mt-1 bg-surface border border-border-subtle shadow-xl overflow-hidden z-50">
             {searchResults.length === 0 ? (
               <div className="px-4 py-3 text-sm text-text-muted">
                 No nodes found for "{searchQuery}"
@@ -224,7 +233,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
                       {node.properties.name}
                     </span>
                     {/* Node type badge */}
-                    <span className="text-xs text-text-muted px-2 py-0.5 bg-elevated rounded">
+                    <span className="text-xs text-text-muted px-2 py-0.5 bg-elevated">
                       {node.label}
                     </span>
                   </button>
@@ -237,19 +246,6 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
 
       {/* Right section */}
       <div className="flex items-center gap-2">
-        {/* GitHub Star Button */}
-        <a
-          href="https://github.com/abhigyanpatwari/GitNexus"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 px-3.5 py-2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 rounded-lg text-white text-sm font-medium shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-all duration-200 group"
-        >
-          <Github className="w-4 h-4" />
-          <span className="hidden sm:inline">Star if cool</span>
-          <Star className="w-3.5 h-3.5 group-hover:fill-yellow-300 group-hover:text-yellow-300 transition-all" />
-          <span className="hidden sm:inline">✨</span>
-        </a>
-
         {/* Stats */}
         {graph && (
           <div className="flex items-center gap-4 mr-2 text-xs text-text-muted">
@@ -261,38 +257,32 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
         {/* Embedding Status */}
         <EmbeddingStatus />
 
+        {/* Theme toggle */}
+        <button
+          onClick={toggleTheme}
+          className="w-9 h-9 flex items-center justify-center text-text-secondary hover:bg-hover hover:text-text-primary transition-colors border border-border-subtle"
+          title={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
+        >
+          {theme === 'light' ? <Moon className="w-[16px] h-[16px]" /> : <Sun className="w-[16px] h-[16px]" />}
+        </button>
+
         {/* Icon buttons */}
         <button
           onClick={() => setTracePanelOpen(true)}
-          className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-cyan-400 transition-colors"
+          className="w-9 h-9 flex items-center justify-center text-text-secondary hover:bg-hover hover:text-cyan-400 transition-colors"
           title="Agent Trace"
         >
           <Activity className="w-[18px] h-[18px]" />
         </button>
         <button
           onClick={() => setSettingsPanelOpen(true)}
-          className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors"
+          className="w-9 h-9 flex items-center justify-center text-text-secondary hover:bg-hover hover:text-text-primary transition-colors"
           title="AI Settings"
         >
           <Settings className="w-[18px] h-[18px]" />
         </button>
-        <button className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors">
+        <button className="w-9 h-9 flex items-center justify-center text-text-secondary hover:bg-hover hover:text-text-primary transition-colors">
           <HelpCircle className="w-[18px] h-[18px]" />
-        </button>
-
-        {/* AI Button */}
-        <button
-          onClick={openChatPanel}
-          className={`
-            flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-medium transition-all
-            ${isRightPanelOpen && rightPanelTab === 'chat'
-              ? 'bg-accent text-white shadow-glow'
-              : 'bg-gradient-to-r from-accent to-accent-dim text-white shadow-glow hover:shadow-lg hover:-translate-y-0.5'
-            }
-          `}
-        >
-          <Sparkles className="w-4 h-4" />
-          <span>Nexus AI</span>
         </button>
       </div>
     </header>

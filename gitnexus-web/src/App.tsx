@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { AppStateProvider, useAppState } from './hooks/useAppState';
+import { ThemeProvider } from './context/ThemeContext';
 import { DropZone } from './components/DropZone';
 import { LoadingOverlay } from './components/LoadingOverlay';
 import { Header } from './components/Header';
@@ -333,9 +334,11 @@ const AppContent = () => {
 
 function App() {
   return (
-    <AppStateProvider>
-      <AppContent />
-    </AppStateProvider>
+    <ThemeProvider>
+      <AppStateProvider>
+        <AppContent />
+      </AppStateProvider>
+    </ThemeProvider>
   );
 }
 

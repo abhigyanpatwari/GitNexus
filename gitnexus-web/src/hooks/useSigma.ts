@@ -1,4 +1,5 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
+import type { Theme } from '../context/ThemeContext';
 import Sigma from 'sigma';
 import Graph from 'graphology';
 import FA2Layout from 'graphology-layout-forceatlas2/worker';
@@ -28,14 +29,17 @@ const rgbToHex = (r: number, g: number, b: number): string => {
   }).join('');
 };
 
-// Dim a color by mixing with dark background (keeps color hint)
-const dimColor = (hex: string, amount: number): string => {
+// Dim a color — mix toward a background-appropriate neutral so de-emphasized
+// nodes stay faintly visible on both light and dark canvases.
+const dimColor = (hex: string, amount: number, isDark: boolean): string => {
   const rgb = hexToRgb(hex);
-  const darkBg = { r: 18, g: 18, b: 28 }; // #12121c - dark background
+  const bg = isDark
+    ? { r: 15,  g: 15,  b: 15  } // dark canvas: #0f0f0f — true neutral
+    : { r: 198, g: 198, b: 198 }; // light canvas: neutral mid-gray
   return rgbToHex(
-    darkBg.r + (rgb.r - darkBg.r) * amount,
-    darkBg.g + (rgb.g - darkBg.g) * amount,
-    darkBg.b + (rgb.b - darkBg.b) * amount
+    bg.r + (rgb.r - bg.r) * amount,
+    bg.g + (rgb.g - bg.g) * amount,
+    bg.b + (rgb.b - bg.b) * amount
   );
 };
 
@@ -57,6 +61,7 @@ interface UseSigmaOptions {
   blastRadiusNodeIds?: Set<string>;
   animatedNodes?: Map<string, NodeAnimation>;
   visibleEdgeTypes?: EdgeType[];
+  theme?: Theme;
 }
 
 interface UseSigmaReturn {
@@ -133,6 +138,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const blastRadiusRef = useRef<Set<string>>(new Set());
   const animatedNodesRef = useRef<Map<string, NodeAnimation>>(new Map());
   const visibleEdgeTypesRef = useRef<EdgeType[] | null>(null);
+  const themeRef = useRef<Theme>(options.theme || 'light');
   const layoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const [isLayoutRunning, setIsLayoutRunning] = useState(false);
@@ -145,6 +151,18 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     visibleEdgeTypesRef.current = options.visibleEdgeTypes || null;
     sigmaRef.current?.refresh();
   }, [options.highlightedNodeIds, options.blastRadiusNodeIds, options.animatedNodes, options.visibleEdgeTypes]);
+
+  // Sync theme ref and update sigma canvas settings when theme changes
+  useEffect(() => {
+    const t = options.theme || 'light';
+    themeRef.current = t;
+    const sigma = sigmaRef.current;
+    if (!sigma) return;
+    const isDark = t === 'dark';
+    sigma.setSetting('labelColor', { color: isDark ? '#d4d4d4' : '#141414' });
+    sigma.setSetting('defaultEdgeColor', isDark ? '#383838' : '#b0b0b0');
+    sigma.refresh();
+  }, [options.theme]);
 
   // Animation loop for node effects
   useEffect(() => {
@@ -202,31 +220,32 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       labelFont: 'JetBrains Mono, monospace',
       labelSize: 11,
       labelWeight: '500',
-      labelColor: { color: '#e4e4ed' },
-      labelRenderedSizeThreshold: 8,
+      labelColor: { color: '#141414' },
+      labelRenderedSizeThreshold: 5,
       labelDensity: 0.1,
       labelGridCellSize: 70,
       
       defaultNodeColor: '#6b7280',
-      defaultEdgeColor: '#2a2a3a',
+      defaultEdgeColor: '#b0b0b0',
       
       defaultEdgeType: 'curved',
       edgeProgramClasses: {
         curved: EdgeCurveProgram,
       },
       
-      // Custom hover renderer - dark background instead of white
+      // Custom hover renderer — adapts to current theme via themeRef
       defaultDrawNodeHover: (context, data, settings) => {
         const label = data.label;
         if (!label) return;
-        
+        const isDark = themeRef.current === 'dark';
+
         const size = settings.labelSize || 11;
         const font = settings.labelFont || 'JetBrains Mono, monospace';
         const weight = settings.labelWeight || '500';
-        
+
         context.font = `${weight} ${size}px ${font}`;
         const textWidth = context.measureText(label).width;
-        
+
         const nodeSize = data.size || 8;
         const x = data.x;
         const y = data.y - nodeSize - 10;
@@ -234,21 +253,20 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         const paddingY = 5;
         const height = size + paddingY * 2;
         const width = textWidth + paddingX * 2;
-        const radius = 4;
-        
-        // Dark background pill
-        context.fillStyle = '#12121c';
+
+        // Background rect (sharp corners) — white in light, dark in dark
+        context.fillStyle = isDark ? '#1a1a1a' : '#ffffff';
         context.beginPath();
-        context.roundRect(x - width / 2, y - height / 2, width, height, radius);
+        context.rect(x - width / 2, y - height / 2, width, height);
         context.fill();
-        
+
         // Border matching node color
-        context.strokeStyle = data.color || '#6366f1';
+        context.strokeStyle = data.color || '#dc2626';
         context.lineWidth = 2;
         context.stroke();
-        
-        // Label text - light color
-        context.fillStyle = '#f5f5f7';
+
+        // Label text
+        context.fillStyle = isDark ? '#e4e4ed' : '#0f0f1a';
         context.textAlign = 'center';
         context.textBaseline = 'middle';
         context.fillText(label, x, y);
@@ -256,7 +274,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         // Also draw a subtle glow ring around the node
         context.beginPath();
         context.arc(data.x, data.y, nodeSize + 4, 0, Math.PI * 2);
-        context.strokeStyle = data.color || '#6366f1';
+        context.strokeStyle = data.color || '#dc2626';
         context.lineWidth = 2;
         context.globalAlpha = 0.5;
         context.stroke();
@@ -280,6 +298,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         const highlighted = highlightedRef.current;
         const blastRadius = blastRadiusRef.current;
         const animatedNodes = animatedNodesRef.current;
+        const isDark = themeRef.current === 'dark';
         const hasHighlights = highlighted.size > 0;
         const hasBlastRadius = blastRadius.size > 0;
         const isQueryHighlighted = highlighted.has(node);
@@ -335,13 +354,13 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
             res.zIndex = 2;
             res.highlighted = true;
           } else {
-            res.color = dimColor(data.color, 0.15);
+            res.color = dimColor(data.color, 0.15, isDark);
             res.size = (data.size || 8) * 0.4;
             res.zIndex = 0;
           }
           return res;
         }
-        
+
         if (hasHighlights && !currentSelected) {
           if (isQueryHighlighted) {
             res.color = '#06b6d4';
@@ -349,19 +368,19 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
             res.zIndex = 2;
             res.highlighted = true;
           } else {
-            res.color = dimColor(data.color, 0.2);
+            res.color = dimColor(data.color, 0.2, isDark);
             res.size = (data.size || 8) * 0.5;
             res.zIndex = 0;
           }
           return res;
         }
-        
+
         if (currentSelected) {
           const graph = graphRef.current;
           if (graph) {
             const isSelected = node === currentSelected;
             const isNeighbor = graph.hasEdge(node, currentSelected) || graph.hasEdge(currentSelected, node);
-            
+
             if (isSelected) {
               res.color = data.color;
               res.size = (data.size || 8) * 1.8;
@@ -372,7 +391,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
               res.size = (data.size || 8) * 1.3;
               res.zIndex = 1;
             } else {
-              res.color = dimColor(data.color, 0.25);
+              res.color = dimColor(data.color, 0.25, isDark);
               res.size = (data.size || 8) * 0.6;
               res.zIndex = 0;
             }
@@ -397,22 +416,21 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         const currentSelected = selectedNodeRef.current;
         const highlighted = highlightedRef.current;
         const blastRadius = blastRadiusRef.current;
-        const hasHighlights = highlighted.size > 0 || blastRadius.size > 0; // Check BOTH sets
-        
+        const isDark = themeRef.current === 'dark';
+        const hasHighlights = highlighted.size > 0 || blastRadius.size > 0;
+
         if (hasHighlights && !currentSelected) {
           const graph = graphRef.current;
           if (graph) {
             const [source, target] = graph.extremities(edge);
-            
-            // Check if nodes are in EITHER set
+
             const isSourceActive = highlighted.has(source) || blastRadius.has(source);
             const isTargetActive = highlighted.has(target) || blastRadius.has(target);
-            
+
             const bothHighlighted = isSourceActive && isTargetActive;
             const oneHighlighted = isSourceActive || isTargetActive;
-            
+
             if (bothHighlighted) {
-              // If both nodes are in blast radius, use red edge
               if (blastRadius.has(source) && blastRadius.has(target)) {
                 res.color = '#ef4444';
               } else {
@@ -421,30 +439,30 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
               res.size = Math.max(2, (data.size || 1) * 3);
               res.zIndex = 2;
             } else if (oneHighlighted) {
-              res.color = dimColor('#06b6d4', 0.4);
+              res.color = dimColor('#06b6d4', 0.4, isDark);
               res.size = 1;
               res.zIndex = 1;
             } else {
-              res.color = dimColor(data.color, 0.08);
+              res.color = dimColor(data.color, 0.08, isDark);
               res.size = 0.2;
               res.zIndex = 0;
             }
           }
           return res;
         }
-        
+
         if (currentSelected) {
           const graph = graphRef.current;
           if (graph) {
             const [source, target] = graph.extremities(edge);
             const isConnected = source === currentSelected || target === currentSelected;
-            
+
             if (isConnected) {
               res.color = brightenColor(data.color, 1.5);
               res.size = Math.max(3, (data.size || 1) * 4);
               res.zIndex = 2;
             } else {
-              res.color = dimColor(data.color, 0.1);
+              res.color = dimColor(data.color, 0.1, isDark);
               res.size = 0.3;
               res.zIndex = 0;
             }

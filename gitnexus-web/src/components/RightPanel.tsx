@@ -215,9 +215,9 @@ export const RightPanel = () => {
           {/* Chat Tab */}
           <button
             onClick={() => setActiveTab('chat')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'chat'
-              ? 'bg-accent/15 text-accent'
-              : 'text-text-muted hover:text-text-primary hover:bg-hover'
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-colors border-b-2 ${activeTab === 'chat'
+              ? 'border-accent text-text-primary'
+              : 'border-transparent text-text-muted hover:text-text-primary'
               }`}
           >
             <Sparkles className="w-3.5 h-3.5" />
@@ -227,14 +227,14 @@ export const RightPanel = () => {
           {/* Processes Tab */}
           <button
             onClick={() => setActiveTab('processes')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'processes'
-              ? 'bg-accent/15 text-accent'
-              : 'text-text-muted hover:text-text-primary hover:bg-hover'
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-colors border-b-2 ${activeTab === 'processes'
+              ? 'border-accent text-text-primary'
+              : 'border-transparent text-text-muted hover:text-text-primary'
               }`}
           >
             <GitBranch className="w-3.5 h-3.5" />
             <span>Processes</span>
-            <span className="text-[10px] px-1.5 py-0.5 bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white rounded-full font-semibold">
+            <span className="text-[10px] px-1.5 py-0.5 bg-accent text-white font-semibold">
               NEW
             </span>
           </button>
@@ -290,7 +290,7 @@ export const RightPanel = () => {
           <div className="flex-1 overflow-y-auto p-4 scrollbar-thin">
             {chatMessages.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-center px-4">
-                <div className="w-14 h-14 mb-4 flex items-center justify-center bg-gradient-to-br from-accent to-node-interface rounded-xl shadow-glow text-2xl">
+                <div className="w-14 h-14 mb-4 flex items-center justify-center bg-elevated border border-border-default text-2xl">
                   🧠
                 </div>
                 <h3 className="text-base font-medium mb-2">
@@ -304,7 +304,7 @@ export const RightPanel = () => {
                     <button
                       key={suggestion}
                       onClick={() => setChatInput(suggestion)}
-                      className="px-3 py-1.5 bg-elevated border border-border-subtle rounded-full text-xs text-text-secondary hover:border-accent hover:text-text-primary transition-colors"
+                      className="px-3 py-1.5 bg-elevated border border-border-subtle text-xs text-text-secondary hover:border-accent hover:text-text-primary transition-colors"
                     >
                       {suggestion}
                     </button>
@@ -394,7 +394,7 @@ export const RightPanel = () => {
 
           {/* Input */}
           <div className="p-3 bg-surface border-t border-border-subtle">
-            <div className="flex items-end gap-2 px-3 py-2 bg-elevated border border-border-subtle rounded-xl transition-all focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
+            <div className="flex items-end gap-2 px-3 py-2 bg-void border border-border-subtle transition-all focus-within:border-border-default">
               <textarea
                 ref={textareaRef}
                 value={chatInput}
@@ -415,7 +415,7 @@ export const RightPanel = () => {
               {isChatLoading ? (
                 <button
                   onClick={stopChatResponse}
-                  className="w-9 h-9 flex items-center justify-center bg-red-500/80 rounded-md text-white transition-all hover:bg-red-500"
+                  className="w-9 h-9 flex items-center justify-center bg-red-600 text-white transition-colors hover:bg-red-700"
                   title="Stop response"
                 >
                   <Square className="w-3.5 h-3.5 fill-current" />
@@ -424,7 +424,7 @@ export const RightPanel = () => {
                 <button
                   onClick={handleSendMessage}
                   disabled={!chatInput.trim() || isAgentInitializing}
-                  className="w-9 h-9 flex items-center justify-center bg-accent rounded-md text-white transition-all hover:bg-accent-dim disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-9 h-9 flex items-center justify-center bg-accent text-white transition-colors hover:bg-accent-dim disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <Send className="w-3.5 h-3.5" />
                 </button>
