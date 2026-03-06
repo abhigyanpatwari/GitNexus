@@ -118,6 +118,8 @@ interface AppState {
   setServerBaseUrl: (url: string | null) => void;
   availableRepos: RepoSummary[];
   setAvailableRepos: (repos: RepoSummary[]) => void;
+  isServerMode: boolean;
+  setIsServerMode: (isServer: boolean) => void;
   switchRepo: (repoName: string) => Promise<void>;
 
   // Worker API (shared across app)
@@ -159,7 +161,8 @@ interface AppState {
   sendChatMessage: (message: string) => Promise<void>;
   stopChatResponse: () => void;
   clearChat: () => void;
-
+  initializeBackendAgent: (projectName?: string, repoName?: string, backendUrlOverride?: string) => Promise<void>;
+  
   // Code References Panel
   codeReferences: CodeReference[];
   isCodePanelOpen: boolean;
@@ -282,6 +285,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   // Multi-repo switching
   const [serverBaseUrl, setServerBaseUrl] = useState<string | null>(null);
   const [availableRepos, setAvailableRepos] = useState<RepoSummary[]>([]);
+  // Server mode flag
+  const [isServerMode, setIsServerMode] = useState(false);
 
   // Embedding state
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus>('idle');
@@ -484,6 +489,10 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
   // Embedding methods
   const startEmbeddings = useCallback(async (forceDevice?: 'webgpu' | 'wasm'): Promise<void> => {
+    if (isServerMode) {
+      return;
+    }
+
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
 
@@ -494,7 +503,6 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       const proxiedOnProgress = Comlink.proxy((progress: EmbeddingProgress) => {
         setEmbeddingProgress(progress);
 
-        // Update status based on phase
         switch (progress.phase) {
           case 'loading-model':
             setEmbeddingStatus('loading');
@@ -516,16 +524,17 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
       await api.startEmbeddingPipeline(proxiedOnProgress, forceDevice);
     } catch (error: any) {
-      // Check if it's WebGPU not available - let caller handle the dialog
-      if (error?.name === 'WebGPUNotAvailableError' ||
-        error?.message?.includes('WebGPU not available')) {
-        setEmbeddingStatus('idle'); // Reset to idle so user can try again
+      if (
+        error?.name === 'WebGPUNotAvailableError' ||
+        error?.message?.includes('WebGPU not available')
+      ) {
+        setEmbeddingStatus('idle');
       } else {
         setEmbeddingStatus('error');
       }
       throw error;
     }
-  }, []);
+  }, [isServerMode]);
 
   const semanticSearch = useCallback(async (
     query: string,
@@ -603,6 +612,52 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       setIsAgentInitializing(false);
     }
   }, [projectName]);
+
+  const initializeBackendAgent = useCallback(async (
+    projectName?: string,
+    repoName?: string,
+    backendUrlOverride?: string
+  ): Promise<void> => {
+  const api = apiRef.current;
+  const config = getActiveProviderConfig();
+
+  if (!api) throw new Error('Worker not initialized');
+  if (!config) throw new Error('No active LLM provider configured');
+  const backendUrl = backendUrlOverride ?? serverBaseUrl;
+  if (!backendUrl) throw new Error('Server not connected');
+
+  const resolvedRepoName = repoName ?? projectName;
+  if (!resolvedRepoName) {
+    throw new Error('Repository name is required for backend agent initialization');
+  }
+
+  setIsAgentInitializing(true);
+  setAgentError(null);
+
+  try {
+    const fileContentsEntries = Array.from(fileContents.entries());
+    const result = await api.initializeBackendAgent(
+      config,
+      backendUrl,
+      resolvedRepoName,
+      fileContentsEntries,
+      projectName ?? resolvedRepoName,
+    );
+
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to initialize backend agent');
+    }
+
+    setIsAgentReady(true);
+  } catch (error) {
+    setIsAgentReady(false);
+    const message = error instanceof Error ? error.message : String(error);
+    setAgentError(message);
+    throw error;
+  } finally {
+    setIsAgentInitializing(false);
+  }
+}, [serverBaseUrl, fileContents]);
 
   const sendChatMessage = useCallback(async (message: string): Promise<void> => {
     const api = apiRef.current;
@@ -975,6 +1030,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   // Switch to a different repo on the connected server
   const switchRepo = useCallback(async (repoName: string) => {
     if (!serverBaseUrl) return;
+    setIsServerMode(true);
 
     setProgress({ phase: 'extracting', percent: 0, message: 'Switching repository...', detail: `Loading ${repoName}` });
     setViewMode('loading');
@@ -1019,15 +1075,12 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
       setViewMode('exploring');
 
-      if (getActiveProviderConfig()) initializeAgent(pName);
-
-      startEmbeddings().catch((err) => {
-        if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
-          startEmbeddings('wasm').catch(console.warn);
-        } else {
-          console.warn('Embeddings auto-start failed:', err);
+      if (getActiveProviderConfig()) {
+          await initializeBackendAgent(pName, result.repoInfo.name || repoName);
         }
-      });
+
+        setEmbeddingStatus('ready');
+        setEmbeddingProgress(null);
     } catch (err) {
       console.error('Repo switch failed:', err);
       setProgress({
@@ -1037,7 +1090,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       });
       setTimeout(() => { setViewMode('exploring'); setProgress(null); }, 3000);
     }
-  }, [serverBaseUrl, setProgress, setViewMode, setProjectName, setGraph, setFileContents, initializeAgent, startEmbeddings, setHighlightedNodeIds, clearAIToolHighlights, clearBlastRadius, setSelectedNode, setQueryResult, setCodeReferences, setCodePanelOpen, setCodeReferenceFocus]);
+  }, [serverBaseUrl, setIsServerMode, setProgress, setViewMode, setProjectName, setGraph, setFileContents, initializeBackendAgent, setEmbeddingStatus, setEmbeddingProgress, setHighlightedNodeIds, clearAIToolHighlights, clearBlastRadius, setSelectedNode, setQueryResult, setCodeReferences, setCodePanelOpen, setCodeReferenceFocus]);
 
   const removeCodeReference = useCallback((id: string) => {
     setCodeReferences(prev => {
@@ -1137,6 +1190,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setServerBaseUrl,
     availableRepos,
     setAvailableRepos,
+    isServerMode,
+    setIsServerMode,
     switchRepo,
     runPipeline,
     runPipelineFromFiles,
@@ -1166,6 +1221,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     // LLM methods
     refreshLLMSettings,
     initializeAgent,
+    initializeBackendAgent,
     sendChatMessage,
     stopChatResponse,
     clearChat,

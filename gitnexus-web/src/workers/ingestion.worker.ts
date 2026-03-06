@@ -72,9 +72,18 @@ const httpFetchWithTimeout = async (
   }
 };
 
+const buildBackendApiUrl = (backendUrl: string, endpointPath: string): string => {
+  const base = backendUrl.replace(/\/+$/, '');
+  const path = endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`;
+  if (base.endsWith('/api')) {
+    return `${base}${path}`;
+  }
+  return `${base}/api${path}`;
+};
+
 const createHttpExecuteQuery = (backendUrl: string, repo: string) => {
   return async (cypher: string): Promise<any[]> => {
-    const response = await httpFetchWithTimeout(`${backendUrl}/api/query`, {
+    const response = await httpFetchWithTimeout(buildBackendApiUrl(backendUrl, '/query'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cypher, repo }),
@@ -88,6 +97,27 @@ const createHttpExecuteQuery = (backendUrl: string, repo: string) => {
   };
 };
 
+const createHttpOptionalExecuteQuery = (backendUrl: string, repo: string) => {
+  const executeQuery = createHttpExecuteQuery(backendUrl, repo);
+
+  return async (cypher: string): Promise<any[]> => {
+    try {
+      return await executeQuery(cypher);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      if (message.includes('Backend query failed: 404')) {
+        if (import.meta.env.DEV) {
+          console.warn('Backend /api/query endpoint unavailable; skipping optional context query');
+        }
+        return [];
+      }
+
+      throw error;
+    }
+  };
+};
+
 /**
  * Create a search function that calls the backend's /api/search endpoint,
  * which runs full hybrid search (BM25 + semantic + RRF) on the server.
@@ -97,7 +127,7 @@ const createHttpExecuteQuery = (backendUrl: string, repo: string) => {
 const createHttpHybridSearch = (backendUrl: string, repo: string) => {
   return async (query: string, k: number = 15): Promise<any[]> => {
     try {
-      const response = await httpFetchWithTimeout(`${backendUrl}/api/search`, {
+      const response = await httpFetchWithTimeout(buildBackendApiUrl(backendUrl, '/search'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, limit: k, repo }),
@@ -107,6 +137,23 @@ const createHttpHybridSearch = (backendUrl: string, repo: string) => {
       }
       const body = await response.json();
       const data = body.results ?? body;
+
+      // Compatibility: older backends return a flat ranked array of hits:
+      // { results: [{ filePath, score, rank }, ...] }
+      if (Array.isArray(data)) {
+        return data.slice(0, k).map((row: any, i: number) => ({
+          id: row.id ?? row.filePath ?? `${repo}:${i}`,
+          nodeId: row.id,
+          name: row.name ?? row.filePath ?? `Result ${i + 1}`,
+          label: row.type ?? 'File',
+          filePath: row.filePath,
+          startLine: row.startLine,
+          endLine: row.endLine,
+          content: row.content ?? '',
+          sources: ['bm25'],
+          score: typeof row.score === 'number' ? row.score : (1 - (i * 0.02)),
+        }));
+      }
 
       // Flatten process_symbols + definitions into a single ranked list
       const symbols: any[] = (data.process_symbols ?? []).map((s: any, i: number) => ({
@@ -218,6 +265,22 @@ const workerApi = {
       throw new Error('Database not ready. Please load a repository first.');
     }
     return kuzu.executeQuery(cypher);
+  },
+
+  /**
+   * Execute a Cypher query that may reuse prepared statements (for embedding pipeline)
+   * @param backendUrl  
+   * @param repo 
+   * @param cypher 
+   * @returns 
+   */
+  async runBackendQuery(
+    backendUrl: string,
+    repo: string,
+    cypher: string,
+  ): Promise<any[]> {
+    const executeQuery = createHttpExecuteQuery(backendUrl, repo);
+    return executeQuery(cypher);
   },
 
   /**
@@ -648,12 +711,13 @@ const workerApi = {
 
       // Create HTTP-based tool wrappers
       const executeQuery = createHttpExecuteQuery(backendUrl, repoName);
+      const optionalExecuteQuery = createHttpOptionalExecuteQuery(backendUrl, repoName);
       const hybridSearch = createHttpHybridSearch(backendUrl, repoName);
 
       // Build codebase context (uses Cypher queries — works via HTTP)
       let codebaseContext: CodebaseContext | undefined;
       try {
-        codebaseContext = await buildCodebaseContext(executeQuery, projectName || repoName);
+        codebaseContext = await buildCodebaseContext(optionalExecuteQuery, projectName || repoName);
       } catch {
         // Non-fatal — agent works without context
       }
@@ -895,4 +959,3 @@ Comlink.expose(workerApi);
 
 // TypeScript type for the exposed API (used by the hook)
 export type IngestionWorkerApi = typeof workerApi;
-
