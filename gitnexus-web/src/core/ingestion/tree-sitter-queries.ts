@@ -483,6 +483,102 @@ export const SWIFT_QUERIES = `
   (inheritance_specifier inherits_from: (user_type (type_identifier) @heritage.extends))) @heritage
 `;
 
+// Dart queries - works with tree-sitter-dart
+export const DART_QUERIES = `
+; ── Classes ──────────────────────────────────────────────────────────────────
+(class_definition
+  name: (identifier) @name) @definition.class
+
+; ── Mixins ───────────────────────────────────────────────────────────────────
+(mixin_declaration
+  (identifier) @name) @definition.trait
+
+; ── Extensions ───────────────────────────────────────────────────────────────
+(extension_declaration
+  name: (identifier) @name) @definition.class
+
+; ── Enums ────────────────────────────────────────────────────────────────────
+(enum_declaration
+  name: (identifier) @name) @definition.enum
+
+; ── Type aliases ─────────────────────────────────────────────────────────────
+; Anchor "=" after the name to avoid capturing the RHS type
+(type_alias
+  (type_identifier) @name
+  "=") @definition.type
+
+; ── Top-level functions (parent is program, not method_signature) ────────────
+(program
+  (function_signature
+    name: (identifier) @name) @definition.function)
+
+; ── Abstract method declarations (function_signature inside class body declaration) ──
+(declaration
+  (function_signature
+    name: (identifier) @name)) @definition.method
+
+; ── Methods (inside class/mixin/extension bodies) ────────────────────────────
+(method_signature
+  (function_signature
+    name: (identifier) @name)) @definition.method
+
+; ── Constructors ─────────────────────────────────────────────────────────────
+(constructor_signature
+  name: (identifier) @name) @definition.constructor
+
+; ── Factory constructors ─────────────────────────────────────────────────────
+(method_signature
+  (factory_constructor_signature
+    (identifier) @name)) @definition.constructor
+
+; ── Getters ──────────────────────────────────────────────────────────────────
+(method_signature
+  (getter_signature
+    name: (identifier) @name)) @definition.property
+
+; ── Setters ──────────────────────────────────────────────────────────────────
+(method_signature
+  (setter_signature
+    name: (identifier) @name)) @definition.property
+
+; ── Imports ──────────────────────────────────────────────────────────────────
+(import_or_export
+  (library_import
+    (import_specification
+      (configurable_uri) @import.source))) @import
+
+; ── Calls: direct function/constructor calls (identifier immediately before argument_part) ──
+(expression_statement
+  (identifier) @call.name
+  .
+  (selector (argument_part))) @call
+
+; ── Calls: method calls (obj.method()) ───────────────────────────────────────
+(expression_statement
+  (selector
+    (unconditional_assignable_selector
+      (identifier) @call.name))) @call
+
+; ── Heritage: extends ────────────────────────────────────────────────────────
+(class_definition
+  name: (identifier) @heritage.class
+  superclass: (superclass
+    (type_identifier) @heritage.extends)) @heritage
+
+; ── Heritage: implements ─────────────────────────────────────────────────────
+(class_definition
+  name: (identifier) @heritage.class
+  interfaces: (interfaces
+    (type_identifier) @heritage.implements)) @heritage.impl
+
+; ── Heritage: with (mixins) ──────────────────────────────────────────────────
+(class_definition
+  name: (identifier) @heritage.class
+  superclass: (superclass
+    (mixins
+      (type_identifier) @heritage.trait))) @heritage
+`;
+
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.TypeScript]: TYPESCRIPT_QUERIES,
   [SupportedLanguages.JavaScript]: JAVASCRIPT_QUERIES,
@@ -497,5 +593,6 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Ruby]: RUBY_QUERIES,
   [SupportedLanguages.Kotlin]: '', // Kotlin WASM parser not yet available for web
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
+  [SupportedLanguages.Dart]: DART_QUERIES,
 };
  

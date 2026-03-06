@@ -545,6 +545,7 @@ export const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE = {
     { framework: 'rails', entryPointMultiplier: 3.0, reason: 'rails-pattern', patterns: FRAMEWORK_AST_PATTERNS.rails },
     { framework: 'sinatra', entryPointMultiplier: 2.8, reason: 'sinatra-pattern', patterns: FRAMEWORK_AST_PATTERNS.sinatra },
   ],
+  [SupportedLanguages.Dart]: [],
 } satisfies Record<SupportedLanguages, AstFrameworkPatternConfig[]>;
 
 /** Pre-lowercased patterns for O(1) pattern matching at runtime */

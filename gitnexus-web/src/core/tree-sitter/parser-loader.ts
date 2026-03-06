@@ -43,6 +43,7 @@ const getWasmPath = (language: SupportedLanguages, filePath?: string): string =>
         [SupportedLanguages.Ruby]: '/wasm/ruby/tree-sitter-ruby.wasm',
         [SupportedLanguages.Kotlin]: '', // Kotlin WASM parser not yet available for web
         [SupportedLanguages.Swift]: '/wasm/swift/tree-sitter-swift.wasm',
+        [SupportedLanguages.Dart]: '/wasm/dart/tree-sitter-dart.wasm',
     };
     
     return languageFileMap[language];

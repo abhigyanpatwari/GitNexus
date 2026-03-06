@@ -315,6 +315,33 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
     return { framework: 'ios-router', entryPointMultiplier: 2.0, reason: 'ios-router' };
   }
 
+  // ========== DART / FLUTTER ==========
+
+  // Flutter main entry point
+  if (p.endsWith('/main.dart')) {
+    return { framework: 'flutter', entryPointMultiplier: 3.0, reason: 'flutter-main' };
+  }
+
+  // Flutter screens/pages (high priority - route entry points)
+  if ((p.includes('/lib/screens/') || p.includes('/lib/pages/')) && p.endsWith('.dart')) {
+    return { framework: 'flutter', entryPointMultiplier: 2.5, reason: 'flutter-screen' };
+  }
+
+  // Flutter BLoC / controllers (state management entry points)
+  if ((p.includes('/lib/bloc/') || p.includes('/lib/controllers/') || p.includes('/lib/cubit/')) && p.endsWith('.dart')) {
+    return { framework: 'flutter', entryPointMultiplier: 2.0, reason: 'flutter-state-management' };
+  }
+
+  // Flutter services
+  if (p.includes('/lib/services/') && p.endsWith('.dart')) {
+    return { framework: 'flutter', entryPointMultiplier: 1.8, reason: 'flutter-service' };
+  }
+
+  // Flutter widgets (reusable components)
+  if (p.includes('/lib/widgets/') && p.endsWith('.dart')) {
+    return { framework: 'flutter', entryPointMultiplier: 1.5, reason: 'flutter-widget' };
+  }
+
   // ========== GENERIC PATTERNS ==========
 
   // Any language: index files in API folders
@@ -365,6 +392,10 @@ export const FRAMEWORK_AST_PATTERNS = {
   'actix': ['#[get', '#[post', '#[put', '#[delete'],
   'axum': ['Router::new'],
   'rocket': ['#[get', '#[post'],
+
+  // Dart/Flutter
+  'flutter': ['StatelessWidget', 'StatefulWidget', 'BuildContext', 'Widget build',
+              'ChangeNotifier', 'GetxController', 'Cubit<', 'Bloc<'],
 
   // Swift/iOS
   'uikit': ['viewDidLoad', 'viewWillAppear', 'viewDidAppear', 'UIViewController'],

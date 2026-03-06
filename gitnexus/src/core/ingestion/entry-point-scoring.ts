@@ -212,6 +212,9 @@ export const ENTRY_POINT_PATTERNS = {
     /^perform$/,              // Background jobs (Sidekiq, ActiveJob)
     /^execute$/,              // Command pattern
   ],
+
+  // Dart
+  [SupportedLanguages.Dart]: [],
 } satisfies Record<SupportedLanguages, RegExp[]>;
 
 /** Pre-computed merged patterns (universal + language-specific) to avoid per-call array allocation. */

@@ -1001,4 +1001,123 @@ export const SWIFT_QUERIES = `
 
 `;
 
+// Dart queries - works with tree-sitter-dart (UserNobody14/tree-sitter-dart, ABI 14)
+// Note: Dart grammar has function_signature/method_signature as wrappers;
+// top-level functions are (program > function_signature),
+// methods inside classes are (method_signature > function_signature).
+// We match top-level functions via (program (function_signature ...)) to avoid
+// double-counting methods that also contain function_signature.
+export const DART_QUERIES = `
+; ── Classes ──────────────────────────────────────────────────────────────────
+(class_definition
+  name: (identifier) @name) @definition.class
+
+; ── Mixins ───────────────────────────────────────────────────────────────────
+(mixin_declaration
+  (identifier) @name) @definition.trait
+
+; ── Extensions ───────────────────────────────────────────────────────────────
+(extension_declaration
+  name: (identifier) @name) @definition.class
+
+; ── Enums ────────────────────────────────────────────────────────────────────
+(enum_declaration
+  name: (identifier) @name) @definition.enum
+
+; ── Type aliases ─────────────────────────────────────────────────────────────
+; Anchor "=" after the name to avoid capturing the RHS type
+(type_alias
+  (type_identifier) @name
+  "=") @definition.type
+
+; ── Top-level functions (parent is program, not method_signature) ────────────
+(program
+  (function_signature
+    name: (identifier) @name) @definition.function)
+
+; ── Abstract method declarations (function_signature inside class body declaration) ──
+(declaration
+  (function_signature
+    name: (identifier) @name)) @definition.method
+
+; ── Methods (inside class/mixin/extension bodies) ────────────────────────────
+(method_signature
+  (function_signature
+    name: (identifier) @name)) @definition.method
+
+; ── Constructors ─────────────────────────────────────────────────────────────
+(constructor_signature
+  name: (identifier) @name) @definition.constructor
+
+; ── Factory constructors ─────────────────────────────────────────────────────
+(method_signature
+  (factory_constructor_signature
+    (identifier) @name)) @definition.constructor
+
+; ── Getters ──────────────────────────────────────────────────────────────────
+(method_signature
+  (getter_signature
+    name: (identifier) @name)) @definition.property
+
+; ── Setters ──────────────────────────────────────────────────────────────────
+(method_signature
+  (setter_signature
+    name: (identifier) @name)) @definition.property
+
+; ── Imports ──────────────────────────────────────────────────────────────────
+(import_or_export
+  (library_import
+    (import_specification
+      (configurable_uri) @import.source))) @import
+
+; ── Calls: direct function/constructor calls (identifier immediately before argument_part) ──
+(expression_statement
+  (identifier) @call.name
+  .
+  (selector (argument_part))) @call
+
+; ── Calls: method calls (obj.method()) ───────────────────────────────────────
+(expression_statement
+  (selector
+    (unconditional_assignable_selector
+      (identifier) @call.name))) @call
+
+; ── Heritage: extends ────────────────────────────────────────────────────────
+(class_definition
+  name: (identifier) @heritage.class
+  superclass: (superclass
+    (type_identifier) @heritage.extends)) @heritage
+
+; ── Heritage: implements ─────────────────────────────────────────────────────
+(class_definition
+  name: (identifier) @heritage.class
+  interfaces: (interfaces
+    (type_identifier) @heritage.implements)) @heritage.impl
+
+; ── Heritage: with (mixins) ──────────────────────────────────────────────────
+(class_definition
+  name: (identifier) @heritage.class
+  superclass: (superclass
+    (mixins
+      (type_identifier) @heritage.trait))) @heritage
+`;
+
+import { SupportedLanguages } from '../../config/supported-languages.js';
+
+export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
+  [SupportedLanguages.TypeScript]: TYPESCRIPT_QUERIES,
+  [SupportedLanguages.JavaScript]: JAVASCRIPT_QUERIES,
+  [SupportedLanguages.Python]: PYTHON_QUERIES,
+  [SupportedLanguages.Java]: JAVA_QUERIES,
+  [SupportedLanguages.C]: C_QUERIES,
+  [SupportedLanguages.Go]: GO_QUERIES,
+  [SupportedLanguages.CPlusPlus]: CPP_QUERIES,
+  [SupportedLanguages.CSharp]: CSHARP_QUERIES,
+  [SupportedLanguages.Rust]: RUST_QUERIES,
+  [SupportedLanguages.PHP]: PHP_QUERIES,
+  [SupportedLanguages.Kotlin]: KOTLIN_QUERIES,
+  [SupportedLanguages.Ruby]: RUBY_QUERIES,
+  [SupportedLanguages.Swift]: SWIFT_QUERIES,
+  [SupportedLanguages.Dart]: DART_QUERIES,
+};
  

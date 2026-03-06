@@ -422,6 +422,95 @@ describe('Tree-sitter multi-language parsing', () => {
     });
   });
 
+  describe('Dart', () => {
+    it('parses classes, functions, mixins, enums, and type aliases', async () => {
+      try {
+        await loadLanguage(SupportedLanguages.Dart);
+      } catch {
+        // tree-sitter-dart not installed — skip
+        return;
+      }
+      const content = readFixture('simple.dart');
+      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Dart]);
+      const defs = extractDefinitions(matches);
+
+      expect(defs.length).toBeGreaterThan(0);
+      const defTypes = defs.map(d => d.type);
+      const defNames = defs.map(d => d.name);
+
+      expect(defTypes).toContain('definition.class');
+      expect(defTypes).toContain('definition.function');
+      expect(defTypes).toContain('definition.method');
+      expect(defTypes).toContain('definition.enum');
+      expect(defTypes).toContain('definition.trait');    // mixin
+      expect(defTypes).toContain('definition.type');     // typedef
+      expect(defTypes).toContain('definition.constructor');
+      expect(defTypes).toContain('definition.property'); // getter/setter
+
+      expect(defNames).toContain('Animal');
+      expect(defNames).toContain('Dog');
+      expect(defNames).toContain('greet');
+      expect(defNames).toContain('Swimming');
+      expect(defNames).toContain('Status');
+      expect(defNames).toContain('main');
+      expect(defNames).toContain('StringExtension');
+    });
+
+    it('extracts imports', async () => {
+      try {
+        await loadLanguage(SupportedLanguages.Dart);
+      } catch {
+        // tree-sitter-dart not installed — skip
+        return;
+      }
+      const content = readFixture('simple.dart');
+      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Dart]);
+
+      const imports: string[] = [];
+      for (const match of matches) {
+        for (const capture of match.captures) {
+          if (capture.name === 'import.source') {
+            imports.push(capture.node.text);
+          }
+        }
+      }
+      expect(imports.length).toBe(3);
+    });
+
+    it('extracts heritage (extends, implements, with)', async () => {
+      try {
+        await loadLanguage(SupportedLanguages.Dart);
+      } catch {
+        // tree-sitter-dart not installed — skip
+        return;
+      }
+      const content = readFixture('simple.dart');
+      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Dart]);
+
+      const heritage: { class: string; parent: string }[] = [];
+      for (const match of matches) {
+        const captures: Record<string, string> = {};
+        for (const c of match.captures) captures[c.name] = c.node.text;
+        if (captures['heritage.extends']) {
+          heritage.push({ class: captures['heritage.class'], parent: captures['heritage.extends'] });
+        }
+        if (captures['heritage.implements']) {
+          heritage.push({ class: captures['heritage.class'], parent: captures['heritage.implements'] });
+        }
+        if (captures['heritage.trait']) {
+          heritage.push({ class: captures['heritage.class'], parent: captures['heritage.trait'] });
+        }
+      }
+
+      const pairs = heritage.map(h => `${h.class}->${h.parent}`);
+      expect(pairs).toContain('Dog->Animal');
+      expect(pairs).toContain('Dog->Describable');
+      expect(pairs).toContain('Duck->Animal');
+      expect(pairs).toContain('Duck->Swimming');
+      expect(pairs).toContain('Duck->Flying');
+    });
+  });
+
   describe('cross-language assertions', () => {
     it('all supported languages produce at least one definition from fixtures', async () => {
       const langFixtures: [SupportedLanguages, string, string?][] = [
@@ -435,6 +524,7 @@ describe('Tree-sitter multi-language parsing', () => {
         [SupportedLanguages.CSharp, 'simple.cs'],
         [SupportedLanguages.Rust, 'simple.rs'],
         [SupportedLanguages.PHP, 'simple.php'],
+        // Dart and Swift are excluded — they are optionalDependencies that may not be installed
       ];
 
       for (const [lang, fixture, filePath] of langFixtures) {
