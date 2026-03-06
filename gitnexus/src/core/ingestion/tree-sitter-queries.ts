@@ -32,6 +32,11 @@ export const TYPESCRIPT_QUERIES = `
     name: (identifier) @name
     value: (function_expression))) @definition.function
 
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression))) @definition.function
+
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
@@ -43,6 +48,12 @@ export const TYPESCRIPT_QUERIES = `
     (variable_declarator
       name: (identifier) @name
       value: (function_expression)))) @definition.function
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (call_expression)))) @definition.function
 
 (import_statement
   source: (string) @import.source) @import
@@ -69,7 +80,7 @@ export const TYPESCRIPT_QUERIES = `
       (type_identifier) @heritage.implements))) @heritage.impl
 `;
 
-// JavaScript queries - works with tree-sitter-javascript  
+// JavaScript queries - works with tree-sitter-javascript
 export const JAVASCRIPT_QUERIES = `
 (class_declaration
   name: (identifier) @name) @definition.class
@@ -90,6 +101,11 @@ export const JAVASCRIPT_QUERIES = `
     name: (identifier) @name
     value: (function_expression))) @definition.function
 
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression))) @definition.function
+
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
@@ -101,6 +117,12 @@ export const JAVASCRIPT_QUERIES = `
     (variable_declarator
       name: (identifier) @name
       value: (function_expression)))) @definition.function
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (call_expression)))) @definition.function
 
 (import_statement
   source: (string) @import.source) @import
