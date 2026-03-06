@@ -37,7 +37,7 @@ if [ -z "$PATTERN" ] || [ ${#PATTERN} -lt 3 ]; then
 fi
 
 # Run gitnexus augment
-RESULT=$(npx -y gitnexus augment "$PATTERN" 2>/dev/null)
+RESULT=$(npx -y gitnexus augment -- "$PATTERN" 2>/dev/null)
 
 if [ -n "$RESULT" ]; then
   # Escape for JSON
