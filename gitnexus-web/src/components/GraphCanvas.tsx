@@ -1,10 +1,11 @@
 import { useEffect, useCallback, useMemo, useState, forwardRef, useImperativeHandle } from 'react';
-import { ZoomIn, ZoomOut, Maximize2, Focus, RotateCcw, Play, Pause, Lightbulb, LightbulbOff } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize2, Focus, RotateCcw, Play, Pause, Lightbulb, LightbulbOff, Box } from 'lucide-react';
 import { useSigma } from '../hooks/useSigma';
 import { useTheme } from '../context/ThemeContext';
 import { useAppState } from '../hooks/useAppState';
 import { knowledgeGraphToGraphology, filterGraphByDepth, SigmaNodeAttributes, SigmaEdgeAttributes } from '../lib/graph-adapter';
 import { QueryFAB } from './QueryFAB';
+import { GraphCanvas3D } from './GraphCanvas3D';
 import Graph from 'graphology';
 
 export interface GraphCanvasHandle {
@@ -31,6 +32,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     animatedNodes,
   } = useAppState();
   const [hoveredNodeName, setHoveredNodeName] = useState<string | null>(null);
+  const [is3DMode, setIs3DMode] = useState(false);
   const { theme } = useTheme();
   const isDark = theme === 'dark';
 
@@ -194,11 +196,17 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
 
   return (
     <div className="relative w-full h-full bg-void">
-      {/* Sigma container */}
+      {/* Sigma 2D — kept mounted for instant switch back.
+          Use visibility+position instead of display:none so Sigma can still measure
+          its container width (display:none collapses to 0 and spams RAF errors). */}
       <div
         ref={containerRef}
-        className="sigma-container w-full h-full cursor-grab active:cursor-grabbing"
+        className="sigma-container cursor-grab active:cursor-grabbing"
         style={{
+          position: 'absolute',
+          inset: 0,
+          visibility: is3DMode ? 'hidden' : 'visible',
+          pointerEvents: is3DMode ? 'none' : 'auto',
           backgroundColor: isDark ? '#0f0f0f' : '#fafafa',
           backgroundImage: isDark
             ? 'radial-gradient(circle, rgba(255,255,255,0.08) 1px, transparent 1px)'
@@ -206,6 +214,16 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
           backgroundSize: '20px 20px',
         }}
       />
+
+      {/* 3D view */}
+      {is3DMode && (
+        <div style={{ position: 'absolute', inset: 0 }}>
+          <GraphCanvas3D
+            highlightedNodeIds={effectiveHighlightedNodeIds}
+            blastRadiusNodeIds={effectiveBlastRadiusNodeIds}
+          />
+        </div>
+      )}
 
       {/* Hovered node tooltip - only show when NOT selected */}
       {hoveredNodeName && !sigmaSelectedNode && (
@@ -235,74 +253,95 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
 
       {/* Graph Controls - Bottom Right */}
       <div className="absolute bottom-4 right-4 flex flex-col gap-1 z-10">
+        {/* 3D toggle — always visible */}
         <button
-          onClick={zoomIn}
-          className="w-9 h-9 flex items-center justify-center bg-elevated border border-border-subtle text-text-secondary hover:bg-hover hover:text-text-primary transition-colors"
-          title="Zoom In"
-        >
-          <ZoomIn className="w-4 h-4" />
-        </button>
-        <button
-          onClick={zoomOut}
-          className="w-9 h-9 flex items-center justify-center bg-elevated border border-border-subtle text-text-secondary hover:bg-hover hover:text-text-primary transition-colors"
-          title="Zoom Out"
-        >
-          <ZoomOut className="w-4 h-4" />
-        </button>
-        <button
-          onClick={resetZoom}
-          className="w-9 h-9 flex items-center justify-center bg-elevated border border-border-subtle text-text-secondary hover:bg-hover hover:text-text-primary transition-colors"
-          title="Fit to Screen"
-        >
-          <Maximize2 className="w-4 h-4" />
-        </button>
-
-        {/* Divider */}
-        <div className="h-px bg-border-subtle my-1" />
-
-        {/* Focus on selected */}
-        {appSelectedNode && (
-          <button
-            onClick={handleFocusSelected}
-            className="w-9 h-9 flex items-center justify-center bg-accent/20 border border-accent/30 text-accent hover:bg-accent/30 transition-colors"
-            title="Focus on Selected Node"
-          >
-            <Focus className="w-4 h-4" />
-          </button>
-        )}
-
-        {/* Clear selection */}
-        {sigmaSelectedNode && (
-          <button
-            onClick={handleClearSelection}
-            className="w-9 h-9 flex items-center justify-center bg-elevated border border-border-subtle text-text-secondary hover:bg-hover hover:text-text-primary transition-colors"
-            title="Clear Selection"
-          >
-            <RotateCcw className="w-4 h-4" />
-          </button>
-        )}
-
-        {/* Divider */}
-        <div className="h-px bg-border-subtle my-1" />
-
-        {/* Layout control */}
-        <button
-          onClick={isLayoutRunning ? stopLayout : startLayout}
-          className={`
-            w-9 h-9 flex items-center justify-center border transition-all
-            ${isLayoutRunning
-              ? 'bg-accent border-accent text-white shadow-glow animate-pulse'
+          onClick={() => setIs3DMode(m => !m)}
+          className={`w-9 h-9 flex items-center justify-center border transition-colors ${
+            is3DMode
+              ? 'bg-accent border-accent text-white'
               : 'bg-elevated border-border-subtle text-text-secondary hover:bg-hover hover:text-text-primary'
-            }
-          `}
-          title={isLayoutRunning ? 'Stop Layout' : 'Run Layout Again'}
+          }`}
+          title={is3DMode ? 'Switch to 2D' : 'Switch to 3D'}
         >
-          {isLayoutRunning ? (
-            <Pause className="w-4 h-4" />
-          ) : (
-            <Play className="w-4 h-4" />
-          )}
+          <Box className="w-4 h-4" />
         </button>
+
+        {/* Divider */}
+        <div className="h-px bg-border-subtle my-1" />
+
+        {/* 2D-only controls */}
+        {!is3DMode && (
+          <>
+            <button
+              onClick={zoomIn}
+              className="w-9 h-9 flex items-center justify-center bg-elevated border border-border-subtle text-text-secondary hover:bg-hover hover:text-text-primary transition-colors"
+              title="Zoom In"
+            >
+              <ZoomIn className="w-4 h-4" />
+            </button>
+            <button
+              onClick={zoomOut}
+              className="w-9 h-9 flex items-center justify-center bg-elevated border border-border-subtle text-text-secondary hover:bg-hover hover:text-text-primary transition-colors"
+              title="Zoom Out"
+            >
+              <ZoomOut className="w-4 h-4" />
+            </button>
+            <button
+              onClick={resetZoom}
+              className="w-9 h-9 flex items-center justify-center bg-elevated border border-border-subtle text-text-secondary hover:bg-hover hover:text-text-primary transition-colors"
+              title="Fit to Screen"
+            >
+              <Maximize2 className="w-4 h-4" />
+            </button>
+
+            {/* Divider */}
+            <div className="h-px bg-border-subtle my-1" />
+
+            {/* Focus on selected */}
+            {appSelectedNode && (
+              <button
+                onClick={handleFocusSelected}
+                className="w-9 h-9 flex items-center justify-center bg-accent/20 border border-accent/30 text-accent hover:bg-accent/30 transition-colors"
+                title="Focus on Selected Node"
+              >
+                <Focus className="w-4 h-4" />
+              </button>
+            )}
+
+            {/* Clear selection */}
+            {sigmaSelectedNode && (
+              <button
+                onClick={handleClearSelection}
+                className="w-9 h-9 flex items-center justify-center bg-elevated border border-border-subtle text-text-secondary hover:bg-hover hover:text-text-primary transition-colors"
+                title="Clear Selection"
+              >
+                <RotateCcw className="w-4 h-4" />
+              </button>
+            )}
+
+            {/* Divider */}
+            <div className="h-px bg-border-subtle my-1" />
+
+            {/* Layout control */}
+            <button
+              onClick={isLayoutRunning ? stopLayout : startLayout}
+              className={`
+                w-9 h-9 flex items-center justify-center border transition-all
+                ${isLayoutRunning
+                  ? 'bg-accent border-accent text-white shadow-glow animate-pulse'
+                  : 'bg-elevated border-border-subtle text-text-secondary hover:bg-hover hover:text-text-primary'
+                }
+              `}
+              title={isLayoutRunning ? 'Stop Layout' : 'Run Layout Again'}
+            >
+              {isLayoutRunning ? (
+                <Pause className="w-4 h-4" />
+              ) : (
+                <Play className="w-4 h-4" />
+              )}
+            </button>
+          </>
+        )}
       </div>
 
       {/* Layout running indicator */}

@@ -30,6 +30,9 @@ export default defineConfig({
       // Fix for mermaid d3-color prototype crash on Vercel (known issue with mermaid 10.9.0+ and Vite)
       'mermaid': path.resolve(__dirname, 'node_modules/mermaid/dist/mermaid.esm.min.mjs'),
     },
+    // Deduplicate three.js — react-force-graph-3d bundles it internally, causing TWO
+    // THREE instances which breaks WebGL rendering (black screen + THREE.THREE.Clock warning)
+    dedupe: ['three', 'three-spritetext'],
   },
   // Polyfill Buffer for isomorphic-git (Node.js API needed in browser)
   define: {
