@@ -13,6 +13,7 @@ import type { AgentMessage } from '../core/llm/agent';
 import { DEFAULT_VISIBLE_EDGES, type EdgeType } from '../lib/constants';
 import type { RepoSummary, ConnectToServerResult } from '../services/server-connection';
 import { fetchRepos, connectToServer } from '../services/server-connection';
+import type { TraceSpan } from '../services/trace-overlay';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
@@ -91,7 +92,9 @@ interface AppState {
   // AI highlights (toggable)
   aiCitationHighlightedNodeIds: Set<string>;
   aiToolHighlightedNodeIds: Set<string>;
+  setAIToolHighlightedNodeIds: (ids: Set<string>) => void;
   blastRadiusNodeIds: Set<string>;
+  setBlastRadiusNodeIds: (ids: Set<string>) => void;
   isAIHighlightsEnabled: boolean;
   toggleAIHighlights: () => void;
   clearAIToolHighlights: () => void;
@@ -169,6 +172,14 @@ interface AppState {
   clearAICodeReferences: () => void;
   clearCodeReferences: () => void;
   codeReferenceFocus: CodeReferenceFocus | null;
+
+  // Trace Overlay
+  traceSpans: TraceSpan[];
+  setTraceSpans: (spans: TraceSpan[]) => void;
+  isTracePanelOpen: boolean;
+  setTracePanelOpen: (open: boolean) => void;
+  selectedTraceSpan: TraceSpan | null;
+  setSelectedTraceSpan: (span: TraceSpan | null) => void;
 }
 
 const AppStateContext = createContext<AppState | null>(null);
@@ -216,6 +227,11 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const [aiToolHighlightedNodeIds, setAIToolHighlightedNodeIds] = useState<Set<string>>(new Set());
   const [blastRadiusNodeIds, setBlastRadiusNodeIds] = useState<Set<string>>(new Set());
   const [isAIHighlightsEnabled, setAIHighlightsEnabled] = useState(true);
+
+  // Trace Overlay
+  const [traceSpans, setTraceSpans] = useState<TraceSpan[]>([]);
+  const [isTracePanelOpen, setTracePanelOpen] = useState(false);
+  const [selectedTraceSpan, setSelectedTraceSpan] = useState<TraceSpan | null>(null);
 
   const toggleAIHighlights = useCallback(() => {
     setAIHighlightsEnabled(prev => !prev);
@@ -1116,7 +1132,9 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setHighlightedNodeIds,
     aiCitationHighlightedNodeIds,
     aiToolHighlightedNodeIds,
+    setAIToolHighlightedNodeIds,
     blastRadiusNodeIds,
+    setBlastRadiusNodeIds,
     isAIHighlightsEnabled,
     toggleAIHighlights,
     clearAIToolHighlights,
@@ -1178,6 +1196,13 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     clearAICodeReferences,
     clearCodeReferences,
     codeReferenceFocus,
+    // Trace Overlay
+    traceSpans,
+    setTraceSpans,
+    isTracePanelOpen,
+    setTracePanelOpen,
+    selectedTraceSpan,
+    setSelectedTraceSpan,
   };
 
   return (

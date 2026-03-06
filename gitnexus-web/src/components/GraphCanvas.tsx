@@ -8,6 +8,7 @@ import Graph from 'graphology';
 
 export interface GraphCanvasHandle {
   focusNode: (nodeId: string) => void;
+  focusNodes: (nodeIds: string[]) => void;
 }
 
 export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
@@ -98,7 +99,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     visibleEdgeTypes,
   });
 
-  // Expose focusNode to parent via ref
+  // Expose focusNode / focusNodes to parent via ref
   useImperativeHandle(ref, () => ({
     focusNode: (nodeId: string) => {
       // Also update app state so the selection syncs properly
@@ -110,8 +111,24 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
         }
       }
       focusNode(nodeId);
-    }
-  }), [focusNode, graph, setSelectedNode, openCodePanel]);
+    },
+    focusNodes: (nodeIds: string[]) => {
+      const sigma = sigmaRef.current;
+      if (!sigma || nodeIds.length === 0) return;
+      const g = sigma.getGraph();
+      const positions = nodeIds
+        .filter(id => g.hasNode(id))
+        .map(id => ({ x: g.getNodeAttribute(id, 'x') as number, y: g.getNodeAttribute(id, 'y') as number }));
+      if (positions.length === 0) return;
+      const xs = positions.map(p => p.x);
+      const ys = positions.map(p => p.y);
+      const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+      const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+      const spread = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), 0.001);
+      const ratio = Math.min(Math.max(spread / 1.5, 0.05), 1.2);
+      sigma.getCamera().animate({ x: cx, y: cy, ratio }, { duration: 600 });
+    },
+  }), [focusNode, sigmaRef, graph, setSelectedNode, openCodePanel]);
 
   // Update Sigma graph when KnowledgeGraph changes
   useEffect(() => {

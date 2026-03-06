@@ -6,6 +6,8 @@ import { Header } from './components/Header';
 import { GraphCanvas, GraphCanvasHandle } from './components/GraphCanvas';
 import { RightPanel } from './components/RightPanel';
 import { SettingsPanel } from './components/SettingsPanel';
+import { TraceOverlayPanel } from './components/TraceOverlayPanel';
+import { TraceInspectorPanel } from './components/TraceInspectorPanel';
 import { StatusBar } from './components/StatusBar';
 import { FileTreePanel } from './components/FileTreePanel';
 import { CodeReferencesPanel } from './components/CodeReferencesPanel';
@@ -28,6 +30,10 @@ const AppContent = () => {
     runPipelineFromFiles,
     isSettingsPanelOpen,
     setSettingsPanelOpen,
+    isTracePanelOpen,
+    setTracePanelOpen,
+    selectedTraceSpan,
+    setSelectedTraceSpan,
     refreshLLMSettings,
     initializeAgent,
     startEmbeddings,
@@ -285,6 +291,17 @@ const AppContent = () => {
               <CodeReferencesPanel onFocusNode={handleFocusNode} />
             </div>
           )}
+
+          {/* Trace Inspector Panel (overlay) - right side, shows selected span details */}
+          {selectedTraceSpan && (
+            <div className="absolute inset-y-0 right-0 z-30 pointer-events-auto">
+              <TraceInspectorPanel
+                span={selectedTraceSpan}
+                onClose={() => setSelectedTraceSpan(null)}
+                onFocusNode={handleFocusNode}
+              />
+            </div>
+          )}
         </div>
 
         {/* Right Panel - Code & Chat (tabbed) */}
@@ -298,6 +315,16 @@ const AppContent = () => {
         isOpen={isSettingsPanelOpen}
         onClose={() => setSettingsPanelOpen(false)}
         onSettingsSaved={handleSettingsSaved}
+      />
+
+      {/* Trace Overlay Panel (modal) */}
+      <TraceOverlayPanel
+        isOpen={isTracePanelOpen}
+        onClose={() => setTracePanelOpen(false)}
+        onLoad={(hitIds, failedIds) => {
+          const all = [...hitIds, ...failedIds];
+          if (all.length > 0) graphCanvasRef.current?.focusNodes(all);
+        }}
       />
 
     </div>

@@ -337,6 +337,167 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     }
   });
 
+  // Load a Langfuse trace and map its spans to graph node IDs
+  app.post('/api/trace', async (req, res) => {
+    try {
+      const { trace_id, langfuse_host, public_key, secret_key } = req.body;
+      if (!trace_id || !public_key || !secret_key) {
+        res.status(400).json({ error: 'Missing required fields: trace_id, public_key, secret_key' });
+        return;
+      }
+
+      const host = (langfuse_host || 'https://us.cloud.langfuse.com').replace(/\/$/, '');
+      const auth = Buffer.from(`${public_key}:${secret_key}`).toString('base64');
+
+      // Fetch trace from Langfuse
+      const langfuseRes = await fetch(`${host}/api/public/traces/${trace_id}`, {
+        headers: { Authorization: `Basic ${auth}` },
+      });
+      if (!langfuseRes.ok) {
+        const body = await langfuseRes.json().catch(() => ({}));
+        res.status(langfuseRes.status).json({ error: (body as any).message || `Langfuse returned ${langfuseRes.status}` });
+        return;
+      }
+      const traceData = await langfuseRes.json() as any;
+
+      // Extract scores
+      const scores: Record<string, number> = {};
+      for (const s of (traceData.scores ?? [])) {
+        if (s.name) scores[s.name] = s.value ?? s.score ?? 0;
+      }
+
+      const observations: any[] = traceData.observations ?? [];
+
+      // Load span→symbol mapping from the repo's .gitnexus/trace-config.json
+      const entry = await resolveRepo(requestedRepo(req));
+      let spanMappings: Record<string, string[]> = {};
+      if (entry) {
+        try {
+          const configPath = path.join(entry.path, '.gitnexus', 'trace-config.json');
+          const raw = await fs.readFile(configPath, 'utf-8');
+          spanMappings = JSON.parse(raw).span_mappings ?? {};
+        } catch {
+          // No trace-config.json — proceed with no mappings
+        }
+      }
+
+      // Split into exact matches and wildcard prefixes
+      const wildcardPrefixes: Array<{ prefix: string; symbols: string[] }> = [];
+      for (const [pattern, symbols] of Object.entries(spanMappings)) {
+        if (pattern.includes('*')) {
+          wildcardPrefixes.push({ prefix: pattern.replace(/\*/g, ''), symbols: symbols as string[] });
+        }
+      }
+
+      // Resolve each span to symbol names
+      const allSymbolNames = new Set<string>();
+      const spanSymbols: string[][] = [];
+      for (const obs of observations) {
+        const spanName: string = obs.name ?? '';
+        let matched: string[] = spanMappings[spanName] ?? [];
+        if (matched.length === 0) {
+          for (const { prefix, symbols } of wildcardPrefixes) {
+            if (spanName.startsWith(prefix)) { matched = symbols; break; }
+          }
+        }
+        spanSymbols.push(matched);
+        for (const s of matched) allSymbolNames.add(s);
+      }
+
+      // Resolve symbol names → node IDs via KuzuDB (one withKuzuDb call)
+      const symbolToIds = new Map<string, string[]>();
+      if (entry && allSymbolNames.size > 0) {
+        const kuzuPath = path.join(entry.storagePath, 'kuzu');
+        const nameList = [...allSymbolNames]
+          .map(n => `'${n.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`)
+          .join(', ');
+        const symbolTables = ['Function', 'Class', 'Method', 'Interface', 'CodeElement'];
+        await withKuzuDb(kuzuPath, async () => {
+          for (const table of symbolTables) {
+            try {
+              const rows = await executeQuery(
+                `MATCH (n:${table}) WHERE n.name IN [${nameList}] RETURN n.id AS id, n.name AS name`
+              );
+              for (const row of rows) {
+                const id = row.id ?? row[0];
+                const name = row.name ?? row[1];
+                if (id && name) {
+                  const existing = symbolToIds.get(name) ?? [];
+                  existing.push(id);
+                  symbolToIds.set(name, existing);
+                }
+              }
+            } catch { /* ignore empty tables */ }
+          }
+        });
+      }
+
+      // Build result
+      const hitNodeIds = new Set<string>();
+      const failedNodeIds = new Set<string>();
+      const spans: any[] = [];
+
+      for (let i = 0; i < observations.length; i++) {
+        const obs = observations[i];
+        const level: string = obs.level ?? 'DEFAULT';
+        const startMs = obs.startTime ? new Date(obs.startTime).getTime() : 0;
+        const endMs = obs.endTime ? new Date(obs.endTime).getTime() : startMs;
+        const latency_ms = Math.max(0, endMs - startMs);
+
+        const nodeIds: string[] = [];
+        for (const sym of spanSymbols[i] ?? []) {
+          for (const id of symbolToIds.get(sym) ?? []) nodeIds.push(id);
+        }
+
+        if (level === 'ERROR') {
+          for (const id of nodeIds) failedNodeIds.add(id);
+        } else {
+          for (const id of nodeIds) hitNodeIds.add(id);
+        }
+
+        const rawUsage = obs.usage ?? obs.usageDetails;
+        let usageFallback = rawUsage;
+        if (!usageFallback && obs.output && typeof obs.output === 'object') {
+          const out = obs.output as Record<string, any>;
+          if (out.input_tokens != null || out.output_tokens != null) {
+            usageFallback = {
+              input: out.input_tokens ?? 0,
+              output: out.output_tokens ?? 0,
+              total: (out.input_tokens ?? 0) + (out.output_tokens ?? 0),
+            };
+          }
+        }
+        spans.push({
+          name: obs.name ?? '',
+          level,
+          latency_ms,
+          mapped_nodes: nodeIds,
+          status_message: obs.statusMessage ?? undefined,
+          type: obs.type ?? 'SPAN',
+          model: obs.model ?? undefined,
+          input: obs.input ?? undefined,
+          output: obs.output ?? undefined,
+          metadata: obs.metadata ?? undefined,
+          usage: usageFallback ? {
+            input: usageFallback.input ?? usageFallback.promptTokens ?? 0,
+            output: usageFallback.output ?? usageFallback.completionTokens ?? 0,
+            total: usageFallback.total ?? usageFallback.totalTokens ?? 0,
+          } : undefined,
+          start_time: obs.startTime ?? undefined,
+        });
+      }
+
+      res.json({
+        hit_node_ids: [...hitNodeIds],
+        failed_node_ids: [...failedNodeIds],
+        spans,
+        scores,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Trace overlay failed' });
+    }
+  });
+
   // Global error handler — catch anything the route handlers miss
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error('Unhandled error:', err);

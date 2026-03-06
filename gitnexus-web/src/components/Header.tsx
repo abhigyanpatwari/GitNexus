@@ -1,4 +1,4 @@
-import { Search, Settings, HelpCircle, Sparkles, Github, Star, ChevronDown } from 'lucide-react';
+import { Search, Settings, HelpCircle, Sparkles, Github, Star, ChevronDown, Activity } from 'lucide-react';
 import { useAppState } from '../hooks/useAppState';
 import type { RepoSummary } from '../services/server-connection';
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
@@ -32,6 +32,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
     isRightPanelOpen,
     rightPanelTab,
     setSettingsPanelOpen,
+    setTracePanelOpen,
   } = useAppState();
   const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
   const repoDropdownRef = useRef<HTMLDivElement>(null);
@@ -261,6 +262,13 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
         <EmbeddingStatus />
 
         {/* Icon buttons */}
+        <button
+          onClick={() => setTracePanelOpen(true)}
+          className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-cyan-400 transition-colors"
+          title="Agent Trace"
+        >
+          <Activity className="w-[18px] h-[18px]" />
+        </button>
         <button
           onClick={() => setSettingsPanelOpen(true)}
           className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors"

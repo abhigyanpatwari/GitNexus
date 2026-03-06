@@ -14,6 +14,8 @@ import {
   Variable,
   Hash,
   Target,
+  Activity,
+  X,
 } from 'lucide-react';
 import { useAppState } from '../hooks/useAppState';
 import { FILTERABLE_LABELS, NODE_COLORS, ALL_EDGE_TYPES, EDGE_INFO, type EdgeType } from '../lib/constants';
@@ -195,12 +197,44 @@ interface FileTreePanelProps {
 }
 
 export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
-  const { graph, visibleLabels, toggleLabelVisibility, visibleEdgeTypes, toggleEdgeVisibility, selectedNode, setSelectedNode, openCodePanel, depthFilter, setDepthFilter } = useAppState();
+  const { graph, visibleLabels, toggleLabelVisibility, visibleEdgeTypes, toggleEdgeVisibility, selectedNode, setSelectedNode, openCodePanel, depthFilter, setDepthFilter, traceSpans, aiToolHighlightedNodeIds, blastRadiusNodeIds, setAIToolHighlightedNodeIds, setBlastRadiusNodeIds, clearAIToolHighlights, clearBlastRadius, setTraceSpans, setTracePanelOpen, selectedTraceSpan, setSelectedTraceSpan } = useAppState();
 
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<'files' | 'filters'>('files');
+  const [activeSpanFilter, setActiveSpanFilter] = useState<Set<string>>(new Set());
+
+  // When span filter changes, recompute graph highlights from selected spans only
+  const applySpanHighlights = useCallback((filter: Set<string>) => {
+    const spansToShow = filter.size === 0 ? traceSpans : traceSpans.filter(s => filter.has(s.name));
+    const hits = new Set<string>();
+    const fails = new Set<string>();
+    for (const span of spansToShow) {
+      for (const id of span.mapped_nodes) {
+        if (span.level === 'ERROR') fails.add(id);
+        else hits.add(id);
+      }
+    }
+    setAIToolHighlightedNodeIds(hits);
+    setBlastRadiusNodeIds(fails);
+  }, [traceSpans, setAIToolHighlightedNodeIds, setBlastRadiusNodeIds]);
+
+  const toggleSpanFilter = useCallback((spanName: string) => {
+    const next = new Set(activeSpanFilter);
+    if (next.has(spanName)) next.delete(spanName);
+    else next.add(spanName);
+    setActiveSpanFilter(next);
+    applySpanHighlights(next);
+  }, [activeSpanFilter, applySpanHighlights]);
+
+  // Reset span filter and inspector when trace is cleared
+  useEffect(() => {
+    if (traceSpans.length === 0) {
+      setActiveSpanFilter(new Set());
+      setSelectedTraceSpan(null);
+    }
+  }, [traceSpans.length, setSelectedTraceSpan]);
 
   // Build file tree from graph
   const fileTree = useMemo(() => {
@@ -509,6 +543,109 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* Trace Highlights */}
+          <div className="mt-6 pt-4 border-t border-border-subtle">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-medium text-text-secondary uppercase tracking-wide flex items-center gap-1.5">
+                <Activity className="w-3 h-3 text-cyan-400" />
+                Trace Highlights
+              </h3>
+              {traceSpans.length > 0 && (
+                <button
+                  onClick={() => { clearAIToolHighlights(); clearBlastRadius(); setTraceSpans([]); }}
+                  className="p-0.5 text-text-muted hover:text-red-400 transition-colors"
+                  title="Clear trace"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            {traceSpans.length === 0 ? (
+              <div className="text-center py-3">
+                <p className="text-[11px] text-text-muted mb-2">No trace loaded</p>
+                <button
+                  onClick={() => setTracePanelOpen(true)}
+                  className="px-2.5 py-1 text-xs bg-cyan-500/15 border border-cyan-500/30 text-cyan-400 rounded-lg hover:bg-cyan-500/25 transition-colors"
+                >
+                  Load a trace
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <div className="flex items-center gap-3 text-[10px] text-text-muted mb-2">
+                  <span className="flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 inline-block" />
+                    {aiToolHighlightedNodeIds?.size ?? 0} executed
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-red-400 inline-block" />
+                    {blastRadiusNodeIds?.size ?? 0} failed
+                  </span>
+                </div>
+                {activeSpanFilter.size > 0 && (
+                  <button
+                    onClick={() => {
+                      setActiveSpanFilter(new Set());
+                      applySpanHighlights(new Set());
+                    }}
+                    className="text-[10px] text-cyan-400 hover:text-cyan-300 transition-colors mb-1"
+                  >
+                    ← show all spans
+                  </button>
+                )}
+                {traceSpans.map((span, i) => {
+                  const isActive = activeSpanFilter.size === 0 || activeSpanFilter.has(span.name);
+                  const isSelected = activeSpanFilter.has(span.name);
+                  const isInspected = selectedTraceSpan?.name === span.name && selectedTraceSpan?.start_time === span.start_time;
+                  const hasMappedNodes = span.mapped_nodes.length > 0;
+                  return (
+                    <div key={i} className={`flex items-center gap-1 rounded transition-colors ${
+                      isInspected ? 'bg-purple-500/10 border border-purple-500/25' :
+                      isSelected ? 'bg-cyan-500/15 border border-cyan-500/30' :
+                      isActive ? 'hover:bg-hover border border-transparent' : 'opacity-40 border border-transparent'
+                    }`}>
+                      <button
+                        onClick={() => hasMappedNodes && toggleSpanFilter(span.name)}
+                        disabled={!hasMappedNodes}
+                        className={`flex items-center gap-2 px-1.5 py-1.5 flex-1 min-w-0 text-left ${!hasMappedNodes ? 'cursor-default' : 'cursor-pointer'}`}
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                          span.level === 'ERROR' ? 'bg-red-400' : span.level === 'WARNING' ? 'bg-amber-400' : 'bg-emerald-400'
+                        }`} />
+                        <span className={`text-[11px] font-mono truncate flex-1 ${isInspected ? 'text-purple-300' : isSelected ? 'text-cyan-300' : 'text-text-secondary'}`}>
+                          {span.name}
+                        </span>
+                        {hasMappedNodes && (
+                          <span className={`text-[10px] px-1 py-0.5 rounded flex-shrink-0 ${
+                            isSelected ? 'text-cyan-300 bg-cyan-400/20' : 'text-cyan-400 bg-cyan-400/10'
+                          }`}>
+                            {span.mapped_nodes.length}
+                          </span>
+                        )}
+                      </button>
+                      <button
+                        onClick={() => setSelectedTraceSpan(isInspected ? null : span)}
+                        className={`p-1 mr-0.5 rounded transition-colors flex-shrink-0 ${
+                          isInspected ? 'text-purple-400' : 'text-text-muted hover:text-purple-400'
+                        }`}
+                        title="Inspect span"
+                      >
+                        <Activity className="w-3 h-3" />
+                      </button>
+                    </div>
+                  );
+                })}
+                <button
+                  onClick={() => setTracePanelOpen(true)}
+                  className="mt-2 w-full text-[11px] text-text-muted hover:text-cyan-400 transition-colors text-center py-1"
+                >
+                  Load different trace →
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
