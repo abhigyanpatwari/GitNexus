@@ -357,10 +357,8 @@ export const analyzeCommand = async (
 
   console.log('');
 
-  // ONNX Runtime registers native atexit hooks that segfault during process
-  // shutdown on macOS (#38) and some Linux configs (#40). Force-exit to
-  // bypass them when embeddings were loaded.
-  if (!embeddingSkipped) {
-    process.exit(0);
-  }
+  // KuzuDB's native module holds open handles that prevent Node from exiting.
+  // ONNX Runtime also registers native atexit hooks that segfault on some
+  // platforms (#38, #40). Force-exit to ensure clean termination.
+  process.exit(0);
 };

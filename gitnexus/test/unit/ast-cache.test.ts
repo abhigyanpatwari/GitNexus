@@ -82,5 +82,14 @@ describe('ASTCache', () => {
       const defaultCache = createASTCache();
       expect(defaultCache.stats().maxSize).toBe(50);
     });
+
+    it('clamps maxSize of 0 to 1 to prevent LRU cache error', () => {
+      const zeroCache = createASTCache(0);
+      expect(zeroCache.stats().maxSize).toBe(1);
+      // Should still function correctly
+      const tree = mockTree('test');
+      zeroCache.set('a.ts', tree);
+      expect(zeroCache.get('a.ts')).toBe(tree);
+    });
   });
 });

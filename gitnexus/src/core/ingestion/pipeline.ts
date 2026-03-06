@@ -108,6 +108,15 @@ export const runPipelineFromRepo = async (
 
     const totalParseable = parseableScanned.length;
 
+    if (totalParseable === 0) {
+      onProgress({
+        phase: 'parsing',
+        percent: 82,
+        message: 'No parseable files found — skipping parsing phase',
+        stats: { filesProcessed: 0, totalFiles: 0, nodesCreated: graph.nodeCount },
+      });
+    }
+
     // Build byte-budget chunks
     const chunks: string[][] = [];
     let currentChunk: string[] = [];
