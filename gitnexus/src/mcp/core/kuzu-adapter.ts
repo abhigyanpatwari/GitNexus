@@ -326,13 +326,18 @@ export const closeKuzu = async (repoId?: string): Promise<void> => {
 };
 
 /**
- * Detach all native KuzuDB references WITHOUT calling .close().
+ * Close all pool connections/databases and clear the pool.
  *
- * Used in test teardown to prevent Node.js GC from running native C++
- * destructors during forked process exit, which causes segfaults.
+ * Pool databases are opened read-only, so .close() is fast (no WAL
+ * flush / checkpoint).  After close, native shared_ptrs are null and
+ * N-API destructor hooks during process.exit() become no-ops — this
+ * prevents the C++ destructor hang seen on Ubuntu CI.
  */
 export const detachKuzu = (): void => {
-  pool.clear();
+  for (const id of [...pool.keys()]) {
+    closeOne(id);
+  }
+  pool.clear(); // belt-and-suspenders (closeOne already deletes)
   if (idleTimer) {
     clearInterval(idleTimer);
     idleTimer = null;

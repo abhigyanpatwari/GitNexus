@@ -5,6 +5,11 @@
  * Each test file clears all data, reseeds, and initializes adapters —
  * avoiding per-file schema creation overhead.
  *
+ * IMPORTANT: Always use detachKuzu() for cleanup — it calls .close() to null
+ * native shared_ptrs (fast for read-only pool DBs), then clears JS refs.
+ * This makes N-API destructor hooks during process.exit() no-ops, preventing
+ * the C++ destructor hang seen on Ubuntu CI.
+ *
  * Each test file gets a unique repoId to prevent MCP pool map collisions.
  * Seed data is NOT included — each test provides its own via options.seed.
  */
@@ -27,7 +32,7 @@ export interface IndexedDBHandle {
   repoId: string;
   /** Temp directory handle for filesystem cleanup */
   tmpHandle: TestDBHandle;
-  /** Cleanup: closes BOTH adapters */
+  /** Cleanup: detaches adapters (null-out, no native .close()) */
   cleanup: () => Promise<void>;
 }
 
@@ -48,8 +53,8 @@ export async function createTestKuzuDB(prefix: string): Promise<IndexedDBHandle>
   const { detachKuzu: detachPoolKuzu } = await import('../../src/mcp/core/kuzu-adapter.js');
 
   const tmpHandle = await createTempDir(`${prefix}-`);
-  const path = await import('path');
-  const dbPath = path.join(tmpHandle.dbPath, 'kuzu');
+  const pathMod = await import('path');
+  const dbPath = pathMod.join(tmpHandle.dbPath, 'kuzu');
   const repoId = `test-${prefix}-${Date.now()}-${repoCounter++}`;
 
   // Create writable DB with schema
@@ -67,12 +72,10 @@ export async function createTestKuzuDB(prefix: string): Promise<IndexedDBHandle>
   db.close();
 
   const cleanup = async () => {
-    // 1. Detach (null out) core adapter refs — do NOT call .close() which
-    //    triggers C++ destructors that hang/segfault in forked workers
+    // Close + detach adapter refs — .close() nulls native shared_ptrs
+    // so N-API destructor hooks during process.exit() are no-ops
     try { detachCoreKuzu(); } catch { /* best-effort */ }
-    // 2. Detach MCP pool adapter refs for this repoId
     try { detachPoolKuzu(); } catch { /* best-effort */ }
-    // 3. Remove temp directory (best-effort — DB files may still be locked)
     try { await tmpHandle.cleanup(); } catch { /* best-effort */ }
   };
 
@@ -96,53 +99,6 @@ export async function seedTestData(dbPath: string, queries: string[]): Promise<v
   db.close();
 }
 
-/**
- * Clear all data from a shared KuzuDB, optionally drop FTS indexes, and reseed.
- *
- * Opens a writable connection, deletes all nodes (DETACH DELETE cascades
- * to relationships), drops stale FTS indexes, inserts seed data, then closes.
- *
- * @param dbPath - Path to the KuzuDB database file
- * @param seedQueries - Cypher CREATE queries for seed data
- * @param ftsIndexesToDrop - FTS index definitions to drop before reseeding
- */
-export async function clearAndSeedData(
-  dbPath: string,
-  seedQueries?: string[],
-  ftsIndexesToDrop?: FTSIndexDef[],
-): Promise<void> {
-  const db = new kuzu.Database(dbPath);
-  const conn = new kuzu.Connection(db);
-  try {
-    // Drop stale FTS indexes before clearing data (requires extension loaded)
-    if (ftsIndexesToDrop?.length) {
-      try { await conn.query('LOAD EXTENSION fts'); } catch { /* may already be loaded */ }
-      for (const idx of ftsIndexesToDrop) {
-        try {
-          await conn.query(`CALL DROP_FTS_INDEX('${idx.table}', '${idx.indexName}')`);
-        } catch { /* index may not exist — first run */ }
-      }
-    }
-
-    // Delete all nodes (DETACH DELETE cascades to relationships)
-    for (const table of NODE_TABLES) {
-      await conn.query(`MATCH (n:\`${table}\`) DETACH DELETE n`);
-    }
-    // Clear embeddings
-    await conn.query(`MATCH (n:${EMBEDDING_TABLE_NAME}) DELETE n`);
-
-    // Seed new data
-    if (seedQueries?.length) {
-      for (const q of seedQueries) {
-        await conn.query(q);
-      }
-    }
-  } finally {
-    conn.close();
-    db.close();
-  }
-}
-
 /** FTS index definition for withTestKuzuDB */
 export interface FTSIndexDef {
   table: string;
@@ -153,8 +109,8 @@ export interface FTSIndexDef {
 /**
  * Options for withTestKuzuDB lifecycle.
  *
- * Lifecycle: clearAndSeed → initKuzu → loadFTS → createIndexes
- *            → [closeCoreKuzu + poolInitKuzu] → afterSetup
+ * Lifecycle: initKuzu → loadFTS → dropFTS → clearData → seed
+ *            → createFTS → [closeCoreKuzu + poolInitKuzu] → afterSetup
  */
 export interface WithTestKuzuDBOptions {
   /** Cypher CREATE queries to insert seed data (runs before core adapter opens). */
@@ -173,6 +129,10 @@ export interface WithTestKuzuDBOptions {
  * Manages the full KuzuDB test lifecycle using the shared global DB:
  * data clearing, reseeding, FTS indexes, adapter init/teardown.
  *
+ * All data operations go through the core adapter's writable connection —
+ * no raw kuzu.Database() connections are opened.  This avoids file-lock
+ * conflicts with orphaned native objects from previous test files.
+ *
  * Each call is wrapped in its own `describe` block to isolate lifecycle
  * hooks — safe to call multiple times in the same file.
  */
@@ -189,59 +149,70 @@ export function withTestKuzuDB(
     const dbPath = inject('kuzuDbPath');
     const repoId = `test-${prefix}-${Date.now()}-${repoCounter++}`;
 
-    // 1. Clear all data + seed (opens a raw writable connection, then closes it)
-    //    Also drops stale FTS indexes from previous test file
-    await clearAndSeedData(dbPath, options?.seed, options?.ftsIndexes);
+    const adapter = await import('../../src/core/kuzu/kuzu-adapter.js');
 
-    // Build cleanup that explicitly closes adapters to release DB locks
-    const cleanup = async () => {
-      try {
-        const { closeKuzu: closeCoreKuzu } = await import('../../src/core/kuzu/kuzu-adapter.js');
-        await closeCoreKuzu();
-      } catch { /* best-effort */ }
-      try {
-        const { closeKuzu: closePoolKuzu } = await import('../../src/mcp/core/kuzu-adapter.js');
-        await closePoolKuzu();
-      } catch { /* best-effort */ }
-    };
+    // 1. Init core adapter (writable) — reuses existing connection if
+    //    already open for this dbPath (no new native objects created).
+    await adapter.initKuzu(dbPath);
 
-    // No per-file temp dir — globalSetup manages the shared directory.
-    // tmpHandle.dbPath points to the parent temp dir (not the kuzu file)
-    // so tests that create sibling directories (e.g. 'storage') still work.
-    const tmpDir = path.dirname(dbPath);
-    const tmpHandle: TestDBHandle = { dbPath: tmpDir, cleanup: async () => {} };
-    ref.handle = { dbPath, repoId, tmpHandle, cleanup };
-    const handle = ref.handle;
+    // 2. Load FTS extension (idempotent — skips if already loaded)
+    await adapter.loadFTSExtension();
 
-    // 2. Init core adapter (writable)
-    const {
-      initKuzu,
-      loadFTSExtension,
-      createFTSIndex,
-      closeKuzu: closeCoreKuzu,
-    } = await import('../../src/core/kuzu/kuzu-adapter.js');
-    await initKuzu(handle.dbPath);
-
-    // 3. Load FTS extension
-    await loadFTSExtension();
-
-    // 4. Create FTS indexes (stale ones already dropped in clearAndSeedData)
+    // 3. Drop stale FTS indexes from previous test file
     if (options?.ftsIndexes?.length) {
       for (const idx of options.ftsIndexes) {
-        await createFTSIndex(idx.table, idx.indexName, idx.columns);
+        try { await adapter.dropFTSIndex(idx.table, idx.indexName); } catch { /* may not exist */ }
       }
     }
 
-    // 5. Close core → open pool adapter (read-only)
-    if (options?.poolAdapter) {
-      await closeCoreKuzu();
-      const { initKuzu: poolInitKuzu } = await import('../../src/mcp/core/kuzu-adapter.js');
-      await poolInitKuzu(handle.repoId, handle.dbPath);
+    // 4. Clear all data via adapter (DETACH DELETE cascades to relationships)
+    for (const table of NODE_TABLES) {
+      await adapter.executeQuery(`MATCH (n:\`${table}\`) DETACH DELETE n`);
+    }
+    await adapter.executeQuery(`MATCH (n:${EMBEDDING_TABLE_NAME}) DELETE n`);
+
+    // 5. Seed new data via adapter
+    if (options?.seed?.length) {
+      for (const q of options.seed) {
+        await adapter.executeQuery(q);
+      }
     }
 
-    // 6. User's final setup (mocks, dynamic imports, etc.)
+    // 6. Create FTS indexes on fresh data
+    if (options?.ftsIndexes?.length) {
+      for (const idx of options.ftsIndexes) {
+        await adapter.createFTSIndex(idx.table, idx.indexName, idx.columns);
+      }
+    }
+
+    // 7. Close core → open pool adapter (read-only)
+    //    closeCoreKuzu() is safe here: it's during setup (within testTimeout),
+    //    and was already used in the pre-shared-DB code.
+    if (options?.poolAdapter) {
+      await adapter.closeKuzu();
+      const { initKuzu: poolInitKuzu } = await import('../../src/mcp/core/kuzu-adapter.js');
+      await poolInitKuzu(repoId, dbPath);
+    }
+
+    // Build cleanup — detachKuzu() closes + nulls native refs (fast for read-only pool DBs)
+    const cleanup = async () => {
+      if (options?.poolAdapter) {
+        // Pool adapter was used — detach pool refs
+        try { (await import('../../src/mcp/core/kuzu-adapter.js')).detachKuzu(); } catch {}
+      }
+      // For core-only files: leave adapter alive for next file to reuse.
+      // The global afterAll in test/setup.ts detaches everything on final exit.
+    };
+
+    // tmpHandle.dbPath → parent temp dir (not the kuzu file) so tests
+    // that create sibling directories (e.g. 'storage') still work.
+    const tmpDir = path.dirname(dbPath);
+    const tmpHandle: TestDBHandle = { dbPath: tmpDir, cleanup: async () => {} };
+    ref.handle = { dbPath, repoId, tmpHandle, cleanup };
+
+    // 8. User's final setup (mocks, dynamic imports, etc.)
     if (options?.afterSetup) {
-      await options.afterSetup(handle);
+      await options.afterSetup(ref.handle);
     }
   };
 

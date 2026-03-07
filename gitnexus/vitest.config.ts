@@ -10,7 +10,7 @@ export default defineConfig({
     maxWorkers: 1,          // single fork — avoids re-loading kuzu native addon per file (~40s on Ubuntu CI)
     globals: true,
     setupFiles: ['test/setup.ts'],
-    teardownTimeout: 1000,
+    teardownTimeout: 3000,
     dangerouslyIgnoreUnhandledErrors: true, // KuzuDB native destructor segfaults on fork exit — not a test failure
     coverage: {
       provider: 'v8',

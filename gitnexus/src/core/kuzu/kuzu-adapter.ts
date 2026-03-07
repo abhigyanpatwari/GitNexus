@@ -592,13 +592,15 @@ export const closeKuzu = async (): Promise<void> => {
 export const isKuzuReady = (): boolean => conn !== null && db !== null;
 
 /**
- * Detach native KuzuDB references WITHOUT calling .close().
+ * Close and detach native KuzuDB references.
  *
- * Used in test teardown to prevent Node.js GC from running native C++
- * destructors during forked process exit, which causes segfaults.
- * The native handles leak intentionally — the OS reclaims them on exit.
+ * Calls .close() to null native shared_ptrs so that N-API destructor
+ * hooks during process.exit() are no-ops — prevents the C++ destructor
+ * hang on Ubuntu CI.  Swallows errors since this runs during teardown.
  */
 export const detachKuzu = (): void => {
+  if (conn) { try { conn.close(); } catch {} }
+  if (db) { try { db.close(); } catch {} }
   conn = null;
   db = null;
   currentDbPath = null;
