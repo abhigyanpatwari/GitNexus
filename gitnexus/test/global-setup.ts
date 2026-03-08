@@ -41,8 +41,14 @@ export default async function setup({ provide }: GlobalSetupContext) {
     // FTS may already be installed system-wide — not fatal
   }
 
-  conn.close();
-  db.close();
+  // Close native handles explicitly on Windows (file locks require it).
+  // On Linux/macOS, skip close — the N-API destructor hooks can segfault
+  // or deadlock. The teardown function removes the temp directory, and
+  // process exit reclaims all native resources.
+  if (process.platform === 'win32') {
+    conn.close();
+    db.close();
+  }
 
   // Share the dbPath with all test files via inject('kuzuDbPath')
   provide('kuzuDbPath', dbPath);

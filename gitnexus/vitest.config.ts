@@ -8,6 +8,8 @@ export default defineConfig({
     pool: 'forks',
     globals: true,
     setupFiles: ['test/setup.ts'],
+    teardownTimeout: 3000,
+    dangerouslyIgnoreUnhandledErrors: true, // KuzuDB N-API destructor segfaults on fork exit — not a test failure
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
