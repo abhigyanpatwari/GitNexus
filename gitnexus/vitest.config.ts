@@ -18,12 +18,14 @@ export default defineConfig({
         'src/server/**',              // HTTP server (requires network)
         'src/core/wiki/**',           // Wiki generation (requires LLM)
       ],
-      // Ratchet these up as coverage improves — CI will fail if a PR drops below
+      // Auto-ratchet: vitest bumps thresholds when coverage exceeds them.
+      // CI will fail if a PR drops below these floors.
       thresholds: {
-        statements: 25,
-        branches: 22,
-        functions: 25,
-        lines: 25,
+        statements: 26,
+        branches: 23,
+        functions: 28,
+        lines: 27,
+        autoUpdate: true,
       },
     },
   },
