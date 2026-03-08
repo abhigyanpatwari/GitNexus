@@ -47,6 +47,15 @@ export const loadParser = async (): Promise<Parser> => {
 
 export const loadLanguage = async (language: SupportedLanguages, filePath?: string): Promise<void> => {
   if (!parser) await loadParser();
+  
+  // Check if language is available before loading
+  if (!isLanguageAvailable(language)) {
+    const suggestion = language === SupportedLanguages.Swift 
+      ? 'Swift parser requires tree-sitter-swift. Try: npm rebuild tree-sitter-swift or check build logs.'
+      : `Language '${language}' is not supported or dependencies failed to install.`;
+    throw new Error(`Unsupported language: ${language}. ${suggestion}`);
+  }
+  
   const key = language === SupportedLanguages.TypeScript && filePath?.endsWith('.tsx')
     ? `${language}:tsx`
     : language;
