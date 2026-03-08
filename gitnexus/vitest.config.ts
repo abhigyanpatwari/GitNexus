@@ -6,12 +6,8 @@ export default defineConfig({
     include: ['test/**/*.test.ts'],
     testTimeout: 30000,
     pool: 'forks',
-    fileParallelism: false, // sequential execution — avoids concurrent KuzuDB native cleanup crashes
-    maxWorkers: 1,          // single fork for sequential file execution
     globals: true,
     setupFiles: ['test/setup.ts'],
-    teardownTimeout: 3000,
-    dangerouslyIgnoreUnhandledErrors: true, // KuzuDB native destructor segfaults on fork exit — not a test failure
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],

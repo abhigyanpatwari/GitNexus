@@ -5,25 +5,20 @@
  * Each test file clears all data, reseeds, and initializes adapters —
  * avoiding per-file schema creation overhead.
  *
- * IMPORTANT: Always use detachKuzu() for cleanup — it calls .close() to null
- * native shared_ptrs (fast for read-only pool DBs), then clears JS refs.
- * This makes N-API destructor hooks during process.exit() no-ops, preventing
- * the C++ destructor hang seen on Ubuntu CI.
+ * Cleanup is intentionally a no-op: CI runs each KuzuDB test file in its
+ * own vitest process, so the OS reclaims all native resources on exit.
  *
  * Each test file gets a unique repoId to prevent MCP pool map collisions.
  * Seed data is NOT included — each test provides its own via options.seed.
  */
+/// <reference path="../vitest.d.ts" />
 import path from 'path';
-import kuzu from 'kuzu';
 import { describe, beforeAll, afterAll, inject } from 'vitest';
 import type { TestDBHandle } from './test-db.js';
 import {
   NODE_TABLES,
   EMBEDDING_TABLE_NAME,
-  NODE_SCHEMA_QUERIES,
-  REL_SCHEMA_QUERIES,
 } from '../../src/core/kuzu/schema.js';
-import { createTempDir } from './test-db.js';
 
 export interface IndexedDBHandle {
   /** Path to the KuzuDB database file */
@@ -37,67 +32,6 @@ export interface IndexedDBHandle {
 }
 
 let repoCounter = 0;
-
-/**
- * Create a temporary KuzuDB with full schema (node tables + relationship tables).
- * Returns a handle with dbPath, unique repoId, and cleanup function.
- *
- * NOTE: Most tests should use `withTestKuzuDB` which shares a global DB.
- * This function creates a fully isolated DB — use only when you need
- * a separate DB instance (e.g. testing adapter lifecycle).
- *
- * @param prefix - Temp directory prefix for identification in logs
- */
-export async function createTestKuzuDB(prefix: string): Promise<IndexedDBHandle> {
-  const { detachKuzu: detachCoreKuzu } = await import('../../src/core/kuzu/kuzu-adapter.js');
-  const { detachKuzu: detachPoolKuzu } = await import('../../src/mcp/core/kuzu-adapter.js');
-
-  const tmpHandle = await createTempDir(`${prefix}-`);
-  const pathMod = await import('path');
-  const dbPath = pathMod.join(tmpHandle.dbPath, 'kuzu');
-  const repoId = `test-${prefix}-${Date.now()}-${repoCounter++}`;
-
-  // Create writable DB with schema
-  const db = new kuzu.Database(dbPath);
-  const conn = new kuzu.Connection(db);
-
-  for (const q of NODE_SCHEMA_QUERIES) {
-    await conn.query(q);
-  }
-  for (const q of REL_SCHEMA_QUERIES) {
-    await conn.query(q);
-  }
-
-  conn.close();
-  db.close();
-
-  const cleanup = async () => {
-    // Close + detach adapter refs — .close() nulls native shared_ptrs
-    // so N-API destructor hooks during process.exit() are no-ops
-    try { detachCoreKuzu(); } catch { /* best-effort */ }
-    try { detachPoolKuzu(); } catch { /* best-effort */ }
-    try { await tmpHandle.cleanup(); } catch { /* best-effort */ }
-  };
-
-  return { dbPath, repoId, tmpHandle, cleanup };
-}
-
-/**
- * Insert seed data into a KuzuDB via direct connection.
- * Opens a writable connection, runs the provided queries, then closes.
- *
- * @param dbPath - Path to the KuzuDB database file
- * @param queries - Array of Cypher INSERT/CREATE queries
- */
-export async function seedTestData(dbPath: string, queries: string[]): Promise<void> {
-  const db = new kuzu.Database(dbPath);
-  const conn = new kuzu.Connection(db);
-  for (const q of queries) {
-    await conn.query(q);
-  }
-  conn.close();
-  db.close();
-}
 
 /** FTS index definition for withTestKuzuDB */
 export interface FTSIndexDef {
@@ -146,7 +80,7 @@ export function withTestKuzuDB(
 
   const setup = async () => {
     // Get shared DB path from globalSetup (created once with full schema)
-    const dbPath = inject('kuzuDbPath');
+    const dbPath = inject<'kuzuDbPath'>('kuzuDbPath');
     const repoId = `test-${prefix}-${Date.now()}-${repoCounter++}`;
 
     const adapter = await import('../../src/core/kuzu/kuzu-adapter.js');
@@ -185,24 +119,22 @@ export function withTestKuzuDB(
       }
     }
 
-    // 7. Close core → open pool adapter (read-only)
-    //    closeCoreKuzu() is safe here: it's during setup (within testTimeout),
-    //    and was already used in the pre-shared-DB code.
+    // 7. Open pool adapter (read-only) alongside core adapter.
+    //    We intentionally do NOT call adapter.closeKuzu() here — on Linux,
+    //    the async .close() triggers N-API destructor hooks that segfault,
+    //    crashing the fork worker.  KuzuDB allows a read-only Database to
+    //    coexist with a writable one on the same path, so skipping close
+    //    is safe.  The OS reclaims all native resources on process exit.
     if (options?.poolAdapter) {
-      await adapter.closeKuzu();
       const { initKuzu: poolInitKuzu } = await import('../../src/mcp/core/kuzu-adapter.js');
       await poolInitKuzu(repoId, dbPath);
     }
 
-    // Build cleanup — detachKuzu() closes + nulls native refs (fast for read-only pool DBs)
-    const cleanup = async () => {
-      if (options?.poolAdapter) {
-        // Pool adapter was used — detach pool refs
-        try { (await import('../../src/mcp/core/kuzu-adapter.js')).detachKuzu(); } catch {}
-      }
-      // For core-only files: leave adapter alive for next file to reuse.
-      // The global afterAll in test/setup.ts detaches everything on final exit.
-    };
+    // Cleanup: intentionally a no-op. We do NOT call detachKuzu() here
+    // because .closeSync() segfaults on Linux (KuzuDB N-API destructor bug).
+    // CI runs each KuzuDB test file in its own vitest process, so the OS
+    // reclaims all native resources on process exit — no explicit cleanup needed.
+    const cleanup = async () => {};
 
     // tmpHandle.dbPath → parent temp dir (not the kuzu file) so tests
     // that create sibling directories (e.g. 'storage') still work.

@@ -14,6 +14,12 @@ jobs:
   #
   # Groups:
   #   kuzu-db    — 7 files using withTestKuzuDB / kuzu-adapter (native addon)
+  #                Each file runs as its own `vitest run` invocation for full
+  #                process isolation. KuzuDB's native N-API addon registers
+  #                persistent handles that prevent fork workers from exiting
+  #                on Linux, and its C++ destructors segfault during
+  #                process.exit(). Running each file in its own process lets
+  #                the OS reclaim all resources cleanly.
   #   pipeline   — 3 files: ingestion pipeline + csv, each creates own temp DB
   #   e2e        — 2 files: child-process only (spawnSync), no in-process kuzu
   #   standalone — 4 files: pure logic, no kuzu, no child processes
@@ -26,14 +32,8 @@ jobs:
         test-group: [kuzu-db, pipeline, e2e, standalone]
         include:
           - test-group: kuzu-db
-            test-glob: >-
-              test/integration/kuzu-core-adapter.test.ts
-              test/integration/kuzu-pool.test.ts
-              test/integration/local-backend.test.ts
-              test/integration/local-backend-calltool.test.ts
-              test/integration/search-core.test.ts
-              test/integration/search-pool.test.ts
-              test/integration/augmentation.test.ts
+            # Marker — actual files are listed in the run step below
+            test-glob: ''
           - test-group: pipeline
             test-glob: >-
               test/integration/pipeline.test.ts
@@ -56,7 +56,34 @@ jobs:
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
+
+      # kuzu-db: run each file in its own vitest process for full isolation.
+      # KuzuDB's native addon hangs fork workers on Linux — process isolation
+      # is the only reliable fix boundary.
+      - name: Run integration tests — kuzu-db (process-isolated)
+        if: matrix.test-group == 'kuzu-db'
+        working-directory: gitnexus
+        shell: bash
+        run: |
+          set -e
+          files=(
+            test/integration/kuzu-core-adapter.test.ts
+            test/integration/kuzu-pool.test.ts
+            test/integration/local-backend.test.ts
+            test/integration/local-backend-calltool.test.ts
+            test/integration/search-core.test.ts
+            test/integration/search-pool.test.ts
+            test/integration/augmentation.test.ts
+          )
+          for f in "${files[@]}"; do
+            echo "::group::$f"
+            npx vitest run --reporter=verbose --pool=forks "$f"
+            echo "::endgroup::"
+          done
+
+      # Non-kuzu groups: run all files in a single vitest invocation
       - name: Run integration tests — ${{ matrix.test-group }}
+        if: matrix.test-group != 'kuzu-db'
         run: npx vitest run --reporter=verbose ${{ matrix.test-glob }}
         working-directory: gitnexus
 

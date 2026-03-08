@@ -325,24 +325,6 @@ export const closeKuzu = async (repoId?: string): Promise<void> => {
   }
 };
 
-/**
- * Close all pool connections/databases and clear the pool.
- *
- * Pool databases are opened read-only, so .close() is fast (no WAL
- * flush / checkpoint).  After close, native shared_ptrs are null and
- * N-API destructor hooks during process.exit() become no-ops — this
- * prevents the C++ destructor hang seen on Ubuntu CI.
- */
-export const detachKuzu = (): void => {
-  for (const id of [...pool.keys()]) {
-    closeOne(id);
-  }
-  pool.clear(); // belt-and-suspenders (closeOne already deletes)
-  if (idleTimer) {
-    clearInterval(idleTimer);
-    idleTimer = null;
-  }
-};
 
 /**
  * Check if a specific repo's pool is active

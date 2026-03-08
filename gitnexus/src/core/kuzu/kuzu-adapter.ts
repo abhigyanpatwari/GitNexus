@@ -591,21 +591,6 @@ export const closeKuzu = async (): Promise<void> => {
 
 export const isKuzuReady = (): boolean => conn !== null && db !== null;
 
-/**
- * Close and detach native KuzuDB references.
- *
- * Calls .close() to null native shared_ptrs so that N-API destructor
- * hooks during process.exit() are no-ops — prevents the C++ destructor
- * hang on Ubuntu CI.  Swallows errors since this runs during teardown.
- */
-export const detachKuzu = (): void => {
-  if (conn) { try { conn.closeSync(); } catch {} }
-  if (db) { try { db.closeSync(); } catch {} }
-  conn = null;
-  db = null;
-  currentDbPath = null;
-  ftsLoaded = false;
-};
 
 /**
  * Delete all nodes (and their relationships) for a specific file from KuzuDB

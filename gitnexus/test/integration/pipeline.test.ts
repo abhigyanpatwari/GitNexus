@@ -103,7 +103,7 @@ describe('pipeline end-to-end', () => {
 
   it('detects communities', () => {
     expect(result.communityResult).toBeDefined();
-    expect(result.communityResult.stats.totalCommunities).toBeGreaterThan(0);
+    expect(result.communityResult?.stats.totalCommunities).toBeGreaterThan(0);
 
     // Community nodes should be in the graph
     const communityNodes: string[] = [];
@@ -122,9 +122,9 @@ describe('pipeline end-to-end', () => {
 
   it('detects execution flows (processes)', () => {
     expect(result.processResult).toBeDefined();
-    expect(result.processResult.stats.totalProcesses).toBeGreaterThan(0);
+    expect(result.processResult?.stats.totalProcesses).toBeGreaterThan(0);
 
-    const proc = result.processResult.processes[0];
+    const proc = result.processResult?.processes[0] ?? { id: '', stepCount: 0, trace: [], entryPointId: '', terminalId: '', processType: '' };
 
     // Each process should have valid structure
     expect(proc.id).toBeTruthy();
@@ -171,7 +171,10 @@ describe('pipeline end-to-end', () => {
 describe('pipeline error handling', () => {
   it('rejects with non-existent repo path', async () => {
     await expect(
-      runPipelineFromRepo('/nonexistent/path/xyz123'),
+      runPipelineFromRepo(
+        '/nonexistent/path/xyz123',
+        () => {},
+      ),
     ).rejects.toThrow();
   }, 30000);
 
