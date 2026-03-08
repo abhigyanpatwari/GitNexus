@@ -47,7 +47,7 @@ export const processHeritage = async (
     if (!tree) {
       // Use larger bufferSize for files > 32KB
       try {
-        tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 256 });
+        tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 1024 * 2 });
       } catch (parseError) {
         // Skip files that can't be parsed
         continue;

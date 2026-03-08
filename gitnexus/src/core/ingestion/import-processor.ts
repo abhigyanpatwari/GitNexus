@@ -794,7 +794,7 @@ export const processImports = async (
 
     if (!tree) {
       try {
-        tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 256 });
+        tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 1024 * 2 });
       } catch (parseError) {
         continue;
       }

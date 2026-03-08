@@ -297,7 +297,7 @@ const processParsingSequential = async (
 
     let tree;
     try {
-      tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 256 });
+      tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 1024 * 2 });
     } catch (parseError) {
       console.warn(`Skipping unparseable file: ${file.path}`);
       continue;
