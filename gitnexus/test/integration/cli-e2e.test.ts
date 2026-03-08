@@ -72,7 +72,11 @@ describe('CLI end-to-end', () => {
     // Accept timeout as valid on slow CI
     if (result.status === null) return;
 
-    expect(result.status).toBe(0);
+    expect(result.status, [
+      `analyze exited with code ${result.status}`,
+      `stdout: ${result.stdout}`,
+      `stderr: ${result.stderr}`,
+    ].join('\n')).toBe(0);
 
     // Successful analyze should create .gitnexus/ output directory
     const gitnexusDir = path.join(MINI_REPO, '.gitnexus');
