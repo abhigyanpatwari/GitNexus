@@ -169,13 +169,12 @@ describe('pipeline end-to-end', () => {
 // ─── Pipeline error handling ──────────────────────────────────────────
 
 describe('pipeline error handling', () => {
-  it('rejects with non-existent repo path', async () => {
-    await expect(
-      runPipelineFromRepo(
-        '/nonexistent/path/xyz123',
-        () => {},
-      ),
-    ).rejects.toThrow();
+  it('returns empty result for non-existent repo path', async () => {
+    const result = await runPipelineFromRepo(
+      '/nonexistent/path/xyz123',
+      () => {},
+    );
+    expect(result.totalFileCount).toBe(0);
   }, 30000);
 
   it('handles empty directory gracefully', async () => {

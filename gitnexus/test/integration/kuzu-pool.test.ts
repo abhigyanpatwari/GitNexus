@@ -183,10 +183,5 @@ withTestKuzuDB('kuzu-pool', (handle) => {
   });
 }, {
   seed: POOL_SEED_DATA,
-  afterSetup: async () => {
-    // Close the core adapter so the pool adapter can acquire a read-only lock.
-    // On Windows, KuzuDB does not allow concurrent writable + read-only connections.
-    const { closeKuzu: closeCoreKuzu } = await import('../../src/core/kuzu/kuzu-adapter.js');
-    await closeCoreKuzu();
-  },
+  poolAdapter: true,
 });

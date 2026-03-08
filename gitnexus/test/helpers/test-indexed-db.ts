@@ -119,13 +119,16 @@ export function withTestKuzuDB(
       }
     }
 
-    // 7. Open pool adapter (read-only) alongside core adapter.
-    //    We intentionally do NOT call adapter.closeKuzu() here — on Linux,
-    //    the async .close() triggers N-API destructor hooks that segfault,
-    //    crashing the fork worker.  KuzuDB allows a read-only Database to
-    //    coexist with a writable one on the same path, so skipping close
-    //    is safe.  The OS reclaims all native resources on process exit.
+    // 7. Close core adapter (Windows only), then open pool adapter (read-only).
+    //    On Windows, KuzuDB enforces file locks — writable + read-only
+    //    can't coexist on the same path, so we must close the core first.
+    //    On Linux/macOS, .close() deadlocks or segfaults via N-API
+    //    destructor hooks, but concurrent Database instances on the same
+    //    path are allowed, so we skip the close entirely.
     if (options?.poolAdapter) {
+      if (process.platform === 'win32') {
+        await adapter.closeKuzu();
+      }
       const { initKuzu: poolInitKuzu } = await import('../../src/mcp/core/kuzu-adapter.js');
       await poolInitKuzu(repoId, dbPath);
     }
