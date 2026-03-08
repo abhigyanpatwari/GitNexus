@@ -7,123 +7,136 @@ on:
     branches: [main]
   workflow_call:
 
+permissions:
+  contents: read
+  pull-requests: write
+
+# ── Reusable workflow orchestration ─────────────────────────────────
+# Each concern lives in its own workflow file for maintainability:
+#   ci-quality.yml       — typecheck (tsc --noEmit)
+#   ci-unit-tests.yml    — unit tests with coverage + cross-platform
+#   ci-integration.yml   — integration test matrix (3 OS x 4 groups)
+#
+# Shared setup is DRY via .github/actions/setup-gitnexus composite action.
+
 jobs:
-  typecheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: gitnexus/package-lock.json
-      - run: npm ci
-        working-directory: gitnexus
-      - run: npx tsc --noEmit
-        working-directory: gitnexus
+  quality:
+    uses: ./.github/workflows/ci-quality.yml
 
   unit-tests:
+    uses: ./.github/workflows/ci-unit-tests.yml
+
+  integration:
+    uses: ./.github/workflows/ci-integration.yml
+
+  # ── PR test & coverage report ────────────────────────────────────
+  # Downloads coverage artifacts from unit tests and posts a summary
+  # comment on the PR with test results and coverage metrics.
+  pr-report:
+    name: PR Report
+    if: always() && github.event_name == 'pull_request'
+    needs: [quality, unit-tests, integration]
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Download test reports
+        uses: actions/download-artifact@v4
         with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: gitnexus/package-lock.json
-      - run: npm ci
-        working-directory: gitnexus
-      - run: npx vitest run test/unit --coverage --coverage.thresholdAutoUpdate=false
-        working-directory: gitnexus
+          name: test-reports
+          path: reports
+        continue-on-error: true
 
-  cross-platform-unit:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Build report
+        id: report
+        run: |
+          # ── Coverage metrics ──
+          COV_FILE="reports/gitnexus/coverage/coverage-summary.json"
+          if [ -f "$COV_FILE" ]; then
+            STMTS=$(jq -r '.total.statements.pct' "$COV_FILE")
+            BRANCH=$(jq -r '.total.branches.pct' "$COV_FILE")
+            FUNCS=$(jq -r '.total.functions.pct' "$COV_FILE")
+            LINES=$(jq -r '.total.lines.pct' "$COV_FILE")
+          else
+            STMTS="N/A"; BRANCH="N/A"; FUNCS="N/A"; LINES="N/A"
+          fi
+
+          # ── Test counts ──
+          RESULTS_FILE="reports/gitnexus/test-results.json"
+          if [ -f "$RESULTS_FILE" ]; then
+            TOTAL=$(jq -r '.numTotalTests' "$RESULTS_FILE")
+            PASSED=$(jq -r '.numPassedTests' "$RESULTS_FILE")
+            FAILED=$(jq -r '.numFailedTests' "$RESULTS_FILE")
+            SKIPPED=$(jq -r '.numPendingTests' "$RESULTS_FILE")
+          else
+            TOTAL="N/A"; PASSED="N/A"; FAILED="N/A"; SKIPPED="N/A"
+          fi
+
+          # ── Job status icons ──
+          status_icon() {
+            case "$1" in
+              success) echo "pass" ;;
+              failure) echo "FAIL" ;;
+              cancelled) echo "skip" ;;
+              *) echo "?" ;;
+            esac
+          }
+
+          QUALITY="${{ needs.quality.result }}"
+          UNIT="${{ needs.unit-tests.result }}"
+          INTEG="${{ needs.integration.result }}"
+
+          # ── Build markdown ──
+          {
+            echo "body<<REPORT_EOF"
+            echo "## CI Results"
+            echo ""
+            echo "| Job | Status |"
+            echo "|-----|--------|"
+            echo "| Typecheck | \`$(status_icon "$QUALITY")\` |"
+            echo "| Unit Tests | \`$(status_icon "$UNIT")\` |"
+            echo "| Integration Tests | \`$(status_icon "$INTEG")\` |"
+            echo ""
+            if [ "$TOTAL" != "N/A" ]; then
+              echo "**Unit Tests:** ${PASSED}/${TOTAL} passed, ${FAILED} failed, ${SKIPPED} skipped"
+              echo ""
+            fi
+            echo "### Code Coverage"
+            echo ""
+            echo "| Metric | Coverage |"
+            echo "|--------|----------|"
+            echo "| Statements | ${STMTS}% |"
+            echo "| Branches | ${BRANCH}% |"
+            echo "| Functions | ${FUNCS}% |"
+            echo "| Lines | ${LINES}% |"
+            echo ""
+            echo "---"
+            echo "[View full run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            echo "REPORT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Comment on PR
+        uses: marocchino/sticky-pull-request-comment@v2
         with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: gitnexus/package-lock.json
-      - run: npm ci
-        working-directory: gitnexus
-      - run: npx vitest run test/unit
-        working-directory: gitnexus
+          header: ci-report
+          message: ${{ steps.report.outputs.body }}
 
-  # ── Integration test matrix ─────────────────────────────────────────
-  # Each test-group runs on a SEPARATE runner per OS, giving full process
-  # isolation for the KuzuDB native C++ addon.
-  # 3 OS × 4 groups = 12 parallel jobs.
-  #
-  # Groups:
-  #   kuzu-db    — 7 files using withTestKuzuDB / kuzu-adapter (native addon)
-  #   pipeline   — 3 files: ingestion pipeline + csv, each creates own temp DB
-  #   e2e        — 2 files: child-process only (spawnSync), no in-process kuzu
-  #   standalone — 4 files: pure logic, no kuzu, no child processes
-  cross-platform-integration:
-    name: integration (${{ matrix.os }} / ${{ matrix.test-group }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        test-group: [kuzu-db, pipeline, e2e, standalone]
-        include:
-          - test-group: kuzu-db
-            test-glob: >-
-              test/integration/kuzu-core-adapter.test.ts
-              test/integration/kuzu-pool.test.ts
-              test/integration/local-backend.test.ts
-              test/integration/local-backend-calltool.test.ts
-              test/integration/search-core.test.ts
-              test/integration/search-pool.test.ts
-              test/integration/augmentation.test.ts
-          - test-group: pipeline
-            test-glob: >-
-              test/integration/pipeline.test.ts
-              test/integration/csv-pipeline.test.ts
-              test/integration/parsing.test.ts
-          - test-group: e2e
-            test-glob: >-
-              test/integration/cli-e2e.test.ts
-              test/integration/hooks-e2e.test.ts
-          - test-group: standalone
-            test-glob: >-
-              test/integration/filesystem-walker.test.ts
-              test/integration/enrichment.test.ts
-              test/integration/tree-sitter-languages.test.ts
-              test/integration/worker-pool.test.ts
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: gitnexus/package-lock.json
-      - run: npm ci
-        working-directory: gitnexus
-      - run: npm run build
-        working-directory: gitnexus
-      - name: Run integration tests — ${{ matrix.test-group }}
-        run: npx vitest run --reporter=verbose ${{ matrix.test-glob }}
-        working-directory: gitnexus
-
-  # ── Unified status gate ──────────────────────────────────────────────
-  # Branch protection should require THIS job, not the matrix jobs directly.
-  integration-status:
-    name: integration (all groups)
-    needs: cross-platform-integration
+  # ── Unified CI gate ──────────────────────────────────────────────
+  # Single required check for branch protection.
+  ci-status:
+    name: CI Gate
+    needs: [quality, unit-tests, integration]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Check all matrix jobs passed
+      - name: Check all jobs passed
         run: |
-          result="${{ needs.cross-platform-integration.result }}"
-          if [[ "$result" != "success" ]]; then
-            echo "::error::Integration matrix failed or cancelled: $result"
+          echo "Quality:     ${{ needs.quality.result }}"
+          echo "Unit Tests:  ${{ needs.unit-tests.result }}"
+          echo "Integration: ${{ needs.integration.result }}"
+          if [[ "${{ needs.quality.result }}" != "success" ]] ||
+             [[ "${{ needs.unit-tests.result }}" != "success" ]] ||
+             [[ "${{ needs.integration.result }}" != "success" ]]; then
+            echo "::error::One or more CI jobs failed"
             exit 1
           fi

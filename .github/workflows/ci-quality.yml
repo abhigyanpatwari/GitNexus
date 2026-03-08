@@ -1,0 +1,16 @@
+name: Quality Checks
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-gitnexus
+      - run: npx tsc --noEmit
+        working-directory: gitnexus
