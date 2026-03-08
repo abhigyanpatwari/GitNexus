@@ -134,6 +134,40 @@ describe('enrichment', () => {
         [2, 2],
       ]);
     });
+
+    // ─── Unhappy paths ────────────────────────────────────────────────
+
+    it('falls back to heuristic when LLM returns empty string', async () => {
+      const emptyLLM: LLMClient = {
+        generate: vi.fn().mockResolvedValue(''),
+      };
+
+      const result = await enrichClusters(communities, memberMap, emptyLLM);
+      expect(result.enrichments.size).toBe(2);
+      expect(result.enrichments.get('comm_0')!.name).toBe('Authentication');
+      expect(result.enrichments.get('comm_1')!.name).toBe('Utilities');
+    });
+
+    it('handles zero communities gracefully', async () => {
+      const mockLLM: LLMClient = {
+        generate: vi.fn(),
+      };
+
+      const result = await enrichClusters([], new Map(), mockLLM);
+      expect(result.enrichments.size).toBe(0);
+      expect(mockLLM.generate).not.toHaveBeenCalled();
+    });
+
+    it('handles LLM returning JSON with missing description field', async () => {
+      const partialLLM: LLMClient = {
+        generate: vi.fn().mockResolvedValue('{"name": "Auth Only"}'),
+      };
+
+      const result = await enrichClusters(communities, memberMap, partialLLM);
+      expect(result.enrichments.size).toBe(2);
+      const auth = result.enrichments.get('comm_0')!;
+      expect(auth.name).toBe('Auth Only');
+    });
   });
 
   describe('enrichClustersBatch', () => {

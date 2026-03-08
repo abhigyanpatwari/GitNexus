@@ -130,4 +130,47 @@ describe('worker pool integration', () => {
       pool = createWorkerPool(badUrl, 1);
     }).toThrow(/Worker script not found/);
   });
+
+  // ─── Unhappy paths ──────────────────────────────────────────────────
+
+  it.skipIf(!hasDistWorker)('dispatch after terminate rejects', async () => {
+    const workerUrl = pathToFileURL(DIST_WORKER) as URL;
+    pool = createWorkerPool(workerUrl, 1);
+    const terminatedPool = pool;
+    await terminatedPool.terminate();
+    pool = undefined; // already terminated — prevent afterEach double-terminate
+
+    await expect(terminatedPool.dispatch([{ path: 'x.ts', content: 'const x = 1;' }]))
+      .rejects.toThrow();
+  });
+
+  it.skipIf(!hasDistWorker)('double terminate does not throw', async () => {
+    const workerUrl = pathToFileURL(DIST_WORKER) as URL;
+    pool = createWorkerPool(workerUrl, 1);
+    await pool.terminate();
+    await expect(pool.terminate()).resolves.toBeUndefined();
+    pool = undefined;
+  });
+
+  it.skipIf(!hasDistWorker)('dispatches entries with empty content string without crashing', async () => {
+    const workerUrl = pathToFileURL(DIST_WORKER) as URL;
+    pool = createWorkerPool(workerUrl, 1);
+
+    const results = await pool.dispatch<any, any>([
+      { path: 'empty.ts', content: '' },
+    ]);
+
+    expect(results).toHaveLength(1);
+    const result = results[0];
+    expect(typeof result.fileCount).toBe('number');
+    expect(result.fileCount).toBeGreaterThanOrEqual(0);
+    expect(Array.isArray(result.nodes)).toBe(true);
+  });
+
+  it.skipIf(!hasDistWorker)('createWorkerPool with size 0 creates pool with zero workers', () => {
+    const workerUrl = pathToFileURL(DIST_WORKER) as URL;
+    const zeroPool = createWorkerPool(workerUrl, 0);
+    expect(zeroPool.size).toBe(0);
+    return zeroPool.terminate();
+  });
 });

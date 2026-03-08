@@ -82,6 +82,28 @@ withTestKuzuDB('augment', (handle) => {
       const result = await augment('', handle.dbPath);
       expect(result).toBe('');
     });
+
+    // ─── Unhappy paths ────────────────────────────────────────────────
+
+    it('returns empty string for whitespace-only pattern', async () => {
+      const result = await augment('   ', handle.dbPath);
+      expect(result).toBe('');
+    });
+
+    it('handles special regex characters in pattern without throwing', async () => {
+      const result = await augment('func()', handle.dbPath);
+      expect(typeof result).toBe('string');
+    });
+
+    it('handles very long pattern without throwing', async () => {
+      const result = await augment('a'.repeat(500), handle.dbPath);
+      expect(typeof result).toBe('string');
+    });
+
+    it('handles unicode pattern without throwing', async () => {
+      const result = await augment('日本語テスト', handle.dbPath);
+      expect(typeof result).toBe('string');
+    });
   });
 }, {
   seed: AUGMENT_SEED_DATA,

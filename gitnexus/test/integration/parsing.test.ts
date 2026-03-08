@@ -11,6 +11,9 @@ import fs from 'fs/promises';
 import path from 'path';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { isNodeExported } from '../../src/core/ingestion/parsing-processor.js';
+import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
+import { getLanguageFromFilename } from '../../src/core/ingestion/utils.js';
+import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
 const FIXTURES_DIR = path.join(process.cwd(), 'test', 'fixtures', 'sample-code');
 
@@ -209,5 +212,59 @@ describe('parsing', () => {
         expect(content.length).toBeGreaterThan(0);
       });
     }
+  });
+
+  // ─── Unhappy path ─────────────────────────────────────────────────────
+
+  describe('unhappy path', () => {
+    it('returns empty AST or handles empty file content', async () => {
+      const parser = await loadParser();
+      await loadLanguage(SupportedLanguages.TypeScript, 'empty.ts');
+
+      // Parsing a zero-length string must not throw and must return a valid tree.
+      const tree = parser.parse('');
+      expect(tree).toBeDefined();
+      expect(tree.rootNode).toBeDefined();
+
+      // An empty file produces a root node with no named children — no symbols.
+      // isNodeExported on a bare node with no ancestors returns false regardless of language.
+      const detachedNode = mockNode('identifier', 'foo');
+      expect(isNodeExported(detachedNode, 'foo', 'typescript')).toBe(false);
+    });
+
+    it('handles binary/non-UTF8 content gracefully', async () => {
+      const parser = await loadParser();
+      await loadLanguage(SupportedLanguages.TypeScript, 'binary.ts');
+
+      // Construct a string that contains the Unicode replacement character (U+FFFD)
+      // and a mix of high-byte sequences that are not valid UTF-8 when treated as Latin-1.
+      // JavaScript strings are UTF-16 internally, so this is always a valid string —
+      // but it exercises tree-sitter's ability to handle unusual byte patterns.
+      const binaryLikeContent = '\uFFFD\u0000\u0001\u001F' + '\xFF\xFE'.repeat(10) + '\uFFFD';
+
+      // Must not throw — tree-sitter should return an error-recovery tree.
+      let tree: any;
+      expect(() => {
+        tree = parser.parse(binaryLikeContent);
+      }).not.toThrow();
+
+      expect(tree).toBeDefined();
+      expect(tree.rootNode).toBeDefined();
+    });
+
+    it('falls back gracefully for unsupported language', async () => {
+      // getLanguageFromFilename returns null for extensions with no grammar mapping.
+      const rubyLang = getLanguageFromFilename('script.rb');
+      expect(rubyLang).toBeNull();
+
+      const luaLang = getLanguageFromFilename('module.lua');
+      expect(luaLang).toBeNull();
+
+      // loadLanguage throws an explicit error for a language not in the grammar map.
+      // Cast through unknown to simulate a caller passing an unrecognised language key.
+      await expect(
+        loadLanguage('erlang' as unknown as SupportedLanguages)
+      ).rejects.toThrow('Unsupported language');
+    });
   });
 });

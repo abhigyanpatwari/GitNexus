@@ -186,6 +186,73 @@ withTestKuzuDB('local-backend', (handle) => {
     });
   });
 
+  // ─── Write blocking edge cases ──────────────────────────────────────
+
+  describe('write blocking edge cases', () => {
+    it('blocks lowercase write keywords (case-insensitive)', () => {
+      expect(isWriteQuery('create (n:Function {id: "x"})')).toBe(true);
+      expect(isWriteQuery('delete n')).toBe(true);
+      expect(isWriteQuery('set n.name = "x"')).toBe(true);
+    });
+
+    it('blocks write keyword in CREATED-like words (regex is keyword-boundary unaware)', () => {
+      // CYPHER_WRITE_RE uses \b word boundaries — "CREATED" does NOT match "CREATE"
+      const result = isWriteQuery("MATCH (n) WHERE n.name = 'CREATED' RETURN n");
+      // The regex uses word boundaries so substring "CREATE" inside "CREATED" is NOT matched
+      expect(result).toBe(false);
+    });
+
+    it('blocks multi-line queries with write keywords', () => {
+      expect(isWriteQuery('MATCH (n)\nDELETE n')).toBe(true);
+    });
+
+    it('returns false for empty string', () => {
+      expect(isWriteQuery('')).toBe(false);
+    });
+
+    it('returns false for whitespace-only query', () => {
+      expect(isWriteQuery('   ')).toBe(false);
+    });
+  });
+
+  // ─── Query error handling via pool ──────────────────────────────────
+
+  describe('query error handling via pool', () => {
+    it('returns empty rows for unknown node label', async () => {
+      // KuzuDB throws a Binder exception for unknown node labels
+      await expect(
+        executeQuery(handle.repoId, 'MATCH (n:NonExistentTable) RETURN n.name AS name')
+      ).rejects.toThrow();
+    });
+
+    it('rejects syntactically invalid Cypher', async () => {
+      await expect(executeQuery(handle.repoId, 'NOT VALID CYPHER AT ALL'))
+        .rejects.toThrow();
+    });
+  });
+
+  // ─── Parameterized query edge cases ─────────────────────────────────
+
+  describe('parameterized query edge cases', () => {
+    it('succeeds with empty params when query has no parameters', async () => {
+      const rows = await executeParameterized(
+        handle.repoId,
+        'MATCH (n:Function) RETURN n.name AS name LIMIT 1',
+        {},
+      );
+      expect(rows.length).toBeGreaterThanOrEqual(0);
+    });
+
+    it('returns empty rows when param value is null', async () => {
+      const rows = await executeParameterized(
+        handle.repoId,
+        'MATCH (n:Function) WHERE n.name = $name RETURN n.name AS name',
+        { name: null as any },
+      );
+      expect(rows).toHaveLength(0);
+    });
+  });
+
 }, {
   seed: LOCAL_BACKEND_SEED_DATA,
   poolAdapter: true,

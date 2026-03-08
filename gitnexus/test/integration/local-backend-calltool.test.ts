@@ -105,6 +105,46 @@ withTestKuzuDB('local-backend-calltool', (handle) => {
     });
   });
 
+  describe('tool parameter edge cases', () => {
+    let backend: LocalBackend;
+
+    beforeAll(async () => {
+      const ext = handle as typeof handle & { _backend?: LocalBackend };
+      if (!ext._backend) {
+        throw new Error('LocalBackend not initialized — afterSetup did not attach _backend to handle');
+      }
+      backend = ext._backend;
+    });
+
+    it('context tool returns error for nonexistent symbol', async () => {
+      const result = await backend.callTool('context', { name: 'nonexistent_xyz_symbol_999' });
+      expect(result).toHaveProperty('error');
+      expect(result.error).toMatch(/not found/i);
+    });
+
+    it('query tool returns error for empty query', async () => {
+      const result = await backend.callTool('query', { query: '' });
+      expect(result).toHaveProperty('error');
+      expect(result.error).toMatch(/required/i);
+    });
+
+    it('query tool returns error for missing query param', async () => {
+      const result = await backend.callTool('query', {});
+      expect(result).toHaveProperty('error');
+    });
+
+    it('cypher tool returns error for invalid Cypher syntax', async () => {
+      const result = await backend.callTool('cypher', { query: 'THIS IS NOT VALID CYPHER AT ALL' });
+      expect(result).toHaveProperty('error');
+    });
+
+    it('context tool returns error when no name or uid provided', async () => {
+      const result = await backend.callTool('context', {});
+      expect(result).toHaveProperty('error');
+      expect(result.error).toMatch(/required/i);
+    });
+  });
+
 }, {
   seed: LOCAL_BACKEND_SEED_DATA,
   ftsIndexes: LOCAL_BACKEND_FTS_INDEXES,

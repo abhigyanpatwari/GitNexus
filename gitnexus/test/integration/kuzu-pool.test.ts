@@ -31,6 +31,7 @@ withTestKuzuDB('kuzu-pool', (handle) => {
     try { await closeKuzu('test-repo'); } catch { /* best-effort */ }
     try { await closeKuzu('repo1'); } catch { /* best-effort */ }
     try { await closeKuzu('repo2'); } catch { /* best-effort */ }
+    try { await closeKuzu(''); } catch { /* best-effort */ }
   });
 
   // ─── Lifecycle: init → query → close ─────────────────────────────────
@@ -134,6 +135,50 @@ withTestKuzuDB('kuzu-pool', (handle) => {
       const row = rows.find((r: any) => r.caller === 'main');
       expect(row).toBeDefined();
       expect(row.callee).toBe('helper');
+    });
+  });
+
+  // ─── Unhappy paths ──────────────────────────────────────────────────
+
+  describe('unhappy paths', () => {
+    it('executeParameterized throws when repo is not initialized', async () => {
+      await expect(executeParameterized('ghost-repo', 'MATCH (n) RETURN n', {}))
+        .rejects.toThrow(/not initialized/);
+    });
+
+    it('executeQuery rejects invalid Cypher syntax', async () => {
+      await initKuzu('test-repo', handle.dbPath);
+      await expect(executeQuery('test-repo', 'THIS IS NOT CYPHER'))
+        .rejects.toThrow();
+    });
+
+    it('executeParameterized rejects when referenced parameter is missing', async () => {
+      await initKuzu('test-repo', handle.dbPath);
+      await expect(executeParameterized(
+        'test-repo',
+        'MATCH (n:Function) WHERE n.name = $name RETURN n',
+        { wrong_param: 'main' },
+      )).rejects.toThrow();
+    });
+
+    it('closeKuzu with unknown repoId does not throw', async () => {
+      await expect(closeKuzu('never-existed-repo')).resolves.toBeUndefined();
+    });
+
+    it('isKuzuReady returns false for unknown repoId', () => {
+      expect(isKuzuReady('never-existed-repo')).toBe(false);
+    });
+
+    it('initKuzu with empty string repoId stores entry under empty key', async () => {
+      await initKuzu('', handle.dbPath);
+      expect(isKuzuReady('')).toBe(true);
+      await closeKuzu('');
+      expect(isKuzuReady('')).toBe(false);
+    });
+
+    it('executeQuery with empty query string rejects', async () => {
+      await initKuzu('test-repo', handle.dbPath);
+      await expect(executeQuery('test-repo', '')).rejects.toThrow();
     });
   });
 }, {

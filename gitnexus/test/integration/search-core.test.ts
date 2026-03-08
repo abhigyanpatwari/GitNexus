@@ -80,6 +80,41 @@ withTestKuzuDB('search-core', (_handle) => {
       expect(results).toEqual([]);
     });
   });
+
+  // ─── Unhappy paths ──────────────────────────────────────────────────
+
+  describe('unhappy paths', () => {
+    it('returns empty array for empty query string', async () => {
+      const results = await searchFTSFromKuzu('', 10);
+      expect(results).toEqual([]);
+    });
+
+    it('returns empty array for whitespace-only query', async () => {
+      const results = await searchFTSFromKuzu('   ', 10);
+      expect(results).toEqual([]);
+    });
+
+    it('handles special characters in query gracefully', async () => {
+      const results = await searchFTSFromKuzu('user* OR auth+', 10);
+      expect(Array.isArray(results)).toBe(true);
+    });
+
+    it('handles limit of 0', async () => {
+      const results = await searchFTSFromKuzu('user authentication', 0);
+      expect(results).toEqual([]);
+    });
+
+    it('handles negative limit gracefully', async () => {
+      const results = await searchFTSFromKuzu('user authentication', -1);
+      expect(Array.isArray(results)).toBe(true);
+    });
+
+    it('handles very large limit', async () => {
+      const results = await searchFTSFromKuzu('user authentication', 100000);
+      expect(results.length).toBeLessThanOrEqual(100000);
+      expect(results.length).toBeGreaterThan(0);
+    });
+  });
 }, {
   seed: SEARCH_SEED_DATA,
   ftsIndexes: SEARCH_FTS_INDEXES,

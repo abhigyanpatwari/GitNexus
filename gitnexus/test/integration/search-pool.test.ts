@@ -50,6 +50,30 @@ withTestKuzuDB('search-pool', (handle) => {
       expect(results.length).toBeLessThanOrEqual(1);
     });
   });
+
+  // ─── Unhappy paths ──────────────────────────────────────────────────
+
+  describe('unhappy paths', () => {
+    it('returns empty array for empty query via pool', async () => {
+      const results = await searchFTSFromKuzu('', 10, handle.repoId);
+      expect(results).toEqual([]);
+    });
+
+    it('returns empty array for whitespace-only query via pool', async () => {
+      const results = await searchFTSFromKuzu('   ', 10, handle.repoId);
+      expect(results).toEqual([]);
+    });
+
+    it('handles special characters in query via pool', async () => {
+      const results = await searchFTSFromKuzu('user* OR auth+', 10, handle.repoId);
+      expect(Array.isArray(results)).toBe(true);
+    });
+
+    it('handles limit of 0 via pool', async () => {
+      const results = await searchFTSFromKuzu('user authentication', 0, handle.repoId);
+      expect(results).toEqual([]);
+    });
+  });
 }, {
   seed: SEARCH_SEED_DATA,
   ftsIndexes: SEARCH_FTS_INDEXES,
