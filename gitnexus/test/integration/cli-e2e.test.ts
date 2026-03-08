@@ -50,6 +50,13 @@ function runCli(command: string, cwd: string, timeoutMs = 15000) {
     encoding: 'utf8',
     timeout: timeoutMs,
     stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      // Pre-set --max-old-space-size so analyzeCommand's ensureHeap() sees it
+      // and skips the re-exec. The re-exec drops the tsx loader (--import tsx
+      // is not in process.argv), causing ERR_UNKNOWN_FILE_EXTENSION on .ts files.
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+    },
   });
 }
 
