@@ -599,8 +599,8 @@ export const isKuzuReady = (): boolean => conn !== null && db !== null;
  * hang on Ubuntu CI.  Swallows errors since this runs during teardown.
  */
 export const detachKuzu = (): void => {
-  if (conn) { try { conn.close(); } catch {} }
-  if (db) { try { db.close(); } catch {} }
+  if (conn) { try { conn.closeSync(); } catch {} }
+  if (db) { try { db.closeSync(); } catch {} }
   conn = null;
   db = null;
   currentDbPath = null;

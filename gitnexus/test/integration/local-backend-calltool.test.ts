@@ -23,8 +23,12 @@ withTestKuzuDB('local-backend-calltool', (handle) => {
     let backend: LocalBackend;
 
     beforeAll(async () => {
-      // backend is created in afterSetup, retrieve it from the closure
-      backend = (handle as any)._backend;
+      // backend is created in afterSetup and attached to the handle
+      const ext = handle as typeof handle & { _backend?: LocalBackend };
+      if (!ext._backend) {
+        throw new Error('LocalBackend not initialized — afterSetup did not attach _backend to handle');
+      }
+      backend = ext._backend;
     });
 
     it('cypher tool returns function names', async () => {

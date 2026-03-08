@@ -90,9 +90,9 @@ function closeOne(repoId: string): void {
   const entry = pool.get(repoId);
   if (!entry) return;
   for (const conn of entry.available) {
-    try { conn.close(); } catch (e) { console.error('GitNexus [pool:close-conn]:', e instanceof Error ? e.message : e); }
+    try { conn.closeSync(); } catch (e) { console.error('GitNexus [pool:close-conn]:', e instanceof Error ? e.message : e); }
   }
-  try { entry.db.close(); } catch (e) { console.error('GitNexus [pool:close-db]:', e instanceof Error ? e.message : e); }
+  try { entry.db.closeSync(); } catch (e) { console.error('GitNexus [pool:close-db]:', e instanceof Error ? e.message : e); }
   pool.delete(repoId);
 }
 
