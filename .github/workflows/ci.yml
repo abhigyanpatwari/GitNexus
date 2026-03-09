@@ -50,6 +50,12 @@ jobs:
     permissions:
       pull-requests: write
     steps:
+      - name: Checkout (for vitest config)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          sparse-checkout: gitnexus/vitest.config.ts
+          sparse-checkout-cone-mode: false
+
       - name: Download test reports
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -96,8 +102,15 @@ jobs:
             SUITES="N/A"; DURATION="N/A"
           fi
 
-          # ── Coverage thresholds (from vitest.config.ts P0 settings) ──
-          THRESH_STMTS=26; THRESH_BRANCH=23; THRESH_FUNCS=28; THRESH_LINES=27
+          # ── Coverage thresholds (read from vitest.config.ts to stay in sync) ──
+          if [ -f gitnexus/vitest.config.ts ]; then
+            THRESH_STMTS=$(grep -oP 'statements:\s*\K[0-9]+' gitnexus/vitest.config.ts || echo 0)
+            THRESH_BRANCH=$(grep -oP 'branches:\s*\K[0-9]+' gitnexus/vitest.config.ts || echo 0)
+            THRESH_FUNCS=$(grep -oP 'functions:\s*\K[0-9]+' gitnexus/vitest.config.ts || echo 0)
+            THRESH_LINES=$(grep -oP 'lines:\s*\K[0-9]+' gitnexus/vitest.config.ts || echo 0)
+          else
+            THRESH_STMTS=0; THRESH_BRANCH=0; THRESH_FUNCS=0; THRESH_LINES=0
+          fi
 
           # ── Status helpers ──
           status_icon() {
