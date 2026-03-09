@@ -618,46 +618,46 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     repoName?: string,
     backendUrlOverride?: string
   ): Promise<void> => {
-  const api = apiRef.current;
-  const config = getActiveProviderConfig();
+    const api = apiRef.current;
+    const config = getActiveProviderConfig();
 
-  if (!api) throw new Error('Worker not initialized');
-  if (!config) throw new Error('No active LLM provider configured');
-  const backendUrl = backendUrlOverride ?? serverBaseUrl;
-  if (!backendUrl) throw new Error('Server not connected');
+    if (!api) throw new Error('Worker not initialized');
+    if (!config) throw new Error('No active LLM provider configured');
+    const backendUrl = backendUrlOverride ?? serverBaseUrl;
+    if (!backendUrl) throw new Error('Server not connected');
 
-  const resolvedRepoName = repoName ?? projectName;
-  if (!resolvedRepoName) {
-    throw new Error('Repository name is required for backend agent initialization');
-  }
-
-  setIsAgentInitializing(true);
-  setAgentError(null);
-
-  try {
-    const fileContentsEntries = Array.from(fileContents.entries());
-    const result = await api.initializeBackendAgent(
-      config,
-      backendUrl,
-      resolvedRepoName,
-      fileContentsEntries,
-      projectName ?? resolvedRepoName,
-    );
-
-    if (!result.success) {
-      throw new Error(result.error || 'Failed to initialize backend agent');
+    const resolvedRepoName = repoName ?? projectName;
+    if (!resolvedRepoName) {
+      throw new Error('Repository name is required for backend agent initialization');
     }
 
-    setIsAgentReady(true);
-  } catch (error) {
-    setIsAgentReady(false);
-    const message = error instanceof Error ? error.message : String(error);
-    setAgentError(message);
-    throw error;
-  } finally {
-    setIsAgentInitializing(false);
-  }
-}, [serverBaseUrl, fileContents]);
+    setIsAgentInitializing(true);
+    setAgentError(null);
+
+    try {
+      const fileContentsEntries = Array.from(fileContents.entries());
+      const result = await api.initializeBackendAgent(
+        config,
+        backendUrl,
+        resolvedRepoName,
+        fileContentsEntries,
+        projectName ?? resolvedRepoName,
+      );
+
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to initialize backend agent');
+      }
+
+      setIsAgentReady(true);
+    } catch (error) {
+      setIsAgentReady(false);
+      const message = error instanceof Error ? error.message : String(error);
+      setAgentError(message);
+      throw error;
+    } finally {
+      setIsAgentInitializing(false);
+    }
+  }, [serverBaseUrl, fileContents]);
 
   const sendChatMessage = useCallback(async (message: string): Promise<void> => {
     const api = apiRef.current;
@@ -1076,11 +1076,11 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       setViewMode('exploring');
 
       if (getActiveProviderConfig()) {
-          await initializeBackendAgent(pName, result.repoInfo.name || repoName);
-        }
+        await initializeBackendAgent(pName, result.repoInfo.name || repoName);
+      }
 
-        setEmbeddingStatus('ready');
-        setEmbeddingProgress(null);
+      setEmbeddingStatus('idle');
+      setEmbeddingProgress(null);
     } catch (err) {
       console.error('Repo switch failed:', err);
       setProgress({
@@ -1250,4 +1250,3 @@ export const useAppState = (): AppState => {
   }
   return context;
 };
-

@@ -72,14 +72,19 @@ const httpFetchWithTimeout = async (
   }
 };
 
+const normalizeBackendUrl = (backendUrl: string): string => backendUrl.replace(/\/+$/, '');
+
 const buildBackendApiUrl = (backendUrl: string, endpointPath: string): string => {
-  const base = backendUrl.replace(/\/+$/, '');
+  const base = normalizeBackendUrl(backendUrl);
   const path = endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`;
   if (base.endsWith('/api')) {
     return `${base}${path}`;
   }
   return `${base}/api${path}`;
 };
+
+type HttpExecuteQuery = (cypher: string) => Promise<any[]>;
+const httpExecuteQueryCache = new Map<string, HttpExecuteQuery>();
 
 const createHttpExecuteQuery = (backendUrl: string, repo: string) => {
   return async (cypher: string): Promise<any[]> => {
@@ -97,8 +102,21 @@ const createHttpExecuteQuery = (backendUrl: string, repo: string) => {
   };
 };
 
+const getCachedHttpExecuteQuery = (backendUrl: string, repo: string): HttpExecuteQuery => {
+  const normalizedBackendUrl = normalizeBackendUrl(backendUrl);
+  const key = `${normalizedBackendUrl}::${repo}`;
+  const cached = httpExecuteQueryCache.get(key);
+  if (cached) {
+    return cached;
+  }
+
+  const executeQuery = createHttpExecuteQuery(normalizedBackendUrl, repo);
+  httpExecuteQueryCache.set(key, executeQuery);
+  return executeQuery;
+};
+
 const createHttpOptionalExecuteQuery = (backendUrl: string, repo: string) => {
-  const executeQuery = createHttpExecuteQuery(backendUrl, repo);
+  const executeQuery = getCachedHttpExecuteQuery(backendUrl, repo);
 
   return async (cypher: string): Promise<any[]> => {
     try {
@@ -279,7 +297,7 @@ const workerApi = {
     repo: string,
     cypher: string,
   ): Promise<any[]> {
-    const executeQuery = createHttpExecuteQuery(backendUrl, repo);
+    const executeQuery = getCachedHttpExecuteQuery(backendUrl, repo);
     return executeQuery(cypher);
   },
 
@@ -710,7 +728,7 @@ const workerApi = {
       storedFileContents = contents;
 
       // Create HTTP-based tool wrappers
-      const executeQuery = createHttpExecuteQuery(backendUrl, repoName);
+      const executeQuery = getCachedHttpExecuteQuery(backendUrl, repoName);
       const optionalExecuteQuery = createHttpOptionalExecuteQuery(backendUrl, repoName);
       const hybridSearch = createHttpHybridSearch(backendUrl, repoName);
 
