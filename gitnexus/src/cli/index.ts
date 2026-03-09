@@ -43,6 +43,9 @@ program
 program
   .command('list')
   .description('List all indexed repositories')
+  .option('-j, --json', 'Output as JSON (useful for scripts)')
+  .option('-s, --sort <field>', 'Sort by: name, indexed, files, symbols', 'indexed')
+  .option('-f, --filter <text>', 'Filter repositories by name or path')
   .action(createLazyAction(() => import('./list.js'), 'listCommand'));
 
 program

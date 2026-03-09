@@ -6,12 +6,68 @@
 
 import { listRegisteredRepos } from '../storage/repo-manager.js';
 
-export const listCommand = async () => {
-  const entries = await listRegisteredRepos({ validate: true });
+interface ListOptions {
+  json?: boolean;
+  sort?: 'name' | 'indexed' | 'files' | 'symbols';
+  filter?: string;
+}
+
+export const listCommand = async (options: ListOptions = {}) => {
+  const { json = false, sort = 'indexed', filter } = options;
+  let entries = await listRegisteredRepos({ validate: true });
+
+  // Filter by name if specified
+  if (filter) {
+    entries = entries.filter(entry => 
+      entry.name.toLowerCase().includes(filter.toLowerCase()) ||
+      entry.path.toLowerCase().includes(filter.toLowerCase())
+    );
+  }
+
+  // Sort entries
+  entries.sort((a, b) => {
+    switch (sort) {
+      case 'name':
+        return a.name.localeCompare(b.name);
+      case 'files':
+        return (b.stats?.files ?? 0) - (a.stats?.files ?? 0);
+      case 'symbols':
+        return (b.stats?.nodes ?? 0) - (a.stats?.nodes ?? 0);
+      case 'indexed':
+      default:
+        return new Date(b.indexedAt).getTime() - new Date(a.indexedAt).getTime();
+    }
+  });
 
   if (entries.length === 0) {
-    console.log('No indexed repositories found.');
-    console.log('Run `gitnexus analyze` in a git repo to index it.');
+    if (json) {
+      console.log(JSON.stringify({ repositories: [], total: 0 }));
+    } else {
+      console.log('No indexed repositories found.');
+      console.log('Run `gitnexus analyze` in a git repo to index it.');
+    }
+    return;
+  }
+
+  if (json) {
+    // Output JSON format for script-friendly output
+    const output = {
+      repositories: entries.map(entry => ({
+        name: entry.name,
+        path: entry.path,
+        indexedAt: entry.indexedAt,
+        lastCommit: entry.lastCommit,
+        stats: {
+          files: entry.stats?.files ?? 0,
+          nodes: entry.stats?.nodes ?? 0,
+          edges: entry.stats?.edges ?? 0,
+          communities: entry.stats?.communities ?? 0,
+          processes: entry.stats?.processes ?? 0,
+        }
+      })),
+      total: entries.length
+    };
+    console.log(JSON.stringify(output, null, 2));
     return;
   }
 
