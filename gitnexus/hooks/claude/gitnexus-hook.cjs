@@ -69,7 +69,7 @@ function extractPattern(toolName, toolInput) {
     for (const token of tokens) {
       if (skipNext) { skipNext = false; continue; }
       if (!foundCmd) {
-        if (/\brg$|\bgrep$/.test(token)) foundCmd = true;
+        if (/\brg\b|\bgrep\b/.test(token)) foundCmd = true;
         continue;
       }
       if (token.startsWith('-')) {

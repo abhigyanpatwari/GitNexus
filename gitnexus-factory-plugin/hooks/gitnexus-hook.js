@@ -64,7 +64,7 @@ function extractPattern(toolName, toolInput) {
     for (const token of tokens) {
       if (skipNext) { skipNext = false; continue; }
       if (!foundCmd) {
-        if (/\brg$|\bgrep$/.test(token)) foundCmd = true;
+        if (/\brg\b|\bgrep\b/.test(token)) foundCmd = true;
         continue;
       }
       if (token.startsWith('-')) {
@@ -122,7 +122,7 @@ function main() {
         const child = spawnSync(
           'npx',
           ['-y', 'gitnexus', 'augment', pattern],
-          { encoding: 'utf-8', timeout: 15000, cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: isWin }
+          { encoding: 'utf-8', timeout: 8000, cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: isWin }
         );
         if (child.status === 0 && child.stderr && child.stderr.trim()) {
           result = child.stderr;
