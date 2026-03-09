@@ -14,8 +14,29 @@ if (!process.env.ORT_LOG_LEVEL) {
   process.env.ORT_LOG_LEVEL = '3';
 }
 
+import { existsSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
+
+/**
+ * Check if CUDA is actually available on this system.
+ * onnxruntime-node crashes with a native fatal error (not catchable by JS)
+ * when attempting to load the CUDA provider without CUDA libraries installed.
+ */
+const isCudaAvailable = (): boolean => {
+  try {
+    execSync('nvidia-smi', { stdio: 'ignore', timeout: 3000 });
+    const commonPaths = [
+      '/usr/lib/x86_64-linux-gnu/libcuda.so',
+      '/usr/lib/x86_64-linux-gnu/libcuda.so.1',
+      '/usr/local/cuda/lib64/libcudart.so',
+    ];
+    return commonPaths.some(p => existsSync(p));
+  } catch {
+    return false;
+  }
+};
 
 // Module-level state for singleton pattern
 let embedderInstance: FeatureExtractionPipeline | null = null;
@@ -62,8 +83,11 @@ export const initEmbedder = async (
   const finalConfig = { ...DEFAULT_EMBEDDING_CONFIG, ...config };
   // On Windows, use DirectML for GPU acceleration (via DirectX12)
   // CUDA is only available on Linux x64 with onnxruntime-node
+  // IMPORTANT: Must verify CUDA availability before attempting it — onnxruntime-node
+  // crashes with a native fatal error (not a JS exception) if CUDA libs are missing.
   const isWindows = process.platform === 'win32';
-  const gpuDevice = isWindows ? 'dml' : 'cuda';
+  const cudaAvailable = !isWindows && isCudaAvailable();
+  const gpuDevice = isWindows ? 'dml' : (cudaAvailable ? 'cuda' : 'cpu');
   let requestedDevice = forceDevice || (finalConfig.device === 'auto' ? gpuDevice : finalConfig.device);
 
   initPromise = (async () => {

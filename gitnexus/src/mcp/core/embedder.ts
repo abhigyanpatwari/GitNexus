@@ -5,7 +5,28 @@
  * For MCP, we only need to compute query embeddings, not batch embed.
  */
 
+import { existsSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
+
+/**
+ * Check if CUDA is actually available on this system.
+ * onnxruntime-node crashes with a native fatal error (not catchable by JS)
+ * when attempting to load the CUDA provider without CUDA libraries installed.
+ */
+const isCudaAvailable = (): boolean => {
+  try {
+    execSync('nvidia-smi', { stdio: 'ignore', timeout: 3000 });
+    const commonPaths = [
+      '/usr/lib/x86_64-linux-gnu/libcuda.so',
+      '/usr/lib/x86_64-linux-gnu/libcuda.so.1',
+      '/usr/local/cuda/lib64/libcudart.so',
+    ];
+    return commonPaths.some(p => existsSync(p));
+  } catch {
+    return false;
+  }
+};
 
 // Model config
 const MODEL_ID = 'Snowflake/snowflake-arctic-embed-xs';
@@ -37,9 +58,12 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
       console.error('GitNexus: Loading embedding model (first search may take a moment)...');
 
       // Try GPU first (DirectML on Windows, CUDA on Linux), fall back to CPU
+      // IMPORTANT: Must verify CUDA before attempting — native crash if libs missing.
       const isWindows = process.platform === 'win32';
-      const gpuDevice = isWindows ? 'dml' : 'cuda';
-      const devicesToTry: Array<'dml' | 'cuda' | 'cpu'> = [gpuDevice, 'cpu'];
+      const cudaAvailable = !isWindows && isCudaAvailable();
+      const gpuDevice = isWindows ? 'dml' : (cudaAvailable ? 'cuda' : 'cpu');
+      const devicesToTry: Array<'dml' | 'cuda' | 'cpu'> =
+        gpuDevice === 'cpu' ? ['cpu'] : [gpuDevice, 'cpu'];
       
       for (const device of devicesToTry) {
         try {
