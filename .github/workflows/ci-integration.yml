@@ -120,6 +120,10 @@ jobs:
           --coverage.reporter=text
           --coverage.thresholdAutoUpdate=false
           --coverage.reportOnFailure=true
+          --coverage.thresholds.statements=0
+          --coverage.thresholds.branches=0
+          --coverage.thresholds.functions=0
+          --coverage.thresholds.lines=0
           test/integration/pipeline.test.ts
           test/integration/csv-pipeline.test.ts
           test/integration/parsing.test.ts

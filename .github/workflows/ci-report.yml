@@ -170,29 +170,36 @@ jobs:
           DIR="$RUNNER_TEMP/artifacts"
           MERGED_DIR="$RUNNER_TEMP/merged-coverage"
 
-          # ── Locate coverage file (prefer merged, fallback to unit-only) ──
-          if [ "$HAS_MERGED" = "true" ] && [ -f "$MERGED_DIR/coverage-summary.json" ]; then
-            COV_FILE="$MERGED_DIR/coverage-summary.json"
-            COV_LABEL="Unit + Integration (merged)"
-          else
-            COV_FILE=$(find "$DIR/test-reports" -name "coverage-summary.json" -type f 2>/dev/null | head -1)
-            COV_LABEL="Unit only"
-          fi
+          # ── Helper: read coverage summary into prefixed vars ──
+          read_cov() {
+            local prefix=$1 file=$2
+            if [ -n "$file" ] && [ -f "$file" ]; then
+              eval "${prefix}_STMTS=$(jq -r '.total.statements.pct' "$file" 2>/dev/null || echo 'N/A')"
+              eval "${prefix}_BRANCH=$(jq -r '.total.branches.pct' "$file" 2>/dev/null || echo 'N/A')"
+              eval "${prefix}_FUNCS=$(jq -r '.total.functions.pct' "$file" 2>/dev/null || echo 'N/A')"
+              eval "${prefix}_LINES=$(jq -r '.total.lines.pct' "$file" 2>/dev/null || echo 'N/A')"
+              eval "${prefix}_STMTS_COV=$(jq -r '"\(.total.statements.covered)/\(.total.statements.total)"' "$file" 2>/dev/null || echo '')"
+              eval "${prefix}_BRANCH_COV=$(jq -r '"\(.total.branches.covered)/\(.total.branches.total)"' "$file" 2>/dev/null || echo '')"
+              eval "${prefix}_FUNCS_COV=$(jq -r '"\(.total.functions.covered)/\(.total.functions.total)"' "$file" 2>/dev/null || echo '')"
+              eval "${prefix}_LINES_COV=$(jq -r '"\(.total.lines.covered)/\(.total.lines.total)"' "$file" 2>/dev/null || echo '')"
+              return 0
+            else
+              eval "${prefix}_STMTS=N/A; ${prefix}_BRANCH=N/A; ${prefix}_FUNCS=N/A; ${prefix}_LINES=N/A"
+              eval "${prefix}_STMTS_COV=; ${prefix}_BRANCH_COV=; ${prefix}_FUNCS_COV=; ${prefix}_LINES_COV="
+              return 1
+            fi
+          }
 
-          if [ -n "$COV_FILE" ] && [ -f "$COV_FILE" ]; then
-            STMTS=$(jq -r '.total.statements.pct' "$COV_FILE" 2>/dev/null || echo "N/A")
-            BRANCH=$(jq -r '.total.branches.pct' "$COV_FILE" 2>/dev/null || echo "N/A")
-            FUNCS=$(jq -r '.total.functions.pct' "$COV_FILE" 2>/dev/null || echo "N/A")
-            LINES=$(jq -r '.total.lines.pct' "$COV_FILE" 2>/dev/null || echo "N/A")
-            STMTS_COV=$(jq -r '"\(.total.statements.covered)/\(.total.statements.total)"' "$COV_FILE" 2>/dev/null || echo "")
-            BRANCH_COV=$(jq -r '"\(.total.branches.covered)/\(.total.branches.total)"' "$COV_FILE" 2>/dev/null || echo "")
-            FUNCS_COV=$(jq -r '"\(.total.functions.covered)/\(.total.functions.total)"' "$COV_FILE" 2>/dev/null || echo "")
-            LINES_COV=$(jq -r '"\(.total.lines.covered)/\(.total.lines.total)"' "$COV_FILE" 2>/dev/null || echo "")
-          else
-            STMTS="N/A"; BRANCH="N/A"; FUNCS="N/A"; LINES="N/A"
-            STMTS_COV=""; BRANCH_COV=""; FUNCS_COV=""; LINES_COV=""
-            COV_LABEL="N/A"
-          fi
+          # ── Read all three coverage reports ──
+          UNIT_SUMMARY=$(find "$DIR/test-reports" -name "coverage-summary.json" -type f 2>/dev/null | head -1)
+          INTEG_SUMMARY=$(find "$DIR/integration-reports" -name "coverage-summary.json" -type f 2>/dev/null | head -1)
+          MERGED_SUMMARY="$MERGED_DIR/coverage-summary.json"
+
+          read_cov "U" "$UNIT_SUMMARY"
+          HAS_UNIT=$?
+          read_cov "I" "$INTEG_SUMMARY"
+          HAS_INTEG=$?
+          read_cov "M" "$MERGED_SUMMARY"
 
           # ── Locate test results (unit) ──
           RESULTS_FILE=$(find "$DIR/test-reports" -name "test-results.json" -type f 2>/dev/null | head -1)
@@ -308,16 +315,61 @@ jobs:
               echo ""
             fi
 
-            if [ "$STMTS" != "N/A" ]; then
-              echo "### Code Coverage (${COV_LABEL})"
+            # ── Coverage table helper ──
+            cov_table() {
+              local label=$1 s=$2 b=$3 f=$4 l=$5 sc=$6 bc=$7 fc=$8 lc=$9
+              shift 9
+              local ts=$1 tb=$2 tf=$3 tl=$4
+              echo "#### ${label}"
               echo ""
               echo "| Metric | Coverage | Covered | Threshold | Status |"
               echo "|--------|----------|---------|-----------|--------|"
-              echo "| Statements | **${STMTS}%** | ${STMTS_COV} | ${THRESH_STMTS}% | $(cov_bar "$STMTS" "$THRESH_STMTS") |"
-              echo "| Branches | **${BRANCH}%** | ${BRANCH_COV} | ${THRESH_BRANCH}% | $(cov_bar "$BRANCH" "$THRESH_BRANCH") |"
-              echo "| Functions | **${FUNCS}%** | ${FUNCS_COV} | ${THRESH_FUNCS}% | $(cov_bar "$FUNCS" "$THRESH_FUNCS") |"
-              echo "| Lines | **${LINES}%** | ${LINES_COV} | ${THRESH_LINES}% | $(cov_bar "$LINES" "$THRESH_LINES") |"
+              echo "| Statements | **${s}%** | ${sc} | ${ts}% | $(cov_bar "$s" "$ts") |"
+              echo "| Branches | **${b}%** | ${bc} | ${tb}% | $(cov_bar "$b" "$tb") |"
+              echo "| Functions | **${f}%** | ${fc} | ${tf}% | $(cov_bar "$f" "$tf") |"
+              echo "| Lines | **${l}%** | ${lc} | ${tl}% | $(cov_bar "$l" "$tl") |"
               echo ""
+            }
+
+            if [ "$M_STMTS" != "N/A" ]; then
+              echo "### Code Coverage"
+              echo ""
+              cov_table "Combined (Unit + Integration)" \
+                "$M_STMTS" "$M_BRANCH" "$M_FUNCS" "$M_LINES" \
+                "$M_STMTS_COV" "$M_BRANCH_COV" "$M_FUNCS_COV" "$M_LINES_COV" \
+                "$THRESH_STMTS" "$THRESH_BRANCH" "$THRESH_FUNCS" "$THRESH_LINES"
+
+              echo "<details>"
+              echo "<summary>Coverage breakdown by test suite</summary>"
+              echo ""
+              if [ "$U_STMTS" != "N/A" ]; then
+                cov_table "Unit Tests" \
+                  "$U_STMTS" "$U_BRANCH" "$U_FUNCS" "$U_LINES" \
+                  "$U_STMTS_COV" "$U_BRANCH_COV" "$U_FUNCS_COV" "$U_LINES_COV" \
+                  "$THRESH_STMTS" "$THRESH_BRANCH" "$THRESH_FUNCS" "$THRESH_LINES"
+              fi
+              if [ "$I_STMTS" != "N/A" ]; then
+                cov_table "Integration Tests" \
+                  "$I_STMTS" "$I_BRANCH" "$I_FUNCS" "$I_LINES" \
+                  "$I_STMTS_COV" "$I_BRANCH_COV" "$I_FUNCS_COV" "$I_LINES_COV" \
+                  "$THRESH_STMTS" "$THRESH_BRANCH" "$THRESH_FUNCS" "$THRESH_LINES"
+              fi
+              echo "</details>"
+              echo ""
+              echo "<details>"
+              echo "<summary>Coverage thresholds are auto-ratcheted — they only go up</summary>"
+              echo ""
+              echo "Vitest \`thresholds.autoUpdate\` bumps the floor whenever local coverage exceeds it."
+              echo "CI enforces the current thresholds; developers commit the ratcheted values."
+              echo "</details>"
+              echo ""
+            elif [ "$U_STMTS" != "N/A" ]; then
+              echo "### Code Coverage (Unit only)"
+              echo ""
+              cov_table "Unit Tests" \
+                "$U_STMTS" "$U_BRANCH" "$U_FUNCS" "$U_LINES" \
+                "$U_STMTS_COV" "$U_BRANCH_COV" "$U_FUNCS_COV" "$U_LINES_COV" \
+                "$THRESH_STMTS" "$THRESH_BRANCH" "$THRESH_FUNCS" "$THRESH_LINES"
               echo "<details>"
               echo "<summary>Coverage thresholds are auto-ratcheted — they only go up</summary>"
               echo ""
