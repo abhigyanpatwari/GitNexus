@@ -3,9 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   pull_request:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   workflow_call:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 # ── Reusable workflow orchestration ─────────────────────────────────
 # Each concern lives in its own workflow file for maintainability:
@@ -18,175 +24,53 @@ on:
 jobs:
   quality:
     uses: ./.github/workflows/ci-quality.yml
+    permissions:
+      contents: read
 
   unit-tests:
     uses: ./.github/workflows/ci-unit-tests.yml
+    permissions:
+      contents: read
 
   integration:
     uses: ./.github/workflows/ci-integration.yml
+    with:
+      collect-coverage: ${{ github.event_name == 'pull_request' }}
+    permissions:
+      contents: read
 
-  # ── PR test & coverage report ────────────────────────────────────
-  # Downloads coverage artifacts from unit tests and posts a summary
-  # comment on the PR with test results and coverage metrics.
-  pr-report:
-    name: PR Report
+  # ── Save PR metadata for the reporting workflow ─────────────────
+  # The ci-report.yml workflow (triggered by workflow_run) needs the
+  # PR number and job results to post a comment.  We save them as an
+  # artifact because workflow_run context doesn't reliably carry PR
+  # info for fork PRs.
+  save-pr-meta:
+    name: Save PR Metadata
     if: always() && github.event_name == 'pull_request'
     needs: [quality, unit-tests, integration]
     runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
+    timeout-minutes: 5
     steps:
-      - name: Download test reports
-        uses: actions/download-artifact@v4
-        with:
-          name: test-reports
-          path: reports
-        continue-on-error: true
-
-      - name: Debug artifact contents
-        run: find reports -type f 2>/dev/null || echo "No reports directory"
-        continue-on-error: true
-
-      - name: Build report
-        id: report
+      - name: Write metadata
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.number }}
+          QUALITY: ${{ needs.quality.result }}
+          UNIT: ${{ needs.unit-tests.result }}
+          INTEG: ${{ needs.integration.result }}
         run: |
-          # ── Locate coverage file (artifact path may vary) ──
-          COV_FILE=$(find reports -name "coverage-summary.json" -type f 2>/dev/null | head -1)
-          if [ -n "$COV_FILE" ]; then
-            STMTS=$(jq -r '.total.statements.pct' "$COV_FILE")
-            BRANCH=$(jq -r '.total.branches.pct' "$COV_FILE")
-            FUNCS=$(jq -r '.total.functions.pct' "$COV_FILE")
-            LINES=$(jq -r '.total.lines.pct' "$COV_FILE")
-            STMTS_COV=$(jq -r '"\(.total.statements.covered)/\(.total.statements.total)"' "$COV_FILE")
-            BRANCH_COV=$(jq -r '"\(.total.branches.covered)/\(.total.branches.total)"' "$COV_FILE")
-            FUNCS_COV=$(jq -r '"\(.total.functions.covered)/\(.total.functions.total)"' "$COV_FILE")
-            LINES_COV=$(jq -r '"\(.total.lines.covered)/\(.total.lines.total)"' "$COV_FILE")
-          else
-            STMTS="N/A"; BRANCH="N/A"; FUNCS="N/A"; LINES="N/A"
-            STMTS_COV=""; BRANCH_COV=""; FUNCS_COV=""; LINES_COV=""
-          fi
+          mkdir -p pr-meta
+          echo "$PR_NUMBER"  > pr-meta/pr_number
+          echo "$QUALITY"    > pr-meta/quality_result
+          echo "$UNIT"       > pr-meta/unit_result
+          echo "$INTEG"      > pr-meta/integration_result
 
-          # ── Locate test results ──
-          RESULTS_FILE=$(find reports -name "test-results.json" -type f 2>/dev/null | head -1)
-          if [ -n "$RESULTS_FILE" ]; then
-            TOTAL=$(jq -r '.numTotalTests' "$RESULTS_FILE")
-            PASSED=$(jq -r '.numPassedTests' "$RESULTS_FILE")
-            FAILED=$(jq -r '.numFailedTests' "$RESULTS_FILE")
-            SKIPPED=$(jq -r '.numPendingTests' "$RESULTS_FILE")
-            SUITES=$(jq -r '.numTotalTestSuites' "$RESULTS_FILE")
-            DURATION=$(jq -r '((.testResults | map(.endTime) | max) - (.startTime)) / 1000 | floor' "$RESULTS_FILE" 2>/dev/null || echo "N/A")
-          else
-            TOTAL="N/A"; PASSED="N/A"; FAILED="N/A"; SKIPPED="N/A"
-            SUITES="N/A"; DURATION="N/A"
-          fi
-
-          # ── Coverage thresholds (from vitest.config.ts P0 settings) ──
-          THRESH_STMTS=26; THRESH_BRANCH=23; THRESH_FUNCS=28; THRESH_LINES=27
-
-          # ── Status helpers ──
-          status_icon() {
-            case "$1" in
-              success) echo "✅" ;;
-              failure) echo "❌" ;;
-              cancelled) echo "⏭️" ;;
-              *) echo "❓" ;;
-            esac
-          }
-
-          cov_bar() {
-            local pct=$1 thresh=$2
-            if [ "$pct" = "N/A" ]; then echo "—"; return; fi
-            local filled=$(echo "$pct / 5" | bc 2>/dev/null || echo 0)
-            local empty=$((20 - filled))
-            local bar=""
-            for ((i=0; i<filled; i++)); do bar+="█"; done
-            for ((i=0; i<empty; i++)); do bar+="░"; done
-            if [ "$(echo "$pct >= $thresh" | bc 2>/dev/null)" = "1" ]; then
-              echo "🟢 ${bar}"
-            else
-              echo "🔴 ${bar}"
-            fi
-          }
-
-          QUALITY="${{ needs.quality.result }}"
-          UNIT="${{ needs.unit-tests.result }}"
-          INTEG="${{ needs.integration.result }}"
-
-          # ── Overall status ──
-          if [[ "$QUALITY" == "success" && "$UNIT" == "success" && "$INTEG" == "success" ]]; then
-            OVERALL="✅ **All checks passed**"
-          else
-            OVERALL="❌ **Some checks failed**"
-          fi
-
-          # ── Build markdown ──
-          {
-            echo "body<<REPORT_EOF"
-            echo "## CI Report"
-            echo ""
-            echo "${OVERALL}"
-            echo ""
-            echo "### Pipeline Status"
-            echo ""
-            echo "| Stage | Status | Details |"
-            echo "|-------|--------|---------|"
-            echo "| $(status_icon "$QUALITY") Typecheck | \`${QUALITY}\` | tsc --noEmit |"
-            echo "| $(status_icon "$UNIT") Unit Tests | \`${UNIT}\` | 3 platforms |"
-            echo "| $(status_icon "$INTEG") Integration | \`${INTEG}\` | 3 OS × 4 groups = 12 jobs |"
-            echo ""
-
-            if [ "$TOTAL" != "N/A" ]; then
-              echo "### Test Results"
-              echo ""
-              if [ "$FAILED" = "0" ]; then
-                echo "✅ **${PASSED}** passed"
-              else
-                echo "❌ **${FAILED}** failed / **${PASSED}** passed"
-              fi
-              if [ "$SKIPPED" != "0" ]; then
-                echo " · ${SKIPPED} skipped"
-              fi
-              echo " · ${SUITES} suites · ${TOTAL} total"
-              if [ "$DURATION" != "N/A" ]; then
-                echo " · ⏱️ ${DURATION}s"
-              fi
-              echo ""
-            fi
-
-            if [ "$STMTS" != "N/A" ]; then
-              echo "### Code Coverage"
-              echo ""
-              echo "| Metric | Coverage | Covered | Threshold | Status |"
-              echo "|--------|----------|---------|-----------|--------|"
-              echo "| Statements | **${STMTS}%** | ${STMTS_COV} | ${THRESH_STMTS}% | $(cov_bar "$STMTS" "$THRESH_STMTS") |"
-              echo "| Branches | **${BRANCH}%** | ${BRANCH_COV} | ${THRESH_BRANCH}% | $(cov_bar "$BRANCH" "$THRESH_BRANCH") |"
-              echo "| Functions | **${FUNCS}%** | ${FUNCS_COV} | ${THRESH_FUNCS}% | $(cov_bar "$FUNCS" "$THRESH_FUNCS") |"
-              echo "| Lines | **${LINES}%** | ${LINES_COV} | ${THRESH_LINES}% | $(cov_bar "$LINES" "$THRESH_LINES") |"
-              echo ""
-              echo "<details>"
-              echo "<summary>Coverage thresholds are auto-ratcheted — they only go up</summary>"
-              echo ""
-              echo "Vitest \`thresholds.autoUpdate\` bumps the floor whenever local coverage exceeds it."
-              echo "CI enforces the current thresholds; developers commit the ratcheted values."
-              echo "</details>"
-              echo ""
-            else
-              echo "### Code Coverage"
-              echo ""
-              echo "⚠️ Coverage data unavailable — check the [unit test job](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
-              echo ""
-            fi
-
-            echo "---"
-            echo "<sub>📋 [View full run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) · Generated by CI</sub>"
-            echo "REPORT_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Comment on PR
-        uses: marocchino/sticky-pull-request-comment@v2
+      - name: Upload PR metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          header: ci-report
-          message: ${{ steps.report.outputs.body }}
+          name: pr-meta
+          path: pr-meta/
+          retention-days: 1
 
   # ── Unified CI gate ──────────────────────────────────────────────
   # Single required check for branch protection.
@@ -195,15 +79,21 @@ jobs:
     needs: [quality, unit-tests, integration]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Check all jobs passed
+        shell: bash
+        env:
+          QUALITY: ${{ needs.quality.result }}
+          UNIT: ${{ needs.unit-tests.result }}
+          INTEG: ${{ needs.integration.result }}
         run: |
-          echo "Quality:     ${{ needs.quality.result }}"
-          echo "Unit Tests:  ${{ needs.unit-tests.result }}"
-          echo "Integration: ${{ needs.integration.result }}"
-          if [[ "${{ needs.quality.result }}" != "success" ]] ||
-             [[ "${{ needs.unit-tests.result }}" != "success" ]] ||
-             [[ "${{ needs.integration.result }}" != "success" ]]; then
+          echo "Quality:     $QUALITY"
+          echo "Unit Tests:  $UNIT"
+          echo "Integration: $INTEG"
+          if [[ "$QUALITY" != "success" ]] ||
+             [[ "$UNIT" != "success" ]] ||
+             [[ "$INTEG" != "success" ]]; then
             echo "::error::One or more CI jobs failed"
             exit 1
           fi
