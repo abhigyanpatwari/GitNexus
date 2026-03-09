@@ -2,6 +2,12 @@ name: Integration Tests
 
 on:
   workflow_call:
+    inputs:
+      collect-coverage:
+        description: 'Whether to run the coverage collection job (only needed for PR reports)'
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   # ── Integration test matrix ─────────────────────────────────────────
@@ -99,6 +105,7 @@ jobs:
   # process (native addon isolation) which prevents single-run coverage merge.
   coverage:
     name: integration (ubuntu / coverage)
+    if: inputs.collect-coverage
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

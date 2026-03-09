@@ -95,9 +95,22 @@ jobs:
 
           echo "skip=false"              >> "$GITHUB_OUTPUT"
           echo "pr_number=$PR_NUM"       >> "$GITHUB_OUTPUT"
-          echo "quality=$(cat "$DIR/quality_result")"        >> "$GITHUB_OUTPUT"
-          echo "unit=$(cat "$DIR/unit_result")"              >> "$GITHUB_OUTPUT"
-          echo "integration=$(cat "$DIR/integration_result")" >> "$GITHUB_OUTPUT"
+          # Validate job-result strings against known GitHub Actions values.
+          # Artifact contents come from the PR workflow (potentially untrusted
+          # fork code), so we whitelist to prevent newline injection into
+          # GITHUB_OUTPUT.
+          validate_result() {
+            local val
+            val=$(cat "$1" | tr -d '[:space:]')
+            case "$val" in
+              success|failure|cancelled|skipped) echo "$val" ;;
+              *) echo "unknown" ;;
+            esac
+          }
+
+          echo "quality=$(validate_result "$DIR/quality_result")"        >> "$GITHUB_OUTPUT"
+          echo "unit=$(validate_result "$DIR/unit_result")"              >> "$GITHUB_OUTPUT"
+          echo "integration=$(validate_result "$DIR/integration_result")" >> "$GITHUB_OUTPUT"
 
       - name: Checkout (for vitest config)
         if: steps.meta.outputs.skip != 'true'
@@ -130,7 +143,12 @@ jobs:
 
           if [ -n "$UNIT_COV" ] && [ -n "$INTEG_COV" ]; then
             echo "has_merged=true" >> "$GITHUB_OUTPUT"
-            # Merge using Node.js + istanbul-lib-coverage (transitive dep of @vitest/coverage-v8)
+            # Merge using Node.js + istanbul-lib-coverage.
+            # Paths are passed via env vars to avoid shell interpolation
+            # inside the script string.
+            UNIT_COV_PATH="$UNIT_COV" \
+            INTEG_COV_PATH="$INTEG_COV" \
+            MERGED_OUT_DIR="$MERGED_DIR" \
             node -e "
               const libCoverage = require('istanbul-lib-coverage');
               const libReport = require('istanbul-lib-report');
@@ -138,15 +156,15 @@ jobs:
               const fs = require('fs');
 
               const map = libCoverage.createCoverageMap({});
-              map.merge(JSON.parse(fs.readFileSync('$UNIT_COV', 'utf8')));
-              map.merge(JSON.parse(fs.readFileSync('$INTEG_COV', 'utf8')));
+              map.merge(JSON.parse(fs.readFileSync(process.env.UNIT_COV_PATH, 'utf8')));
+              map.merge(JSON.parse(fs.readFileSync(process.env.INTEG_COV_PATH, 'utf8')));
 
               const context = libReport.createContext({
                 coverageMap: map,
-                dir: '$MERGED_DIR',
+                dir: process.env.MERGED_OUT_DIR,
               });
               reports.create('json-summary').execute(context);
-              console.log('Merged coverage written to $MERGED_DIR/coverage-summary.json');
+              console.log('Merged coverage written to ' + process.env.MERGED_OUT_DIR + '/coverage-summary.json');
             "
           elif [ -n "$UNIT_COV" ]; then
             echo "has_merged=false" >> "$GITHUB_OUTPUT"
@@ -171,21 +189,37 @@ jobs:
           MERGED_DIR="$RUNNER_TEMP/merged-coverage"
 
           # ── Helper: read coverage summary into prefixed vars ──
+          # Uses printf -v for safe variable assignment (no eval).
           read_cov() {
             local prefix=$1 file=$2
             if [ -n "$file" ] && [ -f "$file" ]; then
-              eval "${prefix}_STMTS=$(jq -r '.total.statements.pct' "$file" 2>/dev/null || echo 'N/A')"
-              eval "${prefix}_BRANCH=$(jq -r '.total.branches.pct' "$file" 2>/dev/null || echo 'N/A')"
-              eval "${prefix}_FUNCS=$(jq -r '.total.functions.pct' "$file" 2>/dev/null || echo 'N/A')"
-              eval "${prefix}_LINES=$(jq -r '.total.lines.pct' "$file" 2>/dev/null || echo 'N/A')"
-              eval "${prefix}_STMTS_COV=$(jq -r '"\(.total.statements.covered)/\(.total.statements.total)"' "$file" 2>/dev/null || echo '')"
-              eval "${prefix}_BRANCH_COV=$(jq -r '"\(.total.branches.covered)/\(.total.branches.total)"' "$file" 2>/dev/null || echo '')"
-              eval "${prefix}_FUNCS_COV=$(jq -r '"\(.total.functions.covered)/\(.total.functions.total)"' "$file" 2>/dev/null || echo '')"
-              eval "${prefix}_LINES_COV=$(jq -r '"\(.total.lines.covered)/\(.total.lines.total)"' "$file" 2>/dev/null || echo '')"
+              local val
+              val=$(jq -r '.total.statements.pct // "N/A"' "$file" 2>/dev/null) || val="N/A"
+              printf -v "${prefix}_STMTS" '%s' "$val"
+              val=$(jq -r '.total.branches.pct // "N/A"' "$file" 2>/dev/null) || val="N/A"
+              printf -v "${prefix}_BRANCH" '%s' "$val"
+              val=$(jq -r '.total.functions.pct // "N/A"' "$file" 2>/dev/null) || val="N/A"
+              printf -v "${prefix}_FUNCS" '%s' "$val"
+              val=$(jq -r '.total.lines.pct // "N/A"' "$file" 2>/dev/null) || val="N/A"
+              printf -v "${prefix}_LINES" '%s' "$val"
+              val=$(jq -r '"\(.total.statements.covered)/\(.total.statements.total)"' "$file" 2>/dev/null) || val=""
+              printf -v "${prefix}_STMTS_COV" '%s' "$val"
+              val=$(jq -r '"\(.total.branches.covered)/\(.total.branches.total)"' "$file" 2>/dev/null) || val=""
+              printf -v "${prefix}_BRANCH_COV" '%s' "$val"
+              val=$(jq -r '"\(.total.functions.covered)/\(.total.functions.total)"' "$file" 2>/dev/null) || val=""
+              printf -v "${prefix}_FUNCS_COV" '%s' "$val"
+              val=$(jq -r '"\(.total.lines.covered)/\(.total.lines.total)"' "$file" 2>/dev/null) || val=""
+              printf -v "${prefix}_LINES_COV" '%s' "$val"
               return 0
             else
-              eval "${prefix}_STMTS=N/A; ${prefix}_BRANCH=N/A; ${prefix}_FUNCS=N/A; ${prefix}_LINES=N/A"
-              eval "${prefix}_STMTS_COV=; ${prefix}_BRANCH_COV=; ${prefix}_FUNCS_COV=; ${prefix}_LINES_COV="
+              printf -v "${prefix}_STMTS" '%s' "N/A"
+              printf -v "${prefix}_BRANCH" '%s' "N/A"
+              printf -v "${prefix}_FUNCS" '%s' "N/A"
+              printf -v "${prefix}_LINES" '%s' "N/A"
+              printf -v "${prefix}_STMTS_COV" '%s' ""
+              printf -v "${prefix}_BRANCH_COV" '%s' ""
+              printf -v "${prefix}_FUNCS_COV" '%s' ""
+              printf -v "${prefix}_LINES_COV" '%s' ""
               return 1
             fi
           }
@@ -259,14 +293,14 @@ jobs:
             local pct=$1 thresh=$2
             if [ "$pct" = "N/A" ]; then echo "—"; return; fi
             local filled
-            filled=$(echo "$pct / 5" | bc 2>/dev/null || echo 0)
+            filled=$(awk "BEGIN { printf \"%d\", $pct / 5 }")
             (( filled < 0 )) && filled=0
             (( filled > 20 )) && filled=20
             local empty=$((20 - filled))
             local bar=""
             for ((i=0; i<filled; i++)); do bar+="█"; done
             for ((i=0; i<empty; i++)); do bar+="░"; done
-            if [ "$(echo "$pct >= $thresh" | bc 2>/dev/null)" = "1" ]; then
+            if [ "$(awk "BEGIN { print ($pct >= $thresh) ? 1 : 0 }")" = "1" ]; then
               echo "🟢 ${bar}"
             else
               echo "🔴 ${bar}"
