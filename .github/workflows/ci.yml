@@ -3,9 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   pull_request:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   workflow_call:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 # ── Reusable workflow orchestration ─────────────────────────────────
 # Each concern lives in its own workflow file for maintainability:
@@ -18,12 +24,19 @@ on:
 jobs:
   quality:
     uses: ./.github/workflows/ci-quality.yml
+    permissions:
+      contents: read
 
   unit-tests:
     uses: ./.github/workflows/ci-unit-tests.yml
+    permissions:
+      contents: read
+      pull-requests: write
 
   integration:
     uses: ./.github/workflows/ci-integration.yml
+    permissions:
+      contents: read
 
   # ── PR test & coverage report ────────────────────────────────────
   # Downloads coverage artifacts from unit tests and posts a summary
@@ -33,34 +46,43 @@ jobs:
     if: always() && github.event_name == 'pull_request'
     needs: [quality, unit-tests, integration]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       pull-requests: write
     steps:
+      - name: Checkout (for vitest config)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          sparse-checkout: gitnexus/vitest.config.ts
+          sparse-checkout-cone-mode: false
+
       - name: Download test reports
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: test-reports
           path: reports
         continue-on-error: true
 
-      - name: Debug artifact contents
-        run: find reports -type f 2>/dev/null || echo "No reports directory"
-        continue-on-error: true
-
       - name: Build report
         id: report
+        shell: bash
+        env:
+          QUALITY: ${{ needs.quality.result }}
+          UNIT: ${{ needs.unit-tests.result }}
+          INTEG: ${{ needs.integration.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # ── Locate coverage file (artifact path may vary) ──
           COV_FILE=$(find reports -name "coverage-summary.json" -type f 2>/dev/null | head -1)
           if [ -n "$COV_FILE" ]; then
-            STMTS=$(jq -r '.total.statements.pct' "$COV_FILE")
-            BRANCH=$(jq -r '.total.branches.pct' "$COV_FILE")
-            FUNCS=$(jq -r '.total.functions.pct' "$COV_FILE")
-            LINES=$(jq -r '.total.lines.pct' "$COV_FILE")
-            STMTS_COV=$(jq -r '"\(.total.statements.covered)/\(.total.statements.total)"' "$COV_FILE")
-            BRANCH_COV=$(jq -r '"\(.total.branches.covered)/\(.total.branches.total)"' "$COV_FILE")
-            FUNCS_COV=$(jq -r '"\(.total.functions.covered)/\(.total.functions.total)"' "$COV_FILE")
-            LINES_COV=$(jq -r '"\(.total.lines.covered)/\(.total.lines.total)"' "$COV_FILE")
+            STMTS=$(jq -r '.total.statements.pct' "$COV_FILE" 2>/dev/null || echo "N/A")
+            BRANCH=$(jq -r '.total.branches.pct' "$COV_FILE" 2>/dev/null || echo "N/A")
+            FUNCS=$(jq -r '.total.functions.pct' "$COV_FILE" 2>/dev/null || echo "N/A")
+            LINES=$(jq -r '.total.lines.pct' "$COV_FILE" 2>/dev/null || echo "N/A")
+            STMTS_COV=$(jq -r '"\(.total.statements.covered)/\(.total.statements.total)"' "$COV_FILE" 2>/dev/null || echo "")
+            BRANCH_COV=$(jq -r '"\(.total.branches.covered)/\(.total.branches.total)"' "$COV_FILE" 2>/dev/null || echo "")
+            FUNCS_COV=$(jq -r '"\(.total.functions.covered)/\(.total.functions.total)"' "$COV_FILE" 2>/dev/null || echo "")
+            LINES_COV=$(jq -r '"\(.total.lines.covered)/\(.total.lines.total)"' "$COV_FILE" 2>/dev/null || echo "")
           else
             STMTS="N/A"; BRANCH="N/A"; FUNCS="N/A"; LINES="N/A"
             STMTS_COV=""; BRANCH_COV=""; FUNCS_COV=""; LINES_COV=""
@@ -69,19 +91,26 @@ jobs:
           # ── Locate test results ──
           RESULTS_FILE=$(find reports -name "test-results.json" -type f 2>/dev/null | head -1)
           if [ -n "$RESULTS_FILE" ]; then
-            TOTAL=$(jq -r '.numTotalTests' "$RESULTS_FILE")
-            PASSED=$(jq -r '.numPassedTests' "$RESULTS_FILE")
-            FAILED=$(jq -r '.numFailedTests' "$RESULTS_FILE")
-            SKIPPED=$(jq -r '.numPendingTests' "$RESULTS_FILE")
-            SUITES=$(jq -r '.numTotalTestSuites' "$RESULTS_FILE")
+            TOTAL=$(jq -r '.numTotalTests' "$RESULTS_FILE" 2>/dev/null || echo "N/A")
+            PASSED=$(jq -r '.numPassedTests' "$RESULTS_FILE" 2>/dev/null || echo "N/A")
+            FAILED=$(jq -r '.numFailedTests' "$RESULTS_FILE" 2>/dev/null || echo "N/A")
+            SKIPPED=$(jq -r '.numPendingTests' "$RESULTS_FILE" 2>/dev/null || echo "N/A")
+            SUITES=$(jq -r '.numTotalTestSuites' "$RESULTS_FILE" 2>/dev/null || echo "N/A")
             DURATION=$(jq -r '((.testResults | map(.endTime) | max) - (.startTime)) / 1000 | floor' "$RESULTS_FILE" 2>/dev/null || echo "N/A")
           else
             TOTAL="N/A"; PASSED="N/A"; FAILED="N/A"; SKIPPED="N/A"
             SUITES="N/A"; DURATION="N/A"
           fi
 
-          # ── Coverage thresholds (from vitest.config.ts P0 settings) ──
-          THRESH_STMTS=26; THRESH_BRANCH=23; THRESH_FUNCS=28; THRESH_LINES=27
+          # ── Coverage thresholds (read from vitest.config.ts to stay in sync) ──
+          if [ -f gitnexus/vitest.config.ts ]; then
+            THRESH_STMTS=$(grep -oP 'statements:\s*\K[0-9]+' gitnexus/vitest.config.ts || echo 0)
+            THRESH_BRANCH=$(grep -oP 'branches:\s*\K[0-9]+' gitnexus/vitest.config.ts || echo 0)
+            THRESH_FUNCS=$(grep -oP 'functions:\s*\K[0-9]+' gitnexus/vitest.config.ts || echo 0)
+            THRESH_LINES=$(grep -oP 'lines:\s*\K[0-9]+' gitnexus/vitest.config.ts || echo 0)
+          else
+            THRESH_STMTS=0; THRESH_BRANCH=0; THRESH_FUNCS=0; THRESH_LINES=0
+          fi
 
           # ── Status helpers ──
           status_icon() {
@@ -96,7 +125,11 @@ jobs:
           cov_bar() {
             local pct=$1 thresh=$2
             if [ "$pct" = "N/A" ]; then echo "—"; return; fi
-            local filled=$(echo "$pct / 5" | bc 2>/dev/null || echo 0)
+            local filled
+            filled=$(echo "$pct / 5" | bc 2>/dev/null || echo 0)
+            # Clamp to [0, 20]
+            (( filled < 0 )) && filled=0
+            (( filled > 20 )) && filled=20
             local empty=$((20 - filled))
             local bar=""
             for ((i=0; i<filled; i++)); do bar+="█"; done
@@ -108,10 +141,6 @@ jobs:
             fi
           }
 
-          QUALITY="${{ needs.quality.result }}"
-          UNIT="${{ needs.unit-tests.result }}"
-          INTEG="${{ needs.integration.result }}"
-
           # ── Overall status ──
           if [[ "$QUALITY" == "success" && "$UNIT" == "success" && "$INTEG" == "success" ]]; then
             OVERALL="✅ **All checks passed**"
@@ -121,7 +150,7 @@ jobs:
 
           # ── Build markdown ──
           {
-            echo "body<<REPORT_EOF"
+            echo "body<<GITNEXUS_CI_REPORT_EOF_7f3a"
             echo "## CI Report"
             echo ""
             echo "${OVERALL}"
@@ -173,17 +202,17 @@ jobs:
             else
               echo "### Code Coverage"
               echo ""
-              echo "⚠️ Coverage data unavailable — check the [unit test job](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
+              echo "⚠️ Coverage data unavailable — check the [unit test job](${RUN_URL}) for details."
               echo ""
             fi
 
             echo "---"
-            echo "<sub>📋 [View full run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) · Generated by CI</sub>"
-            echo "REPORT_EOF"
+            echo "<sub>📋 [View full run](${RUN_URL}) · Generated by CI</sub>"
+            echo "GITNEXUS_CI_REPORT_EOF_7f3a"
           } >> "$GITHUB_OUTPUT"
 
       - name: Comment on PR
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2
         with:
           header: ci-report
           message: ${{ steps.report.outputs.body }}
@@ -195,15 +224,21 @@ jobs:
     needs: [quality, unit-tests, integration]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Check all jobs passed
+        shell: bash
+        env:
+          QUALITY: ${{ needs.quality.result }}
+          UNIT: ${{ needs.unit-tests.result }}
+          INTEG: ${{ needs.integration.result }}
         run: |
-          echo "Quality:     ${{ needs.quality.result }}"
-          echo "Unit Tests:  ${{ needs.unit-tests.result }}"
-          echo "Integration: ${{ needs.integration.result }}"
-          if [[ "${{ needs.quality.result }}" != "success" ]] ||
-             [[ "${{ needs.unit-tests.result }}" != "success" ]] ||
-             [[ "${{ needs.integration.result }}" != "success" ]]; then
+          echo "Quality:     $QUALITY"
+          echo "Unit Tests:  $UNIT"
+          echo "Integration: $INTEG"
+          if [[ "$QUALITY" != "success" ]] ||
+             [[ "$UNIT" != "success" ]] ||
+             [[ "$INTEG" != "success" ]]; then
             echo "::error::One or more CI jobs failed"
             exit 1
           fi

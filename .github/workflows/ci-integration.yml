@@ -49,7 +49,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
@@ -72,30 +72,42 @@ jobs:
             test/integration/search-pool.test.ts
             test/integration/augmentation.test.ts
           )
+          exit_code=0
           for f in "${files[@]}"; do
             echo "::group::$f"
-            npx vitest run --reporter=verbose --pool=forks "$f"
+            if ! npx vitest run --reporter=verbose --pool=forks "$f"; then
+              exit_code=1
+              echo "::error::Test file failed: $f"
+            fi
             echo "::endgroup::"
           done
+          exit $exit_code
 
       # Non-kuzu groups: run all files in a single vitest invocation
       - name: Run integration tests — ${{ matrix.test-group }}
         if: matrix.test-group != 'kuzu-db'
-        run: npx vitest run --reporter=verbose ${{ matrix.test-glob }}
+        shell: bash
+        env:
+          TEST_GLOB: ${{ matrix.test-glob }}
+        run: npx vitest run --reporter=verbose $TEST_GLOB
         working-directory: gitnexus
 
   # ── Unified status gate ──────────────────────────────────────────────
   # Branch protection should require THIS job, not the matrix jobs directly.
+  # ci.yml's needs.integration.result aggregates through this gate.
   status:
     name: integration (all groups)
     needs: test-matrix
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Check all matrix jobs passed
+        shell: bash
+        env:
+          RESULT: ${{ needs.test-matrix.result }}
         run: |
-          result="${{ needs.test-matrix.result }}"
-          if [[ "$result" != "success" ]]; then
-            echo "::error::Integration matrix failed or cancelled: $result"
+          if [[ "$RESULT" != "success" ]]; then
+            echo "::error::Integration matrix failed or cancelled: $RESULT"
             exit 1
           fi
