@@ -13,14 +13,15 @@ import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatOllama } from '@langchain/ollama';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { createGraphRAGTools } from './tools';
-import type { 
-  ProviderConfig, 
+import type {
+  ProviderConfig,
   OpenAIConfig,
-  AzureOpenAIConfig, 
+  AzureOpenAIConfig,
   GeminiConfig,
   AnthropicConfig,
   OllamaConfig,
   OpenRouterConfig,
+  MiniMaxConfig,
   AgentStreamChunk,
 } from './types';
 import { 
@@ -197,7 +198,7 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
     
     case 'openrouter': {
       const openRouterConfig = config as OpenRouterConfig;
-      
+
       // Debug logging
       if (import.meta.env.DEV) {
         console.log('🌐 OpenRouter config:', {
@@ -207,11 +208,11 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
           baseUrl: openRouterConfig.baseUrl,
         });
       }
-      
+
       if (!openRouterConfig.apiKey || openRouterConfig.apiKey.trim() === '') {
         throw new Error('OpenRouter API key is required but was not provided');
       }
-      
+
       return new ChatOpenAI({
         openAIApiKey: openRouterConfig.apiKey,
         apiKey: openRouterConfig.apiKey, // Fallback for some versions
@@ -225,7 +226,26 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
         streaming: true,
       });
     }
-    
+
+    case 'minimax': {
+      const minimaxConfig = config as MiniMaxConfig;
+
+      if (!minimaxConfig.apiKey || minimaxConfig.apiKey.trim() === '') {
+        throw new Error('MiniMax API key is required but was not provided');
+      }
+
+      return new ChatAnthropic({
+        anthropicApiKey: minimaxConfig.apiKey,
+        model: minimaxConfig.model,
+        temperature: minimaxConfig.temperature ?? 0.1,
+        maxTokens: minimaxConfig.maxTokens ?? 8192,
+        streaming: true,
+        clientOptions: {
+          baseURL: 'https://api.minimax.io/anthropic',
+        },
+      });
+    }
+
     default:
       throw new Error(`Unsupported provider: ${(config as any).provider}`);
   }

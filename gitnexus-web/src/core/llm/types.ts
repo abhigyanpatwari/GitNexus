@@ -8,7 +8,7 @@
 /**
  * Supported LLM providers
  */
-export type LLMProvider = 'openai' | 'azure-openai' | 'gemini' | 'anthropic' | 'ollama' | 'openrouter';
+export type LLMProvider = 'openai' | 'azure-openai' | 'gemini' | 'anthropic' | 'ollama' | 'openrouter' | 'minimax';
 
 /**
  * Base configuration shared by all providers
@@ -79,9 +79,18 @@ export interface OpenRouterConfig extends BaseProviderConfig {
 }
 
 /**
+ * MiniMax configuration (Anthropic-compatible API)
+ */
+export interface MiniMaxConfig extends BaseProviderConfig {
+  provider: 'minimax';
+  apiKey: string;
+  model: string;  // e.g., 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed'
+}
+
+/**
  * Union type for all provider configurations
  */
-export type ProviderConfig = OpenAIConfig | AzureOpenAIConfig | GeminiConfig | AnthropicConfig | OllamaConfig | OpenRouterConfig;
+export type ProviderConfig = OpenAIConfig | AzureOpenAIConfig | GeminiConfig | AnthropicConfig | OllamaConfig | OpenRouterConfig | MiniMaxConfig;
 
 /**
  * Stored settings (what goes to localStorage)
@@ -98,6 +107,7 @@ export interface LLMSettings {
   anthropic?: Partial<Omit<AnthropicConfig, 'provider'>>;
   ollama?: Partial<Omit<OllamaConfig, 'provider'>>;
   openrouter?: Partial<Omit<OpenRouterConfig, 'provider'>>;
+  minimax?: Partial<Omit<MiniMaxConfig, 'provider'>>;
 
   // Intelligent Clustering Settings
   intelligentClustering: boolean;
@@ -146,6 +156,11 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
     apiKey: '',
     model: '',
     baseUrl: 'https://openrouter.ai/api/v1',
+    temperature: 0.1,
+  },
+  minimax: {
+    apiKey: '',
+    model: 'MiniMax-M2.5',
     temperature: 0.1,
   },
 };
