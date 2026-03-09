@@ -265,6 +265,101 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
     });
   });
 
+  describe('unhappy paths', () => {
+    it('handles corrupted meta.json (invalid JSON) without crashing', () => {
+      fs.writeFileSync(
+        path.join(gitNexusDir, 'meta.json'),
+        'THIS IS NOT JSON {{{',
+      );
+
+      const result = runHook(hookPath, {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'git commit -m "test"' },
+        tool_output: { exit_code: 0 },
+        cwd: tmpDir,
+      });
+
+      // Should not crash — either treats as stale or ignores
+      expect(result.status === 0 || result.status === null).toBe(true);
+    });
+
+    it('handles meta.json with missing lastCommit field', () => {
+      fs.writeFileSync(
+        path.join(gitNexusDir, 'meta.json'),
+        JSON.stringify({ stats: {} }),
+      );
+
+      const result = runHook(hookPath, {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'git commit -m "test"' },
+        tool_output: { exit_code: 0 },
+        cwd: tmpDir,
+      });
+
+      expect(result.status === 0 || result.status === null).toBe(true);
+      const output = parseHookOutput(result.stdout);
+      // Missing lastCommit should be treated as stale
+      if (output) {
+        expect(output.additionalContext).toContain('stale');
+      }
+    });
+
+    it('ignores unknown hook event name', () => {
+      const result = runHook(hookPath, {
+        hook_event_name: 'UnknownEvent',
+        tool_name: 'Bash',
+        tool_input: { command: 'git commit -m "test"' },
+        tool_output: { exit_code: 0 },
+        cwd: tmpDir,
+      });
+
+      expect(result.status).toBe(0);
+      const output = parseHookOutput(result.stdout);
+      expect(output).toBeNull();
+    });
+
+    it('handles empty tool_input for PostToolUse without crashing', () => {
+      fs.writeFileSync(
+        path.join(gitNexusDir, 'meta.json'),
+        JSON.stringify({ lastCommit: 'aaaa', stats: {} }),
+      );
+
+      const result = runHook(hookPath, {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: {},
+        tool_output: { exit_code: 0 },
+        cwd: tmpDir,
+      });
+
+      expect(result.status === 0 || result.status === null).toBe(true);
+      const output = parseHookOutput(result.stdout);
+      // No command means no git mutation detection — should be silent
+      expect(output).toBeNull();
+    });
+
+    it('ignores non-Bash tool for PostToolUse', () => {
+      fs.writeFileSync(
+        path.join(gitNexusDir, 'meta.json'),
+        JSON.stringify({ lastCommit: 'aaaa', stats: {} }),
+      );
+
+      const result = runHook(hookPath, {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Read',
+        tool_input: { file_path: '/some/file.ts' },
+        tool_output: {},
+        cwd: tmpDir,
+      });
+
+      expect(result.status).toBe(0);
+      const output = parseHookOutput(result.stdout);
+      expect(output).toBeNull();
+    });
+  });
+
   describe('directory without .gitnexus', () => {
     // The hook walks up 5 parent directories looking for .gitnexus.
     // To guarantee none is found, create a deeply nested temp dir at the

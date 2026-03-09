@@ -1,0 +1,173 @@
+name: Integration Tests
+
+on:
+  workflow_call:
+    inputs:
+      collect-coverage:
+        description: 'Whether to run the coverage collection job (only needed for PR reports)'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  # ── Integration test matrix ─────────────────────────────────────────
+  # Each test-group runs on a SEPARATE runner per OS, giving full process
+  # isolation for the KuzuDB native C++ addon.
+  # 3 OS x 4 groups = 12 parallel jobs.
+  #
+  # Groups:
+  #   kuzu-db    — 7 files using withTestKuzuDB / kuzu-adapter (native addon)
+  #                Each file runs as its own `vitest run` invocation for full
+  #                process isolation. KuzuDB's native N-API addon registers
+  #                persistent handles that prevent fork workers from exiting
+  #                on Linux, and its C++ destructors segfault during
+  #                process.exit(). Running each file in its own process lets
+  #                the OS reclaim all resources cleanly.
+  #   pipeline   — 3 files: ingestion pipeline + csv, each creates own temp DB
+  #   e2e        — 2 files: child-process only (spawnSync), no in-process kuzu
+  #   standalone — 4 files: pure logic, no kuzu, no child processes
+  test-matrix:
+    name: integration (${{ matrix.os }} / ${{ matrix.test-group }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        test-group: [kuzu-db, pipeline, e2e, standalone]
+        include:
+          - test-group: kuzu-db
+            # Marker — actual files are listed in the run step below
+            test-glob: ''
+          - test-group: pipeline
+            test-glob: >-
+              test/integration/pipeline.test.ts
+              test/integration/csv-pipeline.test.ts
+              test/integration/parsing.test.ts
+          - test-group: e2e
+            test-glob: >-
+              test/integration/cli-e2e.test.ts
+              test/integration/hooks-e2e.test.ts
+          - test-group: standalone
+            test-glob: >-
+              test/integration/filesystem-walker.test.ts
+              test/integration/enrichment.test.ts
+              test/integration/tree-sitter-languages.test.ts
+              test/integration/worker-pool.test.ts
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+
+      # kuzu-db: run each file in its own vitest process for full isolation.
+      # KuzuDB's native addon hangs fork workers on Linux — process isolation
+      # is the only reliable fix boundary.
+      - name: Run integration tests — kuzu-db (process-isolated)
+        if: matrix.test-group == 'kuzu-db'
+        working-directory: gitnexus
+        shell: bash
+        run: |
+          set -e
+          files=(
+            test/integration/kuzu-core-adapter.test.ts
+            test/integration/kuzu-pool.test.ts
+            test/integration/local-backend.test.ts
+            test/integration/local-backend-calltool.test.ts
+            test/integration/search-core.test.ts
+            test/integration/search-pool.test.ts
+            test/integration/augmentation.test.ts
+          )
+          exit_code=0
+          for f in "${files[@]}"; do
+            echo "::group::$f"
+            if ! npx vitest run --reporter=verbose --pool=forks "$f"; then
+              exit_code=1
+              echo "::error::Test file failed: $f"
+            fi
+            echo "::endgroup::"
+          done
+          exit $exit_code
+
+      # Non-kuzu groups: run all files in a single vitest invocation
+      - name: Run integration tests — ${{ matrix.test-group }}
+        if: matrix.test-group != 'kuzu-db'
+        shell: bash
+        env:
+          TEST_GLOB: ${{ matrix.test-glob }}
+        run: npx vitest run --reporter=verbose $TEST_GLOB
+        working-directory: gitnexus
+
+  # ── Coverage collection (ubuntu only) ─────────────────────────────────
+  # Runs non-kuzu integration tests with coverage enabled so the PR report
+  # can merge integration + unit coverage for a combined view.
+  # kuzu-db tests are excluded because each file must run in its own vitest
+  # process (native addon isolation) which prevents single-run coverage merge.
+  coverage:
+    name: integration (ubuntu / coverage)
+    if: inputs.collect-coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+
+      - name: Run integration tests with coverage
+        working-directory: gitnexus
+        run: >-
+          npx vitest run
+          --reporter=default
+          --reporter=json
+          --outputFile=integration-results.json
+          --coverage
+          --coverage.reporter=json-summary
+          --coverage.reporter=json
+          --coverage.reporter=text
+          --coverage.thresholdAutoUpdate=false
+          --coverage.reportOnFailure=true
+          --coverage.thresholds.statements=0
+          --coverage.thresholds.branches=0
+          --coverage.thresholds.functions=0
+          --coverage.thresholds.lines=0
+          test/integration/pipeline.test.ts
+          test/integration/csv-pipeline.test.ts
+          test/integration/parsing.test.ts
+          test/integration/cli-e2e.test.ts
+          test/integration/hooks-e2e.test.ts
+          test/integration/filesystem-walker.test.ts
+          test/integration/enrichment.test.ts
+          test/integration/tree-sitter-languages.test.ts
+          test/integration/worker-pool.test.ts
+
+      - name: Upload integration coverage
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: integration-reports
+          path: |
+            gitnexus/coverage/coverage-summary.json
+            gitnexus/coverage/coverage-final.json
+            gitnexus/integration-results.json
+          retention-days: 5
+
+  # ── Unified status gate ──────────────────────────────────────────────
+  # Branch protection should require THIS job, not the matrix jobs directly.
+  # ci.yml's needs.integration.result aggregates through this gate.
+  status:
+    name: integration (all groups)
+    needs: test-matrix
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check all matrix jobs passed
+        shell: bash
+        env:
+          RESULT: ${{ needs.test-matrix.result }}
+        run: |
+          if [[ "$RESULT" != "success" ]]; then
+            echo "::error::Integration matrix failed or cancelled: $RESULT"
+            exit 1
+          fi

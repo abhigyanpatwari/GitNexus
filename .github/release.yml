@@ -1,0 +1,45 @@
+changelog:
+  exclude:
+    labels:
+      - chore
+    authors:
+      - dependabot
+      - dependabot[bot]
+  categories:
+    - title: "\U0001F6A8 Security"
+      labels:
+        - security
+    - title: "\U0001F4A5 Breaking Changes"
+      labels:
+        - breaking
+    - title: "\U0001F680 Features"
+      labels:
+        - enhancement
+    - title: "\U0001F41B Bug Fixes"
+      labels:
+        - bug
+    - title: "\U0001F3CE\uFE0F Performance"
+      labels:
+        - performance
+    - title: "\U0001F9EA Tests"
+      labels:
+        - test
+    - title: "\U0001F504 Refactoring"
+      labels:
+        - refactor
+    - title: "\U0001F477 CI/CD"
+      labels:
+        - ci
+    - title: "\U0001F4E6 Dependencies"
+      labels:
+        - dependencies
+    - title: "\U0001F4DD Other Changes"
+      labels:
+        - "*"
+      exclude:
+        labels:
+          - dependencies
+          - ci
+          - test
+          - refactor
+          - chore

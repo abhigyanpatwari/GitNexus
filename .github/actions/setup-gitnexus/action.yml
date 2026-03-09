@@ -1,0 +1,28 @@
+name: Setup GitNexus
+description: Setup Node.js 20, install dependencies, and optionally build
+
+inputs:
+  build:
+    description: Whether to run npm run build after install
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: 20
+        cache: npm
+        cache-dependency-path: gitnexus/package-lock.json
+
+    - name: Install dependencies
+      run: npm ci
+      shell: bash
+      working-directory: gitnexus
+
+    - name: Build
+      if: ${{ inputs.build == 'true' }}
+      run: npm run build
+      shell: bash
+      working-directory: gitnexus

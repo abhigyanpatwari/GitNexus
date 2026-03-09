@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -70,6 +70,41 @@ describe('filesystem-walker', () => {
       await walkRepositoryPaths(tmpDir, onProgress);
       expect(onProgress).toHaveBeenCalled();
     });
+
+    // ─── Unhappy paths ────────────────────────────────────────────────
+
+    it('throws or returns empty for non-existent directory', async () => {
+      try {
+        const files = await walkRepositoryPaths('/nonexistent/path/xyz123');
+        // If it doesn't throw, it should return empty
+        expect(files).toEqual([]);
+      } catch (err: any) {
+        expect(err).toBeDefined();
+      }
+    });
+
+    it('returns empty for directory with only ignored files', async () => {
+      const emptyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-empty-'));
+      await fs.mkdir(path.join(emptyDir, '.git'), { recursive: true });
+      await fs.writeFile(path.join(emptyDir, '.git', 'HEAD'), 'ref: refs/heads/main');
+
+      try {
+        const files = await walkRepositoryPaths(emptyDir);
+        expect(files).toEqual([]);
+      } finally {
+        await fs.rm(emptyDir, { recursive: true, force: true });
+      }
+    });
+
+    it('returns empty for truly empty directory', async () => {
+      const emptyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-truly-empty-'));
+      try {
+        const files = await walkRepositoryPaths(emptyDir);
+        expect(files).toEqual([]);
+      } finally {
+        await fs.rm(emptyDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('readFileContents', () => {
@@ -87,6 +122,19 @@ describe('filesystem-walker', () => {
     it('skips non-existent files gracefully', async () => {
       const contents = await readFileContents(tmpDir, ['nonexistent.ts']);
       expect(contents.size).toBe(0);
+    });
+
+    // ─── Unhappy paths ────────────────────────────────────────────────
+
+    it('skips multiple non-existent files gracefully', async () => {
+      const contents = await readFileContents(tmpDir, ['a.ts', 'b.ts', 'c.ts']);
+      expect(contents.size).toBe(0);
+    });
+
+    it('handles binary file content without crashing', async () => {
+      const contents = await readFileContents(tmpDir, ['src/image.png']);
+      // May return content or skip — should not throw
+      expect(contents.size).toBeLessThanOrEqual(1);
     });
   });
 });

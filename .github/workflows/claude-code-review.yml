@@ -1,44 +1,97 @@
 name: Claude Code Review
 
+# Uses pull_request_target so the workflow runs as defined on the default branch,
+# which allows access to secrets for posting review comments on fork PRs.
+# SECURITY: The checkout below uses the PR head SHA to review the correct code.
+# The claude-code-action sandboxes execution — it does NOT run arbitrary code
+# from the checked-out source.
+
 on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+  # Trigger only when explicitly requested:
+  #   - Add the "claude-review" label to a PR, OR
+  #   - Comment "@claude" or "/review" on a PR
+  pull_request_target:
+    types: [labeled]
+  issue_comment:
+    types: [created]
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
+    # Run only when:
+    #   1. The "claude-review" label is added to a non-draft PR by a trusted contributor, OR
+    #   2. A trusted contributor comments "@claude" or "/review" on a PR
+    if: |
+      (
+        github.event_name == 'pull_request_target' &&
+        github.event.label.name == 'claude-review' &&
+        github.event.pull_request.draft == false &&
+        (github.event.pull_request.author_association == 'OWNER' ||
+         github.event.pull_request.author_association == 'MEMBER' ||
+         github.event.pull_request.author_association == 'COLLABORATOR')
+      ) ||
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        (contains(github.event.comment.body, '@claude') ||
+         contains(github.event.comment.body, '/review')) &&
+        (github.event.comment.author_association == 'OWNER' ||
+         github.event.comment.author_association == 'MEMBER' ||
+         github.event.comment.author_association == 'COLLABORATOR')
+      )
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
-      contents: read
-      pull-requests: read
+      contents: write       # needed to push fork branch to origin
+      pull-requests: write
       issues: read
       id-token: write
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      # For issue_comment triggers, resolve the PR number, head SHA, and branch name
+      - name: Resolve PR context
+        id: pr
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
+          script: |
+            let pr;
+            if (context.eventName === 'issue_comment') {
+              const resp = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.issue.number,
+              });
+              pr = resp.data;
+            } else {
+              pr = context.payload.pull_request;
+            }
+            core.setOutput('number', pr.number);
+            core.setOutput('sha', pr.head.sha);
+            core.setOutput('branch', pr.head.ref);
+            core.setOutput('is_fork', String(pr.head.repo.full_name !== pr.base.repo.full_name));
+
+      - name: Checkout PR head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ steps.pr.outputs.sha }}
           fetch-depth: 1
+
+      # claude-code-action fetches branches by name from origin, which fails
+      # for fork PRs. Work around by pushing the fork branch to origin so
+      # the action can find it.  Cleaned up in the post step below.
+      - name: Push fork branch to origin
+        if: steps.pr.outputs.is_fork == 'true'
+        run: git push origin HEAD:refs/heads/${{ steps.pr.outputs.branch }}
 
       - name: Run Claude Code Review
         id: claude-review
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@9469d113c6afd29550c402740f22d1a97dd1209b # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ steps.pr.outputs.number }}'
 
+      # Clean up the temporary branch we pushed for fork PRs
+      - name: Delete fork branch from origin
+        if: always() && steps.pr.outputs.is_fork == 'true'
+        run: git push origin --delete refs/heads/${{ steps.pr.outputs.branch }} || true

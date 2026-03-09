@@ -84,15 +84,14 @@ function evictLRU(): void {
 }
 
 /**
- * Close all connections for a repo and remove it from the pool
+ * Remove a repo from the pool without calling native close methods.
+ *
+ * KuzuDB's native .closeSync() triggers N-API destructor hooks that
+ * segfault on Linux/macOS.  Pool databases are opened read-only, so
+ * there is no WAL to flush — just deleting the pool entry and letting
+ * the GC (or process exit) reclaim native resources is safe.
  */
 function closeOne(repoId: string): void {
-  const entry = pool.get(repoId);
-  if (!entry) return;
-  for (const conn of entry.available) {
-    try { conn.close(); } catch (e) { console.error('GitNexus [pool:close-conn]:', e instanceof Error ? e.message : e); }
-  }
-  try { entry.db.close(); } catch (e) { console.error('GitNexus [pool:close-db]:', e instanceof Error ? e.message : e); }
   pool.delete(repoId);
 }
 
@@ -324,6 +323,7 @@ export const closeKuzu = async (repoId?: string): Promise<void> => {
     idleTimer = null;
   }
 };
+
 
 /**
  * Check if a specific repo's pool is active

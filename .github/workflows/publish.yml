@@ -5,19 +5,25 @@ on:
     tags:
       - 'v*'
 
+# No workflow-level permissions — scoped per job below.
+
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      pull-requests: write
 
   publish:
     needs: ci
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
@@ -27,8 +33,13 @@ jobs:
         working-directory: gitnexus
 
       - name: Verify version consistency
+        shell: bash
         run: |
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::Tag does not follow semver: v$TAG_VERSION"
+            exit 1
+          fi
           PKG_VERSION=$(node -p "require('./package.json').version")
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
             echo "::error::Tag version (v$TAG_VERSION) does not match package.json version ($PKG_VERSION)"
@@ -52,6 +63,6 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
         with:
           generate_release_notes: true
