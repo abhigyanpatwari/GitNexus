@@ -7,9 +7,6 @@ jobs:
   unit-tests:
     name: unit (ubuntu / coverage)
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-gitnexus
