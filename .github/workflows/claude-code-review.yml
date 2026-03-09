@@ -41,36 +41,46 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: read
+      contents: write       # needed to push fork branch to origin
       pull-requests: write
       issues: read
       id-token: write
 
     steps:
-      # For issue_comment triggers, resolve the PR number and head SHA
+      # For issue_comment triggers, resolve the PR number, head SHA, and branch name
       - name: Resolve PR context
         id: pr
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
           script: |
+            let pr;
             if (context.eventName === 'issue_comment') {
-              const pr = await github.rest.pulls.get({
+              const resp = await github.rest.pulls.get({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 pull_number: context.payload.issue.number,
               });
-              core.setOutput('number', pr.data.number);
-              core.setOutput('sha', pr.data.head.sha);
+              pr = resp.data;
             } else {
-              core.setOutput('number', context.payload.pull_request.number);
-              core.setOutput('sha', context.payload.pull_request.head.sha);
+              pr = context.payload.pull_request;
             }
+            core.setOutput('number', pr.number);
+            core.setOutput('sha', pr.head.sha);
+            core.setOutput('branch', pr.head.ref);
+            core.setOutput('is_fork', String(pr.head.repo.full_name !== pr.base.repo.full_name));
 
       - name: Checkout PR head
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ steps.pr.outputs.sha }}
           fetch-depth: 1
+
+      # claude-code-action fetches branches by name from origin, which fails
+      # for fork PRs. Work around by pushing the fork branch to origin so
+      # the action can find it.  Cleaned up in the post step below.
+      - name: Push fork branch to origin
+        if: steps.pr.outputs.is_fork == 'true'
+        run: git push origin HEAD:refs/heads/${{ steps.pr.outputs.branch }}
 
       - name: Run Claude Code Review
         id: claude-review
@@ -80,3 +90,8 @@ jobs:
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ steps.pr.outputs.number }}'
+
+      # Clean up the temporary branch we pushed for fork PRs
+      - name: Delete fork branch from origin
+        if: always() && steps.pr.outputs.is_fork == 'true'
+        run: git push origin --delete refs/heads/${{ steps.pr.outputs.branch }} || true
