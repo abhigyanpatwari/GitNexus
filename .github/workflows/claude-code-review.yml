@@ -7,18 +7,37 @@ name: Claude Code Review
 # from the checked-out source.
 
 on:
+  # Trigger only when explicitly requested:
+  #   - Add the "claude-review" label to a PR, OR
+  #   - Comment "@claude" or "/review" on a PR
   pull_request_target:
-    types: [opened, synchronize, ready_for_review, reopened]
+    types: [labeled]
+  issue_comment:
+    types: [created]
 
 jobs:
   claude-review:
-    # Skip draft PRs and restrict to trusted contributors to prevent
-    # untrusted code from accessing secrets via pull_request_target.
+    # Run only when:
+    #   1. The "claude-review" label is added to a non-draft PR by a trusted contributor, OR
+    #   2. A trusted contributor comments "@claude" or "/review" on a PR
     if: |
-      github.event.pull_request.draft == false &&
-      (github.event.pull_request.author_association == 'OWNER' ||
-       github.event.pull_request.author_association == 'MEMBER' ||
-       github.event.pull_request.author_association == 'COLLABORATOR')
+      (
+        github.event_name == 'pull_request_target' &&
+        github.event.label.name == 'claude-review' &&
+        github.event.pull_request.draft == false &&
+        (github.event.pull_request.author_association == 'OWNER' ||
+         github.event.pull_request.author_association == 'MEMBER' ||
+         github.event.pull_request.author_association == 'COLLABORATOR')
+      ) ||
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        (contains(github.event.comment.body, '@claude') ||
+         contains(github.event.comment.body, '/review')) &&
+        (github.event.comment.author_association == 'OWNER' ||
+         github.event.comment.author_association == 'MEMBER' ||
+         github.event.comment.author_association == 'COLLABORATOR')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -28,10 +47,29 @@ jobs:
       id-token: write
 
     steps:
+      # For issue_comment triggers, resolve the PR number and head SHA
+      - name: Resolve PR context
+        id: pr
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            if (context.eventName === 'issue_comment') {
+              const pr = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.issue.number,
+              });
+              core.setOutput('number', pr.data.number);
+              core.setOutput('sha', pr.data.head.sha);
+            } else {
+              core.setOutput('number', context.payload.pull_request.number);
+              core.setOutput('sha', context.payload.pull_request.head.sha);
+            }
+
       - name: Checkout PR head
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ steps.pr.outputs.sha }}
           fetch-depth: 1
 
       - name: Run Claude Code Review
@@ -41,4 +79,4 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ steps.pr.outputs.number }}'
