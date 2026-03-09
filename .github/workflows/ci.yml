@@ -21,6 +21,9 @@ jobs:
 
   unit-tests:
     uses: ./.github/workflows/ci-unit-tests.yml
+    permissions:
+      contents: read
+      pull-requests: write
 
   integration:
     uses: ./.github/workflows/ci-integration.yml
@@ -86,10 +89,10 @@ jobs:
           # ── Status helpers ──
           status_icon() {
             case "$1" in
-              success) echo "✅" ;;
-              failure) echo "❌" ;;
-              cancelled) echo "⏭️" ;;
-              *) echo "❓" ;;
+              success) echo "✅" ;; 
+              failure) echo "❌" ;; 
+              cancelled) echo "⏭️" ;; 
+              *) echo "❓" ;; 
             esac
           }
 
@@ -99,8 +102,8 @@ jobs:
             local filled=$(echo "$pct / 5" | bc 2>/dev/null || echo 0)
             local empty=$((20 - filled))
             local bar=""
-            for ((i=0; i<filled; i++)); do bar+="█"; done
-            for ((i=0; i<empty; i++)); do bar+="░"; done
+            for ((i=0;i<filled;i++)); do bar+="█"; done
+            for ((i=0;i<empty;i++)); do bar+="░"; done
             if [ "$(echo "$pct >= $thresh" | bc 2>/dev/null)" = "1" ]; then
               echo "🟢 ${bar}"
             else
@@ -130,9 +133,9 @@ jobs:
             echo ""
             echo "| Stage | Status | Details |"
             echo "|-------|--------|---------|"
-            echo "| $(status_icon "$QUALITY") Typecheck | \`${QUALITY}\` | tsc --noEmit |"
-            echo "| $(status_icon "$UNIT") Unit Tests | \`${UNIT}\` | 3 platforms |"
-            echo "| $(status_icon "$INTEG") Integration | \`${INTEG}\` | 3 OS × 4 groups = 12 jobs |"
+            echo "| \\$(status_icon \"$QUALITY\") Typecheck | \\`${QUALITY}\` | tsc --noEmit |"
+            echo "| \\$(status_icon \"$UNIT\") Unit Tests | \\`${UNIT}\` | 3 platforms |"
+            echo "| \\$(status_icon \"$INTEG\") Integration | \\`${INTEG}\` | 3 OS × 4 groups = 12 jobs |"
             echo ""
 
             if [ "$TOTAL" != "N/A" ]; then
@@ -158,15 +161,15 @@ jobs:
               echo ""
               echo "| Metric | Coverage | Covered | Threshold | Status |"
               echo "|--------|----------|---------|-----------|--------|"
-              echo "| Statements | **${STMTS}%** | ${STMTS_COV} | ${THRESH_STMTS}% | $(cov_bar "$STMTS" "$THRESH_STMTS") |"
-              echo "| Branches | **${BRANCH}%** | ${BRANCH_COV} | ${THRESH_BRANCH}% | $(cov_bar "$BRANCH" "$THRESH_BRANCH") |"
-              echo "| Functions | **${FUNCS}%** | ${FUNCS_COV} | ${THRESH_FUNCS}% | $(cov_bar "$FUNCS" "$THRESH_FUNCS") |"
-              echo "| Lines | **${LINES}%** | ${LINES_COV} | ${THRESH_LINES}% | $(cov_bar "$LINES" "$THRESH_LINES") |"
+              echo "| Statements | **${STMTS}%** | ${STMTS_COV} | ${THRESH_STMTS}% | \\$(cov_bar \"$STMTS\" \"$THRESH_STMTS\") |"
+              echo "| Branches | **${BRANCH}%** | ${BRANCH_COV} | ${THRESH_BRANCH}% | \\$(cov_bar \"$BRANCH\" \"$THRESH_BRANCH\") |"
+              echo "| Functions | **${FUNCS}%** | ${FUNCS_COV} | ${THRESH_FUNCS}% | \\$(cov_bar \"$FUNCS\" \"$THRESH_FUNCS\") |"
+              echo "| Lines | **${LINES}%** | ${LINES_COV} | ${THRESH_LINES}% | \\$(cov_bar \"$LINES\" \"$THRESH_LINES\") |"
               echo ""
               echo "<details>"
               echo "<summary>Coverage thresholds are auto-ratcheted — they only go up</summary>"
               echo ""
-              echo "Vitest \`thresholds.autoUpdate\` bumps the floor whenever local coverage exceeds it."
+              echo "Vitest \\`thresholds.autoUpdate\\` bumps the floor whenever local coverage exceeds it."
               echo "CI enforces the current thresholds; developers commit the ratcheted values."
               echo "</details>"
               echo ""
