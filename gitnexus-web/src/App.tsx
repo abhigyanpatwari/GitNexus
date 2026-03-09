@@ -205,7 +205,6 @@ const AppContent = () => {
     }).then(async (result) => {
       handleServerConnect(result, baseUrl);
       // Fetch available repos for the repo switcher
-      setServerBaseUrl(baseUrl);
       try {
         const repos = await fetchRepos(baseUrl);
         setAvailableRepos(repos);
@@ -225,7 +224,7 @@ const AppContent = () => {
         setProgress(null);
       }, 3000);
     });
-  }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos]);
+  }, [handleServerConnect, setProgress, setViewMode, setAvailableRepos]);
 
   const handleFocusNode = useCallback((nodeId: string) => {
     graphCanvasRef.current?.focusNode(nodeId);
@@ -245,16 +244,13 @@ const AppContent = () => {
         onFileSelect={handleFileSelect}
         onGitClone={handleGitClone}
         onServerConnect={async (result, serverUrl) => {
-          handleServerConnect(result);
-          if (serverUrl) {
-            const baseUrl = normalizeServerUrl(serverUrl);
-            setServerBaseUrl(baseUrl);
-            try {
-              const repos = await fetchRepos(baseUrl);
-              setAvailableRepos(repos);
-            } catch (e) {
-              console.warn('Failed to fetch repo list:', e);
-            }
+          const baseUrl = normalizeServerUrl(serverUrl || window.location.origin);
+          handleServerConnect(result, baseUrl);
+          try {
+            const repos = await fetchRepos(baseUrl);
+            setAvailableRepos(repos);
+          } catch (e) {
+            console.warn('Failed to fetch repo list:', e);
           }
         }}
       />
