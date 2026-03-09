@@ -19,7 +19,7 @@ import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 const _require = createRequire(import.meta.url);
 let Swift: any = null;
 try { Swift = _require('tree-sitter-swift'); } catch {}
-import { findSiblingChild, getLanguageFromFilename } from '../utils.js';
+import { findSiblingChild, getLanguageFromFilename, FUNCTION_NODE_TYPES, extractFunctionName, isBuiltInOrNoise } from '../utils.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
 
@@ -266,188 +266,21 @@ const isNodeExported = (node: any, name: string, language: string): boolean => {
 // Enclosing function detection (for call extraction)
 // ============================================================================
 
-const FUNCTION_NODE_TYPES = new Set([
-  'function_declaration', 'arrow_function', 'function_expression',
-  'method_definition', 'generator_function_declaration',
-  'function_definition', 'async_function_declaration', 'async_arrow_function',
-  'method_declaration', 'constructor_declaration',
-  'local_function_statement', 'function_item', 'impl_item',
-  // Kotlin
-  'lambda_literal',
-  // PHP
-  'anonymous_function',
-  // Swift initializers/deinitializers
-  'init_declaration', 'deinit_declaration',
-]);
-
 /** Walk up AST to find enclosing function, return its generateId or null for top-level */
 const findEnclosingFunctionId = (node: any, filePath: string): string | null => {
   let current = node.parent;
   while (current) {
     if (FUNCTION_NODE_TYPES.has(current.type)) {
-      let funcName: string | null = null;
-      let label = 'Function';
-
-      if (current.type === 'init_declaration' || current.type === 'deinit_declaration') {
-        const funcName = current.type === 'init_declaration' ? 'init' : 'deinit';
-        const label = 'Constructor';
-        const startLine = current.startPosition?.row ?? 0;
-        return generateId(label, `${filePath}:${funcName}:${startLine}`);
-      }
-
-      if (['function_declaration', 'function_definition', 'async_function_declaration',
-           'generator_function_declaration', 'function_item'].includes(current.type)) {
-        const nameNode = current.childForFieldName?.('name') ||
-          current.children?.find((c: any) => c.type === 'identifier' || c.type === 'property_identifier');
-        funcName = nameNode?.text;
-      } else if (current.type === 'impl_item') {
-        const funcItem = current.children?.find((c: any) => c.type === 'function_item');
-        if (funcItem) {
-          const nameNode = funcItem.childForFieldName?.('name') ||
-            funcItem.children?.find((c: any) => c.type === 'identifier');
-          funcName = nameNode?.text;
-          label = 'Method';
-        }
-      } else if (current.type === 'method_definition') {
-        const nameNode = current.childForFieldName?.('name') ||
-          current.children?.find((c: any) => c.type === 'property_identifier');
-        funcName = nameNode?.text;
-        label = 'Method';
-      } else if (current.type === 'method_declaration' || current.type === 'constructor_declaration') {
-        const nameNode = current.childForFieldName?.('name') ||
-          current.children?.find((c: any) => c.type === 'identifier');
-        funcName = nameNode?.text;
-        label = 'Method';
-      } else if (current.type === 'arrow_function' || current.type === 'function_expression') {
-        const parent = current.parent;
-        if (parent?.type === 'variable_declarator') {
-          const nameNode = parent.childForFieldName?.('name') ||
-            parent.children?.find((c: any) => c.type === 'identifier');
-          funcName = nameNode?.text;
-        }
-      }
-
+      const { funcName, label } = extractFunctionName(current);
       if (funcName) {
         const startLine = current.startPosition?.row ?? 0;
-        return generateId(label, `${filePath}:${funcName}:${startLine}`);
+        return generateId(label, `${filePath}:${funcName}`);
       }
     }
     current = current.parent;
   }
   return null;
 };
-
-const BUILT_INS = new Set([
-  // JavaScript/TypeScript
-  'console', 'log', 'warn', 'error', 'info', 'debug',
-  'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval',
-  'parseInt', 'parseFloat', 'isNaN', 'isFinite',
-  'encodeURI', 'decodeURI', 'encodeURIComponent', 'decodeURIComponent',
-  'JSON', 'parse', 'stringify',
-  'Object', 'Array', 'String', 'Number', 'Boolean', 'Symbol', 'BigInt',
-  'Map', 'Set', 'WeakMap', 'WeakSet',
-  'Promise', 'resolve', 'reject', 'then', 'catch', 'finally',
-  'Math', 'Date', 'RegExp', 'Error',
-  'require', 'import', 'export', 'fetch', 'Response', 'Request',
-  'useState', 'useEffect', 'useCallback', 'useMemo', 'useRef', 'useContext',
-  'useReducer', 'useLayoutEffect', 'useImperativeHandle', 'useDebugValue',
-  'createElement', 'createContext', 'createRef', 'forwardRef', 'memo', 'lazy',
-  'map', 'filter', 'reduce', 'forEach', 'find', 'findIndex', 'some', 'every',
-  'includes', 'indexOf', 'slice', 'splice', 'concat', 'join', 'split',
-  'push', 'pop', 'shift', 'unshift', 'sort', 'reverse',
-  'keys', 'values', 'entries', 'assign', 'freeze', 'seal',
-  'hasOwnProperty', 'toString', 'valueOf',
-  // Python
-  'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple',
-  'open', 'read', 'write', 'close', 'append', 'extend', 'update',
-  'super', 'type', 'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr',
-  'enumerate', 'zip', 'sorted', 'reversed', 'min', 'max', 'sum', 'abs',
-  // Kotlin stdlib (IMPORTANT: keep in sync with call-processor.ts BUILT_IN_NAMES)
-  'println', 'print', 'readLine', 'require', 'requireNotNull', 'check', 'assert', 'lazy', 'error',
-  'listOf', 'mapOf', 'setOf', 'mutableListOf', 'mutableMapOf', 'mutableSetOf',
-  'arrayOf', 'sequenceOf', 'also', 'apply', 'run', 'with', 'takeIf', 'takeUnless',
-  'TODO', 'buildString', 'buildList', 'buildMap', 'buildSet',
-  'repeat', 'synchronized',
-  // Kotlin coroutine builders & scope functions
-  'launch', 'async', 'runBlocking', 'withContext', 'coroutineScope',
-  'supervisorScope', 'delay',
-  // Kotlin Flow operators
-  'flow', 'flowOf', 'collect', 'emit', 'onEach', 'catch',
-  'buffer', 'conflate', 'distinctUntilChanged',
-  'flatMapLatest', 'flatMapMerge', 'combine',
-  'stateIn', 'shareIn', 'launchIn',
-  // Kotlin infix stdlib functions
-  'to', 'until', 'downTo', 'step',
-  // C/C++ standard library
-  'printf', 'fprintf', 'sprintf', 'snprintf', 'vprintf', 'vfprintf', 'vsprintf', 'vsnprintf',
-  'scanf', 'fscanf', 'sscanf',
-  'malloc', 'calloc', 'realloc', 'free', 'memcpy', 'memmove', 'memset', 'memcmp',
-  'strlen', 'strcpy', 'strncpy', 'strcat', 'strncat', 'strcmp', 'strncmp', 'strstr', 'strchr', 'strrchr',
-  'atoi', 'atol', 'atof', 'strtol', 'strtoul', 'strtoll', 'strtoull', 'strtod',
-  'sizeof', 'offsetof', 'typeof',
-  'assert', 'abort', 'exit', '_exit',
-  'fopen', 'fclose', 'fread', 'fwrite', 'fseek', 'ftell', 'rewind', 'fflush', 'fgets', 'fputs',
-  // Linux kernel common macros/helpers (not real call targets)
-  'likely', 'unlikely', 'BUG', 'BUG_ON', 'WARN', 'WARN_ON', 'WARN_ONCE',
-  'IS_ERR', 'PTR_ERR', 'ERR_PTR', 'IS_ERR_OR_NULL',
-  'ARRAY_SIZE', 'container_of', 'list_for_each_entry', 'list_for_each_entry_safe',
-  'min', 'max', 'clamp', 'abs', 'swap',
-  'pr_info', 'pr_warn', 'pr_err', 'pr_debug', 'pr_notice', 'pr_crit', 'pr_emerg',
-  'printk', 'dev_info', 'dev_warn', 'dev_err', 'dev_dbg',
-  'GFP_KERNEL', 'GFP_ATOMIC',
-  'spin_lock', 'spin_unlock', 'spin_lock_irqsave', 'spin_unlock_irqrestore',
-  'mutex_lock', 'mutex_unlock', 'mutex_init',
-  'kfree', 'kmalloc', 'kzalloc', 'kcalloc', 'krealloc', 'kvmalloc', 'kvfree',
-  'get', 'put',
-  // PHP built-ins
-  'echo', 'isset', 'empty', 'unset', 'list', 'array', 'compact', 'extract',
-  'count', 'strlen', 'strpos', 'strrpos', 'substr', 'strtolower', 'strtoupper', 'trim',
-  'ltrim', 'rtrim', 'str_replace', 'str_contains', 'str_starts_with', 'str_ends_with',
-  'sprintf', 'vsprintf', 'printf', 'number_format',
-  'array_map', 'array_filter', 'array_reduce', 'array_push', 'array_pop', 'array_shift',
-  'array_unshift', 'array_slice', 'array_splice', 'array_merge', 'array_keys', 'array_values',
-  'array_key_exists', 'in_array', 'array_search', 'array_unique', 'usort', 'rsort',
-  'json_encode', 'json_decode', 'serialize', 'unserialize',
-  'intval', 'floatval', 'strval', 'boolval', 'is_null', 'is_string', 'is_int', 'is_array',
-  'is_object', 'is_numeric', 'is_bool', 'is_float',
-  'var_dump', 'print_r', 'var_export',
-  'date', 'time', 'strtotime', 'mktime', 'microtime',
-  'file_exists', 'file_get_contents', 'file_put_contents', 'is_file', 'is_dir',
-  'preg_match', 'preg_match_all', 'preg_replace', 'preg_split',
-  'header', 'session_start', 'session_destroy', 'ob_start', 'ob_end_clean', 'ob_get_clean',
-  'dd', 'dump',
-  // Swift/iOS built-ins and standard library
-  'print', 'debugPrint', 'dump', 'fatalError', 'precondition', 'preconditionFailure',
-  'assert', 'assertionFailure', 'NSLog',
-  'abs', 'min', 'max', 'zip', 'stride', 'sequence', 'repeatElement',
-  'swap', 'withUnsafePointer', 'withUnsafeMutablePointer', 'withUnsafeBytes',
-  'autoreleasepool', 'unsafeBitCast', 'unsafeDowncast', 'numericCast',
-  'type', 'MemoryLayout',
-  // Swift collection/string methods (common noise)
-  'map', 'flatMap', 'compactMap', 'filter', 'reduce', 'forEach', 'contains',
-  'first', 'last', 'prefix', 'suffix', 'dropFirst', 'dropLast',
-  'sorted', 'reversed', 'enumerated', 'joined', 'split',
-  'append', 'insert', 'remove', 'removeAll', 'removeFirst', 'removeLast',
-  'isEmpty', 'count', 'index', 'startIndex', 'endIndex',
-  // UIKit/Foundation common methods (noise in call graph)
-  'addSubview', 'removeFromSuperview', 'layoutSubviews', 'setNeedsLayout',
-  'layoutIfNeeded', 'setNeedsDisplay', 'invalidateIntrinsicContentSize',
-  'addTarget', 'removeTarget', 'addGestureRecognizer',
-  'addConstraint', 'addConstraints', 'removeConstraint', 'removeConstraints',
-  'NSLocalizedString', 'Bundle',
-  'reloadData', 'reloadSections', 'reloadRows', 'performBatchUpdates',
-  'register', 'dequeueReusableCell', 'dequeueReusableSupplementaryView',
-  'beginUpdates', 'endUpdates', 'insertRows', 'deleteRows', 'insertSections', 'deleteSections',
-  'present', 'dismiss', 'pushViewController', 'popViewController', 'popToRootViewController',
-  'performSegue', 'prepare',
-  // GCD / async
-  'DispatchQueue', 'async', 'sync', 'asyncAfter',
-  'Task', 'withCheckedContinuation', 'withCheckedThrowingContinuation',
-  // Combine
-  'sink', 'store', 'assign', 'receive', 'subscribe',
-  // Notification / KVO
-  'addObserver', 'removeObserver', 'post', 'NotificationCenter',
-]);
 
 // ============================================================================
 // Label detection from capture map
@@ -1148,7 +981,7 @@ const processFileGroup = (
         const callNameNode = captureMap['call.name'];
         if (callNameNode) {
           const calledName = callNameNode.text;
-          if (!BUILT_INS.has(calledName)) {
+          if (!isBuiltInOrNoise(calledName)) {
             const callNode = captureMap['call'];
             const sourceId = findEnclosingFunctionId(callNode, file.path)
               || generateId('File', file.path);
@@ -1198,7 +1031,7 @@ const processFileGroup = (
       const nodeName = nameNode ? nameNode.text : 'init';
       const definitionNode = getDefinitionNodeFromCaptures(captureMap);
       const startLine = definitionNode ? definitionNode.startPosition.row : (nameNode ? nameNode.startPosition.row : 0);
-      const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}:${startLine}`);
+      const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}`);
 
       let description: string | undefined;
       if (language === SupportedLanguages.PHP) {
