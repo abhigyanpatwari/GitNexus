@@ -26,12 +26,6 @@ jobs:
           --coverage.reportOnFailure=true
         working-directory: gitnexus
 
-      - name: Coverage report
-        if: always()
-        uses: davelosert/vitest-coverage-report-action@2500dafcee7dd64f85ab689c0b83798a8359770e # v2
-        with:
-          working-directory: gitnexus
-
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -39,6 +33,7 @@ jobs:
           name: test-reports
           path: |
             gitnexus/coverage/coverage-summary.json
+            gitnexus/coverage/coverage-final.json
             gitnexus/test-results.json
           retention-days: 5
 

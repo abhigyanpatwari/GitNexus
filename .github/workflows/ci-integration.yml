@@ -92,6 +92,55 @@ jobs:
         run: npx vitest run --reporter=verbose $TEST_GLOB
         working-directory: gitnexus
 
+  # ── Coverage collection (ubuntu only) ─────────────────────────────────
+  # Runs non-kuzu integration tests with coverage enabled so the PR report
+  # can merge integration + unit coverage for a combined view.
+  # kuzu-db tests are excluded because each file must run in its own vitest
+  # process (native addon isolation) which prevents single-run coverage merge.
+  coverage:
+    name: integration (ubuntu / coverage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+
+      - name: Run integration tests with coverage
+        working-directory: gitnexus
+        run: >-
+          npx vitest run
+          --reporter=default
+          --reporter=json
+          --outputFile=integration-results.json
+          --coverage
+          --coverage.reporter=json-summary
+          --coverage.reporter=json
+          --coverage.reporter=text
+          --coverage.thresholdAutoUpdate=false
+          --coverage.reportOnFailure=true
+          test/integration/pipeline.test.ts
+          test/integration/csv-pipeline.test.ts
+          test/integration/parsing.test.ts
+          test/integration/cli-e2e.test.ts
+          test/integration/hooks-e2e.test.ts
+          test/integration/filesystem-walker.test.ts
+          test/integration/enrichment.test.ts
+          test/integration/tree-sitter-languages.test.ts
+          test/integration/worker-pool.test.ts
+
+      - name: Upload integration coverage
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: integration-reports
+          path: |
+            gitnexus/coverage/coverage-summary.json
+            gitnexus/coverage/coverage-final.json
+            gitnexus/integration-results.json
+          retention-days: 5
+
   # ── Unified status gate ──────────────────────────────────────────────
   # Branch protection should require THIS job, not the matrix jobs directly.
   # ci.yml's needs.integration.result aggregates through this gate.
