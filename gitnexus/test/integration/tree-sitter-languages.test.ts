@@ -4,6 +4,7 @@ import path from 'path';
 import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
 import { LANGUAGE_QUERIES } from '../../src/core/ingestion/tree-sitter-queries.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { getLanguageFromFilename } from '../../src/core/ingestion/utils.js';
 import Parser from 'tree-sitter';
 
 const fixturesDir = path.resolve(__dirname, '..', 'fixtures', 'sample-code');
@@ -216,6 +217,23 @@ describe('Tree-sitter multi-language parsing', () => {
     });
   });
 
+  describe('unhappy path', () => {
+    it('returns null/undefined for unsupported file extensions', () => {
+      expect(getLanguageFromFilename('archive.xyz')).toBeNull();
+      expect(getLanguageFromFilename('data.unknown')).toBeNull();
+    });
+
+    it('handles empty string file path', () => {
+      expect(getLanguageFromFilename('')).toBeNull();
+    });
+
+    it('returns null/undefined for binary file extensions', () => {
+      expect(getLanguageFromFilename('program.exe')).toBeNull();
+      expect(getLanguageFromFilename('library.dll')).toBeNull();
+      expect(getLanguageFromFilename('object.so')).toBeNull();
+    });
+  });
+
   describe('cross-language assertions', () => {
     it('all supported languages produce at least one definition from fixtures', async () => {
       const langFixtures: [SupportedLanguages, string, string?][] = [
@@ -243,6 +261,30 @@ describe('Tree-sitter multi-language parsing', () => {
           if (!e.message?.includes('TSQueryError')) throw e;
         }
       }
+    });
+  });
+
+  describe('parser edge cases', () => {
+    it('loadLanguage throws for unsupported language', async () => {
+      await expect(loadLanguage('brainfuck' as any)).rejects.toThrow(/unsupported language/i);
+    });
+
+    it('parsing empty file content produces empty matches', async () => {
+      await loadLanguage(SupportedLanguages.TypeScript, 'empty.ts');
+      const tree = parser.parse('');
+      expect(tree.rootNode).toBeDefined();
+
+      const lang = parser.getLanguage();
+      const query = new Parser.Query(lang, LANGUAGE_QUERIES[SupportedLanguages.TypeScript]);
+      const matches = query.matches(tree.rootNode);
+      expect(matches).toEqual([]);
+    });
+
+    it('parsing malformed code does not crash', async () => {
+      await loadLanguage(SupportedLanguages.TypeScript, 'malformed.ts');
+      const tree = parser.parse('function {{{ class >>><< if(( end');
+      expect(tree.rootNode).toBeDefined();
+      expect(tree.rootNode.hasError).toBe(true);
     });
   });
 });

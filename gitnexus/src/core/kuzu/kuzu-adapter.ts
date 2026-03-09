@@ -591,6 +591,7 @@ export const closeKuzu = async (): Promise<void> => {
 
 export const isKuzuReady = (): boolean => conn !== null && db !== null;
 
+
 /**
  * Delete all nodes (and their relationships) for a specific file from KuzuDB
  * @param filePath - The file path to delete nodes for
@@ -746,8 +747,8 @@ export const queryFTS = async (
     throw new Error('KuzuDB not initialized. Call initKuzu first.');
   }
   
-  // Escape single quotes in query
-  const escapedQuery = query.replace(/'/g, "''");
+  // Escape backslashes and single quotes to prevent Cypher injection
+  const escapedQuery = query.replace(/\\/g, '\\\\').replace(/'/g, "''");
   
   const cypher = `
     CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', '${escapedQuery}', conjunctive := ${conjunctive})

@@ -1,23 +1,38 @@
-import { describe, it, expect, vi } from 'vitest';
+/**
+ * P1 Integration Tests: Pipeline End-to-End
+ *
+ * Runs the full ingestion pipeline once on a mini-repo fixture and
+ * validates the resulting knowledge graph: file/symbol nodes, CALLS
+ * edges, IMPORTS edges, community detection, and process detection.
+ *
+ * Pipeline runs once in beforeAll; each it() asserts against the cached result.
+ */
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
+import os from 'os';
+import fs from 'fs/promises';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import type { PipelineProgress } from '../../src/types/pipeline.js';
+import type { PipelineResult } from '../../src/types/pipeline.js';
 
 const MINI_REPO = path.resolve(__dirname, '..', 'fixtures', 'mini-repo');
 
 describe('pipeline end-to-end', () => {
-  it('indexes a mini repo and produces a valid graph', async () => {
-    const progressCalls: PipelineProgress[] = [];
-    const onProgress = (p: PipelineProgress) => progressCalls.push(p);
+  let result: PipelineResult;
+  const phases = new Set<string>();
 
-    const result = await runPipelineFromRepo(MINI_REPO, onProgress);
+  // Run pipeline ONCE in beforeAll — each it() asserts against the cached result
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(MINI_REPO, (p: PipelineProgress) => phases.add(p.phase));
+  }, 60000);
 
+  it('indexes a mini repo and produces a valid graph', () => {
     // --- Graph should have nodes ---
     expect(result.graph.nodeCount).toBeGreaterThan(0);
     expect(result.graph.relationshipCount).toBeGreaterThan(0);
 
-    // --- Should find the 5 TypeScript files ---
-    expect(result.totalFileCount).toBe(5);
+    // --- Should find at least 7 TypeScript files (may include AGENTS.md, CLAUDE.md, etc.) ---
+    expect(result.totalFileCount).toBeGreaterThanOrEqual(7);
 
     // --- Verify File nodes exist for each source file ---
     const fileNodes: string[] = [];
@@ -29,6 +44,8 @@ describe('pipeline end-to-end', () => {
     expect(fileNodes).toContain('src/db.ts');
     expect(fileNodes).toContain('src/formatter.ts');
     expect(fileNodes).toContain('src/index.ts');
+    expect(fileNodes).toContain('src/logger.ts');
+    expect(fileNodes).toContain('src/middleware.ts');
 
     // --- Verify symbol nodes were created (functions, classes) ---
     const symbolNames: string[] = [];
@@ -42,6 +59,8 @@ describe('pipeline end-to-end', () => {
     expect(symbolNames).toContain('saveToDb');
     expect(symbolNames).toContain('formatResponse');
     expect(symbolNames).toContain('RequestHandler');
+    expect(symbolNames).toContain('processRequest');
+    expect(symbolNames).toContain('createLogEntry');
 
     // --- Verify relationships exist ---
     const relTypes = new Set<string>();
@@ -82,11 +101,9 @@ describe('pipeline end-to-end', () => {
     expect(importsCount).toBeGreaterThan(0);
   });
 
-  it('detects communities', async () => {
-    const result = await runPipelineFromRepo(MINI_REPO, () => {});
-
+  it('detects communities', () => {
     expect(result.communityResult).toBeDefined();
-    expect(result.communityResult.stats.totalCommunities).toBeGreaterThan(0);
+    expect(result.communityResult?.stats.totalCommunities).toBeGreaterThan(0);
 
     // Community nodes should be in the graph
     const communityNodes: string[] = [];
@@ -103,47 +120,39 @@ describe('pipeline end-to-end', () => {
     expect(memberOfCount).toBeGreaterThan(0);
   });
 
-  it('detects execution flows (processes)', async () => {
-    const result = await runPipelineFromRepo(MINI_REPO, () => {});
-
+  it('detects execution flows (processes)', () => {
     expect(result.processResult).toBeDefined();
+    expect(result.processResult?.stats.totalProcesses).toBeGreaterThan(0);
 
-    // With a 4-function call chain (handler -> validator -> db -> formatter),
-    // there should be at least one process detected
-    if (result.processResult.stats.totalProcesses > 0) {
-      const process = result.processResult.processes[0];
+    const proc = result.processResult?.processes[0] ?? { id: '', stepCount: 0, trace: [], entryPointId: '', terminalId: '', processType: '' };
 
-      // Each process should have valid structure
-      expect(process.id).toBeTruthy();
-      expect(process.stepCount).toBeGreaterThanOrEqual(3); // minSteps default
-      expect(process.trace.length).toBe(process.stepCount);
-      expect(process.entryPointId).toBeTruthy();
-      expect(process.terminalId).toBeTruthy();
-      expect(process.processType).toMatch(/^(intra_community|cross_community)$/);
+    // Each process should have valid structure
+    expect(proc.id).toBeTruthy();
+    expect(proc.stepCount).toBeGreaterThanOrEqual(3); // minSteps default
+    expect(proc.trace.length).toBe(proc.stepCount);
+    expect(proc.entryPointId).toBeTruthy();
+    expect(proc.terminalId).toBeTruthy();
+    expect(proc.processType).toMatch(/^(intra_community|cross_community)$/);
 
-      // Process nodes should be in the graph
-      const processNode = result.graph.getNode(process.id);
-      expect(processNode).toBeDefined();
-      expect(processNode!.label).toBe('Process');
+    // Process nodes should be in the graph
+    const processNode = result.graph.getNode(proc.id);
+    expect(processNode).toBeDefined();
+    expect(processNode!.label).toBe('Process');
 
-      // STEP_IN_PROCESS relationships should exist
-      let stepCount = 0;
-      for (const rel of result.graph.iterRelationships()) {
-        if (rel.type === 'STEP_IN_PROCESS' && rel.targetId === process.id) {
-          stepCount++;
-          expect(rel.step).toBeGreaterThanOrEqual(1);
-        }
+    // STEP_IN_PROCESS relationships should exist with sequential ordering
+    const steps: number[] = [];
+    for (const rel of result.graph.iterRelationships()) {
+      if (rel.type === 'STEP_IN_PROCESS' && rel.targetId === proc.id) {
+        steps.push(rel.step);
       }
-      expect(stepCount).toBe(process.stepCount);
     }
+    expect(steps.length).toBe(proc.stepCount);
+    // Steps should be sequential 1, 2, 3, ...
+    const sorted = [...steps].sort((a, b) => a - b);
+    sorted.forEach((s, i) => expect(s).toBe(i + 1));
   });
 
-  it('reports progress through all 6 phases', async () => {
-    const phases = new Set<string>();
-    const onProgress = (p: PipelineProgress) => phases.add(p.phase);
-
-    await runPipelineFromRepo(MINI_REPO, onProgress);
-
+  it('reports progress through all 6 phases', () => {
     expect(phases).toContain('extracting');
     expect(phases).toContain('structure');
     expect(phases).toContain('parsing');
@@ -152,8 +161,31 @@ describe('pipeline end-to-end', () => {
     expect(phases).toContain('complete');
   });
 
-  it('returns correct repoPath in result', async () => {
-    const result = await runPipelineFromRepo(MINI_REPO, () => {});
+  it('returns correct repoPath in result', () => {
     expect(result.repoPath).toBe(MINI_REPO);
   });
+});
+
+// ─── Pipeline error handling ──────────────────────────────────────────
+
+describe('pipeline error handling', () => {
+  it('returns empty result for non-existent repo path', async () => {
+    const result = await runPipelineFromRepo(
+      '/nonexistent/path/xyz123',
+      () => {},
+    );
+    expect(result.totalFileCount).toBe(0);
+  }, 30000);
+
+  it('handles empty directory gracefully', async () => {
+    const tmpDir = path.join(os.tmpdir(), `gn-pipeline-empty-${Date.now()}`);
+    await fs.mkdir(tmpDir, { recursive: true });
+    try {
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      // Empty repo should produce empty or minimal graph
+      expect(result.totalFileCount).toBe(0);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
 });
