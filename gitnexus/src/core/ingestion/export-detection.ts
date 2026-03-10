@@ -9,6 +9,22 @@
 
 import { findSiblingChild } from './utils.js';
 
+/** C# declaration node types for sibling modifier scanning. */
+const CSHARP_DECL_TYPES = new Set([
+  'method_declaration', 'local_function_statement', 'constructor_declaration',
+  'class_declaration', 'interface_declaration', 'struct_declaration',
+  'enum_declaration', 'record_declaration', 'delegate_declaration',
+  'property_declaration', 'field_declaration', 'event_declaration',
+  'namespace_declaration',
+]);
+
+/** Rust declaration node types for sibling visibility_modifier scanning. */
+const RUST_DECL_TYPES = new Set([
+  'function_item', 'struct_item', 'enum_item', 'trait_item', 'impl_item',
+  'type_item', 'const_item', 'static_item', 'mod_item', 'use_declaration',
+  'associated_type', 'function_signature_item',
+]);
+
 /**
  * Check if a tree-sitter node is exported/public in its language.
  * @param node - The tree-sitter AST node
@@ -67,13 +83,6 @@ export const isNodeExported = (node: any, name: string, language: string): boole
     // C#: modifier nodes are SIBLINGS of the name node inside the declaration.
     // Walk up to the declaration node, then scan its direct children.
     case 'csharp': {
-      const CSHARP_DECL_TYPES = new Set([
-        'method_declaration', 'local_function_statement', 'constructor_declaration',
-        'class_declaration', 'interface_declaration', 'struct_declaration',
-        'enum_declaration', 'record_declaration', 'delegate_declaration',
-        'property_declaration', 'field_declaration', 'event_declaration',
-        'namespace_declaration',
-      ]);
       while (current) {
         if (CSHARP_DECL_TYPES.has(current.type)) {
           for (let i = 0; i < current.childCount; i++) {
@@ -97,11 +106,6 @@ export const isNodeExported = (node: any, name: string, language: string): boole
     // declaration node (function_item, struct_item, etc.), not a parent.
     // Walk up to the declaration node, then scan its direct children.
     case 'rust': {
-      const RUST_DECL_TYPES = new Set([
-        'function_item', 'struct_item', 'enum_item', 'trait_item', 'impl_item',
-        'type_item', 'const_item', 'static_item', 'mod_item', 'use_declaration',
-        'associated_type', 'function_signature_item',
-      ]);
       while (current) {
         if (RUST_DECL_TYPES.has(current.type)) {
           for (let i = 0; i < current.childCount; i++) {

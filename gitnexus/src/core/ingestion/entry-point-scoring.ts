@@ -192,6 +192,14 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
   ],
 };
 
+/** Pre-computed merged patterns (universal + language-specific) to avoid per-call array allocation. */
+const MERGED_ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {};
+const UNIVERSAL_PATTERNS = ENTRY_POINT_PATTERNS['*'] || [];
+for (const [lang, patterns] of Object.entries(ENTRY_POINT_PATTERNS)) {
+  if (lang === '*') continue;
+  MERGED_ENTRY_POINT_PATTERNS[lang] = [...UNIVERSAL_PATTERNS, ...patterns];
+}
+
 // ============================================================================
 // UTILITY PATTERNS - Functions that should be penalized
 // ============================================================================
@@ -279,9 +287,7 @@ export function calculateEntryPointScore(
     reasons.push('utility-pattern');
   } else {
     // Check positive patterns
-    const universalPatterns = ENTRY_POINT_PATTERNS['*'] || [];
-    const langPatterns = ENTRY_POINT_PATTERNS[language] || [];
-    const allPatterns = [...universalPatterns, ...langPatterns];
+    const allPatterns = MERGED_ENTRY_POINT_PATTERNS[language] || UNIVERSAL_PATTERNS;
     
     if (allPatterns.some(p => p.test(name))) {
       nameMultiplier = 1.5;  // Bonus for matching entry point pattern

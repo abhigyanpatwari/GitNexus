@@ -5,7 +5,7 @@ import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { generateId } from '../../lib/utils.js';
 import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
-import { getLanguageFromFilename, yieldToEventLoop } from './utils.js';
+import { getLanguageFromFilename, yieldToEventLoop, DEFINITION_CAPTURE_KEYS, getDefinitionNodeFromCaptures } from './utils.js';
 import { isNodeExported } from './export-detection.js';
 import { detectFrameworkFromAST } from './framework-detection.js';
 import { WorkerPool } from './workers/worker-pool.js';
@@ -20,38 +20,6 @@ export interface WorkerExtractedData {
   heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
 }
-
-const DEFINITION_CAPTURE_KEYS = [
-  'definition.function',
-  'definition.class',
-  'definition.interface',
-  'definition.method',
-  'definition.struct',
-  'definition.enum',
-  'definition.namespace',
-  'definition.module',
-  'definition.trait',
-  'definition.impl',
-  'definition.type',
-  'definition.const',
-  'definition.static',
-  'definition.typedef',
-  'definition.macro',
-  'definition.union',
-  'definition.property',
-  'definition.record',
-  'definition.delegate',
-  'definition.annotation',
-  'definition.constructor',
-  'definition.template',
-] as const;
-
-const getDefinitionNodeFromCaptures = (captureMap: Record<string, any>): any | null => {
-  for (const key of DEFINITION_CAPTURE_KEYS) {
-    if (captureMap[key]) return captureMap[key];
-  }
-  return null;
-};
 
 // isNodeExported imported from ./export-detection.js (shared module)
 // Re-export for backward compatibility with any external consumers

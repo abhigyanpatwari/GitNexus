@@ -1,6 +1,43 @@
 import { SupportedLanguages } from '../../config/supported-languages.js';
 
 /**
+ * Ordered list of definition capture keys for tree-sitter query matches.
+ * Used to extract the definition node from a capture map.
+ */
+export const DEFINITION_CAPTURE_KEYS = [
+  'definition.function',
+  'definition.class',
+  'definition.interface',
+  'definition.method',
+  'definition.struct',
+  'definition.enum',
+  'definition.namespace',
+  'definition.module',
+  'definition.trait',
+  'definition.impl',
+  'definition.type',
+  'definition.const',
+  'definition.static',
+  'definition.typedef',
+  'definition.macro',
+  'definition.union',
+  'definition.property',
+  'definition.record',
+  'definition.delegate',
+  'definition.annotation',
+  'definition.constructor',
+  'definition.template',
+] as const;
+
+/** Extract the definition node from a tree-sitter query capture map. */
+export const getDefinitionNodeFromCaptures = (captureMap: Record<string, any>): any | null => {
+  for (const key of DEFINITION_CAPTURE_KEYS) {
+    if (captureMap[key]) return captureMap[key];
+  }
+  return null;
+};
+
+/**
  * Node types that represent function/method definitions across languages.
  * Used to find the enclosing function for a call site.
  */
