@@ -42,6 +42,7 @@ export const walkRepositoryPaths = async (
   const entries: ScannedFile[] = [];
   let processed = 0;
   let skippedLarge = 0;
+  let skippedNonRegular = 0;
 
   for (let start = 0; start < filtered.length; start += READ_CONCURRENCY) {
     const batch = filtered.slice(start, start + READ_CONCURRENCY);
@@ -49,6 +50,10 @@ export const walkRepositoryPaths = async (
       batch.map(async relativePath => {
         const fullPath = path.join(repoPath, relativePath);
         const stat = await fs.stat(fullPath);
+        if (!stat.isFile()) {
+          skippedNonRegular++;
+          return null;
+        }
         if (stat.size > MAX_FILE_SIZE) {
           skippedLarge++;
           return null;
@@ -70,6 +75,9 @@ export const walkRepositoryPaths = async (
 
   if (skippedLarge > 0) {
     console.warn(`  Skipped ${skippedLarge} large files (>${MAX_FILE_SIZE / 1024}KB, likely generated/vendored)`);
+  }
+  if (skippedNonRegular > 0) {
+    console.warn(`  Skipped ${skippedNonRegular} non-regular paths (pipes/sockets/devices)`);
   }
 
   return entries;

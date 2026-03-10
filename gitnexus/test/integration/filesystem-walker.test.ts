@@ -65,6 +65,30 @@ describe('filesystem-walker', () => {
       }
     });
 
+    it('skips non-regular paths reported by stat', async () => {
+      const originalStat = fs.stat.bind(fs);
+      const statSpy = vi.spyOn(fs, 'stat');
+
+      statSpy.mockImplementation(async (targetPath: any) => {
+        const normalized = String(targetPath).replace(/\\/g, '/');
+        if (normalized.endsWith('/src/index.ts')) {
+          return {
+            isFile: () => false,
+            size: 0,
+          } as any;
+        }
+        return originalStat(targetPath);
+      });
+
+      try {
+        const files = await walkRepositoryPaths(tmpDir);
+        const paths = files.map(f => f.path.replace(/\\/g, '/'));
+        expect(paths.some(p => p.endsWith('src/index.ts'))).toBe(false);
+      } finally {
+        statSpy.mockRestore();
+      }
+    });
+
     it('calls progress callback', async () => {
       const onProgress = vi.fn();
       await walkRepositoryPaths(tmpDir, onProgress);
