@@ -6,7 +6,7 @@ import Parser from 'tree-sitter';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { generateId } from '../../lib/utils.js';
-import { getLanguageFromFilename, yieldToEventLoop } from './utils.js';
+import { getLanguageFromFilename, isVerboseIngestionEnabled, yieldToEventLoop } from './utils.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
 import type { ExtractedImport } from './workers/parse-worker.js';
 
@@ -733,6 +733,8 @@ export const processImports = async (
   const allFileList = allPaths ?? files.map(f => f.path);
   const allFilePaths = new Set(allFileList);
   const parser = await loadParser();
+  const logSkipped = isVerboseIngestionEnabled();
+  const skippedByLang = logSkipped ? new Map<string, number>() : null;
   const resolveCache = new Map<string, string | null>();
   // Pre-compute normalized file list once (forward slashes)
   const normalizedFileList = allFileList.map(p => p.replace(/\\/g, '/'));
@@ -781,7 +783,12 @@ export const processImports = async (
     // 1. Check language support first
     const language = getLanguageFromFilename(file.path);
     if (!language) continue;
-    if (!isLanguageAvailable(language)) continue;
+    if (!isLanguageAvailable(language)) {
+      if (skippedByLang) {
+        skippedByLang.set(language, (skippedByLang.get(language) ?? 0) + 1);
+      }
+      continue;
+    }
 
     const queryStr = LANGUAGE_QUERIES[language];
     if (!queryStr) continue;
@@ -938,6 +945,14 @@ export const processImports = async (
     });
 
     // Tree is now owned by the LRU cache — no manual delete needed
+  }
+
+  if (skippedByLang && skippedByLang.size > 0) {
+    for (const [lang, count] of skippedByLang.entries()) {
+      console.warn(
+        `[ingestion] Skipped ${count} ${lang} file(s) in import processing — ${lang} parser not available.`
+      );
+    }
   }
 
   if (isDev) {

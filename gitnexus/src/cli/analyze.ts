@@ -45,6 +45,7 @@ function ensureHeap(): boolean {
 export interface AnalyzeOptions {
   force?: boolean;
   embeddings?: boolean;
+  verbose?: boolean;
 }
 
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
@@ -71,6 +72,10 @@ export const analyzeCommand = async (
   options?: AnalyzeOptions
 ) => {
   if (ensureHeap()) return;
+
+  if (options?.verbose) {
+    process.env.GITNEXUS_VERBOSE = '1';
+  }
 
   console.log('\n  GitNexus Analyzer\n');
 

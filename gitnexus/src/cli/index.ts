@@ -26,6 +26,7 @@ program
   .description('Index a repository (full analysis)')
   .option('-f, --force', 'Force full re-index even if up to date')
   .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
+  .option('-v, --verbose', 'Enable verbose ingestion warnings')
   .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
 
 program
