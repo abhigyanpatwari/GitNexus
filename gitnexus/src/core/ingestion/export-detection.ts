@@ -13,16 +13,17 @@ import { findSiblingChild } from './utils.js';
 const CSHARP_DECL_TYPES = new Set([
   'method_declaration', 'local_function_statement', 'constructor_declaration',
   'class_declaration', 'interface_declaration', 'struct_declaration',
-  'enum_declaration', 'record_declaration', 'delegate_declaration',
+  'enum_declaration', 'record_declaration', 'record_struct_declaration',
+  'record_class_declaration', 'delegate_declaration',
   'property_declaration', 'field_declaration', 'event_declaration',
-  'namespace_declaration',
+  'namespace_declaration', 'file_scoped_namespace_declaration',
 ]);
 
 /** Rust declaration node types for sibling visibility_modifier scanning. */
 const RUST_DECL_TYPES = new Set([
   'function_item', 'struct_item', 'enum_item', 'trait_item', 'impl_item',
-  'type_item', 'const_item', 'static_item', 'mod_item', 'use_declaration',
-  'associated_type', 'function_signature_item',
+  'union_item', 'type_item', 'const_item', 'static_item', 'mod_item',
+  'use_declaration', 'associated_type', 'function_signature_item',
 ]);
 
 /**
@@ -43,10 +44,10 @@ export const isNodeExported = (node: any, name: string, language: string): boole
         const type = current.type;
         if (type === 'export_statement' ||
             type === 'export_specifier' ||
-            type === 'lexical_declaration' && current.parent?.type === 'export_statement') {
+            (type === 'lexical_declaration' && current.parent?.type === 'export_statement')) {
           return true;
         }
-        // Also check if text starts with 'export '
+        // Fallback: check if node text starts with 'export ' for edge cases
         if (current.text?.startsWith('export ')) {
           return true;
         }
@@ -139,17 +140,24 @@ export const isNodeExported = (node: any, name: string, language: string): boole
     // C/C++: Functions without 'static' storage class have external linkage
     // by default, making them globally accessible (equivalent to exported).
     // Only functions explicitly marked 'static' are file-scoped (not exported).
+    // C++ anonymous namespaces (namespace { ... }) also give internal linkage.
     case 'c':
     case 'cpp': {
       // Walk up to the function_definition/declaration and check for 'static'
       let cur = node;
       while (cur) {
         if (cur.type === 'function_definition' || cur.type === 'declaration') {
-          // Check text before the opening brace (or semicolon) for 'static'
-          const declText: string = (cur.text || '').split('{')[0].split(';')[0];
-          // 'static' as a storage class (not 'static_assert' etc.)
-          if (/\bstatic\b/.test(declText)) return false;
-          return true; // No 'static' = external linkage = exported
+          // Check for 'static' storage class specifier as a direct child node.
+          // This avoids reading the full function text (which can be very large).
+          for (let i = 0; i < cur.childCount; i++) {
+            const child = cur.child(i);
+            if (child?.type === 'storage_class_specifier' && child.text === 'static') return false;
+          }
+        }
+        // C++ anonymous namespace: namespace_definition with no name child = internal linkage
+        if (cur.type === 'namespace_definition') {
+          const hasName = cur.childForFieldName?.('name');
+          if (!hasName) return false;
         }
         cur = cur.parent;
       }

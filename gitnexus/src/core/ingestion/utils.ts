@@ -220,6 +220,17 @@ export const BUILT_IN_NAMES = new Set([
   'sink', 'store', 'assign', 'receive', 'subscribe',
   // Notification / KVO
   'addObserver', 'removeObserver', 'post', 'NotificationCenter',
+  // Rust standard library (common noise in call graphs)
+  'unwrap', 'expect', 'unwrap_or', 'unwrap_or_else', 'unwrap_or_default',
+  'ok', 'err', 'is_ok', 'is_err', 'map', 'map_err', 'and_then', 'or_else',
+  'clone', 'to_string', 'to_owned', 'into', 'from', 'as_ref', 'as_mut',
+  'iter', 'into_iter', 'collect', 'map', 'filter', 'fold', 'for_each',
+  'len', 'is_empty', 'push', 'pop', 'insert', 'remove', 'contains',
+  'format', 'write', 'writeln', 'panic', 'unreachable', 'todo', 'unimplemented',
+  'vec', 'println', 'eprintln', 'dbg',
+  'lock', 'read', 'write', 'try_lock',
+  'spawn', 'join', 'sleep',
+  'Some', 'None', 'Ok', 'Err',
 ]);
 
 /** Check if a name is a built-in function or common noise that should be filtered out */
@@ -242,9 +253,15 @@ export const extractFunctionName = (node: any): { funcName: string | null; label
   }
 
   if (FUNCTION_DECLARATION_TYPES.has(node.type)) {
-    // C/C++: function_definition -> function_declarator -> qualified_identifier/identifier
-    const declarator = node.childForFieldName?.('declarator') ||
+    // C/C++: function_definition -> [pointer_declarator ->] function_declarator -> qualified_identifier/identifier
+    // Unwrap pointer_declarator / reference_declarator wrappers to reach function_declarator
+    let declarator = node.childForFieldName?.('declarator') ||
                         node.children?.find((c: any) => c.type === 'function_declarator');
+    while (declarator && (declarator.type === 'pointer_declarator' || declarator.type === 'reference_declarator')) {
+      declarator = declarator.childForFieldName?.('declarator') ||
+                   declarator.children?.find((c: any) =>
+                     c.type === 'function_declarator' || c.type === 'pointer_declarator' || c.type === 'reference_declarator');
+    }
     if (declarator) {
       const innerDeclarator = declarator.childForFieldName?.('declarator') ||
                                declarator.children?.find((c: any) =>

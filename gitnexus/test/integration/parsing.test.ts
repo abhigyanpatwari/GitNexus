@@ -23,13 +23,14 @@ const FIXTURES_DIR = path.join(process.cwd(), 'test', 'fixtures', 'sample-code')
 /**
  * Minimal mock of a tree-sitter AST node.
  */
-function mockNode(type: string, text: string = '', parent?: any, children?: any[]): any {
+function mockNode(type: string, text: string = '', parent?: any, children?: any[], fields?: Record<string, any>): any {
   const node: any = {
     type,
     text,
     parent: parent || null,
     childCount: children?.length ?? 0,
     child: (i: number) => children?.[i] ?? null,
+    childForFieldName: (name: string) => fields?.[name] ?? null,
   };
   // Set parent references on children
   if (children) {
@@ -185,7 +186,8 @@ describe('parsing', () => {
 
       it('static C function is not exported', () => {
         const nameNode = mockNode('identifier', 'internalHelper');
-        const fnDef = mockNode('function_definition', 'static void internalHelper() {}', undefined, [nameNode]);
+        const staticSpec = mockNode('storage_class_specifier', 'static');
+        const fnDef = mockNode('function_definition', 'static void internalHelper() {}', undefined, [staticSpec, nameNode]);
         expect(isNodeExported(nameNode, 'internalHelper', 'c')).toBe(false);
       });
     });
@@ -356,7 +358,8 @@ describe('parsing', () => {
     describe('c/cpp additional', () => {
       it('static C++ function is not exported', () => {
         const nameNode = mockNode('identifier', 'localHelper');
-        const fnDef = mockNode('function_definition', 'static int localHelper() {}', undefined, [nameNode]);
+        const staticSpec = mockNode('storage_class_specifier', 'static');
+        const fnDef = mockNode('function_definition', 'static int localHelper() {}', undefined, [staticSpec, nameNode]);
         expect(isNodeExported(nameNode, 'localHelper', 'cpp')).toBe(false);
       });
 
@@ -368,13 +371,311 @@ describe('parsing', () => {
 
       it('static declaration is not exported', () => {
         const nameNode = mockNode('identifier', 'internalFn');
-        const decl = mockNode('declaration', 'static int internalFn(void);', undefined, [nameNode]);
+        const staticSpec = mockNode('storage_class_specifier', 'static');
+        const decl = mockNode('declaration', 'static int internalFn(void);', undefined, [staticSpec, nameNode]);
         expect(isNodeExported(nameNode, 'internalFn', 'c')).toBe(false);
       });
 
       it('detached node defaults to exported (external linkage)', () => {
         const nameNode = mockNode('identifier', 'orphan');
         expect(isNodeExported(nameNode, 'orphan', 'c')).toBe(true);
+      });
+
+      it('C++ anonymous namespace function is not exported (internal linkage)', () => {
+        const nameNode = mockNode('identifier', 'anonHelper');
+        const fnDef = mockNode('function_definition', 'void anonHelper() {}', undefined, [nameNode]);
+        // Anonymous namespace: namespace_definition with no name field
+        const anonNs = mockNode('namespace_definition', 'namespace { void anonHelper() {} }', undefined, [fnDef]);
+        expect(isNodeExported(nameNode, 'anonHelper', 'cpp')).toBe(false);
+      });
+
+      it('C++ named namespace function is still exported', () => {
+        const nameNode = mockNode('identifier', 'namedHelper');
+        const fnDef = mockNode('function_definition', 'void namedHelper() {}', undefined, [nameNode]);
+        const nsName = mockNode('namespace_identifier', 'utils');
+        const namedNs = mockNode('namespace_definition', 'namespace utils { void namedHelper() {} }', undefined, [fnDef], { name: nsName });
+        expect(isNodeExported(nameNode, 'namedHelper', 'cpp')).toBe(true);
+      });
+    });
+
+    // C/C++ with real tree-sitter (validates structural storage_class_specifier detection)
+    describe('c/cpp real tree-sitter', () => {
+      it('non-static function is exported using real AST', async () => {
+        const parser = await loadParser();
+        await loadLanguage(SupportedLanguages.C);
+        const tree = parser.parse('int add(int a, int b) { return a + b; }');
+        const funcDef = tree.rootNode.child(0)!;
+        // Find the identifier name node inside the function_definition
+        const declNode = funcDef.childForFieldName('declarator');
+        const nameNode = declNode?.childForFieldName?.('declarator') || declNode;
+        expect(isNodeExported(nameNode, 'add', 'c')).toBe(true);
+      });
+
+      it('static function is not exported using real AST', async () => {
+        const parser = await loadParser();
+        await loadLanguage(SupportedLanguages.C);
+        const tree = parser.parse('static int internal_helper(void) { return 0; }');
+        const funcDef = tree.rootNode.child(0)!;
+        const declNode = funcDef.childForFieldName('declarator');
+        const nameNode = declNode?.childForFieldName?.('declarator') || declNode;
+        expect(isNodeExported(nameNode, 'internal_helper', 'c')).toBe(false);
+      });
+
+      it('extern function is exported using real AST', async () => {
+        const parser = await loadParser();
+        await loadLanguage(SupportedLanguages.C);
+        const tree = parser.parse('extern int shared_func(void);');
+        const decl = tree.rootNode.child(0)!;
+        // Declaration nodes should not have storage_class_specifier 'static'
+        const nameNode = decl.descendantsOfType?.('identifier')?.[0] || decl;
+        expect(isNodeExported(nameNode, 'shared_func', 'c')).toBe(true);
+      });
+
+      it('C++ anonymous namespace detected via real AST', async () => {
+        const parser = await loadParser();
+        await loadLanguage(SupportedLanguages.CPlusPlus);
+        const code = 'namespace { void hidden() {} }';
+        const tree = parser.parse(code);
+        const nsDef = tree.rootNode.child(0)!;
+        // Find function_definition inside the namespace body
+        const body = nsDef.childForFieldName('body');
+        const funcDef = body?.namedChild(0);
+        const declNode = funcDef?.childForFieldName?.('declarator');
+        const nameNode = declNode?.childForFieldName?.('declarator') || declNode;
+        expect(isNodeExported(nameNode, 'hidden', 'cpp')).toBe(false);
+      });
+
+      it('C++ named namespace is still exported via real AST', async () => {
+        const parser = await loadParser();
+        await loadLanguage(SupportedLanguages.CPlusPlus);
+        const code = 'namespace utils { void helper() {} }';
+        const tree = parser.parse(code);
+        const nsDef = tree.rootNode.child(0)!;
+        const body = nsDef.childForFieldName('body');
+        const funcDef = body?.namedChild(0);
+        const declNode = funcDef?.childForFieldName?.('declarator');
+        const nameNode = declNode?.childForFieldName?.('declarator') || declNode;
+        expect(isNodeExported(nameNode, 'helper', 'cpp')).toBe(true);
+      });
+    });
+
+    // C/C++ edge cases with mocks
+    describe('c/cpp edge cases', () => {
+      it('nested anonymous namespace (double nesting) is not exported', () => {
+        const nameNode = mockNode('identifier', 'deepHidden');
+        const fnDef = mockNode('function_definition', 'void deepHidden() {}', undefined, [nameNode]);
+        const innerNs = mockNode('namespace_definition', 'namespace { }', undefined, [fnDef]);
+        const outerNs = mockNode('namespace_definition', 'namespace outer { }', undefined, [innerNs], { name: mockNode('namespace_identifier', 'outer') });
+        expect(isNodeExported(nameNode, 'deepHidden', 'cpp')).toBe(false);
+      });
+
+      it('static function inside named namespace is not exported', () => {
+        const nameNode = mockNode('identifier', 'staticInNs');
+        const staticSpec = mockNode('storage_class_specifier', 'static');
+        const fnDef = mockNode('function_definition', 'static void staticInNs() {}', undefined, [staticSpec, nameNode]);
+        const ns = mockNode('namespace_definition', 'namespace foo { }', undefined, [fnDef], { name: mockNode('namespace_identifier', 'foo') });
+        expect(isNodeExported(nameNode, 'staticInNs', 'cpp')).toBe(false);
+      });
+
+      it('extern storage class is not confused with static', () => {
+        const nameNode = mockNode('identifier', 'externFn');
+        const externSpec = mockNode('storage_class_specifier', 'extern');
+        const fnDef = mockNode('function_definition', 'extern void externFn() {}', undefined, [externSpec, nameNode]);
+        expect(isNodeExported(nameNode, 'externFn', 'c')).toBe(true);
+      });
+    });
+
+    // Rust additional edge cases
+    describe('rust edge cases', () => {
+      it('pub(super) is treated as exported', () => {
+        const visMod = mockNode('visibility_modifier', 'pub(super)');
+        const nameNode = mockNode('identifier', 'parent_fn');
+        const fnDecl = mockNode('function_item', 'pub(super) fn parent_fn() {}', undefined, [visMod, nameNode]);
+        expect(isNodeExported(nameNode, 'parent_fn', 'rust')).toBe(true);
+      });
+
+      it('pub union is exported', () => {
+        const visMod = mockNode('visibility_modifier', 'pub');
+        const nameNode = mockNode('type_identifier', 'MyUnion');
+        const unionDecl = mockNode('union_item', 'pub union MyUnion {}', undefined, [visMod, nameNode]);
+        expect(isNodeExported(nameNode, 'MyUnion', 'rust')).toBe(true);
+      });
+
+      it('private union is not exported', () => {
+        const nameNode = mockNode('type_identifier', 'InternalUnion');
+        const unionDecl = mockNode('union_item', 'union InternalUnion {}', undefined, [nameNode]);
+        expect(isNodeExported(nameNode, 'InternalUnion', 'rust')).toBe(false);
+      });
+
+      it('pub type alias is exported', () => {
+        const visMod = mockNode('visibility_modifier', 'pub');
+        const nameNode = mockNode('type_identifier', 'Result');
+        const typeDecl = mockNode('type_item', 'pub type Result = ...', undefined, [visMod, nameNode]);
+        expect(isNodeExported(nameNode, 'Result', 'rust')).toBe(true);
+      });
+
+      it('pub const is exported', () => {
+        const visMod = mockNode('visibility_modifier', 'pub');
+        const nameNode = mockNode('identifier', 'MAX_SIZE');
+        const constDecl = mockNode('const_item', 'pub const MAX_SIZE: usize = 100;', undefined, [visMod, nameNode]);
+        expect(isNodeExported(nameNode, 'MAX_SIZE', 'rust')).toBe(true);
+      });
+
+      it('private const is not exported', () => {
+        const nameNode = mockNode('identifier', 'INTERNAL_LIMIT');
+        const constDecl = mockNode('const_item', 'const INTERNAL_LIMIT: usize = 50;', undefined, [nameNode]);
+        expect(isNodeExported(nameNode, 'INTERNAL_LIMIT', 'rust')).toBe(false);
+      });
+
+      it('pub static is exported', () => {
+        const visMod = mockNode('visibility_modifier', 'pub');
+        const nameNode = mockNode('identifier', 'INSTANCE');
+        const staticDecl = mockNode('static_item', 'pub static INSTANCE: ...', undefined, [visMod, nameNode]);
+        expect(isNodeExported(nameNode, 'INSTANCE', 'rust')).toBe(true);
+      });
+
+      it('associated_type without pub is not exported', () => {
+        const nameNode = mockNode('type_identifier', 'Item');
+        const assocType = mockNode('associated_type', 'type Item;', undefined, [nameNode]);
+        expect(isNodeExported(nameNode, 'Item', 'rust')).toBe(false);
+      });
+    });
+
+    // C# edge cases
+    describe('csharp edge cases', () => {
+      it('protected modifier is not exported', () => {
+        const modifier = mockNode('modifier', 'protected');
+        const nameNode = mockNode('identifier', 'OnInit');
+        const methodDecl = mockNode('method_declaration', 'protected void OnInit() {}', undefined, [modifier, nameNode]);
+        expect(isNodeExported(nameNode, 'OnInit', 'csharp')).toBe(false);
+      });
+
+      it('protected internal is not exported (first modifier wins)', () => {
+        const mod1 = mockNode('modifier', 'protected');
+        const mod2 = mockNode('modifier', 'internal');
+        const nameNode = mockNode('identifier', 'Setup');
+        const methodDecl = mockNode('method_declaration', 'protected internal void Setup() {}', undefined, [mod1, mod2, nameNode]);
+        // Neither modifier is 'public', so not exported
+        expect(isNodeExported(nameNode, 'Setup', 'csharp')).toBe(false);
+      });
+
+      it('record_struct with public modifier is exported', () => {
+        const modifier = mockNode('modifier', 'public');
+        const nameNode = mockNode('identifier', 'Coord');
+        const recStruct = mockNode('record_struct_declaration', 'public record struct Coord {}', undefined, [modifier, nameNode]);
+        expect(isNodeExported(nameNode, 'Coord', 'csharp')).toBe(true);
+      });
+
+      it('record_class with public modifier is exported', () => {
+        const modifier = mockNode('modifier', 'public');
+        const nameNode = mockNode('identifier', 'UserRecord');
+        const recClass = mockNode('record_class_declaration', 'public record class UserRecord {}', undefined, [modifier, nameNode]);
+        expect(isNodeExported(nameNode, 'UserRecord', 'csharp')).toBe(true);
+      });
+
+      it('file_scoped_namespace_declaration is a valid context', () => {
+        const modifier = mockNode('modifier', 'public');
+        const nameNode = mockNode('identifier', 'MyClass');
+        const classDecl = mockNode('class_declaration', 'public class MyClass {}', undefined, [modifier, nameNode]);
+        // class_declaration is found before namespace, so public is detected
+        expect(isNodeExported(nameNode, 'MyClass', 'csharp')).toBe(true);
+      });
+
+      it('delegate with public modifier is exported', () => {
+        const modifier = mockNode('modifier', 'public');
+        const nameNode = mockNode('identifier', 'OnChange');
+        const delegateDecl = mockNode('delegate_declaration', 'public delegate void OnChange();', undefined, [modifier, nameNode]);
+        expect(isNodeExported(nameNode, 'OnChange', 'csharp')).toBe(true);
+      });
+
+      it('event with public modifier is exported', () => {
+        const modifier = mockNode('modifier', 'public');
+        const nameNode = mockNode('identifier', 'Changed');
+        const eventDecl = mockNode('event_declaration', 'public event EventHandler Changed;', undefined, [modifier, nameNode]);
+        expect(isNodeExported(nameNode, 'Changed', 'csharp')).toBe(true);
+      });
+
+      it('property with public modifier is exported', () => {
+        const modifier = mockNode('modifier', 'public');
+        const nameNode = mockNode('identifier', 'Name');
+        const propDecl = mockNode('property_declaration', 'public string Name { get; set; }', undefined, [modifier, nameNode]);
+        expect(isNodeExported(nameNode, 'Name', 'csharp')).toBe(true);
+      });
+    });
+
+    // Kotlin edge cases
+    describe('kotlin edge cases', () => {
+      it('protected function is not exported', () => {
+        const visMod = mockNode('visibility_modifier', 'protected');
+        const modifiers = mockNode('modifiers', 'protected', undefined, [visMod]);
+        const nameNode = mockNode('identifier', 'onInit');
+        const fnDecl = mockNode('function_declaration', 'protected fun onInit() {}', undefined, [modifiers, nameNode]);
+        expect(isNodeExported(nameNode, 'onInit', 'kotlin')).toBe(false);
+      });
+    });
+
+    // Java edge cases
+    describe('java edge cases', () => {
+      it('protected method is not exported', () => {
+        const modifiers = mockNode('modifiers', 'protected');
+        const nameNode = mockNode('identifier', 'onInit');
+        const methodDecl = mockNode('method_declaration', 'protected void onInit() {}', undefined, [modifiers, nameNode]);
+        expect(isNodeExported(nameNode, 'onInit', 'java')).toBe(false);
+      });
+
+      it('static public method is exported', () => {
+        const modifiers = mockNode('modifiers', 'public static');
+        const nameNode = mockNode('identifier', 'main');
+        const methodDecl = mockNode('method_declaration', 'public static void main(String[] args) {}', undefined, [modifiers, nameNode]);
+        expect(isNodeExported(nameNode, 'main', 'java')).toBe(true);
+      });
+    });
+
+    // PHP edge cases
+    describe('php edge cases', () => {
+      it('protected method is not exported', () => {
+        const visMod = mockNode('visibility_modifier', 'protected');
+        const nameNode = mockNode('name', 'init', visMod);
+        expect(isNodeExported(nameNode, 'init', 'php')).toBe(false);
+      });
+
+      it('interface declaration is exported', () => {
+        const ifaceDecl = mockNode('interface_declaration', 'interface Loggable {}');
+        const nameNode = mockNode('name', 'Loggable', ifaceDecl);
+        expect(isNodeExported(nameNode, 'Loggable', 'php')).toBe(true);
+      });
+
+      it('trait declaration is exported', () => {
+        const traitDecl = mockNode('trait_declaration', 'trait Cacheable {}');
+        const nameNode = mockNode('name', 'Cacheable', traitDecl);
+        expect(isNodeExported(nameNode, 'Cacheable', 'php')).toBe(true);
+      });
+
+      it('enum declaration is exported', () => {
+        const enumDecl = mockNode('enum_declaration', 'enum Status {}');
+        const nameNode = mockNode('name', 'Status', enumDecl);
+        expect(isNodeExported(nameNode, 'Status', 'php')).toBe(true);
+      });
+    });
+
+    // Swift edge cases
+    describe('swift edge cases', () => {
+      it('internal function is not exported (Swift default)', () => {
+        const visMod = mockNode('visibility_modifier', 'internal');
+        const nameNode = mockNode('identifier', 'setup', visMod);
+        expect(isNodeExported(nameNode, 'setup', 'swift')).toBe(false);
+      });
+
+      it('private function is not exported', () => {
+        const visMod = mockNode('visibility_modifier', 'private');
+        const nameNode = mockNode('identifier', 'helper', visMod);
+        expect(isNodeExported(nameNode, 'helper', 'swift')).toBe(false);
+      });
+
+      it('fileprivate function is not exported', () => {
+        const visMod = mockNode('visibility_modifier', 'fileprivate');
+        const nameNode = mockNode('identifier', 'localHelper', visMod);
+        expect(isNodeExported(nameNode, 'localHelper', 'swift')).toBe(false);
       });
     });
 

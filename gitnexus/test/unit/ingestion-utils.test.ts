@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { getLanguageFromFilename, isBuiltInOrNoise, extractFunctionName } from '../../src/core/ingestion/utils.js';
-import { getTreeSitterBufferSize, TREE_SITTER_BUFFER_SIZE } from '../../src/core/ingestion/constants.js';
+import { getTreeSitterBufferSize, TREE_SITTER_BUFFER_SIZE, TREE_SITTER_MAX_BUFFER } from '../../src/core/ingestion/constants.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import Parser from 'tree-sitter';
 import C from 'tree-sitter-c';
@@ -204,6 +204,115 @@ describe('isBuiltInOrNoise', () => {
     });
   });
 
+  describe('Rust', () => {
+    it('filters Result/Option methods', () => {
+      expect(isBuiltInOrNoise('unwrap')).toBe(true);
+      expect(isBuiltInOrNoise('expect')).toBe(true);
+      expect(isBuiltInOrNoise('unwrap_or')).toBe(true);
+      expect(isBuiltInOrNoise('unwrap_or_else')).toBe(true);
+      expect(isBuiltInOrNoise('unwrap_or_default')).toBe(true);
+      expect(isBuiltInOrNoise('ok')).toBe(true);
+      expect(isBuiltInOrNoise('err')).toBe(true);
+      expect(isBuiltInOrNoise('is_ok')).toBe(true);
+      expect(isBuiltInOrNoise('is_err')).toBe(true);
+      expect(isBuiltInOrNoise('map_err')).toBe(true);
+      expect(isBuiltInOrNoise('and_then')).toBe(true);
+      expect(isBuiltInOrNoise('or_else')).toBe(true);
+    });
+
+    it('filters trait conversion methods', () => {
+      expect(isBuiltInOrNoise('clone')).toBe(true);
+      expect(isBuiltInOrNoise('to_string')).toBe(true);
+      expect(isBuiltInOrNoise('to_owned')).toBe(true);
+      expect(isBuiltInOrNoise('into')).toBe(true);
+      expect(isBuiltInOrNoise('from')).toBe(true);
+      expect(isBuiltInOrNoise('as_ref')).toBe(true);
+      expect(isBuiltInOrNoise('as_mut')).toBe(true);
+    });
+
+    it('filters iterator methods', () => {
+      expect(isBuiltInOrNoise('iter')).toBe(true);
+      expect(isBuiltInOrNoise('into_iter')).toBe(true);
+      expect(isBuiltInOrNoise('collect')).toBe(true);
+      expect(isBuiltInOrNoise('fold')).toBe(true);
+      expect(isBuiltInOrNoise('for_each')).toBe(true);
+    });
+
+    it('filters collection methods', () => {
+      expect(isBuiltInOrNoise('len')).toBe(true);
+      expect(isBuiltInOrNoise('is_empty')).toBe(true);
+      expect(isBuiltInOrNoise('push')).toBe(true);
+      expect(isBuiltInOrNoise('pop')).toBe(true);
+      expect(isBuiltInOrNoise('insert')).toBe(true);
+      expect(isBuiltInOrNoise('remove')).toBe(true);
+      expect(isBuiltInOrNoise('contains')).toBe(true);
+    });
+
+    it('filters macro-like and panic functions', () => {
+      expect(isBuiltInOrNoise('format')).toBe(true);
+      expect(isBuiltInOrNoise('panic')).toBe(true);
+      expect(isBuiltInOrNoise('unreachable')).toBe(true);
+      expect(isBuiltInOrNoise('todo')).toBe(true);
+      expect(isBuiltInOrNoise('unimplemented')).toBe(true);
+      expect(isBuiltInOrNoise('vec')).toBe(true);
+      expect(isBuiltInOrNoise('println')).toBe(true);
+      expect(isBuiltInOrNoise('eprintln')).toBe(true);
+      expect(isBuiltInOrNoise('dbg')).toBe(true);
+    });
+
+    it('filters sync primitives', () => {
+      expect(isBuiltInOrNoise('lock')).toBe(true);
+      expect(isBuiltInOrNoise('try_lock')).toBe(true);
+      expect(isBuiltInOrNoise('spawn')).toBe(true);
+      expect(isBuiltInOrNoise('join')).toBe(true);
+      expect(isBuiltInOrNoise('sleep')).toBe(true);
+    });
+
+    it('filters enum constructors', () => {
+      expect(isBuiltInOrNoise('Some')).toBe(true);
+      expect(isBuiltInOrNoise('None')).toBe(true);
+      expect(isBuiltInOrNoise('Ok')).toBe(true);
+      expect(isBuiltInOrNoise('Err')).toBe(true);
+    });
+
+    it('does not filter user-defined Rust functions', () => {
+      expect(isBuiltInOrNoise('process_request')).toBe(false);
+      expect(isBuiltInOrNoise('handle_connection')).toBe(false);
+      expect(isBuiltInOrNoise('build_response')).toBe(false);
+    });
+  });
+
+  describe('C#/.NET', () => {
+    it('filters Console I/O', () => {
+      expect(isBuiltInOrNoise('Console')).toBe(true);
+      expect(isBuiltInOrNoise('WriteLine')).toBe(true);
+      expect(isBuiltInOrNoise('ReadLine')).toBe(true);
+    });
+
+    it('filters LINQ methods', () => {
+      expect(isBuiltInOrNoise('Where')).toBe(true);
+      expect(isBuiltInOrNoise('Select')).toBe(true);
+      expect(isBuiltInOrNoise('GroupBy')).toBe(true);
+      expect(isBuiltInOrNoise('OrderBy')).toBe(true);
+      expect(isBuiltInOrNoise('FirstOrDefault')).toBe(true);
+      expect(isBuiltInOrNoise('ToList')).toBe(true);
+    });
+
+    it('filters Task async methods', () => {
+      expect(isBuiltInOrNoise('Task')).toBe(true);
+      expect(isBuiltInOrNoise('Run')).toBe(true);
+      expect(isBuiltInOrNoise('WhenAll')).toBe(true);
+      expect(isBuiltInOrNoise('ConfigureAwait')).toBe(true);
+    });
+
+    it('filters Object base methods', () => {
+      expect(isBuiltInOrNoise('ToString')).toBe(true);
+      expect(isBuiltInOrNoise('GetType')).toBe(true);
+      expect(isBuiltInOrNoise('Equals')).toBe(true);
+      expect(isBuiltInOrNoise('GetHashCode')).toBe(true);
+    });
+  });
+
   describe('user-defined functions', () => {
     it('does not filter custom function names', () => {
       expect(isBuiltInOrNoise('myCustomFunction')).toBe(false);
@@ -288,6 +397,109 @@ describe('extractFunctionName', () => {
       const result = extractFunctionName(funcNode);
 
       expect(result.funcName).toBe('handler');
+      expect(result.label).toBe('Method');
+    });
+  });
+
+  describe('C pointer returns', () => {
+    it('extracts name from function returning pointer', () => {
+      parser.setLanguage(C);
+      const code = `int* get_data() { return 0; }`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('get_data');
+      expect(result.label).toBe('Function');
+    });
+
+    it('extracts name from function returning double pointer', () => {
+      parser.setLanguage(C);
+      const code = `char** get_strings() { return 0; }`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('get_strings');
+      expect(result.label).toBe('Function');
+    });
+
+    it('extracts name from struct pointer return', () => {
+      parser.setLanguage(C);
+      const code = `struct Node* create_node(int val) { return 0; }`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('create_node');
+      expect(result.label).toBe('Function');
+    });
+  });
+
+  describe('C++ pointer/reference returns', () => {
+    it('extracts name from method returning pointer', () => {
+      parser.setLanguage(CPP);
+      const code = `int* MyClass::getData() { return nullptr; }`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('getData');
+      expect(result.label).toBe('Method');
+    });
+
+    it('extracts name from function returning reference', () => {
+      parser.setLanguage(CPP);
+      const code = `std::string& get_name() { static std::string s; return s; }`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('get_name');
+      expect(result.label).toBe('Function');
+    });
+
+    it('extracts name from method returning reference', () => {
+      parser.setLanguage(CPP);
+      const code = `int& Container::at(int i) { return data[i]; }`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('at');
+      expect(result.label).toBe('Method');
+    });
+
+    it('extracts name from method returning const reference', () => {
+      parser.setLanguage(CPP);
+      const code = `const std::string& Config::getName() const { return name_; }`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('getName');
+      expect(result.label).toBe('Method');
+    });
+  });
+
+  describe('C++ destructors', () => {
+    it('extracts destructor name from out-of-line definition', () => {
+      parser.setLanguage(CPP);
+      const code = `MyClass::~MyClass() { cleanup(); }`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      // destructor_name includes the ~ prefix
+      expect(result.funcName).toBe('~MyClass');
       expect(result.label).toBe('Method');
     });
   });
@@ -417,5 +629,29 @@ describe('getTreeSitterBufferSize', () => {
     const large = getTreeSitterBufferSize(5 * 1024 * 1024);
     expect(small).toBeLessThan(medium);
     expect(medium).toBeLessThan(large);
+  });
+
+  it('TREE_SITTER_MAX_BUFFER is 32MB', () => {
+    expect(TREE_SITTER_MAX_BUFFER).toBe(32 * 1024 * 1024);
+  });
+
+  it('returns max buffer at exact boundary (16MB input)', () => {
+    // 16MB * 2 = 32MB = max
+    expect(getTreeSitterBufferSize(16 * 1024 * 1024)).toBe(TREE_SITTER_MAX_BUFFER);
+  });
+
+  it('file just over max returns max buffer', () => {
+    // 17MB * 2 = 34MB > 32MB cap
+    expect(getTreeSitterBufferSize(17 * 1024 * 1024)).toBe(TREE_SITTER_MAX_BUFFER);
+  });
+
+  it('handles files between old 512KB limit and new 32MB limit', () => {
+    // This is the range that was previously silently skipped
+    const sizes = [600 * 1024, 1024 * 1024, 5 * 1024 * 1024, 10 * 1024 * 1024];
+    for (const size of sizes) {
+      const bufSize = getTreeSitterBufferSize(size);
+      expect(bufSize).toBeGreaterThanOrEqual(TREE_SITTER_BUFFER_SIZE);
+      expect(bufSize).toBeLessThanOrEqual(TREE_SITTER_MAX_BUFFER);
+    }
   });
 });

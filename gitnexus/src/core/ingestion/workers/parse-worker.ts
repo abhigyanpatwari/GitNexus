@@ -14,7 +14,7 @@ import PHP from 'tree-sitter-php';
 import { createRequire } from 'node:module';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
-import { getTreeSitterBufferSize } from '../constants.js';
+import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from '../constants.js';
 
 // tree-sitter-swift is an optionalDependency — may not be installed
 const _require = createRequire(import.meta.url);
@@ -792,8 +792,8 @@ const processFileGroup = (
   }
 
   for (const file of files) {
-    // Skip very large files — they can crash tree-sitter or cause OOM
-    if (file.content.length > 512 * 1024) continue;
+    // Skip files larger than the max tree-sitter buffer (32 MB)
+    if (file.content.length > TREE_SITTER_MAX_BUFFER) continue;
 
     let tree;
     try {

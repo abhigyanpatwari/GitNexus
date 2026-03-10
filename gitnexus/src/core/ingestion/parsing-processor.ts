@@ -10,7 +10,7 @@ import { isNodeExported } from './export-detection.js';
 import { detectFrameworkFromAST } from './framework-detection.js';
 import { WorkerPool } from './workers/worker-pool.js';
 import type { ParseWorkerResult, ParseWorkerInput, ExtractedImport, ExtractedCall, ExtractedHeritage, ExtractedRoute } from './workers/parse-worker.js';
-import { getTreeSitterBufferSize } from './constants.js';
+import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
 
@@ -114,8 +114,8 @@ const processParsingSequential = async (
 
     if (!language) continue;
 
-    // Skip very large files — they can crash tree-sitter or cause OOM
-    if (file.content.length > 512 * 1024) continue;
+    // Skip files larger than the max tree-sitter buffer (32 MB)
+    if (file.content.length > TREE_SITTER_MAX_BUFFER) continue;
 
     try {
       await loadLanguage(language, file.path);
