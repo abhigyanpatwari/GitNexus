@@ -67,9 +67,9 @@ function buildHTML(
   meta: Record<string, unknown> | null,
 ): string {
   // Embed data as JSON inside the HTML
-  const pagesJSON = JSON.stringify(pages);
-  const treeJSON = JSON.stringify(moduleTree);
-  const metaJSON = JSON.stringify(meta);
+  const pagesJSON = JSON.stringify(pages).replace(/`/g, '\\`');
+  const treeJSON = JSON.stringify(moduleTree).replace(/`/g, '\\`');
+  const metaJSON = meta ? JSON.stringify(meta).replace(/`/g, '\\`') : 'null';
 
   const parts: string[] = [];
 
