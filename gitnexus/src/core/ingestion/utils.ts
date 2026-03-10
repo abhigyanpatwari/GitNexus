@@ -239,7 +239,9 @@ export const extractFunctionName = (node: any): { funcName: string | null; label
       funcName = nameNode?.text;
     }
   }
-
+  
+  // Note: local_function_statement (C#), anonymous_function, lambda_literal, async_arrow_function
+  // are in FUNCTION_NODE_TYPES but are intentionally unnamed here — they walk up to the parent.
   return { funcName, label };
 };
 

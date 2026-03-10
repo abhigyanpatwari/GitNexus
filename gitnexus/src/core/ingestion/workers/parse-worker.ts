@@ -273,7 +273,6 @@ const findEnclosingFunctionId = (node: any, filePath: string): string | null => 
     if (FUNCTION_NODE_TYPES.has(current.type)) {
       const { funcName, label } = extractFunctionName(current);
       if (funcName) {
-        const startLine = current.startPosition?.row ?? 0;
         return generateId(label, `${filePath}:${funcName}`);
       }
     }
