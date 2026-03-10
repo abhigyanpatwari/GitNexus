@@ -207,6 +207,177 @@ describe('parsing', () => {
       });
     });
 
+    // Java
+    describe('java', () => {
+      it('public method is exported', () => {
+        const modifiers = mockNode('modifiers', 'public');
+        const nameNode = mockNode('identifier', 'getUser');
+        const methodDecl = mockNode('method_declaration', 'public User getUser() {}', undefined, [modifiers, nameNode]);
+        expect(isNodeExported(nameNode, 'getUser', 'java')).toBe(true);
+      });
+
+      it('public class method via text check is exported', () => {
+        const nameNode = mockNode('identifier', 'doGet');
+        const methodDecl = mockNode('method_declaration', 'public void doGet() {}', undefined, [nameNode]);
+        // text starts with 'public' so it should be detected
+        expect(isNodeExported(nameNode, 'doGet', 'java')).toBe(true);
+      });
+
+      it('private method is not exported', () => {
+        const modifiers = mockNode('modifiers', 'private');
+        const nameNode = mockNode('identifier', 'helper');
+        const methodDecl = mockNode('method_declaration', 'private void helper() {}', undefined, [modifiers, nameNode]);
+        expect(isNodeExported(nameNode, 'helper', 'java')).toBe(false);
+      });
+
+      it('package-private (no modifier) is not exported', () => {
+        const nameNode = mockNode('identifier', 'internal');
+        const methodDecl = mockNode('method_declaration', 'void internal() {}', undefined, [nameNode]);
+        expect(isNodeExported(nameNode, 'internal', 'java')).toBe(false);
+      });
+    });
+
+    // Kotlin
+    describe('kotlin', () => {
+      it('function without visibility modifier is public by default', () => {
+        const nameNode = mockNode('identifier', 'greet');
+        const fnDecl = mockNode('function_declaration', 'fun greet() {}', undefined, [nameNode]);
+        expect(isNodeExported(nameNode, 'greet', 'kotlin')).toBe(true);
+      });
+
+      it('public function is exported', () => {
+        const visMod = mockNode('visibility_modifier', 'public');
+        const modifiers = mockNode('modifiers', 'public', undefined, [visMod]);
+        const nameNode = mockNode('identifier', 'greet');
+        const fnDecl = mockNode('function_declaration', 'public fun greet() {}', undefined, [modifiers, nameNode]);
+        expect(isNodeExported(nameNode, 'greet', 'kotlin')).toBe(true);
+      });
+
+      it('private function is not exported', () => {
+        const visMod = mockNode('visibility_modifier', 'private');
+        const modifiers = mockNode('modifiers', 'private', undefined, [visMod]);
+        const nameNode = mockNode('identifier', 'secret');
+        const fnDecl = mockNode('function_declaration', 'private fun secret() {}', undefined, [modifiers, nameNode]);
+        expect(isNodeExported(nameNode, 'secret', 'kotlin')).toBe(false);
+      });
+
+      it('internal function is not exported', () => {
+        const visMod = mockNode('visibility_modifier', 'internal');
+        const modifiers = mockNode('modifiers', 'internal', undefined, [visMod]);
+        const nameNode = mockNode('identifier', 'moduleOnly');
+        const fnDecl = mockNode('function_declaration', 'internal fun moduleOnly() {}', undefined, [modifiers, nameNode]);
+        expect(isNodeExported(nameNode, 'moduleOnly', 'kotlin')).toBe(false);
+      });
+    });
+
+    // C# additional cases
+    describe('csharp additional', () => {
+      it('internal modifier is not exported', () => {
+        const modifier = mockNode('modifier', 'internal');
+        const nameNode = mockNode('identifier', 'InternalService');
+        const classDecl = mockNode('class_declaration', 'internal class InternalService {}', undefined, [modifier, nameNode]);
+        expect(isNodeExported(nameNode, 'InternalService', 'csharp')).toBe(false);
+      });
+
+      it('private modifier is not exported', () => {
+        const modifier = mockNode('modifier', 'private');
+        const nameNode = mockNode('identifier', 'helper');
+        const methodDecl = mockNode('method_declaration', 'private void helper() {}', undefined, [modifier, nameNode]);
+        expect(isNodeExported(nameNode, 'helper', 'csharp')).toBe(false);
+      });
+
+      it('struct with public modifier is exported', () => {
+        const modifier = mockNode('modifier', 'public');
+        const nameNode = mockNode('identifier', 'Point');
+        const structDecl = mockNode('struct_declaration', 'public struct Point {}', undefined, [modifier, nameNode]);
+        expect(isNodeExported(nameNode, 'Point', 'csharp')).toBe(true);
+      });
+
+      it('enum with public modifier is exported', () => {
+        const modifier = mockNode('modifier', 'public');
+        const nameNode = mockNode('identifier', 'Status');
+        const enumDecl = mockNode('enum_declaration', 'public enum Status {}', undefined, [modifier, nameNode]);
+        expect(isNodeExported(nameNode, 'Status', 'csharp')).toBe(true);
+      });
+
+      it('record with public modifier is exported', () => {
+        const modifier = mockNode('modifier', 'public');
+        const nameNode = mockNode('identifier', 'UserDto');
+        const recordDecl = mockNode('record_declaration', 'public record UserDto {}', undefined, [modifier, nameNode]);
+        expect(isNodeExported(nameNode, 'UserDto', 'csharp')).toBe(true);
+      });
+
+      it('interface with public modifier is exported', () => {
+        const modifier = mockNode('modifier', 'public');
+        const nameNode = mockNode('identifier', 'IService');
+        const ifaceDecl = mockNode('interface_declaration', 'public interface IService {}', undefined, [modifier, nameNode]);
+        expect(isNodeExported(nameNode, 'IService', 'csharp')).toBe(true);
+      });
+    });
+
+    // Rust additional cases
+    describe('rust additional', () => {
+      it('pub(crate) is exported', () => {
+        const visMod = mockNode('visibility_modifier', 'pub(crate)');
+        const nameNode = mockNode('identifier', 'internal_fn');
+        const fnDecl = mockNode('function_item', 'pub(crate) fn internal_fn() {}', undefined, [visMod, nameNode]);
+        expect(isNodeExported(nameNode, 'internal_fn', 'rust')).toBe(true);
+      });
+
+      it('pub struct is exported', () => {
+        const visMod = mockNode('visibility_modifier', 'pub');
+        const nameNode = mockNode('type_identifier', 'Config');
+        const structDecl = mockNode('struct_item', 'pub struct Config {}', undefined, [visMod, nameNode]);
+        expect(isNodeExported(nameNode, 'Config', 'rust')).toBe(true);
+      });
+
+      it('private struct is not exported', () => {
+        const nameNode = mockNode('type_identifier', 'Inner');
+        const structDecl = mockNode('struct_item', 'struct Inner {}', undefined, [nameNode]);
+        expect(isNodeExported(nameNode, 'Inner', 'rust')).toBe(false);
+      });
+
+      it('pub enum is exported', () => {
+        const visMod = mockNode('visibility_modifier', 'pub');
+        const nameNode = mockNode('type_identifier', 'ErrorKind');
+        const enumDecl = mockNode('enum_item', 'pub enum ErrorKind {}', undefined, [visMod, nameNode]);
+        expect(isNodeExported(nameNode, 'ErrorKind', 'rust')).toBe(true);
+      });
+
+      it('pub trait is exported', () => {
+        const visMod = mockNode('visibility_modifier', 'pub');
+        const nameNode = mockNode('type_identifier', 'Handler');
+        const traitDecl = mockNode('trait_item', 'pub trait Handler {}', undefined, [visMod, nameNode]);
+        expect(isNodeExported(nameNode, 'Handler', 'rust')).toBe(true);
+      });
+    });
+
+    // C/C++ additional cases
+    describe('c/cpp additional', () => {
+      it('static C++ function is not exported', () => {
+        const nameNode = mockNode('identifier', 'localHelper');
+        const fnDef = mockNode('function_definition', 'static int localHelper() {}', undefined, [nameNode]);
+        expect(isNodeExported(nameNode, 'localHelper', 'cpp')).toBe(false);
+      });
+
+      it('declaration (not definition) without static is exported', () => {
+        const nameNode = mockNode('identifier', 'compute');
+        const decl = mockNode('declaration', 'int compute(int x);', undefined, [nameNode]);
+        expect(isNodeExported(nameNode, 'compute', 'c')).toBe(true);
+      });
+
+      it('static declaration is not exported', () => {
+        const nameNode = mockNode('identifier', 'internalFn');
+        const decl = mockNode('declaration', 'static int internalFn(void);', undefined, [nameNode]);
+        expect(isNodeExported(nameNode, 'internalFn', 'c')).toBe(false);
+      });
+
+      it('detached node defaults to exported (external linkage)', () => {
+        const nameNode = mockNode('identifier', 'orphan');
+        expect(isNodeExported(nameNode, 'orphan', 'c')).toBe(true);
+      });
+    });
+
     // Unknown language
     describe('unknown language', () => {
       it('returns false for unknown language', () => {

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { getLanguageFromFilename, isBuiltInOrNoise, extractFunctionName } from '../../src/core/ingestion/utils.js';
+import { getTreeSitterBufferSize, TREE_SITTER_BUFFER_SIZE } from '../../src/core/ingestion/constants.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import Parser from 'tree-sitter';
 import C from 'tree-sitter-c';
@@ -385,5 +386,36 @@ describe('extractFunctionName', () => {
       expect(result.funcName).toBe('inner');
       expect(result.label).toBe('Function');
     });
+  });
+});
+
+describe('getTreeSitterBufferSize', () => {
+  it('returns minimum 512KB for small files', () => {
+    expect(getTreeSitterBufferSize(100)).toBe(TREE_SITTER_BUFFER_SIZE);
+    expect(getTreeSitterBufferSize(0)).toBe(TREE_SITTER_BUFFER_SIZE);
+    expect(getTreeSitterBufferSize(1000)).toBe(TREE_SITTER_BUFFER_SIZE);
+  });
+
+  it('returns 2x content length when larger than minimum', () => {
+    const size = 400 * 1024; // 400 KB — 2x = 800 KB > 512 KB min
+    expect(getTreeSitterBufferSize(size)).toBe(size * 2);
+  });
+
+  it('caps at 32MB for very large files', () => {
+    const huge = 20 * 1024 * 1024; // 20 MB — 2x = 40 MB > 32 MB cap
+    expect(getTreeSitterBufferSize(huge)).toBe(32 * 1024 * 1024);
+  });
+
+  it('returns exactly 512KB at the boundary', () => {
+    // 256KB * 2 = 512KB = minimum, so should return minimum
+    expect(getTreeSitterBufferSize(256 * 1024)).toBe(TREE_SITTER_BUFFER_SIZE);
+  });
+
+  it('scales linearly between min and max', () => {
+    const small = getTreeSitterBufferSize(300 * 1024);
+    const medium = getTreeSitterBufferSize(1 * 1024 * 1024);
+    const large = getTreeSitterBufferSize(5 * 1024 * 1024);
+    expect(small).toBeLessThan(medium);
+    expect(medium).toBeLessThan(large);
   });
 });
