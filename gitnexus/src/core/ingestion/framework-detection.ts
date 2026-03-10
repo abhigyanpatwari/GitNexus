@@ -183,7 +183,35 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
   if (p.endsWith('controller.cs')) {
     return { framework: 'aspnet', entryPointMultiplier: 3.0, reason: 'aspnet-controller-file' };
   }
-  
+
+  // ASP.NET Services
+  if ((p.includes('/services/') || p.includes('/service/')) && p.endsWith('.cs')) {
+    return { framework: 'aspnet', entryPointMultiplier: 1.8, reason: 'aspnet-service' };
+  }
+
+  // ASP.NET Middleware
+  if (p.includes('/middleware/') && p.endsWith('.cs')) {
+    return { framework: 'aspnet', entryPointMultiplier: 2.5, reason: 'aspnet-middleware' };
+  }
+
+  // SignalR Hubs
+  if (p.includes('/hubs/') && p.endsWith('.cs')) {
+    return { framework: 'signalr', entryPointMultiplier: 2.5, reason: 'signalr-hub' };
+  }
+  if (p.endsWith('hub.cs')) {
+    return { framework: 'signalr', entryPointMultiplier: 2.5, reason: 'signalr-hub-file' };
+  }
+
+  // Minimal API / Program.cs / Startup.cs
+  if (p.endsWith('/program.cs') || p.endsWith('/startup.cs')) {
+    return { framework: 'aspnet', entryPointMultiplier: 3.0, reason: 'aspnet-entry' };
+  }
+
+  // Background services / Hosted services
+  if ((p.includes('/backgroundservices/') || p.includes('/hostedservices/')) && p.endsWith('.cs')) {
+    return { framework: 'aspnet', entryPointMultiplier: 2.0, reason: 'aspnet-background-service' };
+  }
+
   // Blazor pages
   if (p.includes('/pages/') && p.endsWith('.razor')) {
     return { framework: 'blazor', entryPointMultiplier: 2.5, reason: 'blazor-page' };
@@ -385,7 +413,11 @@ export const FRAMEWORK_AST_PATTERNS = {
   'jaxrs': ['@Path', '@GET', '@POST', '@PUT', '@DELETE'],
   
   // C# attributes
-  'aspnet': ['[ApiController]', '[HttpGet]', '[HttpPost]', '[Route]'],
+  'aspnet': ['[ApiController]', '[HttpGet]', '[HttpPost]', '[HttpPut]', '[HttpDelete]',
+             '[Route]', '[Authorize]', '[AllowAnonymous]'],
+  'signalr': ['[HubMethodName]', ': Hub', ': Hub<'],
+  'blazor': ['@page', '[Parameter]', '@inject'],
+  'efcore': ['DbContext', 'DbSet<', 'OnModelCreating'],
   
   // Go patterns (function signatures)
   'go-http': ['http.Handler', 'http.HandlerFunc', 'ServeHTTP'],
@@ -435,6 +467,9 @@ const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE: Record<string, AstFrameworkPatternConf
   ],
   csharp: [
     { framework: 'aspnet', entryPointMultiplier: 3.2, reason: 'aspnet-attribute', patterns: FRAMEWORK_AST_PATTERNS.aspnet },
+    { framework: 'signalr', entryPointMultiplier: 2.8, reason: 'signalr-attribute', patterns: FRAMEWORK_AST_PATTERNS.signalr },
+    { framework: 'blazor', entryPointMultiplier: 2.5, reason: 'blazor-attribute', patterns: FRAMEWORK_AST_PATTERNS.blazor },
+    { framework: 'efcore', entryPointMultiplier: 2.0, reason: 'efcore-pattern', patterns: FRAMEWORK_AST_PATTERNS.efcore },
   ],
   php: [
     { framework: 'laravel', entryPointMultiplier: 3.0, reason: 'php-route-attribute', patterns: FRAMEWORK_AST_PATTERNS.laravel },

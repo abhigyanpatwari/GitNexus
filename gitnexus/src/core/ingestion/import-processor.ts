@@ -9,6 +9,7 @@ import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename, isVerboseIngestionEnabled, yieldToEventLoop } from './utils.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
 import type { ExtractedImport } from './workers/parse-worker.js';
+import { getTreeSitterBufferSize } from './constants.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -151,6 +152,152 @@ async function loadComposerConfig(repoRoot: string): Promise<ComposerConfig | nu
   } catch {
     return null;
   }
+}
+
+/** C# project config parsed from .csproj files */
+interface CSharpProjectConfig {
+  /** Root namespace from <RootNamespace> or assembly name (default: project directory name) */
+  rootNamespace: string;
+  /** Directory containing the .csproj file */
+  projectDir: string;
+}
+
+/**
+ * Parse .csproj files to extract RootNamespace.
+ * Scans the repo root for .csproj files and returns configs for each.
+ */
+async function loadCSharpProjectConfig(repoRoot: string): Promise<CSharpProjectConfig[]> {
+  const configs: CSharpProjectConfig[] = [];
+  // BFS scan for .csproj files up to 5 levels deep, cap at 100 dirs to avoid runaway scanning
+  const scanQueue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
+  const maxDepth = 5;
+  const maxDirs = 100;
+  let dirsScanned = 0;
+
+  while (scanQueue.length > 0 && dirsScanned < maxDirs) {
+    const { dir, depth } = scanQueue.shift()!;
+    dirsScanned++;
+    try {
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && depth < maxDepth) {
+          // Skip common non-project directories
+          if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'bin' || entry.name === 'obj') continue;
+          scanQueue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+        }
+        if (entry.isFile() && entry.name.endsWith('.csproj')) {
+          try {
+            const csprojPath = path.join(dir, entry.name);
+            const content = await fs.readFile(csprojPath, 'utf-8');
+            const nsMatch = content.match(/<RootNamespace>\s*([^<]+)\s*<\/RootNamespace>/);
+            const rootNamespace = nsMatch
+              ? nsMatch[1].trim()
+              : entry.name.replace(/\.csproj$/, '');
+            const projectDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
+            configs.push({ rootNamespace, projectDir });
+            if (isDev) {
+              console.log(`📦 Loaded C# project: ${entry.name} (namespace: ${rootNamespace}, dir: ${projectDir})`);
+            }
+          } catch {
+            // Can't read .csproj
+          }
+        }
+      }
+    } catch {
+      // Can't read directory
+    }
+  }
+  return configs;
+}
+
+/**
+ * Resolve a C# using directive to file paths.
+ * C# `using` directives import namespaces (not files), so one using can resolve
+ * to multiple .cs files in a directory — similar to Go package imports.
+ *
+ * e.g. "MyApp.Services" -> all .cs files in "src/Services/"
+ * e.g. "MyApp.Services.UserService" -> "src/Services/UserService.cs" (single file)
+ *
+ * Strategy:
+ * 1. Strip root namespace prefix from each known .csproj project
+ * 2. Convert remaining namespace to path: Dots -> /
+ * 3. Try as single file first (ClassName import), then as directory (namespace import)
+ */
+function resolveCSharpImport(
+  importPath: string,
+  csharpConfigs: CSharpProjectConfig[],
+  normalizedFileList: string[],
+  allFileList: string[],
+  index?: SuffixIndex,
+): string[] {
+  const namespacePath = importPath.replace(/\./g, '/');
+  const results: string[] = [];
+
+  for (const config of csharpConfigs) {
+    const nsPath = config.rootNamespace.replace(/\./g, '/');
+    let relative: string;
+    if (namespacePath.startsWith(nsPath + '/')) {
+      relative = namespacePath.slice(nsPath.length + 1);
+    } else if (namespacePath === nsPath) {
+      // The import IS the root namespace — resolve to all .cs files in project root
+      relative = '';
+    } else {
+      continue;
+    }
+
+    const dirPrefix = config.projectDir
+      ? (relative ? config.projectDir + '/' + relative : config.projectDir)
+      : relative;
+
+    // 1. Try as single file: relative.cs (e.g., "Models/DlqMessage.cs")
+    if (relative) {
+      const candidate = dirPrefix + '.cs';
+      if (index) {
+        const result = index.get(candidate) || index.getInsensitive(candidate);
+        if (result) return [result];
+      }
+      // Also try suffix match
+      const suffixResult = index?.get(relative + '.cs') || index?.getInsensitive(relative + '.cs');
+      if (suffixResult) return [suffixResult];
+    }
+
+    // 2. Try as directory: all .cs files directly inside (namespace import)
+    if (index) {
+      const dirFiles = index.getFilesInDir(dirPrefix, '.cs');
+      for (const f of dirFiles) {
+        const normalized = f.replace(/\\/g, '/');
+        // Check it's a direct child by finding the dirPrefix and ensuring no deeper slashes
+        const prefixIdx = normalized.indexOf(dirPrefix + '/');
+        if (prefixIdx < 0) continue;
+        const afterDir = normalized.substring(prefixIdx + dirPrefix.length + 1);
+        if (!afterDir.includes('/')) {
+          results.push(f);
+        }
+      }
+      if (results.length > 0) return results;
+    }
+
+    // 3. Linear scan fallback for directory matching
+    if (results.length === 0) {
+      const dirTrail = dirPrefix + '/';
+      for (let i = 0; i < normalizedFileList.length; i++) {
+        const normalized = normalizedFileList[i];
+        if (!normalized.endsWith('.cs')) continue;
+        const prefixIdx = normalized.indexOf(dirTrail);
+        if (prefixIdx < 0) continue;
+        const afterDir = normalized.substring(prefixIdx + dirTrail.length);
+        if (!afterDir.includes('/')) {
+          results.push(allFileList[i]);
+        }
+      }
+      if (results.length > 0) return results;
+    }
+  }
+
+  // Fallback: suffix matching without namespace stripping (single file)
+  const pathParts = namespacePath.split('/').filter(Boolean);
+  const fallback = suffixResolve(pathParts, normalizedFileList, allFileList, index);
+  return fallback ? [fallback] : [];
 }
 
 /** Swift Package Manager module config */
@@ -751,6 +898,7 @@ export const processImports = async (
   const goModule = await loadGoModulePath(effectiveRoot);
   const composerConfig = await loadComposerConfig(effectiveRoot);
   const swiftPackageConfig = await loadSwiftPackageConfig(effectiveRoot);
+  const csharpConfigs = await loadCSharpProjectConfig(effectiveRoot);
 
   // Helper: add an IMPORTS edge + update import map
   const addImportEdge = (filePath: string, resolvedPath: string) => {
@@ -802,7 +950,7 @@ export const processImports = async (
 
     if (!tree) {
       try {
-        tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 256 });
+        tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
       } catch (parseError) {
         continue;
       }
@@ -897,6 +1045,15 @@ export const processImports = async (
           // Fall through if no files found (package might be external)
         }
 
+        // ---- C#: handle namespace-based imports (using directives) ----
+        if (language === SupportedLanguages.CSharp && csharpConfigs.length > 0) {
+          const resolvedFiles = resolveCSharpImport(rawImportPath, csharpConfigs, normalizedFileList, allFileList, index);
+          for (const resolvedFile of resolvedFiles) {
+            addImportEdge(file.path, resolvedFile);
+          }
+          return;
+        }
+
         // ---- PHP: handle namespace-based imports (use statements) ----
         if (language === SupportedLanguages.PHP) {
           const resolved = resolvePhpImport(rawImportPath, composerConfig, allFilePaths, normalizedFileList, allFileList, index);
@@ -984,6 +1141,7 @@ export const processImportsFromExtracted = async (
   const goModule = await loadGoModulePath(effectiveRoot);
   const composerConfig = await loadComposerConfig(effectiveRoot);
   const swiftPackageConfig = await loadSwiftPackageConfig(effectiveRoot);
+  const csharpConfigs = await loadCSharpProjectConfig(effectiveRoot);
 
   const addImportEdge = (filePath: string, resolvedPath: string) => {
     const sourceId = generateId('File', filePath);
@@ -1095,6 +1253,15 @@ export const processImportsFromExtracted = async (
           }
           continue;
         }
+      }
+
+      // C#: handle namespace-based imports (using directives)
+      if (language === SupportedLanguages.CSharp && csharpConfigs.length > 0) {
+        const resolvedFiles = resolveCSharpImport(rawImportPath, csharpConfigs, normalizedFileList, allFileList, index);
+        for (const resolvedFile of resolvedFiles) {
+          addImportEdge(filePath, resolvedFile);
+        }
+        continue;
       }
 
       // PHP: handle namespace-based imports (use statements)

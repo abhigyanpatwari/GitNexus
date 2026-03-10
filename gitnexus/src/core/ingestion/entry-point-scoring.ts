@@ -63,10 +63,18 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
   
   // C#
   'csharp': [
-    /^(Get|Post|Put|Delete)/,  // ASP.NET conventions
-    /Action$/,                 // MVC actions
-    /^On[A-Z]/,               // Event handlers
-    /Async$/,                 // Async entry points
+    /^(Get|Post|Put|Delete|Patch)/,  // ASP.NET action methods
+    /Action$/,                        // MVC actions
+    /^On[A-Z]/,                      // Event handlers / Blazor lifecycle
+    /Async$/,                        // Async entry points
+    /^Configure$/,                   // Startup.Configure
+    /^ConfigureServices$/,           // Startup.ConfigureServices
+    /^Handle$/,                      // MediatR / generic handler
+    /^Execute$/,                     // Command pattern
+    /^Invoke$/,                      // Middleware Invoke
+    /^Map[A-Z]/,                     // Minimal API MapGet, MapPost
+    /Service$/,                      // Service classes
+    /^Seed/,                         // Database seeding
   ],
   
   // Go
@@ -86,21 +94,60 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
     /^spawn/,                 // Async spawn
   ],
   
-  // C - explicit main() boost (critical for C programs)
+  // C - explicit main() boost plus common C entry point conventions
   'c': [
     /^main$/,                 // THE entry point
-    /^init_/,                 // Initialization functions
-    /^start_/,                // Start functions
-    /^run_/,                  // Run functions
+    /^init_/,                 // init_server, init_client
+    /_init$/,                 // module_init, server_init
+    /^start_/,                // start_server
+    /_start$/,                // thread_start
+    /^run_/,                  // run_loop
+    /_run$/,                  // event_run
+    /^stop_/,                 // stop_server
+    /_stop$/,                 // service_stop
+    /^open_/,                 // open_connection
+    /_open$/,                 // file_open
+    /^close_/,                // close_connection
+    /_close$/,                // socket_close
+    /^create_/,               // create_session
+    /_create$/,               // object_create
+    /^destroy_/,              // destroy_session
+    /_destroy$/,              // object_destroy
+    /^handle_/,               // handle_request
+    /_handler$/,              // signal_handler
+    /_callback$/,             // event_callback
+    /^cmd_/,                  // tmux: cmd_new_window, cmd_attach_session
+    /^server_/,               // server_start, server_loop
+    /^client_/,               // client_connect
+    /^session_/,              // session_create
+    /^window_/,               // window_resize (tmux)
+    /^key_/,                  // key_press
+    /^input_/,                // input_parse
+    /^output_/,               // output_write
+    /^notify_/,               // notify_client
+    /^control_/,              // control_start
   ],
-  
-  // C++ - same as C plus class patterns
+
+  // C++ - same as C plus OOP/template patterns
   'cpp': [
     /^main$/,                 // THE entry point
     /^init_/,
+    /_init$/,
     /^Create[A-Z]/,           // Factory patterns
+    /^create_/,
     /^Run$/,                  // Run methods
+    /^run$/,
     /^Start$/,                // Start methods
+    /^start$/,
+    /^handle_/,
+    /_handler$/,
+    /_callback$/,
+    /^OnEvent/,               // Event callbacks
+    /^on_/,
+    /::Run$/,                 // Class::Run
+    /::Start$/,               // Class::Start
+    /::Init$/,                // Class::Init
+    /::Execute$/,             // Class::Execute
   ],
 
   // Swift / iOS
@@ -296,8 +343,13 @@ export function isTestFile(filePath: string): boolean {
     p.endsWith('test.swift') ||
     p.includes('uitests/') ||
     // C# test patterns
+    p.endsWith('tests.cs') ||
+    p.endsWith('test.cs') ||
     p.includes('.tests/') ||
-    p.includes('tests.cs') ||
+    p.includes('.test/') ||
+    p.includes('.integrationtests/') ||
+    p.includes('.unittests/') ||
+    p.includes('/testproject/') ||
     // PHP/Laravel test patterns
     p.endsWith('test.php') ||
     p.endsWith('spec.php') ||

@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { getLanguageFromFilename } from '../../src/core/ingestion/utils.js';
+import { getLanguageFromFilename, isBuiltInOrNoise, extractFunctionName } from '../../src/core/ingestion/utils.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import Parser from 'tree-sitter';
+import C from 'tree-sitter-c';
+import CPP from 'tree-sitter-cpp';
+import Python from 'tree-sitter-python';
+import TypeScript from 'tree-sitter-typescript';
 
 describe('getLanguageFromFilename', () => {
   describe('TypeScript', () => {
@@ -43,14 +48,10 @@ describe('getLanguageFromFilename', () => {
     it('detects .c files', () => {
       expect(getLanguageFromFilename('main.c')).toBe(SupportedLanguages.C);
     });
-
-    it('detects .h header files', () => {
-      expect(getLanguageFromFilename('header.h')).toBe(SupportedLanguages.C);
-    });
   });
 
   describe('C++', () => {
-    it.each(['.cpp', '.cc', '.cxx', '.hpp', '.hxx', '.hh'])(
+    it.each(['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh'])(
       'detects %s files',
       (ext) => {
         expect(getLanguageFromFilename(`file${ext}`)).toBe(SupportedLanguages.CPlusPlus);
@@ -114,6 +115,275 @@ describe('getLanguageFromFilename', () => {
 
     it('returns null for empty string', () => {
       expect(getLanguageFromFilename('')).toBeNull();
+    });
+  });
+});
+
+describe('isBuiltInOrNoise', () => {
+  describe('JavaScript/TypeScript', () => {
+    it('filters console methods', () => {
+      expect(isBuiltInOrNoise('console')).toBe(true);
+      expect(isBuiltInOrNoise('log')).toBe(true);
+      expect(isBuiltInOrNoise('warn')).toBe(true);
+    });
+
+    it('filters React hooks', () => {
+      expect(isBuiltInOrNoise('useState')).toBe(true);
+      expect(isBuiltInOrNoise('useEffect')).toBe(true);
+      expect(isBuiltInOrNoise('useCallback')).toBe(true);
+    });
+
+    it('filters array methods', () => {
+      expect(isBuiltInOrNoise('map')).toBe(true);
+      expect(isBuiltInOrNoise('filter')).toBe(true);
+      expect(isBuiltInOrNoise('reduce')).toBe(true);
+    });
+  });
+
+  describe('Python', () => {
+    it('filters built-in functions', () => {
+      expect(isBuiltInOrNoise('print')).toBe(true);
+      expect(isBuiltInOrNoise('len')).toBe(true);
+      expect(isBuiltInOrNoise('range')).toBe(true);
+    });
+  });
+
+  describe('PHP', () => {
+    it('filters PHP built-in functions', () => {
+      expect(isBuiltInOrNoise('echo')).toBe(true);
+      expect(isBuiltInOrNoise('isset')).toBe(true);
+      expect(isBuiltInOrNoise('date')).toBe(true);
+      expect(isBuiltInOrNoise('json_encode')).toBe(true);
+      expect(isBuiltInOrNoise('array_map')).toBe(true);
+    });
+
+    it('filters PHP string functions', () => {
+      expect(isBuiltInOrNoise('strlen')).toBe(true);
+      expect(isBuiltInOrNoise('substr')).toBe(true);
+      expect(isBuiltInOrNoise('str_replace')).toBe(true);
+    });
+  });
+
+  describe('C/C++', () => {
+    it('filters standard library functions', () => {
+      expect(isBuiltInOrNoise('printf')).toBe(true);
+      expect(isBuiltInOrNoise('malloc')).toBe(true);
+      expect(isBuiltInOrNoise('free')).toBe(true);
+    });
+
+    it('filters Linux kernel macros', () => {
+      expect(isBuiltInOrNoise('container_of')).toBe(true);
+      expect(isBuiltInOrNoise('ARRAY_SIZE')).toBe(true);
+      expect(isBuiltInOrNoise('pr_info')).toBe(true);
+    });
+  });
+
+  describe('Kotlin', () => {
+    it('filters stdlib functions', () => {
+      expect(isBuiltInOrNoise('println')).toBe(true);
+      expect(isBuiltInOrNoise('listOf')).toBe(true);
+      expect(isBuiltInOrNoise('TODO')).toBe(true);
+    });
+
+    it('filters coroutine functions', () => {
+      expect(isBuiltInOrNoise('launch')).toBe(true);
+      expect(isBuiltInOrNoise('async')).toBe(true);
+    });
+  });
+
+  describe('Swift', () => {
+    it('filters built-in functions', () => {
+      expect(isBuiltInOrNoise('print')).toBe(true);
+      expect(isBuiltInOrNoise('fatalError')).toBe(true);
+    });
+
+    it('filters UIKit methods', () => {
+      expect(isBuiltInOrNoise('addSubview')).toBe(true);
+      expect(isBuiltInOrNoise('reloadData')).toBe(true);
+    });
+  });
+
+  describe('user-defined functions', () => {
+    it('does not filter custom function names', () => {
+      expect(isBuiltInOrNoise('myCustomFunction')).toBe(false);
+      expect(isBuiltInOrNoise('processData')).toBe(false);
+      expect(isBuiltInOrNoise('handleUserRequest')).toBe(false);
+    });
+  });
+});
+
+describe('extractFunctionName', () => {
+  const parser = new Parser();
+
+  describe('C', () => {
+    it('extracts function name from C function definition', () => {
+      parser.setLanguage(C);
+      const code = `int main() { return 0; }`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('main');
+      expect(result.label).toBe('Function');
+    });
+
+    it('extracts function name with parameters', () => {
+      parser.setLanguage(C);
+      const code = `void helper(int a, char* b) {}`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('helper');
+      expect(result.label).toBe('Function');
+    });
+  });
+
+  describe('C++', () => {
+    it('extracts method name from C++ class method definition', () => {
+      parser.setLanguage(CPP);
+      const code = `int MyClass::OnEncryptData() { return 0; }`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('OnEncryptData');
+      expect(result.label).toBe('Method');
+    });
+
+    it('extracts method name with namespace', () => {
+      parser.setLanguage(CPP);
+      const code = `void HuksListener::OnDataOprEvent(int type, DataInfo& info) {}`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('OnDataOprEvent');
+      expect(result.label).toBe('Method');
+    });
+
+    it('extracts C function (not method)', () => {
+      parser.setLanguage(CPP);
+      const code = `void standalone_function() {}`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('standalone_function');
+      expect(result.label).toBe('Function');
+    });
+
+    it('extracts method with parenthesized declarator', () => {
+      parser.setLanguage(CPP);
+      const code = `void (MyClass::handler)() {}`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('handler');
+      expect(result.label).toBe('Method');
+    });
+  });
+
+  describe('TypeScript', () => {
+    it('extracts arrow function name from variable declarator', () => {
+      parser.setLanguage(TypeScript.typescript);
+      const code = `const myHandler = () => { return 1; }`;
+      const tree = parser.parse(code);
+      const program = tree.rootNode;
+      const varDecl = program.child(0);
+      const declarator = varDecl!.namedChild(0);
+      const arrowFunc = declarator!.namedChild(1);
+
+      const result = extractFunctionName(arrowFunc);
+
+      expect(result.funcName).toBe('myHandler');
+      expect(result.label).toBe('Function');
+    });
+
+    it('extracts function expression name from variable declarator', () => {
+      parser.setLanguage(TypeScript.typescript);
+      const code = `const processItem = function() { }`;
+      const tree = parser.parse(code);
+      const program = tree.rootNode;
+      const varDecl = program.child(0);
+      const declarator = varDecl!.namedChild(0);
+      const funcExpr = declarator!.namedChild(1);
+
+      const result = extractFunctionName(funcExpr);
+
+      expect(result.funcName).toBe('processItem');
+      expect(result.label).toBe('Function');
+    });
+  });
+
+  describe('Python', () => {
+    it('extracts function name from Python function definition', () => {
+      parser.setLanguage(Python);
+      const code = `def hello_world():\n    pass`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('hello_world');
+      expect(result.label).toBe('Function');
+    });
+
+    it('extracts function name with parameters', () => {
+      parser.setLanguage(Python);
+      const code = `def calculate_sum(a, b):\n    return a + b`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('calculate_sum');
+      expect(result.label).toBe('Function');
+    });
+
+    it('extracts async function name', () => {
+      parser.setLanguage(Python);
+      const code = `async def fetch_data():\n    pass`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('fetch_data');
+      expect(result.label).toBe('Function');
+    });
+
+    it('extracts function name with type hints', () => {
+      parser.setLanguage(Python);
+      const code = `def process_data(items: list[int]) -> bool:\n    return True`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(funcNode);
+
+      expect(result.funcName).toBe('process_data');
+      expect(result.label).toBe('Function');
+    });
+
+    it('extracts nested function name', () => {
+      parser.setLanguage(Python);
+      const code = `def outer():\n    def inner():\n        pass`;
+      const tree = parser.parse(code);
+      const outerFunc = tree.rootNode.child(0);
+      const block = outerFunc!.child(4);
+      const innerFunc = block!.namedChild(0);
+
+      const result = extractFunctionName(innerFunc);
+
+      expect(result.funcName).toBe('inner');
+      expect(result.label).toBe('Function');
     });
   });
 });

@@ -14,6 +14,7 @@ import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/pa
 import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename, isVerboseIngestionEnabled, yieldToEventLoop } from './utils.js';
+import { getTreeSitterBufferSize } from './constants.js';
 import type { ExtractedHeritage } from './workers/parse-worker.js';
 
 export const processHeritage = async (
@@ -55,7 +56,7 @@ export const processHeritage = async (
     if (!tree) {
       // Use larger bufferSize for files > 32KB
       try {
-        tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 256 });
+        tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
       } catch (parseError) {
         // Skip files that can't be parsed
         continue;

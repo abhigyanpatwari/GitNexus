@@ -23,14 +23,21 @@ const FIXTURES_DIR = path.join(process.cwd(), 'test', 'fixtures', 'sample-code')
 /**
  * Minimal mock of a tree-sitter AST node.
  */
-function mockNode(type: string, text: string = '', parent?: any): any {
-  return {
+function mockNode(type: string, text: string = '', parent?: any, children?: any[]): any {
+  const node: any = {
     type,
     text,
     parent: parent || null,
-    childCount: 0,
-    child: () => null,
+    childCount: children?.length ?? 0,
+    child: (i: number) => children?.[i] ?? null,
   };
+  // Set parent references on children
+  if (children) {
+    for (const child of children) {
+      child.parent = node;
+    }
+  }
+  return node;
 }
 
 // ─── isNodeExported per-language ─────────────────────────────────────
@@ -99,16 +106,15 @@ describe('parsing', () => {
     describe('rust', () => {
       it('pub function is exported', () => {
         const visMod = mockNode('visibility_modifier', 'pub');
-        const fnDecl = mockNode('function_item', 'pub fn foo() {}', visMod);
-        // For rust, isNodeExported walks up parents checking for visibility_modifier
-        // The visMod is a parent of the nameNode
-        const nameNode = mockNode('identifier', 'foo', visMod);
+        const nameNode = mockNode('identifier', 'foo');
+        // visibility_modifier is a sibling of the name inside function_item
+        const fnDecl = mockNode('function_item', 'pub fn foo() {}', undefined, [visMod, nameNode]);
         expect(isNodeExported(nameNode, 'foo', 'rust')).toBe(true);
       });
 
       it('non-pub function is not exported', () => {
-        const fnDecl = mockNode('function_item', 'fn foo() {}');
-        const nameNode = mockNode('identifier', 'foo', fnDecl);
+        const nameNode = mockNode('identifier', 'foo');
+        const fnDecl = mockNode('function_item', 'fn foo() {}', undefined, [nameNode]);
         expect(isNodeExported(nameNode, 'foo', 'rust')).toBe(false);
       });
     });
@@ -165,14 +171,22 @@ describe('parsing', () => {
 
     // C/C++
     describe('c/cpp', () => {
-      it('C functions are never exported', () => {
-        const node = mockNode('identifier', 'add');
-        expect(isNodeExported(node, 'add', 'c')).toBe(false);
+      it('C functions without static are exported (external linkage)', () => {
+        const nameNode = mockNode('identifier', 'add');
+        const fnDef = mockNode('function_definition', 'int add(int a, int b) {}', undefined, [nameNode]);
+        expect(isNodeExported(nameNode, 'add', 'c')).toBe(true);
       });
 
-      it('C++ functions are never exported', () => {
-        const node = mockNode('identifier', 'helperFunction');
-        expect(isNodeExported(node, 'helperFunction', 'cpp')).toBe(false);
+      it('C++ functions without static are exported', () => {
+        const nameNode = mockNode('identifier', 'helperFunction');
+        const fnDef = mockNode('function_definition', 'void helperFunction() {}', undefined, [nameNode]);
+        expect(isNodeExported(nameNode, 'helperFunction', 'cpp')).toBe(true);
+      });
+
+      it('static C function is not exported', () => {
+        const nameNode = mockNode('identifier', 'internalHelper');
+        const fnDef = mockNode('function_definition', 'static void internalHelper() {}', undefined, [nameNode]);
+        expect(isNodeExported(nameNode, 'internalHelper', 'c')).toBe(false);
       });
     });
 
@@ -180,13 +194,15 @@ describe('parsing', () => {
     describe('csharp', () => {
       it('public modifier means exported', () => {
         const modifier = mockNode('modifier', 'public');
-        const nameNode = mockNode('identifier', 'Add', modifier);
+        const nameNode = mockNode('identifier', 'Add');
+        // modifier is a sibling of nameNode inside method_declaration
+        const methodDecl = mockNode('method_declaration', 'public int Add() {}', undefined, [modifier, nameNode]);
         expect(isNodeExported(nameNode, 'Add', 'csharp')).toBe(true);
       });
 
       it('no public modifier means not exported', () => {
-        const classDecl = mockNode('class_declaration', 'class Helper {}');
-        const nameNode = mockNode('identifier', 'Helper', classDecl);
+        const nameNode = mockNode('identifier', 'Helper');
+        const classDecl = mockNode('class_declaration', 'class Helper {}', undefined, [nameNode]);
         expect(isNodeExported(nameNode, 'Helper', 'csharp')).toBe(false);
       });
     });

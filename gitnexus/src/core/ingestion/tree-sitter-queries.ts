@@ -32,6 +32,11 @@ export const TYPESCRIPT_QUERIES = `
     name: (identifier) @name
     value: (function_expression))) @definition.function
 
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression))) @definition.function
+
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
@@ -43,6 +48,12 @@ export const TYPESCRIPT_QUERIES = `
     (variable_declarator
       name: (identifier) @name
       value: (function_expression)))) @definition.function
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (call_expression)))) @definition.function
 
 (import_statement
   source: (string) @import.source) @import
@@ -69,7 +80,7 @@ export const TYPESCRIPT_QUERIES = `
       (type_identifier) @heritage.implements))) @heritage.impl
 `;
 
-// JavaScript queries - works with tree-sitter-javascript  
+// JavaScript queries - works with tree-sitter-javascript
 export const JAVASCRIPT_QUERIES = `
 (class_declaration
   name: (identifier) @name) @definition.class
@@ -90,6 +101,11 @@ export const JAVASCRIPT_QUERIES = `
     name: (identifier) @name
     value: (function_expression))) @definition.function
 
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression))) @definition.function
+
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
@@ -101,6 +117,12 @@ export const JAVASCRIPT_QUERIES = `
     (variable_declarator
       name: (identifier) @name
       value: (function_expression)))) @definition.function
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (call_expression)))) @definition.function
 
 (import_statement
   source: (string) @import.source) @import
@@ -228,9 +250,29 @@ export const CPP_QUERIES = `
 (namespace_definition name: (namespace_identifier) @name) @definition.namespace
 (enum_specifier name: (type_identifier) @name) @definition.enum
 
+; Typedefs and unions (common in C-style headers and mixed C/C++ code)
+(type_definition declarator: (type_identifier) @name) @definition.typedef
+(union_specifier name: (type_identifier) @name) @definition.union
+
+; Macros
+(preproc_function_def name: (identifier) @name) @definition.macro
+(preproc_def name: (identifier) @name) @definition.macro
+
 ; Functions & Methods
 (function_definition declarator: (function_declarator declarator: (identifier) @name)) @definition.function
 (function_definition declarator: (function_declarator declarator: (qualified_identifier name: (identifier) @name))) @definition.method
+
+; Function declarations / prototypes (common in headers)
+(declaration declarator: (function_declarator declarator: (identifier) @name)) @definition.function
+
+; Inline class method declarations (inside class body, no body: void Foo();)
+(field_declaration declarator: (function_declarator declarator: (identifier) @name)) @definition.method
+
+; Inline class method definitions (inside class body, with body: void Foo() { ... })
+(field_declaration_list
+  (function_definition
+    declarator: (function_declarator
+      declarator: [(field_identifier) (identifier) (operator_name)] @name))) @definition.method
 
 ; Templates
 (template_declaration (class_specifier name: (type_identifier) @name)) @definition.template
@@ -282,9 +324,9 @@ export const CSHARP_QUERIES = `
 
 ; Heritage
 (class_declaration name: (identifier) @heritage.class
-  (base_list (simple_base_type (identifier) @heritage.extends))) @heritage
+  (base_list (identifier) @heritage.extends)) @heritage
 (class_declaration name: (identifier) @heritage.class
-  (base_list (simple_base_type (generic_name (identifier) @heritage.extends)))) @heritage
+  (base_list (generic_name (identifier) @heritage.extends))) @heritage
 `;
 
 // Rust queries - works with tree-sitter-rust

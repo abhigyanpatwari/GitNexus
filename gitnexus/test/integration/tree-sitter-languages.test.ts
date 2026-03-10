@@ -150,17 +150,20 @@ describe('Tree-sitter multi-language parsing', () => {
   });
 
   describe('C#', () => {
-    it('parses class, method, and property declarations', async () => {
+    it('parses class, method, and namespace declarations', async () => {
       await loadLanguage(SupportedLanguages.CSharp);
       const content = readFixture('simple.cs');
-      try {
-        const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.CSharp]);
-        const defs = extractDefinitions(matches);
-        expect(defs.length).toBeGreaterThan(0);
-      } catch (e: any) {
-        // Some tree-sitter-c-sharp versions don't support all query node types
-        expect(e.message).toContain('TSQueryError');
-      }
+      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.CSharp]);
+      const defs = extractDefinitions(matches);
+
+      expect(defs.length).toBeGreaterThan(0);
+      const defTypes = defs.map(d => d.type);
+      expect(defTypes).toContain('definition.class');
+      expect(defTypes).toContain('definition.method');
+      expect(defTypes).toContain('definition.namespace');
+      const names = defs.map(d => d.name);
+      expect(names).toContain('Calculator');
+      expect(names).toContain('Add');
     });
   });
 
@@ -252,14 +255,9 @@ describe('Tree-sitter multi-language parsing', () => {
       for (const [lang, fixture, filePath] of langFixtures) {
         await loadLanguage(lang, filePath || fixture);
         const content = readFixture(fixture);
-        try {
-          const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[lang]);
-          const defs = extractDefinitions(matches);
-          expect(defs.length, `${lang} (${fixture}) should have definitions`).toBeGreaterThan(0);
-        } catch (e: any) {
-          // Some grammars may have query compatibility issues
-          if (!e.message?.includes('TSQueryError')) throw e;
-        }
+        const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[lang]);
+        const defs = extractDefinitions(matches);
+        expect(defs.length, `${lang} (${fixture}) should have definitions`).toBeGreaterThan(0);
       }
     });
   });
