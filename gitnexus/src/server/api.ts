@@ -22,6 +22,7 @@ import { hybridSearch } from '../core/search/hybrid-search.js';
 // at server startup — crashes on unsupported Node ABI versions (#89)
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { mountMCPEndpoints } from './mcp-http.js';
+import { detectCLITools, spawnCLIStream, type CLIChatRequest } from './cli-llm.js';
 
 const buildGraph = async (): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
   const nodes: GraphNode[] = [];
@@ -129,6 +130,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const backend = new LocalBackend();
   await backend.init();
   const cleanupMcp = mountMCPEndpoints(app, backend);
+
+  const mcpServerUrl = `http://127.0.0.1:${port}/api/mcp`;
 
   // Helper: resolve a repo by name from the global registry, or default to first
   const resolveRepo = async (repoName?: string) => {
@@ -337,9 +340,64 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     }
   });
 
+  // CLI LLM: detect available CLI tools
+  app.get('/api/llm/cli-status', (_req, res) => {
+    res.json(detectCLITools());
+  });
+
+  // CLI LLM: stream chat via CLI tool (SSE)
+  app.post('/api/llm/chat', (req, res) => {
+    const { messages, systemPrompt, cliTool } = req.body as CLIChatRequest;
+
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+      res.status(400).json({ error: 'Missing or empty "messages" array' });
+      return;
+    }
+
+    const tools = detectCLITools();
+    const tool = cliTool || (tools.claude ? 'claude' : tools.codex ? 'codex' : tools.gemini ? 'gemini' : null);
+    if (!tool || !tools[tool]) {
+      res.status(400).json({ error: `CLI tool "${tool || 'none'}" not found. Install claude, codex, or gemini.` });
+      return;
+    }
+
+    // SSE headers
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    });
+
+    const child = spawnCLIStream(
+      { messages, systemPrompt, cliTool: tool, mcpServerUrl },
+      (event) => {
+        if (!res.writableEnded) {
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+        }
+      },
+      (error) => {
+        if (!res.writableEnded) {
+          if (error) {
+            res.write(`data: ${JSON.stringify({ type: 'error', content: error.message })}\n\n`);
+          }
+          res.end();
+        }
+      },
+    );
+
+    // Kill CLI process if client disconnects
+    res.on('close', () => {
+      child.kill('SIGTERM');
+    });
+  });
+
   // Global error handler — catch anything the route handlers miss
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error('Unhandled error:', err);
+    if (res.headersSent) {
+      res.end();
+      return;
+    }
     res.status(500).json({ error: 'Internal server error' });
   });
 

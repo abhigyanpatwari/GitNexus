@@ -226,6 +226,9 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
       });
     }
     
+    case 'cli':
+      throw new Error('CLI provider uses CLI streaming, not LangChain. Use chatStreamViaCLI() instead.');
+
     default:
       throw new Error(`Unsupported provider: ${(config as any).provider}`);
   }

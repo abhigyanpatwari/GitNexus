@@ -5,9 +5,9 @@
  * All API keys are stored locally - never sent to any server except the LLM provider.
  */
 
-import { 
-  LLMSettings, 
-  DEFAULT_LLM_SETTINGS, 
+import {
+  LLMSettings,
+  DEFAULT_LLM_SETTINGS,
   LLMProvider,
   OpenAIConfig,
   AzureOpenAIConfig,
@@ -15,6 +15,7 @@ import {
   AnthropicConfig,
   OllamaConfig,
   OpenRouterConfig,
+  CLIConfig,
   ProviderConfig,
 } from './types';
 
@@ -30,8 +31,17 @@ export const loadSettings = (): LLMSettings => {
       return DEFAULT_LLM_SETTINGS;
     }
     
-    const parsed = JSON.parse(stored) as Partial<LLMSettings>;
-    
+    const parsed = JSON.parse(stored) as Partial<LLMSettings> & { claudeCode?: any };
+
+    // Migrate legacy 'claude-code' provider → 'cli'
+    if ((parsed.activeProvider as string) === 'claude-code') {
+      parsed.activeProvider = 'cli';
+    }
+    if (parsed.claudeCode && !parsed.cli) {
+      parsed.cli = parsed.claudeCode;
+      delete parsed.claudeCode;
+    }
+
     // Merge with defaults to handle new fields
     return {
       ...DEFAULT_LLM_SETTINGS,
@@ -60,6 +70,10 @@ export const loadSettings = (): LLMSettings => {
         ...DEFAULT_LLM_SETTINGS.openrouter,
         ...parsed.openrouter,
       },
+      cli: {
+        ...DEFAULT_LLM_SETTINGS.cli,
+        ...parsed.cli,
+      },
     };
   } catch (error) {
     console.warn('Failed to load LLM settings:', error);
@@ -84,11 +98,13 @@ export const saveSettings = (settings: LLMSettings): void => {
 export const updateProviderSettings = <T extends LLMProvider>(
   provider: T,
   updates: Partial<
-    T extends 'openai' ? Partial<Omit<OpenAIConfig, 'provider'>> :
-    T extends 'azure-openai' ? Partial<Omit<AzureOpenAIConfig, 'provider'>> :
-    T extends 'gemini' ? Partial<Omit<GeminiConfig, 'provider'>> :
-    T extends 'anthropic' ? Partial<Omit<AnthropicConfig, 'provider'>> :
-    T extends 'ollama' ? Partial<Omit<OllamaConfig, 'provider'>> :
+    T extends 'openai' ? Omit<OpenAIConfig, 'provider'> :
+    T extends 'azure-openai' ? Omit<AzureOpenAIConfig, 'provider'> :
+    T extends 'gemini' ? Omit<GeminiConfig, 'provider'> :
+    T extends 'anthropic' ? Omit<AnthropicConfig, 'provider'> :
+    T extends 'ollama' ? Omit<OllamaConfig, 'provider'> :
+    T extends 'openrouter' ? Omit<OpenRouterConfig, 'provider'> :
+    T extends 'cli' ? Omit<CLIConfig, 'provider'> :
     never
   >
 ): LLMSettings => {
@@ -157,6 +173,17 @@ export const updateProviderSettings = <T extends LLMProvider>(
         openrouter: {
           ...(current.openrouter ?? {}),
           ...(updates as Partial<Omit<OpenRouterConfig, 'provider'>>),
+        },
+      };
+      saveSettings(updated);
+      return updated;
+    }
+    case 'cli': {
+      const updated: LLMSettings = {
+        ...current,
+        cli: {
+          ...(current.cli ?? {}),
+          ...(updates as Partial<Omit<CLIConfig, 'provider'>>),
         },
       };
       saveSettings(updated);
@@ -245,7 +272,14 @@ export const getActiveProviderConfig = (): ProviderConfig | null => {
         temperature: settings.openrouter.temperature,
         maxTokens: settings.openrouter.maxTokens,
       } as OpenRouterConfig;
-      
+
+    case 'cli':
+      return {
+        provider: 'cli',
+        cliTool: settings.cli?.cliTool || 'claude',
+        model: settings.cli?.model || 'claude (CLI)',
+      } as CLIConfig;
+
     default:
       return null;
   }
@@ -282,6 +316,8 @@ export const getProviderDisplayName = (provider: LLMProvider): string => {
       return 'Ollama (Local)';
     case 'openrouter':
       return 'OpenRouter';
+    case 'cli':
+      return 'CLI';
     default:
       return provider;
   }
@@ -303,6 +339,10 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
       return ['claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'];
     case 'ollama':
       return ['llama3.2', 'llama3.1', 'mistral', 'codellama', 'deepseek-coder'];
+    case 'openrouter':
+      return []; // Models fetched dynamically via fetchOpenRouterModels()
+    case 'cli':
+      return []; // CLI tool is selected in settings, not as a model
     default:
       return [];
   }

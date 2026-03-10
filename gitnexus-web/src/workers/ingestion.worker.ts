@@ -53,6 +53,7 @@ let enrichmentCancelled = false;
 
 // Chat cancellation flag
 let chatCancelled = false;
+let cliAbortController: AbortController | null = null;
 
 // ============================================================
 // HTTP helpers for backend mode
@@ -145,6 +146,11 @@ const createHttpHybridSearch = (backendUrl: string, repo: string) => {
  * Note: The onProgress callback is passed as a Comlink.proxy() from the main thread,
  * allowing it to be called from the worker and have it execute on the main thread.
  */
+/** Try to parse JSON, returning the object or a key-value with the raw string. */
+const tryParseJSON = (s: string): Record<string, unknown> => {
+  try { return JSON.parse(s); } catch { return { raw: s }; }
+};
+
 const workerApi = {
   /**
    * Run the ingestion pipeline in the worker thread
@@ -744,10 +750,154 @@ const workerApi = {
   },
 
   /**
+   * Chat with CLI tool (claude/codex/gemini) via backend SSE proxy.
+   * Bypasses LangChain — the CLI itself acts as the agent.
+   */
+  async chatStreamViaCLI(
+    messages: AgentMessage[],
+    backendUrl: string,
+    systemPrompt: string | undefined,
+    cliTool: 'claude' | 'codex' | 'gemini',
+    onChunk: (chunk: AgentStreamChunk) => void,
+  ): Promise<void> {
+    chatCancelled = false;
+    cliAbortController = new AbortController();
+    let doneEmitted = false;
+    const emitDone = () => { if (!doneEmitted) { doneEmitted = true; onChunk({ type: 'done' }); } };
+
+    try {
+      const response = await fetch(`${backendUrl}/api/llm/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages, systemPrompt, cliTool }),
+        signal: cliAbortController.signal,
+      });
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => 'Unknown error');
+        onChunk({ type: 'error', error: `Backend error (${response.status}): ${errText}` });
+        emitDone();
+        return;
+      }
+
+      if (!response.body) {
+        onChunk({ type: 'error', error: 'No response body from backend' });
+        emitDone();
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let toolCounter = 0;
+      // Map tool_start counter values to IDs for tool_result matching
+      const toolIdMap = new Map<number, string>();
+
+      while (true) {
+        if (chatCancelled) {
+          reader.cancel();
+          emitDone();
+          break;
+        }
+
+        const { done: readerDone, value } = await reader.read();
+        if (readerDone) {
+          // Flush remaining buffer (last line may lack trailing newline)
+          const remaining = buffer.trim();
+          if (remaining && remaining.startsWith('data: ')) {
+            try {
+              const event = JSON.parse(remaining.slice(6));
+              if (event.type === 'error' && event.content) {
+                onChunk({ type: 'error', error: event.content });
+              }
+            } catch { /* ignore */ }
+          }
+          emitDone();
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
+          try {
+            const event = JSON.parse(trimmed.slice(6));
+
+            switch (event.type) {
+              case 'text':
+                if (event.content) {
+                  onChunk({ type: 'content', content: event.content });
+                }
+                break;
+
+              case 'tool_start': {
+                const idx = toolCounter++;
+                const id = event.toolCallId || `cli-tool-${idx}`;
+                toolIdMap.set(idx, id);
+                onChunk({
+                  type: 'tool_call',
+                  toolCall: {
+                    id,
+                    name: event.toolName || 'unknown',
+                    args: event.toolInput ? tryParseJSON(event.toolInput) : {},
+                    status: 'running',
+                  },
+                });
+                break;
+              }
+
+              case 'tool_result': {
+                // Match to the most recent tool_start if no explicit ID
+                const lastIdx = toolCounter - 1;
+                const id = event.toolCallId || toolIdMap.get(lastIdx) || `cli-tool-${lastIdx}`;
+                onChunk({
+                  type: 'tool_result',
+                  toolCall: {
+                    id,
+                    name: '',
+                    args: {},
+                    result: event.toolResult || event.content || '',
+                    status: 'completed',
+                  },
+                });
+                break;
+              }
+
+              case 'error':
+                onChunk({ type: 'error', error: event.content || 'CLI error' });
+                break;
+
+              case 'done':
+                emitDone();
+                break;
+            }
+          } catch {
+            // Skip malformed SSE lines
+          }
+        }
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      // Don't emit error for intentional abort
+      if (!msg.includes('abort')) {
+        onChunk({ type: 'error', error: msg });
+      }
+      emitDone();
+    } finally {
+      cliAbortController = null;
+    }
+  },
+
+  /**
    * Stop the current chat stream
    */
   stopChat(): void {
     chatCancelled = true;
+    cliAbortController?.abort();
   },
 
   /**
@@ -811,6 +961,11 @@ const workerApi = {
         }
       }
     });
+
+    // CLI provider can't be used for cluster enrichment (needs LangChain)
+    if (providerConfig.provider === 'cli') {
+      throw new Error('Cluster enrichment is not supported with CLI providers. Select an API-based provider (e.g., Gemini, OpenAI) in settings.');
+    }
 
     // Create LLM client adapter for LangChain model
     const chatModel = createChatModel(providerConfig);

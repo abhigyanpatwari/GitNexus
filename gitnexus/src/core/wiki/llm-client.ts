@@ -1,11 +1,15 @@
 /**
  * LLM Client for Wiki Generation
- * 
+ *
  * OpenAI-compatible API client using native fetch.
  * Supports OpenAI, Azure, LiteLLM, Ollama, and any OpenAI-compatible endpoint.
- * 
+ * Falls back to locally installed CLI (claude/codex/gemini) when no API key is configured.
+ *
  * Config priority: CLI flags > env vars > defaults
  */
+
+import { spawn as nodeSpawn } from 'child_process';
+import { isCLIAvailable, getCleanEnv } from '../../lib/cli.js';
 
 export interface LLMConfig {
   apiKey: string;
@@ -59,6 +63,86 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+/**
+ * Detect which CLI tool is available locally.
+ */
+function detectCLI(): 'claude' | 'codex' | 'gemini' | null {
+  for (const tool of ['claude', 'codex', 'gemini'] as const) {
+    if (isCLIAvailable(tool)) return tool;
+  }
+  return null;
+}
+
+/**
+ * Call LLM via locally installed CLI (claude, codex, or gemini).
+ * No API key required — CLI handles auth.
+ */
+const CLI_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_STDOUT = 1024 * 1024; // 1 MB
+
+async function callLLMViaCLI(
+  prompt: string,
+  systemPrompt?: string,
+  cliTool?: 'claude' | 'codex' | 'gemini',
+): Promise<LLMResponse> {
+  const tool = cliTool || detectCLI();
+  if (!tool) {
+    throw new Error('No CLI tool found. Install "claude", "codex", or "gemini", or provide an API key.');
+  }
+
+  let args: string[];
+  if (tool === 'claude') {
+    args = ['-p', prompt, '--output-format', 'text', '--no-session-persistence'];
+    if (systemPrompt) {
+      args.push('--system-prompt', systemPrompt);
+    }
+  } else if (tool === 'gemini') {
+    args = ['-p', prompt, '-o', 'text'];
+  } else {
+    args = ['--quiet', '--full-auto', '--', prompt];
+  }
+
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    const done = (fn: () => void) => { if (!finished) { finished = true; clearTimeout(timer); fn(); } };
+
+    const child = nodeSpawn(tool, args, { env: getCleanEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      done(() => reject(new Error(`CLI "${tool}" timed out after ${CLI_TIMEOUT_MS / 1000}s`)));
+    }, CLI_TIMEOUT_MS);
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+      if (stdout.length > MAX_STDOUT) child.kill('SIGTERM');
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      if (stderr.length < 4096) stderr += chunk.toString();
+    });
+
+    child.on('close', (code) => done(() => {
+      if (code !== 0) {
+        reject(new Error(`CLI "${tool}" exited with code ${code}: ${stderr.slice(0, 500)}`));
+        return;
+      }
+      const content = stdout.trim();
+      if (!content) {
+        reject(new Error(`CLI "${tool}" returned empty output`));
+        return;
+      }
+      resolve({ content });
+    }));
+
+    child.on('error', (err) => done(() => {
+      reject(new Error(`Failed to spawn "${tool}": ${err.message}`));
+    }));
+  });
+}
+
 export interface CallLLMOptions {
   onChunk?: (charsReceived: number) => void;
 }
@@ -74,6 +158,11 @@ export async function callLLM(
   systemPrompt?: string,
   options?: CallLLMOptions,
 ): Promise<LLMResponse> {
+  // CLI fallback when no API key is configured
+  if (!config.apiKey || config.apiKey.trim() === '') {
+    return callLLMViaCLI(prompt, systemPrompt);
+  }
+
   const messages: Array<{ role: string; content: string }> = [];
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });

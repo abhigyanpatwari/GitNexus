@@ -222,6 +222,9 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
   // OpenRouter models state
   const [openRouterModels, setOpenRouterModels] = useState<Array<{ id: string; name: string }>>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
+  // CLI status state
+  const [cliStatus, setCliStatus] = useState<{ claude: boolean; codex: boolean; gemini: boolean } | null>(null);
+  const [isCheckingCli, setIsCheckingCli] = useState(false);
 
   // Load settings when panel opens
   useEffect(() => {
@@ -260,6 +263,21 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
     }
   }, [settings.ollama?.baseUrl, settings.activeProvider, checkOllamaConnection]);
 
+  // Check CLI availability when CLI provider is selected
+  useEffect(() => {
+    if (settings.activeProvider !== 'cli') return;
+    let cancelled = false;
+    setIsCheckingCli(true);
+
+    const checkUrl = backendUrl || 'http://localhost:4747';
+    fetch(`${checkUrl}/api/llm/cli-status`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (!cancelled && data) { setCliStatus(data); setIsCheckingCli(false); } })
+      .catch(() => { if (!cancelled) { setCliStatus(null); setIsCheckingCli(false); } });
+
+    return () => { cancelled = true; };
+  }, [settings.activeProvider, backendUrl]);
+
   const handleProviderChange = (provider: LLMProvider) => {
     setSettings(prev => ({ ...prev, activeProvider: provider }));
   };
@@ -281,7 +299,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
 
   if (!isOpen) return null;
 
-  const providers: LLMProvider[] = ['openai', 'gemini', 'anthropic', 'azure-openai', 'ollama', 'openrouter'];
+  const providers: LLMProvider[] = ['cli', 'openai', 'gemini', 'anthropic', 'azure-openai', 'ollama', 'openrouter'];
 
 
   return (
@@ -366,7 +384,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
                     w-8 h-8 rounded-lg flex items-center justify-center text-lg
                     ${settings.activeProvider === provider ? 'bg-accent/20' : 'bg-surface'}
                   `}>
-                    {provider === 'openai' ? '🤖' : provider === 'gemini' ? '💎' : provider === 'anthropic' ? '🧠' : provider === 'ollama' ? '🦙' : provider === 'openrouter' ? '🌐' : '☁️'}
+                    {provider === 'cli' ? '⌨' : provider === 'openai' ? '🤖' : provider === 'gemini' ? '💎' : provider === 'anthropic' ? '🧠' : provider === 'ollama' ? '🦙' : provider === 'openrouter' ? '🌐' : '☁️'}
                   </div>
                   <span className="font-medium">{getProviderDisplayName(provider)}</span>
                 </button>
@@ -815,6 +833,71 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
           )}
 
 
+
+          {settings.activeProvider === 'cli' && (
+            <div className="space-y-4 animate-fade-in">
+              <div className="p-3 bg-accent/10 border border-accent/30 rounded-xl">
+                <p className="text-xs text-accent leading-relaxed">
+                  <span className="font-medium">No API key needed.</span> Uses your
+                  locally installed CLI tool.
+                  The CLI handles authentication.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-secondary">CLI Tool</label>
+                <div className="grid grid-cols-3 gap-3">
+                  {([
+                    { id: 'claude', label: 'Claude Code' },
+                    { id: 'codex', label: 'Codex CLI' },
+                    { id: 'gemini', label: 'Gemini CLI' },
+                  ] as const).map(({ id: tool, label }) => {
+                    const isAvailable = cliStatus ? cliStatus[tool] : null;
+                    const isSelected = (settings.cli?.cliTool || 'claude') === tool;
+                    return (
+                      <button
+                        key={tool}
+                        type="button"
+                        onClick={() => setSettings(prev => ({
+                          ...prev,
+                          cli: { ...prev.cli, cliTool: tool }
+                        }))}
+                        className={`p-3 rounded-xl border-2 transition-all ${
+                          isSelected
+                            ? 'border-accent bg-accent/10 text-text-primary'
+                            : 'border-border-subtle bg-elevated text-text-secondary hover:border-accent/50'
+                        }`}
+                      >
+                        <span className="text-sm font-medium">{label}</span>
+                        {isAvailable !== null && (
+                          <span className={`block text-[10px] mt-1 ${isAvailable ? 'text-green-400' : 'text-red-400'}`}>
+                            {isAvailable ? 'installed' : 'not found'}
+                          </span>
+                        )}
+                        {isCheckingCli && isAvailable === null && (
+                          <span className="block text-[10px] mt-1 text-text-muted">checking...</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {cliStatus === null && !isCheckingCli && (
+                <p className="text-xs text-amber-300 leading-relaxed">
+                  Cannot connect to backend. Run: <code className="px-1 py-0.5 bg-elevated rounded">npx gitnexus serve</code>
+                </p>
+              )}
+
+              {cliStatus && !cliStatus.claude && !cliStatus.codex && !cliStatus.gemini && (
+                <p className="text-xs text-red-400 leading-relaxed">
+                  No CLI tools found. Install <code className="px-1 py-0.5 bg-elevated rounded">claude</code>,{' '}
+                  <code className="px-1 py-0.5 bg-elevated rounded">codex</code>, or{' '}
+                  <code className="px-1 py-0.5 bg-elevated rounded">gemini</code>.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Privacy Note */}
           <div className="p-4 bg-elevated/50 border border-border-subtle rounded-xl">

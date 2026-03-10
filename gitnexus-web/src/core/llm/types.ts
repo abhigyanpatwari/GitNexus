@@ -8,7 +8,7 @@
 /**
  * Supported LLM providers
  */
-export type LLMProvider = 'openai' | 'azure-openai' | 'gemini' | 'anthropic' | 'ollama' | 'openrouter';
+export type LLMProvider = 'openai' | 'azure-openai' | 'gemini' | 'anthropic' | 'ollama' | 'openrouter' | 'cli';
 
 /**
  * Base configuration shared by all providers
@@ -79,9 +79,19 @@ export interface OpenRouterConfig extends BaseProviderConfig {
 }
 
 /**
+ * CLI provider configuration (no API key needed)
+ * Supports Claude Code, Codex CLI, and Gemini CLI.
+ */
+export interface CLIConfig extends BaseProviderConfig {
+  provider: 'cli';
+  cliTool: 'claude' | 'codex' | 'gemini';
+  model: string;
+}
+
+/**
  * Union type for all provider configurations
  */
-export type ProviderConfig = OpenAIConfig | AzureOpenAIConfig | GeminiConfig | AnthropicConfig | OllamaConfig | OpenRouterConfig;
+export type ProviderConfig = OpenAIConfig | AzureOpenAIConfig | GeminiConfig | AnthropicConfig | OllamaConfig | OpenRouterConfig | CLIConfig;
 
 /**
  * Stored settings (what goes to localStorage)
@@ -98,6 +108,7 @@ export interface LLMSettings {
   anthropic?: Partial<Omit<AnthropicConfig, 'provider'>>;
   ollama?: Partial<Omit<OllamaConfig, 'provider'>>;
   openrouter?: Partial<Omit<OpenRouterConfig, 'provider'>>;
+  cli?: Partial<Omit<CLIConfig, 'provider'>>;
 
   // Intelligent Clustering Settings
   intelligentClustering: boolean;
@@ -147,6 +158,10 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
     model: '',
     baseUrl: 'https://openrouter.ai/api/v1',
     temperature: 0.1,
+  },
+  cli: {
+    cliTool: 'claude',
+    model: 'claude (CLI)',
   },
 };
 
