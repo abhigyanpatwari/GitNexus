@@ -28,13 +28,25 @@ export const FUNCTION_NODE_TYPES = new Set([
   // Rust
   'function_item',
   'impl_item', // Methods inside impl blocks
-  // Kotlin (function_declaration already included above via JS/TS)
+  // PHP
   'anonymous_function',
+  // Kotlin
   'lambda_literal',
-  // PHP — no additional node types needed
   // Swift
   'init_declaration',
   'deinit_declaration',
+]);
+
+/**
+ * Node types for standard function declarations that need C/C++ declarator handling.
+ * Used by extractFunctionName to determine how to extract the function name.
+ */
+export const FUNCTION_DECLARATION_TYPES = new Set([
+  'function_declaration',
+  'function_definition',
+  'async_function_declaration',
+  'generator_function_declaration',
+  'function_item',
 ]);
 
 /**
@@ -172,8 +184,7 @@ export const extractFunctionName = (node: any): { funcName: string | null; label
     };
   }
 
-  if (['function_declaration', 'function_definition', 'async_function_declaration',
-       'generator_function_declaration', 'function_item'].includes(node.type)) {
+  if (FUNCTION_DECLARATION_TYPES.has(node.type)) {
     // C/C++: function_definition -> function_declarator -> qualified_identifier/identifier
     const declarator = node.childForFieldName?.('declarator') ||
                         node.children?.find((c: any) => c.type === 'function_declarator');

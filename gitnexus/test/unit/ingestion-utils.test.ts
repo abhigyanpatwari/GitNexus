@@ -4,6 +4,8 @@ import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import Parser from 'tree-sitter';
 import C from 'tree-sitter-c';
 import CPP from 'tree-sitter-cpp';
+import Python from 'tree-sitter-python';
+import TypeScript from 'tree-sitter-typescript';
 
 describe('getLanguageFromFilename', () => {
   describe('TypeScript', () => {
@@ -277,6 +279,114 @@ describe('extractFunctionName', () => {
       const result = extractFunctionName(funcNode);
       
       expect(result.funcName).toBe('standalone_function');
+      expect(result.label).toBe('Function');
+    });
+
+    it('extracts method with parenthesized declarator', () => {
+      parser.setLanguage(CPP);
+      const code = `void (MyClass::handler)() {}`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+      
+      const result = extractFunctionName(funcNode);
+      
+      expect(result.funcName).toBe('handler');
+      expect(result.label).toBe('Method');
+    });
+  });
+
+  describe('TypeScript', () => {
+    it('extracts arrow function name from variable declarator', () => {
+      parser.setLanguage(TypeScript.typescript);
+      const code = `const myHandler = () => { return 1; }`;
+      const tree = parser.parse(code);
+      const program = tree.rootNode;
+      const varDecl = program.child(0);
+      const declarator = varDecl.namedChild(0);
+      const arrowFunc = declarator.namedChild(1);
+      
+      const result = extractFunctionName(arrowFunc);
+      
+      expect(result.funcName).toBe('myHandler');
+      expect(result.label).toBe('Function');
+    });
+
+    it('extracts function expression name from variable declarator', () => {
+      parser.setLanguage(TypeScript.typescript);
+      const code = `const processItem = function() { }`;
+      const tree = parser.parse(code);
+      const program = tree.rootNode;
+      const varDecl = program.child(0);
+      const declarator = varDecl.namedChild(0);
+      const funcExpr = declarator.namedChild(1);
+      
+      const result = extractFunctionName(funcExpr);
+      
+      expect(result.funcName).toBe('processItem');
+      expect(result.label).toBe('Function');
+    });
+  });
+
+  describe('Python', () => {
+    it('extracts function name from Python function definition', () => {
+      parser.setLanguage(Python);
+      const code = `def hello_world():\n    pass`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+      
+      const result = extractFunctionName(funcNode);
+      
+      expect(result.funcName).toBe('hello_world');
+      expect(result.label).toBe('Function');
+    });
+
+    it('extracts function name with parameters', () => {
+      parser.setLanguage(Python);
+      const code = `def calculate_sum(a, b):\n    return a + b`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+      
+      const result = extractFunctionName(funcNode);
+      
+      expect(result.funcName).toBe('calculate_sum');
+      expect(result.label).toBe('Function');
+    });
+
+    it('extracts async function name', () => {
+      parser.setLanguage(Python);
+      const code = `async def fetch_data():\n    pass`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+      
+      const result = extractFunctionName(funcNode);
+      
+      expect(result.funcName).toBe('fetch_data');
+      expect(result.label).toBe('Function');
+    });
+
+    it('extracts function name with type hints', () => {
+      parser.setLanguage(Python);
+      const code = `def process_data(items: list[int]) -> bool:\n    return True`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0);
+      
+      const result = extractFunctionName(funcNode);
+      
+      expect(result.funcName).toBe('process_data');
+      expect(result.label).toBe('Function');
+    });
+
+    it('extracts nested function name', () => {
+      parser.setLanguage(Python);
+      const code = `def outer():\n    def inner():\n        pass`;
+      const tree = parser.parse(code);
+      const outerFunc = tree.rootNode.child(0);
+      const block = outerFunc.child(4);
+      const innerFunc = block.namedChild(0);
+      
+      const result = extractFunctionName(innerFunc);
+      
+      expect(result.funcName).toBe('inner');
       expect(result.label).toBe('Function');
     });
   });
