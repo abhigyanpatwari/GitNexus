@@ -46,6 +46,8 @@
     "test:integration": "vitest run test/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "sync:skills": "tsx scripts/sync-skills.ts",
+    "sync:skills:check": "tsx scripts/sync-skills.ts && git diff --exit-code -- ../.claude/skills/gitnexus ../gitnexus-claude-plugin/skills ../gitnexus-cursor-integration/skills",
     "prepare": "node scripts/build.js",
     "prepack": "node scripts/build.js"
   },

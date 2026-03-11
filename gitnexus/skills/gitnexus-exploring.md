@@ -15,7 +15,7 @@ description: "Use when the user asks how code works, wants to understand archite
 
 ## Workflow
 
-```
+```text
 1. READ gitnexus://repos                          → Discover indexed repos
 2. READ gitnexus://repo/{name}/context             → Codebase overview, check staleness
 3. gitnexus_query({query: "<what you want to understand>"})  → Find related execution flows
@@ -27,7 +27,7 @@ description: "Use when the user asks how code works, wants to understand archite
 
 ## Checklist
 
-```
+```text
 - [ ] READ gitnexus://repo/{name}/context
 - [ ] gitnexus_query for the concept you want to understand
 - [ ] Review returned processes (execution flows)
@@ -49,7 +49,7 @@ description: "Use when the user asks how code works, wants to understand archite
 
 **gitnexus_query** — find execution flows related to a concept:
 
-```
+```text
 gitnexus_query({query: "payment processing"})
 → Processes: CheckoutFlow, RefundFlow, WebhookHandler
 → Symbols grouped by flow with file locations
@@ -57,7 +57,7 @@ gitnexus_query({query: "payment processing"})
 
 **gitnexus_context** — 360-degree view of a symbol:
 
-```
+```text
 gitnexus_context({name: "validateUser"})
 → Incoming calls: loginHandler, apiMiddleware
 → Outgoing calls: checkToken, getUserById
@@ -66,7 +66,7 @@ gitnexus_context({name: "validateUser"})
 
 ## Example: "How does payment processing work?"
 
-```
+```text
 1. READ gitnexus://repo/my-app/context       → 918 symbols, 45 processes
 2. gitnexus_query({query: "payment processing"})
    → CheckoutFlow: processPayment → validateCard → chargeStripe

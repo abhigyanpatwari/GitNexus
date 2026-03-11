@@ -16,7 +16,7 @@ description: "Use when the user wants to review a pull request, understand what 
 
 ## Workflow
 
-```
+```text
 1. gh pr diff <number>                                    → Get the raw diff
 2. gitnexus_detect_changes({scope: "compare", base_ref: "main"})  → Map diff to affected flows
 3. For each changed symbol:
@@ -30,7 +30,7 @@ description: "Use when the user wants to review a pull request, understand what 
 
 ## Checklist
 
-```
+```text
 - [ ] Fetch PR diff (gh pr diff or git diff base...head)
 - [ ] gitnexus_detect_changes to map changes to affected execution flows
 - [ ] gitnexus_impact on each non-trivial changed symbol
@@ -65,7 +65,7 @@ description: "Use when the user wants to review a pull request, understand what 
 
 **gitnexus_detect_changes** — map PR diff to affected execution flows:
 
-```
+```text
 gitnexus_detect_changes({scope: "compare", base_ref: "main"})
 
 → Changed: 8 symbols in 4 files
@@ -75,7 +75,7 @@ gitnexus_detect_changes({scope: "compare", base_ref: "main"})
 
 **gitnexus_impact** — blast radius per changed symbol:
 
-```
+```text
 gitnexus_impact({target: "validatePayment", direction: "upstream"})
 
 → d=1 (WILL BREAK):
@@ -88,7 +88,7 @@ gitnexus_impact({target: "validatePayment", direction: "upstream"})
 
 **gitnexus_impact with tests** — check test coverage:
 
-```
+```text
 gitnexus_impact({target: "validatePayment", direction: "upstream", includeTests: true})
 
 → Tests that cover this symbol:
@@ -98,7 +98,7 @@ gitnexus_impact({target: "validatePayment", direction: "upstream", includeTests:
 
 **gitnexus_context** — understand a changed symbol's role:
 
-```
+```text
 gitnexus_context({name: "validatePayment"})
 
 → Incoming calls: processCheckout, webhookHandler
@@ -108,7 +108,7 @@ gitnexus_context({name: "validatePayment"})
 
 ## Example: "Review PR #42"
 
-```
+```text
 1. gh pr diff 42 > /tmp/pr42.diff
    → 4 files changed: payments.ts, checkout.ts, types.ts, utils.ts
 

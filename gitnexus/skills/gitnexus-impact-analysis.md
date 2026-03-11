@@ -16,7 +16,7 @@ description: "Use when the user wants to know what will break if they change som
 
 ## Workflow
 
-```
+```text
 1. gitnexus_impact({target: "X", direction: "upstream"})  → What depends on this
 2. READ gitnexus://repo/{name}/processes                   → Check affected execution flows
 3. gitnexus_detect_changes()                               → Map current git changes to affected flows
@@ -27,7 +27,7 @@ description: "Use when the user wants to know what will break if they change som
 
 ## Checklist
 
-```
+```text
 - [ ] gitnexus_impact({target, direction: "upstream"}) to find dependents
 - [ ] Review d=1 items first (these WILL BREAK)
 - [ ] Check high-confidence (>0.8) dependencies
@@ -57,7 +57,7 @@ description: "Use when the user wants to know what will break if they change som
 
 **gitnexus_impact** — the primary tool for symbol blast radius:
 
-```
+```text
 gitnexus_impact({
   target: "validateUser",
   direction: "upstream",
@@ -75,7 +75,7 @@ gitnexus_impact({
 
 **gitnexus_detect_changes** — git-diff based impact analysis:
 
-```
+```text
 gitnexus_detect_changes({scope: "staged"})
 
 → Changed: 5 symbols in 3 files
@@ -85,7 +85,7 @@ gitnexus_detect_changes({scope: "staged"})
 
 ## Example: "What breaks if I change validateUser?"
 
-```
+```text
 1. gitnexus_impact({target: "validateUser", direction: "upstream"})
    → d=1: loginHandler, apiMiddleware (WILL BREAK)
    → d=2: authRouter, sessionManager (LIKELY AFFECTED)

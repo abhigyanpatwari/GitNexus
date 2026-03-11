@@ -18,6 +18,7 @@ concurrency:
 #   ci-quality.yml       — typecheck (tsc --noEmit)
 #   ci-tests.yml         — unit + integration tests with coverage + cross-platform
 #   ci-e2e.yml           — E2E tests (only when gitnexus-web/ changes)
+#   ci-skill-sync.yml    — skill file parity check
 #
 # Shared setup is DRY via .github/actions/setup-gitnexus composite action.
 
@@ -37,6 +38,11 @@ jobs:
     permissions:
       contents: read
 
+  skill-sync:
+    uses: ./.github/workflows/ci-skill-sync.yml
+    permissions:
+      contents: read
+
   # ── Save PR metadata for the reporting workflow ─────────────────
   # The ci-report.yml workflow (triggered by workflow_run) needs the
   # PR number and job results to post a comment.  We save them as an
@@ -45,7 +51,7 @@ jobs:
   save-pr-meta:
     name: Save PR Metadata
     if: always() && github.event_name == 'pull_request'
-    needs: [quality, tests, e2e]
+    needs: [quality, tests, e2e, skill-sync]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -56,12 +62,14 @@ jobs:
           QUALITY: ${{ needs.quality.result }}
           TESTS: ${{ needs.tests.result }}
           E2E: ${{ needs.e2e.result }}
+          SYNC: ${{ needs.skill-sync.result }}
         run: |
           mkdir -p pr-meta
           echo "$PR_NUMBER"  > pr-meta/pr_number
           echo "$QUALITY"    > pr-meta/quality_result
           echo "$TESTS"      > pr-meta/tests_result
           echo "$E2E"        > pr-meta/e2e_result
+          echo "$SYNC"       > pr-meta/skill_sync_result
           # TODO(post-merge): remove backward-compat copies once ci-report.yml
           # on main reads underscore names.
           # Backward-compat: ci-report.yml on main still reads hyphenated
@@ -84,7 +92,7 @@ jobs:
   # Single required check for branch protection.
   ci-status:
     name: CI Gate
-    needs: [quality, tests, e2e]
+    needs: [quality, tests, e2e, skill-sync]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -95,10 +103,12 @@ jobs:
           QUALITY: ${{ needs.quality.result }}
           TESTS: ${{ needs.tests.result }}
           E2E: ${{ needs.e2e.result }}
+          SYNC: ${{ needs.skill-sync.result }}
         run: |
           echo "Quality:     $QUALITY"
           echo "Tests:       $TESTS"
           echo "E2E:         $E2E"
+          echo "Skill Sync:  $SYNC"
           if [[ "$QUALITY" != "success" ]] ||
              [[ "$TESTS" != "success" ]]; then
             echo "::error::Quality or test jobs failed"
@@ -106,5 +116,9 @@ jobs:
           fi
           if [[ "$E2E" != "success" && "$E2E" != "skipped" ]]; then
             echo "::error::E2E job failed"
+            exit 1
+          fi
+          if [[ "$SYNC" != "success" ]]; then
+            echo "::error::Skill sync check failed"
             exit 1
           fi

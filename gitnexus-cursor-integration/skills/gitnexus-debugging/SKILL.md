@@ -1,11 +1,9 @@
----
-name: gitnexus-debugging
-description: Trace bugs through call chains using knowledge graph
----
+<!-- AUTO-GENERATED FROM gitnexus/skills/gitnexus-debugging.md — DO NOT EDIT -->
 
 # Debugging with GitNexus
 
 ## When to Use
+
 - "Why is this function failing?"
 - "Trace where this error comes from"
 - "Who calls this method?"
@@ -37,17 +35,18 @@ description: Trace bugs through call chains using knowledge graph
 
 ## Debugging Patterns
 
-| Symptom | GitNexus Approach |
-|---------|-------------------|
-| Error message | `gitnexus_query` for error text → `context` on throw sites |
-| Wrong return value | `context` on the function → trace callees for data flow |
-| Intermittent failure | `context` → look for external calls, async deps |
-| Performance issue | `context` → find symbols with many callers (hot paths) |
-| Recent regression | `detect_changes` to see what your changes affect |
+| Symptom              | GitNexus Approach                                          |
+| -------------------- | ---------------------------------------------------------- |
+| Error message        | `gitnexus_query` for error text → `context` on throw sites |
+| Wrong return value   | `context` on the function → trace callees for data flow    |
+| Intermittent failure | `context` → look for external calls, async deps            |
+| Performance issue    | `context` → find symbols with many callers (hot paths)     |
+| Recent regression    | `detect_changes` to see what your changes affect           |
 
 ## Tools
 
 **gitnexus_query** — find code related to error:
+
 ```
 gitnexus_query({query: "payment validation error"})
 → Processes: CheckoutFlow, ErrorHandling
@@ -55,6 +54,7 @@ gitnexus_query({query: "payment validation error"})
 ```
 
 **gitnexus_context** — full context for a suspect:
+
 ```
 gitnexus_context({name: "validatePayment"})
 → Incoming calls: processCheckout, webhookHandler
@@ -63,6 +63,7 @@ gitnexus_context({name: "validatePayment"})
 ```
 
 **gitnexus_cypher** — custom call chain traces:
+
 ```cypher
 MATCH path = (a)-[:CodeRelation {type: 'CALLS'}*1..2]->(b:Function {name: "validatePayment"})
 RETURN [n IN nodes(path) | n.name] AS chain

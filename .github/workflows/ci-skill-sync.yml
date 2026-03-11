@@ -1,0 +1,19 @@
+name: Skill Sync Check
+
+on:
+  workflow_call:
+
+jobs:
+  skill-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: ./.github/actions/setup-gitnexus
+
+      - name: Run skill sync
+        run: npm run sync:skills
+        working-directory: gitnexus
+
+      - name: Verify no skill files are out of sync
+        run: git diff --exit-code -- .claude/skills/gitnexus gitnexus-claude-plugin/skills gitnexus-cursor-integration/skills
