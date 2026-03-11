@@ -218,6 +218,65 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
   }
 }
 
+async function setupCodexCli(result: SetupResult): Promise<void> {
+  const codexDir = path.join(os.homedir(), '.codex');
+  if (!(await dirExists(codexDir))) {
+    result.skipped.push('Codex CLI (not installed)');
+    return;
+  }
+
+  const configPath = path.join(codexDir, 'config.toml');
+  try {
+    let content = '';
+    try {
+      content = await fs.readFile(configPath, 'utf-8');
+    } catch {
+      // File doesn't exist yet — we'll create it
+    }
+
+    // Check if gitnexus MCP server is already configured
+    if (content.includes('[mcp_servers.gitnexus]')) {
+      result.configured.push('Codex CLI (already configured)');
+      return;
+    }
+
+    // Append the GitNexus MCP server config block
+    const mcpBlock = [
+      '',
+      '[mcp_servers.gitnexus]',
+      'command = "npx"',
+      'args = ["-y", "gitnexus@latest", "mcp"]',
+      'startup_timeout_sec = 15.0',
+      '',
+    ].join('\n');
+
+    content = content.trimEnd() + '\n' + mcpBlock;
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(configPath, content, 'utf-8');
+    result.configured.push('Codex CLI');
+  } catch (err: any) {
+    result.errors.push(`Codex CLI: ${err.message}`);
+  }
+}
+
+/**
+ * Install GitNexus skills to ~/.codex/skills/ for Codex CLI.
+ */
+async function installCodexCliSkills(result: SetupResult): Promise<void> {
+  const codexDir = path.join(os.homedir(), '.codex');
+  if (!(await dirExists(codexDir))) return;
+
+  const skillsDir = path.join(codexDir, 'skills');
+  try {
+    const installed = await installSkillsTo(skillsDir);
+    if (installed.length > 0) {
+      result.configured.push(`Codex CLI skills (${installed.length} skills → ~/.codex/skills/)`);
+    }
+  } catch (err: any) {
+    result.errors.push(`Codex CLI skills: ${err.message}`);
+  }
+}
+
 async function setupOpenCode(result: SetupResult): Promise<void> {
   const opencodeDir = path.join(os.homedir(), '.config', 'opencode');
   if (!(await dirExists(opencodeDir))) {
@@ -362,11 +421,13 @@ export const setupCommand = async () => {
   // Detect and configure each editor's MCP
   await setupCursor(result);
   await setupClaudeCode(result);
+  await setupCodexCli(result);
   await setupOpenCode(result);
   
   // Install global skills for platforms that support them
   await installClaudeCodeSkills(result);
   await installClaudeCodeHooks(result);
+  await installCodexCliSkills(result);
   await installCursorSkills(result);
   await installOpenCodeSkills(result);
 
