@@ -1,3 +1,25 @@
+import fs from 'fs';
+import path from 'path';
+import ignore, { Ignore } from 'ignore';
+
+/**
+ * Load a .gitnexusignore file from the repository root.
+ * Returns an `ignore` instance that can test paths against the patterns.
+ * If no .gitnexusignore exists, returns null (graceful fallback).
+ */
+export const loadGitNexusIgnore = (repoPath: string): Ignore | null => {
+  const ignorePath = path.join(repoPath, '.gitnexusignore');
+  try {
+    const content = fs.readFileSync(ignorePath, 'utf-8');
+    const ig = ignore();
+    ig.add(content);
+    return ig;
+  } catch {
+    // No .gitnexusignore file — that's fine, return null
+    return null;
+  }
+};
+
 const DEFAULT_IGNORE_LIST = new Set([
     // Version Control
     '.git',

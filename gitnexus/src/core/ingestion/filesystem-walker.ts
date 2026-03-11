@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { glob } from 'glob';
-import { shouldIgnorePath } from '../../config/ignore-service.js';
+import { shouldIgnorePath, loadGitNexusIgnore } from '../../config/ignore-service.js';
 
 export interface FileEntry {
   path: string;
@@ -38,7 +38,14 @@ export const walkRepositoryPaths = async (
     dot: false,
   });
 
-  const filtered = files.filter(file => !shouldIgnorePath(file));
+  // Load .gitnexusignore patterns (null if file doesn't exist)
+  const nexusIgnore = loadGitNexusIgnore(repoPath);
+
+  const filtered = files.filter(file => {
+    if (shouldIgnorePath(file)) return false;
+    if (nexusIgnore && nexusIgnore.ignores(file)) return false;
+    return true;
+  });
   const entries: ScannedFile[] = [];
   let processed = 0;
   let skippedLarge = 0;
