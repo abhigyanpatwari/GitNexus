@@ -230,7 +230,13 @@ async function setupOpenCode(result: SetupResult): Promise<void> {
     const existing = await readJsonFile(configPath);
     const config = existing || {};
     if (!config.mcp) config.mcp = {};
-    config.mcp.gitnexus = getMcpEntry();
+    // OpenCode expects { type: "local", command: ["cmd", "arg1", ...] } format
+    // which differs from the standard MCP { command, args } format (#219)
+    const entry = getMcpEntry();
+    config.mcp.gitnexus = {
+      type: 'local',
+      command: [entry.command, ...entry.args],
+    };
     await writeJsonFile(configPath, config);
     result.configured.push('OpenCode');
   } catch (err: any) {
