@@ -16,11 +16,35 @@ import { resolveLLMConfig } from '../core/wiki/llm-client.js';
 
 export interface WikiCommandOptions {
   force?: boolean;
+  provider?: string;
   model?: string;
   baseUrl?: string;
   apiKey?: string;
   concurrency?: string;
   gist?: boolean;
+}
+
+/**
+ * Provider presets for common LLM endpoints.
+ * Each preset defines a base URL and sensible default model.
+ */
+const PROVIDER_PRESETS: Record<string, { baseUrl: string; model: string; needsKey: boolean }> = {
+  openai:      { baseUrl: 'https://api.openai.com/v1',      model: 'gpt-4o-mini',           needsKey: true },
+  openrouter:  { baseUrl: 'https://openrouter.ai/api/v1',   model: 'minimax/minimax-m2.5',  needsKey: true },
+  deepseek:    { baseUrl: 'https://api.deepseek.com/v1',    model: 'deepseek-chat',         needsKey: true },
+  ollama:      { baseUrl: 'http://localhost:11434/v1',       model: 'llama3.2',              needsKey: false },
+  lmstudio:    { baseUrl: 'http://localhost:1234/v1',        model: 'default',               needsKey: false },
+};
+
+/**
+ * Resolve provider preset. If the provider string isn't a known preset,
+ * treat it as a custom base URL.
+ */
+function resolveProvider(provider: string): { baseUrl: string; model: string; needsKey: boolean } {
+  const preset = PROVIDER_PRESETS[provider.toLowerCase()];
+  if (preset) return preset;
+  // Treat unknown provider as a custom base URL
+  return { baseUrl: provider, model: 'gpt-4o-mini', needsKey: true };
 }
 
 /**
@@ -112,24 +136,35 @@ export const wikiCommand = async (
   }
 
   // ── Resolve LLM config (with interactive fallback) ─────────────────
+  // Resolve --provider preset into baseUrl/model defaults
+  let providerDefaults: { baseUrl?: string; model?: string; needsKey?: boolean } = {};
+  if (options?.provider) {
+    providerDefaults = resolveProvider(options.provider);
+    console.log(`  Provider: ${options.provider} → ${providerDefaults.baseUrl}\n`);
+  }
+
+  // CLI flags override provider defaults
+  const effectiveBaseUrl = options?.baseUrl || providerDefaults.baseUrl;
+  const effectiveModel = options?.model || providerDefaults.model;
+
   // Save any CLI overrides immediately
-  if (options?.apiKey || options?.model || options?.baseUrl) {
+  if (options?.apiKey || effectiveModel || effectiveBaseUrl) {
     const existing = await loadCLIConfig();
     const updates: Record<string, string> = {};
-    if (options.apiKey) updates.apiKey = options.apiKey;
-    if (options.model) updates.model = options.model;
-    if (options.baseUrl) updates.baseUrl = options.baseUrl;
+    if (options?.apiKey) updates.apiKey = options.apiKey;
+    if (effectiveModel) updates.model = effectiveModel;
+    if (effectiveBaseUrl) updates.baseUrl = effectiveBaseUrl;
     await saveCLIConfig({ ...existing, ...updates });
     console.log('  Config saved to ~/.gitnexus/config.json\n');
   }
 
   const savedConfig = await loadCLIConfig();
   const hasSavedConfig = !!(savedConfig.apiKey && savedConfig.baseUrl);
-  const hasCLIOverrides = !!(options?.apiKey || options?.model || options?.baseUrl);
+  const hasCLIOverrides = !!(options?.apiKey || options?.provider || options?.model || options?.baseUrl);
 
   let llmConfig = await resolveLLMConfig({
-    model: options?.model,
-    baseUrl: options?.baseUrl,
+    model: effectiveModel,
+    baseUrl: effectiveBaseUrl,
     apiKey: options?.apiKey,
   });
 
@@ -139,37 +174,53 @@ export const wikiCommand = async (
     if (!process.stdin.isTTY) {
       if (!llmConfig.apiKey) {
         console.log('  Error: No LLM API key found.');
-        console.log('  Set OPENAI_API_KEY or GITNEXUS_API_KEY environment variable,');
-        console.log('  or pass --api-key <key>.\n');
+        console.log('  Options:');
+        console.log('    --provider ollama          (local, no key needed)');
+        console.log('    --provider deepseek --api-key <key>');
+        console.log('    --provider openrouter --api-key <key>');
+        console.log('    OPENAI_API_KEY=... or GITNEXUS_API_KEY=...\n');
         process.exitCode = 1;
         return;
       }
       // Non-interactive with env var — just use it
     } else {
       console.log('  No LLM configured. Let\'s set it up.\n');
-      console.log('  Supports OpenAI, OpenRouter, or any OpenAI-compatible API.\n');
+      console.log('  Supports any OpenAI-compatible API (OpenAI, DeepSeek, Ollama, etc.)\n');
 
       // Provider selection
-      console.log('  [1] OpenAI (api.openai.com)');
-      console.log('  [2] OpenRouter (openrouter.ai)');
-      console.log('  [3] Custom endpoint\n');
+      console.log('  [1] OpenAI          (api.openai.com)');
+      console.log('  [2] OpenRouter      (openrouter.ai — 300+ models)');
+      console.log('  [3] DeepSeek        (api.deepseek.com)');
+      console.log('  [4] Ollama          (localhost:11434 — local, no key needed)');
+      console.log('  [5] LM Studio       (localhost:1234 — local, no key needed)');
+      console.log('  [6] Custom endpoint\n');
 
-      const choice = await prompt('  Select provider (1/2/3): ');
+      const choice = await prompt('  Select provider (1-6): ');
 
       let baseUrl: string;
       let defaultModel: string;
+      let needsKey = true;
 
-      if (choice === '2') {
-        baseUrl = 'https://openrouter.ai/api/v1';
-        defaultModel = 'minimax/minimax-m2.5';
-      } else if (choice === '3') {
-        baseUrl = await prompt('  Base URL (e.g. http://localhost:11434/v1): ');
+      const presetMap: Record<string, string> = {
+        '1': 'openai', '2': 'openrouter', '3': 'deepseek',
+        '4': 'ollama', '5': 'lmstudio',
+      };
+
+      if (presetMap[choice]) {
+        const preset = PROVIDER_PRESETS[presetMap[choice]];
+        baseUrl = preset.baseUrl;
+        defaultModel = preset.model;
+        needsKey = preset.needsKey;
+      } else if (choice === '6') {
+        baseUrl = await prompt('  Base URL (e.g. http://localhost:18789/v1): ');
         if (!baseUrl) {
           console.log('\n  No URL provided. Aborting.\n');
           process.exitCode = 1;
           return;
         }
         defaultModel = 'gpt-4o-mini';
+        const keyNeeded = await prompt('  Does this endpoint require an API key? (Y/n): ');
+        needsKey = !keyNeeded || keyNeeded.toLowerCase() === 'y' || keyNeeded.toLowerCase() === 'yes';
       } else {
         baseUrl = 'https://api.openai.com/v1';
         defaultModel = 'gpt-4o-mini';
@@ -179,25 +230,30 @@ export const wikiCommand = async (
       const modelInput = await prompt(`  Model (default: ${defaultModel}): `);
       const model = modelInput || defaultModel;
 
-      // API key — pre-fill hint if env var exists
-      const envKey = process.env.GITNEXUS_API_KEY || process.env.OPENAI_API_KEY || '';
-      let key: string;
-      if (envKey) {
-        const masked = envKey.slice(0, 6) + '...' + envKey.slice(-4);
-        const useEnv = await prompt(`  Use existing env key (${masked})? (Y/n): `);
-        if (!useEnv || useEnv.toLowerCase() === 'y' || useEnv.toLowerCase() === 'yes') {
-          key = envKey;
+      // API key — skip for local providers that don't need one
+      let key = '';
+      if (needsKey) {
+        const envKey = process.env.GITNEXUS_API_KEY || process.env.OPENAI_API_KEY || '';
+        if (envKey) {
+          const masked = envKey.slice(0, 6) + '...' + envKey.slice(-4);
+          const useEnv = await prompt(`  Use existing env key (${masked})? (Y/n): `);
+          if (!useEnv || useEnv.toLowerCase() === 'y' || useEnv.toLowerCase() === 'yes') {
+            key = envKey;
+          } else {
+            key = await prompt('  API key: ', true);
+          }
         } else {
           key = await prompt('  API key: ', true);
         }
-      } else {
-        key = await prompt('  API key: ', true);
-      }
 
-      if (!key) {
-        console.log('\n  No key provided. Aborting.\n');
-        process.exitCode = 1;
-        return;
+        if (!key) {
+          console.log('\n  No key provided. Aborting.\n');
+          process.exitCode = 1;
+          return;
+        }
+      } else {
+        console.log('  No API key needed for local provider.\n');
+        key = 'local';
       }
 
       // Save
