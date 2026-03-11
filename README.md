@@ -122,8 +122,8 @@ claude mcp add gitnexus -- npx -y gitnexus@latest mcp
 {
   "mcp": {
     "gitnexus": {
-      "command": "npx",
-      "args": ["-y", "gitnexus@latest", "mcp"]
+      "type": "local",
+      "command": ["npx", "-y", "gitnexus@latest", "mcp"]
     }
   }
 }
