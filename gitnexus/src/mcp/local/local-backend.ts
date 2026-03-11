@@ -338,17 +338,29 @@ export class LocalBackend {
     limit?: number;
     max_symbols?: number;
     include_content?: boolean;
+    smart?: boolean;
   }): Promise<any> {
     if (!params.query?.trim()) {
       return { error: 'query parameter is required and cannot be empty.' };
     }
-    
+
     await this.ensureInitialized(repo.id);
-    
+
     const processLimit = params.limit || 5;
     const maxSymbolsPerProcess = params.max_symbols || 10;
     const includeContent = params.include_content ?? false;
-    const searchQuery = params.query.trim();
+
+    // Cross-lingual support: translate non-English queries when smart=true
+    let searchQuery = params.query.trim();
+    let translationNote = '';
+    if (params.smart) {
+      const { processSmartQuery } = await import('../../core/search/cross-lingual.js');
+      const result = await processSmartQuery(searchQuery, true);
+      if (result.wasTranslated) {
+        translationNote = `Translated: "${result.original}" → "${result.searchQuery}"\n\n`;
+        searchQuery = result.searchQuery;
+      }
+    }
     
     // Step 1: Run hybrid search to get matching symbols
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
@@ -526,6 +538,7 @@ export class LocalBackend {
     });
     
     return {
+      ...(translationNote ? { translation: translationNote.trim() } : {}),
       processes,
       process_symbols: dedupedSymbols,
       definitions: definitions.slice(0, 20), // cap standalone definitions

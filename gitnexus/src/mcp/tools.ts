@@ -63,6 +63,7 @@ Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank
         max_symbols: { type: 'number', description: 'Max symbols per process (default: 10)', default: 10 },
         include_content: { type: 'boolean', description: 'Include full symbol source code (default: false)', default: false },
         repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+        smart: { type: 'boolean', description: 'Enable cross-lingual search: auto-translates non-English queries (Chinese, Japanese, Korean, etc.) to English code keywords via LLM. Requires LLM API key configured. Default: false.', default: false },
       },
       required: ['query'],
     },
