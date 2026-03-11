@@ -86,6 +86,8 @@ export type ProgressCallback = (phase: string, percent: number, detail?: string)
 
 const DEFAULT_MAX_TOKENS_PER_MODULE = 30_000;
 const WIKI_DIR = 'wiki';
+/** Max tokens for the grouping prompt before chunking kicks in (#166) */
+const GROUPING_MAX_TOKENS = 100_000;
 
 // ─── Generator Class ──────────────────────────────────────────────────
 
@@ -324,17 +326,26 @@ export class WikiGenerator {
 
     const fileList = formatFileListForGrouping(files);
     const dirTree = formatDirectoryTree(files.map(f => f.filePath));
+    const estimatedTokens = estimateTokens(fileList + dirTree);
 
-    const prompt = fillTemplate(GROUPING_USER_PROMPT, {
-      FILE_LIST: fileList,
-      DIRECTORY_TREE: dirTree,
-    });
+    let grouping: Record<string, string[]>;
 
-    const response = await callLLM(
-      prompt, this.llmConfig, GROUPING_SYSTEM_PROMPT,
-      this.streamOpts('Grouping files', 15),
-    );
-    const grouping = this.parseGroupingResponse(response.content, files);
+    if (estimatedTokens <= GROUPING_MAX_TOKENS) {
+      // Small enough — single LLM call
+      const prompt = fillTemplate(GROUPING_USER_PROMPT, {
+        FILE_LIST: fileList,
+        DIRECTORY_TREE: dirTree,
+      });
+
+      const response = await callLLM(
+        prompt, this.llmConfig, GROUPING_SYSTEM_PROMPT,
+        this.streamOpts('Grouping files', 15),
+      );
+      grouping = this.parseGroupingResponse(response.content, files);
+    } else {
+      // Large repo — chunk files and merge groupings (#166)
+      grouping = await this.chunkedGrouping(files, estimatedTokens);
+    }
 
     // Convert to tree nodes
     const tree: ModuleTreeNode[] = [];
@@ -357,6 +368,72 @@ export class WikiGenerator {
     this.onProgress('grouping', 28, `Created ${tree.length} modules`);
 
     return tree;
+  }
+
+  /**
+   * Chunk large file lists into batches and merge LLM grouping results.
+   * Each chunk gets its own LLM call; results are merged by module name.
+   */
+  private async chunkedGrouping(
+    files: FileWithExports[],
+    estimatedTokens: number,
+  ): Promise<Record<string, string[]>> {
+    const numChunks = Math.ceil(estimatedTokens / GROUPING_MAX_TOKENS);
+    const chunkSize = Math.ceil(files.length / numChunks);
+
+    this.onProgress('grouping', 16, `Large repo (${files.length} files) — splitting into ${numChunks} chunks`);
+
+    // Pre-group files by top-level directory to keep related files together
+    const byDir = new Map<string, FileWithExports[]>();
+    for (const f of files) {
+      const topDir = f.filePath.replace(/\\/g, '/').split('/')[0] || 'root';
+      let group = byDir.get(topDir);
+      if (!group) { group = []; byDir.set(topDir, group); }
+      group.push(f);
+    }
+
+    // Pack directory groups into chunks that fit under the token limit
+    const chunks: FileWithExports[][] = [];
+    let current: FileWithExports[] = [];
+    for (const dirFiles of byDir.values()) {
+      if (current.length + dirFiles.length > chunkSize && current.length > 0) {
+        chunks.push(current);
+        current = [];
+      }
+      current.push(...dirFiles);
+    }
+    if (current.length > 0) chunks.push(current);
+
+    // Process each chunk
+    const mergedGrouping: Record<string, string[]> = {};
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const pct = 16 + Math.round((i / chunks.length) * 10);
+      this.onProgress('grouping', pct, `Grouping chunk ${i + 1}/${chunks.length} (${chunk.length} files)`);
+
+      const chunkFileList = formatFileListForGrouping(chunk);
+      const chunkDirTree = formatDirectoryTree(chunk.map(f => f.filePath));
+
+      const prompt = fillTemplate(GROUPING_USER_PROMPT, {
+        FILE_LIST: chunkFileList,
+        DIRECTORY_TREE: chunkDirTree,
+      });
+
+      const response = await callLLM(
+        prompt, this.llmConfig, GROUPING_SYSTEM_PROMPT,
+        this.streamOpts(`Grouping chunk ${i + 1}/${chunks.length}`, pct),
+      );
+
+      const chunkGrouping = this.parseGroupingResponse(response.content, chunk);
+
+      // Merge into combined grouping
+      for (const [mod, paths] of Object.entries(chunkGrouping)) {
+        if (!mergedGrouping[mod]) mergedGrouping[mod] = [];
+        mergedGrouping[mod].push(...paths);
+      }
+    }
+
+    return mergedGrouping;
   }
 
   /**
