@@ -343,7 +343,10 @@ async function installOpenCodeSkills(result: SetupResult): Promise<void> {
 
 // ─── Main command ──────────────────────────────────────────────────
 
-export const setupCommand = async () => {
+export const setupCommand = async (options?: { hooks?: boolean; skills?: boolean }) => {
+  const installHooks = options?.hooks !== false;
+  const installSkills = options?.skills !== false;
+
   console.log('');
   console.log('  GitNexus Setup');
   console.log('  ==============');
@@ -365,10 +368,22 @@ export const setupCommand = async () => {
   await setupOpenCode(result);
   
   // Install global skills for platforms that support them
-  await installClaudeCodeSkills(result);
-  await installClaudeCodeHooks(result);
-  await installCursorSkills(result);
-  await installOpenCodeSkills(result);
+  if (installSkills) {
+    await installClaudeCodeSkills(result);
+    await installCursorSkills(result);
+    await installOpenCodeSkills(result);
+  } else {
+    result.skipped.push('Skills (--no-skills)');
+  }
+
+  if (installHooks) {
+    console.log('  Installing hooks to ~/.claude/settings.json (PreToolUse, PostToolUse)');
+    console.log('  Use --no-hooks to skip this step.');
+    console.log('');
+    await installClaudeCodeHooks(result);
+  } else {
+    result.skipped.push('Hooks (--no-hooks)');
+  }
 
   // Print results
   if (result.configured.length > 0) {

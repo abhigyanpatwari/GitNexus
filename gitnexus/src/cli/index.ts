@@ -19,6 +19,8 @@ program
 program
   .command('setup')
   .description('One-time setup: configure MCP for Cursor, Claude Code, OpenCode')
+  .option('--no-hooks', 'Skip installing PreToolUse/PostToolUse hooks')
+  .option('--no-skills', 'Skip installing skills to editor config directories')
   .action(createLazyAction(() => import('./setup.js'), 'setupCommand'));
 
 program
