@@ -330,3 +330,31 @@ describe('Java variadic call resolution', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Local shadow: same-file definition takes priority over imported name
+// ---------------------------------------------------------------------------
+
+describe('Java local definition shadows import', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-local-shadow'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves run → save to same-file definition, not the imported one', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'run');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('src/main/java/com/example/app/Main.java');
+  });
+
+  it('does NOT resolve save to Logger.java', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveToUtils = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/main/java/com/example/utils/Logger.java');
+    expect(saveToUtils).toBeUndefined();
+  });
+});
+

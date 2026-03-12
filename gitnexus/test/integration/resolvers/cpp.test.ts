@@ -256,3 +256,31 @@ describe('C++ variadic call resolution', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Local shadow: same-file definition takes priority over imported name
+// ---------------------------------------------------------------------------
+
+describe('C++ local definition shadows import', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-local-shadow'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves run → save to same-file definition, not the imported one', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'run');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('src/main.cpp');
+  });
+
+  it('does NOT resolve save to utils.h', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveToUtils = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/utils.h');
+    expect(saveToUtils).toBeUndefined();
+  });
+});
+

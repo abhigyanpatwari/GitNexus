@@ -419,5 +419,72 @@ describe('PHP grouped import with alias', () => {
     expect(saveCall!.source).toBe('run');
     expect(saveCall!.targetFilePath).toBe('app/Models/User.php');
   });
+
+  it('resolves non-aliased User via NamedImportMap (not just the aliased Repo)', () => {
+    // Both User (non-aliased) and R→Repo (aliased) should resolve through grouped import
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'run');
+    const persistCall = calls.find(c => c.target === 'persist' && c.source === 'run');
+    expect(saveCall).toBeDefined();
+    expect(persistCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('app/Models/User.php');
+    expect(persistCall!.targetFilePath).toBe('app/Models/Repo.php');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Variadic resolution: ...$args don't get filtered by arity
+// ---------------------------------------------------------------------------
+
+describe('PHP variadic call resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'php-variadic-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves run → Logger.record despite extra args (variadic)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCall = calls.find(c => c.target === 'record');
+    expect(recordCall).toBeDefined();
+    expect(recordCall!.source).toBe('run');
+    expect(recordCall!.targetFilePath).toBe('app/Utils/Logger.php');
+  });
+
+  it('detects Logger class and record method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Logger');
+    expect(getNodesByLabel(result, 'Method')).toContain('record');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Local shadow: same-file definition takes priority over imported name
+// ---------------------------------------------------------------------------
+
+describe('PHP local definition shadows import', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'php-local-shadow'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves run → save to same-file definition, not the imported one', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'run');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('app/Services/Main.php');
+  });
+
+  it('does NOT resolve save to Logger.php', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveToUtils = calls.find(c => c.target === 'save' && c.targetFilePath === 'app/Utils/Logger.php');
+    expect(saveToUtils).toBeUndefined();
+  });
 });
 

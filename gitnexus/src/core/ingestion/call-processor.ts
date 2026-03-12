@@ -3,6 +3,7 @@ import { ASTCache } from './ast-cache.js';
 import type { SymbolDefinition, SymbolTable } from './symbol-table.js';
 import { ImportMap, PackageMap, NamedImportMap, isFileInPackageDir } from './import-processor.js';
 import { resolveSymbol, resolveSymbolInternal } from './symbol-resolver.js';
+import { walkBindingChain } from './named-binding-extraction.js';
 import Parser from 'tree-sitter';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
@@ -475,7 +476,8 @@ export const processRoutesFromExtracted = async (
 
 /**
  * Follow re-export chains through NamedImportMap for call candidate collection.
- * Returns TieredCandidates if a definition is found along the chain, null otherwise.
+ * Delegates chain-walking to the shared walkBindingChain utility, then
+ * applies call-processor semantics: any number of matches accepted.
  */
 const resolveNamedBindingChainForCandidates = (
   calledName: string,
@@ -484,34 +486,9 @@ const resolveNamedBindingChainForCandidates = (
   namedImportMap: NamedImportMap,
   allDefs: SymbolDefinition[],
 ): TieredCandidates | null => {
-  let lookupFile = currentFile;
-  let lookupName = calledName;
-  const visited = new Set<string>();
-
-  for (let depth = 0; depth < 5; depth++) {
-    const bindings = namedImportMap.get(lookupFile);
-    if (!bindings) return null;
-
-    const binding = bindings.get(lookupName);
-    if (!binding) return null;
-
-    const key = `${binding.sourcePath}:${binding.exportedName}`;
-    if (visited.has(key)) return null;
-    visited.add(key);
-
-    const targetName = binding.exportedName;
-    const boundDefs = targetName !== lookupName || depth > 0
-      ? symbolTable.lookupFuzzy(targetName).filter(def => def.filePath === binding.sourcePath)
-      : allDefs.filter(def => def.filePath === binding.sourcePath);
-
-    if (boundDefs.length > 0) {
-      return { candidates: boundDefs, tier: 'import-scoped' };
-    }
-
-    // No definition in source file → follow re-export chain
-    lookupFile = binding.sourcePath;
-    lookupName = targetName;
+  const defs = walkBindingChain(calledName, currentFile, symbolTable, namedImportMap, allDefs);
+  if (defs && defs.length > 0) {
+    return { candidates: defs, tier: 'import-scoped' };
   }
-
   return null;
 };

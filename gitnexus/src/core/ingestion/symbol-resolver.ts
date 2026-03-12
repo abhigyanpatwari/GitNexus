@@ -10,6 +10,7 @@
 import type { SymbolTable, SymbolDefinition } from './symbol-table.js';
 import type { ImportMap, PackageMap, NamedImportMap } from './import-processor.js';
 import { isFileInPackageDir } from './import-processor.js';
+import { walkBindingChain } from './named-binding-extraction.js';
 
 /** Resolution tier for internal tracking, logging, and test assertions. */
 export type ResolutionTier = 'same-file' | 'import-scoped' | 'unique-global';
@@ -104,11 +105,8 @@ export const resolveSymbolInternal = (
 
 /**
  * Follow re-export chains through NamedImportMap.
- *
- * When file A imports { User } from B, and B re-exports { User } from C,
- * the NamedImportMap for A points to B, but B has no User definition.
- * This function follows the chain: A→B→C until a definition is found.
- * Max depth 5 to prevent infinite loops.
+ * Delegates chain-walking to the shared walkBindingChain utility, then
+ * applies symbol-resolver semantics: exactly one match required.
  */
 const resolveNamedBindingChain = (
   name: string,
@@ -117,35 +115,9 @@ const resolveNamedBindingChain = (
   namedImportMap: NamedImportMap,
   allDefs: SymbolDefinition[],
 ): InternalResolution | null => {
-  let lookupFile = currentFilePath;
-  let lookupName = name;
-  const visited = new Set<string>();
-
-  for (let depth = 0; depth < 5; depth++) {
-    const bindings = namedImportMap.get(lookupFile);
-    if (!bindings) return null;
-
-    const binding = bindings.get(lookupName);
-    if (!binding) return null;
-
-    const key = `${binding.sourcePath}:${binding.exportedName}`;
-    if (visited.has(key)) return null; // circular
-    visited.add(key);
-
-    const targetName = binding.exportedName;
-    const resolvedDefs = targetName !== lookupName || depth > 0
-      ? symbolTable.lookupFuzzy(targetName).filter(def => def.filePath === binding.sourcePath)
-      : allDefs.filter(def => def.filePath === binding.sourcePath);
-
-    if (resolvedDefs.length === 1) {
-      return { definition: resolvedDefs[0], tier: 'import-scoped', candidateCount: resolvedDefs.length };
-    }
-    if (resolvedDefs.length > 1) return null; // ambiguous
-
-    // No definition in source file → it might be a re-export, follow chain
-    lookupFile = binding.sourcePath;
-    lookupName = targetName;
+  const defs = walkBindingChain(name, currentFilePath, symbolTable, namedImportMap, allDefs);
+  if (defs?.length === 1) {
+    return { definition: defs[0], tier: 'import-scoped', candidateCount: defs.length };
   }
-
   return null;
 };

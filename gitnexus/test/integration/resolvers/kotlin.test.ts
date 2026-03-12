@@ -327,3 +327,31 @@ describe('Kotlin variadic call resolution', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Local shadow: same-file definition takes priority over imported name
+// ---------------------------------------------------------------------------
+
+describe('Kotlin local definition shadows import', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-local-shadow'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves run → save to same-file definition, not the imported one', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'run');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('src/main/kotlin/app/Main.kt');
+  });
+
+  it('does NOT resolve save to Logger.kt', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveToUtils = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/main/kotlin/utils/Logger.kt');
+    expect(saveToUtils).toBeUndefined();
+  });
+});
+

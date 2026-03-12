@@ -347,3 +347,31 @@ describe('C# variadic call resolution', () => {
     expect(logCall!.targetFilePath).toBe('Utils/Logger.cs');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Local shadow: same-file definition takes priority over imported name
+// ---------------------------------------------------------------------------
+
+describe('C# local definition shadows import', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-local-shadow'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves Run → Save to same-file definition, not the imported one', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'Save' && c.source === 'Run');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('App/Main.cs');
+  });
+
+  it('does NOT resolve Save to Logger.cs', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveToUtils = calls.find(c => c.target === 'Save' && c.targetFilePath === 'Utils/Logger.cs');
+    expect(saveToUtils).toBeUndefined();
+  });
+});
