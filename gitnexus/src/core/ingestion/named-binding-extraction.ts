@@ -199,6 +199,11 @@ export function extractKotlinNamedBindings(importNode: any): { local: string; ex
   // Non-aliased: import com.example.User → local="User", exported="User"
   // Skip wildcard imports (ending in *)
   if (fullText.endsWith('.*') || fullText.endsWith('*')) return undefined;
+  // Skip lowercase last segments — those are member/function imports (e.g.,
+  // import util.OneArg.writeAudit), not class imports. Multiple member imports
+  // with the same function name would collide in NamedImportMap, breaking
+  // arity-based disambiguation.
+  if (exportedName[0] && exportedName[0] === exportedName[0].toLowerCase()) return undefined;
   return [{ local: exportedName, exported: exportedName }];
 }
 
