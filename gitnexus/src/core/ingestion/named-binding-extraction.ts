@@ -241,6 +241,16 @@ function collectRustBindings(node: any, bindings: { local: string; exported: str
     return;
   }
 
+  // Skip scoped_identifier that serves as path prefix in scoped_use_list
+  // e.g. use crate::models::{User, Repo} — the path node "crate::models" is not an importable symbol
+  if (node.type === 'scoped_identifier' && node.parent?.type === 'scoped_use_list') {
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child) collectRustBindings(child, bindings);
+    }
+    return;
+  }
+
   // Terminal scoped_identifier: use crate::models::User;
   // Only extract if this is a leaf (no deeper use_list/use_as_clause/scoped_use_list)
   if (node.type === 'scoped_identifier') {

@@ -359,3 +359,51 @@ describe('Rust local definition shadows import', () => {
     expect(saveToUtils).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Grouped imports: use crate::helpers::{func_a, func_b}
+// Verifies no spurious binding for the path prefix (e.g. "helpers")
+// ---------------------------------------------------------------------------
+
+describe('Rust grouped import resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-grouped-imports'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves main → format_name to src/helpers/mod.rs', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const call = calls.find(c => c.target === 'format_name');
+    expect(call).toBeDefined();
+    expect(call!.source).toBe('main');
+    expect(call!.targetFilePath).toBe('src/helpers/mod.rs');
+    expect(call!.rel.reason).toBe('import-resolved');
+  });
+
+  it('resolves main → validate_email to src/helpers/mod.rs', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const call = calls.find(c => c.target === 'validate_email');
+    expect(call).toBeDefined();
+    expect(call!.source).toBe('main');
+    expect(call!.targetFilePath).toBe('src/helpers/mod.rs');
+    expect(call!.rel.reason).toBe('import-resolved');
+  });
+
+  it('does not create a spurious CALLS edge for the path prefix "helpers"', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const spurious = calls.find(c => c.target === 'helpers' || c.source === 'helpers');
+    expect(spurious).toBeUndefined();
+  });
+
+  it('emits exactly 1 IMPORTS edge: main.rs → helpers/mod.rs', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    expect(imports.length).toBe(1);
+    expect(imports[0].source).toBe('main.rs');
+    expect(imports[0].target).toBe('mod.rs');
+    expect(imports[0].targetFilePath).toBe('src/helpers/mod.rs');
+  });
+});
