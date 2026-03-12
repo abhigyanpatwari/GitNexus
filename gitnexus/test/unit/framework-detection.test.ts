@@ -90,12 +90,11 @@ describe('detectFrameworkFromPath', () => {
 
   describe('React', () => {
     it('has React component detection rule for views/components folders', () => {
-      // Note: The current implementation lowercases the path before checking
-      // PascalCase, so PascalCase detection currently can't match.
-      // This test documents the current behavior.
       const result = detectFrameworkFromPath('views/Button.tsx');
-      // Returns null because path is lowercased before PascalCase regex check
-      expect(result).toBeNull();
+      expect(result).not.toBeNull();
+      expect(result!.framework).toBe('react');
+      expect(result!.entryPointMultiplier).toBe(1.5);
+      expect(result!.reason).toBe('react-component');
     });
   });
 
