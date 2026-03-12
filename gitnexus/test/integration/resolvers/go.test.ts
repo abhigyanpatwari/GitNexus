@@ -298,3 +298,48 @@ describe('Go receiver-constrained resolution', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Variadic resolution: ...interface{} doesn't get filtered by arity
+// ---------------------------------------------------------------------------
+
+describe('Go variadic call resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-variadic-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves 3-arg call to variadic func Entry(...interface{}) in logger.go', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const logCall = calls.find(c => c.target === 'Entry');
+    expect(logCall).toBeDefined();
+    expect(logCall!.source).toBe('main');
+    expect(logCall!.targetFilePath).toBe('internal/logger/logger.go');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Local shadow: unqualified call resolves to local function, not imported package
+// ---------------------------------------------------------------------------
+
+describe('Go local definition shadows import', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-local-shadow'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves Save("test") to local Save in main.go, not utils.go', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'Save' && c.source === 'main');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('cmd/main.go');
+  });
+});
+

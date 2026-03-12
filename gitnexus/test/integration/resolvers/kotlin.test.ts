@@ -262,3 +262,68 @@ describe('Kotlin alias import resolution', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Constructor-call resolution: User("alice") resolves to User constructor
+// ---------------------------------------------------------------------------
+
+describe('Kotlin constructor-call resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-constructor-calls'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User class with save method and main function', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Function')).toContain('main');
+  });
+
+  it('resolves import from app/App.kt to models/User.kt', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const imp = imports.find(e => e.source === 'App.kt' && e.targetFilePath === 'models/User.kt');
+    expect(imp).toBeDefined();
+  });
+
+  it('emits HAS_METHOD from User class to save function', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const edge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toBe('models/User.kt');
+  });
+
+  it('resolves user.save() as a method call to models/User.kt', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('main');
+    expect(saveCall!.targetFilePath).toBe('models/User.kt');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Variadic resolution: vararg doesn't get filtered by arity
+// ---------------------------------------------------------------------------
+
+describe('Kotlin variadic call resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-variadic-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves 3-arg call to vararg function logEntry(vararg String) in Logger.kt', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const logCall = calls.find(c => c.target === 'logEntry');
+    expect(logCall).toBeDefined();
+    expect(logCall!.source).toBe('main');
+    expect(logCall!.targetFilePath).toBe('util/Logger.kt');
+  });
+});
+

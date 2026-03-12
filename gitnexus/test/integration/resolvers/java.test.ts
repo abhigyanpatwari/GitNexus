@@ -307,3 +307,26 @@ describe('Java named import disambiguation', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Variadic resolution: String... doesn't get filtered by arity
+// ---------------------------------------------------------------------------
+
+describe('Java variadic call resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-variadic-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves 3-arg call to varargs method record(String...) in Logger.java', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const logCall = calls.find(c => c.target === 'record');
+    expect(logCall).toBeDefined();
+    expect(logCall!.source).toBe('run');
+    expect(logCall!.targetFilePath).toBe('com/example/util/Logger.java');
+  });
+});
+

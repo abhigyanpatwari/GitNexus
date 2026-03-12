@@ -8,6 +8,7 @@ import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename, isVerboseIngestionEnabled, yieldToEventLoop } from './utils.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
+import { extractNamedBindings } from './named-binding-extraction.js';
 import type { ExtractedImport } from './workers/parse-worker.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import {
@@ -42,196 +43,6 @@ export type {
 } from './resolvers/index.js';
 
 const isDev = process.env.NODE_ENV === 'development';
-
-/**
- * Extract named import bindings from an import AST node (sequential path).
- * Returns undefined for non-named imports (namespace, default, side-effect).
- */
-function extractNamedBindingsFromAST(
-  importNode: any,
-  language: SupportedLanguages,
-): { local: string; exported: string }[] | undefined {
-  if (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) {
-    // import_statement > import_clause > named_imports > import_specifier*
-    const importClause = findNamedChild(importNode, 'import_clause');
-    if (importClause) {
-      const namedImports = findNamedChild(importClause, 'named_imports');
-      if (!namedImports) return undefined;
-
-      const bindings: { local: string; exported: string }[] = [];
-      for (let i = 0; i < namedImports.namedChildCount; i++) {
-        const spec = namedImports.namedChild(i);
-        if (spec?.type !== 'import_specifier') continue;
-        const ids: string[] = [];
-        for (let j = 0; j < spec.namedChildCount; j++) {
-          const c = spec.namedChild(j);
-          if (c?.type === 'identifier') ids.push(c.text);
-        }
-        if (ids.length === 1) bindings.push({ local: ids[0], exported: ids[0] });
-        else if (ids.length === 2) bindings.push({ local: ids[1], exported: ids[0] });
-      }
-      return bindings.length > 0 ? bindings : undefined;
-    }
-
-    // Re-export: export { X } from './y' → export_clause > export_specifier
-    const exportClause = findNamedChild(importNode, 'export_clause');
-    if (exportClause) {
-      const bindings: { local: string; exported: string }[] = [];
-      for (let i = 0; i < exportClause.namedChildCount; i++) {
-        const spec = exportClause.namedChild(i);
-        if (spec?.type !== 'export_specifier') continue;
-        const ids: string[] = [];
-        for (let j = 0; j < spec.namedChildCount; j++) {
-          const c = spec.namedChild(j);
-          if (c?.type === 'identifier') ids.push(c.text);
-        }
-        if (ids.length === 1) bindings.push({ local: ids[0], exported: ids[0] });
-        else if (ids.length === 2) bindings.push({ local: ids[1], exported: ids[0] });
-      }
-      return bindings.length > 0 ? bindings : undefined;
-    }
-
-    return undefined;
-  }
-
-  if (language === SupportedLanguages.Python) {
-    if (importNode.type !== 'import_from_statement') return undefined;
-    const bindings: { local: string; exported: string }[] = [];
-    const moduleNode = importNode.childForFieldName?.('module_name');
-    for (let i = 0; i < importNode.namedChildCount; i++) {
-      const child = importNode.namedChild(i);
-      if (!child) continue;
-      if (child.type === 'dotted_name' && (!moduleNode || child.id !== moduleNode.id)) {
-        bindings.push({ local: child.text, exported: child.text });
-      }
-      if (child.type === 'aliased_import') {
-        const dn = findNamedChild(child, 'dotted_name');
-        const al = findNamedChild(child, 'identifier');
-        if (dn && al) bindings.push({ local: al.text, exported: dn.text });
-      }
-    }
-    return bindings.length > 0 ? bindings : undefined;
-  }
-
-  if (language === SupportedLanguages.Kotlin) {
-    if (importNode.type !== 'import_header') return undefined;
-    const importAlias = findNamedChild(importNode, 'import_alias');
-    if (!importAlias) return undefined;
-    const aliasIdent = findNamedChild(importAlias, 'simple_identifier');
-    if (!aliasIdent) return undefined;
-    const fullIdent = findNamedChild(importNode, 'identifier');
-    if (!fullIdent) return undefined;
-    const fullText = fullIdent.text;
-    const exportedName = fullText.includes('.') ? fullText.split('.').pop()! : fullText;
-    return [{ local: aliasIdent.text, exported: exportedName }];
-  }
-
-  if (language === SupportedLanguages.Rust) {
-    if (importNode.type !== 'use_declaration') return undefined;
-    const bindings: { local: string; exported: string }[] = [];
-    const collectUseAs = (node: any): void => {
-      if (node.type === 'use_as_clause') {
-        const idents: string[] = [];
-        for (let i = 0; i < node.namedChildCount; i++) {
-          const child = node.namedChild(i);
-          if (child?.type === 'identifier') idents.push(child.text);
-          if (child?.type === 'scoped_identifier') {
-            const nameNode = child.childForFieldName?.('name');
-            if (nameNode) idents.push(nameNode.text);
-          }
-        }
-        if (idents.length === 2) bindings.push({ local: idents[1], exported: idents[0] });
-        return;
-      }
-      for (let i = 0; i < node.namedChildCount; i++) {
-        const child = node.namedChild(i);
-        if (child) collectUseAs(child);
-      }
-    };
-    collectUseAs(importNode);
-    return bindings.length > 0 ? bindings : undefined;
-  }
-
-  if (language === SupportedLanguages.PHP) {
-    if (importNode.type !== 'namespace_use_declaration') return undefined;
-    const bindings: { local: string; exported: string }[] = [];
-    // Collect clauses from direct children AND namespace_use_group (grouped imports)
-    const clauses: any[] = [];
-    for (let i = 0; i < importNode.namedChildCount; i++) {
-      const child = importNode.namedChild(i);
-      if (child?.type === 'namespace_use_clause') {
-        clauses.push(child);
-      } else if (child?.type === 'namespace_use_group') {
-        for (let j = 0; j < child.namedChildCount; j++) {
-          const groupChild = child.namedChild(j);
-          if (groupChild?.type === 'namespace_use_clause') clauses.push(groupChild);
-        }
-      }
-    }
-    for (const clause of clauses) {
-      let qualifiedName: any = null;
-      const names: any[] = [];
-      for (let j = 0; j < clause.namedChildCount; j++) {
-        const child = clause.namedChild(j);
-        if (child?.type === 'qualified_name') qualifiedName = child;
-        else if (child?.type === 'name') names.push(child);
-      }
-      if (qualifiedName && names.length > 0) {
-        // Flat aliased import: use App\Models\Repo as R;
-        const fullText = qualifiedName.text;
-        const exportedName = fullText.includes('\\') ? fullText.split('\\').pop()! : fullText;
-        bindings.push({ local: names[0].text, exported: exportedName });
-      } else if (!qualifiedName && names.length >= 2) {
-        // Grouped aliased import: {Repo as R} — first name = exported, second = alias
-        bindings.push({ local: names[1].text, exported: names[0].text });
-      }
-    }
-    return bindings.length > 0 ? bindings : undefined;
-  }
-
-  if (language === SupportedLanguages.Java) {
-    if (importNode.type !== 'import_declaration') return undefined;
-    // Skip wildcard imports
-    for (let i = 0; i < importNode.childCount; i++) {
-      const child = importNode.child(i);
-      if (child?.type === 'asterisk') return undefined;
-    }
-    const scopedId = findNamedChild(importNode, 'scoped_identifier');
-    if (!scopedId) return undefined;
-    const fullText = scopedId.text;
-    const lastDot = fullText.lastIndexOf('.');
-    if (lastDot === -1) return undefined;
-    const className = fullText.slice(lastDot + 1);
-    // Skip lowercase names — package imports, not class imports
-    if (className[0] && className[0] === className[0].toLowerCase()) return undefined;
-    return [{ local: className, exported: className }];
-  }
-
-  if (language === SupportedLanguages.CSharp) {
-    if (importNode.type !== 'using_directive') return undefined;
-    let aliasIdent: any = null;
-    let qualifiedName: any = null;
-    for (let i = 0; i < importNode.namedChildCount; i++) {
-      const child = importNode.namedChild(i);
-      if (child?.type === 'identifier' && !aliasIdent) aliasIdent = child;
-      else if (child?.type === 'qualified_name') qualifiedName = child;
-    }
-    if (!aliasIdent || !qualifiedName) return undefined;
-    const fullText = qualifiedName.text;
-    const exportedName = fullText.includes('.') ? fullText.split('.').pop()! : fullText;
-    return [{ local: aliasIdent.text, exported: exportedName }];
-  }
-
-  return undefined;
-}
-
-function findNamedChild(node: any, type: string): any {
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const c = node.namedChild(i);
-    if (c?.type === type) return c;
-  }
-  return null;
-}
 
 // Type: Map<FilePath, Set<ResolvedFilePath>>
 // Stores all files that a given file imports from
@@ -823,7 +634,7 @@ export const processImports = async (
         totalImportsFound++;
 
         const result = resolveLanguageImport(file.path, rawImportPath, language, configs, ctx);
-        const bindings = namedImportMap ? extractNamedBindingsFromAST(captureMap['import'], language) : undefined;
+        const bindings = namedImportMap ? extractNamedBindings(captureMap['import'], language) : undefined;
         applyImportResult(result, file.path, importMap, packageMap, addImportEdge, addImportGraphEdge, bindings, namedImportMap);
       }
     });

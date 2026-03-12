@@ -324,3 +324,26 @@ describe('C# alias import resolution', () => {
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Variadic resolution: params string[] doesn't get filtered by arity
+// ---------------------------------------------------------------------------
+
+describe('C# variadic call resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-variadic-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves call to params method Record(params string[]) in Logger.cs', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const logCall = calls.find(c => c.target === 'Record');
+    expect(logCall).toBeDefined();
+    expect(logCall!.source).toBe('Execute');
+    expect(logCall!.targetFilePath).toBe('Utils/Logger.cs');
+  });
+});

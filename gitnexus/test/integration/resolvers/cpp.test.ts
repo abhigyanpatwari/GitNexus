@@ -233,3 +233,26 @@ describe('C++ receiver-constrained resolution', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Variadic resolution: C-style variadic (...) doesn't get filtered by arity
+// ---------------------------------------------------------------------------
+
+describe('C++ variadic call resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-variadic-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves 3-arg call to variadic function log_entry(const char*, ...) in logger.h', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const logCall = calls.find(c => c.target === 'log_entry');
+    expect(logCall).toBeDefined();
+    expect(logCall!.source).toBe('main');
+    expect(logCall!.targetFilePath).toBe('logger.h');
+  });
+});
+

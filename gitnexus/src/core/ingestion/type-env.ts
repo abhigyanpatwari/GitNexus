@@ -174,6 +174,9 @@ const walkForTypes = (
   let scope = currentScope;
   if (FUNCTION_NODE_TYPES.has(node.type)) {
     const { funcName } = extractFunctionName(node);
+    // TODO(stack-graph): scope key should use node position (startIndex) for full correctness.
+    // Two methods named 'save' in different classes within the same file write to the same
+    // scope key, causing non-deterministic resolution for receiver types inside same-named methods.
     if (funcName) scope = funcName;
   }
 

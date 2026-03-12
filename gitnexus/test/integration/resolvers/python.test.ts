@@ -284,3 +284,100 @@ describe('Python alias import resolution', () => {
     expect(imports[0].targetFilePath).toBe('models.py');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Re-export chain: from .base import X barrel pattern via __init__.py
+// ---------------------------------------------------------------------------
+
+describe('Python re-export chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-reexport-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.save() through __init__.py barrel to models/base.py', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('main');
+    expect(saveCall!.targetFilePath).toBe('models/base.py');
+  });
+
+  it('resolves repo.persist() through __init__.py barrel to models/base.py', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const persistCall = calls.find(c => c.target === 'persist');
+    expect(persistCall).toBeDefined();
+    expect(persistCall!.source).toBe('main');
+    expect(persistCall!.targetFilePath).toBe('models/base.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Local shadow: same-file definition takes priority over imported name
+// ---------------------------------------------------------------------------
+
+describe('Python local definition shadows import', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-local-shadow'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves save("test") to local save in app.py, not utils.py', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'main');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('app.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Constructor-call resolution: User("alice") resolves to User class
+// ---------------------------------------------------------------------------
+
+describe('Python constructor-call resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-constructor-calls'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User class with __init__ and save methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Function')).toContain('__init__');
+    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Function')).toContain('process');
+  });
+
+  it('resolves import from app.py to models.py', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const imp = imports.find(e => e.source === 'app.py' && e.targetFilePath === 'models.py');
+    expect(imp).toBeDefined();
+  });
+
+  it('emits HAS_METHOD from User class to __init__ and save', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const initEdge = hasMethod.find(e => e.source === 'User' && e.target === '__init__');
+    const saveEdge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
+    expect(initEdge).toBeDefined();
+    expect(saveEdge).toBeDefined();
+  });
+
+  it('resolves user.save() as a method call to models.py', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('process');
+    expect(saveCall!.targetFilePath).toBe('models.py');
+  });
+});
