@@ -182,20 +182,24 @@ export function extractKotlinNamedBindings(importNode: any): { local: string; ex
   // import_header > identifier + import_alias > simple_identifier
   if (importNode.type !== 'import_header') return undefined;
 
-  const importAlias = findChild(importNode, 'import_alias');
-  if (!importAlias) return undefined; // no alias → plain import, skip
-
-  const aliasIdent = findChild(importAlias, 'simple_identifier');
-  if (!aliasIdent) return undefined;
-
-  // The imported name is the full identifier; extract the last segment
   const fullIdent = findChild(importNode, 'identifier');
   if (!fullIdent) return undefined;
 
   const fullText = fullIdent.text;
   const exportedName = fullText.includes('.') ? fullText.split('.').pop()! : fullText;
 
-  return [{ local: aliasIdent.text, exported: exportedName }];
+  const importAlias = findChild(importNode, 'import_alias');
+  if (importAlias) {
+    // Aliased: import com.example.User as U
+    const aliasIdent = findChild(importAlias, 'simple_identifier');
+    if (!aliasIdent) return undefined;
+    return [{ local: aliasIdent.text, exported: exportedName }];
+  }
+
+  // Non-aliased: import com.example.User → local="User", exported="User"
+  // Skip wildcard imports (ending in *)
+  if (fullText.endsWith('.*') || fullText.endsWith('*')) return undefined;
+  return [{ local: exportedName, exported: exportedName }];
 }
 
 export function extractRustNamedBindings(importNode: any): { local: string; exported: string }[] | undefined {
@@ -203,11 +207,11 @@ export function extractRustNamedBindings(importNode: any): { local: string; expo
   if (importNode.type !== 'use_declaration') return undefined;
 
   const bindings: { local: string; exported: string }[] = [];
-  collectUseAsClauses(importNode, bindings);
+  collectRustBindings(importNode, bindings);
   return bindings.length > 0 ? bindings : undefined;
 }
 
-function collectUseAsClauses(node: any, bindings: { local: string; exported: string }[]): void {
+function collectRustBindings(node: any, bindings: { local: string; exported: string }[]): void {
   if (node.type === 'use_as_clause') {
     // First identifier = exported name, second identifier = local alias
     const idents: string[] = [];
@@ -225,9 +229,37 @@ function collectUseAsClauses(node: any, bindings: { local: string; exported: str
     }
     return;
   }
+
+  // Terminal identifier in a use_list: use crate::models::{User, Repo}
+  if (node.type === 'identifier' && node.parent?.type === 'use_list') {
+    bindings.push({ local: node.text, exported: node.text });
+    return;
+  }
+
+  // Terminal scoped_identifier: use crate::models::User;
+  // Only extract if this is a leaf (no deeper use_list/use_as_clause/scoped_use_list)
+  if (node.type === 'scoped_identifier') {
+    let hasDeeper = false;
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child?.type === 'use_list' || child?.type === 'use_as_clause' || child?.type === 'scoped_use_list') {
+        hasDeeper = true;
+        break;
+      }
+    }
+    if (!hasDeeper) {
+      const nameNode = node.childForFieldName?.('name');
+      if (nameNode) {
+        bindings.push({ local: nameNode.text, exported: nameNode.text });
+      }
+      return;
+    }
+  }
+
+  // Recurse into children
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
-    if (child) collectUseAsClauses(child, bindings);
+    if (child) collectRustBindings(child, bindings);
   }
 }
 

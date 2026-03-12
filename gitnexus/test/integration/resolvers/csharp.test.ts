@@ -51,6 +51,17 @@ describe('C# heritage resolution', () => {
     expect(targets).toContain('CreateUser → Log');        // _logger.Log() — receiver-typed
   });
 
+  it('resolves all CALLS from CreateUser via import-resolved or unique-global', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // C# non-aliased `using Namespace;` imports don't populate NamedImportMap
+    // (namespace-scoped imports can't bind to individual symbols).
+    // Calls resolve via directory-based PackageMap (import-resolved) when ambiguous,
+    // or via unique-global when the symbol name is globally unique.
+    for (const call of calls) {
+      expect(['import-resolved', 'unique-global']).toContain(call.rel.reason);
+    }
+  });
+
   it('resolves new User() to the User class via constructor discrimination', () => {
     const calls = getRelationships(result, 'CALLS');
     const ctorCall = calls.find(c => c.target === 'User');

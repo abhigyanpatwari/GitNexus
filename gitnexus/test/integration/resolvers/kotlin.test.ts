@@ -66,6 +66,23 @@ describe('Kotlin heritage resolution', () => {
     expect(extends_.some(e => e.target === 'Validatable')).toBe(false);
   });
 
+  it('resolves ambiguous validate() call through non-aliased import with import-resolved reason', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // validate is defined in both Validatable (interface) and User (override) → needs import scoping
+    const validateCall = calls.find(c => c.target === 'validate');
+    expect(validateCall).toBeDefined();
+    expect(validateCall!.source).toBe('processUser');
+    expect(validateCall!.rel.reason).toBe('import-resolved');
+  });
+
+  it('resolves unique save() call through non-aliased import', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // save is unique globally (only in BaseModel) → resolves as unique-global
+    const saveCall = calls.find(c => c.target === 'save');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('processUser');
+  });
+
   it('no OVERRIDES edges target Property nodes', () => {
     const overrides = getRelationships(result, 'OVERRIDES');
     for (const edge of overrides) {
@@ -301,6 +318,14 @@ describe('Kotlin constructor-call resolution', () => {
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('main');
     expect(saveCall!.targetFilePath).toBe('models/User.kt');
+  });
+
+  it('resolves calls via non-aliased import with import-resolved reason', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // Both User("alice") constructor and user.save() go through `import models.User`
+    for (const call of calls) {
+      expect(call.rel.reason).toBe('import-resolved');
+    }
   });
 });
 

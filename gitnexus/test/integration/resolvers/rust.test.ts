@@ -292,6 +292,50 @@ describe('Rust alias import resolution', () => {
 // Local shadow: same-file definition takes priority over imported name
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Re-export chain: pub use in mod.rs followed through to definition file
+// ---------------------------------------------------------------------------
+
+describe('Rust re-export chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-reexport-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Handler struct in handler.rs', () => {
+    const structs: string[] = [];
+    result.graph.forEachNode(n => {
+      if (n.label === 'Struct') structs.push(`${n.properties.name}@${n.properties.filePath}`);
+    });
+    expect(structs).toContain('Handler@src/models/handler.rs');
+  });
+
+  it('resolves Handler { ... } to src/models/handler.rs via re-export chain, not mod.rs', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctorCall = calls.find(c => c.target === 'Handler');
+    expect(ctorCall).toBeDefined();
+    expect(ctorCall!.source).toBe('main');
+    expect(ctorCall!.targetLabel).toBe('Struct');
+    expect(ctorCall!.targetFilePath).toBe('src/models/handler.rs');
+  });
+
+  it('resolves h.process() to src/models/handler.rs', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const processCall = calls.find(c => c.target === 'process');
+    expect(processCall).toBeDefined();
+    expect(processCall!.source).toBe('main');
+    expect(processCall!.targetFilePath).toBe('src/models/handler.rs');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Local shadow: same-file definition takes priority over imported name
+// ---------------------------------------------------------------------------
+
 describe('Rust local definition shadows import', () => {
   let result: PipelineResult;
 
