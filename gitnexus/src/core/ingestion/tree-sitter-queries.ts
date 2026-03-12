@@ -47,6 +47,10 @@ export const TYPESCRIPT_QUERIES = `
 (import_statement
   source: (string) @import.source) @import
 
+; Re-export statements: export { X } from './y'
+(export_statement
+  source: (string) @import.source) @import
+
 (call_expression
   function: (identifier) @call.name) @call
 
@@ -107,6 +111,10 @@ export const JAVASCRIPT_QUERIES = `
       value: (function_expression)))) @definition.function
 
 (import_statement
+  source: (string) @import.source) @import
+
+; Re-export statements: export { X } from './y'
+(export_statement
   source: (string) @import.source) @import
 
 (call_expression

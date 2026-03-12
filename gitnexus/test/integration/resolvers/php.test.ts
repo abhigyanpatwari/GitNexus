@@ -384,3 +384,40 @@ describe('PHP alias import resolution', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Grouped import with alias: use App\Models\{User, Repo as R}
+// ---------------------------------------------------------------------------
+
+describe('PHP grouped import with alias', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'php-grouped-imports'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Main, Repo, and User classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Main', 'Repo', 'User']);
+  });
+
+  it('resolves $r->persist() to Repo.php via grouped alias', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const persistCall = calls.find(c => c.target === 'persist');
+
+    expect(persistCall).toBeDefined();
+    expect(persistCall!.source).toBe('run');
+    expect(persistCall!.targetFilePath).toBe('app/Models/Repo.php');
+  });
+
+  it('resolves $u->save() to User.php via grouped import', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save');
+
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('run');
+    expect(saveCall!.targetFilePath).toBe('app/Models/User.php');
+  });
+});
+

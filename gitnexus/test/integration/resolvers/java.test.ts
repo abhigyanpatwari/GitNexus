@@ -272,3 +272,38 @@ describe('Java receiver-constrained resolution', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Named import disambiguation: two User classes, import resolves to correct one
+// ---------------------------------------------------------------------------
+
+describe('Java named import disambiguation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-named-imports'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects two User classes in different packages', () => {
+    const users = getNodesByLabel(result, 'Class').filter(n => n === 'User');
+    expect(users.length).toBe(2);
+  });
+
+  it('resolves user.save() to com/example/models/User.java via named import', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('run');
+    expect(saveCall!.targetFilePath).toBe('com/example/models/User.java');
+  });
+
+  it('resolves new User() to com/example/models/User.java, not other/', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctorCall = calls.find(c => c.target === 'User' && c.source === 'run');
+    expect(ctorCall).toBeDefined();
+    expect(ctorCall!.targetFilePath).toBe('com/example/models/User.java');
+  });
+});
+

@@ -73,38 +73,68 @@ function extractNamedBindings(
   if (language === SupportedLanguages.CSharp) {
     return extractCsharpNamedBindings(importNode);
   }
+  if (language === SupportedLanguages.Java) {
+    return extractJavaNamedBindings(importNode);
+  }
   return undefined;
 }
 
 function extractTsNamedBindings(importNode: any): { local: string; exported: string }[] | undefined {
   // import_statement > import_clause > named_imports > import_specifier*
   const importClause = findChild(importNode, 'import_clause');
-  if (!importClause) return undefined;
+  if (importClause) {
+    const namedImports = findChild(importClause, 'named_imports');
+    if (!namedImports) return undefined; // default import, namespace import, or side-effect
 
-  const namedImports = findChild(importClause, 'named_imports');
-  if (!namedImports) return undefined; // default import, namespace import, or side-effect
+    const bindings: { local: string; exported: string }[] = [];
+    for (let i = 0; i < namedImports.namedChildCount; i++) {
+      const specifier = namedImports.namedChild(i);
+      if (specifier?.type !== 'import_specifier') continue;
 
-  const bindings: { local: string; exported: string }[] = [];
-  for (let i = 0; i < namedImports.namedChildCount; i++) {
-    const specifier = namedImports.namedChild(i);
-    if (specifier?.type !== 'import_specifier') continue;
+      const identifiers: string[] = [];
+      for (let j = 0; j < specifier.namedChildCount; j++) {
+        const child = specifier.namedChild(j);
+        if (child?.type === 'identifier') identifiers.push(child.text);
+      }
 
-    // import_specifier has 1 identifier (no alias) or 2 identifiers (name + alias)
-    const identifiers: string[] = [];
-    for (let j = 0; j < specifier.namedChildCount; j++) {
-      const child = specifier.namedChild(j);
-      if (child?.type === 'identifier') identifiers.push(child.text);
+      if (identifiers.length === 1) {
+        bindings.push({ local: identifiers[0], exported: identifiers[0] });
+      } else if (identifiers.length === 2) {
+        // import { Foo as Bar } → exported='Foo', local='Bar'
+        bindings.push({ local: identifiers[1], exported: identifiers[0] });
+      }
     }
-
-    if (identifiers.length === 1) {
-      bindings.push({ local: identifiers[0], exported: identifiers[0] });
-    } else if (identifiers.length === 2) {
-      // import { Foo as Bar } → exported='Foo', local='Bar'
-      bindings.push({ local: identifiers[1], exported: identifiers[0] });
-    }
+    return bindings.length > 0 ? bindings : undefined;
   }
 
-  return bindings.length > 0 ? bindings : undefined;
+  // Re-export: export { X } from './y' → export_statement > export_clause > export_specifier
+  const exportClause = findChild(importNode, 'export_clause');
+  if (exportClause) {
+    const bindings: { local: string; exported: string }[] = [];
+    for (let i = 0; i < exportClause.namedChildCount; i++) {
+      const specifier = exportClause.namedChild(i);
+      if (specifier?.type !== 'export_specifier') continue;
+
+      const identifiers: string[] = [];
+      for (let j = 0; j < specifier.namedChildCount; j++) {
+        const child = specifier.namedChild(j);
+        if (child?.type === 'identifier') identifiers.push(child.text);
+      }
+
+      if (identifiers.length === 1) {
+        // export { User } from './base' → re-exports User as User
+        bindings.push({ local: identifiers[0], exported: identifiers[0] });
+      } else if (identifiers.length === 2) {
+        // export { Repo as Repository } from './models' → name=Repo, alias=Repository
+        // For re-exports, the first id is the source name, second is what's exported
+        // When another file imports { Repository }, they get Repo from the source
+        bindings.push({ local: identifiers[1], exported: identifiers[0] });
+      }
+    }
+    return bindings.length > 0 ? bindings : undefined;
+  }
+
+  return undefined;
 }
 
 function extractPythonNamedBindings(importNode: any): { local: string; exported: string }[] | undefined {
@@ -193,30 +223,45 @@ function collectUseAsClauses(node: any, bindings: { local: string; exported: str
 }
 
 function extractPhpNamedBindings(importNode: any): { local: string; exported: string }[] | undefined {
-  // namespace_use_declaration > namespace_use_clause*
+  // namespace_use_declaration > namespace_use_clause* (flat)
+  // namespace_use_declaration > namespace_use_group > namespace_use_clause* (grouped)
   if (importNode.type !== 'namespace_use_declaration') return undefined;
 
   const bindings: { local: string; exported: string }[] = [];
-  for (let i = 0; i < importNode.namedChildCount; i++) {
-    const clause = importNode.namedChild(i);
-    if (clause?.type !== 'namespace_use_clause') continue;
 
-    // Look for a name child (alias) that is NOT inside qualified_name
+  // Collect all clauses — from direct children AND from namespace_use_group
+  const clauses: any[] = [];
+  for (let i = 0; i < importNode.namedChildCount; i++) {
+    const child = importNode.namedChild(i);
+    if (child?.type === 'namespace_use_clause') {
+      clauses.push(child);
+    } else if (child?.type === 'namespace_use_group') {
+      for (let j = 0; j < child.namedChildCount; j++) {
+        const groupChild = child.namedChild(j);
+        if (groupChild?.type === 'namespace_use_clause') clauses.push(groupChild);
+      }
+    }
+  }
+
+  for (const clause of clauses) {
+    // Flat imports: qualified_name + name (alias)
     let qualifiedName: any = null;
-    let aliasName: any = null;
+    const names: any[] = [];
     for (let j = 0; j < clause.namedChildCount; j++) {
       const child = clause.namedChild(j);
       if (child?.type === 'qualified_name') qualifiedName = child;
-      else if (child?.type === 'name') aliasName = child;
+      else if (child?.type === 'name') names.push(child);
     }
 
-    if (!qualifiedName || !aliasName) continue;
-
-    // Extract last segment of qualified name as exported name
-    const fullText = qualifiedName.text;
-    const exportedName = fullText.includes('\\') ? fullText.split('\\').pop()! : fullText;
-
-    bindings.push({ local: aliasName.text, exported: exportedName });
+    if (qualifiedName && names.length > 0) {
+      // Flat aliased import: use App\Models\Repo as R;
+      const fullText = qualifiedName.text;
+      const exportedName = fullText.includes('\\') ? fullText.split('\\').pop()! : fullText;
+      bindings.push({ local: names[0].text, exported: exportedName });
+    } else if (!qualifiedName && names.length >= 2) {
+      // Grouped aliased import: {Repo as R} — first name = exported, second = alias
+      bindings.push({ local: names[1].text, exported: names[0].text });
+    }
   }
   return bindings.length > 0 ? bindings : undefined;
 }
@@ -239,6 +284,31 @@ function extractCsharpNamedBindings(importNode: any): { local: string; exported:
   const exportedName = fullText.includes('.') ? fullText.split('.').pop()! : fullText;
 
   return [{ local: aliasIdent.text, exported: exportedName }];
+}
+
+function extractJavaNamedBindings(importNode: any): { local: string; exported: string }[] | undefined {
+  // import_declaration > scoped_identifier "com.example.models.User"
+  // Wildcard imports (.*) don't produce named bindings
+  if (importNode.type !== 'import_declaration') return undefined;
+
+  // Check for asterisk (wildcard import) — skip those
+  for (let i = 0; i < importNode.childCount; i++) {
+    const child = importNode.child(i);
+    if (child?.type === 'asterisk') return undefined;
+  }
+
+  const scopedId = findChild(importNode, 'scoped_identifier');
+  if (!scopedId) return undefined;
+
+  const fullText = scopedId.text;
+  const lastDot = fullText.lastIndexOf('.');
+  if (lastDot === -1) return undefined;
+
+  const className = fullText.slice(lastDot + 1);
+  // Skip lowercase names — those are package imports, not class imports
+  if (className[0] && className[0] === className[0].toLowerCase()) return undefined;
+
+  return [{ local: className, exported: className }];
 }
 
 function findChild(node: any, type: string): any {

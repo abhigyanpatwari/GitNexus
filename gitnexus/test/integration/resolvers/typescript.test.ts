@@ -370,6 +370,120 @@ describe('TypeScript alias import resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Re-export chain: export { X } from './base' barrel pattern
+// ---------------------------------------------------------------------------
+
+describe('TypeScript re-export chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-reexport-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes in base.ts', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
+  });
+
+  it('resolves new User() through re-export chain to base.ts', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userCtor = calls.find(c => c.target === 'User' && c.targetLabel === 'Class');
+    expect(userCtor).toBeDefined();
+    expect(userCtor!.source).toBe('main');
+    expect(userCtor!.targetFilePath).toBe('src/base.ts');
+  });
+
+  it('resolves user.save() through re-export chain to base.ts', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('main');
+    expect(saveCall!.targetFilePath).toBe('src/base.ts');
+  });
+
+  it('resolves new Repo() through re-export chain to base.ts', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoCtor = calls.find(c => c.target === 'Repo' && c.targetLabel === 'Class');
+    expect(repoCtor).toBeDefined();
+    expect(repoCtor!.source).toBe('main');
+    expect(repoCtor!.targetFilePath).toBe('src/base.ts');
+  });
+
+  it('resolves repo.persist() through re-export chain to base.ts', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const persistCall = calls.find(c => c.target === 'persist');
+    expect(persistCall).toBeDefined();
+    expect(persistCall!.source).toBe('main');
+    expect(persistCall!.targetFilePath).toBe('src/base.ts');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Re-export type chain: export type { X } from './base' barrel pattern
+// ---------------------------------------------------------------------------
+
+describe('TypeScript export type re-export chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-reexport-type'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes in base.ts', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
+  });
+
+  it('resolves new User() through export type re-export chain to base.ts', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userCtor = calls.find(c => c.target === 'User' && c.targetLabel === 'Class');
+    expect(userCtor).toBeDefined();
+    expect(userCtor!.source).toBe('main');
+    expect(userCtor!.targetFilePath).toBe('src/base.ts');
+  });
+
+  it('resolves user.save() through export type re-export chain to base.ts', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('main');
+    expect(saveCall!.targetFilePath).toBe('src/base.ts');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Local shadow: same-file definition takes priority over imported name
+// ---------------------------------------------------------------------------
+
+describe('TypeScript local definition shadows import', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-local-shadow'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves run → save to same-file definition, not the imported one', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'run');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('src/app.ts');
+  });
+
+  it('does NOT resolve save to utils.ts', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveToUtils = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/utils.ts');
+    expect(saveToUtils).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Variadic resolution: rest params don't get filtered by arity
 // ---------------------------------------------------------------------------
 

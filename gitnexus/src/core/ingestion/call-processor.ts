@@ -213,32 +213,25 @@ const collectTieredCandidates = (
 ): TieredCandidates | null => {
   const allDefs = symbolTable.lookupFuzzy(calledName);
 
-  // Tier 2a-named: Check named bindings BEFORE the empty-allDefs early return,
-  // because aliased imports (import { User as U }) mean lookupFuzzy('U') returns
-  // empty but we can resolve via the exported name.
-  const namedBindings = namedImportMap?.get(currentFile);
-  if (namedBindings) {
-    const binding = namedBindings.get(calledName);
-    if (binding) {
-      const lookupName = binding.exportedName;
-      const boundDefs = lookupName !== calledName
-        ? symbolTable.lookupFuzzy(lookupName).filter(def => def.filePath === binding.sourcePath)
-        : allDefs.filter(def => def.filePath === binding.sourcePath);
-      if (boundDefs.length > 0) {
-        return { candidates: boundDefs, tier: 'import-scoped' };
-      }
-      // Named binding exists but no matching def in source file → fall through
-    }
-  }
-
-  if (allDefs.length === 0) return null;
-
-  // Tier 1: Same-file — use globalIndex filtered to currentFile to catch overloads
-  // (fileIndex stores only one definition per name per file, losing overloads)
+  // Tier 1: Same-file — highest priority, prevents imports from shadowing local defs
+  // (matches resolveSymbolInternal which checks lookupExactFull before named bindings)
   const localDefs = allDefs.filter(def => def.filePath === currentFile);
   if (localDefs.length > 0) {
     return { candidates: localDefs, tier: 'same-file' };
   }
+
+  // Tier 2a-named: Check named bindings with re-export chain following.
+  // Aliased imports (import { User as U }) mean lookupFuzzy('U') returns
+  // empty but we can resolve via the exported name.
+  // Re-exports (export { User } from './base') are followed up to 5 hops.
+  if (namedImportMap) {
+    const chainResult = resolveNamedBindingChainForCandidates(
+      calledName, currentFile, symbolTable, namedImportMap, allDefs,
+    );
+    if (chainResult) return chainResult;
+  }
+
+  if (allDefs.length === 0) return null;
 
   const importedFiles = importMap.get(currentFile);
   if (importedFiles) {
@@ -478,4 +471,47 @@ export const processRoutesFromExtracted = async (
   }
 
   onProgress?.(extractedRoutes.length, extractedRoutes.length);
+};
+
+/**
+ * Follow re-export chains through NamedImportMap for call candidate collection.
+ * Returns TieredCandidates if a definition is found along the chain, null otherwise.
+ */
+const resolveNamedBindingChainForCandidates = (
+  calledName: string,
+  currentFile: string,
+  symbolTable: SymbolTable,
+  namedImportMap: NamedImportMap,
+  allDefs: SymbolDefinition[],
+): TieredCandidates | null => {
+  let lookupFile = currentFile;
+  let lookupName = calledName;
+  const visited = new Set<string>();
+
+  for (let depth = 0; depth < 5; depth++) {
+    const bindings = namedImportMap.get(lookupFile);
+    if (!bindings) return null;
+
+    const binding = bindings.get(lookupName);
+    if (!binding) return null;
+
+    const key = `${binding.sourcePath}:${binding.exportedName}`;
+    if (visited.has(key)) return null;
+    visited.add(key);
+
+    const targetName = binding.exportedName;
+    const boundDefs = targetName !== lookupName || depth > 0
+      ? symbolTable.lookupFuzzy(targetName).filter(def => def.filePath === binding.sourcePath)
+      : allDefs.filter(def => def.filePath === binding.sourcePath);
+
+    if (boundDefs.length > 0) {
+      return { candidates: boundDefs, tier: 'import-scoped' };
+    }
+
+    // No definition in source file → follow re-export chain
+    lookupFile = binding.sourcePath;
+    lookupName = targetName;
+  }
+
+  return null;
 };

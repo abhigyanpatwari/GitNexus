@@ -62,21 +62,9 @@ export const resolveSymbolInternal = (
   // Tier 2a-named: Check named bindings BEFORE the empty-allDefs early return,
   // because aliased imports (import { User as U }) mean lookupFuzzy('U') returns
   // empty but we can resolve via the exported name.
-  const namedBindings = namedImportMap?.get(currentFilePath);
-  if (namedBindings) {
-    const binding = namedBindings.get(name);
-    if (binding) {
-      const lookupName = binding.exportedName;
-      // If local !== exported (alias), re-lookup with the exported name
-      const resolvedDefs = lookupName !== name
-        ? symbolTable.lookupFuzzy(lookupName).filter(def => def.filePath === binding.sourcePath)
-        : allDefs.filter(def => def.filePath === binding.sourcePath);
-      if (resolvedDefs.length === 1) {
-        return { definition: resolvedDefs[0], tier: 'import-scoped', candidateCount: resolvedDefs.length };
-      }
-      if (resolvedDefs.length > 1) return null; // ambiguous within bound file
-      // resolvedDefs.length === 0 → fall through to file-level ImportMap
-    }
+  if (namedImportMap) {
+    const result = resolveNamedBindingChain(name, currentFilePath, symbolTable, namedImportMap, allDefs);
+    if (result) return result;
   }
 
   if (allDefs.length === 0) return null;
@@ -111,5 +99,53 @@ export const resolveSymbolInternal = (
   }
 
   // Ambiguous: multiple global candidates, no import or same-file match → refuse
+  return null;
+};
+
+/**
+ * Follow re-export chains through NamedImportMap.
+ *
+ * When file A imports { User } from B, and B re-exports { User } from C,
+ * the NamedImportMap for A points to B, but B has no User definition.
+ * This function follows the chain: A→B→C until a definition is found.
+ * Max depth 5 to prevent infinite loops.
+ */
+const resolveNamedBindingChain = (
+  name: string,
+  currentFilePath: string,
+  symbolTable: SymbolTable,
+  namedImportMap: NamedImportMap,
+  allDefs: SymbolDefinition[],
+): InternalResolution | null => {
+  let lookupFile = currentFilePath;
+  let lookupName = name;
+  const visited = new Set<string>();
+
+  for (let depth = 0; depth < 5; depth++) {
+    const bindings = namedImportMap.get(lookupFile);
+    if (!bindings) return null;
+
+    const binding = bindings.get(lookupName);
+    if (!binding) return null;
+
+    const key = `${binding.sourcePath}:${binding.exportedName}`;
+    if (visited.has(key)) return null; // circular
+    visited.add(key);
+
+    const targetName = binding.exportedName;
+    const resolvedDefs = targetName !== lookupName || depth > 0
+      ? symbolTable.lookupFuzzy(targetName).filter(def => def.filePath === binding.sourcePath)
+      : allDefs.filter(def => def.filePath === binding.sourcePath);
+
+    if (resolvedDefs.length === 1) {
+      return { definition: resolvedDefs[0], tier: 'import-scoped', candidateCount: resolvedDefs.length };
+    }
+    if (resolvedDefs.length > 1) return null; // ambiguous
+
+    // No definition in source file → it might be a re-export, follow chain
+    lookupFile = binding.sourcePath;
+    lookupName = targetName;
+  }
+
   return null;
 };
