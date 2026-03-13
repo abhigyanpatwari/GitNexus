@@ -4,6 +4,7 @@ import { loadParser, loadLanguage } from '../tree-sitter/parser-loader';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries';
 import { generateId } from '../../lib/utils';
 import { getLanguageFromFilename } from './utils';
+import { routeRubyCall } from './ruby-call-routing';
 
 // Type: Map<FilePath, Set<ResolvedFilePath>>
 // Stores all files that a given file imports from
@@ -227,36 +228,25 @@ export const processImports = async (
       if (language === 'ruby' && captureMap['call']) {
         const callNameNode = captureMap['call.name'];
         if (callNameNode) {
-          const calledName = callNameNode.text;
-          if (calledName === 'require' || calledName === 'require_relative') {
-            const callNode = captureMap['call'];
-            const argList = callNode.childForFieldName?.('arguments');
-            const stringNode = argList?.children?.find((c: any) => c.type === 'string');
-            const contentNode = stringNode?.children?.find((c: any) => c.type === 'string_content');
-            if (contentNode) {
-              let importPath = contentNode.text;
-              // require_relative always resolves relative to current file
-              if (calledName === 'require_relative' && !importPath.startsWith('.')) {
-                importPath = './' + importPath;
+          const routed = routeRubyCall(callNameNode.text, captureMap['call']);
+          if (routed.kind === 'import') {
+            totalImportsFound++;
+            const resolvedPath = resolveImportPath(
+              file.path, routed.importPath, allFilePaths, allFileList, resolveCache
+            );
+            if (resolvedPath) {
+              const sourceId = generateId('File', file.path);
+              const targetId = generateId('File', resolvedPath);
+              const relId = generateId('IMPORTS', `${file.path}->${resolvedPath}`);
+              totalImportsResolved++;
+              graph.addRelationship({
+                id: relId, sourceId, targetId,
+                type: 'IMPORTS', confidence: 1.0, reason: '',
+              });
+              if (!importMap.has(file.path)) {
+                importMap.set(file.path, new Set());
               }
-              totalImportsFound++;
-              const resolvedPath = resolveImportPath(
-                file.path, importPath, allFilePaths, allFileList, resolveCache
-              );
-              if (resolvedPath) {
-                const sourceId = generateId('File', file.path);
-                const targetId = generateId('File', resolvedPath);
-                const relId = generateId('IMPORTS', `${file.path}->${resolvedPath}`);
-                totalImportsResolved++;
-                graph.addRelationship({
-                  id: relId, sourceId, targetId,
-                  type: 'IMPORTS', confidence: 1.0, reason: '',
-                });
-                if (!importMap.has(file.path)) {
-                  importMap.set(file.path, new Set());
-                }
-                importMap.get(file.path)!.add(resolvedPath);
-              }
+              importMap.get(file.path)!.add(resolvedPath);
             }
           }
         }

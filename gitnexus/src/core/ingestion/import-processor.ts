@@ -30,8 +30,8 @@ import {
   resolveCSharpNamespaceDir,
   resolvePhpImport,
   resolveRustImport,
-  extractRubyImportPath,
 } from './resolvers/index.js';
+import { routeRubyCall } from './ruby-call-routing.js';
 import type {
   SuffixIndex,
   TsconfigPaths,
@@ -450,11 +450,11 @@ export const processImports = async (
       if (language === SupportedLanguages.Ruby && captureMap['call']) {
         const callNameNode = captureMap['call.name'];
         if (callNameNode) {
-          const extracted = extractRubyImportPath(callNameNode.text, captureMap['call']);
-          if (extracted) {
+          const routed = routeRubyCall(callNameNode.text, captureMap['call']);
+          if (routed.kind === 'import') {
             totalImportsFound++;
             const resolvedPath = resolveImportPath(
-              file.path, extracted.importPath, allFilePaths, allFileList,
+              file.path, routed.importPath, allFilePaths, allFileList,
               normalizedFileList, resolveCache, language, configs.tsconfigPaths, index,
             );
             if (resolvedPath) {

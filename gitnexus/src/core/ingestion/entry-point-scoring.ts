@@ -193,7 +193,7 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
   ],
 
   // Ruby
-  'ruby': [
+  [SupportedLanguages.Ruby]: [
     /^call$/,                 // Service objects (MyService.call)
     /^perform$/,              // Background jobs (Sidekiq, ActiveJob)
     /^execute$/,              // Command pattern

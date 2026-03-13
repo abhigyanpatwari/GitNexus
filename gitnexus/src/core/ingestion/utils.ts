@@ -236,6 +236,21 @@ export const BUILT_IN_NAMES = new Set([
   'lock', 'read', 'write', 'try_lock',
   'spawn', 'join', 'sleep',
   'Some', 'None', 'Ok', 'Err',
+  // Ruby built-ins and Kernel methods
+  'puts', 'p', 'pp', 'raise', 'fail',
+  'require', 'require_relative', 'load', 'autoload',
+  'include', 'extend', 'prepend',
+  'attr_accessor', 'attr_reader', 'attr_writer',
+  'public', 'private', 'protected', 'module_function',
+  'lambda', 'proc', 'block_given?',
+  'nil?', 'is_a?', 'kind_of?', 'instance_of?', 'respond_to?',
+  'freeze', 'frozen?', 'dup', 'tap', 'yield_self',
+  // Ruby enumerables
+  'each', 'select', 'reject', 'detect', 'collect',
+  'inject', 'flat_map', 'each_with_object', 'each_with_index',
+  'any?', 'all?', 'none?', 'count', 'first', 'last',
+  'sort_by', 'min_by', 'max_by',
+  'group_by', 'partition', 'compact', 'flatten', 'uniq',
 ]);
 
 /** Check if a name is a built-in function or common noise that should be filtered out */

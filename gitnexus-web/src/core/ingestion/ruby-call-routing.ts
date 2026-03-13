@@ -3,9 +3,12 @@
  *
  * Ruby expresses imports, heritage (mixins), and property definitions as
  * method calls rather than syntax-level constructs. This module provides a
- * single routing function used by the CLI call-processor, CLI parse-worker,
- * and the web call-processor so that the classification logic lives in one
- * place.
+ * routing function used by the CLI call-processor, CLI parse-worker, and
+ * the web call-processor so that the classification logic lives in one place.
+ *
+ * NOTE: This file is intentionally duplicated in gitnexus-web/ because the
+ * two packages have separate build targets (Node native vs WASM/browser).
+ * Keep both copies in sync until a shared package is introduced.
  */
 
 // ── Result types ────────────────────────────────────────────────────────────
@@ -22,12 +25,21 @@ export interface RubyHeritageItem {
   mixinName: string;
 }
 
+export type RubyAccessorType = 'attr_accessor' | 'attr_reader' | 'attr_writer';
+
 export interface RubyPropertyItem {
   propName: string;
-  accessorType: string;
+  accessorType: RubyAccessorType;
   startLine: number;
   endLine: number;
 }
+
+// ── Pre-allocated singletons for common return values ────────────────────────
+const CALL_RESULT: RubyCallRouting = { kind: 'call' };
+const SKIP_RESULT: RubyCallRouting = { kind: 'skip' };
+
+/** Max depth for parent-walking loops to prevent pathological AST traversals */
+const MAX_PARENT_DEPTH = 50;
 
 // ── Routing function ────────────────────────────────────────────────────────
 
@@ -44,9 +56,13 @@ export function routeRubyCall(calledName: string, callNode: any): RubyCallRoutin
     const argList = callNode.childForFieldName?.('arguments');
     const stringNode = argList?.children?.find((c: any) => c.type === 'string');
     const contentNode = stringNode?.children?.find((c: any) => c.type === 'string_content');
-    if (!contentNode) return { kind: 'skip' };
+    if (!contentNode) return SKIP_RESULT;
 
     let importPath: string = contentNode.text;
+    // Validate: reject null bytes, control chars, excessively long paths
+    if (!importPath || importPath.length > 1024 || /[\x00-\x1f]/.test(importPath)) {
+      return SKIP_RESULT;
+    }
     const isRelative = calledName === 'require_relative';
     if (isRelative && !importPath.startsWith('.')) {
       importPath = './' + importPath;
@@ -58,14 +74,15 @@ export function routeRubyCall(calledName: string, callNode: any): RubyCallRoutin
   if (calledName === 'include' || calledName === 'extend' || calledName === 'prepend') {
     let enclosingClass: string | null = null;
     let current = callNode.parent;
-    while (current) {
+    let depth = 0;
+    while (current && ++depth <= MAX_PARENT_DEPTH) {
       if (current.type === 'class' || current.type === 'module') {
         const nameNode = current.childForFieldName?.('name');
         if (nameNode) { enclosingClass = nameNode.text; break; }
       }
       current = current.parent;
     }
-    if (!enclosingClass) return { kind: 'skip' };
+    if (!enclosingClass) return SKIP_RESULT;
 
     const items: RubyHeritageItem[] = [];
     const argList = callNode.childForFieldName?.('arguments');
@@ -74,7 +91,7 @@ export function routeRubyCall(calledName: string, callNode: any): RubyCallRoutin
         items.push({ enclosingClass, mixinName: arg.text });
       }
     }
-    return items.length > 0 ? { kind: 'heritage', items } : { kind: 'skip' };
+    return items.length > 0 ? { kind: 'heritage', items } : SKIP_RESULT;
   }
 
   // ── attr_accessor / attr_reader / attr_writer → property definitions ───
@@ -84,16 +101,16 @@ export function routeRubyCall(calledName: string, callNode: any): RubyCallRoutin
     for (const arg of (argList?.children ?? [])) {
       if (arg.type === 'simple_symbol') {
         items.push({
-          propName: arg.text.replace(/^:/, ''),
-          accessorType: calledName,
+          propName: arg.text.startsWith(':') ? arg.text.slice(1) : arg.text,
+          accessorType: calledName as RubyAccessorType,
           startLine: arg.startPosition.row,
           endLine: arg.endPosition.row,
         });
       }
     }
-    return items.length > 0 ? { kind: 'properties', items } : { kind: 'skip' };
+    return items.length > 0 ? { kind: 'properties', items } : SKIP_RESULT;
   }
 
   // ── Everything else → regular call ─────────────────────────────────────
-  return { kind: 'call' };
+  return CALL_RESULT;
 }

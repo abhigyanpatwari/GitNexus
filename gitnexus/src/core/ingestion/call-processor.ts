@@ -156,12 +156,13 @@ export const processCalls = async (
             }
             return;
 
-          case 'properties':
+          case 'properties': {
+            const fileId = generateId('File', file.path);
             for (const item of routed.items) {
               const nodeId = generateId('Property', `${file.path}:${item.propName}`);
               graph.addNode({
                 id: nodeId,
-                label: 'Property' as any,
+                label: 'Property' as any, // TODO: add 'Property' to graph node label union
                 properties: {
                   name: item.propName, filePath: file.path,
                   startLine: item.startLine, endLine: item.endLine,
@@ -170,7 +171,6 @@ export const processCalls = async (
                 },
               });
               symbolTable.add(file.path, item.propName, nodeId, 'Property');
-              const fileId = generateId('File', file.path);
               const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
               graph.addRelationship({
                 id: relId, sourceId: fileId, targetId: nodeId,
@@ -178,6 +178,7 @@ export const processCalls = async (
               });
             }
             return;
+          }
 
           case 'call':
             break; // fall through to normal call processing below
