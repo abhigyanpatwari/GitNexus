@@ -48,6 +48,9 @@ coverage/
 # Claude Code worktrees
 .claude/worktrees/
 
+# Claude code skills
+.claude/skills/generated/
+
 # Assets (screenshots, images)
 assets/
 

@@ -135,6 +135,8 @@ claude mcp add gitnexus -- npx -y gitnexus@latest mcp
 gitnexus setup                    # Configure MCP for your editors (one-time)
 gitnexus analyze [path]           # Index a repository (or update stale index)
 gitnexus analyze --force          # Force full re-index
+gitnexus analyze --skills         # Generate repo-specific skill files from detected communities
+gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
 gitnexus analyze --embeddings     # Enable embedding generation (slower, better search)
 gitnexus analyze --verbose        # Log skipped files when parsers are unavailable
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
@@ -189,6 +191,10 @@ gitnexus wiki --base-url <url>   # Wiki with custom LLM API base URL
 - **Debugging** — Trace bugs through call chains
 - **Impact Analysis** — Analyze blast radius before changes
 - **Refactoring** — Plan safe refactors using dependency mapping
+
+**Repo-specific skills** generated with `--skills`:
+
+When you run `gitnexus analyze --skills`, GitNexus detects the functional areas of your codebase (via Leiden community detection) and generates a `SKILL.md` file for each one under `.claude/skills/generated/`. Each skill describes a module's key files, entry points, execution flows, and cross-area connections — so your AI agent gets targeted context for the exact area of code you're working in. Skills are regenerated on each `--skills` run to stay current with the codebase.
 
 ---
 

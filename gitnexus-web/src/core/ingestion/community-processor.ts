@@ -330,25 +330,20 @@ const calculateCohesion = (memberIds: string[], graph: Graph): number => {
 
   const memberSet = new Set(memberIds);
   let internalEdges = 0;
-  
-  // Count edges within the community
+  let totalEdges = 0;
+
+  // Count internal vs total edges for community members
   memberIds.forEach(nodeId => {
     if (graph.hasNode(nodeId)) {
       graph.forEachNeighbor(nodeId, neighbor => {
+        totalEdges++;
         if (memberSet.has(neighbor)) {
           internalEdges++;
         }
       });
     }
   });
-  
-  // Each edge is counted twice (once from each end), so divide by 2
-  internalEdges = internalEdges / 2;
-  
-  // Maximum possible internal edges for n nodes: n*(n-1)/2
-  const maxPossibleEdges = (memberIds.length * (memberIds.length - 1)) / 2;
-  
-  if (maxPossibleEdges === 0) return 1.0;
-  
-  return Math.min(1.0, internalEdges / maxPossibleEdges);
+
+  if (totalEdges === 0) return 1.0;
+  return Math.min(1.0, internalEdges / totalEdges);
 };
