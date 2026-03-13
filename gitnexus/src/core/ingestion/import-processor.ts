@@ -31,7 +31,7 @@ import {
   resolvePhpImport,
   resolveRustImport,
 } from './resolvers/index.js';
-import type { 
+import type {
   SuffixIndex,
   TsconfigPaths,
   GoModuleConfig,
@@ -105,7 +105,6 @@ export function buildImportResolutionContext(allPaths: string[]): ImportResoluti
 
 // Config loaders extracted to ./language-config.ts (Phase 2 refactor)
 // Resolver functions are in ./resolvers/ — imported above
-
 
 // ============================================================================
 // SHARED LANGUAGE DISPATCH
