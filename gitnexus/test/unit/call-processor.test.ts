@@ -326,4 +326,27 @@ describe('processCallsFromExtracted', () => {
     expect(rels).toHaveLength(1);
     expect(rels[0].targetId).toBe('Constructor:src/models.ts:User(2)');
   });
+
+  it('cannot discriminate same-arity overloads by parameter type (known limitation)', async () => {
+    // Java: save(User u) vs save(Repo r) — both have parameterCount: 1
+    // The system counts arguments, not their types, so both candidates match equally.
+    // With parameter type capture, receiver-typed calls could be discriminated.
+    symbolTable.add('src/UserDao.ts', 'save', 'Function:src/UserDao.ts:save', 'Function', { parameterCount: 1 });
+    symbolTable.add('src/RepoDao.ts', 'save', 'Function:src/RepoDao.ts:save', 'Function', { parameterCount: 1 });
+    importMap.set('src/index.ts', new Set(['src/UserDao.ts', 'src/RepoDao.ts']));
+
+    const calls: ExtractedCall[] = [{
+      filePath: 'src/index.ts',
+      calledName: 'save',
+      sourceId: 'Function:src/index.ts:main',
+      argCount: 1,
+    }];
+
+    await processCallsFromExtracted(graph, calls, symbolTable, importMap);
+    const rels = graph.relationships.filter(r => r.type === 'CALLS');
+
+    // Both candidates match (same name, same arity) — ambiguous → no edge emitted
+    // Discriminating by parameter type would require capturing type annotations at call sites
+    expect(rels).toHaveLength(0);
+  });
 });
