@@ -13,8 +13,9 @@ import type { NamedImportMap } from './import-processor.js';
  * chain breaks (missing binding, circular reference, or depth exceeded).
  * Max depth 5 to prevent infinite loops.
  *
- * @param allDefs Pre-computed lookupFuzzy(name) results — must NOT be pre-filtered.
- *               Used as optimization cache at depth=0 when targetName === lookupName.
+ * @param allDefs Pre-computed `symbolTable.lookupFuzzy(name)` result — must be the
+ *               complete unfiltered result. Passing a file-filtered subset will cause
+ *               silent misses at depth=0 for non-aliased bindings.
  */
 export function walkBindingChain(
   name: string,
