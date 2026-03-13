@@ -250,16 +250,16 @@ async function setupOpenCode(result: SetupResult): Promise<void> {
  *   - Flat file:  skills/{name}.md           → copied as SKILL.md
  *   - Directory:  skills/{name}/SKILL.md     → copied recursively (includes references/, etc.)
  */
-export async function installSkillsTo(targetDir: string, skillsRoot?: string): Promise<string[]> {
+async function installSkillsTo(targetDir: string): Promise<string[]> {
   const installed: string[] = [];
-  const root = skillsRoot ?? path.join(__dirname, '..', '..', 'skills');
+  const skillsRoot = path.join(__dirname, '..', '..', 'skills');
 
   let flatFiles: string[] = [];
   let dirSkillFiles: string[] = [];
   try {
     [flatFiles, dirSkillFiles] = await Promise.all([
-      glob('*.md', { cwd: root }),
-      glob('*/SKILL.md', { cwd: root }),
+      glob('*.md', { cwd: skillsRoot }),
+      glob('*/SKILL.md', { cwd: skillsRoot }),
     ]);
   } catch {
     return [];
@@ -282,11 +282,11 @@ export async function installSkillsTo(targetDir: string, skillsRoot?: string): P
 
     try {
       if (source.isDirectory) {
-        const dirSource = path.join(root, skillName);
+        const dirSource = path.join(skillsRoot, skillName);
         await copyDirRecursive(dirSource, skillDir);
         installed.push(skillName);
       } else {
-        const flatSource = path.join(root, `${skillName}.md`);
+        const flatSource = path.join(skillsRoot, `${skillName}.md`);
         const content = await fs.readFile(flatSource, 'utf-8');
         await fs.mkdir(skillDir, { recursive: true });
         await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
