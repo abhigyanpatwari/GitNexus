@@ -224,18 +224,12 @@ export const runPipelineFromRepo = async (
         if (chunkWorkerData) {
           // Imports
           await processImportsFromExtracted(graph, allPathObjects, chunkWorkerData.imports, importMap, undefined, repoPath, importCtx, packageMap, namedImportMap);
-          // Calls — resolve immediately, then free the array
-          if (chunkWorkerData.calls.length > 0) {
-            await processCallsFromExtracted(graph, chunkWorkerData.calls, symbolTable, importMap, packageMap, undefined, namedImportMap);
-          }
-          // Heritage — resolve immediately, then free
-          if (chunkWorkerData.heritage.length > 0) {
-            await processHeritageFromExtracted(graph, chunkWorkerData.heritage, symbolTable, importMap, packageMap);
-          }
-          // Routes — resolve immediately (Laravel route→controller CALLS edges)
-          if (chunkWorkerData.routes && chunkWorkerData.routes.length > 0) {
-            await processRoutesFromExtracted(graph, chunkWorkerData.routes, symbolTable, importMap, packageMap);
-          }
+          // Calls + Heritage + Routes — resolve in parallel (no shared mutable state between them)
+          await Promise.all([
+            processCallsFromExtracted(graph, chunkWorkerData.calls, symbolTable, importMap, packageMap, undefined, namedImportMap),
+            processHeritageFromExtracted(graph, chunkWorkerData.heritage, symbolTable, importMap, packageMap),
+            processRoutesFromExtracted(graph, chunkWorkerData.routes ?? [], symbolTable, importMap, packageMap),
+          ]);
         } else {
           await processImports(graph, chunkFiles, astCache, importMap, undefined, repoPath, allPaths, packageMap, namedImportMap);
           sequentialChunkPaths.push(chunkPaths);

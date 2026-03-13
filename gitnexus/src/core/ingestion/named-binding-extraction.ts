@@ -12,6 +12,9 @@ import type { NamedImportMap } from './import-processor.js';
  * Returns the definitions found at the end of the chain, or null if the
  * chain breaks (missing binding, circular reference, or depth exceeded).
  * Max depth 5 to prevent infinite loops.
+ *
+ * @param allDefs Pre-computed lookupFuzzy(name) results — must NOT be pre-filtered.
+ *               Used as optimization cache at depth=0 when targetName === lookupName.
  */
 export function walkBindingChain(
   name: string,
@@ -244,11 +247,7 @@ function collectRustBindings(node: any, bindings: { local: string; exported: str
   // Skip scoped_identifier that serves as path prefix in scoped_use_list
   // e.g. use crate::models::{User, Repo} — the path node "crate::models" is not an importable symbol
   if (node.type === 'scoped_identifier' && node.parent?.type === 'scoped_use_list') {
-    for (let i = 0; i < node.namedChildCount; i++) {
-      const child = node.namedChild(i);
-      if (child) collectRustBindings(child, bindings);
-    }
-    return;
+    return; // path prefix — the use_list sibling handles the actual symbols
   }
 
   // Terminal scoped_identifier: use crate::models::User;
