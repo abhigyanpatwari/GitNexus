@@ -157,7 +157,26 @@ GitNexus supports indexing multiple repositories. Each `gitnexus analyze` regist
 
 ## Supported Languages
 
-TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Swift
+TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift
+
+### Language Feature Matrix
+
+| Language | Imports | Types | Exports | Named Bindings | Config | Frameworks | Entry Points | Heritage |
+|----------|---------|-------|---------|----------------|--------|------------|-------------|----------|
+| TypeScript | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| JavaScript | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Python | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| C# | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Java | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ |
+| Kotlin | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ |
+| Go | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ |
+| Rust | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ |
+| PHP | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| Swift | — | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ |
+| C | — | ✓ | ✓ | — | — | ✓ | ✓ | ✓ |
+| C++ | — | ✓ | ✓ | — | — | ✓ | ✓ | ✓ |
+
+**Imports** — cross-file import resolution · **Types** — type annotation extraction · **Exports** — public/exported symbol detection · **Named Bindings** — `import { X }` tracking · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics · **Heritage** — class inheritance / interface implementation
 
 ## Agent Skills
 
