@@ -286,11 +286,15 @@ describe('buildTypeEnv', () => {
       `, TypeScript.typescript);
       const env = buildTypeEnv(tree, 'typescript');
 
-      // Each function has its own scope for 'user'
-      const handleUserScope = env.get('handleUser');
-      const handleRepoScope = env.get('handleRepo');
-      expect(handleUserScope?.get('user')).toBe('User');
-      expect(handleRepoScope?.get('user')).toBe('Repo');
+      // Each function has its own scope for 'user' (keyed by funcName@startIndex)
+      // Find the scope keys that start with handleUser/handleRepo
+      const scopes = [...env.keys()];
+      const handleUserKey = scopes.find(k => k.startsWith('handleUser@'));
+      const handleRepoKey = scopes.find(k => k.startsWith('handleRepo@'));
+      expect(handleUserKey).toBeDefined();
+      expect(handleRepoKey).toBeDefined();
+      expect(env.get(handleUserKey!)?.get('user')).toBe('User');
+      expect(env.get(handleRepoKey!)?.get('user')).toBe('Repo');
     });
 
     it('lookupTypeEnv resolves from enclosing function scope', () => {
@@ -321,6 +325,38 @@ function handleRepo(user: Repo) {
       expect(lookupTypeEnv(env, 'user', calls[1])).toBe('Repo');
     });
 
+    it('separates same-named methods in different classes via startIndex', () => {
+      const code = `
+class UserService {
+  process(user: User) {
+    user.save();
+  }
+}
+class RepoService {
+  process(repo: Repo) {
+    repo.save();
+  }
+}`;
+      const tree = parse(code, TypeScript.typescript);
+      const env = buildTypeEnv(tree, 'typescript');
+
+      // Find the call nodes inside each process method
+      const calls: any[] = [];
+      function findCalls(node: any) {
+        if (node.type === 'call_expression') calls.push(node);
+        for (let i = 0; i < node.childCount; i++) {
+          findCalls(node.child(i));
+        }
+      }
+      findCalls(tree.rootNode);
+
+      expect(calls.length).toBe(2);
+      // First call inside UserService.process → user should be User
+      expect(lookupTypeEnv(env, 'user', calls[0])).toBe('User');
+      // Second call inside RepoService.process → repo should be Repo
+      expect(lookupTypeEnv(env, 'repo', calls[1])).toBe('Repo');
+    });
+
     it('file-level variables are accessible from all scopes', () => {
       const tree = parse(`
         const config: Config = getConfig();
@@ -335,9 +371,46 @@ function handleRepo(user: Repo) {
       const fileScope = env.get('');
       expect(fileScope?.get('config')).toBe('Config');
 
-      // user is in process scope
-      const processScope = env.get('process');
-      expect(processScope?.get('user')).toBe('User');
+      // user is in process scope (key includes startIndex)
+      // Find call nodes inside the process function
+      const calls: any[] = [];
+      function findCalls(node: any) {
+        if (node.type === 'call_expression') calls.push(node);
+        for (let i = 0; i < node.childCount; i++) findCalls(node.child(i));
+      }
+      findCalls(tree.rootNode);
+      // calls[0] = getConfig() at file level, calls[1] = config.validate(), calls[2] = user.save()
+      // Use a call inside the function to test scope resolution
+      expect(lookupTypeEnv(env, 'user', calls[2])).toBe('User');
+      // config is file-level, accessible from any scope
+      expect(lookupTypeEnv(env, 'config', calls[1])).toBe('Config');
+    });
+  });
+
+  describe('destructuring patterns (known limitations)', () => {
+    it('captures the typed source variable but not destructured bindings', () => {
+      const tree = parse(`
+        const user: User = getUser();
+        const { name, email } = user;
+      `, TypeScript.typescript);
+      const env = buildTypeEnv(tree, 'typescript');
+      // The typed variable is captured
+      expect(flatGet(env, 'user')).toBe('User');
+      // Destructured bindings (name, email) would need type inference to resolve
+      // — not extractable from annotations alone
+      expect(flatGet(env, 'name')).toBeUndefined();
+      expect(flatGet(env, 'email')).toBeUndefined();
+    });
+
+    it('does not extract from object-type-annotated destructuring', () => {
+      // TypeScript allows: const { name }: { name: string } = user;
+      // The annotation is on the whole pattern, not individual bindings
+      const tree = parse(`
+        const { name }: { name: string } = getUser();
+      `, TypeScript.typescript);
+      const env = buildTypeEnv(tree, 'typescript');
+      // Complex type annotation (object type) — extractSimpleTypeName returns undefined
+      expect(flatSize(env)).toBe(0);
     });
   });
 

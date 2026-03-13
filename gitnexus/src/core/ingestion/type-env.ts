@@ -50,7 +50,7 @@ const findEnclosingScopeKey = (node: SyntaxNode): string | undefined => {
   while (current) {
     if (FUNCTION_NODE_TYPES.has(current.type)) {
       const { funcName } = extractFunctionName(current);
-      if (funcName) return funcName;
+      if (funcName) return `${funcName}@${current.startIndex}`;
     }
     current = current.parent;
   }
@@ -174,10 +174,7 @@ const walkForTypes = (
   let scope = currentScope;
   if (FUNCTION_NODE_TYPES.has(node.type)) {
     const { funcName } = extractFunctionName(node);
-    // TODO(stack-graph): scope key should use node position (startIndex) for full correctness.
-    // Two methods named 'save' in different classes within the same file write to the same
-    // scope key, causing non-deterministic resolution for receiver types inside same-named methods.
-    if (funcName) scope = funcName;
+    if (funcName) scope = `${funcName}@${node.startIndex}`;
   }
 
   // Get or create the sub-map for this scope
