@@ -96,9 +96,8 @@ const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<str
   // AST: compound_literal_expression > type_identifier + initializer_list
   if (value.type === 'compound_literal_expression') {
     const typeId = value.firstNamedChild;
-    if (typeId?.type === 'type_identifier') {
-      env.set(varName, typeId.text);
-    }
+    const typeName = typeId ? extractSimpleTypeName(typeId) : undefined;
+    if (typeName) env.set(varName, typeName);
   }
 };
 

@@ -43,7 +43,10 @@ const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<str
   if (value.type === 'struct_expression') {
     const typeNode = value.childForFieldName('name');
     if (!typeNode) return;
-    const typeName = extractSimpleTypeName(typeNode);
+    const rawType = extractSimpleTypeName(typeNode);
+    if (!rawType) return;
+    // Resolve Self to the actual struct/enum name from the enclosing impl block
+    const typeName = rawType === 'Self' ? findEnclosingImplType(node) : rawType;
     const varName = extractVarName(pattern);
     if (varName && typeName) env.set(varName, typeName);
     return;

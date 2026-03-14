@@ -415,3 +415,32 @@ describe('C++ brace-init constructor inference', () => {
     expect(repoSave).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// C++ scoped brace-init: auto x = ns::HttpClient{}
+// ---------------------------------------------------------------------------
+
+describe('C++ scoped brace-init resolution (ns::Type{})', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-scoped-brace-init'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves client.connect() via ns::HttpClient{} scoped brace-init', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const connectCall = calls.find(c => c.target === 'connect' && c.targetFilePath === 'models.h');
+    expect(connectCall).toBeDefined();
+    expect(connectCall!.source).toBe('run');
+  });
+
+  it('resolves client.send() via ns::HttpClient{} scoped brace-init', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const sendCall = calls.find(c => c.target === 'send' && c.targetFilePath === 'models.h');
+    expect(sendCall).toBeDefined();
+    expect(sendCall!.source).toBe('run');
+  });
+});

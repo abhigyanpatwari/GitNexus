@@ -472,3 +472,36 @@ describe('Ruby super resolution', () => {
     expect(saveMethods.length).toBe(3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Ruby constant constructor: SERVICE = UserService.new; SERVICE.process
+// ---------------------------------------------------------------------------
+
+describe('Ruby constant constructor binding resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-constant-constructor'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects UserService class with process and validate methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('UserService');
+    expect(getNodesByLabel(result, 'Method')).toContain('process');
+    expect(getNodesByLabel(result, 'Method')).toContain('validate');
+  });
+
+  it('resolves SERVICE.process() via constant constructor binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const processCall = calls.find(c => c.target === 'process' && c.targetFilePath === 'models.rb');
+    expect(processCall).toBeDefined();
+  });
+
+  it('resolves SERVICE.validate() via constant constructor binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const validateCall = calls.find(c => c.target === 'validate' && c.targetFilePath === 'models.rb');
+    expect(validateCall).toBeDefined();
+  });
+});

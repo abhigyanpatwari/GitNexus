@@ -10,6 +10,7 @@ import Python from 'tree-sitter-python';
 import CPP from 'tree-sitter-cpp';
 import Kotlin from 'tree-sitter-kotlin';
 import PHP from 'tree-sitter-php';
+import Ruby from 'tree-sitter-ruby';
 
 const parser = new Parser();
 
@@ -339,6 +340,19 @@ class UserService {
       expect(calls.length).toBeGreaterThanOrEqual(1);
       // $this should resolve to enclosing class 'UserService'
       expect(typeEnv.lookup('$this', calls[0])).toBe('UserService');
+    });
+
+    it('extracts type from constructor property promotion (PHP 8.0+)', () => {
+      const tree = parse(`<?php
+class User {
+  public function __construct(
+    private string $name,
+    private UserRepo $repo
+  ) {}
+}
+      `, PHP.php);
+      const { env } = buildTypeEnv(tree, 'php');
+      expect(flatGet(env, '$repo')).toBe('UserRepo');
     });
   });
 
@@ -817,6 +831,29 @@ class RepoService {
         const { env } = buildTypeEnv(tree, 'rust');
         expect(flatGet(env, 'user')).toBe('BaseUser');
       });
+
+      it('resolves Self {} struct literal to enclosing impl type', () => {
+        const tree = parse(`
+          struct User { name: String }
+          impl User {
+            fn reset(&self) -> Self {
+              let fresh = Self { name: String::new() };
+            }
+          }
+        `, Rust);
+        const { env } = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'fresh')).toBe('User');
+      });
+
+      it('skips Self {} outside impl block', () => {
+        const tree = parse(`
+          fn main() {
+            let x = Self { name: String::new() };
+          }
+        `, Rust);
+        const { env } = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'x')).toBeUndefined();
+      });
     });
 
     describe('PHP', () => {
@@ -937,6 +974,17 @@ class RepoService {
         `, CPP);
         const { env } = buildTypeEnv(tree, 'cpp');
         expect(flatGet(env, 'cfg')).toBe('Config');
+      });
+
+      it('infers type from namespaced brace-init (ns::User{})', () => {
+        const tree = parse(`
+          namespace ns { class User {}; }
+          void run() {
+            auto user = ns::User{};
+          }
+        `, CPP);
+        const { env } = buildTypeEnv(tree, 'cpp');
+        expect(flatGet(env, 'user')).toBe('User');
       });
     });
 
@@ -1280,6 +1328,16 @@ def main():
       `, Go);
       const { constructorBindings } = buildTypeEnv(tree, 'go');
       expect(constructorBindings).toEqual([]);
+    });
+
+    it('returns constructor bindings for Ruby constant assignment (REPO = Repo.new)', () => {
+      const tree = parse(`
+REPO = Repo.new
+`, Ruby);
+      const { constructorBindings } = buildTypeEnv(tree, 'ruby');
+      expect(constructorBindings.length).toBe(1);
+      expect(constructorBindings[0].varName).toBe('REPO');
+      expect(constructorBindings[0].calleeName).toBe('Repo');
     });
 
     it('includes scope key in constructor bindings', () => {

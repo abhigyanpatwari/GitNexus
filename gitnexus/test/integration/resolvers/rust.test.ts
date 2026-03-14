@@ -541,3 +541,25 @@ describe('Rust struct literal type inference', () => {
     expect(validateCall!.source).toBe('main');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rust Self {} struct literal: Self resolves to enclosing impl type
+// ---------------------------------------------------------------------------
+
+describe('Rust Self {} struct literal resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-self-struct-literal'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves fresh.validate() inside impl User via Self {} inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const validateCall = calls.find(c => c.target === 'validate' && c.source === 'blank');
+    expect(validateCall).toBeDefined();
+    expect(validateCall!.targetFilePath).toBe('models.rs');
+  });
+});

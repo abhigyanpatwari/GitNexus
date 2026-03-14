@@ -96,6 +96,7 @@ export const TYPED_PARAMETER_TYPES = new Set([
   'parameter',               // C#/Rust/Go/Python/Swift
   'parameter_declaration',   // C/C++ void f(Type name)
   'simple_parameter',        // PHP function(Foo $x)
+  'property_promotion_parameter', // PHP 8.0+ constructor promotion: __construct(private Foo $x)
 ]);
 
 /** Find the first named child with the given node type */

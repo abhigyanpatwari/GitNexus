@@ -628,3 +628,34 @@ describe('PHP parent:: resolution', () => {
     expect(repoSave).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// PHP 8.0+ constructor property promotion: __construct(private UserRepo $repo)
+// ---------------------------------------------------------------------------
+
+describe('PHP constructor property promotion resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'php-property-promotion'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects UserRepo and UserService classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('UserRepo');
+    expect(getNodesByLabel(result, 'Class')).toContain('UserService');
+  });
+
+  it('resolves $repo->save() inside constructor via promoted parameter type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === '__construct');
+    expect(saveCall).toBeDefined();
+  });
+
+  // NOTE: $this->repo->save() in other methods requires multi-step receiver resolution
+  // (chained property access), which is a cross-language architectural feature not yet
+  // implemented. The promoted parameter type IS extracted into the TypeEnv — it just
+  // can't be accessed via $this->property chains yet.
+});
