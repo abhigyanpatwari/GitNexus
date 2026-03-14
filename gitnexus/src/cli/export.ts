@@ -20,7 +20,7 @@ import { createGzip } from 'zlib';
 import { pipeline } from 'stream/promises';
 import { Readable } from 'stream';
 import { getStoragePaths, loadMeta, listRegisteredRepos } from '../storage/repo-manager.js';
-import { withKuzuDb, executeQuery } from '../core/kuzu/kuzu-adapter.js';
+import { withKuzuDb, executeQuery, closeKuzu } from '../core/kuzu/kuzu-adapter.js';
 import { NODE_TABLES } from '../core/kuzu/schema.js';
 import { GraphNode, GraphRelationship } from '../core/graph/types.js';
 
@@ -348,4 +348,8 @@ export async function exportCommand(
   const stat = await fs.stat(outputPath);
   const sizeKB = (stat.size / 1024).toFixed(1);
   console.log(`  Written to: ${outputPath} (${sizeKB} KB)`);
+
+  // KuzuDB holds a native handle that prevents Node from exiting — close it explicitly.
+  await closeKuzu();
+  process.exit(0);
 }
