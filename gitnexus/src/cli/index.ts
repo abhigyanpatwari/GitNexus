@@ -25,6 +25,7 @@ program
   .command('analyze [path]')
   .description('Index a repository (full analysis)')
   .option('-f, --force', 'Force full re-index even if up to date')
+  .option('--incremental', 'Only re-index files changed since last commit (faster for small changes)')
   .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
   .option('--skills', 'Generate repo-specific skill files from detected communities')
    .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')

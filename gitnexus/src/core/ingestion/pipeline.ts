@@ -38,7 +38,10 @@ const AST_CACHE_CAP = 50;
 
 export const runPipelineFromRepo = async (
   repoPath: string,
-  onProgress: (progress: PipelineProgress) => void
+  onProgress: (progress: PipelineProgress) => void,
+  /** Optional: absolute paths of files to (re)process. When set, only these files
+   *  are parsed — used by incremental indexing after deleting stale symbols. */
+  fileFilter?: Set<string>
 ): Promise<PipelineResult> => {
   const graph = createKnowledgeGraph();
   const symbolTable = createSymbolTable();
@@ -88,8 +91,13 @@ export const runPipelineFromRepo = async (
       stats: { filesProcessed: 0, totalFiles, nodesCreated: graph.nodeCount },
     });
 
+    // In incremental mode, only create structure nodes for changed files
+    // (all other folder/file nodes already exist in KuzuDB)
+    const structurePaths = fileFilter
+      ? scannedFiles.filter(f => fileFilter.has(f.path)).map(f => f.path)
+      : scannedFiles.map(f => f.path);
     const allPaths = scannedFiles.map(f => f.path);
-    processStructure(graph, allPaths);
+    processStructure(graph, structurePaths.length > 0 ? structurePaths : allPaths);
 
     onProgress({
       phase: 'structure',
@@ -103,6 +111,7 @@ export const runPipelineFromRepo = async (
     // is in memory at a time. Each chunk is: read → parse → extract → free.
 
     const parseableScanned = scannedFiles.filter(f => {
+      if (fileFilter && !fileFilter.has(f.path)) return false;
       const lang = getLanguageFromFilename(f.path);
       return lang && isLanguageAvailable(lang);
     });

@@ -672,6 +672,20 @@ export const deleteNodesForFile = async (filePath: string, dbPath?: string): Pro
 
 export const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
 
+/**
+ * Remove all graph nodes (and their edges via DETACH DELETE) for a list of
+ * absolute file paths. Used by incremental indexing before re-ingesting
+ * changed files, so stale symbols don't persist in the graph.
+ */
+export const removeSymbolsForFiles = async (filePaths: string[]): Promise<number> => {
+  let total = 0;
+  for (const fp of filePaths) {
+    const { deletedNodes } = await deleteNodesForFile(fp);
+    total += deletedNodes;
+  }
+  return total;
+};
+
 // ============================================================================
 // Full-Text Search (FTS) Functions
 // ============================================================================

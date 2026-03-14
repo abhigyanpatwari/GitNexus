@@ -9,13 +9,13 @@ import { execFileSync } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
 import { runPipelineFromRepo } from '../core/ingestion/pipeline.js';
-import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReusedStatement, closeKuzu, createFTSIndex, loadCachedEmbeddings } from '../core/kuzu/kuzu-adapter.js';
+import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReusedStatement, closeKuzu, createFTSIndex, loadCachedEmbeddings, removeSymbolsForFiles } from '../core/kuzu/kuzu-adapter.js';
 // Embedding imports are lazy (dynamic import) so onnxruntime-node is never
 // loaded when embeddings are not requested. This avoids crashes on Node
 // versions whose ABI is not yet supported by the native binary (#89).
 // disposeEmbedder intentionally not called — ONNX Runtime segfaults on cleanup (see #38)
 import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath } from '../storage/repo-manager.js';
-import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
+import { getCurrentCommit, isGitRepo, getGitRoot, getChangedFiles } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
 import { generateSkillFiles, type GeneratedSkillInfo } from './skill-gen.js';
 import fs from 'fs/promises';
@@ -48,6 +48,7 @@ export interface AnalyzeOptions {
   embeddings?: boolean;
   skills?: boolean;
   verbose?: boolean;
+  incremental?: boolean;
 }
 
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
@@ -107,6 +108,24 @@ export const analyzeCommand = async (
   if (existingMeta && !options?.force && !options?.skills && existingMeta.lastCommit === currentCommit) {
     console.log('  Already up to date\n');
     return;
+  }
+
+  // ── Incremental mode: detect changed files ────────────────────────
+  let incrementalFileFilter: Set<string> | undefined;
+  let incrementalRelPaths: string[] = [];
+
+  if (options?.incremental && existingMeta?.lastCommit && existingMeta.lastCommit !== currentCommit && !options?.force) {
+    const relChanged = getChangedFiles(repoPath, existingMeta.lastCommit, currentCommit);
+    if (relChanged.length === 0) {
+      console.log('  Incremental update: no file changes detected\n');
+      return;
+    }
+    // fileFilter uses the SAME relative paths that walkRepositoryPaths returns
+    // (e.g. "gitnexus/src/cli/export.ts", relative to repoPath)
+    incrementalFileFilter = new Set(relChanged);
+    // relChangedPaths match KuzuDB's stored filePath format — used for DETACH DELETE
+    incrementalRelPaths = relChanged;
+    console.log(`  Incremental update: ${relChanged.length} file(s) changed`);
   }
 
   // Single progress bar for entire pipeline
@@ -195,15 +214,39 @@ export const analyzeCommand = async (
     const phaseLabel = PHASE_LABELS[progress.phase] || progress.phase;
     const scaled = Math.round(progress.percent * 0.6);
     updateBar(scaled, phaseLabel);
-  });
+  }, incrementalFileFilter);
 
   // ── Phase 2: KuzuDB (60–85%) ──────────────────────────────────────
   updateBar(60, 'Loading into KuzuDB...');
 
-  await closeKuzu();
-  const kuzuFiles = [kuzuPath, `${kuzuPath}.wal`, `${kuzuPath}.lock`];
-  for (const f of kuzuFiles) {
-    try { await fs.rm(f, { recursive: true, force: true }); } catch {}
+  if (incrementalFileFilter) {
+    // Incremental: open DB, remove stale symbols for changed files, then close
+    // so loadGraphToKuzu can reopen fresh (avoids KuzuDB double-open segfault)
+    try {
+      await initKuzu(kuzuPath);
+      // Use relative paths matching KuzuDB's stored filePath format
+      const deletedCount = await removeSymbolsForFiles(incrementalRelPaths);
+      updateBar(62, `Incremental update: removed ${deletedCount} stale node(s)`);
+    } catch (e: any) {
+      // On failure fall back to full rebuild to ensure correctness
+      updateBar(62, 'Incremental delete failed — falling back to full rebuild');
+      incrementalFileFilter = undefined;
+    }
+    await closeKuzu();
+    if (!incrementalFileFilter) {
+      // Fallback: wipe and rebuild
+      const kuzuFiles = [kuzuPath, `${kuzuPath}.wal`, `${kuzuPath}.lock`];
+      for (const f of kuzuFiles) {
+        try { await fs.rm(f, { recursive: true, force: true }); } catch {}
+      }
+    }
+  } else {
+    // Full rebuild: wipe the entire KuzuDB
+    await closeKuzu();
+    const kuzuFiles = [kuzuPath, `${kuzuPath}.wal`, `${kuzuPath}.lock`];
+    for (const f of kuzuFiles) {
+      try { await fs.rm(f, { recursive: true, force: true }); } catch {}
+    }
   }
 
   const t0Kuzu = Date.now();

@@ -1,4 +1,5 @@
 import { GraphNode, GraphRelationship } from '../core/graph/types';
+import { loadGraphFromCache, saveGraphToCache } from '../core/cache/graph-cache';
 
 export interface RepoSummary {
   name: string;
@@ -18,6 +19,7 @@ export interface ServerRepoInfo {
   name: string;
   repoPath: string;
   indexedAt: string;
+  lastCommit?: string;
   stats: {
     files: number;
     nodes: number;
@@ -136,11 +138,26 @@ export async function connectToServer(
 ): Promise<ConnectToServerResult> {
   const baseUrl = normalizeServerUrl(url);
 
-  // Phase 1: Validate server
+  // Phase 1: Validate server and get repo metadata (includes lastCommit)
   onProgress?.('validating', 0, null);
   const repoInfo = await fetchRepoInfo(baseUrl, repoName);
 
-  // Phase 2: Download graph
+  // Phase 2: Check IndexedDB cache — skip download if graph is up to date
+  if (repoInfo.lastCommit) {
+    const cached = await loadGraphFromCache(baseUrl, repoInfo.name);
+    if (cached && cached.commitHash === repoInfo.lastCommit) {
+      console.log(`[GitNexus] Loading from IndexedDB cache (commit ${repoInfo.lastCommit.slice(0, 8)})`);
+      onProgress?.('cached', cached.nodes.length, cached.nodes.length);
+      return {
+        nodes: cached.nodes as GraphNode[],
+        relationships: cached.relationships as GraphRelationship[],
+        fileContents: cached.fileContents,
+        repoInfo,
+      };
+    }
+  }
+
+  // Phase 3: Download graph from server
   onProgress?.('downloading', 0, null);
   const { nodes, relationships } = await fetchGraph(
     baseUrl,
@@ -149,9 +166,15 @@ export async function connectToServer(
     repoName
   );
 
-  // Phase 3: Extract file contents
+  // Phase 4: Extract file contents
   onProgress?.('extracting', 0, null);
   const fileContents = extractFileContents(nodes);
+
+  // Phase 5: Persist to IndexedDB (fire-and-forget — don't block return)
+  if (repoInfo.lastCommit) {
+    saveGraphToCache(baseUrl, repoInfo.name, repoInfo.lastCommit, nodes, relationships, fileContents)
+      .catch(err => console.warn('[GitNexus] Cache write failed:', err));
+  }
 
   return { nodes, relationships, fileContents, repoInfo };
 }

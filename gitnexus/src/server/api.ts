@@ -164,6 +164,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         name: entry.name,
         repoPath: entry.path,
         indexedAt: meta?.indexedAt ?? entry.indexedAt,
+        lastCommit: meta?.lastCommit ?? entry.lastCommit,
         stats: meta?.stats ?? entry.stats ?? {},
       });
     } catch (err: any) {

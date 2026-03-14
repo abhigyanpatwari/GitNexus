@@ -21,6 +21,23 @@ export const getCurrentCommit = (repoPath: string): string => {
 };
 
 /**
+ * Get files changed between two commits (relative paths from repo root).
+ * Returns an empty array if the diff fails (e.g. shallow clone, first commit).
+ */
+export const getChangedFiles = (repoPath: string, fromCommit: string, toCommit: string): string[] => {
+  try {
+    const output = execSync(
+      `git diff --name-only ${fromCommit} ${toCommit}`,
+      { cwd: repoPath, stdio: ['pipe', 'pipe', 'pipe'] }
+    ).toString().trim();
+    if (!output) return [];
+    return output.split('\n').map(f => f.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+};
+
+/**
  * Find the git repository root from any path inside the repo
  */
 export const getGitRoot = (fromPath: string): string | null => {
