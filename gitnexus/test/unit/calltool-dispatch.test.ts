@@ -7,7 +7,7 @@
  * These are pure unit tests that mock the LadybugDB layer to test
  * the dispatch and error handling logic in isolation.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // We need to mock the LadybugDB adapter and repo-manager BEFORE importing LocalBackend
 vi.mock('../../src/mcp/core/lbug-adapter.js', () => ({
@@ -20,6 +20,7 @@ vi.mock('../../src/mcp/core/lbug-adapter.js', () => ({
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn().mockResolvedValue([]),
+  cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
 }));
 
 // Also mock the search modules to avoid loading onnxruntime
@@ -32,8 +33,8 @@ vi.mock('../../src/mcp/core/embedder.js', () => ({
   getEmbeddingDims: vi.fn().mockReturnValue(384),
 }));
 
-import { LocalBackend, isWriteQuery, CYPHER_WRITE_RE } from '../../src/mcp/local/local-backend.js';
-import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
+import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { listRegisteredRepos, cleanupOldKuzuFiles } from '../../src/storage/repo-manager.js';
 import { initLbug, executeQuery, executeParameterized, isLbugReady, closeLbug } from '../../src/mcp/core/lbug-adapter.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -540,6 +541,7 @@ describe('cypher result formatting', () => {
     // Full reset of all mocks to prevent state leaking from other tests
     vi.resetAllMocks();
     (listRegisteredRepos as any).mockResolvedValue([MOCK_REPO_ENTRY]);
+    (cleanupOldKuzuFiles as any).mockResolvedValue({ found: false, needsReindex: false });
     (initLbug as any).mockResolvedValue(undefined);
     (isLbugReady as any).mockReturnValue(true);
     (closeLbug as any).mockResolvedValue(undefined);
