@@ -6,8 +6,7 @@ import { loadParser, loadLanguage } from '../tree-sitter/parser-loader';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries';
 import { generateId } from '../../lib/utils';
 import { getLanguageFromFilename } from './utils';
-import { SupportedLanguages } from '../../config/supported-languages';
-import { routeRubyCall } from './ruby-call-routing';
+import { callRouters } from './call-routing';
 
 /**
  * Node types that represent function/method definitions across languages.
@@ -108,7 +107,7 @@ const findEnclosingFunction = (
         const nameNode = current.childForFieldName?.('name') ||
                          current.children?.find((c: any) => c.type === 'identifier');
         funcName = nameNode?.text;
-        label = 'Function';
+        label = 'Method';
       } else if (current.type === 'arrow_function' || current.type === 'function_expression') {
         // Arrow/expression: const foo = () => {} - check parent variable declarator
         const parent = current.parent;
@@ -141,6 +140,47 @@ const findEnclosingFunction = (
   }
   
   return null; // Top-level call (not inside any function)
+};
+
+/** AST node types that represent a class-like container */
+const CLASS_CONTAINER_TYPES = new Set([
+  'class_declaration', 'abstract_class_declaration',
+  'interface_declaration', 'struct_declaration', 'record_declaration',
+  'class_specifier', 'struct_specifier',
+  'impl_item', 'trait_item',
+  'class_definition',
+  'trait_declaration',
+  'protocol_declaration',
+  'class', 'module', // Ruby
+]);
+
+const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
+  class_declaration: 'Class', abstract_class_declaration: 'Class',
+  interface_declaration: 'Interface',
+  struct_declaration: 'Struct', struct_specifier: 'Struct',
+  class_specifier: 'Class', class_definition: 'Class',
+  impl_item: 'Impl', trait_item: 'Trait', trait_declaration: 'Trait',
+  record_declaration: 'Record', protocol_declaration: 'Interface',
+  class: 'Class', module: 'Module',
+};
+
+/** Walk up AST to find enclosing class/struct/interface, return its generateId or null. */
+const findEnclosingClassId = (node: any, filePath: string): string | null => {
+  let current = node.parent;
+  while (current) {
+    if (CLASS_CONTAINER_TYPES.has(current.type)) {
+      const nameNode = current.childForFieldName?.('name')
+        ?? current.children?.find((c: any) =>
+          c.type === 'type_identifier' || c.type === 'identifier' || c.type === 'name' || c.type === 'constant'
+        );
+      if (nameNode) {
+        const label = CONTAINER_TYPE_TO_LABEL[current.type] || 'Class';
+        return generateId(label, `${filePath}:${nameNode.text}`);
+      }
+    }
+    current = current.parent;
+  }
+  return null;
 };
 
 export const processCalls = async (
@@ -188,6 +228,8 @@ export const processCalls = async (
       continue;
     }
 
+    const callRouter = callRouters[language];
+
     // 3. Process each call match
     matches.forEach(match => {
       const captureMap: Record<string, any> = {};
@@ -201,11 +243,9 @@ export const processCalls = async (
 
       const calledName = nameNode.text;
 
-      // Ruby: route special calls to heritage or properties (imports handled by import-processor)
-      if (language === SupportedLanguages.Ruby) {
-        const callNode = captureMap['call'];
-        const routed = routeRubyCall(calledName, callNode);
-
+      // Dispatch: route language-specific calls (heritage, properties, imports)
+      const routed = callRouter(calledName, captureMap['call']);
+      if (routed) {
         switch (routed.kind) {
           case 'skip':
           case 'import': // handled by import-processor
@@ -219,10 +259,10 @@ export const processCalls = async (
               const parentId = symbolTable.lookupFuzzy(item.mixinName)[0]?.nodeId ||
                                generateId('Module', `${item.mixinName}`);
               if (childId && parentId) {
-                const relId = generateId('IMPLEMENTS', `${childId}->${parentId}`);
+                const relId = generateId('IMPLEMENTS', `${childId}->${parentId}:${item.heritageKind}`);
                 graph.addRelationship({
                   id: relId, sourceId: childId, targetId: parentId,
-                  type: 'IMPLEMENTS', confidence: 1.0, reason: 'trait-impl',
+                  type: 'IMPLEMENTS', confidence: 1.0, reason: item.heritageKind,
                 });
               }
             }
@@ -230,6 +270,7 @@ export const processCalls = async (
 
           case 'properties': {
             const fileId = generateId('File', file.path);
+            const propEnclosingClassId = findEnclosingClassId(captureMap['call'], file.path);
             for (const item of routed.items) {
               const nodeId = generateId('Property', `${file.path}:${item.propName}`);
               graph.addNode({
@@ -238,7 +279,7 @@ export const processCalls = async (
                 properties: {
                   name: item.propName, filePath: file.path,
                   startLine: item.startLine, endLine: item.endLine,
-                  language: SupportedLanguages.Ruby, isExported: true,
+                  language, isExported: true,
                   description: item.accessorType,
                 },
               });
@@ -248,6 +289,13 @@ export const processCalls = async (
                 id: relId, sourceId: fileId, targetId: nodeId,
                 type: 'DEFINES', confidence: 1.0, reason: '',
               });
+              if (propEnclosingClassId) {
+                graph.addRelationship({
+                  id: generateId('HAS_METHOD', `${propEnclosingClassId}->${nodeId}`),
+                  sourceId: propEnclosingClassId, targetId: nodeId,
+                  type: 'HAS_METHOD', confidence: 1.0, reason: '',
+                });
+              }
             }
             return;
           }

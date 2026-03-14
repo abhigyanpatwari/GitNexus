@@ -30,8 +30,9 @@ import {
   resolveCSharpNamespaceDir,
   resolvePhpImport,
   resolveRustImport,
+  resolveRubyImport,
 } from './resolvers/index.js';
-import { routeRubyCall } from './ruby-call-routing.js';
+import { callRouters } from './call-routing.js';
 import type {
   SuffixIndex,
   TsconfigPaths,
@@ -221,6 +222,12 @@ function resolveLanguageImport(
       if (files.length > 0) return { kind: 'files', files };
     }
     return null; // External framework (Foundation, UIKit, etc.)
+  }
+
+  // Ruby: require / require_relative
+  if (language === SupportedLanguages.Ruby) {
+    const resolved = resolveRubyImport(rawImportPath, normalizedFileList, allFileList, index);
+    return resolved ? { kind: 'files', files: [resolved] } : null;
   }
 
   // Rust: expand top-level grouped imports: use {crate::a, crate::b}
@@ -446,20 +453,16 @@ export const processImports = async (
         applyImportResult(result, file.path, importMap, packageMap, addImportEdge, addImportGraphEdge, bindings, namedImportMap);
       }
 
-      // ---- Ruby: require/require_relative come through @call, not @import ----
-      if (language === SupportedLanguages.Ruby && captureMap['call']) {
+      // ---- Language-specific call-as-import routing (Ruby require, etc.) ----
+      if (captureMap['call']) {
         const callNameNode = captureMap['call.name'];
         if (callNameNode) {
-          const routed = routeRubyCall(callNameNode.text, captureMap['call']);
-          if (routed.kind === 'import') {
+          const callRouter = callRouters[language];
+          const routed = callRouter(callNameNode.text, captureMap['call']);
+          if (routed && routed.kind === 'import') {
             totalImportsFound++;
-            const resolvedPath = resolveImportPath(
-              file.path, routed.importPath, allFilePaths, allFileList,
-              normalizedFileList, resolveCache, language, configs.tsconfigPaths, index,
-            );
-            if (resolvedPath) {
-              addImportEdge(file.path, resolvedPath);
-            }
+            const result = resolveLanguageImport(file.path, routed.importPath, language, configs, ctx);
+            applyImportResult(result, file.path, importMap, packageMap, addImportEdge, addImportGraphEdge);
           }
         }
       }
