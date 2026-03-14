@@ -190,7 +190,8 @@ export const loadGraphToLbug = async (
     for (const tableName of NODE_TABLES) {
       try {
         const countRes = await conn.query(`MATCH (n:${tableName}) RETURN count(n) AS cnt`);
-        const countRow = await countRes.getNext();
+        const countRows = await countRes.getAll();
+        const countRow = countRows[0];
         const count = countRow ? (countRow.cnt ?? countRow[0] ?? 0) : 0;
         totalNodes += Number(count);
       } catch {
@@ -229,6 +230,9 @@ const escapeTableName = (table: string): string => {
   return BACKTICK_TABLES.has(table) ? `\`${table}\`` : table;
 };
 
+/** Tables with isExported column (TypeScript/JS-native types) */
+const TABLES_WITH_EXPORTED = new Set<string>(['Function', 'Class', 'Interface', 'Method', 'CodeElement']);
+
 /**
  * Get the COPY query for a node table with correct column mapping
  */
@@ -246,8 +250,12 @@ const getCopyQuery = (table: NodeTableName, path: string): string => {
   if (table === 'Process') {
     return `COPY ${t}(id, label, heuristicLabel, processType, stepCount, communities, entryPointId, terminalId) FROM "${path}" ${COPY_CSV_OPTS}`;
   }
-  // Code element tables (Function, Class, Interface, Method, CodeElement, and multi-language)
-  return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content) FROM "${path}" ${COPY_CSV_OPTS}`;
+  // TypeScript/JS code element tables have isExported; multi-language tables do not
+  if (TABLES_WITH_EXPORTED.has(table)) {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content) FROM "${path}" ${COPY_CSV_OPTS}`;
+  }
+  // Multi-language tables (Struct, Impl, Trait, Macro, etc.)
+  return `COPY ${t}(id, name, filePath, startLine, endLine, content) FROM "${path}" ${COPY_CSV_OPTS}`;
 };
 
 /**
@@ -286,10 +294,9 @@ export const executeQuery = async (cypher: string): Promise<any[]> => {
     }
 
     // Collect all rows
+    const allRows = await result.getAll();
     const rows: any[] = [];
-    while (await result.hasNext()) {
-      const row = await result.getNext();
-
+    for (const row of allRows) {
       // Convert tuple to named object if we have column names and row is array
       if (Array.isArray(row) && columnNames.length === row.length) {
         const namedRow: Record<string, any> = {};
@@ -324,7 +331,8 @@ export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> 
     for (const tableName of NODE_TABLES) {
       try {
         const nodeResult = await conn.query(`MATCH (n:${tableName}) RETURN count(n) AS cnt`);
-        const nodeRow = await nodeResult.getNext();
+        const nodeRows = await nodeResult.getAll();
+        const nodeRow = nodeRows[0];
         totalNodes += Number(nodeRow?.cnt ?? nodeRow?.[0] ?? 0);
       } catch {
         // Table might not exist or be empty
@@ -335,7 +343,8 @@ export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> 
     let totalEdges = 0;
     try {
       const edgeResult = await conn.query(`MATCH ()-[r:${REL_TABLE_NAME}]->() RETURN count(r) AS cnt`);
-      const edgeRow = await edgeResult.getNext();
+      const edgeRows = await edgeResult.getAll();
+      const edgeRow = edgeRows[0];
       totalEdges = Number(edgeRow?.cnt ?? edgeRow?.[0] ?? 0);
     } catch {
       // Table might not exist or be empty
@@ -399,11 +408,7 @@ export const executePrepared = async (
 
     const result = await conn.execute(stmt, params);
 
-    const rows: any[] = [];
-    while (await result.hasNext()) {
-      const row = await result.getNext();
-      rows.push(row);
-    }
+    const rows = await result.getAll();
 
     await stmt.close();
     return rows;
@@ -467,7 +472,8 @@ export const testArrayParams = async (): Promise<{ success: boolean; error?: str
     for (const tableName of NODE_TABLES) {
       try {
         const nodeResult = await conn.query(`MATCH (n:${tableName}) RETURN n.id AS id LIMIT 1`);
-        const nodeRow = await nodeResult.getNext();
+        const nodeRows = await nodeResult.getAll();
+        const nodeRow = nodeRows[0];
         if (nodeRow) {
           testNodeId = nodeRow.id ?? nodeRow[0];
           break;
@@ -503,7 +509,8 @@ export const testArrayParams = async (): Promise<{ success: boolean; error?: str
     const verifyResult = await conn.query(
       `MATCH (e:${EMBEDDING_TABLE_NAME} {nodeId: '${testNodeId}'}) RETURN e.embedding AS emb`
     );
-    const verifyRow = await verifyResult.getNext();
+    const verifyRows = await verifyResult.getAll();
+    const verifyRow = verifyRows[0];
     const storedEmb = verifyRow?.emb ?? verifyRow?.[0];
 
     if (storedEmb && Array.isArray(storedEmb) && storedEmb.length === 384) {

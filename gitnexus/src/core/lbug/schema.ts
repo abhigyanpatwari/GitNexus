@@ -406,14 +406,6 @@ CREATE NODE TABLE ${EMBEDDING_TABLE_NAME} (
 )`;
 
 /**
- * Load the VECTOR extension (required before creating vector indices in LadybugDB v0.15+)
- */
-export const LOAD_VECTOR_EXTENSION_QUERIES = [
-  'INSTALL VECTOR',
-  'LOAD EXTENSION VECTOR',
-];
-
-/**
  * Create vector index for semantic search
  * Uses HNSW (Hierarchical Navigable Small World) algorithm with cosine similarity
  */

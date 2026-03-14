@@ -47,8 +47,8 @@ A full migration from KuzuDB (archived Oct 2025) to LadybugDB v0.15 — its comm
 
 | Current | New | Location |
 |---------|-----|----------|
-| `kuzu` ^0.11.3 | `lbug` (latest v0.15) | `gitnexus/package.json` |
-| `kuzu-wasm` ^0.11.1 | `lbug-wasm` (latest) | `gitnexus-web/package.json` |
+| `kuzu` ^0.11.3 | `@ladybugdb/core` ^0.15.1 | `gitnexus/package.json` |
+| `kuzu-wasm` ^0.11.1 | `@ladybugdb/wasm-core` ^0.15.1 | `gitnexus-web/package.json` |
 
 ### Files to Rename
 

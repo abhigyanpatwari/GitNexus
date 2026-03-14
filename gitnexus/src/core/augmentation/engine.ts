@@ -140,8 +140,90 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
     
     if (symbolMatches.length === 0) return '';
     
-    // Step 3: For top matches, fetch callers/callees/processes
-    // Also get cluster cohesion internally for ranking
+    // Step 3: Batch-fetch callers/callees/processes/cohesion for top matches
+    // Uses batched WHERE n.id IN [...] queries instead of per-symbol queries
+    const uniqueSymbols = symbolMatches.slice(0, 5).filter((sym, i, arr) =>
+      arr.findIndex(s => s.nodeId === sym.nodeId) === i
+    );
+
+    if (uniqueSymbols.length === 0) return '';
+
+    const idList = uniqueSymbols.map(s => `'${s.nodeId.replace(/'/g, "''")}'`).join(', ');
+
+    // Batch fetch callers
+    const callersMap = new Map<string, string[]>();
+    try {
+      const rows = await executeQuery(repoId, `
+        MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(n)
+        WHERE n.id IN [${idList}]
+        RETURN n.id AS targetId, caller.name AS name
+        LIMIT 15
+      `);
+      for (const r of rows) {
+        const tid = r.targetId || r[0];
+        const name = r.name || r[1];
+        if (tid && name) {
+          if (!callersMap.has(tid)) callersMap.set(tid, []);
+          callersMap.get(tid)!.push(name);
+        }
+      }
+    } catch { /* skip */ }
+
+    // Batch fetch callees
+    const calleesMap = new Map<string, string[]>();
+    try {
+      const rows = await executeQuery(repoId, `
+        MATCH (n)-[:CodeRelation {type: 'CALLS'}]->(callee)
+        WHERE n.id IN [${idList}]
+        RETURN n.id AS sourceId, callee.name AS name
+        LIMIT 15
+      `);
+      for (const r of rows) {
+        const sid = r.sourceId || r[0];
+        const name = r.name || r[1];
+        if (sid && name) {
+          if (!calleesMap.has(sid)) calleesMap.set(sid, []);
+          calleesMap.get(sid)!.push(name);
+        }
+      }
+    } catch { /* skip */ }
+
+    // Batch fetch processes
+    const processesMap = new Map<string, string[]>();
+    try {
+      const rows = await executeQuery(repoId, `
+        MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+        WHERE n.id IN [${idList}]
+        RETURN n.id AS nodeId, p.heuristicLabel AS label, r.step AS step, p.stepCount AS stepCount
+      `);
+      for (const r of rows) {
+        const nid = r.nodeId || r[0];
+        const label = r.label || r[1];
+        const step = r.step || r[2];
+        const stepCount = r.stepCount || r[3];
+        if (nid && label) {
+          if (!processesMap.has(nid)) processesMap.set(nid, []);
+          processesMap.get(nid)!.push(`${label} (step ${step}/${stepCount})`);
+        }
+      }
+    } catch { /* skip */ }
+
+    // Batch fetch cohesion
+    const cohesionMap = new Map<string, number>();
+    try {
+      const rows = await executeQuery(repoId, `
+        MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+        WHERE n.id IN [${idList}]
+        RETURN n.id AS nodeId, c.cohesion AS cohesion
+      `);
+      for (const r of rows) {
+        const nid = r.nodeId || r[0];
+        const coh = r.cohesion ?? r[1] ?? 0;
+        if (nid) cohesionMap.set(nid, coh);
+      }
+    } catch { /* skip */ }
+
+    // Assemble enriched results
     const enriched: Array<{
       name: string;
       filePath: string;
@@ -150,72 +232,15 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
       processes: string[];
       cohesion: number;
     }> = [];
-    
-    const seen = new Set<string>();
-    
-    for (const sym of symbolMatches.slice(0, 5)) {
-      if (seen.has(sym.nodeId)) continue;
-      seen.add(sym.nodeId);
-      
-      const escaped = sym.nodeId.replace(/'/g, "''");
-      
-      // Callers
-      let callers: string[] = [];
-      try {
-        const rows = await executeQuery(repoId, `
-          MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(n {id: '${escaped}'})
-          RETURN caller.name AS name
-          LIMIT 3
-        `);
-        callers = rows.map((r: any) => r.name || r[0]).filter(Boolean);
-      } catch { /* skip */ }
-      
-      // Callees
-      let callees: string[] = [];
-      try {
-        const rows = await executeQuery(repoId, `
-          MATCH (n {id: '${escaped}'})-[:CodeRelation {type: 'CALLS'}]->(callee)
-          RETURN callee.name AS name
-          LIMIT 3
-        `);
-        callees = rows.map((r: any) => r.name || r[0]).filter(Boolean);
-      } catch { /* skip */ }
-      
-      // Processes
-      let processes: string[] = [];
-      try {
-        const rows = await executeQuery(repoId, `
-          MATCH (n {id: '${escaped}'})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-          RETURN p.heuristicLabel AS label, r.step AS step, p.stepCount AS stepCount
-        `);
-        processes = rows.map((r: any) => {
-          const label = r.label || r[0];
-          const step = r.step || r[1];
-          const stepCount = r.stepCount || r[2];
-          return `${label} (step ${step}/${stepCount})`;
-        }).filter(Boolean);
-      } catch { /* skip */ }
-      
-      // Cluster cohesion (internal ranking signal)
-      let cohesion = 0;
-      try {
-        const rows = await executeQuery(repoId, `
-          MATCH (n {id: '${escaped}'})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-          RETURN c.cohesion AS cohesion
-          LIMIT 1
-        `);
-        if (rows.length > 0) {
-          cohesion = (rows[0].cohesion ?? rows[0][0]) || 0;
-        }
-      } catch { /* skip */ }
-      
+
+    for (const sym of uniqueSymbols) {
       enriched.push({
         name: sym.name,
         filePath: sym.filePath,
-        callers,
-        callees,
-        processes,
-        cohesion,
+        callers: (callersMap.get(sym.nodeId) || []).slice(0, 3),
+        callees: (calleesMap.get(sym.nodeId) || []).slice(0, 3),
+        processes: processesMap.get(sym.nodeId) || [],
+        cohesion: cohesionMap.get(sym.nodeId) || 0,
       });
     }
     

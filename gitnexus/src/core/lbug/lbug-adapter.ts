@@ -77,16 +77,20 @@ const doInitLbug = async (dbPath: string) => {
   // If the path already exists, it must be a valid LadybugDB database file.
   // Remove stale empty directories or files from older versions.
   try {
-    const stat = await fs.stat(dbPath);
-    if (stat.isDirectory()) {
-      // Old-style directory database or empty leftover - remove it
-      const files = await fs.readdir(dbPath);
-      if (files.length === 0) {
-        await fs.rmdir(dbPath);
-      } else {
-        // Non-empty directory from older LadybugDB version - remove entire directory
-        await fs.rm(dbPath, { recursive: true, force: true });
+    const stat = await fs.lstat(dbPath);
+    if (stat.isSymbolicLink()) {
+      // Never follow symlinks — just remove the link itself
+      await fs.unlink(dbPath);
+    } else if (stat.isDirectory()) {
+      // Verify path is within expected storage directory before deleting
+      const realPath = await fs.realpath(dbPath);
+      const parentDir = path.dirname(dbPath);
+      const realParent = await fs.realpath(parentDir);
+      if (!realPath.startsWith(realParent + path.sep) && realPath !== realParent) {
+        throw new Error(`Refusing to delete ${dbPath}: resolved path ${realPath} is outside storage directory`);
       }
+      // Old-style directory database or empty leftover - remove it
+      await fs.rm(dbPath, { recursive: true, force: true });
     }
     // If it's a file, assume it's an existing LadybugDB database - LadybugDB will open it
   } catch {

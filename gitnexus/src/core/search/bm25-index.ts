@@ -63,8 +63,8 @@ export const searchFTSFromLbug = async (query: string, limit: number = 20, repoI
 
   if (repoId) {
     // Use MCP connection pool via dynamic import
-    // IMPORTANT: LadybugDB uses a single connection per repo — queries must be sequential
-    // to avoid deadlocking. Do NOT use Promise.all here.
+    // IMPORTANT: FTS queries run sequentially to avoid connection contention.
+    // The MCP pool supports multiple connections, but FTS is best run serially.
     const { executeQuery } = await import('../../mcp/core/lbug-adapter.js');
     const executor = (cypher: string) => executeQuery(repoId, cypher);
     fileResults = await queryFTSViaExecutor(executor, 'File', 'file_fts', query, limit);
