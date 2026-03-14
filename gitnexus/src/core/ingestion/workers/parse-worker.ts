@@ -107,7 +107,7 @@ export interface ExtractedHeritage {
   filePath: string;
   className: string;
   parentName: string;
-  /** 'extends' | 'implements' | 'trait-impl' */
+  /** 'extends' | 'implements' | 'trait-impl' | 'include' | 'extend' | 'prepend' */
   kind: string;
 }
 
