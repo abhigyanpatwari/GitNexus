@@ -51,6 +51,7 @@ jobs:
               test/integration/resolvers/go.test.ts
               test/integration/resolvers/kotlin.test.ts
               test/integration/resolvers/php.test.ts
+              test/integration/resolvers/ruby.test.ts
           - test-group: e2e
             test-glob: >-
               test/integration/cli-e2e.test.ts
@@ -159,6 +160,7 @@ jobs:
           test/integration/resolvers/go.test.ts
           test/integration/resolvers/kotlin.test.ts
           test/integration/resolvers/php.test.ts
+          test/integration/resolvers/ruby.test.ts
 
       - name: Upload integration coverage
         if: always()

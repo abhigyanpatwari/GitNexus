@@ -4,7 +4,7 @@ import { loadParser, loadLanguage } from '../tree-sitter/parser-loader';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries';
 import { generateId } from '../../lib/utils';
 import { getLanguageFromFilename } from './utils';
-import { routeRubyCall } from './ruby-call-routing';
+import { callRouters } from './call-routing';
 
 // Type: Map<FilePath, Set<ResolvedFilePath>>
 // Stores all files that a given file imports from
@@ -224,12 +224,13 @@ export const processImports = async (
         }
       }
 
-      // ---- Ruby: require/require_relative come through @call, not @import ----
-      if (language === 'ruby' && captureMap['call']) {
+      // ---- Language-specific call-as-import routing (Ruby require, etc.) ----
+      if (captureMap['call']) {
         const callNameNode = captureMap['call.name'];
         if (callNameNode) {
-          const routed = routeRubyCall(callNameNode.text, captureMap['call']);
-          if (routed.kind === 'import') {
+          const callRouter = callRouters[language];
+          const routed = callRouter(callNameNode.text, captureMap['call']);
+          if (routed && routed.kind === 'import') {
             totalImportsFound++;
             const resolvedPath = resolveImportPath(
               file.path, routed.importPath, allFilePaths, allFileList, resolveCache
