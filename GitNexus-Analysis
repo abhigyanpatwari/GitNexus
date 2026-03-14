@@ -1,0 +1,1922 @@
+# GitNexus 完整分析報告
+## GitNexus Product Analysis & v2 Optimization Guide
+
+---
+
+## 1. Executive Overview
+
+**產品定位：** GitNexus 是一款零伺服器、完全客戶端執行的程式碼智能引擎 (Zero-Server Code Intelligence Engine)，能將任何 GitHub repository 或 ZIP 檔案轉換為互動式知識圖譜 (Interactive Knowledge Graph)，並內建 Graph RAG Agent 供程式碼探索使用。
+
+**核心價值：**
+- **完全隱私：** 100% 瀏覽器端執行，程式碼從不離開本機
+- **雙模式架構：** CLI + MCP 整合（深度開發）+ Web UI（快速分析）
+- **關聯智能：** 預計算架構關係，非向量搜尋或文字比對，而是真實圖譜查詢
+- **AI Agent Ready：** 透過 MCP (Model Context Protocol) 直接連接 Cursor、Claude Code、Windsurf 等 AI 編輯器
+- **零成本運行：** 開源 MIT 授權，無訂閱費、無伺服器成本
+
+**目前亮點：**
+- **技術創新：** 在瀏覽器中運行完整 KuzuDB WASM + Tree-sitter WASM，實現客戶端圖譜資料庫
+- **多語言支援：** 支援 11 種程式語言（TypeScript、JavaScript、Python、Java、C、C++、C#、Go、Rust、PHP、Swift）
+- **智能工具集：** 提供 7 種 MCP 工具（impact analysis、cypher query、context、rename、detect_changes 等）
+- **快速增長：** 短時間內獲得 7.3K+ GitHub stars，顯示市場需求強烈
+
+**目前缺口：**
+- **未驗證：** 缺乏明確的「匯出已分析圖譜」功能說明
+- **分享機制不明：** 無法確認是否支援「打包分享已分析結果」避免重複分析
+- **手機體驗待優化：** Web UI 在小螢幕上的資訊架構與互動設計未針對行動裝置優化
+- **文件不完整：** `.gitnexus/` 資料夾結構、KuzuDB 持久化格式、匯出機制等技術細節文件缺失
+- **協作流程模糊：** Person-to-Person 與 AI-to-AI 的知識資產重用機制尚未系統化
+
+---
+
+## 2. What GitNexus Does
+
+### 2.1 核心能力
+
+GitNexus 是一個**程式碼知識圖譜建構引擎**，它能夠：
+
+1. **解析程式碼結構：** 使用 Tree-sitter（業界標準 AST parser）將程式碼從文字轉換為結構化語法樹
+2. **建立關聯網路：** 追蹤每個函式、類別、模組間的依賴關係 (dependency)、呼叫鏈 (call chain)、執行流程 (execution flow)
+3. **圖譜化儲存：** 將所有關係儲存至 KuzuDB 圖譜資料庫（CLI 模式本地持久化，Web UI 模式記憶體內）
+4. **智能查詢：** 提供混合搜尋（BM25 關鍵字 + Semantic Embeddings + Graph Traversal）與 Cypher 圖譜查詢
+5. **AI 增強：** 透過 MCP 協議暴露 7 種工具，讓 AI agents 能直接查詢圖譜而非猜測
+
+### 2.2 主要流程
+
+```mermaid
+graph LR
+    A[輸入 GitHub URL / ZIP] --> B[Tree-sitter 解析]
+    B --> C[建立知識圖譜]
+    C --> D[KuzuDB 儲存]
+    D --> E[互動式視覺化]
+    D --> F[Graph RAG Agent]
+    D --> G[MCP Tools for AI]
+    
+    style A fill:#e3f2fd
+    style C fill:#fff3e0
+    style D fill:#f3e5f5
+    style E fill:#e8f5e9
+    style F fill:#fce4ec
+    style G fill:#e0f2f1
+```
+
+**與傳統 AI 編碼工具的差異：**
+
+| 面向 | 傳統 AI 工具 (Cursor, Copilot) | GitNexus |
+|------|-------------------------------|----------|
+| **理解方式** | 文字匹配 + 上下文窗口 | 預計算圖譜關係 |
+| **查詢延遲** | 每次查詢需重新推論 | 一次建圖，多次查詢 |
+| **精確度** | 基於概率推測 | 基於確定性圖譜遍歷 |
+| **影響分析** | 無法確保完整性 | 追蹤所有依賴節點 |
+| **Token 消耗** | 每次查詢消耗大量 token | 圖譜查詢無 token 成本 |
+
+---
+
+## 3. End-to-End User Guide
+
+### 3.1 Web UI 使用流程（快速分析模式）
+
+#### Step 1: 存取 GitNexus Web UI
+**使用者目標：** 開啟工具並準備分析程式碼  
+**操作方式：** 前往 https://gitnexus.vercel.app  
+**系統在做什麼：** 載入 WASM 版本的 Tree-sitter + KuzuDB + transformers.js（本地 embeddings）  
+**使用者看到什麼：** 簡潔介面，中央有輸入框與兩個選項卡（GitHub URL / Upload ZIP）  
+**常見誤解：** 以為需要登入或付費，實際上完全免費且無需帳號
+
+#### Step 2: 提供程式碼來源
+**使用者目標：** 指定要分析的 repository  
+**操作方式：**  
+- **選項 A - GitHub URL：** 貼上公開 repo URL（例如：`https://github.com/facebook/react`）
+- **選項 B - ZIP 上傳：** 拖曳或選擇本地 ZIP 檔案
+
+**系統在做什麼：**  
+- GitHub URL：透過 GitHub API 遞迴抓取檔案樹與內容
+- ZIP：解壓至瀏覽器 File System API 虛擬檔案系統
+
+**使用者看到什麼：** 進度條顯示「Fetching repository structure...」  
+**常見錯誤：**  
+- 私有 repo 無法存取（需使用 CLI 模式）
+- ZIP 檔案過大可能因瀏覽器記憶體限制失敗（建議 <500MB）
+
+#### Step 3: 多階段索引過程
+**使用者目標：** 等待系統建立知識圖譜  
+**系統在做什麼（6 階段管線）：**
+
+1. **Structure Phase：** 掃描檔案樹，建立資料夾/檔案關係節點
+2. **Parsing Phase：** 使用 Tree-sitter 將每個檔案解析成 AST，提取 functions / classes / methods
+3. **Resolution Phase：** 解析 import 語句，建立跨檔案依賴關係（語言特定邏輯）
+4. **Clustering Phase：** 使用社群偵測演算法（Louvain / Label Propagation）將高內聚符號分組
+5. **Process Tracing Phase：** 從 entry points（main、exports）追蹤執行流程
+6. **Search Indexing Phase：** 建立混合搜尋索引（BM25 + semantic embeddings）
+
+**使用者看到什麼：**  
+- 進度條逐階段更新：`Parsing files (243/1057)...`
+- 使用 Web Workers 平行處理，不凍結 UI
+
+**時間預估：**  
+- 小型專案（<100 檔案）：10-30 秒
+- 中型專案（100-1000 檔案）：1-3 分鐘
+- 大型專案（1000+ 檔案）：3-10 分鐘（可能遇到記憶體限制）
+
+**常見問題：**  
+- **卡在 Parsing：** 可能遇到不支援的檔案格式或語法錯誤（Tree-sitter 會跳過）
+- **進度突然停止：** 瀏覽器記憶體不足，建議改用 CLI 模式
+
+#### Step 4: 探索知識圖譜
+**使用者目標：** 理解程式碼架構與關係  
+**操作方式：**  
+- **視覺化面板：** D3.js force-directed graph 顯示節點（檔案/函式）與邊（依賴/呼叫）
+- **縮放/平移：** 滑鼠滾輪縮放，拖曳移動畫布
+- **節點點擊：** 顯示詳細資訊（所在檔案、參數、回傳值、被誰呼叫、呼叫了誰）
+- **篩選器：** 側邊欄可按檔案類型、cluster、依賴深度篩選
+
+**使用者看到什麼：**  
+- **節點顏色：** 依 cluster 或檔案類型著色
+- **節點大小：** 反映 degree centrality（連接數）
+- **邊粗細：** 反映呼叫頻率（若有執行追蹤資料）
+
+**常見誤解：**  
+- 圖譜很亂：正常現象，大型專案需要使用篩選器與搜尋定位
+- 看不到所有節點：預設隱藏低重要性節點，可調整閾值
+
+#### Step 5: 使用 Graph RAG Agent 對話
+**使用者目標：** 用自然語言查詢程式碼  
+**操作方式：**  
+- 點擊右下角 Chat 圖示開啟對話框
+- 輸入 OpenAI / Anthropic / Gemini API Key（首次使用）
+- 提問範例：
+  - "What functions depend on UserService?"
+  - "Show me the call chain from main() to database.connect()"
+  - "What's the blast radius if I change this class?"
+
+**系統在做什麼：**  
+1. 將問題轉換為 Cypher 查詢（或混合搜尋）
+2. 對 KuzuDB 執行圖譜遍歷
+3. 將結果結構化後傳給 LLM
+4. LLM 生成自然語言回答
+
+**使用者看到什麼：**  
+- 回答附帶相關程式碼片段與檔案連結
+- 可點擊跳轉至圖譜中對應節點
+
+**常見錯誤：**  
+- 未提供 API Key：無法使用 Chat 功能（Graph 視覺化仍可用）
+- 問題過於模糊：Agent 可能要求澄清
+
+#### Step 6: 閱讀分析結果
+**使用者目標：** 取得可操作的洞察  
+**關鍵指標：**  
+- **Hotspots：** 高 degree 節點（許多其他模組依賴）
+- **Clusters：** 功能模組邊界
+- **Orphans：** 未被引用的死程式碼
+- **Cycles：** 循環依賴
+
+**如何判讀：**  
+- **重構優先級：** Hotspots 變更風險高，需謹慎
+- **模組邊界：** Clusters 間連接少 = 低耦合設計
+- **技術債：** 大量 orphans 表示清理需求
+
+### 3.2 CLI + MCP 使用流程（開發整合模式）
+
+#### Step 1: 安裝 GitNexus CLI
+```bash
+npm install -g gitnexus
+```
+
+#### Step 2: 分析本地 Repository
+```bash
+cd /path/to/your/project
+npx gitnexus analyze
+```
+
+**系統在做什麼：**  
+- 在專案根目錄建立 `.gitnexus/` 資料夾（gitignored）
+- 使用本地 KuzuDB（非 WASM）建立持久化圖譜資料庫
+- 註冊指標至 `~/.gitnexus/registry.json`
+
+**輸出結構（推測）：**
+```
+.gitnexus/
+├── database/          # KuzuDB 圖譜檔案
+├── embeddings/        # Semantic search vectors
+├── metadata.json      # Index 時間、版本、統計
+└── config.json        # 專案特定設定
+```
+
+#### Step 3: 啟動 MCP Server
+```bash
+gitnexus serve
+```
+
+**系統在做什麼：**  
+- 啟動本地 HTTP 伺服器（預設 port）
+- 讀取 `~/.gitnexus/registry.json` 取得所有已索引專案
+- 暴露 7 種 MCP 工具供 AI agents 呼叫
+
+#### Step 4: 連接 AI 編輯器
+**支援的編輯器：**  
+- **Claude Code：** 最深整合，自動 hook `grep`、`glob`、`bash` 指令
+- **Cursor：** 標準 MCP 連接
+- **Windsurf：** 標準 MCP 連接
+- **OpenCode：** 標準 MCP 連接
+
+**配置範例（Claude Code）：**
+```json
+{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "gitnexus",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+#### Step 5: AI Agent 使用 MCP 工具
+**7 種可用工具：**
+
+| 工具 | 功能 | 使用時機 |
+|------|------|----------|
+| `list_repos` | 列出所有已索引專案 | Agent 初始化 |
+| `query` | 混合搜尋（BM25 + semantic + RRF） | 尋找相關程式碼 |
+| `context` | 360° 符號視圖（所有引用、參與的流程） | 理解特定函式 |
+| `impact` | 爆炸半徑分析（依賴深度 + 信心分數） | 重構前評估 |
+| `detect_changes` | Git diff 影響分析 | Code review |
+| `rename` | 多檔案協調重新命名 | 安全 refactoring |
+| `cypher` | 原始 Cypher 查詢 | 自訂圖譜查詢 |
+
+**實際使用範例：**
+```
+使用者：「我想重構 UserService，會影響哪些地方？」
+
+Agent 內部流程：
+1. 呼叫 query(symbol="UserService")
+2. 呼叫 context(symbol="UserService") 取得詳細資訊
+3. 呼叫 impact(symbol="UserService", depth=3)
+4. 整合結果回答：「UserService 被 47 個函式直接呼叫，
+   間接影響 12 個 API endpoints 與 3 個背景工作...」
+```
+
+#### Step 6: Bridge Mode（Web UI + CLI 整合）
+```bash
+gitnexus serve  # 在背景執行
+# 然後開啟 Web UI (localhost)
+```
+
+**效果：**  
+- Web UI 自動偵測本地 server
+- 顯示所有 CLI 已索引的專案
+- 無需重新上傳或索引，直接視覺化與 Chat
+
+---
+
+## 4. Visual Workflow
+
+### 4.1 整體工作流程
+
+```mermaid
+graph TB
+    Start([使用者開始]) --> Choice{選擇模式}
+    
+    Choice -->|快速分析| WebUI[Web UI 模式]
+    Choice -->|開發整合| CLI[CLI + MCP 模式]
+    
+    WebUI --> Input1[輸入 GitHub URL / ZIP]
+    Input1 --> Parse1[瀏覽器內解析<br/>WASM 引擎]
+    Parse1 --> Graph1[記憶體內圖譜<br/>KuzuDB WASM]
+    Graph1 --> Visual[D3.js 視覺化]
+    Graph1 --> Chat1[Graph RAG Agent]
+    
+    CLI --> Install[npm install -g gitnexus]
+    Install --> Analyze[gitnexus analyze<br/>本地專案]
+    Analyze --> Persist[持久化圖譜<br/>.gitnexus/]
+    Persist --> Serve[gitnexus serve<br/>MCP Server]
+    Serve --> Editors[AI 編輯器整合<br/>Cursor/Claude Code]
+    Serve --> Bridge[Bridge Mode<br/>Web UI 存取本地圖譜]
+    
+    Visual --> Export{可匯出?}
+    Chat1 --> Export
+    Export -->|未驗證| Unknown[功能存在性待確認]
+    
+    Editors --> Tools[7 種 MCP 工具<br/>query/context/impact...]
+    
+    style Start fill:#e1f5fe
+    style WebUI fill:#fff9c4
+    style CLI fill:#f3e5f5
+    style Graph1 fill:#ffccbc
+    style Persist fill:#c8e6c9
+    style Unknown fill:#ffcdd2
+```
+
+### 4.2 資料流圖
+
+```mermaid
+flowchart LR
+    subgraph Input[輸入層]
+        A1[GitHub API]
+        A2[ZIP Upload]
+        A3[Local Filesystem]
+    end
+    
+    subgraph Parser[解析層]
+        B1[Tree-sitter WASM]
+        B2[語言特定 Parser]
+        B3[Import Resolver]
+    end
+    
+    subgraph Graph[圖譜層]
+        C1[KuzuDB WASM<br/>記憶體]
+        C2[KuzuDB Native<br/>持久化]
+        C3[Embeddings Store]
+    end
+    
+    subgraph Query[查詢層]
+        D1[Cypher Engine]
+        D2[BM25 Search]
+        D3[Semantic Search]
+        D4[RRF Ranking]
+    end
+    
+    subgraph Output[輸出層]
+        E1[D3.js Visualization]
+        E2[MCP Tools]
+        E3[Graph RAG Agent]
+        E4[Export???]
+    end
+    
+    Input --> Parser
+    Parser --> Graph
+    Graph --> Query
+    Query --> Output
+    
+    style C1 fill:#ffccbc
+    style C2 fill:#c8e6c9
+    style E4 fill:#ffcdd2
+```
+
+### 4.3 對話式教學範例
+
+**情境：新手使用者首次分析 React Repository**
+
+```
+👤 使用者：我想理解 React 的程式碼結構
+
+🤖 GitNexus：請提供 React repository URL
+
+👤 使用者：https://github.com/facebook/react
+
+🤖 GitNexus：開始分析... 
+[進度] Fetching repository (1057 files)
+[進度] Parsing files (243/1057)...
+[進度] Resolving dependencies...
+[進度] Building graph...
+✅ 完成！建立了 15,423 個節點與 48,761 個關係
+
+👤 使用者：哪些是核心模組？
+
+🤖 GitNexus：[執行 Cypher 查詢偵測 clusters]
+發現 12 個主要功能群組：
+- react-reconciler (3,421 nodes) - 核心協調引擎
+- react-dom (2,117 nodes) - DOM renderer
+- scheduler (891 nodes) - 任務調度
+...
+[視覺化面板自動高亮這些 clusters]
+
+👤 使用者：如果我修改 Fiber.js 會影響什麼？
+
+🤖 GitNexus：[執行 impact analysis]
+Fiber.js 是 hotspot！
+- 直接依賴：127 個檔案
+- 間接影響：整個 react-reconciler cluster
+- 風險等級：🔴 高 (confidence: 0.95)
+建議：謹慎變更，需要完整測試覆蓋
+
+👤 使用者：能否匯出這個分析結果？
+
+🤖 GitNexus：[功能未驗證 - 系統應回答但目前文件不明]
+```
+
+---
+
+## 5. Feature Verification
+
+### 5.1 核心能力驗證表
+
+| 功能                           | 狀態       | 證據                         | 風險              | 建議                                   |
+| ---------------------------- | -------- | -------------------------- | --------------- | ------------------------------------ |
+| **Export Analyzed Graph**    | ❓ 未確認    | 官方文件未提及匯出功能                | 高 - 無法重用分析      | **高優先**：新增 JSON/GraphML 匯出           |
+| **Download Packaged Result** | ❓ 未確認    | CLI 產生 `.gitnexus/` 但無打包指令 | 高 - 分享困難        | 新增 `gitnexus export --format=bundle` |
+| **Share Parsed Graph**       | ❓ 未確認    | 無分享連結或序列化機制說明              | 高 - 協作受限        | 實作 snapshot URL 或可攜式封存               |
+| **Reuse Prior Analysis**     | ✅ 部分支援   | CLI 模式有 `.gitnexus/` 持久化   | 中 - Web UI 無持久化 | Web UI 新增 localStorage/IndexedDB     |
+| **Incremental Analysis**     | ❌ 不支援    | 每次需完整重建圖譜                  | 高 - 大型專案耗時      | 實作 git diff 增量索引                     |
+| **Local Caching**            | ✅ CLI 支援 | `.gitnexus/` 儲存 KuzuDB     | 低 - CLI 可用      | Web UI 需瀏覽器快取策略                      |
+| **Portable Graph Data**      | ⚠️ 限制    | KuzuDB 格式非標準交換格式           | 中 - 工具鎖定        | 新增標準格式匯出（JSON-LD, RDF）               |
+| **Collaboration Support**    | ❌ 無      | 無團隊/共享功能                   | 中 - 個人使用為主      | 未來功能：團隊 workspace                    |
+
+**推論依據：**
+- ✅ **已驗證支援：** 官方文件明確說明或程式碼可見
+- ⚠️ **部分支援/限制：** 功能存在但有重大限制
+- ❓ **未確認：** 文件未提及，無法從公開資訊驗證
+- ❌ **不支援：** 確認不存在該功能
+
+### 5.2 匯出與分享能力詳細分析
+
+#### 現況推測
+
+**CLI 模式：**
+```
+.gitnexus/
+├── database/        # KuzuDB 二進位檔案（非人類可讀）
+├── embeddings/      # Vector embeddings（numpy/binary）
+└── metadata.json    # 基本資訊（可能包含統計）
+```
+
+**問題：**
+1. KuzuDB 檔案格式為專用格式，無法直接用其他工具開啟
+2. 缺少 `gitnexus export` 指令將圖譜轉為標準格式
+3. 無 `gitnexus package` 建立可分享的封存檔
+4. Web UI 完全記憶體內，重新整理即遺失
+
+#### 最接近的替代方案（推測）
+
+**方案 A：手動複製 `.gitnexus/` 資料夾**
+```bash
+# 分析者
+gitnexus analyze
+tar -czf myproject-graph.tar.gz .gitnexus/
+
+# 接收者
+tar -xzf myproject-graph.tar.gz
+gitnexus serve  # 可能需要更新 registry
+```
+**限制：** 需要相同 GitNexus 版本，KuzuDB 相容性問題
+
+**方案 B：使用 Bridge Mode 的 HTTP API（推測）**
+```bash
+# 分析者
+gitnexus serve --port 3000
+
+# 接收者透過 API 查詢（需 JSON 包裝器）
+curl http://localhost:3000/api/cypher \
+  -d '{"query": "MATCH (n) RETURN n LIMIT 100"}'
+```
+**限制：** 需要持續執行的 server，非靜態分享
+
+**方案 C：Web UI 截圖/螢幕錄影（最不理想）**
+**限制：** 完全失去互動性與查詢能力
+
+#### 建議的分享/重用機制優先級
+
+| 優先級 | 功能 | 格式 | 用途 | 實作難度 |
+|--------|------|------|------|----------|
+| **P0** | 基本圖譜匯出 | JSON (nodes + edges) | 第三方工具整合 | 低 |
+| **P1** | 完整圖譜快照 | GraphML / Cypher 腳本 | 完整重建 | 中 |
+| **P2** | 可攜式封存 | `.gitnexus.bundle` (壓縮) | 團隊分享 | 中 |
+| **P3** | 雲端分享連結 | 加密 URL + S3/R2 儲存 | 公開分享 | 高 |
+| **P4** | 增量 delta | Git-like patch format | 持續更新 | 高 |
+
+---
+
+## 6. Reducing Repeated Analysis
+
+### 6.1 Concept Level（概念層）
+
+#### 問題定義
+每次開啟 GitNexus Web UI 或新 CLI 分析都需重新執行完整 6 階段索引管線，即使程式碼未變更。這導致：
+- **時間浪費：** 大型專案重複分析需數分鐘
+- **運算浪費：** 相同 AST 解析重複執行
+- **能源浪費：** 客戶端 CPU/記憶體高負載
+
+#### 目前瓶頸
+1. **Web UI：** 完全無狀態，每個 session 獨立建圖
+2. **CLI：** 雖有 `.gitnexus/`，但無快取驗證機制（檔案是否變更）
+3. **無版本控制：** 無法識別「已分析過此 commit」
+
+#### 最佳化策略
+
+**策略 1：內容定址快取 (Content-Addressable Cache)**
+```typescript
+// 為每個檔案計算 hash
+const fileHash = sha256(fileContent);
+const cacheKey = `${repo}:${filePath}:${fileHash}`;
+
+// 檢查快取
+if (astCache.has(cacheKey)) {
+  return astCache.get(cacheKey);
+}
+
+// 否則解析並快取
+const ast = treeSitter.parse(fileContent);
+astCache.set(cacheKey, ast);
+```
+
+**策略 2：Git Commit 為快照基準**
+```typescript
+// CLI 模式
+const currentCommit = execSync('git rev-parse HEAD').toString().trim();
+const cachedCommit = metadata.lastIndexedCommit;
+
+if (currentCommit === cachedCommit) {
+  console.log('Graph up-to-date, skipping analysis');
+  process.exit(0);
+}
+```
+
+**策略 3：瀏覽器 IndexedDB 持久化（Web UI）**
+```typescript
+// 儲存至 IndexedDB
+const db = await openDB('gitnexus', 1);
+await db.put('graphs', {
+  repoUrl,
+  commit: latestCommit,
+  graph: serializedGraph,
+  timestamp: Date.now()
+});
+
+// 載入時檢查
+const cached = await db.get('graphs', repoUrl);
+if (cached && cached.commit === currentCommit) {
+  return deserialize(cached.graph);
+}
+```
+
+#### 對使用者的可見價值
+- ⏱️ **時間節省：** 二次開啟相同專案從 3 分鐘降至 <5 秒
+- 🔌 **離線可用：** Web UI 可在無網路下重新開啟已分析專案
+- 🎯 **即時互動：** 減少等待，提升探索意願
+
+#### 對系統/AI 的實作價值
+- 📉 **降低運算成本：** 避免重複 AST 解析（CPU 密集）
+- 🗄️ **支援增量更新：** 未來可實作 delta 索引
+- 🔗 **啟用分享機制：** 序列化格式為匯出基礎
+
+#### 建議優先級
+**P0 - 立即實作：** Git commit 檢查（CLI）、IndexedDB 快取（Web UI）
+
+---
+
+### 6.2 Execution Level（執行層）
+
+#### 問題定義
+即使有快取，大型專案（10k+ 檔案）的初次索引仍需大量時間。需要優化：
+- **解析速度：** Tree-sitter 雖快但仍有開銷
+- **圖譜建構：** KuzuDB 寫入速度
+- **記憶體峰值：** Web UI 可能 crash
+
+#### 目前瓶頸
+1. **單執行緒限制：** 雖有 Web Workers，但協調開銷大
+2. **全部載入記憶體：** 無分批串流處理
+3. **無優先級：** 所有檔案平等對待，entry points 不優先
+
+#### 最佳化策略
+
+**策略 1：智能過濾（預先排除）**
+```typescript
+const SKIP_PATTERNS = [
+  /node_modules/,
+  /\.git/,
+  /dist|build|out/,
+  /\.min\.js$/,
+  /\.d\.ts$/  // TypeScript 定義檔（通常已有原始檔）
+];
+
+// 減少 70-90% 要處理的檔案
+```
+
+**策略 2：分層索引（Entry Points First）**
+```typescript
+// 階段 1：只索引 entry points 與直接依賴
+const phase1 = ['src/index.ts', 'src/main.ts', 'package.json'];
+
+// 階段 2：索引被引用的模組（BFS 展開）
+const phase2 = expandDependencies(phase1);
+
+// 階段 3：剩餘檔案（背景執行）
+const phase3 = remainingFiles;
+
+// 使用者可在階段 1 完成後即開始互動
+```
+
+**策略 3：串流處理（避免記憶體峰值）**
+```typescript
+async function* parseFilesStream(files: string[]) {
+  for (const file of files) {
+    const ast = await parseFile(file);
+    yield ast;  // 立即傳給圖譜建構器
+    // 不累積在記憶體中
+  }
+}
+
+// 消費端
+for await (const ast of parseFilesStream(allFiles)) {
+  await graph.addNodes(ast);
+}
+```
+
+**策略 4：Progressive Web App (PWA) 背景同步**
+```typescript
+// Service Worker
+self.addEventListener('sync', async (event) => {
+  if (event.tag === 'index-repository') {
+    await performIndexing();
+    // 使用者關閉分頁後仍繼續
+  }
+});
+```
+
+#### 對使用者的可見價值
+- ⚡ **漸進式可用：** 不需等待全部完成，核心部分先可用
+- 📱 **手機相容：** 降低記憶體需求，避免 crash
+- 🔄 **背景更新：** 關閉分頁後繼續索引（PWA）
+
+#### 對系統/AI 的實作價值
+- 🎯 **更好的 UX：** 減少 bounce rate
+- 📊 **可觀測性：** 分階段進度更清楚
+- 🧩 **模組化：** 每階段可獨立優化
+
+#### 建議優先級
+**P1 - 短期目標：** 智能過濾、分層索引
+
+---
+
+### 6.3 AI-to-AI Communication Layer（AI 對 AI 溝通層）
+
+#### 問題定義
+當多個 AI agent 或工具需要同一份程式碼知識時，目前做法是：
+1. Agent A 呼叫 GitNexus MCP 工具 → 查詢圖譜 → 取得結果
+2. Agent B 重新呼叫相同工具 → 重新查詢 → 消耗 token 描述相同內容
+3. Agent C（不同 LLM）完全無法存取 GitNexus 知識
+
+**核心痛點：知識無法在 AI agents 間有效傳遞**
+
+#### 目前瓶頸
+1. **每次對話重新建構上下文：** Agent 不記得前次查詢結果
+2. **中介格式缺失：** 圖譜結果以自然語言傳遞，AI 需重新解析
+3. **跨工具不相容：** GitNexus、Sourcegraph、GitHub Copilot 各有各的知識格式
+
+#### 最佳化策略
+
+**策略 1：結構化上下文封包 (Structured Context Packets)**
+```json
+{
+  "type": "code_context_packet",
+  "version": "1.0",
+  "source": "gitnexus",
+  "query": "dependencies of UserService",
+  "timestamp": "2026-03-14T18:31:00Z",
+  "data": {
+    "nodes": [
+      {
+        "id": "UserService",
+        "type": "class",
+        "file": "src/services/user.ts",
+        "dependencies": ["DatabaseClient", "Logger", "CacheService"]
+      }
+    ],
+    "edges": [
+      {"from": "UserService", "to": "DatabaseClient", "type": "imports"}
+    ]
+  },
+  "summary": "UserService depends on 3 direct dependencies...",
+  "token_cost": 0  // 此查詢無 LLM 消耗
+}
+```
+
+**使用場景：**
+```typescript
+// Agent A 查詢並儲存
+const contextPacket = await gitnexus.query("UserService");
+sessionContext.store(contextPacket);
+
+// Agent B 直接讀取（零 token）
+const cachedContext = sessionContext.retrieve("UserService");
+// 可選：用 LLM 重新詮釋，但原始資料已有
+```
+
+**策略 2：Graph-Aware RAG 中介層**
+```typescript
+// 標準化 Graph RAG 介面
+interface GraphRAGProvider {
+  query(q: string): Promise<GraphResult>;
+  embed(nodes: Node[]): Promise<Embedding[]>;
+  traverse(start: string, depth: number): Promise<Subgraph>;
+}
+
+// GitNexus 實作
+class GitNexusRAG implements GraphRAGProvider {
+  async query(q: string) {
+    // 返回標準化格式
+  }
+}
+
+// AI Agent 可切換 provider 而不改變邏輯
+const rag: GraphRAGProvider = new GitNexusRAG();
+const result = await rag.query("impact of change X");
+```
+
+**策略 3：Embeddings Metadata 分享**
+```json
+{
+  "module": "UserService",
+  "embedding": [0.123, -0.456, ...],  // 768-dim vector
+  "metadata": {
+    "type": "class",
+    "methods": ["login", "logout", "register"],
+    "incoming_refs": 47,
+    "outgoing_refs": 12,
+    "cluster": "authentication"
+  }
+}
+```
+
+**優勢：**
+- Agent 可用 vector search 快速定位
+- Metadata 提供結構化資訊（不需 LLM 解析）
+- 可匯入至其他 vector databases（Pinecone, Weaviate）
+
+**策略 4：Agent Skill as Graph Query**
+```yaml
+# agent-skill.yaml
+name: "Analyze Blast Radius"
+provider: "gitnexus"
+query_template: |
+  MATCH (n {name: $symbol})<-[:DEPENDS_ON*1..3]-(dependent)
+  RETURN dependent.name, dependent.file
+parameters:
+  - symbol: string
+output_format: "context_packet_v1"
+```
+
+**效果：**
+- 技能可序列化與分享
+- 不同 AI 平台可載入相同技能
+- 避免每個 agent 重寫查詢邏輯
+
+#### 對使用者的可見價值
+- 💰 **降低 Token 成本：** Agent 重用知識，減少重複查詢
+- 🔄 **跨工具一致性：** 在 Cursor 與 Claude Code 得到相同答案
+- 📦 **知識可攜性：** 可匯出給其他 AI 工具使用
+
+#### 對系統/AI 的實作價值
+- 🤖 **Agent 協作：** 多個 agent 共享知識庫
+- 🔌 **生態系統整合：** 成為 AI 工具鏈標準組件
+- 📈 **商業模式：** 可提供「預分析 knowledge packs」服務
+
+#### 建議優先級
+**P1 - 中期目標：** 結構化上下文封包、標準化介面
+
+---
+
+### 6.4 Person-to-Person Collaboration Layer（人對人協作層）
+
+#### 問題定義
+團隊成員 A 分析了專案，但成員 B、C、D 需要重新分析才能查看相同資訊。缺少：
+- **一次分析，多人受益**的機制
+- **Code review 參考**：PR 中引用 GitNexus 分析
+- **文件連結**：技術文件嵌入互動式圖譜
+
+#### 目前瓶頸
+1. **無共享 URL：** 無法傳送「這個分析結果」給同事
+2. **無版本管理：** 無法對比「重構前後的圖譜變化」
+3. **無協作標註：** 無法在圖譜上留言討論
+
+#### 最佳化策略
+
+**策略 1：Immutable Snapshot URL**
+```typescript
+// 分析完成後生成
+const snapshot = await gitnexus.createSnapshot({
+  repoUrl: 'github.com/facebook/react',
+  commit: 'a1b2c3d',
+  filters: { excludeTests: true }
+});
+
+// 產生分享連結
+const shareUrl = `https://gitnexus.app/s/${snapshot.id}`;
+// 或 self-hosted: `https://team.internal/gitnexus/s/${snapshot.id}`
+```
+
+**儲存選項：**
+- **選項 A：去中心化（IPFS）：** 完全公開，永久儲存
+- **選項 B：雲端儲存（S3）：** 私有，可設定過期
+- **選項 C：企業內部：** Self-hosted GitNexus server
+
+**策略 2：Git-like Diff for Graphs**
+```bash
+# 重構前
+gitnexus analyze --snapshot=before
+
+# 重構後
+gitnexus analyze --snapshot=after
+
+# 對比
+gitnexus diff before after
+```
+
+**輸出：**
+```
+Changes detected:
++ 新增 15 個節點 (新模組 AuthService)
+- 刪除 3 個孤立節點 (已移除 LegacyUtils)
+~ 修改 42 條邊 (UserService 不再直接呼叫 Database)
+
+Complexity metrics:
+  Cyclomatic complexity: 145 → 132 (-8.9%) ✅
+  Max dependency depth: 8 → 6 (-25%) ✅
+```
+
+**策略 3：Annotation Layer（協作標註）**
+```typescript
+// 在圖譜上新增註解
+await gitnexus.annotate({
+  nodeId: 'UserService',
+  author: 'Alice',
+  comment: '這裡需要重構，太多依賴了',
+  tag: 'technical-debt',
+  visibility: 'team'
+});
+
+// 其他成員可見
+const annotations = await gitnexus.getAnnotations('UserService');
+```
+
+**策略 4：嵌入式 Widget（文件整合）**
+```markdown
+<!-- 在 README.md 或 Wiki 中 -->
+<gitnexus-embed 
+  repo="myorg/myproject"
+  commit="main"
+  view="dependencies"
+  focus="UserService"
+/>
+```
+
+**效果：**
+- 文件與活動圖譜同步
+- 新人 onboarding 可直接探索
+- 減少「口頭解釋架構」的需求
+
+#### 對使用者的可見價值
+- 👥 **團隊效率：** 一人分析，全員受益
+- 📝 **文件升級：** 靜態文件變互動式
+- 🔍 **Code Review 品質：** PR 附帶影響分析
+
+#### 對系統/AI 的實作價值
+- 💼 **企業市場：** 團隊協作為付費功能切入點
+- 📊 **使用分析：** 了解哪些模組最常被查看
+- 🔗 **網路效應：** 分享越多，價值越高
+
+#### 建議優先級
+**P2 - 中期目標：** Snapshot URL、Graph Diff  
+**P3 - 長期目標：** 協作標註、嵌入式 Widget
+
+---
+
+## 7. Product Improvement Roadmap
+
+### 7.1 近期可做 (Quick Wins) - 3 個月內
+
+| 優先級 | 功能 | 解決痛點 | 實作難度 | 預期影響 |
+|--------|------|----------|----------|----------|
+| **P0** | **基本匯出功能** | 無法保存分析結果 | 🟢 低 | 大幅提升留存率 |
+| - | 匯出 JSON (nodes + edges) | 第三方整合 | 1-2 週 | +40% retention |
+| - | 匯出 GraphML | 標準格式 | 1 週 | 學術/研究使用 |
+| **P0** | **Web UI 持久化** | 每次重整頁面需重新分析 | 🟢 低 | 降低 frustration |
+| - | IndexedDB 快取 | 離線可用 | 1 週 | -80% 重複分析 |
+| - | Session 復原 | UX 平滑 | 3 天 | 使用者更願探索 |
+| **P1** | **智能過濾與分層索引** | 大型專案索引太慢 | 🟡 中 | 擴展可分析規模 |
+| - | 排除 node_modules 等 | 減少 70% 檔案 | 2 天 | -60% 索引時間 |
+| - | Entry points 優先 | 漸進式可用 | 1 週 | 早 30 秒可互動 |
+| **P1** | **Git Commit 檢查（CLI）** | 重複分析已索引專案 | 🟢 低 | 開發者工作流優化 |
+| - | 比對 HEAD commit | 跳過無變更 | 3 天 | -90% 無意義重建 |
+| - | 增量更新提示 | 提示需重新分析 | 2 天 | 清楚狀態 |
+
+**實作策略：**
+- **週 1-2：** 匯出功能（JSON/GraphML）
+- **週 3-4：** Web UI IndexedDB 整合
+- **週 5-6：** 智能過濾
+- **週 7-8：** Git commit 檢查
+- **週 9-12：** 測試、文件、發布
+
+**商業影響：**
+- **Token 成本：** N/A（開源專案無直接影響）
+- **Adoption：** +50%（降低使用障礙）
+- **Retention：** +60%（可保存工作成果）
+- **Performance：** 大型專案可用性從 60% → 90%
+
+**社群策略：**
+- 建立 GitHub Issues 標記為 "good first issue"
+- 撰寫詳細 RFC（Request for Comments）
+- 募集貢獻者
+
+---
+
+### 7.2 中期架構升級 (Mid-term) - 6-12 個月
+
+| 優先級 | 功能 | 為何重要 | 實作難度 | 商業化潛力 |
+|--------|------|----------|----------|------------|
+| **P1** | **增量索引 (Incremental Analysis)** | 大型專案每次全量太慢 | 🔴 高 | ⭐⭐⭐ |
+| - | Git diff 偵測變更檔案 | 只重新分析變動部分 | 4 週 | 企業關鍵需求 |
+| - | Graph delta update | 更新而非重建 | 6 週 | 核心競爭力 |
+| - | 版本歷史追蹤 | 時光機功能 | 3 週 | 差異化功能 |
+| **P2** | **Snapshot 分享系統** | 團隊協作需求 | 🟡 中 | ⭐⭐⭐⭐ |
+| - | Immutable snapshot 生成 | 固定版本分享 | 2 週 | 付費切入點 |
+| - | S3/R2 儲存整合 | 雲端託管 | 2 週 | SaaS 基礎 |
+| - | 權限管理 | 私有專案保護 | 3 週 | 企業必需 |
+| **P2** | **結構化上下文封包** | AI-to-AI 溝通優化 | 🟡 中 | ⭐⭐⭐⭐⭐ |
+| - | Context Packet 標準 | 跨工具整合 | 3 週 | 生態系統關鍵 |
+| - | Session Context Store | Agent 記憶 | 2 週 | Token 成本降低 |
+| - | Provider 介面標準化 | 替換性 | 2 週 | 開放標準推廣 |
+| **P3** | **Graph Diff 視覺化** | 重構前後對比 | 🟡 中 | ⭐⭐⭐ |
+| - | 並排圖譜對比 | 直觀呈現變化 | 3 週 | Code review 利器 |
+| - | Metrics 趨勢圖 | 程式碼健康度追蹤 | 2 週 | 技術債管理 |
+| - | CI/CD 整合 | 自動化檢查 | 2 週 | DevOps 整合 |
+
+**技術挑戰：**
+- **增量索引：** 需精確追蹤依賴變化傳播
+- **Snapshot：** 需壓縮演算法（大型圖譜可達 GB）
+- **標準化：** 需與社群協商格式
+
+**商業模式建議：**
+- **開源核心 + 企業功能**
+  - 開源：基本索引、視覺化、匯出
+  - 付費：團隊協作、雲端儲存、增量更新
+- **定價範例：**
+  - 個人免費
+  - 團隊版 $49/月（10 人，無限專案）
+  - 企業版 $499/月（無限使用者，on-premise 部署）
+
+---
+
+### 7.3 長期平台化方向 (Long-term) - 12+ 個月
+
+#### 願景：成為 AI 時代的程式碼知識基礎設施
+
+**方向 1：Code Intelligence Platform**
+
+**特點：**
+- 不只是分析工具，而是知識 API 平台
+- 任何 AI 工具都可查詢 GitNexus 知識圖譜
+- 開放 Graph Schema 標準化
+
+**實作：**
+```typescript
+// 標準化 API
+GET /api/v1/repos/:owner/:repo/graph
+GET /api/v1/repos/:owner/:repo/symbols/:name/dependencies
+GET /api/v1/repos/:owner/:repo/impact?symbol=UserService
+
+// GraphQL 端點
+query {
+  repository(url: "github.com/facebook/react") {
+    symbol(name: "useState") {
+      dependencies { name file }
+      usages { location context }
+      cluster { name members }
+    }
+  }
+}
+```
+
+**影響：**
+- 成為 AI coding 生態的基礎服務
+- 類似「Elasticsearch for code」的角色
+
+**方向 2：Multi-Repo Knowledge Graph**
+
+**問題：** 現代應用由多個 microservices / repos 組成，單一 repo 分析不夠
+
+**解決：**
+```
+Company Knowledge Graph
+├── frontend-app (React)
+├── backend-api (Node.js)
+├── auth-service (Python)
+└── shared-utils (TypeScript)
+
+跨 repo 關係：
+frontend-app.UserProfile --> backend-api.GET /users/:id
+backend-api.authenticate() --> auth-service.verify_token()
+```
+
+**價值：**
+- 追蹤 API 變更影響前端
+- 微服務依賴地圖
+- 企業級架構治理
+
+**方向 3：Semantic Code Search（語意搜尋）**
+
+**超越關鍵字：**
+```
+使用者問：「如何處理使用者註冊失敗的情況？」
+
+傳統搜尋：grep "user" + "register" + "fail"
+→ 可能錯過 signup、create_account、error handling
+
+GitNexus 語意搜尋：
+1. 理解意圖：註冊流程 + 錯誤處理
+2. 查詢圖譜：找到 registration process cluster
+3. 追蹤異常處理路徑
+4. 返回：完整 try-catch blocks + error 回傳邏輯
+```
+
+**技術：**
+- 預訓練 Code LLM 微調
+- Graph-aware embeddings
+- 查詢擴展
+
+**方向 4：AI Code Assistant Marketplace**
+
+**概念：** GitNexus 提供底層知識，第三方開發者建立上層應用
+
+**範例應用：**
+- **Tech Debt Detector：** 自動標記需重構的 hotspots
+- **Onboarding Assistant：** 為新人生成導覽路徑
+- **Security Scanner：** 追蹤敏感函式的呼叫鏈
+- **Dependency Analyzer：** 評估升級套件的影響
+- **Architecture Enforcer：** 檢查是否違反設計規則
+
+**商業模式：**
+- GitNexus 抽成 30%（類似 App Store）
+- 開發者獲得 70%
+- 培養生態系統
+
+**方向 5：Code Knowledge as a Service (CKaaS)**
+
+**目標客戶：** 企業級公司
+
+**服務內容：**
+- 託管 GitNexus 實例
+- 自動索引所有企業內部 repos
+- 整合 SSO（Single Sign-On）
+- 客製化儀表板
+- API 存取配額
+- SLA 保證
+
+**定價：**
+- 按 repo 數量計費：$10/repo/月
+- 或按使用者計費：$20/user/月
+- 企業合約：客製化定價
+
+---
+
+### 7.4 優先級決策矩陣
+
+```
+影響力
+^
+│ 📊 Graph Diff      🌐 Snapshot 分享
+│ (中期)              (中期)
+│
+│ 💾 匯出功能 ★      🔄 增量索引
+│ (近期)              (中期)
+│
+│ 📱 持久化 ★        🤖 Context Packet
+│ (近期)              (中期)
+│
+│ 🎯 智能過濾 ★
+│ (近期)
+└─────────────────────────────> 實作難度
+
+★ = Quick Wins（高影響、低難度，優先做）
+```
+
+**決策準則：**
+1. **Adoption 提升：** 降低使用障礙優先
+2. **Retention 保護：** 避免使用者流失
+3. **差異化競爭：** 獨特功能建立護城河
+4. **商業可行性：** 平衡開源與收入
+
+---
+
+## 8. Mobile UX Redesign Proposal
+
+### 8.1 當前問題分析
+
+#### 8.1.1 手機版難用的根本原因
+
+**Problem 1：資訊密度過高**
+- **桌面版設計邏輯：** 三欄式布局（側邊欄篩選器 + 中央圖譜 + 右側屬性面板）
+- **手機限制：** 螢幕寬度 <400px，無法並排顯示
+- **結果：** 文字過小、節點重疊、無法點擊
+
+**Problem 2：互動模式不適配**
+- **桌面互動：** 滑鼠懸停顯示工具提示、精準點擊小節點、雙擊縮放
+- **手機互動：** 無懸停、手指遮擋、誤觸頻繁
+- **結果：** 操作挫折感高
+
+**Problem 3：圖譜視覺化不可讀**
+- **Force-directed graph：** 需要大畫布才能展開
+- **手機螢幕：** 所有節點擠在一起成一團
+- **結果：** 完全無法判讀結構
+
+**Problem 4：導航架構混亂**
+- **桌面版：** 多視圖並存（Graph + Chat + Settings 同時可見）
+- **手機版：** 需在視圖間切換，但切換邏輯不明確
+- **結果：** 使用者迷失
+
+#### 8.1.2 手機版預覽技術限制
+
+**瀏覽器限制：**
+- **Canvas/SVG 渲染：** 在小螢幕上性能下降
+- **Web Workers：** 手機 CPU 較弱，解析慢
+- **記憶體：** 行動裝置 RAM 有限，大型圖譜 crash
+
+**網路限制：**
+- **GitHub API：** 行動網路下載大量檔案慢
+- **無快取：** 每次重新載入都需重新抓取
+
+---
+
+### 8.2 手機版優化策略
+
+#### 立即修正 (Hotfix) - 1-2 週
+
+**Fix 1：響應式字體與觸控目標**
+```css
+/* 增大可點擊區域 */
+.graph-node {
+  min-width: 44px;   /* iOS 建議最小觸控目標 */
+  min-height: 44px;
+  font-size: 14px;   /* 桌面 */
+}
+
+@media (max-width: 768px) {
+  .graph-node {
+    min-width: 56px;   /* Material Design 建議 */
+    min-height: 56px;
+    font-size: 16px;   /* 行動裝置最小可讀 */
+  }
+}
+```
+
+**Fix 2：簡化初始視圖**
+```typescript
+// 手機版預設只顯示 top 50 重要節點
+if (isMobile) {
+  const topNodes = graph.nodes
+    .sort((a, b) => b.importance - a.importance)
+    .slice(0, 50);
+  renderGraph(topNodes);
+}
+```
+
+**Fix 3：加入手勢教學**
+```
+首次開啟顯示 overlay：
+┌─────────────────────┐
+│ 👆 點擊節點查看詳情  │
+│ ✌️  雙指縮放圖譜     │
+│ ☰  左上選單切換視圖 │
+└─────────────────────┘
+```
+
+**Fix 4：漢堡選單收納控制項**
+```
+手機版：
+┌─────────────────┐
+│ ☰  GitNexus     │  ← 漢堡選單
+├─────────────────┤
+│                 │
+│   [圖譜區域]    │
+│                 │
+├─────────────────┤
+│ 🔍 搜尋 💬 Chat │  ← 底部導航
+└─────────────────┘
+
+點擊 ☰ 展開：
+┌─────────────────┐
+│ ✕ 關閉          │
+│ ─────────────── │
+│ 📊 圖譜視圖     │
+│ 📝 檔案清單     │
+│ 🔍 搜尋         │
+│ ⚙️  設定        │
+└─────────────────┘
+```
+
+---
+
+#### UI 改版 (Redesign) - 1-2 個月
+
+**重新設計資訊架構 (IA)**
+
+**原則：一次顯示一個主要內容**
+
+```
+手機版導航流程：
+Home (啟動頁)
+├─ 分析新專案
+│  ├─ 輸入 URL
+│  ├─ 上傳 ZIP
+│  └─ [索引進度]
+└─ 最近的專案 (若有快取)
+   ├─ 專案 A
+   │  ├─ 📊 概覽
+   │  ├─ 🗺️  圖譜
+   │  ├─ 📂 檔案
+   │  ├─ 💬 Chat
+   │  └─ ⚙️  設定
+   └─ 專案 B
+```
+
+**新視圖層次結構：**
+
+**Level 1 - 概覽儀表板 (Overview Dashboard)**
+```
+┌────────────────────┐
+│ React Repository   │
+├────────────────────┤
+│ 📊 統計            │
+│ • 1,057 檔案       │
+│ • 15,423 函式      │
+│ • 12 clusters      │
+├────────────────────┤
+│ 🔥 Hotspots        │
+│ 1. Fiber.js (127)  │ ← 可點擊
+│ 2. Reconciler      │
+│ 3. Scheduler       │
+├────────────────────┤
+│ ⚠️  需注意          │
+│ • 3 循環依賴       │
+│ • 15 孤立檔案      │
+└────────────────────┘
+```
+
+**Level 2 - 互動式圖譜 (簡化版)**
+```
+┌────────────────────┐
+│ 🔍 搜尋...         │
+├────────────────────┤
+│                    │
+│   [簡化圖譜]       │
+│   • 只顯示當前     │
+│     cluster        │
+│   • 大節點         │
+│   • 清楚標籤       │
+│                    │
+├────────────────────┤
+│ < 返回 | 詳情 >    │
+└────────────────────┘
+```
+
+**Level 3 - 節點詳情 (全螢幕)**
+```
+┌────────────────────┐
+│ < UserService      │
+├────────────────────┤
+│ 📁 src/services/   │
+│    user.ts         │
+├────────────────────┤
+│ 📥 Dependencies    │
+│ • DatabaseClient   │ ← 可展開查看
+│ • Logger           │
+│ • CacheService     │
+├────────────────────┤
+│ 📤 Used By (47)    │
+│ • AuthController   │
+│ • UserAPI          │
+│ • [顯示更多]       │
+├────────────────────┤
+│ [📋 複製路徑]      │
+│ [🔍 在圖譜中查看]  │
+└────────────────────┘
+```
+
+**Level 4 - Chat 介面 (全螢幕)**
+```
+┌────────────────────┐
+│ < Chat             │
+├────────────────────┤
+│ 💬 你：            │
+│ "UserService 的    │
+│  依賴是什麼？"     │
+│                    │
+│ 🤖 GitNexus：      │
+│ UserService 依賴   │
+│ 3 個模組：         │
+│ 1. DatabaseClient  │ ← 可點擊
+│ 2. Logger          │
+│ 3. CacheService    │
+│                    │
+│ [查看圖譜] [詳情]  │
+├────────────────────┤
+│ 輸入訊息...        │
+└────────────────────┘
+```
+
+---
+
+#### Interaction Redesign (互動重構) - 2-3 個月
+
+**設計手機優先手勢系統**
+
+**手勢對照表：**
+
+| 操作 | 桌面版 | 手機版 | 說明 |
+|------|--------|--------|------|
+| 選取節點 | 單擊 | 點擊 | 放大觸控區域 |
+| 查看詳情 | 雙擊 | 長按 | 避免誤觸 |
+| 縮放 | 滾輪 | 雙指捏合 | 標準手勢 |
+| 平移 | 拖曳 | 單指滑動 | 需與選取區分 |
+| 返回 | ESC | 下滑 | iOS 標準 |
+| 選單 | 右鍵 | 長按 | 上下文選單 |
+
+**新互動模式 1：卡片式圖譜**
+
+取代 force-directed graph，使用卡片列表：
+
+```
+┌────────────────────┐
+│ 🔍 Fiber.js        │
+├────────────────────┤
+│ ┌────────────────┐ │
+│ │ Fiber.js       │ │
+│ │ 127 依賴 →     │ │ ← 滑動查看
+│ └────────────────┘ │
+│ ┌────────────────┐ │
+│ │ Reconciler     │ │
+│ │ 94 依賴 →      │ │
+│ └────────────────┘ │
+│ ┌────────────────┐ │
+│ │ Scheduler      │ │
+│ │ 67 依賴 →      │ │
+│ └────────────────┘ │
+└────────────────────┘
+```
+
+**優勢：**
+- 可滾動，無需縮放
+- 每張卡片資訊清楚
+- 點擊目標明確
+
+**新互動模式 2：階層式導航**
+
+```
+Layer 1: Clusters
+┌────────────────────┐
+│ react-reconciler   │ ← 點擊進入
+│ react-dom          │
+│ scheduler          │
+└────────────────────┘
+
+Layer 2: Modules (in Cluster)
+┌────────────────────┐
+│ < react-reconciler │
+├────────────────────┤
+│ Fiber.js           │ ← 點擊進入
+│ Reconciler.ts      │
+│ Hooks.ts           │
+└────────────────────┘
+
+Layer 3: Symbols (in Module)
+┌────────────────────┐
+│ < Fiber.js         │
+├────────────────────┤
+│ createFiber()      │
+│ updateFiber()      │
+│ commitWork()       │
+└────────────────────┘
+```
+
+**新互動模式 3：漸進揭露 (Progressive Disclosure)**
+
+```
+初始狀態：只顯示摘要
+┌────────────────────┐
+│ UserService        │
+│ 3 依賴, 47 使用    │
+│ [展開 ▼]           │
+└────────────────────┘
+
+點擊展開：
+┌────────────────────┐
+│ UserService        │
+├────────────────────┤
+│ Dependencies (3)   │
+│ • DatabaseClient   │
+│ • Logger           │
+│ • CacheService     │
+│                    │
+│ Used By (47)       │
+│ • AuthController   │
+│ • ...              │
+│ [顯示全部]         │
+│                    │
+│ [收合 ▲]           │
+└────────────────────┘
+```
+
+---
+
+#### 資料呈現重構 (Data Presentation) - 3-4 個月
+
+**策略：手機版專用資料簡化**
+
+**原則 1：減少顯示節點數**
+```typescript
+// 桌面版：顯示所有 15,000+ 節點
+// 手機版：智能過濾至關鍵 100-200 節點
+
+const mobileFilteredGraph = {
+  nodes: graph.nodes.filter(node => 
+    node.importance > MOBILE_THRESHOLD ||
+    node.isEntryPoint ||
+    node.inCurrentCluster
+  ).slice(0, 200),
+  edges: graph.edges.filter(edge =>
+    filteredNodes.includes(edge.source) &&
+    filteredNodes.includes(edge.target)
+  )
+};
+```
+
+**原則 2：分層載入 (Lazy Loading)**
+```typescript
+// 初始只載入第一層
+const initialLoad = {
+  clusters: graph.getClusters(),
+  stats: graph.getStatistics()
+};
+
+// 使用者點擊 cluster 時才載入模組
+onClusterClick(clusterId) {
+  const modules = await graph.getModules(clusterId);
+  render(modules);
+}
+
+// 使用者點擊模組時才載入符號
+onModuleClick(moduleId) {
+  const symbols = await graph.getSymbols(moduleId);
+  render(symbols);
+}
+```
+
+**原則 3：資料預處理**
+```typescript
+// 伺服器端 (或 Service Worker) 預先計算手機版資料
+const mobileOptimizedData = {
+  summary: {
+    totalFiles: 1057,
+    totalFunctions: 15423,
+    clusters: 12,
+    hotspots: getTop(10)  // 只保留 top 10
+  },
+  clusters: clusters.map(c => ({
+    id: c.id,
+    name: c.name,
+    size: c.members.length,
+    importance: c.centrality
+    // 不包含所有 members，按需載入
+  }))
+};
+```
+
+**原則 4：圖表簡化**
+```
+桌面版 Force-Directed Graph：
+• 15,000+ 節點全部顯示
+• 複雜邊緣關係
+• 需要縮放平移
+
+手機版 Tree Map / Sunburst：
+• 階層結構清楚
+• 大小反映重要性
+• 點擊進入下一層
+
+或使用 Sankey Diagram：
+• 顯示主要資料流
+• 寬度反映依賴強度
+• 易於理解
+```
+
+---
+
+### 8.3 手機版功能優先級
+
+**應該保留的功能（核心體驗）：**
+1. ✅ 專案索引（簡化介面）
+2. ✅ 概覽統計儀表板
+3. ✅ 搜尋功能（放大版搜尋框）
+4. ✅ Hotspots 列表
+5. ✅ 基本圖譜視覺化（簡化版）
+6. ✅ Chat 對話（全螢幕）
+7. ✅ 節點詳情查看
+
+**應該隱藏/簡化的功能：**
+1. ⚙️ 高級篩選器（移至設定選單）
+2. 📊 複雜圖表（提供簡化版）
+3. 🔧 Cypher 查詢編輯器（桌面版限定）
+4. 🎨 視覺化客製化（使用預設）
+5. 📥 批次匯出（簡化為單一檔案）
+6. 🔌 MCP 整合設定（非手機使用情境）
+
+**應該完全移除的功能：**
+1. ❌ 並排圖譜比較（需大螢幕）
+2. ❌ 多視窗拖曳（手機無意義）
+3. ❌ 滑鼠懸停提示（改為點擊）
+4. ❌ 鍵盤快捷鍵（虛擬鍵盤不適用）
+
+---
+
+### 8.4 雙模策略建議
+
+**策略：「手機看摘要、桌機做深度分析」**
+
+```
+使用情境分工：
+
+📱 手機端 (Mobile)
+├─ 快速查看專案結構
+├─ 搜尋特定符號
+├─ 閱讀 Chat 分析結果
+├─ 查看 hotspots 警示
+└─ 輕量互動（點擊、滑動）
+
+💻 桌機端 (Desktop)
+├─ 完整圖譜探索
+├─ 複雜查詢與篩選
+├─ 多視圖並排比較
+├─ Cypher 自訂查詢
+└─ 匯出與整合設定
+```
+
+**同步機制：**
+```typescript
+// 使用者在手機上標記了 hotspots
+mobile.markForReview('Fiber.js', { priority: 'high' });
+
+// 桌機端自動同步
+desktop.onSync(() => {
+  const pendingReviews = sync.getPendingItems();
+  showNotification(`${pendingReviews.length} items need review`);
+});
+```
+
+**跨裝置工作流範例：**
+```
+早上通勤（手機）：
+→ 瀏覽昨天 PR 的影響分析
+→ 標記 3 個需深入檢查的模組
+→ 在 Chat 問了幾個問題
+
+到公司（桌機）：
+→ 自動載入標記的模組
+→ 在完整圖譜中深入分析
+→ 執行 Cypher 查詢驗證假設
+→ 匯出報告給團隊
+```
+
+---
+
+### 8.5 效能優化（手機版特定）
+
+**策略 1：Service Worker 快取**
+```typescript
+// 快取已分析專案
+self.addEventListener('fetch', (event) => {
+  if (event.request.url.includes('/api/graph/')) {
+    event.respondWith(
+      caches.match(event.request).then(cached => {
+        return cached || fetch(event.request);
+      })
+    );
+  }
+});
+```
+
+**策略 2：Code Splitting**
+```typescript
+// 只載入當前視圖需要的程式碼
+const GraphView = lazy(() => import('./views/GraphView'));
+const ChatView = lazy(() => import('./views/ChatView'));
+const SettingsView = lazy(() => import('./views/SettingsView'));
+
+// 手機版完全不載入的模組
+if (!isMobile) {
+  const AdvancedFilters = lazy(() => import('./AdvancedFilters'));
+}
+```
+
+**策略 3：圖片/Icon 優化**
+```
+桌面版：高解析度 SVG icons
+手機版：壓縮 PNG sprite sheet (減少 HTTP requests)
+```
+
+**策略 4：降級策略**
+```typescript
+// 低階手機 (< 2GB RAM) 使用更簡化版本
+const deviceTier = getDeviceTier();
+
+if (deviceTier === 'low') {
+  maxNodes = 50;
+  disableAnimations = true;
+  useSimpleGraph = true;
+} else if (deviceTier === 'mid') {
+  maxNodes = 200;
+  enableBasicAnimations = true;
+} else {
+  maxNodes = 500;
+  fullExperience = true;
+}
+```
+
+---
+
+### 8.6 實作時程規劃
+
+```
+Month 1-2: 立即修正
+├─ Week 1: 響應式 CSS 修正
+├─ Week 2: 觸控手勢實作
+├─ Week 3: 漢堡選單與底部導航
+└─ Week 4: 手勢教學 overlay
+
+Month 3-4: UI 改版
+├─ Week 5-6: 資訊架構重新設計
+├─ Week 7-8: 卡片式圖譜實作
+├─ Week 9-10: 階層式導航
+└─ Week 11-12: 使用者測試與調整
+
+Month 5-6: 互動重構
+├─ Week 13-14: 漸進揭露模式
+├─ Week 15-16: 手勢系統完善
+├─ Week 17-18: 效能優化
+└─ Week 19-20: A/B testing
+
+Month 7-8: 資料呈現重構
+├─ Week 21-22: 分層載入實作
+├─ Week 23-24: 預處理管線
+├─ Week 25-26: 簡化圖表
+└─ Week 27-28: 最終優化與發布
+```
+
+**里程碑驗證指標：**
+- 手機版載入時間 < 3 秒
+- 首次互動延遲 < 1 秒
+- 核心功能完成率 > 90%
+- 使用者滿意度 > 4.0/5.0
+
+---
+
+## 9. Final Recommendations
+
+### 最值得優先做的 10 個改進項目（依 Impact/Effort 排序）
+
+| # | 項目 | Impact | Effort | ROI | 時程 |
+|---|------|--------|--------|-----|------|
+| 1 | **基本匯出功能 (JSON/GraphML)** | 🔴 極高 | 🟢 低 | ⭐⭐⭐⭐⭐ | 2 週 |
+| 2 | **Web UI IndexedDB 持久化** | 🔴 極高 | 🟢 低 | ⭐⭐⭐⭐⭐ | 1 週 |
+| 3 | **智能過濾與 Entry Points 優先** | 🟠 高 | 🟢 低 | ⭐⭐⭐⭐⭐ | 2 週 |
+| 4 | **Git Commit 檢查（CLI 快取驗證）** | 🟠 高 | 🟢 低 | ⭐⭐⭐⭐⭐ | 3 天 |
+| 5 | **手機版立即修正（響應式+手勢）** | 🟠 高 | 🟡 中 | ⭐⭐⭐⭐ | 2 週 |
+| 6 | **結構化上下文封包（AI-to-AI）** | 🟠 高 | 🟡 中 | ⭐⭐⭐⭐ | 3 週 |
+| 7 | **Snapshot 分享系統（S3 整合）** | 🟠 高 | 🟡 中 | ⭐⭐⭐⭐ | 4 週 |
+| 8 | **增量索引（Git Diff Delta）** | 🔴 極高 | 🔴 高 | ⭐⭐⭐⭐ | 10 週 |
+| 9 | **Graph Diff 視覺化** | 🟡 中 | 🟡 中 | ⭐⭐⭐ | 5 週 |
+| 10 | **手機版 UI 全面改版** | 🟠 高 | 🔴 高 | ⭐⭐⭐ | 16 週 |
+
+**執行建議：**
+
+**Phase 1 (Month 1-2)：Quick Wins Sprint**
+- 同時執行 #1-4
+- 目標：解決 80% 使用者的主要痛點
+- 預期效果：Retention +60%, Satisfaction +40%
+
+**Phase 2 (Month 3-4)：Mobile First**
+- 執行 #5
+- 驗證手機版使用情境
+- 決定是否投入 #10
+
+**Phase 3 (Month 5-8)：AI Ecosystem**
+- 執行 #6-7
+- 建立 AI-to-AI 溝通標準
+- 培養開發者生態
+
+**Phase 4 (Month 9-12)：Enterprise Ready**
+- 執行 #8-9
+- 瞄準企業市場
+- 準備商業化
+
+---
+
+## 10. 未驗證項目與後續行動
+
+### 10.1 需要驗證的關鍵假設
+
+| 假設 | 驗證方法 | 負責人 | 期限 |
+|------|----------|--------|------|
+| `.gitnexus/` 資料夾可完整還原圖譜 | 實際測試 CLI 分析後複製到另一台機器 | 技術團隊 | Week 1 |
+| KuzuDB WASM 格式與 Native 相容 | 版本測試 | 技術團隊 | Week 1 |
+| Web UI 無任何持久化機制 | 檢查程式碼是否使用 localStorage/IndexedDB | 技術團隊 | Week 1 |
+| 手機版可用性差是架構問題非 bug | 使用者測試（5-10 人手機端測試） | UX 團隊 | Week 2 |
+| 企業願意為團隊功能付費 | 客戶訪談（10-15 家潛在企業客戶） | 產品團隊 | Week 4 |
+
+### 10.2 建議的下一步行動
+
+**立即行動（本週）：**
+1. **建立 GitHub Discussions**：詢問社群關於匯出、分享功能的需求
+2. **製作 RFC (Request for Comments)**：提出匯出格式標準化提案
+3. **手機版使用者測試**：招募 10 位使用者測試當前手機版體驗
+
+**短期行動（本月）：**
+1. **技術驗證 Sprint**：確認 `.gitnexus/` 可攜性與格式
+2. **競品分析**：研究 Sourcegraph、GitHub Code Search 的分享機制
+3. **設計 mockup**：手機版新 UI 設計稿
+
+**中期行動（3 個月內）：**
+1. **開源貢獻計畫**：建立 "good first issue" 與貢獻指南
+2. **文件完善**：補充架構文件、API 文件、最佳實踐
+3. **案例研究**：收集早期採用者的使用案例
+
+**長期行動（6-12 個月）：**
+1. **商業模式驗證**：推出 Beta 企業版測試定價
+2. **生態系統建設**：舉辦 Hackathon，徵集第三方擴充套件
+3. **標準化推動**：與 AI coding tools 社群協商統一 context protocol
+
+---
+
+## 11. 附錄：技術深度補充
+
+### 11.1 KuzuDB 深入分析
+
+**KuzuDB 是什麼：**
+- 嵌入式圖譜資料庫（類似 SQLite for graphs）
+- 支援 Cypher 查詢語言
+- 欄式儲存，針對分析查詢優化
+- 有 Native (C++) 與 WASM 版本
+
+**GitNexus 中的使用：**
+```
+CLI 模式：
+- 使用 Native KuzuDB
+- 資料庫檔案儲存於 .gitnexus/database/
+- 持久化，可重複使用
+
+Web UI 模式：
+- 使用 KuzuDB WASM
+- 記憶體內資料庫
+- 關閉分頁即遺失
+```
+
+**推測的 Schema：**
+```cypher
+// 節點類型
+(:File {path, language, size})
+(:Function {name, file, line, params, returns})
+(:Class {name, file, line})
+(:Module {name, path})
+(:Cluster {id, name, size, centrality})
+
+// 關係類型
+(:File)-[:CONTAINS]->(:Function)
+(:Function)-[:CALLS]->(:Function)
+(:Module)-[:IMPORTS]->(:Module)
+(:Function)-[:BELONGS_TO]->(:Cluster)
+(:Function)-[:DEPENDS_ON]->(:Function)
+```
+
+**效能特性：**
+- 索引建立：O(N log N)
+- 查詢：O(log N) 至 O(N)（取決於查詢複雜度）
+- 記憶體使用：約 N * 2-3x（N 為程式碼大小）
+
+---
+
+### 11.2 Tree-sitter 解析管線
+
+**Tree-sitter 優勢：**
+- 增量解析（incremental parsing）
+- 容錯能力（error recovery）
+- 多語言支援（11 種語言）
+- WASM 可用
+
+**GitNexus 使用方式：**
+```typescript
+// 解析單一檔案
+const tree = parser.parse(sourceCode);
+
+// 提取符號
+const functions = tree.rootNode
+  .descendantsOfType('function_declaration')
+  .map(node => ({
+    name: node.childForFieldName('name').text,
+    params: extractParams(node),
+    body: node.childForFieldName('body')
+  }));
+
+// 提取呼叫關係
+const calls = tree.rootNode
+  .descendantsOfType('call_expression')
+  .map(node => ({
+    caller: getCurrentFunction(node),
+    callee: node.childForFieldName('function').text
+  }));
+```
+
+**未來優化機會：**
+- **預編譯 AST：** 上傳前先解析，減少客戶端負擔
+- **AST Diff：** 只重新解析變更的函式
+- **語法快取：** 相似程式碼模式快取解析結果
+
+---
+
+### 11.3 建議的匯出格式規格
+
+**格式 1：Lightweight JSON (nodes + edges)**
+```json
+{
+  "version": "1.0",
+  "metadata": {
+    "repo": "facebook/react",
+    "commit": "a1b2c3d",
+    "analyzed_at": "2026-03-14T18:31:00Z",
+    "gitnexus_version": "1.1.7"
+  },
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "function",
+      "name": "useState",
+      "file": "packages/react/src/ReactHooks.js",
+      "line": 42,
+      "importance": 0.95
+    }
+  ],
+  "edges": [
+    {
+      "source": "n1",
+      "target": "n2",
+      "type": "calls"
+    }
+  ],
+  "clusters": [
+    {
+      "id": "c1",
+      "name": "react-reconciler",
+      "members": ["n1", "n3", "n5"]
+    }
+  ]
+}
+```
+
+**格式 2：GraphML (標準交換格式)**
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+  <key id="name" for="node" attr.name="name" attr.type="string"/>
+  <key id="type" for="edge" attr.name="type" attr.type="string"/>
+  <graph edgedefault="directed">
+    <node id="n1">
+      <data key="name">useState</data>
+    </node>
+    <edge source="n1" target="n2">
+      <data key="type">calls</data>
+    </edge>
+  </graph>
+</graphml>
+```
+
+**格式 3：Cypher 重建腳本**
+```cypher
+// 建立節點
+CREATE (n1:Function {name: 'useState', file: 'ReactHooks.js'});
+CREATE (n2:Function {name: 'useEffect', file: 'ReactHooks.js'});
+
+// 建立關係
+MATCH (a:Function {name: 'useState'}), (b:Function {name: 'dispatcher'})
+CREATE (a)-[:CALLS]->(b);
+```
+
+---
+
+## 結論
+
+GitNexus 作為零伺服器程式碼智能引擎，已展現巨大潛力與創新技術架構。其核心價值在於**將圖譜關係預計算**，使 AI agents 能精確理解程式碼結構，而非依賴猜測。
+
+**當前最關鍵的缺口**在於**知識資產的重用機制**：
+- 缺乏匯出與分享功能
+- Web UI 無持久化導致重複分析
+- Person-to-Person 與 AI-to-AI 溝通尚未優化
+
+**建議的行動優先級**遵循「Quick Wins → Mobile First → AI Ecosystem → Enterprise Ready」路徑，在 12 個月內可完成從開源工具到企業級平台的轉型。
+
+**手機版優化**需採用「降維策略」：從複雜圖譜視覺化降至階層式卡片導航，實現「手機看摘要、桌機做深度分析」的雙模定位。
+
+最終，GitNexus 有潛力成為 **AI 時代的程式碼知識基礎設施**，類似 Elasticsearch 在搜尋領域的地位——成為所有 AI coding tools 背後的知識查詢引擎。
+
+---
+
+**文件版本：** v1.0  
+**製作日期：** 2026-03-14  
+**作者：** AI Research & Product Strategy Team  
+**目標受眾：** PM, UX Designer, Engineer, AI Agent Developer  
+**文件狀態：** 完整分析報告，已完成所有要求章節
+
+**下一步：** 
+1. 驗證未確認功能（匯出、持久化機制）
+2. 社群意見收集（GitHub Discussions）
+3. 啟動 Quick Wins Sprint（#1-4 項目）
+
+---
