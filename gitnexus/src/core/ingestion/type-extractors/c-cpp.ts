@@ -89,6 +89,16 @@ const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<str
       const text = func.text;
       if (text && classNames.has(text)) env.set(varName, text);
     }
+    return;
+  }
+
+  // auto x = User{} — compound_literal_expression (brace initialization)
+  // AST: compound_literal_expression > type_identifier + initializer_list
+  if (value.type === 'compound_literal_expression') {
+    const typeId = value.firstNamedChild;
+    if (typeId?.type === 'type_identifier') {
+      env.set(varName, typeId.text);
+    }
   }
 };
 

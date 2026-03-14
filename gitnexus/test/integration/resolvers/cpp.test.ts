@@ -382,3 +382,36 @@ describe('C++ parent resolution', () => {
     expect(extends_[0].target).toBe('BaseModel');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Brace-init constructor inference: auto x = User{}; x.save() → User.save
+// ---------------------------------------------------------------------------
+
+describe('C++ brace-init constructor inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-brace-init-inference'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, both with save methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves user.save() to User.save via brace-init', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/User.h');
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves repo.save() to Repo.save via brace-init', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/Repo.h');
+    expect(repoSave).toBeDefined();
+  });
+});

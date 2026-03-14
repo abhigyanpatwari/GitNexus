@@ -484,3 +484,31 @@ describe('C# base resolution', () => {
     expect(repoSave).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// base.Save() resolves to generic parent class's Save method
+// ---------------------------------------------------------------------------
+
+describe('C# generic parent base resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-generic-parent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel, User, and Repo classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'Repo', 'User']);
+  });
+
+  it('resolves base.Save() inside User to BaseModel.Save, not Repo.Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const baseSave = calls.find(c => c.source === 'Save' && c.target === 'Save'
+      && c.targetFilePath === 'src/Models/BaseModel.cs');
+    expect(baseSave).toBeDefined();
+    const repoSave = calls.find(c => c.target === 'Save' && c.targetFilePath === 'src/Models/Repo.cs');
+    expect(repoSave).toBeUndefined();
+  });
+});

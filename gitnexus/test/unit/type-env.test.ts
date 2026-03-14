@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildTypeEnv, lookupTypeEnv, type TypeEnv } from '../../src/core/ingestion/type-env.js';
+import { buildTypeEnv, type TypeEnv, type TypeEnvironment } from '../../src/core/ingestion/type-env.js';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import Java from 'tree-sitter-java';
@@ -273,7 +273,7 @@ describe('buildTypeEnv', () => {
       expect(flatGet(env, '$repo')).toBe('Repository');
     });
 
-    it('lookupTypeEnv resolves $this to enclosing class name', () => {
+    it('resolves $this to enclosing class name', () => {
       const code = `<?php
 class UserService {
   public function process(): void {
@@ -281,7 +281,7 @@ class UserService {
   }
 }`;
       const tree = parse(code, PHP.php);
-      const { env } = buildTypeEnv(tree, 'php');
+      const typeEnv = buildTypeEnv(tree, 'php');
 
       // Find the call node ($this->save())
       const calls: any[] = [];
@@ -293,12 +293,12 @@ class UserService {
 
       expect(calls.length).toBeGreaterThanOrEqual(1);
       // $this should resolve to enclosing class 'UserService'
-      expect(lookupTypeEnv(env, '$this', calls[0])).toBe('UserService');
+      expect(typeEnv.lookup('$this', calls[0])).toBe('UserService');
     });
   });
 
   describe('super/base/parent resolution', () => {
-    it('lookupTypeEnv resolves super to parent class name (TypeScript)', () => {
+    it('resolves super to parent class name (TypeScript)', () => {
       const code = `
 class BaseModel {
   save(): boolean { return true; }
@@ -310,7 +310,7 @@ class User extends BaseModel {
   }
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
 
       const calls: any[] = [];
       function findCalls(node: any) {
@@ -325,10 +325,10 @@ class User extends BaseModel {
         return text.includes('super');
       });
       expect(superCall).toBeDefined();
-      expect(lookupTypeEnv(env, 'super', superCall)).toBe('BaseModel');
+      expect(typeEnv.lookup('super', superCall)).toBe('BaseModel');
     });
 
-    it('lookupTypeEnv resolves super to parent class name (Java)', () => {
+    it('resolves super to parent class name (Java)', () => {
       const code = `
 class BaseModel {
   boolean save() { return true; }
@@ -340,7 +340,7 @@ class User extends BaseModel {
   }
 }`;
       const tree = parse(code, Java);
-      const { env } = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, 'java');
 
       const calls: any[] = [];
       function findCalls(node: any) {
@@ -351,10 +351,10 @@ class User extends BaseModel {
 
       const superCall = calls.find((c: any) => c.text.includes('super'));
       expect(superCall).toBeDefined();
-      expect(lookupTypeEnv(env, 'super', superCall)).toBe('BaseModel');
+      expect(typeEnv.lookup('super', superCall)).toBe('BaseModel');
     });
 
-    it('lookupTypeEnv resolves super to parent class name (Python)', () => {
+    it('resolves super to parent class name (Python)', () => {
       const code = `
 class BaseModel:
     def save(self) -> bool:
@@ -366,7 +366,7 @@ class User(BaseModel):
         return True
 `;
       const tree = parse(code, Python);
-      const { env } = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, 'python');
 
       const calls: any[] = [];
       function findCalls(node: any) {
@@ -378,7 +378,7 @@ class User(BaseModel):
       // Find a call inside the User class
       const superCall = calls.find((c: any) => c.text.includes('super'));
       expect(superCall).toBeDefined();
-      expect(lookupTypeEnv(env, 'super', superCall)).toBe('BaseModel');
+      expect(typeEnv.lookup('super', superCall)).toBe('BaseModel');
     });
 
     it('returns undefined when class has no parent', () => {
@@ -389,23 +389,17 @@ class Standalone {
   }
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
 
-      const calls: any[] = [];
-      function findCalls(node: any) {
-        if (node.type === 'call_expression') calls.push(node);
-        for (let i = 0; i < node.childCount; i++) findCalls(node.child(i));
-      }
-      findCalls(tree.rootNode);
-      // No calls in this code, but let's test the resolution function directly
+      // No calls in this code — test the resolution function directly
       // by using the class body as the context node
       const classNode = tree.rootNode.firstNamedChild;
-      expect(lookupTypeEnv(env, 'super', classNode!)).toBeUndefined();
+      expect(typeEnv.lookup('super', classNode!)).toBeUndefined();
     });
   });
 
   describe('Kotlin object_declaration this resolution', () => {
-    it('lookupTypeEnv resolves this inside object declaration', () => {
+    it('resolves this inside object declaration', () => {
       const code = `
 object AppConfig {
   fun setup() {
@@ -413,7 +407,7 @@ object AppConfig {
   }
 }`;
       const tree = parse(code, Kotlin);
-      const { env } = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
 
       const calls: any[] = [];
       function findCalls(node: any) {
@@ -423,7 +417,7 @@ object AppConfig {
       findCalls(tree.rootNode);
 
       expect(calls.length).toBeGreaterThanOrEqual(1);
-      expect(lookupTypeEnv(env, 'this', calls[0])).toBe('AppConfig');
+      expect(typeEnv.lookup('this', calls[0])).toBe('AppConfig');
     });
   });
 
@@ -450,7 +444,7 @@ object AppConfig {
       expect(env.get(handleRepoKey!)?.get('user')).toBe('Repo');
     });
 
-    it('lookupTypeEnv resolves from enclosing function scope', () => {
+    it('lookup resolves from enclosing function scope', () => {
       const code = `
 function handleUser(user: User) {
   user.save();
@@ -459,7 +453,7 @@ function handleRepo(user: Repo) {
   user.save();
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
 
       // Find the call nodes inside each function
       const calls: any[] = [];
@@ -473,9 +467,9 @@ function handleRepo(user: Repo) {
 
       expect(calls.length).toBe(2);
       // First call is inside handleUser → user should be User
-      expect(lookupTypeEnv(env, 'user', calls[0])).toBe('User');
+      expect(typeEnv.lookup('user', calls[0])).toBe('User');
       // Second call is inside handleRepo → user should be Repo
-      expect(lookupTypeEnv(env, 'user', calls[1])).toBe('Repo');
+      expect(typeEnv.lookup('user', calls[1])).toBe('Repo');
     });
 
     it('separates same-named methods in different classes via startIndex', () => {
@@ -491,7 +485,7 @@ class RepoService {
   }
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
 
       // Find the call nodes inside each process method
       const calls: any[] = [];
@@ -505,9 +499,9 @@ class RepoService {
 
       expect(calls.length).toBe(2);
       // First call inside UserService.process → user should be User
-      expect(lookupTypeEnv(env, 'user', calls[0])).toBe('User');
+      expect(typeEnv.lookup('user', calls[0])).toBe('User');
       // Second call inside RepoService.process → repo should be Repo
-      expect(lookupTypeEnv(env, 'repo', calls[1])).toBe('Repo');
+      expect(typeEnv.lookup('repo', calls[1])).toBe('Repo');
     });
 
     it('file-level variables are accessible from all scopes', () => {
@@ -518,10 +512,10 @@ class RepoService {
           user.save();
         }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
 
       // config is at file-level scope
-      const fileScope = env.get('');
+      const fileScope = typeEnv.env.get('');
       expect(fileScope?.get('config')).toBe('Config');
 
       // user is in process scope (key includes startIndex)
@@ -533,10 +527,9 @@ class RepoService {
       }
       findCalls(tree.rootNode);
       // calls[0] = getConfig() at file level, calls[1] = config.validate(), calls[2] = user.save()
-      // Use a call inside the function to test scope resolution
-      expect(lookupTypeEnv(env, 'user', calls[2])).toBe('User');
+      expect(typeEnv.lookup('user', calls[2])).toBe('User');
       // config is file-level, accessible from any scope
-      expect(lookupTypeEnv(env, 'config', calls[1])).toBe('Config');
+      expect(typeEnv.lookup('config', calls[1])).toBe('Config');
     });
   });
 
@@ -587,6 +580,20 @@ class RepoService {
         const { env } = buildTypeEnv(tree, 'typescript');
         // member_expression as constructor → extractSimpleTypeName returns undefined
         expect(flatGet(env, 'svc')).toBeUndefined();
+      });
+
+      it('infers type from new expression with as cast', () => {
+        const tree = parse('const x = new User() as BaseUser;', TypeScript.typescript);
+        const { env } = buildTypeEnv(tree, 'typescript');
+        // Unwraps as_expression to find the inner new_expression → User
+        expect(flatGet(env, 'x')).toBe('User');
+      });
+
+      it('infers type from new expression with non-null assertion', () => {
+        const tree = parse('const x = new User()!;', TypeScript.typescript);
+        const { env } = buildTypeEnv(tree, 'typescript');
+        // Unwraps non_null_expression to find the inner new_expression → User
+        expect(flatGet(env, 'x')).toBe('User');
       });
 
       it('ignores non-new assignments', () => {
@@ -827,6 +834,28 @@ class RepoService {
         // getUser is an identifier but NOT a known class — no inference
         expect(flatGet(env, 'x')).toBeUndefined();
       });
+
+      it('infers type from brace initialization (User{})', () => {
+        const tree = parse(`
+          class User {};
+          void run() {
+            auto user = User{};
+          }
+        `, CPP);
+        const { env } = buildTypeEnv(tree, 'cpp');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('infers type from brace initialization with args (User{1,2})', () => {
+        const tree = parse(`
+          class Config {};
+          void run() {
+            auto cfg = Config{1, 2};
+          }
+        `, CPP);
+        const { env } = buildTypeEnv(tree, 'cpp');
+        expect(flatGet(env, 'cfg')).toBe('Config');
+      });
     });
 
     describe('Kotlin constructor inference', () => {
@@ -931,6 +960,208 @@ class RepoService {
       const { env } = buildTypeEnv(tree, 'typescript');
       // Both declarations are at file level; last one wins
       expect(flatGet(env, 'x')).toBeDefined();
+    });
+  });
+
+  describe('generic parent class resolution', () => {
+    it('resolves super through generic parent (TypeScript)', () => {
+      const code = `
+class BaseModel<T> {
+  save(): T { return {} as T; }
+}
+class User extends BaseModel<string> {
+  save(): string {
+    super.save();
+    return "ok";
+  }
+}`;
+      const tree = parse(code, TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+
+      const calls: any[] = [];
+      function findCalls(node: any) {
+        if (node.type === 'call_expression') calls.push(node);
+        for (let i = 0; i < node.childCount; i++) findCalls(node.child(i));
+      }
+      findCalls(tree.rootNode);
+
+      const superCall = calls.find((c: any) => c.text.includes('super'));
+      expect(superCall).toBeDefined();
+      // Should resolve to "BaseModel", not "BaseModel<string>"
+      expect(typeEnv.lookup('super', superCall)).toBe('BaseModel');
+    });
+
+    it('resolves super through generic parent (Java)', () => {
+      const code = `
+class BaseModel<T> {
+  T save() { return null; }
+}
+class User extends BaseModel<String> {
+  String save() {
+    super.save();
+    return "ok";
+  }
+}`;
+      const tree = parse(code, Java);
+      const typeEnv = buildTypeEnv(tree, 'java');
+
+      const calls: any[] = [];
+      function findCalls(node: any) {
+        if (node.type === 'method_invocation') calls.push(node);
+        for (let i = 0; i < node.childCount; i++) findCalls(node.child(i));
+      }
+      findCalls(tree.rootNode);
+
+      const superCall = calls.find((c: any) => c.text.includes('super'));
+      expect(superCall).toBeDefined();
+      // Should resolve to "BaseModel", not "BaseModel<String>"
+      expect(typeEnv.lookup('super', superCall)).toBe('BaseModel');
+    });
+
+    it('resolves super through qualified parent (Python models.Model)', () => {
+      const code = `
+class Model:
+    def save(self):
+        pass
+
+class User(Model):
+    def save(self):
+        super().save()
+`;
+      const tree = parse(code, Python);
+      const typeEnv = buildTypeEnv(tree, 'python');
+
+      const calls: any[] = [];
+      function findCalls(node: any) {
+        if (node.type === 'call') calls.push(node);
+        for (let i = 0; i < node.childCount; i++) findCalls(node.child(i));
+      }
+      findCalls(tree.rootNode);
+
+      const superCall = calls.find((c: any) => c.text.includes('super'));
+      expect(superCall).toBeDefined();
+      expect(typeEnv.lookup('super', superCall)).toBe('Model');
+    });
+
+    it('resolves super through generic parent (C#)', () => {
+      const code = `
+class BaseModel<T> {
+  public T Save() { return default; }
+}
+class User : BaseModel<string> {
+  public string Save() {
+    base.Save();
+    return "ok";
+  }
+}`;
+      const tree = parse(code, CSharp);
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+
+      const calls: any[] = [];
+      function findCalls(node: any) {
+        if (node.type === 'invocation_expression') calls.push(node);
+        for (let i = 0; i < node.childCount; i++) findCalls(node.child(i));
+      }
+      findCalls(tree.rootNode);
+
+      const baseCall = calls.find((c: any) => c.text.includes('base'));
+      expect(baseCall).toBeDefined();
+      // Should resolve to "BaseModel", not "BaseModel<string>"
+      expect(typeEnv.lookup('base', baseCall)).toBe('BaseModel');
+    });
+  });
+
+  describe('C++ namespaced constructor binding', () => {
+    it('infers type from auto with namespaced constructor (ns::User)', () => {
+      const tree = parse(`
+        namespace ns {
+          class HttpClient {};
+        }
+        void run() {
+          auto client = ns::HttpClient();
+        }
+      `, CPP);
+      const { constructorBindings } = buildTypeEnv(tree, 'cpp');
+      // Should extract "HttpClient" from the scoped_identifier ns::HttpClient
+      const binding = constructorBindings.find(b => b.varName === 'client');
+      expect(binding).toBeDefined();
+      expect(binding!.calleeName).toBe('HttpClient');
+    });
+
+    it('does not extract from non-namespaced plain identifier (existing behavior)', () => {
+      const tree = parse(`
+        class User {};
+        void run() {
+          auto user = User();
+        }
+      `, CPP);
+      const { env, constructorBindings } = buildTypeEnv(tree, 'cpp');
+      // User() with known class resolves via extractInitializer, not constructor bindings
+      expect(flatGet(env, 'user')).toBe('User');
+      // No unresolved bindings since User is locally known
+      expect(constructorBindings.find(b => b.varName === 'user')).toBeUndefined();
+    });
+  });
+
+  describe('constructorBindings merged into buildTypeEnv', () => {
+    it('returns constructor bindings for Kotlin val x = UnknownClass()', () => {
+      const tree = parse(`
+        fun main() {
+          val user = UnknownClass()
+        }
+      `, Kotlin);
+      const { env, constructorBindings } = buildTypeEnv(tree, 'kotlin');
+      // UnknownClass is not defined locally — should appear as unverified binding
+      expect(flatGet(env, 'user')).toBeUndefined();
+      expect(constructorBindings.length).toBe(1);
+      expect(constructorBindings[0].varName).toBe('user');
+      expect(constructorBindings[0].calleeName).toBe('UnknownClass');
+    });
+
+    it('does NOT emit constructor binding when TypeEnv already resolved', () => {
+      const tree = parse(`
+        fun main() {
+          val user: User = User()
+        }
+      `, Kotlin);
+      const { env, constructorBindings } = buildTypeEnv(tree, 'kotlin');
+      // Explicit annotation resolves it — no unverified binding needed
+      expect(flatGet(env, 'user')).toBe('User');
+      expect(constructorBindings.find(b => b.varName === 'user')).toBeUndefined();
+    });
+
+    it('returns constructor bindings for Python x = UnknownClass()', () => {
+      const tree = parse(`
+def main():
+    user = SomeClass()
+`, Python);
+      const { env, constructorBindings } = buildTypeEnv(tree, 'python');
+      expect(flatGet(env, 'user')).toBeUndefined();
+      expect(constructorBindings.length).toBe(1);
+      expect(constructorBindings[0].varName).toBe('user');
+      expect(constructorBindings[0].calleeName).toBe('SomeClass');
+    });
+
+    it('returns empty bindings for language without scanner (Go)', () => {
+      const tree = parse(`
+        package main
+        func main() {
+          var x int = 5
+        }
+      `, Go);
+      const { constructorBindings } = buildTypeEnv(tree, 'go');
+      expect(constructorBindings).toEqual([]);
+    });
+
+    it('includes scope key in constructor bindings', () => {
+      const tree = parse(`
+        fun process() {
+          val user = RemoteUser()
+        }
+      `, Kotlin);
+      const { constructorBindings } = buildTypeEnv(tree, 'kotlin');
+      expect(constructorBindings.length).toBe(1);
+      expect(constructorBindings[0].scope).toMatch(/^process@\d+$/);
     });
   });
 });

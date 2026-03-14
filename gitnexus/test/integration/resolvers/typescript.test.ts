@@ -698,3 +698,73 @@ describe('TypeScript super resolution', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// super.save() resolves to generic parent class's save method
+// ---------------------------------------------------------------------------
+
+describe('TypeScript generic parent super resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-generic-parent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel, User, and Repo classes, each with a save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'Repo', 'User']);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(3);
+  });
+
+  it('emits EXTENDS edge: User → BaseModel (not BaseModel<string>)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(1);
+    expect(extends_[0].source).toBe('User');
+    expect(extends_[0].target).toBe('BaseModel');
+  });
+
+  it('resolves super.save() inside User to BaseModel.save, not Repo.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const superSave = calls.find(c => c.source === 'save' && c.target === 'save'
+      && c.targetFilePath === 'src/models/Base.ts');
+    expect(superSave).toBeDefined();
+    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/models/Repo.ts');
+    expect(repoSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cast/non-null constructor inference: new X() as T, new X()!
+// ---------------------------------------------------------------------------
+
+describe('TypeScript cast/non-null constructor inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-cast-constructor-inference'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, both with save methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves user.save() to User.save via new User() as any', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/user.ts');
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves repo.save() to Repo.save via new Repo()!', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/repo.ts');
+    expect(repoSave).toBeDefined();
+  });
+});
+

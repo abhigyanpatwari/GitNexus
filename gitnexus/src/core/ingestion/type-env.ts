@@ -3,6 +3,7 @@ import { FUNCTION_NODE_TYPES, extractFunctionName, CLASS_CONTAINER_TYPES } from 
 import { SupportedLanguages } from '../../config/supported-languages.js';
 import { typeConfigs, TYPED_PARAMETER_TYPES } from './type-extractors/index.js';
 import type { ClassNameLookup } from './type-extractors/types.js';
+import { extractSimpleTypeName } from './type-extractors/shared.js';
 import type { SymbolTable } from './symbol-table.js';
 
 /**
@@ -79,8 +80,6 @@ const lookupInEnv = (
   return fileEnv?.get(varName);
 };
 
-/** @deprecated Use `TypeEnvironment.lookup()` instead. Kept for backward compatibility. */
-export const lookupTypeEnv = lookupInEnv;
 
 /**
  * Walk up the AST from a node to find the enclosing class/module name.
@@ -129,18 +128,18 @@ const extractParentClassFromNode = (classNode: SyntaxNode): string | undefined =
   // 1. Named fields: Java (superclass), Ruby (superclass), Python (superclasses)
   const superclassNode = classNode.childForFieldName('superclass');
   if (superclassNode) {
-    // Java: superclass > type_identifier, Ruby: superclass > constant
+    // Java: superclass > type_identifier or generic_type, Ruby: superclass > constant
     const inner = superclassNode.childForFieldName('type')
       ?? superclassNode.firstNamedChild
       ?? superclassNode;
-    return inner.text;
+    return extractSimpleTypeName(inner) ?? inner.text;
   }
 
   const superclassesNode = classNode.childForFieldName('superclasses');
   if (superclassesNode) {
-    // Python: argument_list with identifiers — first one is the parent class
+    // Python: argument_list with identifiers or attribute nodes (e.g. models.Model)
     const first = superclassesNode.firstNamedChild;
-    if (first) return first.text;
+    if (first) return extractSimpleTypeName(first) ?? first.text;
   }
 
   // 2. Unnamed children: walk class node's children looking for heritage nodes
@@ -156,7 +155,7 @@ const extractParentClassFromNode = (classNode: SyntaxNode): string | undefined =
           const clause = child.child(j);
           if (clause?.type === 'extends_clause') {
             const typeNode = clause.firstNamedChild;
-            if (typeNode) return typeNode.text;
+            if (typeNode) return extractSimpleTypeName(typeNode) ?? typeNode.text;
           }
           // JS: direct identifier child (no extends_clause wrapper)
           if (clause?.type === 'identifier' || clause?.type === 'type_identifier') {
@@ -396,8 +395,21 @@ const extractCppConstructorBinding = (node: SyntaxNode): { varName: string; call
   const value = declarator.childForFieldName('value');
   if (!value || value.type !== 'call_expression') return undefined;
   const func = value.childForFieldName('function');
-  // Only match plain identifiers — type_identifier is already resolved by extractInitializer
-  if (!func || func.type !== 'identifier') return undefined;
+  // Match plain identifiers (type_identifier is already resolved by extractInitializer)
+  // and qualified/scoped identifiers for namespaced calls like ns::HttpClient()
+  if (!func) return undefined;
+  if (func.type === 'qualified_identifier' || func.type === 'scoped_identifier') {
+    // ns::HttpClient → extract "HttpClient" (last segment)
+    const last = func.lastNamedChild;
+    if (!last) return undefined;
+    const nameNode = declarator.childForFieldName('declarator');
+    if (!nameNode) return undefined;
+    const finalName = nameNode.type === 'pointer_declarator' || nameNode.type === 'reference_declarator'
+      ? nameNode.firstNamedChild : nameNode;
+    if (!finalName) return undefined;
+    return { varName: finalName.text, calleeName: last.text };
+  }
+  if (func.type !== 'identifier') return undefined;
   const nameNode = declarator.childForFieldName('declarator');
   if (!nameNode) return undefined;
   const finalName = nameNode.type === 'pointer_declarator' || nameNode.type === 'reference_declarator'
