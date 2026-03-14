@@ -33,7 +33,7 @@ import {
   inferCallForm,
   extractReceiverName
 } from '../utils.js';
-import { buildTypeEnv, lookupTypeEnv, scanConstructorBindings } from '../type-env.js';
+import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { isNodeExported } from '../export-detection.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
@@ -833,15 +833,13 @@ const processFileGroup = (
     result.fileCount++;
     onFileProcessed?.();
 
-    // Build per-file TypeEnv from explicit type annotations (for receiver resolution)
+    // Build per-file type environment + constructor bindings in a single AST walk.
+    // Constructor bindings are verified against the SymbolTable in processCallsFromExtracted.
     const typeEnv = buildTypeEnv(tree, language);
     const callRouter = callRouters[language];
 
-    // Scan for constructor bindings that couldn't be resolved locally (cross-file classes).
-    // These are verified against the SymbolTable in processCallsFromExtracted.
-    const ctorBindings = scanConstructorBindings(tree, language, typeEnv);
-    if (ctorBindings.length > 0) {
-      result.constructorBindings.push({ filePath: file.path, bindings: ctorBindings });
+    if (typeEnv.constructorBindings.length > 0) {
+      result.constructorBindings.push({ filePath: file.path, bindings: [...typeEnv.constructorBindings] });
     }
 
     let matches;
@@ -962,7 +960,7 @@ const processFileGroup = (
               || generateId('File', file.path);
             const callForm = inferCallForm(callNode, callNameNode);
             const receiverName = callForm === 'member' ? extractReceiverName(callNameNode) : undefined;
-            const receiverTypeName = receiverName ? lookupTypeEnv(typeEnv, receiverName, callNode) : undefined;
+            const receiverTypeName = receiverName ? typeEnv.lookup(receiverName, callNode) : undefined;
             result.calls.push({
               filePath: file.path,
               calledName,

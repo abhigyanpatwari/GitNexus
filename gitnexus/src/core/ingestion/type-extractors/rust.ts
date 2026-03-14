@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup } from './types.js';
 import { extractSimpleTypeName, extractVarName } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
@@ -31,7 +31,7 @@ const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
 };
 
 /** Rust: let x = User::new() or let x = User::default() */
-const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, _classNames: ReadonlySet<string>): void => {
+const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, _classNames: ClassNameLookup): void => {
   // Skip if there's an explicit type annotation — Tier 0 already handled it
   if (node.childForFieldName('type') !== null) return;
   const pattern = node.childForFieldName('pattern');

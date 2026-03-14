@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup } from './types.js';
 import { extractSimpleTypeName, extractVarName } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
@@ -50,7 +50,7 @@ const extractDeclaration: TypeBindingExtractor = (_node: SyntaxNode, _env: Map<s
 };
 
 /** PHP: $x = new User() — infer type from object_creation_expression */
-const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, _classNames: ReadonlySet<string>): void => {
+const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, _classNames: ClassNameLookup): void => {
   if (node.type !== 'assignment_expression') return;
   const left = node.childForFieldName('left');
   const right = node.childForFieldName('right');

@@ -2,6 +2,7 @@ import type { SyntaxNode } from './utils.js';
 import { FUNCTION_NODE_TYPES, extractFunctionName, CLASS_CONTAINER_TYPES } from './utils.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
 import { typeConfigs, TYPED_PARAMETER_TYPES } from './type-extractors/index.js';
+import type { ClassNameLookup } from './type-extractors/types.js';
 import type { SymbolTable } from './symbol-table.js';
 
 /**
@@ -30,20 +31,35 @@ const findTypeIdentifierChild = (node: SyntaxNode): SyntaxNode | null => {
 };
 
 /**
- * Look up a variable's type in the TypeEnv, trying the call's enclosing
- * function scope first, then falling back to file-level scope.
- *
- * Special handling for `self`/`this`: resolves to the enclosing class name
- * by walking up the AST, enabling receiver-type filtering for self.method() calls.
+ * Per-file type environment with receiver resolution.
+ * Built once per file via `buildTypeEnv`, used for receiver-type filtering,
+ * then discarded. Encapsulates scope-aware type lookup and self/this/super
+ * AST resolution behind a single `.lookup()` method.
  */
-export const lookupTypeEnv = (
+export interface TypeEnvironment {
+  /** Look up a variable's resolved type, with self/this/super AST resolution. */
+  lookup(varName: string, callNode: SyntaxNode): string | undefined;
+  /** Unverified cross-file constructor bindings for SymbolTable verification. */
+  readonly constructorBindings: readonly ConstructorBinding[];
+  /** Raw per-scope type bindings — for testing and debugging. */
+  readonly env: TypeEnv;
+}
+
+/** Implementation of the lookup logic — shared between TypeEnvironment and the legacy export. */
+const lookupInEnv = (
   env: TypeEnv,
   varName: string,
   callNode: SyntaxNode,
 ): string | undefined => {
   // Self/this receiver: resolve to enclosing class name via AST walk
-  if (varName === 'self' || varName === 'this') {
+  if (varName === 'self' || varName === 'this' || varName === '$this') {
     return findEnclosingClassName(callNode);
+  }
+
+  // Super/base/parent receiver: resolve to the parent class name via AST walk.
+  // Walks up to the enclosing class, then extracts the superclass from its heritage node.
+  if (varName === 'super' || varName === 'base' || varName === 'parent') {
+    return findEnclosingParentClassName(callNode);
   }
 
   // Determine the enclosing function scope for the call
@@ -63,6 +79,9 @@ export const lookupTypeEnv = (
   return fileEnv?.get(varName);
 };
 
+/** @deprecated Use `TypeEnvironment.lookup()` instead. Kept for backward compatibility. */
+export const lookupTypeEnv = lookupInEnv;
+
 /**
  * Walk up the AST from a node to find the enclosing class/module name.
  * Used to resolve `self`/`this` receivers to their containing type.
@@ -71,11 +90,142 @@ const findEnclosingClassName = (node: SyntaxNode): string | undefined => {
   let current = node.parent;
   while (current) {
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
-      const nameNode = current.childForFieldName('name');
+      const nameNode = current.childForFieldName('name')
+        ?? findTypeIdentifierChild(current);
       if (nameNode) return nameNode.text;
     }
     current = current.parent;
   }
+  return undefined;
+};
+
+/**
+ * Walk up the AST to find the enclosing class, then extract its parent class name
+ * from the heritage/superclass AST node. Used to resolve `super`/`base`/`parent`.
+ *
+ * Supported patterns per tree-sitter grammar:
+ * - Java/Ruby: `superclass` field → type_identifier/constant
+ * - Python: `superclasses` field → argument_list → first identifier
+ * - TypeScript/JS: unnamed `class_heritage` child → `extends_clause` → identifier
+ * - C#: unnamed `base_list` child → first identifier
+ * - PHP: unnamed `base_clause` child → name
+ * - Kotlin: unnamed `delegation_specifier` child → constructor_invocation → user_type → type_identifier
+ * - C++: unnamed `base_class_clause` child → type_identifier
+ * - Swift: unnamed `inheritance_specifier` child → user_type → type_identifier
+ */
+const findEnclosingParentClassName = (node: SyntaxNode): string | undefined => {
+  let current = node.parent;
+  while (current) {
+    if (CLASS_CONTAINER_TYPES.has(current.type)) {
+      return extractParentClassFromNode(current);
+    }
+    current = current.parent;
+  }
+  return undefined;
+};
+
+/** Extract the parent/superclass name from a class declaration AST node. */
+const extractParentClassFromNode = (classNode: SyntaxNode): string | undefined => {
+  // 1. Named fields: Java (superclass), Ruby (superclass), Python (superclasses)
+  const superclassNode = classNode.childForFieldName('superclass');
+  if (superclassNode) {
+    // Java: superclass > type_identifier, Ruby: superclass > constant
+    const inner = superclassNode.childForFieldName('type')
+      ?? superclassNode.firstNamedChild
+      ?? superclassNode;
+    return inner.text;
+  }
+
+  const superclassesNode = classNode.childForFieldName('superclasses');
+  if (superclassesNode) {
+    // Python: argument_list with identifiers — first one is the parent class
+    const first = superclassesNode.firstNamedChild;
+    if (first) return first.text;
+  }
+
+  // 2. Unnamed children: walk class node's children looking for heritage nodes
+  for (let i = 0; i < classNode.childCount; i++) {
+    const child = classNode.child(i);
+    if (!child) continue;
+
+    switch (child.type) {
+      // TypeScript: class_heritage > extends_clause > type_identifier
+      // JavaScript: class_heritage > identifier (no extends_clause wrapper)
+      case 'class_heritage': {
+        for (let j = 0; j < child.childCount; j++) {
+          const clause = child.child(j);
+          if (clause?.type === 'extends_clause') {
+            const typeNode = clause.firstNamedChild;
+            if (typeNode) return typeNode.text;
+          }
+          // JS: direct identifier child (no extends_clause wrapper)
+          if (clause?.type === 'identifier' || clause?.type === 'type_identifier') {
+            return clause.text;
+          }
+        }
+        break;
+      }
+
+      // C#: base_list > identifier or generic_name > identifier
+      case 'base_list': {
+        const first = child.firstNamedChild;
+        if (first) {
+          // generic_name wraps the identifier: BaseClass<T>
+          if (first.type === 'generic_name') {
+            const inner = first.childForFieldName('name') ?? first.firstNamedChild;
+            if (inner) return inner.text;
+          }
+          return first.text;
+        }
+        break;
+      }
+
+      // PHP: base_clause > name
+      case 'base_clause': {
+        const name = child.firstNamedChild;
+        if (name) return name.text;
+        break;
+      }
+
+      // C++: base_class_clause > type_identifier (with optional access_specifier before it)
+      case 'base_class_clause': {
+        for (let j = 0; j < child.childCount; j++) {
+          const inner = child.child(j);
+          if (inner?.type === 'type_identifier') return inner.text;
+        }
+        break;
+      }
+
+      // Kotlin: delegation_specifier > constructor_invocation > user_type > type_identifier
+      case 'delegation_specifier': {
+        const delegate = child.firstNamedChild;
+        if (delegate?.type === 'constructor_invocation') {
+          const userType = delegate.firstNamedChild;
+          if (userType?.type === 'user_type') {
+            const typeId = userType.firstNamedChild;
+            if (typeId) return typeId.text;
+          }
+        }
+        // Also handle plain user_type (interface conformance without parentheses)
+        if (delegate?.type === 'user_type') {
+          const typeId = delegate.firstNamedChild;
+          if (typeId) return typeId.text;
+        }
+        break;
+      }
+
+      // Swift: inheritance_specifier > user_type > type_identifier
+      case 'inheritance_specifier': {
+        const userType = child.childForFieldName('inherits_from') ?? child.firstNamedChild;
+        if (userType?.type === 'user_type') {
+          const typeId = userType.firstNamedChild;
+          if (typeId) return typeId.text;
+        }
+        break;
+      }
+    }
+  }
+
   return undefined;
 };
 
@@ -93,34 +243,31 @@ const findEnclosingScopeKey = (node: SyntaxNode): string | undefined => {
 };
 
 /**
- * Create a composite ReadonlySet that checks both local AST class names
- * AND the SymbolTable's global index. This allows extractInitializer functions
- * to distinguish constructor calls from function calls (e.g. Kotlin `User()` vs
- * `getUser()`) using cross-file type information when available.
+ * Create a lookup that checks both local AST class names AND the SymbolTable's
+ * global index. This allows extractInitializer functions to distinguish
+ * constructor calls from function calls (e.g. Kotlin `User()` vs `getUser()`)
+ * using cross-file type information when available.
  *
- * The SymbolTable doesn't support iteration, so we query it lazily via lookupFuzzy
- * — checking whether any definition of that name has type === 'Class'.
+ * Only `.has()` is exposed — the SymbolTable doesn't support iteration.
+ * Results are memoized to avoid redundant lookupFuzzy scans across declarations.
  */
 const createClassNameLookup = (
   localNames: Set<string>,
   symbolTable?: SymbolTable,
-): ReadonlySet<string> => {
+): ClassNameLookup => {
   if (!symbolTable) return localNames;
 
+  const memo = new Map<string, boolean>();
   return {
     has(name: string): boolean {
       if (localNames.has(name)) return true;
-      return symbolTable.lookupFuzzy(name).some(def => def.type === 'Class');
+      const cached = memo.get(name);
+      if (cached !== undefined) return cached;
+      const result = symbolTable.lookupFuzzy(name).some(def => def.type === 'Class');
+      memo.set(name, result);
+      return result;
     },
-    get size() { return localNames.size; },
-    [Symbol.iterator]() { return localNames[Symbol.iterator](); },
-    entries() { return localNames.entries(); },
-    keys() { return localNames.keys(); },
-    values() { return localNames.values(); },
-    forEach(cb: (value: string, value2: string, set: ReadonlySet<string>) => void) {
-      localNames.forEach(cb as any);
-    },
-  } as ReadonlySet<string>;
+  };
 };
 
 /**
@@ -133,15 +280,22 @@ const createClassNameLookup = (
  * the project are available for constructor inference in languages like Kotlin
  * where constructors are syntactically identical to function calls.
  */
+/**
+ * Build a TypeEnvironment from a tree-sitter AST for a given language.
+ * Single-pass: collects class/struct names, type bindings, AND constructor
+ * bindings that couldn't be resolved locally — all in one AST walk.
+ */
 export const buildTypeEnv = (
   tree: { rootNode: SyntaxNode },
   language: SupportedLanguages,
   symbolTable?: SymbolTable,
-): TypeEnv => {
+): TypeEnvironment => {
   const env: TypeEnv = new Map();
   const localClassNames = new Set<string>();
   const classNames = createClassNameLookup(localClassNames, symbolTable);
   const config = typeConfigs[language];
+  const scanner = CONSTRUCTOR_BINDING_SCANNERS[language];
+  const bindings: ConstructorBinding[] = [];
 
   /**
    * Try to extract a (variableName → typeName) binding from a single AST node.
@@ -192,6 +346,15 @@ export const buildTypeEnv = (
 
     extractTypeBinding(node, scopeEnv);
 
+    // Scan for constructor bindings that couldn't be resolved locally.
+    // Only collect if TypeEnv didn't already resolve this binding.
+    if (scanner) {
+      const result = scanner(node);
+      if (result && !scopeEnv.has(result.varName)) {
+        bindings.push({ scope, ...result });
+      }
+    }
+
     // Recurse into children
     for (let i = 0; i < node.childCount; i++) {
       const child = node.child(i);
@@ -200,7 +363,11 @@ export const buildTypeEnv = (
   };
 
   walk(tree.rootNode, FILE_SCOPE);
-  return env;
+  return {
+    lookup: (varName, callNode) => lookupInEnv(env, varName, callNode),
+    constructorBindings: bindings,
+    env,
+  };
 };
 
 /**
@@ -312,54 +479,11 @@ const CONSTRUCTOR_BINDING_SCANNERS: Partial<Record<SupportedLanguages, (node: Sy
     return { varName, calleeName: callee.text };
   },
 
-  // C/C++: auto x = User() where User is parsed as identifier (cross-file)
-  [SupportedLanguages.C]: extractCppConstructorBinding,
+  // C++: auto x = User() where User is parsed as identifier (cross-file)
+  // Note: C is excluded — C has no constructors and `auto` is a storage-class specifier, not type inference.
   [SupportedLanguages.CPlusPlus]: extractCppConstructorBinding,
 
   // Ruby: user = User.new — assignment with call where method is 'new' and receiver is a constant
   [SupportedLanguages.Ruby]: extractRubyConstructorBinding,
 };
 
-/**
- * Scan a file's AST for constructor-assignment patterns that couldn't be resolved
- * locally (callee not in the file's own class list). Returns unverified bindings
- * that must be checked against the SymbolTable before use.
- *
- * Called by the parse-worker to export candidates that processCallsFromExtracted
- * will verify and apply.
- */
-export const scanConstructorBindings = (
-  tree: { rootNode: SyntaxNode },
-  language: SupportedLanguages,
-  resolvedEnv: TypeEnv,
-): ConstructorBinding[] => {
-  const scanner = CONSTRUCTOR_BINDING_SCANNERS[language];
-  if (!scanner) return [];
-
-  const bindings: ConstructorBinding[] = [];
-
-  const walk = (node: SyntaxNode, currentScope: string): void => {
-    let scope = currentScope;
-    if (FUNCTION_NODE_TYPES.has(node.type)) {
-      const { funcName } = extractFunctionName(node);
-      if (funcName) scope = `${funcName}@${node.startIndex}`;
-    }
-
-    const result = scanner(node);
-    if (result) {
-      // Only collect if TypeEnv didn't already resolve this binding
-      const scopeEnv = resolvedEnv.get(scope);
-      if (!scopeEnv?.has(result.varName)) {
-        bindings.push({ scope, ...result });
-      }
-    }
-
-    for (let i = 0; i < node.childCount; i++) {
-      const child = node.child(i);
-      if (child) walk(child, scope);
-    }
-  };
-
-  walk(tree.rootNode, FILE_SCOPE);
-  return bindings;
-};

@@ -380,3 +380,95 @@ describe('Ruby constructor-inferred type resolution', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// self.save resolves to enclosing class's own save method
+// ---------------------------------------------------------------------------
+
+describe('Ruby self resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-self-this-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, each with a save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves self.save inside User#process to User#save, not Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('lib/models/user.rb');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parent class resolution: < BaseModel + include Module
+// ---------------------------------------------------------------------------
+
+describe('Ruby parent resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-parent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel and User classes plus Serializable module', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'User']);
+    expect(getNodesByLabel(result, 'Module')).toEqual(['Serializable']);
+  });
+
+  it('emits EXTENDS edge: User < BaseModel', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(1);
+    expect(extends_[0].source).toBe('User');
+    expect(extends_[0].target).toBe('BaseModel');
+  });
+
+  it('emits IMPLEMENTS edge: User includes Serializable', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const includeEdge = implements_.find(e => e.source === 'User' && e.target === 'Serializable');
+    expect(includeEdge).toBeDefined();
+    expect(includeEdge!.rel.reason).toBe('include');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ruby super: standalone keyword calls same-named method on parent
+// ---------------------------------------------------------------------------
+
+describe('Ruby super resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-super-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel, User, and Repo classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'Repo', 'User']);
+  });
+
+  it('emits EXTENDS edge: User < BaseModel', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(1);
+    expect(extends_[0].source).toBe('User');
+    expect(extends_[0].target).toBe('BaseModel');
+  });
+
+  it('detects save methods on all three classes', () => {
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(3);
+  });
+});

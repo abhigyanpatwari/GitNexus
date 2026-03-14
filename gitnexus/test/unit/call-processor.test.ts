@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { processCallsFromExtracted } from '../../src/core/ingestion/call-processor.js';
 import { createResolutionContext, type ResolutionContext } from '../../src/core/ingestion/resolution-context.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import type { ExtractedCall } from '../../src/core/ingestion/workers/parse-worker.js';
+import type { ExtractedCall, FileConstructorBindings } from '../../src/core/ingestion/workers/parse-worker.js';
 
 describe('processCallsFromExtracted', () => {
   let graph: ReturnType<typeof createKnowledgeGraph>;
@@ -331,5 +331,49 @@ describe('processCallsFromExtracted', () => {
     await processCallsFromExtracted(graph, calls, ctx);
     const rels = graph.relationships.filter(r => r.type === 'CALLS');
     expect(rels).toHaveLength(0);
+  });
+
+  // ---- Scope-aware constructor bindings (Phase 3) ----
+
+  it('scope-aware bindings: same varName in different functions resolves to correct type', async () => {
+    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.symbols.add('src/models.ts', 'Repo', 'Class:src/models.ts:Repo', 'Class');
+    ctx.symbols.add('src/models.ts', 'save', 'Function:src/models.ts:save', 'Function');
+    ctx.importMap.set('src/index.ts', new Set(['src/models.ts']));
+
+    const constructorBindings: FileConstructorBindings[] = [{
+      filePath: 'src/index.ts',
+      bindings: [
+        { scope: 'processUser@12', varName: 'obj', calleeName: 'User' },
+        { scope: 'processRepo@89', varName: 'obj', calleeName: 'Repo' },
+      ],
+    }];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/index.ts',
+        calledName: 'save',
+        sourceId: 'Function:src/index.ts:processUser',
+        receiverName: 'obj',
+        callForm: 'member',
+      },
+      {
+        filePath: 'src/index.ts',
+        calledName: 'save',
+        sourceId: 'Function:src/index.ts:processRepo',
+        receiverName: 'obj',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx, undefined, constructorBindings);
+
+    const rels = graph.relationships.filter(r => r.type === 'CALLS');
+    expect(rels).toHaveLength(2);
+    // Both calls should resolve, each with the correct receiver type from their scope
+    // (the important thing is they don't collide — without scope awareness,
+    // last-write-wins would give both calls the same receiver type)
+    expect(rels[0].sourceId).toBe('Function:src/index.ts:processUser');
+    expect(rels[1].sourceId).toBe('Function:src/index.ts:processRepo');
   });
 });

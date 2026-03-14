@@ -423,3 +423,107 @@ it('resolves user.save() to models/User.kt via constructor-inferred type', () =>
   });
 });
 
+// ---------------------------------------------------------------------------
+// this.save() resolves to enclosing class's / object's own method
+// ---------------------------------------------------------------------------
+
+describe('Kotlin this resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-self-this-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User, Repo classes and AppConfig object', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    expect(getNodesByLabel(result, 'Class')).toContain('AppConfig');
+  });
+
+  it('resolves this.save() inside User.process to User.save, not Repo.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('models/User.kt');
+  });
+
+  it('resolves this.init() inside AppConfig.setup to AppConfig.init (object_declaration)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const initCall = calls.find(c => c.target === 'init' && c.source === 'setup');
+    expect(initCall).toBeDefined();
+    expect(initCall!.targetFilePath).toBe('models/AppConfig.kt');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parent class resolution: EXTENDS + IMPLEMENTS edges
+// ---------------------------------------------------------------------------
+
+describe('Kotlin parent resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-parent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel and User classes plus Serializable interface', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'User']);
+    expect(getNodesByLabel(result, 'Interface')).toEqual(['Serializable']);
+  });
+
+  it('emits EXTENDS edge: User → BaseModel', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(1);
+    expect(extends_[0].source).toBe('User');
+    expect(extends_[0].target).toBe('BaseModel');
+  });
+
+  it('emits IMPLEMENTS edge: User → Serializable', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(implements_.length).toBe(1);
+    expect(implements_[0].source).toBe('User');
+    expect(implements_[0].target).toBe('Serializable');
+  });
+
+  it('all heritage edges point to real graph nodes', () => {
+    for (const edge of [...getRelationships(result, 'EXTENDS'), ...getRelationships(result, 'IMPLEMENTS')]) {
+      const target = result.graph.getNode(edge.rel.targetId);
+      expect(target).toBeDefined();
+      expect(target!.properties.name).toBe(edge.target);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// super.save() resolves to parent class's save method
+// ---------------------------------------------------------------------------
+
+describe('Kotlin super resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-super-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel, User, and Repo classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'Repo', 'User']);
+  });
+
+  it('resolves super.save() inside User to BaseModel.save, not Repo.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const superSave = calls.find(c => c.source === 'save' && c.target === 'save'
+      && c.targetFilePath === 'models/BaseModel.kt');
+    expect(superSave).toBeDefined();
+    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/Repo.kt');
+    expect(repoSave).toBeUndefined();
+  });
+});

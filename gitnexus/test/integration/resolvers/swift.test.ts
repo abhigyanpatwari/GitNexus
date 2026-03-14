@@ -54,3 +54,65 @@ describe.skipIf(!swiftAvailable)('Swift constructor-inferred type resolution', (
     expect(saveCalls.length).toBe(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// self.save() resolves to enclosing class's own save method
+// Known issue: tree-sitter-swift has build issues on Node 22
+// ---------------------------------------------------------------------------
+
+describe.skip('Swift self resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'swift-self-this-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, each with a save function', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
+    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  it('resolves self.save() inside User.process to User.save, not Repo.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('Sources/Models/User.swift');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parent class resolution: EXTENDS + protocol conformance
+// Known issue: tree-sitter-swift has build issues on Node 22
+// ---------------------------------------------------------------------------
+
+describe.skip('Swift parent resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'swift-parent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel and User classes plus Serializable protocol', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'User']);
+    expect(getNodesByLabel(result, 'Interface')).toEqual(['Serializable']);
+  });
+
+  it('emits EXTENDS edge: User → BaseModel', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const extendsEdge = extends_.find(e => e.source === 'User' && e.target === 'BaseModel');
+    expect(extendsEdge).toBeDefined();
+  });
+
+  it('emits IMPLEMENTS edge: User → Serializable (protocol conformance)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const implEdge = implements_.find(e => e.source === 'User' && e.target === 'Serializable');
+    expect(implEdge).toBeDefined();
+  });
+});

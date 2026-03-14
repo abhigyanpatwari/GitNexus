@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup } from './types.js';
 import { extractSimpleTypeName, extractVarName } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
@@ -42,7 +42,7 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
 };
 
 /** TypeScript: const x = new User() — infer type from new_expression */
-const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, _classNames: ReadonlySet<string>): void => {
+const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, _classNames: ClassNameLookup): void => {
   for (let i = 0; i < node.namedChildCount; i++) {
     const declarator = node.namedChild(i);
     if (declarator?.type !== 'variable_declarator') continue;

@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup } from './types.js';
 import { extractSimpleTypeName, extractVarName } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
@@ -33,7 +33,7 @@ const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
 };
 
 /** C++: auto x = new User(); auto x = User(); */
-const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ReadonlySet<string>): void => {
+const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ClassNameLookup): void => {
   const typeNode = node.childForFieldName('type');
   if (!typeNode) return;
 

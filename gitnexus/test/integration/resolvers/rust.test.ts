@@ -450,3 +450,65 @@ describe('Rust constructor-inferred type resolution', () => {
     expect(saveCalls.length).toBe(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// self.save() resolves to enclosing impl's own save method
+// ---------------------------------------------------------------------------
+
+describe('Rust self resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-self-this-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs, each with a save function', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
+    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  it('resolves self.save() inside User::process to User::save, not Repo::save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('src/user.rs');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Trait impl emits IMPLEMENTS edge
+// ---------------------------------------------------------------------------
+
+describe('Rust parent resolution (trait impl)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-parent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User struct and Serializable trait', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Trait')).toContain('Serializable');
+  });
+
+  it('emits IMPLEMENTS edge: User → Serializable (trait impl)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(implements_.length).toBe(1);
+    expect(implements_[0].source).toBe('User');
+    expect(implements_[0].target).toBe('Serializable');
+    expect(implements_[0].rel.reason).toBe('trait-impl');
+  });
+
+  it('no EXTENDS edges (Rust has no class inheritance)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(0);
+  });
+});

@@ -122,7 +122,7 @@ export const BUILT_IN_NAMES = new Set([
   'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple',
   'append', 'extend', 'update',
   // NOTE: 'open', 'read', 'write', 'close' removed — these are real C POSIX syscalls
-  'super', 'type', 'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr',
+  'type', 'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr',
   'enumerate', 'zip', 'sorted', 'reversed', 'min', 'max', 'sum', 'abs',
   // Kotlin stdlib
   'println', 'print', 'readLine', 'require', 'requireNotNull', 'check', 'assert', 'lazy', 'error',
@@ -271,6 +271,9 @@ export const CLASS_CONTAINER_TYPES = new Set([
   // Ruby
   'class',
   'module',
+  // Kotlin
+  'object_declaration',
+  'companion_object',
 ]);
 
 export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
@@ -288,6 +291,8 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   protocol_declaration: 'Interface',
   class: 'Class',
   module: 'Module',
+  object_declaration: 'Class',
+  companion_object: 'Class',
 };
 
 /** Walk up AST to find enclosing class/struct/interface/impl, return its generateId or null.
@@ -787,6 +792,10 @@ const SIMPLE_RECEIVER_TYPES = new Set([
   'name',              // PHP name node
   'this',              // TS/JS/Java/C# this.method()
   'self',              // Rust/Python self.method()
+  'super',             // TS/JS/Java/Kotlin/Ruby super.method()
+  'super_expression',  // Kotlin wraps super in super_expression
+  'base',              // C# base.Method()
+  'parent',            // PHP parent::method()
 ]);
 
 export const extractReceiverName = (
@@ -824,6 +833,17 @@ export const extractReceiverName = (
     receiver = parent.childForFieldName('receiver');
   }
 
+  // PHP scoped_call_expression (parent::method(), self::method()):
+  // nameNode's direct parent IS the scoped_call_expression (name is a direct child)
+  if (!receiver && (parent.type === 'scoped_call_expression' || callNode.type === 'scoped_call_expression')) {
+    const scopedCall = parent.type === 'scoped_call_expression' ? parent : callNode;
+    receiver = scopedCall.childForFieldName('scope');
+    // relative_scope wraps 'parent'/'self'/'static' — unwrap to get the keyword
+    if (receiver?.type === 'relative_scope') {
+      receiver = receiver.firstChild;
+    }
+  }
+
   // Kotlin/Swift: navigation_expression target is the first child
   if (!receiver && parent.type === 'navigation_suffix') {
     const navExpr = parent.parent;
@@ -843,6 +863,12 @@ export const extractReceiverName = (
   // Only capture simple identifiers — refuse complex expressions
   if (SIMPLE_RECEIVER_TYPES.has(receiver.type)) {
     return receiver.text;
+  }
+
+  // Python super().method(): receiver is a call node `super()` — extract the function name
+  if (receiver.type === 'call') {
+    const func = receiver.childForFieldName('function');
+    if (func?.text === 'super') return 'super';
   }
 
   return undefined;

@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup } from './types.js';
 import { extractSimpleTypeName, extractVarName, findChildByType } from './shared.js';
 
 // ── Java ──────────────────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ const extractJavaDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map
 };
 
 /** Java 10+: var x = new User() — infer type from object_creation_expression */
-const extractJavaInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, _classNames: ReadonlySet<string>): void => {
+const extractJavaInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, _classNames: ClassNameLookup): void => {
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (child?.type !== 'variable_declarator') continue;
@@ -138,7 +138,7 @@ const extractKotlinParameter: ParameterExtractor = (node: SyntaxNode, env: Map<s
 /** Kotlin: val user = User() — infer type from call_expression when callee is a known class.
  *  Kotlin constructors are syntactically identical to function calls, so we verify
  *  against classNames (which may include cross-file SymbolTable lookups). */
-const extractKotlinInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ReadonlySet<string>): void => {
+const extractKotlinInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ClassNameLookup): void => {
   if (node.type !== 'property_declaration') return;
   // Skip if there's an explicit type annotation — Tier 0 already handled it
   const varDecl = findChildByType(node, 'variable_declaration');

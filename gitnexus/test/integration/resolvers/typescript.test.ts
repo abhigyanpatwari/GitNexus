@@ -591,3 +591,110 @@ describe('JavaScript constructor-inferred type resolution', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// this.save() resolves to enclosing class's own save method
+// ---------------------------------------------------------------------------
+
+describe('TypeScript this resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-self-this-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, each with a save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves this.save() inside User.process to User.save, not Repo.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('src/models/User.ts');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parent class resolution: EXTENDS + IMPLEMENTS edges
+// ---------------------------------------------------------------------------
+
+describe('TypeScript parent resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-parent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel and User classes plus Serializable interface', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'User']);
+    expect(getNodesByLabel(result, 'Interface')).toEqual(['Serializable']);
+  });
+
+  it('emits EXTENDS edge: User → BaseModel', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(1);
+    expect(extends_[0].source).toBe('User');
+    expect(extends_[0].target).toBe('BaseModel');
+  });
+
+  it('emits IMPLEMENTS edge: User → Serializable', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(implements_.length).toBe(1);
+    expect(implements_[0].source).toBe('User');
+    expect(implements_[0].target).toBe('Serializable');
+  });
+
+  it('all heritage edges point to real graph nodes', () => {
+    for (const edge of [...getRelationships(result, 'EXTENDS'), ...getRelationships(result, 'IMPLEMENTS')]) {
+      const target = result.graph.getNode(edge.rel.targetId);
+      expect(target).toBeDefined();
+      expect(target!.properties.name).toBe(edge.target);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// super.save() resolves to parent class's save method
+// ---------------------------------------------------------------------------
+
+describe('TypeScript super resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-super-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel, User, and Repo classes, each with a save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'Repo', 'User']);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(3);
+  });
+
+  it('emits EXTENDS edge: User → BaseModel', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(1);
+    expect(extends_[0].source).toBe('User');
+    expect(extends_[0].target).toBe('BaseModel');
+  });
+
+  it('resolves super.save() inside User to BaseModel.save, not Repo.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const superSave = calls.find(c => c.source === 'save' && c.target === 'save'
+      && c.targetFilePath === 'src/models/Base.ts');
+    expect(superSave).toBeDefined();
+    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/models/Repo.ts');
+    expect(repoSave).toBeUndefined();
+  });
+});
+

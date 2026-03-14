@@ -327,3 +327,58 @@ describe('C++ local definition shadows import', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// this->save() resolves to enclosing class's own save method
+// ---------------------------------------------------------------------------
+
+describe('C++ this resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-self-this-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, each with a save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves this->save() to User::save in the same file (not Repo::save)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('src/User.cpp');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parent class resolution: EXTENDS via base_class_clause
+// ---------------------------------------------------------------------------
+
+describe('C++ parent resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-parent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel and User classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('BaseModel');
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+  });
+
+  it('emits EXTENDS edge: User → BaseModel (base_class_clause)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(1);
+    expect(extends_[0].source).toBe('User');
+    expect(extends_[0].target).toBe('BaseModel');
+  });
+});

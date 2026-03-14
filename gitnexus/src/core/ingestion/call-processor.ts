@@ -2,7 +2,7 @@ import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
 import type { SymbolDefinition } from './symbol-table.js';
 import Parser from 'tree-sitter';
-import type { ResolutionContext, TieredCandidates } from './resolution-context.js';
+import type { ResolutionContext } from './resolution-context.js';
 import { TIER_CONFIDENCE, type ResolutionTier } from './resolution-context.js';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
@@ -19,7 +19,7 @@ import {
   extractReceiverName,
   findEnclosingClassId,
 } from './utils.js';
-import { buildTypeEnv, lookupTypeEnv } from './type-env.js';
+import { buildTypeEnv } from './type-env.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type { ExtractedCall, ExtractedHeritage, ExtractedRoute, FileConstructorBindings } from './workers/parse-worker.js';
 import { callRouters } from './call-routing.js';
@@ -107,7 +107,7 @@ export const processCalls = async (
     }
 
     const lang = getLanguageFromFilename(file.path);
-    const typeEnv = lang ? buildTypeEnv(tree, lang, ctx.symbols) : new Map();
+    const typeEnv = lang ? buildTypeEnv(tree, lang, ctx.symbols) : null;
     const callRouter = callRouters[language];
 
     ctx.enableCache(file.path);
@@ -184,7 +184,7 @@ export const processCalls = async (
       const callNode = captureMap['call'];
       const callForm = inferCallForm(callNode, nameNode);
       const receiverName = callForm === 'member' ? extractReceiverName(nameNode) : undefined;
-      const receiverTypeName = receiverName ? lookupTypeEnv(typeEnv, receiverName, callNode) : undefined;
+      const receiverTypeName = receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
 
       const resolved = resolveCallTarget({
         calledName,
@@ -304,37 +304,37 @@ const resolveCallTarget = (
   // resolve the type through the same tiered import infrastructure, then
   // filter method candidates to the type's defining file. Fall back to
   // fuzzy ownerId matching only when file-based narrowing is inconclusive.
-  if (call.callForm === 'member' && call.receiverTypeName && filteredCandidates.length > 1) {
+  //
+  // Applied regardless of candidate count — the sole same-file candidate may
+  // belong to the wrong class (e.g. super.save() should hit the parent's save,
+  // not the child's own save method in the same file).
+  if (call.callForm === 'member' && call.receiverTypeName) {
     // D1. Resolve the receiver type
     const typeResolved = ctx.resolve(call.receiverTypeName, currentFile);
     if (typeResolved && typeResolved.candidates.length > 0) {
-      // D2. File-based: prefer candidates whose filePath matches the resolved type's file
+      const typeNodeIds = new Set(typeResolved.candidates.map(d => d.nodeId));
       const typeFiles = new Set(typeResolved.candidates.map(d => d.filePath));
-      const fileFiltered = filteredCandidates.filter(c => typeFiles.has(c.filePath));
+
+      // D2. Widen candidates: same-file tier may miss the parent's method when
+      //     it lives in another file. Query the symbol table directly for all
+      //     global methods with this name, then apply arity/kind filtering.
+      const methodPool = filteredCandidates.length <= 1
+        ? filterCallableCandidates(ctx.symbols.lookupFuzzy(call.calledName), call.argCount, call.callForm)
+        : filteredCandidates;
+
+      // D3. File-based: prefer candidates whose filePath matches the resolved type's file
+      const fileFiltered = methodPool.filter(c => typeFiles.has(c.filePath));
       if (fileFiltered.length === 1) {
         return toResolveResult(fileFiltered[0], tiered.tier);
       }
-      // D3. ownerId fallback: if multiple methods coexist in the same file as the type,
-      //     narrow by ownerId matching the type's nodeId
-      if (fileFiltered.length > 1) {
-        const typeNodeIds = new Set(typeResolved.candidates.map(d => d.nodeId));
-        const ownerFiltered = fileFiltered.filter(c => c.ownerId && typeNodeIds.has(c.ownerId));
-        if (ownerFiltered.length === 1) {
-          return toResolveResult(ownerFiltered[0], tiered.tier);
-        }
-        return null; // still ambiguous
-      }
-      // fileFiltered.length === 0: type's file has no matching methods — try ownerId on all candidates
-    }
-    // D4. Last resort: ownerId matching against all type candidates (reuses typeResolved from D1)
-    const typeDefs = typeResolved?.candidates ?? [];
-    if (typeDefs.length > 0) {
-      const typeNodeIds = new Set(typeDefs.map(d => d.nodeId));
-      const ownerFiltered = filteredCandidates.filter(c => c.ownerId && typeNodeIds.has(c.ownerId));
+
+      // D4. ownerId fallback: narrow by ownerId matching the type's nodeId
+      const pool = fileFiltered.length > 0 ? fileFiltered : methodPool;
+      const ownerFiltered = pool.filter(c => c.ownerId && typeNodeIds.has(c.ownerId));
       if (ownerFiltered.length === 1) {
         return toResolveResult(ownerFiltered[0], tiered.tier);
       }
-      if (ownerFiltered.length > 1) return null;
+      if (fileFiltered.length > 1 || ownerFiltered.length > 1) return null;
     }
   }
 
@@ -342,6 +342,26 @@ const resolveCallTarget = (
 
   return toResolveResult(filteredCandidates[0], tiered.tier);
 };
+
+// ── Scope key helpers ────────────────────────────────────────────────────
+// Scope keys use the format "funcName@startIndex" (produced by type-env.ts).
+// Source IDs use "Label:filepath:funcName" (produced by parse-worker.ts).
+// NUL (\0) is used as a composite-key separator because it cannot appear
+// in source-code identifiers, preventing ambiguous concatenation.
+
+/** Extract the function name from a scope key ("funcName@startIndex" → "funcName"). */
+const extractFuncNameFromScope = (scope: string): string =>
+  scope.slice(0, scope.indexOf('@'));
+
+/** Extract the trailing function name from a sourceId ("Function:filepath:funcName" → "funcName"). */
+const extractFuncNameFromSourceId = (sourceId: string): string => {
+  const lastColon = sourceId.lastIndexOf(':');
+  return lastColon >= 0 ? sourceId.slice(lastColon + 1) : '';
+};
+
+/** Build a scope-aware composite key for receiver type lookup. */
+const receiverKey = (funcName: string, varName: string): string =>
+  `${funcName}\0${varName}`;
 
 /**
  * Fast path: resolve pre-extracted call sites from workers.
@@ -354,15 +374,18 @@ export const processCallsFromExtracted = async (
   onProgress?: (current: number, total: number) => void,
   constructorBindings?: FileConstructorBindings[],
 ) => {
+  // Scope-aware receiver types: keyed by filePath → "funcName\0varName" → typeName.
+  // The scope dimension prevents collisions when two functions in the same file
+  // have same-named locals pointing to different constructor types.
   const fileReceiverTypes = new Map<string, Map<string, string>>();
   if (constructorBindings) {
     for (const { filePath, bindings } of constructorBindings) {
-      for (const { varName, calleeName } of bindings) {
+      for (const { scope, varName, calleeName } of bindings) {
         const tiered = ctx.resolve(calleeName, filePath);
         const isClass = tiered?.candidates.some(def => def.type === 'Class') ?? false;
         if (isClass) {
           if (!fileReceiverTypes.has(filePath)) fileReceiverTypes.set(filePath, new Map());
-          fileReceiverTypes.get(filePath)!.set(varName, calleeName);
+          fileReceiverTypes.get(filePath)!.set(receiverKey(extractFuncNameFromScope(scope), varName), calleeName);
         }
       }
     }
@@ -391,7 +414,9 @@ export const processCallsFromExtracted = async (
     for (const call of calls) {
       let effectiveCall = call;
       if (!call.receiverTypeName && call.receiverName && receiverMap) {
-        const resolvedType = receiverMap.get(call.receiverName);
+        const callFuncName = extractFuncNameFromSourceId(call.sourceId);
+        const resolvedType = receiverMap.get(receiverKey(callFuncName, call.receiverName))
+          ?? receiverMap.get(receiverKey('', call.receiverName)); // fall back to file-level scope
         if (resolvedType) {
           effectiveCall = { ...call, receiverTypeName: resolvedType };
         }

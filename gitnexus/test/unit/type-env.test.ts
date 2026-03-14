@@ -38,32 +38,32 @@ describe('buildTypeEnv', () => {
   describe('TypeScript', () => {
     it('extracts type from const declaration', () => {
       const tree = parse('const user: User = getUser();', TypeScript.typescript);
-      const env = buildTypeEnv(tree, 'typescript');
+      const { env } = buildTypeEnv(tree, 'typescript');
       expect(flatGet(env, 'user')).toBe('User');
     });
 
     it('extracts type from let declaration', () => {
       const tree = parse('let repo: Repository;', TypeScript.typescript);
-      const env = buildTypeEnv(tree, 'typescript');
+      const { env } = buildTypeEnv(tree, 'typescript');
       expect(flatGet(env, 'repo')).toBe('Repository');
     });
 
     it('extracts type from function parameters', () => {
       const tree = parse('function save(user: User, repo: Repository) {}', TypeScript.typescript);
-      const env = buildTypeEnv(tree, 'typescript');
+      const { env } = buildTypeEnv(tree, 'typescript');
       expect(flatGet(env, 'user')).toBe('User');
       expect(flatGet(env, 'repo')).toBe('Repository');
     });
 
     it('extracts type from arrow function parameters', () => {
       const tree = parse('const fn = (user: User) => user.save();', TypeScript.typescript);
-      const env = buildTypeEnv(tree, 'typescript');
+      const { env } = buildTypeEnv(tree, 'typescript');
       expect(flatGet(env, 'user')).toBe('User');
     });
 
     it('ignores variables without type annotations', () => {
       const tree = parse('const x = 5; let y = "hello";', TypeScript.typescript);
-      const env = buildTypeEnv(tree, 'typescript');
+      const { env } = buildTypeEnv(tree, 'typescript');
       expect(flatSize(env)).toBe(0);
     });
   });
@@ -78,7 +78,7 @@ describe('buildTypeEnv', () => {
           }
         }
       `, Java);
-      const env = buildTypeEnv(tree, 'java');
+      const { env } = buildTypeEnv(tree, 'java');
       expect(flatGet(env, 'user')).toBe('User');
       expect(flatGet(env, 'repo')).toBe('Repository');
     });
@@ -89,7 +89,7 @@ describe('buildTypeEnv', () => {
           void process(User user, Repository repo) {}
         }
       `, Java);
-      const env = buildTypeEnv(tree, 'java');
+      const { env } = buildTypeEnv(tree, 'java');
       expect(flatGet(env, 'user')).toBe('User');
       expect(flatGet(env, 'repo')).toBe('Repository');
     });
@@ -100,7 +100,7 @@ describe('buildTypeEnv', () => {
           private User user;
         }
       `, Java);
-      const env = buildTypeEnv(tree, 'java');
+      const { env } = buildTypeEnv(tree, 'java');
       expect(flatGet(env, 'user')).toBe('User');
     });
   });
@@ -114,7 +114,7 @@ describe('buildTypeEnv', () => {
           }
         }
       `, CSharp);
-      const env = buildTypeEnv(tree, 'csharp');
+      const { env } = buildTypeEnv(tree, 'csharp');
       expect(flatGet(env, 'user')).toBe('User');
     });
 
@@ -126,7 +126,7 @@ describe('buildTypeEnv', () => {
           }
         }
       `, CSharp);
-      const env = buildTypeEnv(tree, 'csharp');
+      const { env } = buildTypeEnv(tree, 'csharp');
       expect(flatGet(env, 'user')).toBe('User');
     });
 
@@ -136,7 +136,7 @@ describe('buildTypeEnv', () => {
           void Process(User user, Repository repo) {}
         }
       `, CSharp);
-      const env = buildTypeEnv(tree, 'csharp');
+      const { env } = buildTypeEnv(tree, 'csharp');
       expect(flatGet(env, 'user')).toBe('User');
       expect(flatGet(env, 'repo')).toBe('Repository');
     });
@@ -150,7 +150,7 @@ describe('buildTypeEnv', () => {
           var user User
         }
       `, Go);
-      const env = buildTypeEnv(tree, 'go');
+      const { env } = buildTypeEnv(tree, 'go');
       expect(flatGet(env, 'user')).toBe('User');
     });
 
@@ -161,7 +161,7 @@ describe('buildTypeEnv', () => {
           user := User{Name: "Alice"}
         }
       `, Go);
-      const env = buildTypeEnv(tree, 'go');
+      const { env } = buildTypeEnv(tree, 'go');
       expect(flatGet(env, 'user')).toBe('User');
     });
 
@@ -170,7 +170,7 @@ describe('buildTypeEnv', () => {
         package main
         func process(user User, repo Repository) {}
       `, Go);
-      const env = buildTypeEnv(tree, 'go');
+      const { env } = buildTypeEnv(tree, 'go');
       // Go parameter extraction depends on tree-sitter grammar structure
       // Parameters may or may not have 'name'/'type' fields
     });
@@ -183,7 +183,7 @@ describe('buildTypeEnv', () => {
           let user: User = User::new();
         }
       `, Rust);
-      const env = buildTypeEnv(tree, 'rust');
+      const { env } = buildTypeEnv(tree, 'rust');
       expect(flatGet(env, 'user')).toBe('User');
     });
 
@@ -191,7 +191,7 @@ describe('buildTypeEnv', () => {
       const tree = parse(`
         fn process(user: User, repo: Repository) {}
       `, Rust);
-      const env = buildTypeEnv(tree, 'rust');
+      const { env } = buildTypeEnv(tree, 'rust');
       expect(flatGet(env, 'user')).toBe('User');
       expect(flatGet(env, 'repo')).toBe('Repository');
     });
@@ -202,7 +202,7 @@ describe('buildTypeEnv', () => {
           let user: &User = &get_user();
         }
       `, Rust);
-      const env = buildTypeEnv(tree, 'rust');
+      const { env } = buildTypeEnv(tree, 'rust');
       expect(flatGet(env, 'user')).toBe('User');
     });
   });
@@ -210,13 +210,13 @@ describe('buildTypeEnv', () => {
   describe('Python', () => {
     it('extracts type from annotated assignment (PEP 484)', () => {
       const tree = parse('user: User = get_user()', Python);
-      const env = buildTypeEnv(tree, 'python');
+      const { env } = buildTypeEnv(tree, 'python');
       expect(flatGet(env, 'user')).toBe('User');
     });
 
     it('extracts type from function parameters', () => {
       const tree = parse('def process(user: User, repo: Repository): pass', Python);
-      const env = buildTypeEnv(tree, 'python');
+      const { env } = buildTypeEnv(tree, 'python');
       // Python uses typed_parameter nodes, check if they match
     });
   });
@@ -228,7 +228,7 @@ describe('buildTypeEnv', () => {
           User user;
         }
       `, CPP);
-      const env = buildTypeEnv(tree, 'cpp');
+      const { env } = buildTypeEnv(tree, 'cpp');
       expect(flatGet(env, 'user')).toBe('User');
     });
 
@@ -238,7 +238,7 @@ describe('buildTypeEnv', () => {
           User user = getUser();
         }
       `, CPP);
-      const env = buildTypeEnv(tree, 'cpp');
+      const { env } = buildTypeEnv(tree, 'cpp');
       expect(flatGet(env, 'user')).toBe('User');
     });
 
@@ -248,7 +248,7 @@ describe('buildTypeEnv', () => {
           User* user = new User();
         }
       `, CPP);
-      const env = buildTypeEnv(tree, 'cpp');
+      const { env } = buildTypeEnv(tree, 'cpp');
       expect(flatGet(env, 'user')).toBe('User');
     });
 
@@ -256,7 +256,7 @@ describe('buildTypeEnv', () => {
       const tree = parse(`
         void process(User user, Repository& repo) {}
       `, CPP);
-      const env = buildTypeEnv(tree, 'cpp');
+      const { env } = buildTypeEnv(tree, 'cpp');
       expect(flatGet(env, 'user')).toBe('User');
       expect(flatGet(env, 'repo')).toBe('Repository');
     });
@@ -267,10 +267,163 @@ describe('buildTypeEnv', () => {
       const tree = parse(`<?php
         function process(User $user, Repository $repo) {}
       `, PHP.php);
-      const env = buildTypeEnv(tree, 'php');
+      const { env } = buildTypeEnv(tree, 'php');
       // PHP parameter type extraction
       expect(flatGet(env, '$user')).toBe('User');
       expect(flatGet(env, '$repo')).toBe('Repository');
+    });
+
+    it('lookupTypeEnv resolves $this to enclosing class name', () => {
+      const code = `<?php
+class UserService {
+  public function process(): void {
+    $this->save();
+  }
+}`;
+      const tree = parse(code, PHP.php);
+      const { env } = buildTypeEnv(tree, 'php');
+
+      // Find the call node ($this->save())
+      const calls: any[] = [];
+      function findCalls(node: any) {
+        if (node.type === 'member_call_expression') calls.push(node);
+        for (let i = 0; i < node.childCount; i++) findCalls(node.child(i));
+      }
+      findCalls(tree.rootNode);
+
+      expect(calls.length).toBeGreaterThanOrEqual(1);
+      // $this should resolve to enclosing class 'UserService'
+      expect(lookupTypeEnv(env, '$this', calls[0])).toBe('UserService');
+    });
+  });
+
+  describe('super/base/parent resolution', () => {
+    it('lookupTypeEnv resolves super to parent class name (TypeScript)', () => {
+      const code = `
+class BaseModel {
+  save(): boolean { return true; }
+}
+class User extends BaseModel {
+  save(): boolean {
+    super.save();
+    return true;
+  }
+}`;
+      const tree = parse(code, TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript');
+
+      const calls: any[] = [];
+      function findCalls(node: any) {
+        if (node.type === 'call_expression') calls.push(node);
+        for (let i = 0; i < node.childCount; i++) findCalls(node.child(i));
+      }
+      findCalls(tree.rootNode);
+
+      // Find the super.save() call (inside User class)
+      const superCall = calls.find((c: any) => {
+        const text = c.text;
+        return text.includes('super');
+      });
+      expect(superCall).toBeDefined();
+      expect(lookupTypeEnv(env, 'super', superCall)).toBe('BaseModel');
+    });
+
+    it('lookupTypeEnv resolves super to parent class name (Java)', () => {
+      const code = `
+class BaseModel {
+  boolean save() { return true; }
+}
+class User extends BaseModel {
+  boolean save() {
+    super.save();
+    return true;
+  }
+}`;
+      const tree = parse(code, Java);
+      const { env } = buildTypeEnv(tree, 'java');
+
+      const calls: any[] = [];
+      function findCalls(node: any) {
+        if (node.type === 'method_invocation') calls.push(node);
+        for (let i = 0; i < node.childCount; i++) findCalls(node.child(i));
+      }
+      findCalls(tree.rootNode);
+
+      const superCall = calls.find((c: any) => c.text.includes('super'));
+      expect(superCall).toBeDefined();
+      expect(lookupTypeEnv(env, 'super', superCall)).toBe('BaseModel');
+    });
+
+    it('lookupTypeEnv resolves super to parent class name (Python)', () => {
+      const code = `
+class BaseModel:
+    def save(self) -> bool:
+        return True
+
+class User(BaseModel):
+    def save(self) -> bool:
+        super().save()
+        return True
+`;
+      const tree = parse(code, Python);
+      const { env } = buildTypeEnv(tree, 'python');
+
+      const calls: any[] = [];
+      function findCalls(node: any) {
+        if (node.type === 'call') calls.push(node);
+        for (let i = 0; i < node.childCount; i++) findCalls(node.child(i));
+      }
+      findCalls(tree.rootNode);
+
+      // Find a call inside the User class
+      const superCall = calls.find((c: any) => c.text.includes('super'));
+      expect(superCall).toBeDefined();
+      expect(lookupTypeEnv(env, 'super', superCall)).toBe('BaseModel');
+    });
+
+    it('returns undefined when class has no parent', () => {
+      const code = `
+class Standalone {
+  save(): boolean {
+    return true;
+  }
+}`;
+      const tree = parse(code, TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript');
+
+      const calls: any[] = [];
+      function findCalls(node: any) {
+        if (node.type === 'call_expression') calls.push(node);
+        for (let i = 0; i < node.childCount; i++) findCalls(node.child(i));
+      }
+      findCalls(tree.rootNode);
+      // No calls in this code, but let's test the resolution function directly
+      // by using the class body as the context node
+      const classNode = tree.rootNode.firstNamedChild;
+      expect(lookupTypeEnv(env, 'super', classNode!)).toBeUndefined();
+    });
+  });
+
+  describe('Kotlin object_declaration this resolution', () => {
+    it('lookupTypeEnv resolves this inside object declaration', () => {
+      const code = `
+object AppConfig {
+  fun setup() {
+    this.init()
+  }
+}`;
+      const tree = parse(code, Kotlin);
+      const { env } = buildTypeEnv(tree, 'kotlin');
+
+      const calls: any[] = [];
+      function findCalls(node: any) {
+        if (node.type === 'call_expression') calls.push(node);
+        for (let i = 0; i < node.childCount; i++) findCalls(node.child(i));
+      }
+      findCalls(tree.rootNode);
+
+      expect(calls.length).toBeGreaterThanOrEqual(1);
+      expect(lookupTypeEnv(env, 'this', calls[0])).toBe('AppConfig');
     });
   });
 
@@ -284,7 +437,7 @@ describe('buildTypeEnv', () => {
           user.save();
         }
       `, TypeScript.typescript);
-      const env = buildTypeEnv(tree, 'typescript');
+      const { env } = buildTypeEnv(tree, 'typescript');
 
       // Each function has its own scope for 'user' (keyed by funcName@startIndex)
       // Find the scope keys that start with handleUser/handleRepo
@@ -306,7 +459,7 @@ function handleRepo(user: Repo) {
   user.save();
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const env = buildTypeEnv(tree, 'typescript');
+      const { env } = buildTypeEnv(tree, 'typescript');
 
       // Find the call nodes inside each function
       const calls: any[] = [];
@@ -338,7 +491,7 @@ class RepoService {
   }
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const env = buildTypeEnv(tree, 'typescript');
+      const { env } = buildTypeEnv(tree, 'typescript');
 
       // Find the call nodes inside each process method
       const calls: any[] = [];
@@ -365,7 +518,7 @@ class RepoService {
           user.save();
         }
       `, TypeScript.typescript);
-      const env = buildTypeEnv(tree, 'typescript');
+      const { env } = buildTypeEnv(tree, 'typescript');
 
       // config is at file-level scope
       const fileScope = env.get('');
@@ -393,7 +546,7 @@ class RepoService {
         const user: User = getUser();
         const { name, email } = user;
       `, TypeScript.typescript);
-      const env = buildTypeEnv(tree, 'typescript');
+      const { env } = buildTypeEnv(tree, 'typescript');
       // The typed variable is captured
       expect(flatGet(env, 'user')).toBe('User');
       // Destructured bindings (name, email) would need type inference to resolve
@@ -408,7 +561,7 @@ class RepoService {
       const tree = parse(`
         const { name }: { name: string } = getUser();
       `, TypeScript.typescript);
-      const env = buildTypeEnv(tree, 'typescript');
+      const { env } = buildTypeEnv(tree, 'typescript');
       // Complex type annotation (object type) — extractSimpleTypeName returns undefined
       expect(flatSize(env)).toBe(0);
     });
@@ -418,33 +571,33 @@ class RepoService {
     describe('TypeScript', () => {
       it('infers type from new expression when no annotation', () => {
         const tree = parse('const user = new User();', TypeScript.typescript);
-        const env = buildTypeEnv(tree, 'typescript');
+        const { env } = buildTypeEnv(tree, 'typescript');
         expect(flatGet(env, 'user')).toBe('User');
       });
 
       it('prefers explicit annotation over constructor inference', () => {
         const tree = parse('const user: BaseUser = new User();', TypeScript.typescript);
-        const env = buildTypeEnv(tree, 'typescript');
+        const { env } = buildTypeEnv(tree, 'typescript');
         expect(flatGet(env, 'user')).toBe('BaseUser');
       });
 
       it('does not infer from namespaced constructor (known limitation)', () => {
         // extractSimpleTypeName only handles simple identifiers, not member expressions
         const tree = parse('const svc = new ns.Service();', TypeScript.typescript);
-        const env = buildTypeEnv(tree, 'typescript');
+        const { env } = buildTypeEnv(tree, 'typescript');
         // member_expression as constructor → extractSimpleTypeName returns undefined
         expect(flatGet(env, 'svc')).toBeUndefined();
       });
 
       it('ignores non-new assignments', () => {
         const tree = parse('const x = getUser();', TypeScript.typescript);
-        const env = buildTypeEnv(tree, 'typescript');
+        const { env } = buildTypeEnv(tree, 'typescript');
         expect(flatSize(env)).toBe(0);
       });
 
       it('handles mixed annotated + unannotated declarators', () => {
         const tree = parse('const a: A = getA(), b = new B();', TypeScript.typescript);
-        const env = buildTypeEnv(tree, 'typescript');
+        const { env } = buildTypeEnv(tree, 'typescript');
         expect(flatGet(env, 'a')).toBe('A');
         expect(flatGet(env, 'b')).toBe('B');
       });
@@ -459,7 +612,7 @@ class RepoService {
             }
           }
         `, Java);
-        const env = buildTypeEnv(tree, 'java');
+        const { env } = buildTypeEnv(tree, 'java');
         expect(flatGet(env, 'user')).toBe('User');
       });
 
@@ -471,7 +624,7 @@ class RepoService {
             }
           }
         `, Java);
-        const env = buildTypeEnv(tree, 'java');
+        const { env } = buildTypeEnv(tree, 'java');
         expect(flatGet(env, 'user')).toBe('User');
       });
 
@@ -483,7 +636,7 @@ class RepoService {
             }
           }
         `, Java);
-        const env = buildTypeEnv(tree, 'java');
+        const { env } = buildTypeEnv(tree, 'java');
         expect(flatGet(env, 'x')).toBeUndefined();
       });
     });
@@ -495,7 +648,7 @@ class RepoService {
             let user = User::new();
           }
         `, Rust);
-        const env = buildTypeEnv(tree, 'rust');
+        const { env } = buildTypeEnv(tree, 'rust');
         expect(flatGet(env, 'user')).toBe('User');
       });
 
@@ -505,7 +658,7 @@ class RepoService {
             let config = Config::default();
           }
         `, Rust);
-        const env = buildTypeEnv(tree, 'rust');
+        const { env } = buildTypeEnv(tree, 'rust');
         expect(flatGet(env, 'config')).toBe('Config');
       });
 
@@ -516,7 +669,7 @@ class RepoService {
             let user: BaseUser = Admin::new();
           }
         `, Rust);
-        const env = buildTypeEnv(tree, 'rust');
+        const { env } = buildTypeEnv(tree, 'rust');
         expect(flatGet(env, 'user')).toBe('BaseUser');
       });
 
@@ -526,7 +679,7 @@ class RepoService {
             let mut user = User::new();
           }
         `, Rust);
-        const env = buildTypeEnv(tree, 'rust');
+        const { env } = buildTypeEnv(tree, 'rust');
         expect(flatGet(env, 'user')).toBe('User');
       });
 
@@ -539,7 +692,7 @@ class RepoService {
             }
           }
         `, Rust);
-        const env = buildTypeEnv(tree, 'rust');
+        const { env } = buildTypeEnv(tree, 'rust');
         expect(flatGet(env, 'instance')).toBe('User');
       });
 
@@ -552,7 +705,7 @@ class RepoService {
             }
           }
         `, Rust);
-        const env = buildTypeEnv(tree, 'rust');
+        const { env } = buildTypeEnv(tree, 'rust');
         expect(flatGet(env, 'cfg')).toBe('Config');
       });
 
@@ -562,7 +715,7 @@ class RepoService {
             let x = Self::new();
           }
         `, Rust);
-        const env = buildTypeEnv(tree, 'rust');
+        const { env } = buildTypeEnv(tree, 'rust');
         expect(flatGet(env, 'x')).toBeUndefined();
       });
 
@@ -572,7 +725,7 @@ class RepoService {
             let user = User::from_str("alice");
           }
         `, Rust);
-        const env = buildTypeEnv(tree, 'rust');
+        const { env } = buildTypeEnv(tree, 'rust');
         expect(flatGet(env, 'user')).toBeUndefined();
       });
     });
@@ -582,7 +735,7 @@ class RepoService {
         const tree = parse(`<?php
           $user = new User();
         `, PHP.php);
-        const env = buildTypeEnv(tree, 'php');
+        const { env } = buildTypeEnv(tree, 'php');
         expect(flatGet(env, '$user')).toBe('User');
       });
 
@@ -595,7 +748,7 @@ class RepoService {
             }
           }
         `, PHP.php);
-        const env = buildTypeEnv(tree, 'php');
+        const { env } = buildTypeEnv(tree, 'php');
         expect(flatGet(env, '$a')).toBe('Foo');
         expect(flatGet(env, '$b')).toBe('Foo');
       });
@@ -609,7 +762,7 @@ class RepoService {
             }
           }
         `, PHP.php);
-        const env = buildTypeEnv(tree, 'php');
+        const { env } = buildTypeEnv(tree, 'php');
         expect(flatGet(env, '$p')).toBe('Bar');
       });
 
@@ -617,7 +770,7 @@ class RepoService {
         const tree = parse(`<?php
           $a = new self();
         `, PHP.php);
-        const env = buildTypeEnv(tree, 'php');
+        const { env } = buildTypeEnv(tree, 'php');
         expect(flatGet(env, '$a')).toBeUndefined();
       });
 
@@ -625,7 +778,7 @@ class RepoService {
         const tree = parse(`<?php
           $user = getUser();
         `, PHP.php);
-        const env = buildTypeEnv(tree, 'php');
+        const { env } = buildTypeEnv(tree, 'php');
         expect(flatGet(env, '$user')).toBeUndefined();
       });
     });
@@ -637,7 +790,7 @@ class RepoService {
             auto user = new User();
           }
         `, CPP);
-        const env = buildTypeEnv(tree, 'cpp');
+        const { env } = buildTypeEnv(tree, 'cpp');
         expect(flatGet(env, 'user')).toBe('User');
       });
 
@@ -648,7 +801,7 @@ class RepoService {
             auto user = User();
           }
         `, CPP);
-        const env = buildTypeEnv(tree, 'cpp');
+        const { env } = buildTypeEnv(tree, 'cpp');
         expect(flatGet(env, 'user')).toBe('User');
       });
 
@@ -658,7 +811,7 @@ class RepoService {
             User* user = new User();
           }
         `, CPP);
-        const env = buildTypeEnv(tree, 'cpp');
+        const { env } = buildTypeEnv(tree, 'cpp');
         expect(flatGet(env, 'user')).toBe('User');
       });
 
@@ -670,7 +823,7 @@ class RepoService {
             auto x = getUser();
           }
         `, CPP);
-        const env = buildTypeEnv(tree, 'cpp');
+        const { env } = buildTypeEnv(tree, 'cpp');
         // getUser is an identifier but NOT a known class — no inference
         expect(flatGet(env, 'x')).toBeUndefined();
       });
@@ -683,7 +836,7 @@ class RepoService {
             val user: User = User()
           }
         `, Kotlin);
-        const env = buildTypeEnv(tree, 'kotlin');
+        const { env } = buildTypeEnv(tree, 'kotlin');
         expect(flatGet(env, 'user')).toBe('User');
       });
 
@@ -694,7 +847,7 @@ class RepoService {
             val user = User("Alice")
           }
         `, Kotlin);
-        const env = buildTypeEnv(tree, 'kotlin');
+        const { env } = buildTypeEnv(tree, 'kotlin');
         expect(flatGet(env, 'user')).toBe('User');
       });
 
@@ -705,7 +858,7 @@ class RepoService {
             val user = getUser()
           }
         `, Kotlin);
-        const env = buildTypeEnv(tree, 'kotlin');
+        const { env } = buildTypeEnv(tree, 'kotlin');
         // getUser is not a class name — should NOT produce a binding
         expect(flatGet(env, 'user')).toBeUndefined();
       });
@@ -726,7 +879,7 @@ class RepoService {
           getStats: () => ({ fileCount: 0, globalSymbolCount: 0 }),
           clear: () => {},
         };
-        const env = buildTypeEnv(tree, 'kotlin', mockSymbolTable as any);
+        const { env } = buildTypeEnv(tree, 'kotlin', mockSymbolTable as any);
         expect(flatGet(env, 'user')).toBe('User');
       });
 
@@ -745,7 +898,7 @@ class RepoService {
           getStats: () => ({ fileCount: 0, globalSymbolCount: 0 }),
           clear: () => {},
         };
-        const env = buildTypeEnv(tree, 'kotlin', mockSymbolTable as any);
+        const { env } = buildTypeEnv(tree, 'kotlin', mockSymbolTable as any);
         expect(flatGet(env, 'result')).toBeUndefined();
       });
 
@@ -756,7 +909,7 @@ class RepoService {
             val user: BaseEntity = User("Alice")
           }
         `, Kotlin);
-        const env = buildTypeEnv(tree, 'kotlin');
+        const { env } = buildTypeEnv(tree, 'kotlin');
         // Tier 0 (explicit annotation) wins over Tier 1 (constructor inference)
         expect(flatGet(env, 'user')).toBe('BaseEntity');
       });
@@ -766,7 +919,7 @@ class RepoService {
   describe('edge cases', () => {
     it('returns empty map for code without type annotations', () => {
       const tree = parse('const x = 5;', TypeScript.typescript);
-      const env = buildTypeEnv(tree, 'typescript');
+      const { env } = buildTypeEnv(tree, 'typescript');
       expect(flatSize(env)).toBe(0);
     });
 
@@ -775,7 +928,7 @@ class RepoService {
         let x: User = getUser();
         let x: Admin = getAdmin();
       `, TypeScript.typescript);
-      const env = buildTypeEnv(tree, 'typescript');
+      const { env } = buildTypeEnv(tree, 'typescript');
       // Both declarations are at file level; last one wins
       expect(flatGet(env, 'x')).toBeDefined();
     });

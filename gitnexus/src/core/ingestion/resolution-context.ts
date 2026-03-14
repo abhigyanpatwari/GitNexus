@@ -152,12 +152,14 @@ export const createResolutionContext = (): ResolutionContext => {
 
   const enableCache = (filePath: string): void => {
     cacheFile = filePath;
-    cache = new Map();
+    if (!cache) cache = new Map();
+    else cache.clear();
   };
 
   const clearCache = (): void => {
     cacheFile = null;
-    cache = null;
+    // Reuse the Map instance — just clear entries to reduce GC pressure at scale.
+    cache?.clear();
   };
 
   const getStats = () => ({

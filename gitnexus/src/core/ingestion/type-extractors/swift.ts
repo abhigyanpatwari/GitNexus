@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup } from './types.js';
 import { extractSimpleTypeName, extractVarName, findChildByType } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
@@ -42,7 +42,7 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
 /** Swift: let user = User(name: "alice") — infer type from call when callee is a known class.
  *  Swift initializers are syntactically identical to function calls, so we verify
  *  against classNames (which may include cross-file SymbolTable lookups). */
-const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ReadonlySet<string>): void => {
+const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ClassNameLookup): void => {
   if (node.type !== 'property_declaration') return;
   // Skip if has type annotation — extractDeclaration handled it
   if (node.childForFieldName('type') || findChildByType(node, 'type_annotation')) return;

@@ -386,3 +386,28 @@ describe('Go constructor-inferred type resolution', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Parent resolution: struct embedding emits EXTENDS
+// ---------------------------------------------------------------------------
+
+describe('Go parent resolution (struct embedding)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-parent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel and User structs', () => {
+    expect(getNodesByLabel(result, 'Struct')).toEqual(['BaseModel', 'User']);
+  });
+
+  it('emits EXTENDS edge: User → BaseModel (struct embedding)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(1);
+    expect(extends_[0].source).toBe('User');
+    expect(extends_[0].target).toBe('BaseModel');
+  });
+});
