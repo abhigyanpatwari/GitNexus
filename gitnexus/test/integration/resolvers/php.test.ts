@@ -659,3 +659,39 @@ describe('PHP constructor property promotion resolution', () => {
   // implemented. The promoted parameter type IS extracted into the TypeEnv — it just
   // can't be accessed via $this->property chains yet.
 });
+
+// ---------------------------------------------------------------------------
+// PHP 7.4+ typed class property resolution: private UserRepo $repo;
+// ---------------------------------------------------------------------------
+
+describe('PHP typed class property resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'php-typed-properties'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects UserRepo and UserService classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('UserRepo');
+    expect(getNodesByLabel(result, 'Class')).toContain('UserService');
+  });
+
+  it('detects typed property $repo on UserService', () => {
+    expect(getNodesByLabel(result, 'Property')).toContain('repo');
+  });
+
+  it('detects find and save methods on UserRepo', () => {
+    expect(getNodesByLabel(result, 'Method')).toContain('find');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
+  });
+
+  it('resolves $repo->save() to UserRepo.php via parameter type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('app/Models/UserRepo.php');
+  });
+});

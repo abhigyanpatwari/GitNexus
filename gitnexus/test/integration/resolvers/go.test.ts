@@ -483,3 +483,61 @@ describe('Go new() builtin type inference', () => {
     expect(greetCall!.source).toBe('main');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Go make() builtin type inference: sl := make([]User, 0); sl[0].Save()
+// ---------------------------------------------------------------------------
+
+describe('Go make() builtin type inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-make-builtin'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves sl[0].Save() via make([]User, 0) slice inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'Save' && c.targetFilePath === 'models.go');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('main');
+  });
+
+  it('resolves m["key"].Greet() via make(map[string]User) map inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCall = calls.find(c => c.target === 'Greet' && c.targetFilePath === 'models.go');
+    expect(greetCall).toBeDefined();
+    expect(greetCall!.source).toBe('main');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Go type assertion inference: user := s.(User); user.Save()
+// ---------------------------------------------------------------------------
+
+describe('Go type assertion type inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-type-assertion'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.Save() via type assertion s.(User)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'Save' && c.targetFilePath === 'models.go');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('process');
+  });
+
+  it('resolves user.Greet() via type assertion s.(User)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCall = calls.find(c => c.target === 'Greet' && c.targetFilePath === 'models.go');
+    expect(greetCall).toBeDefined();
+    expect(greetCall!.source).toBe('process');
+  });
+});

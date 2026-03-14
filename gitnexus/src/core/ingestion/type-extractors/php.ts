@@ -4,6 +4,7 @@ import { extractSimpleTypeName, extractVarName } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
   'assignment_expression', // For constructor inference: $x = new User()
+  'property_declaration',  // PHP 7.4+ typed properties: private UserRepo $repo;
 ]);
 
 /** Walk up the AST to find the enclosing class declaration. */
@@ -44,9 +45,28 @@ const resolvePhpKeyword = (keyword: string, node: SyntaxNode): string | undefine
   return undefined;
 };
 
-/** PHP: no typed local variable declarations */
-const extractDeclaration: TypeBindingExtractor = (_node: SyntaxNode, _env: Map<string, string>): void => {
-  // PHP has no typed local variable annotations; constructor inference is handled by extractInitializer
+/** PHP: typed class properties (PHP 7.4+): private UserRepo $repo; */
+const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+  if (node.type !== 'property_declaration') return;
+
+  const typeNode = node.childForFieldName('type');
+  if (!typeNode) return;
+
+  const typeName = extractSimpleTypeName(typeNode);
+  if (!typeName) return;
+
+  // The variable name is inside property_element > variable_name
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child?.type === 'property_element') {
+      const varNameNode = child.firstNamedChild; // variable_name
+      if (varNameNode) {
+        const varName = extractVarName(varNameNode);
+        if (varName) env.set(varName, typeName);
+      }
+      break;
+    }
+  }
 };
 
 /** PHP: $x = new User() — infer type from object_creation_expression */

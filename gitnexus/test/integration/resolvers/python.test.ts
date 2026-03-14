@@ -546,3 +546,31 @@ describe('Python qualified constructor inference', () => {
     expect(greetCall!.source).toBe('main');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Walrus operator: if (user := User("alice")): user.save()
+// ---------------------------------------------------------------------------
+
+describe('Python walrus operator type inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-walrus-operator'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User class with save and greet methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Function')).toContain('greet');
+  });
+
+  it('resolves user.save() via walrus operator constructor inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.targetFilePath === 'models.py');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('process');
+  });
+});

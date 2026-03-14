@@ -67,6 +67,30 @@ describe('buildTypeEnv', () => {
       const { env } = buildTypeEnv(tree, 'typescript');
       expect(flatSize(env)).toBe(0);
     });
+
+    it('extracts type from nullable union User | null', () => {
+      const tree = parse('const user: User | null = getUser();', TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(env, 'user')).toBe('User');
+    });
+
+    it('extracts type from optional union User | undefined', () => {
+      const tree = parse('let user: User | undefined;', TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(env, 'user')).toBe('User');
+    });
+
+    it('extracts type from triple nullable union User | null | undefined', () => {
+      const tree = parse('const user: User | null | undefined = getUser();', TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(env, 'user')).toBe('User');
+    });
+
+    it('ignores non-nullable unions like User | Repo', () => {
+      const tree = parse('const entity: User | Repo = getEntity();', TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(env, 'entity')).toBeUndefined();
+    });
   });
 
   describe('Java', () => {
@@ -211,6 +235,52 @@ describe('buildTypeEnv', () => {
       expect(flatGet(env, 'user')).toBeUndefined();
     });
 
+    it('infers element type from make([]User, 0) slice builtin', () => {
+      const tree = parse(`
+        package main
+        func main() {
+          sl := make([]User, 0)
+        }
+      `, Go);
+      const { env } = buildTypeEnv(tree, 'go');
+      expect(flatGet(env, 'sl')).toBe('User');
+    });
+
+    it('infers value type from make(map[string]User) map builtin', () => {
+      const tree = parse(`
+        package main
+        func main() {
+          m := make(map[string]User)
+        }
+      `, Go);
+      const { env } = buildTypeEnv(tree, 'go');
+      expect(flatGet(env, 'm')).toBe('User');
+    });
+
+    it('infers type from type assertion: user := iface.(User)', () => {
+      const tree = parse(`
+        package main
+        type Saver interface { Save() }
+        func process(s Saver) {
+          user := s.(User)
+        }
+      `, Go);
+      const { env } = buildTypeEnv(tree, 'go');
+      expect(flatGet(env, 'user')).toBe('User');
+    });
+
+    it('infers type from type assertion in multi-assignment: user, ok := iface.(User)', () => {
+      const tree = parse(`
+        package main
+        type Saver interface { Save() }
+        func process(s Saver) {
+          user, ok := s.(User)
+        }
+      `, Go);
+      const { env } = buildTypeEnv(tree, 'go');
+      expect(flatGet(env, 'user')).toBe('User');
+    });
+
     it('extracts type from function parameters', () => {
       const tree = parse(`
         package main
@@ -353,6 +423,26 @@ class User {
       `, PHP.php);
       const { env } = buildTypeEnv(tree, 'php');
       expect(flatGet(env, '$repo')).toBe('UserRepo');
+    });
+
+    it('extracts type from typed class property (PHP 7.4+)', () => {
+      const tree = parse(`<?php
+class UserService {
+  private UserRepo $repo;
+}
+      `, PHP.php);
+      const { env } = buildTypeEnv(tree, 'php');
+      expect(flatGet(env, '$repo')).toBe('UserRepo');
+    });
+
+    it('extracts type from typed class property with default value', () => {
+      const tree = parse(`<?php
+class UserService {
+  public string $name = "test";
+}
+      `, PHP.php);
+      const { env } = buildTypeEnv(tree, 'php');
+      expect(flatGet(env, '$name')).toBe('string');
     });
   });
 
@@ -1109,6 +1199,31 @@ def main():
         expect(flatGet(env, 'user')).toBeUndefined();
       });
     });
+
+    describe('Python walrus operator type inference', () => {
+      it('infers type from walrus operator with constructor call', () => {
+        const tree = parse(`
+class User:
+    pass
+
+def main():
+    if (user := User("alice")):
+        pass
+`, Python);
+        const { env } = buildTypeEnv(tree, 'python');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('does not infer type from walrus operator without known class', () => {
+        const tree = parse(`
+def main():
+    if (data := get_data()):
+        pass
+`, Python);
+        const { env } = buildTypeEnv(tree, 'python');
+        expect(flatGet(env, 'data')).toBeUndefined();
+      });
+    });
   });
 
   describe('edge cases', () => {
@@ -1317,6 +1432,19 @@ def main():
       expect(constructorBindings.length).toBe(1);
       expect(constructorBindings[0].varName).toBe('user');
       expect(constructorBindings[0].calleeName).toBe('User');
+    });
+
+    it('returns constructor bindings for Python walrus operator (user := SomeClass())', () => {
+      const tree = parse(`
+def main():
+    if (user := SomeClass()):
+        pass
+`, Python);
+      const { env, constructorBindings } = buildTypeEnv(tree, 'python');
+      expect(flatGet(env, 'user')).toBeUndefined();
+      expect(constructorBindings.length).toBe(1);
+      expect(constructorBindings[0].varName).toBe('user');
+      expect(constructorBindings[0].calleeName).toBe('SomeClass');
     });
 
     it('returns empty bindings for language without scanner (Go)', () => {

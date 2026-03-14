@@ -801,3 +801,54 @@ describe('TypeScript double-cast constructor inference', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Nullable/optional receiver unwrapping: user?.save() resolves through ?.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript nullable receiver resolution (optional chaining)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ts-nullable-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes with their methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toContain('greet');
+  });
+
+  it('resolves user?.save() to User.save via receiver typing', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/user.ts');
+    expect(userSave).toBeDefined();
+    expect(userSave!.source).toBe('processEntities');
+  });
+
+  it('resolves user?.greet() to User.greet via receiver typing', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCall = calls.find(c => c.target === 'greet' && c.targetFilePath === 'src/user.ts');
+    expect(greetCall).toBeDefined();
+    expect(greetCall!.source).toBe('processEntities');
+  });
+
+  it('resolves repo?.save() to Repo.save via receiver typing', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/repo.ts');
+    expect(repoSave).toBeDefined();
+    expect(repoSave!.source).toBe('processEntities');
+  });
+
+  it('emits constructor CALLS edges for both User and Repo', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userCtor = calls.find(c => c.target === 'User' && c.targetLabel === 'Class');
+    const repoCtor = calls.find(c => c.target === 'Repo' && c.targetLabel === 'Class');
+    expect(userCtor).toBeDefined();
+    expect(repoCtor).toBeDefined();
+  });
+});
+

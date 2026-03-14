@@ -454,13 +454,25 @@ const CONSTRUCTOR_BINDING_SCANNERS: Partial<Record<SupportedLanguages, (node: Sy
   },
 
   // Python: user = User("alice") — assignment with call
+  // Also handles walrus operator: (user := User("alice"))
   [SupportedLanguages.Python]: (node) => {
-    if (node.type !== 'assignment') return undefined;
-    const left = node.childForFieldName('left');
-    const right = node.childForFieldName('right');
+    let left: SyntaxNode | null;
+    let right: SyntaxNode | null;
+
+    if (node.type === 'named_expression') {
+      // Walrus operator: (user := User("alice"))
+      left = node.childForFieldName('name');
+      right = node.childForFieldName('value');
+    } else if (node.type === 'assignment') {
+      left = node.childForFieldName('left');
+      right = node.childForFieldName('right');
+      // Skip annotated assignments — extractDeclaration handles those
+      if (node.childForFieldName('type')) return undefined;
+    } else {
+      return undefined;
+    }
+
     if (!left || !right) return undefined;
-    // Skip annotated assignments — extractDeclaration handles those
-    if (node.childForFieldName('type')) return undefined;
     if (left.type !== 'identifier') return undefined;
     if (right.type !== 'call') return undefined;
     const func = right.childForFieldName('function');

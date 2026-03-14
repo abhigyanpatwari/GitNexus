@@ -65,6 +65,7 @@ const extractGoShortVarDeclaration = (node: SyntaxNode, env: Map<string, string>
       valueNode = valueNode.firstNamedChild;
     }
     // Go built-in new(User) — call_expression with 'new' callee and type argument
+    // Go built-in make([]User, 0) / make(map[string]User) — extract element/value type
     if (valueNode.type === 'call_expression') {
       const funcNode = valueNode.childForFieldName('function');
       if (funcNode?.text === 'new') {
@@ -74,6 +75,32 @@ const extractGoShortVarDeclaration = (node: SyntaxNode, env: Map<string, string>
           const varName = extractVarName(lhsNodes[i]);
           if (varName && typeName) env.set(varName, typeName);
         }
+      } else if (funcNode?.text === 'make') {
+        const args = valueNode.childForFieldName('arguments');
+        const firstArg = args?.firstNamedChild;
+        if (firstArg) {
+          let innerType: SyntaxNode | null = null;
+          if (firstArg.type === 'slice_type') {
+            innerType = firstArg.childForFieldName('element');
+          } else if (firstArg.type === 'map_type') {
+            innerType = firstArg.childForFieldName('value');
+          }
+          if (innerType) {
+            const typeName = extractSimpleTypeName(innerType);
+            const varName = extractVarName(lhsNodes[i]);
+            if (varName && typeName) env.set(varName, typeName);
+          }
+        }
+      }
+      continue;
+    }
+    // Go type assertion: user := iface.(User) — type_assertion_expression with 'type' field
+    if (valueNode.type === 'type_assertion_expression') {
+      const typeNode = valueNode.childForFieldName('type');
+      if (typeNode) {
+        const typeName = extractSimpleTypeName(typeNode);
+        const varName = extractVarName(lhsNodes[i]);
+        if (varName && typeName) env.set(varName, typeName);
       }
       continue;
     }
