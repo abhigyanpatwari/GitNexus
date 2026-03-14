@@ -33,7 +33,7 @@ export const typeConfigs = {
     declarationNodeTypes: new Set<string>(),
     extractDeclaration: () => {},
     extractParameter: () => {},
-  },
+  } as LanguageTypeConfig,
 } satisfies Record<SupportedLanguages, LanguageTypeConfig>;
 
 export type { LanguageTypeConfig, TypeBindingExtractor, ParameterExtractor } from './types.js';

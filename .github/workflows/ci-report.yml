@@ -119,6 +119,66 @@ jobs:
           sparse-checkout: gitnexus/vitest.config.ts
           sparse-checkout-cone-mode: false
 
+      # ── Fetch base branch coverage for delta reporting ───────────
+      - name: Fetch base branch coverage
+        if: steps.meta.outputs.skip != 'true'
+        id: base-coverage
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            // Find the latest successful CI run on main
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'ci.yml',
+              branch: 'main',
+              status: 'success',
+              per_page: 1,
+            });
+
+            if (runs.data.workflow_runs.length === 0) {
+              core.setOutput('found', 'false');
+              core.info('No successful main branch CI runs found');
+              return;
+            }
+
+            const mainRunId = runs.data.workflow_runs[0].id;
+            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: mainRunId,
+            });
+
+            const testReports = artifacts.data.artifacts.find(a => a.name === 'test-reports');
+            if (!testReports) {
+              core.setOutput('found', 'false');
+              core.info('No test-reports artifact on main branch');
+              return;
+            }
+
+            const zip = await github.rest.actions.downloadArtifact({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              artifact_id: testReports.id,
+              archive_format: 'zip',
+            });
+
+            const dest = path.join(process.env.RUNNER_TEMP, 'base-coverage');
+            fs.mkdirSync(dest, { recursive: true });
+            fs.writeFileSync(path.join(dest, 'base.zip'), Buffer.from(zip.data));
+            core.setOutput('found', 'true');
+            core.setOutput('dir', dest);
+
+      - name: Extract base coverage
+        if: steps.meta.outputs.skip != 'true' && steps.base-coverage.outputs.found == 'true'
+        shell: bash
+        run: |
+          cd "${{ steps.base-coverage.outputs.dir }}"
+          unzip -o base.zip -d base
+
       # ── Merge coverage from unit + integration ─────────────────────
       - name: Setup Node.js
         if: steps.meta.outputs.skip != 'true'
@@ -183,13 +243,14 @@ jobs:
           UNIT: ${{ steps.meta.outputs.unit }}
           INTEG: ${{ steps.meta.outputs.integration }}
           HAS_MERGED: ${{ steps.coverage.outputs.has_merged }}
+          BASE_FOUND: ${{ steps.base-coverage.outputs.found }}
+          BASE_DIR: ${{ steps.base-coverage.outputs.dir }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           DIR="$RUNNER_TEMP/artifacts"
           MERGED_DIR="$RUNNER_TEMP/merged-coverage"
 
           # ── Helper: read coverage summary into prefixed vars ──
-          # Uses printf -v for safe variable assignment (no eval).
           read_cov() {
             local prefix=$1 file=$2
             if [ -n "$file" ] && [ -f "$file" ]; then
@@ -224,7 +285,7 @@ jobs:
             fi
           }
 
-          # ── Read all three coverage reports ──
+          # ── Read all coverage reports ──
           UNIT_SUMMARY=$(find "$DIR/test-reports" -name "coverage-summary.json" -type f 2>/dev/null | head -1)
           INTEG_SUMMARY=$(find "$DIR/integration-reports" -name "coverage-summary.json" -type f 2>/dev/null | head -1)
           MERGED_SUMMARY="$MERGED_DIR/coverage-summary.json"
@@ -235,7 +296,14 @@ jobs:
           HAS_INTEG=$?
           read_cov "M" "$MERGED_SUMMARY"
 
-          # ── Locate test results (unit) ──
+          # ── Read base branch coverage (main) ──
+          BASE_SUMMARY=""
+          if [ "$BASE_FOUND" = "true" ] && [ -n "$BASE_DIR" ]; then
+            BASE_SUMMARY=$(find "$BASE_DIR/base" -name "coverage-summary.json" -type f 2>/dev/null | head -1)
+          fi
+          read_cov "B" "$BASE_SUMMARY"
+
+          # ── Locate test results ──
           RESULTS_FILE=$(find "$DIR/test-reports" -name "test-results.json" -type f 2>/dev/null | head -1)
           INTEG_RESULTS=$(find "$DIR/integration-reports" -name "integration-results.json" -type f 2>/dev/null | head -1)
 
@@ -267,17 +335,6 @@ jobs:
           FAILED=$((U_FAILED + I_FAILED))
           SKIPPED=$((U_SKIPPED + I_SKIPPED))
           SUITES=$((U_SUITES + I_SUITES))
-          DURATION=$((U_DURATION + I_DURATION))
-
-          # ── Coverage thresholds (read from vitest.config.ts) ──
-          if [ -f gitnexus/vitest.config.ts ]; then
-            THRESH_STMTS=$(grep -oP 'statements:\s*\K[0-9]+' gitnexus/vitest.config.ts || echo 0)
-            THRESH_BRANCH=$(grep -oP 'branches:\s*\K[0-9]+' gitnexus/vitest.config.ts || echo 0)
-            THRESH_FUNCS=$(grep -oP 'functions:\s*\K[0-9]+' gitnexus/vitest.config.ts || echo 0)
-            THRESH_LINES=$(grep -oP 'lines:\s*\K[0-9]+' gitnexus/vitest.config.ts || echo 0)
-          else
-            THRESH_STMTS=0; THRESH_BRANCH=0; THRESH_FUNCS=0; THRESH_LINES=0
-          fi
 
           # ── Status helpers ──
           status_icon() {
@@ -289,8 +346,22 @@ jobs:
             esac
           }
 
+          cov_delta() {
+            local pct=$1 base=$2
+            if [ "$pct" = "N/A" ] || [ "$base" = "N/A" ]; then echo "—"; return; fi
+            local diff
+            diff=$(awk "BEGIN { printf \"%.1f\", $pct - $base }")
+            if [ "$(awk "BEGIN { print ($pct > $base) ? 1 : 0 }")" = "1" ]; then
+              echo "📈 +${diff}"
+            elif [ "$(awk "BEGIN { print ($pct < $base) ? 1 : 0 }")" = "1" ]; then
+              echo "📉 ${diff}"
+            else
+              echo "＝ ${diff}"
+            fi
+          }
+
           cov_bar() {
-            local pct=$1 thresh=$2
+            local pct=$1 base=$2
             if [ "$pct" = "N/A" ]; then echo "—"; return; fi
             local filled
             filled=$(awk "BEGIN { printf \"%d\", $pct / 5 }")
@@ -300,7 +371,8 @@ jobs:
             local bar=""
             for ((i=0; i<filled; i++)); do bar+="█"; done
             for ((i=0; i<empty; i++)); do bar+="░"; done
-            if [ "$(awk "BEGIN { print ($pct >= $thresh) ? 1 : 0 }")" = "1" ]; then
+            # Green if >= base (or base unavailable), red if dropped
+            if [ "$base" = "N/A" ] || [ "$(awk "BEGIN { print ($pct >= $base) ? 1 : 0 }")" = "1" ]; then
               echo "🟢 ${bar}"
             else
               echo "🔴 ${bar}"
@@ -333,18 +405,50 @@ jobs:
             if [ "$TOTAL" -gt 0 ] 2>/dev/null; then
               echo "### Test Results"
               echo ""
+              echo "| Suite | Tests | Passed | Failed | Skipped | Duration |"
+              echo "|-------|-------|--------|--------|---------|----------|"
+              if [ "$U_TOTAL" -gt 0 ] 2>/dev/null; then
+                echo "| Unit | ${U_TOTAL} | ${U_PASSED} | ${U_FAILED} | ${U_SKIPPED} | ${U_DURATION}s |"
+              fi
+              if [ "$I_TOTAL" -gt 0 ] 2>/dev/null; then
+                echo "| Integration | ${I_TOTAL} | ${I_PASSED} | ${I_FAILED} | ${I_SKIPPED} | ${I_DURATION}s |"
+              fi
+              echo "| **Total** | **${TOTAL}** | **${PASSED}** | **${FAILED}** | **${SKIPPED}** | **$((U_DURATION + I_DURATION))s** |"
+              echo ""
+
               if [ "$FAILED" = "0" ]; then
-                echo "✅ **${PASSED}** passed"
+                echo "✅ All **${PASSED}** tests passed"
               else
                 echo "❌ **${FAILED}** failed / **${PASSED}** passed"
               fi
               if [ "$SKIPPED" != "0" ]; then
-                echo " · ${SKIPPED} skipped"
-              fi
-              echo " · ${SUITES} suites · ${TOTAL} total"
-              echo " · ⏱️ ${DURATION}s"
-              if [ "$I_TOTAL" -gt 0 ] 2>/dev/null; then
-                echo " · 📊 ${U_TOTAL} unit + ${I_TOTAL} integration"
+                echo ""
+                echo "<details>"
+                echo "<summary>${SKIPPED} test(s) skipped — expand for details</summary>"
+                echo ""
+                # Extract skipped test names from integration results
+                if [ -n "$INTEG_RESULTS" ] && [ "$I_SKIPPED" -gt 0 ] 2>/dev/null; then
+                  echo "**Integration:**"
+                  jq -r '
+                    .testResults[]
+                    | .assertionResults[]?
+                    | select(.status == "pending" or .status == "skipped")
+                    | "- \(.ancestorTitles | join(" > ")) > \(.title)"
+                  ' "$INTEG_RESULTS" 2>/dev/null || echo "- _(unable to parse skipped test details)_"
+                fi
+                # Extract skipped test names from unit results
+                if [ -n "$RESULTS_FILE" ] && [ "$U_SKIPPED" -gt 0 ] 2>/dev/null; then
+                  echo ""
+                  echo "**Unit:**"
+                  jq -r '
+                    .testResults[]
+                    | .assertionResults[]?
+                    | select(.status == "pending" or .status == "skipped")
+                    | "- \(.ancestorTitles | join(" > ")) > \(.title)"
+                  ' "$RESULTS_FILE" 2>/dev/null || echo "- _(unable to parse skipped test details)_"
+                fi
+                echo ""
+                echo "</details>"
               fi
               echo ""
             fi
@@ -353,15 +457,15 @@ jobs:
             cov_table() {
               local label=$1 s=$2 b=$3 f=$4 l=$5 sc=$6 bc=$7 fc=$8 lc=$9
               shift 9
-              local ts=$1 tb=$2 tf=$3 tl=$4
+              local bs=$1 bb=$2 bf=$3 bl=$4
               echo "#### ${label}"
               echo ""
-              echo "| Metric | Coverage | Covered | Threshold | Status |"
-              echo "|--------|----------|---------|-----------|--------|"
-              echo "| Statements | **${s}%** | ${sc} | ${ts}% | $(cov_bar "$s" "$ts") |"
-              echo "| Branches | **${b}%** | ${bc} | ${tb}% | $(cov_bar "$b" "$tb") |"
-              echo "| Functions | **${f}%** | ${fc} | ${tf}% | $(cov_bar "$f" "$tf") |"
-              echo "| Lines | **${l}%** | ${lc} | ${tl}% | $(cov_bar "$l" "$tl") |"
+              echo "| Metric | Coverage | Covered | Base | Delta | Status |"
+              echo "|--------|----------|---------|------|-------|--------|"
+              echo "| Statements | **${s}%** | ${sc} | ${bs}% | $(cov_delta "$s" "$bs") | $(cov_bar "$s" "$bs") |"
+              echo "| Branches | **${b}%** | ${bc} | ${bb}% | $(cov_delta "$b" "$bb") | $(cov_bar "$b" "$bb") |"
+              echo "| Functions | **${f}%** | ${fc} | ${bf}% | $(cov_delta "$f" "$bf") | $(cov_bar "$f" "$bf") |"
+              echo "| Lines | **${l}%** | ${lc} | ${bl}% | $(cov_delta "$l" "$bl") | $(cov_bar "$l" "$bl") |"
               echo ""
             }
 
@@ -371,7 +475,7 @@ jobs:
               cov_table "Combined (Unit + Integration)" \
                 "$M_STMTS" "$M_BRANCH" "$M_FUNCS" "$M_LINES" \
                 "$M_STMTS_COV" "$M_BRANCH_COV" "$M_FUNCS_COV" "$M_LINES_COV" \
-                "$THRESH_STMTS" "$THRESH_BRANCH" "$THRESH_FUNCS" "$THRESH_LINES"
+                "$B_STMTS" "$B_BRANCH" "$B_FUNCS" "$B_LINES"
 
               echo "<details>"
               echo "<summary>Coverage breakdown by test suite</summary>"
@@ -380,21 +484,14 @@ jobs:
                 cov_table "Unit Tests" \
                   "$U_STMTS" "$U_BRANCH" "$U_FUNCS" "$U_LINES" \
                   "$U_STMTS_COV" "$U_BRANCH_COV" "$U_FUNCS_COV" "$U_LINES_COV" \
-                  "$THRESH_STMTS" "$THRESH_BRANCH" "$THRESH_FUNCS" "$THRESH_LINES"
+                  "$B_STMTS" "$B_BRANCH" "$B_FUNCS" "$B_LINES"
               fi
               if [ "$I_STMTS" != "N/A" ]; then
                 cov_table "Integration Tests" \
                   "$I_STMTS" "$I_BRANCH" "$I_FUNCS" "$I_LINES" \
                   "$I_STMTS_COV" "$I_BRANCH_COV" "$I_FUNCS_COV" "$I_LINES_COV" \
-                  "$THRESH_STMTS" "$THRESH_BRANCH" "$THRESH_FUNCS" "$THRESH_LINES"
+                  "$B_STMTS" "$B_BRANCH" "$B_FUNCS" "$B_LINES"
               fi
-              echo "</details>"
-              echo ""
-              echo "<details>"
-              echo "<summary>Coverage thresholds are auto-ratcheted — they only go up</summary>"
-              echo ""
-              echo "Vitest \`thresholds.autoUpdate\` bumps the floor whenever local coverage exceeds it."
-              echo "CI enforces the current thresholds; developers commit the ratcheted values."
               echo "</details>"
               echo ""
             elif [ "$U_STMTS" != "N/A" ]; then
@@ -403,14 +500,7 @@ jobs:
               cov_table "Unit Tests" \
                 "$U_STMTS" "$U_BRANCH" "$U_FUNCS" "$U_LINES" \
                 "$U_STMTS_COV" "$U_BRANCH_COV" "$U_FUNCS_COV" "$U_LINES_COV" \
-                "$THRESH_STMTS" "$THRESH_BRANCH" "$THRESH_FUNCS" "$THRESH_LINES"
-              echo "<details>"
-              echo "<summary>Coverage thresholds are auto-ratcheted — they only go up</summary>"
-              echo ""
-              echo "Vitest \`thresholds.autoUpdate\` bumps the floor whenever local coverage exceeds it."
-              echo "CI enforces the current thresholds; developers commit the ratcheted values."
-              echo "</details>"
-              echo ""
+                "$B_STMTS" "$B_BRANCH" "$B_FUNCS" "$B_LINES"
             else
               echo "### Code Coverage"
               echo ""

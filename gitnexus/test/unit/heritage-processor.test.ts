@@ -1,26 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { processHeritageFromExtracted } from '../../src/core/ingestion/heritage-processor.js';
-import { createSymbolTable } from '../../src/core/ingestion/symbol-table.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import { createImportMap } from '../../src/core/ingestion/import-processor.js';
-import type { ImportMap } from '../../src/core/ingestion/import-processor.js';
+import { createResolutionContext, type ResolutionContext } from '../../src/core/ingestion/resolution-context.js';
 import type { ExtractedHeritage } from '../../src/core/ingestion/workers/parse-worker.js';
 
 describe('processHeritageFromExtracted', () => {
   let graph: ReturnType<typeof createKnowledgeGraph>;
-  let symbolTable: ReturnType<typeof createSymbolTable>;
-  let importMap: ImportMap;
+  let ctx: ResolutionContext;
 
   beforeEach(() => {
     graph = createKnowledgeGraph();
-    symbolTable = createSymbolTable();
-    importMap = createImportMap();
+    ctx = createResolutionContext();
   });
 
   describe('extends', () => {
     it('creates EXTENDS relationship between classes', async () => {
-      symbolTable.add('src/admin.ts', 'AdminUser', 'Class:src/admin.ts:AdminUser', 'Class');
-      symbolTable.add('src/user.ts', 'User', 'Class:src/user.ts:User', 'Class');
+      ctx.symbols.add('src/admin.ts', 'AdminUser', 'Class:src/admin.ts:AdminUser', 'Class');
+      ctx.symbols.add('src/user.ts', 'User', 'Class:src/user.ts:User', 'Class');
 
       const heritage: ExtractedHeritage[] = [{
         filePath: 'src/admin.ts',
@@ -29,7 +25,7 @@ describe('processHeritageFromExtracted', () => {
         kind: 'extends',
       }];
 
-      await processHeritageFromExtracted(graph, heritage, symbolTable, importMap);
+      await processHeritageFromExtracted(graph, heritage, ctx);
 
       const rels = graph.relationships.filter(r => r.type === 'EXTENDS');
       expect(rels).toHaveLength(1);
@@ -46,7 +42,7 @@ describe('processHeritageFromExtracted', () => {
         kind: 'extends',
       }];
 
-      await processHeritageFromExtracted(graph, heritage, symbolTable, importMap);
+      await processHeritageFromExtracted(graph, heritage, ctx);
 
       const rels = graph.relationships.filter(r => r.type === 'EXTENDS');
       expect(rels).toHaveLength(1);
@@ -55,7 +51,7 @@ describe('processHeritageFromExtracted', () => {
     });
 
     it('skips self-inheritance', async () => {
-      symbolTable.add('src/a.ts', 'Foo', 'Class:src/a.ts:Foo', 'Class');
+      ctx.symbols.add('src/a.ts', 'Foo', 'Class:src/a.ts:Foo', 'Class');
 
       const heritage: ExtractedHeritage[] = [{
         filePath: 'src/a.ts',
@@ -64,15 +60,15 @@ describe('processHeritageFromExtracted', () => {
         kind: 'extends',
       }];
 
-      await processHeritageFromExtracted(graph, heritage, symbolTable, importMap);
+      await processHeritageFromExtracted(graph, heritage, ctx);
       expect(graph.relationshipCount).toBe(0);
     });
   });
 
   describe('implements', () => {
     it('creates IMPLEMENTS relationship', async () => {
-      symbolTable.add('src/service.ts', 'UserService', 'Class:src/service.ts:UserService', 'Class');
-      symbolTable.add('src/interfaces.ts', 'IService', 'Interface:src/interfaces.ts:IService', 'Interface');
+      ctx.symbols.add('src/service.ts', 'UserService', 'Class:src/service.ts:UserService', 'Class');
+      ctx.symbols.add('src/interfaces.ts', 'IService', 'Interface:src/interfaces.ts:IService', 'Interface');
 
       const heritage: ExtractedHeritage[] = [{
         filePath: 'src/service.ts',
@@ -81,7 +77,7 @@ describe('processHeritageFromExtracted', () => {
         kind: 'implements',
       }];
 
-      await processHeritageFromExtracted(graph, heritage, symbolTable, importMap);
+      await processHeritageFromExtracted(graph, heritage, ctx);
 
       const rels = graph.relationships.filter(r => r.type === 'IMPLEMENTS');
       expect(rels).toHaveLength(1);
@@ -91,8 +87,8 @@ describe('processHeritageFromExtracted', () => {
 
   describe('trait-impl (Rust)', () => {
     it('creates IMPLEMENTS relationship for trait impl', async () => {
-      symbolTable.add('src/point.rs', 'Point', 'Struct:src/point.rs:Point', 'Struct');
-      symbolTable.add('src/display.rs', 'Display', 'Trait:src/display.rs:Display', 'Trait');
+      ctx.symbols.add('src/point.rs', 'Point', 'Struct:src/point.rs:Point', 'Struct');
+      ctx.symbols.add('src/display.rs', 'Display', 'Trait:src/display.rs:Display', 'Trait');
 
       const heritage: ExtractedHeritage[] = [{
         filePath: 'src/point.rs',
@@ -101,7 +97,7 @@ describe('processHeritageFromExtracted', () => {
         kind: 'trait-impl',
       }];
 
-      await processHeritageFromExtracted(graph, heritage, symbolTable, importMap);
+      await processHeritageFromExtracted(graph, heritage, ctx);
 
       const rels = graph.relationships.filter(r => r.type === 'IMPLEMENTS');
       expect(rels).toHaveLength(1);
@@ -111,8 +107,8 @@ describe('processHeritageFromExtracted', () => {
 
   describe('C# interface resolution from extends captures', () => {
     it('emits IMPLEMENTS when parent is an Interface in symbol table', async () => {
-      symbolTable.add('src/Service.cs', 'UserService', 'Class:src/Service.cs:UserService', 'Class');
-      symbolTable.add('src/IService.cs', 'IService', 'Interface:src/IService.cs:IService', 'Interface');
+      ctx.symbols.add('src/Service.cs', 'UserService', 'Class:src/Service.cs:UserService', 'Class');
+      ctx.symbols.add('src/IService.cs', 'IService', 'Interface:src/IService.cs:IService', 'Interface');
 
       const heritage: ExtractedHeritage[] = [{
         filePath: 'src/Service.cs',
@@ -121,7 +117,7 @@ describe('processHeritageFromExtracted', () => {
         kind: 'extends', // C# base_list always sends extends
       }];
 
-      await processHeritageFromExtracted(graph, heritage, symbolTable, importMap);
+      await processHeritageFromExtracted(graph, heritage, ctx);
 
       const impls = graph.relationships.filter(r => r.type === 'IMPLEMENTS');
       const exts = graph.relationships.filter(r => r.type === 'EXTENDS');
@@ -132,8 +128,8 @@ describe('processHeritageFromExtracted', () => {
     });
 
     it('emits EXTENDS when parent is a Class in symbol table', async () => {
-      symbolTable.add('src/Admin.cs', 'AdminUser', 'Class:src/Admin.cs:AdminUser', 'Class');
-      symbolTable.add('src/User.cs', 'User', 'Class:src/User.cs:User', 'Class');
+      ctx.symbols.add('src/Admin.cs', 'AdminUser', 'Class:src/Admin.cs:AdminUser', 'Class');
+      ctx.symbols.add('src/User.cs', 'User', 'Class:src/User.cs:User', 'Class');
 
       const heritage: ExtractedHeritage[] = [{
         filePath: 'src/Admin.cs',
@@ -142,7 +138,7 @@ describe('processHeritageFromExtracted', () => {
         kind: 'extends',
       }];
 
-      await processHeritageFromExtracted(graph, heritage, symbolTable, importMap);
+      await processHeritageFromExtracted(graph, heritage, ctx);
 
       const exts = graph.relationships.filter(r => r.type === 'EXTENDS');
       const impls = graph.relationships.filter(r => r.type === 'IMPLEMENTS');
@@ -159,7 +155,7 @@ describe('processHeritageFromExtracted', () => {
         kind: 'extends',
       }];
 
-      await processHeritageFromExtracted(graph, heritage, symbolTable, importMap);
+      await processHeritageFromExtracted(graph, heritage, ctx);
 
       const impls = graph.relationships.filter(r => r.type === 'IMPLEMENTS');
       expect(impls).toHaveLength(1);
@@ -175,7 +171,7 @@ describe('processHeritageFromExtracted', () => {
         kind: 'extends',
       }];
 
-      await processHeritageFromExtracted(graph, heritage, symbolTable, importMap);
+      await processHeritageFromExtracted(graph, heritage, ctx);
 
       const exts = graph.relationships.filter(r => r.type === 'EXTENDS');
       const impls = graph.relationships.filter(r => r.type === 'IMPLEMENTS');
@@ -191,7 +187,7 @@ describe('processHeritageFromExtracted', () => {
         kind: 'extends',
       }];
 
-      await processHeritageFromExtracted(graph, heritage, symbolTable, importMap);
+      await processHeritageFromExtracted(graph, heritage, ctx);
 
       const exts = graph.relationships.filter(r => r.type === 'EXTENDS');
       const impls = graph.relationships.filter(r => r.type === 'IMPLEMENTS');
@@ -207,7 +203,7 @@ describe('processHeritageFromExtracted', () => {
         kind: 'extends',
       }];
 
-      await processHeritageFromExtracted(graph, heritage, symbolTable, importMap);
+      await processHeritageFromExtracted(graph, heritage, ctx);
 
       // "Id" starts with I but second char is lowercase — should be EXTENDS
       const exts = graph.relationships.filter(r => r.type === 'EXTENDS');
@@ -215,10 +211,10 @@ describe('processHeritageFromExtracted', () => {
     });
 
     it('handles mixed class + interface base_list from C#', async () => {
-      symbolTable.add('src/Repo.cs', 'UserRepo', 'Class:src/Repo.cs:UserRepo', 'Class');
-      symbolTable.add('src/Base.cs', 'BaseRepository', 'Class:src/Base.cs:BaseRepository', 'Class');
-      symbolTable.add('src/IRepo.cs', 'IRepository', 'Interface:src/IRepo.cs:IRepository', 'Interface');
-      symbolTable.add('src/IDisp.cs', 'IDisposable', 'Interface:src/IDisp.cs:IDisposable', 'Interface');
+      ctx.symbols.add('src/Repo.cs', 'UserRepo', 'Class:src/Repo.cs:UserRepo', 'Class');
+      ctx.symbols.add('src/Base.cs', 'BaseRepository', 'Class:src/Base.cs:BaseRepository', 'Class');
+      ctx.symbols.add('src/IRepo.cs', 'IRepository', 'Interface:src/IRepo.cs:IRepository', 'Interface');
+      ctx.symbols.add('src/IDisp.cs', 'IDisposable', 'Interface:src/IDisp.cs:IDisposable', 'Interface');
 
       const heritage: ExtractedHeritage[] = [
         { filePath: 'src/Repo.cs', className: 'UserRepo', parentName: 'BaseRepository', kind: 'extends' },
@@ -226,7 +222,7 @@ describe('processHeritageFromExtracted', () => {
         { filePath: 'src/Repo.cs', className: 'UserRepo', parentName: 'IDisposable', kind: 'extends' },
       ];
 
-      await processHeritageFromExtracted(graph, heritage, symbolTable, importMap);
+      await processHeritageFromExtracted(graph, heritage, ctx);
 
       const exts = graph.relationships.filter(r => r.type === 'EXTENDS');
       const impls = graph.relationships.filter(r => r.type === 'IMPLEMENTS');
@@ -245,7 +241,7 @@ describe('processHeritageFromExtracted', () => {
         kind: 'extends',
       }];
 
-      await processHeritageFromExtracted(graph, heritage, symbolTable, importMap);
+      await processHeritageFromExtracted(graph, heritage, ctx);
 
       const impls = graph.relationships.filter(r => r.type === 'IMPLEMENTS');
       const exts = graph.relationships.filter(r => r.type === 'EXTENDS');
@@ -256,7 +252,7 @@ describe('processHeritageFromExtracted', () => {
 
     it('still uses symbol table authoritatively for Swift (Tier 1 takes precedence)', async () => {
       // When the parent is in the symbol table as a Class, EXTENDS wins even in Swift
-      symbolTable.add('src/Animal.swift', 'Animal', 'Class:src/Animal.swift:Animal', 'Class');
+      ctx.symbols.add('src/Animal.swift', 'Animal', 'Class:src/Animal.swift:Animal', 'Class');
 
       const heritage: ExtractedHeritage[] = [{
         filePath: 'src/Dog.swift',
@@ -265,7 +261,7 @@ describe('processHeritageFromExtracted', () => {
         kind: 'extends',
       }];
 
-      await processHeritageFromExtracted(graph, heritage, symbolTable, importMap);
+      await processHeritageFromExtracted(graph, heritage, ctx);
 
       const exts = graph.relationships.filter(r => r.type === 'EXTENDS');
       const impls = graph.relationships.filter(r => r.type === 'IMPLEMENTS');
@@ -281,7 +277,7 @@ describe('processHeritageFromExtracted', () => {
       { filePath: 'src/e.rs', className: 'E', parentName: 'F', kind: 'trait-impl' },
     ];
 
-    await processHeritageFromExtracted(graph, heritage, symbolTable, importMap);
+    await processHeritageFromExtracted(graph, heritage, ctx);
     expect(graph.relationships.filter(r => r.type === 'EXTENDS')).toHaveLength(1);
     expect(graph.relationships.filter(r => r.type === 'IMPLEMENTS')).toHaveLength(2);
   });
@@ -292,12 +288,12 @@ describe('processHeritageFromExtracted', () => {
     ];
 
     const onProgress = vi.fn();
-    await processHeritageFromExtracted(graph, heritage, symbolTable, importMap, undefined, onProgress);
+    await processHeritageFromExtracted(graph, heritage, ctx, onProgress);
     expect(onProgress).toHaveBeenCalledWith(1, 1);
   });
 
   it('handles empty heritage array', async () => {
-    await processHeritageFromExtracted(graph, [], symbolTable, importMap);
+    await processHeritageFromExtracted(graph, [], ctx);
     expect(graph.relationshipCount).toBe(0);
   });
 });

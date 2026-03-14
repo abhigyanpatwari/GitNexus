@@ -407,3 +407,196 @@ describe('Rust grouped import resolution', () => {
     expect(imports[0].targetFilePath).toBe('src/helpers/mod.rs');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Constructor-inferred type resolution: let user = User::new(); user.save()
+// Rust scoped_identifier constructor pattern (no explicit type annotations)
+// ---------------------------------------------------------------------------
+
+describe('Rust constructor-inferred type resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-constructor-type-inference'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs, both with save methods', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
+    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  it('resolves user.save() to src/user.rs via constructor-inferred type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/user.rs');
+    expect(userSave).toBeDefined();
+    expect(userSave!.source).toBe('process_entities');
+  });
+
+  it('resolves repo.save() to src/repo.rs via constructor-inferred type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/repo.rs');
+    expect(repoSave).toBeDefined();
+    expect(repoSave!.source).toBe('process_entities');
+  });
+
+  it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save');
+    expect(saveCalls.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// self.save() resolves to enclosing impl's own save method
+// ---------------------------------------------------------------------------
+
+describe('Rust self resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-self-this-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs, each with a save function', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
+    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  it('resolves self.save() inside User::process to User::save, not Repo::save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('src/user.rs');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Trait impl emits IMPLEMENTS edge
+// ---------------------------------------------------------------------------
+
+describe('Rust parent resolution (trait impl)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-parent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User struct and Serializable trait', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Trait')).toContain('Serializable');
+  });
+
+  it('emits IMPLEMENTS edge: User → Serializable (trait impl)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(implements_.length).toBe(1);
+    expect(implements_[0].source).toBe('User');
+    expect(implements_[0].target).toBe('Serializable');
+    expect(implements_[0].rel.reason).toBe('trait-impl');
+  });
+
+  it('no EXTENDS edges (Rust has no class inheritance)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Struct literal inference: let user = User { ... }; user.save()
+// ---------------------------------------------------------------------------
+
+describe('Rust struct literal type inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-struct-literal-inference'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.save() via struct literal inference (User { ... })', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.targetFilePath === 'models.rs');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('main');
+  });
+
+  it('resolves config.validate() via struct literal inference (Config { ... })', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const validateCall = calls.find(c => c.target === 'validate' && c.targetFilePath === 'models.rs');
+    expect(validateCall).toBeDefined();
+    expect(validateCall!.source).toBe('main');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rust Self {} struct literal: Self resolves to enclosing impl type
+// ---------------------------------------------------------------------------
+
+describe('Rust Self {} struct literal resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-self-struct-literal'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves fresh.validate() inside impl User via Self {} inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const validateCall = calls.find(c => c.target === 'validate' && c.source === 'blank');
+    expect(validateCall).toBeDefined();
+    expect(validateCall!.targetFilePath).toBe('models.rs');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// if let / while let: captured_pattern type extraction
+// Extracts type from `user @ User { .. }` patterns in if-let/while-let
+// ---------------------------------------------------------------------------
+
+describe('Rust if-let captured_pattern type resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-if-let'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Config structs with their methods', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Config');
+    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Function')).toContain('validate');
+  });
+
+  it('resolves user.save() inside if-let via captured_pattern binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process_if_let');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('models.rs');
+  });
+
+  it('resolves cfg.validate() inside while-let via captured_pattern binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const validateCall = calls.find(c => c.target === 'validate' && c.source === 'process_while_let');
+    expect(validateCall).toBeDefined();
+    expect(validateCall!.targetFilePath).toBe('models.rs');
+  });
+});

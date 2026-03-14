@@ -343,3 +343,201 @@ describe('Go local definition shadows import', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Constructor-inferred type resolution: user := models.User{}; user.Save()
+// Go composite literal constructor pattern (no explicit type annotations)
+// ---------------------------------------------------------------------------
+
+describe('Go constructor-inferred type resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-constructor-type-inference'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs, both with Save methods', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'Save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves user.Save() to models/user.go via constructor-inferred type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'Save' && c.targetFilePath === 'models/user.go');
+    expect(userSave).toBeDefined();
+    expect(userSave!.source).toBe('processEntities');
+  });
+
+  it('resolves repo.Save() to models/repo.go via constructor-inferred type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'Save' && c.targetFilePath === 'models/repo.go');
+    expect(repoSave).toBeDefined();
+    expect(repoSave!.source).toBe('processEntities');
+  });
+
+  it('emits exactly 2 Save() CALLS edges (one per receiver type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'Save');
+    expect(saveCalls.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pointer-constructor-inferred type resolution: user := &models.User{...}; user.Save()
+// Go address-of composite literal constructor pattern (no explicit type annotations)
+// ---------------------------------------------------------------------------
+
+describe('Go pointer-constructor-inferred type resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-pointer-constructor-inference'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs, both with Save methods', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'Save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves user.Save() to models/user.go via &User{} pointer-constructor-inferred type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'Save' && c.targetFilePath === 'models/user.go');
+    expect(userSave).toBeDefined();
+    expect(userSave!.source).toBe('process');
+  });
+
+  it('resolves repo.Save() to models/repo.go via &Repo{} pointer-constructor-inferred type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'Save' && c.targetFilePath === 'models/repo.go');
+    expect(repoSave).toBeDefined();
+    expect(repoSave!.source).toBe('process');
+  });
+
+  it('emits exactly 2 Save() CALLS edges (one per receiver type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'Save');
+    expect(saveCalls.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parent resolution: struct embedding emits EXTENDS
+// ---------------------------------------------------------------------------
+
+describe('Go parent resolution (struct embedding)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-parent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel and User structs', () => {
+    expect(getNodesByLabel(result, 'Struct')).toEqual(['BaseModel', 'User']);
+  });
+
+  it('emits EXTENDS edge: User → BaseModel (struct embedding)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(1);
+    expect(extends_[0].source).toBe('User');
+    expect(extends_[0].target).toBe('BaseModel');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Go new() builtin type inference: user := new(User); user.Save()
+// ---------------------------------------------------------------------------
+
+describe('Go new() builtin type inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-new-builtin'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.Save() via new(User) inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'Save' && c.targetFilePath === 'models.go');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('main');
+  });
+
+  it('resolves user.Greet() via new(User) inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCall = calls.find(c => c.target === 'Greet' && c.targetFilePath === 'models.go');
+    expect(greetCall).toBeDefined();
+    expect(greetCall!.source).toBe('main');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Go make() builtin type inference: sl := make([]User, 0); sl[0].Save()
+// ---------------------------------------------------------------------------
+
+describe('Go make() builtin type inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-make-builtin'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves sl[0].Save() via make([]User, 0) slice inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'Save' && c.targetFilePath === 'models.go');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('main');
+  });
+
+  it('resolves m["key"].Greet() via make(map[string]User) map inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCall = calls.find(c => c.target === 'Greet' && c.targetFilePath === 'models.go');
+    expect(greetCall).toBeDefined();
+    expect(greetCall!.source).toBe('main');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Go type assertion inference: user := s.(User); user.Save()
+// ---------------------------------------------------------------------------
+
+describe('Go type assertion type inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-type-assertion'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.Save() via type assertion s.(User)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'Save' && c.targetFilePath === 'models.go');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('process');
+  });
+
+  it('resolves user.Greet() via type assertion s.(User)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCall = calls.find(c => c.target === 'Greet' && c.targetFilePath === 'models.go');
+    expect(greetCall).toBeDefined();
+    expect(greetCall!.source).toBe('process');
+  });
+});

@@ -33,7 +33,8 @@ import {
   inferCallForm,
   extractReceiverName
 } from '../utils.js';
-import { buildTypeEnv, lookupTypeEnv } from '../type-env.js';
+import { buildTypeEnv } from '../type-env.js';
+import type { ConstructorBinding } from '../type-env.js';
 import { isNodeExported } from '../export-detection.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
@@ -122,6 +123,12 @@ export interface ExtractedRoute {
   lineNumber: number;
 }
 
+/** Constructor bindings keyed by filePath for cross-file type resolution */
+export interface FileConstructorBindings {
+  filePath: string;
+  bindings: ConstructorBinding[];
+}
+
 export interface ParseWorkerResult {
   nodes: ParsedNode[];
   relationships: ParsedRelationship[];
@@ -130,6 +137,7 @@ export interface ParseWorkerResult {
   calls: ExtractedCall[];
   heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
+  constructorBindings: FileConstructorBindings[];
   fileCount: number;
 }
 
@@ -241,6 +249,7 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
     calls: [],
     heritage: [],
     routes: [],
+    constructorBindings: [],
     fileCount: 0,
   };
 
@@ -824,9 +833,14 @@ const processFileGroup = (
     result.fileCount++;
     onFileProcessed?.();
 
-    // Build per-file TypeEnv from explicit type annotations (for receiver resolution)
+    // Build per-file type environment + constructor bindings in a single AST walk.
+    // Constructor bindings are verified against the SymbolTable in processCallsFromExtracted.
     const typeEnv = buildTypeEnv(tree, language);
     const callRouter = callRouters[language];
+
+    if (typeEnv.constructorBindings.length > 0) {
+      result.constructorBindings.push({ filePath: file.path, bindings: [...typeEnv.constructorBindings] });
+    }
 
     let matches;
     try {
@@ -946,7 +960,7 @@ const processFileGroup = (
               || generateId('File', file.path);
             const callForm = inferCallForm(callNode, callNameNode);
             const receiverName = callForm === 'member' ? extractReceiverName(callNameNode) : undefined;
-            const receiverTypeName = receiverName ? lookupTypeEnv(typeEnv, receiverName, callNode) : undefined;
+            const receiverTypeName = receiverName ? typeEnv.lookup(receiverName, callNode) : undefined;
             result.calls.push({
               filePath: file.path,
               calledName,
@@ -1106,7 +1120,7 @@ const processFileGroup = (
 /** Accumulated result across sub-batches */
 let accumulated: ParseWorkerResult = {
   nodes: [], relationships: [], symbols: [],
-  imports: [], calls: [], heritage: [], routes: [], fileCount: 0,
+  imports: [], calls: [], heritage: [], routes: [], constructorBindings: [], fileCount: 0,
 };
 let cumulativeProcessed = 0;
 
@@ -1118,6 +1132,7 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   target.calls.push(...src.calls);
   target.heritage.push(...src.heritage);
   target.routes.push(...src.routes);
+  target.constructorBindings.push(...src.constructorBindings);
   target.fileCount += src.fileCount;
 };
 
@@ -1139,7 +1154,7 @@ parentPort!.on('message', (msg: any) => {
     if (msg && msg.type === 'flush') {
       parentPort!.postMessage({ type: 'result', data: accumulated });
       // Reset for potential reuse
-      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], heritage: [], routes: [], fileCount: 0 };
+      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], heritage: [], routes: [], constructorBindings: [], fileCount: 0 };
       cumulativeProcessed = 0;
       return;
     }

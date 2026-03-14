@@ -1,23 +1,36 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { resolveSymbol, resolveSymbolInternal } from '../../src/core/ingestion/symbol-resolver.js';
+import { createResolutionContext, type ResolutionContext } from '../../src/core/ingestion/resolution-context.js';
 import { createSymbolTable } from '../../src/core/ingestion/symbol-table.js';
-import { createImportMap, createPackageMap, isFileInPackageDir } from '../../src/core/ingestion/import-processor.js';
-import type { ImportMap, PackageMap } from '../../src/core/ingestion/import-processor.js';
+import { isFileInPackageDir } from '../../src/core/ingestion/import-processor.js';
 
-describe('resolveSymbol', () => {
-  let symbolTable: ReturnType<typeof createSymbolTable>;
-  let importMap: ImportMap;
+/** Helper: resolve to single best definition (refuses ambiguous global) */
+const resolveOne = (ctx: ResolutionContext, name: string, fromFile: string) => {
+  const tiered = ctx.resolve(name, fromFile);
+  if (!tiered) return null;
+  if (tiered.tier === 'global' && tiered.candidates.length !== 1) return null;
+  return tiered.candidates[0];
+};
+
+/** Helper: resolve with tier metadata (refuses ambiguous global) */
+const resolveInternal = (ctx: ResolutionContext, name: string, fromFile: string) => {
+  const tiered = ctx.resolve(name, fromFile);
+  if (!tiered) return null;
+  if (tiered.tier === 'global' && tiered.candidates.length !== 1) return null;
+  return { definition: tiered.candidates[0], tier: tiered.tier, candidateCount: tiered.candidates.length };
+};
+
+describe('ResolutionContext.resolve — resolveSymbol compatibility', () => {
+  let ctx: ResolutionContext;
 
   beforeEach(() => {
-    symbolTable = createSymbolTable();
-    importMap = createImportMap();
+    ctx = createResolutionContext();
   });
 
   describe('Tier 1: Same-file resolution', () => {
     it('resolves symbol defined in the same file', () => {
-      symbolTable.add('src/models/user.ts', 'User', 'Class:src/models/user.ts:User', 'Class');
+      ctx.symbols.add('src/models/user.ts', 'User', 'Class:src/models/user.ts:User', 'Class');
 
-      const result = resolveSymbol('User', 'src/models/user.ts', symbolTable, importMap);
+      const result = resolveOne(ctx, 'User', 'src/models/user.ts');
 
       expect(result).not.toBeNull();
       expect(result!.nodeId).toBe('Class:src/models/user.ts:User');
@@ -26,11 +39,11 @@ describe('resolveSymbol', () => {
     });
 
     it('prefers same-file over imported definition', () => {
-      symbolTable.add('src/local.ts', 'Config', 'Class:src/local.ts:Config', 'Class');
-      symbolTable.add('src/shared.ts', 'Config', 'Class:src/shared.ts:Config', 'Class');
-      importMap.set('src/local.ts', new Set(['src/shared.ts']));
+      ctx.symbols.add('src/local.ts', 'Config', 'Class:src/local.ts:Config', 'Class');
+      ctx.symbols.add('src/shared.ts', 'Config', 'Class:src/shared.ts:Config', 'Class');
+      ctx.importMap.set('src/local.ts', new Set(['src/shared.ts']));
 
-      const result = resolveSymbol('Config', 'src/local.ts', symbolTable, importMap);
+      const result = resolveOne(ctx, 'Config', 'src/local.ts');
 
       expect(result!.nodeId).toBe('Class:src/local.ts:Config');
       expect(result!.filePath).toBe('src/local.ts');
@@ -39,10 +52,10 @@ describe('resolveSymbol', () => {
 
   describe('Tier 2: Import-scoped resolution', () => {
     it('resolves symbol from an imported file', () => {
-      symbolTable.add('src/services/auth.ts', 'AuthService', 'Class:src/services/auth.ts:AuthService', 'Class');
-      importMap.set('src/controllers/login.ts', new Set(['src/services/auth.ts']));
+      ctx.symbols.add('src/services/auth.ts', 'AuthService', 'Class:src/services/auth.ts:AuthService', 'Class');
+      ctx.importMap.set('src/controllers/login.ts', new Set(['src/services/auth.ts']));
 
-      const result = resolveSymbol('AuthService', 'src/controllers/login.ts', symbolTable, importMap);
+      const result = resolveOne(ctx, 'AuthService', 'src/controllers/login.ts');
 
       expect(result).not.toBeNull();
       expect(result!.nodeId).toBe('Class:src/services/auth.ts:AuthService');
@@ -50,76 +63,85 @@ describe('resolveSymbol', () => {
     });
 
     it('prefers imported definition over non-imported with same name', () => {
-      symbolTable.add('src/services/logger.ts', 'Logger', 'Class:src/services/logger.ts:Logger', 'Class');
-      symbolTable.add('src/testing/mock-logger.ts', 'Logger', 'Class:src/testing/mock-logger.ts:Logger', 'Class');
-      importMap.set('src/app.ts', new Set(['src/services/logger.ts']));
+      ctx.symbols.add('src/services/logger.ts', 'Logger', 'Class:src/services/logger.ts:Logger', 'Class');
+      ctx.symbols.add('src/testing/mock-logger.ts', 'Logger', 'Class:src/testing/mock-logger.ts:Logger', 'Class');
+      ctx.importMap.set('src/app.ts', new Set(['src/services/logger.ts']));
 
-      const result = resolveSymbol('Logger', 'src/app.ts', symbolTable, importMap);
+      const result = resolveOne(ctx, 'Logger', 'src/app.ts');
 
       expect(result!.nodeId).toBe('Class:src/services/logger.ts:Logger');
       expect(result!.filePath).toBe('src/services/logger.ts');
     });
 
     it('handles file with no imports — unique global falls through', () => {
-      symbolTable.add('src/utils.ts', 'Helper', 'Class:src/utils.ts:Helper', 'Class');
+      ctx.symbols.add('src/utils.ts', 'Helper', 'Class:src/utils.ts:Helper', 'Class');
 
-      const result = resolveSymbol('Helper', 'src/app.ts', symbolTable, importMap);
+      const result = resolveOne(ctx, 'Helper', 'src/app.ts');
 
-      // Falls through to Tier 3 (unique global)
       expect(result).not.toBeNull();
       expect(result!.nodeId).toBe('Class:src/utils.ts:Helper');
     });
   });
 
-  describe('Tier 3: Unique global resolution', () => {
+  describe('Tier 3: Global resolution', () => {
     it('resolves unique global when not in imports', () => {
-      symbolTable.add('src/external/base.ts', 'BaseModel', 'Class:src/external/base.ts:BaseModel', 'Class');
-      importMap.set('src/app.ts', new Set(['src/other.ts']));
+      ctx.symbols.add('src/external/base.ts', 'BaseModel', 'Class:src/external/base.ts:BaseModel', 'Class');
+      ctx.importMap.set('src/app.ts', new Set(['src/other.ts']));
 
-      const result = resolveSymbol('BaseModel', 'src/app.ts', symbolTable, importMap);
+      const result = resolveOne(ctx, 'BaseModel', 'src/app.ts');
 
       expect(result).not.toBeNull();
       expect(result!.nodeId).toBe('Class:src/external/base.ts:BaseModel');
     });
 
     it('refuses ambiguous global — returns null when multiple candidates exist', () => {
-      symbolTable.add('src/a.ts', 'Config', 'Class:src/a.ts:Config', 'Class');
-      symbolTable.add('src/b.ts', 'Config', 'Class:src/b.ts:Config', 'Class');
+      ctx.symbols.add('src/a.ts', 'Config', 'Class:src/a.ts:Config', 'Class');
+      ctx.symbols.add('src/b.ts', 'Config', 'Class:src/b.ts:Config', 'Class');
 
-      const result = resolveSymbol('Config', 'src/other.ts', symbolTable, importMap);
+      const result = resolveOne(ctx, 'Config', 'src/other.ts');
 
-      // A wrong edge is worse than no edge
       expect(result).toBeNull();
+    });
+
+    it('ctx.resolve returns all candidates at global tier (consumers decide)', () => {
+      ctx.symbols.add('src/a.ts', 'Config', 'Class:src/a.ts:Config', 'Class');
+      ctx.symbols.add('src/b.ts', 'Config', 'Class:src/b.ts:Config', 'Class');
+
+      const tiered = ctx.resolve('Config', 'src/other.ts');
+
+      expect(tiered).not.toBeNull();
+      expect(tiered!.tier).toBe('global');
+      expect(tiered!.candidates.length).toBe(2);
     });
   });
 
   describe('null cases', () => {
     it('returns null for unknown symbol', () => {
-      const result = resolveSymbol('NonExistent', 'src/app.ts', symbolTable, importMap);
+      const result = resolveOne(ctx, 'NonExistent', 'src/app.ts');
       expect(result).toBeNull();
     });
 
     it('returns null when symbol table is empty', () => {
-      const result = resolveSymbol('Anything', 'src/app.ts', symbolTable, importMap);
+      const result = resolveOne(ctx, 'Anything', 'src/app.ts');
       expect(result).toBeNull();
     });
   });
 
   describe('type preservation', () => {
     it('preserves Interface type for heritage resolution', () => {
-      symbolTable.add('src/interfaces.ts', 'ILogger', 'Interface:src/interfaces.ts:ILogger', 'Interface');
-      importMap.set('src/app.ts', new Set(['src/interfaces.ts']));
+      ctx.symbols.add('src/interfaces.ts', 'ILogger', 'Interface:src/interfaces.ts:ILogger', 'Interface');
+      ctx.importMap.set('src/app.ts', new Set(['src/interfaces.ts']));
 
-      const result = resolveSymbol('ILogger', 'src/app.ts', symbolTable, importMap);
+      const result = resolveOne(ctx, 'ILogger', 'src/app.ts');
 
       expect(result!.type).toBe('Interface');
     });
 
     it('preserves Class type for heritage resolution', () => {
-      symbolTable.add('src/base.ts', 'BaseService', 'Class:src/base.ts:BaseService', 'Class');
-      importMap.set('src/app.ts', new Set(['src/base.ts']));
+      ctx.symbols.add('src/base.ts', 'BaseService', 'Class:src/base.ts:BaseService', 'Class');
+      ctx.importMap.set('src/app.ts', new Set(['src/base.ts']));
 
-      const result = resolveSymbol('BaseService', 'src/app.ts', symbolTable, importMap);
+      const result = resolveOne(ctx, 'BaseService', 'src/app.ts');
 
       expect(result!.type).toBe('Class');
     });
@@ -127,42 +149,39 @@ describe('resolveSymbol', () => {
 
   describe('heritage-specific scenarios', () => {
     it('resolves C# interface vs class ambiguity via imports', () => {
-      // ILogger exists as Interface in one file and Class in another
-      symbolTable.add('src/logging/ilogger.cs', 'ILogger', 'Interface:src/logging/ilogger.cs:ILogger', 'Interface');
-      symbolTable.add('src/testing/ilogger.cs', 'ILogger', 'Class:src/testing/ilogger.cs:ILogger', 'Class');
-      importMap.set('src/services/auth.cs', new Set(['src/logging/ilogger.cs']));
+      ctx.symbols.add('src/logging/ilogger.cs', 'ILogger', 'Interface:src/logging/ilogger.cs:ILogger', 'Interface');
+      ctx.symbols.add('src/testing/ilogger.cs', 'ILogger', 'Class:src/testing/ilogger.cs:ILogger', 'Class');
+      ctx.importMap.set('src/services/auth.cs', new Set(['src/logging/ilogger.cs']));
 
-      const result = resolveSymbol('ILogger', 'src/services/auth.cs', symbolTable, importMap);
+      const result = resolveOne(ctx, 'ILogger', 'src/services/auth.cs');
 
       expect(result!.type).toBe('Interface');
       expect(result!.filePath).toBe('src/logging/ilogger.cs');
     });
 
     it('resolves parent class from imported file for extends', () => {
-      symbolTable.add('src/api/controller.ts', 'UserController', 'Class:src/api/controller.ts:UserController', 'Class');
-      symbolTable.add('src/base/controller.ts', 'BaseController', 'Class:src/base/controller.ts:BaseController', 'Class');
-      importMap.set('src/api/controller.ts', new Set(['src/base/controller.ts']));
+      ctx.symbols.add('src/api/controller.ts', 'UserController', 'Class:src/api/controller.ts:UserController', 'Class');
+      ctx.symbols.add('src/base/controller.ts', 'BaseController', 'Class:src/base/controller.ts:BaseController', 'Class');
+      ctx.importMap.set('src/api/controller.ts', new Set(['src/base/controller.ts']));
 
-      const result = resolveSymbol('BaseController', 'src/api/controller.ts', symbolTable, importMap);
+      const result = resolveOne(ctx, 'BaseController', 'src/api/controller.ts');
 
       expect(result!.nodeId).toBe('Class:src/base/controller.ts:BaseController');
     });
   });
 });
 
-describe('resolveSymbolInternal — tier metadata', () => {
-  let symbolTable: ReturnType<typeof createSymbolTable>;
-  let importMap: ImportMap;
+describe('ResolutionContext.resolve — tier metadata', () => {
+  let ctx: ResolutionContext;
 
   beforeEach(() => {
-    symbolTable = createSymbolTable();
-    importMap = createImportMap();
+    ctx = createResolutionContext();
   });
 
   it('returns same-file tier for Tier 1 match', () => {
-    symbolTable.add('src/a.ts', 'Foo', 'Class:src/a.ts:Foo', 'Class');
+    ctx.symbols.add('src/a.ts', 'Foo', 'Class:src/a.ts:Foo', 'Class');
 
-    const result = resolveSymbolInternal('Foo', 'src/a.ts', symbolTable, importMap);
+    const result = resolveInternal(ctx, 'Foo', 'src/a.ts');
 
     expect(result).not.toBeNull();
     expect(result!.tier).toBe('same-file');
@@ -171,48 +190,46 @@ describe('resolveSymbolInternal — tier metadata', () => {
   });
 
   it('returns import-scoped tier for Tier 2 match', () => {
-    symbolTable.add('src/logger.ts', 'Logger', 'Class:src/logger.ts:Logger', 'Class');
-    symbolTable.add('src/mock.ts', 'Logger', 'Class:src/mock.ts:Logger', 'Class');
-    importMap.set('src/app.ts', new Set(['src/logger.ts']));
+    ctx.symbols.add('src/logger.ts', 'Logger', 'Class:src/logger.ts:Logger', 'Class');
+    ctx.symbols.add('src/mock.ts', 'Logger', 'Class:src/mock.ts:Logger', 'Class');
+    ctx.importMap.set('src/app.ts', new Set(['src/logger.ts']));
 
-    const result = resolveSymbolInternal('Logger', 'src/app.ts', symbolTable, importMap);
+    const result = resolveInternal(ctx, 'Logger', 'src/app.ts');
 
     expect(result).not.toBeNull();
     expect(result!.tier).toBe('import-scoped');
-    expect(result!.candidateCount).toBe(2);
-    expect(result!.definition.filePath).toBe('src/logger.ts');
   });
 
-  it('returns unique-global tier for Tier 3 match', () => {
-    symbolTable.add('src/only.ts', 'Singleton', 'Class:src/only.ts:Singleton', 'Class');
+  it('returns global tier for Tier 3 match', () => {
+    ctx.symbols.add('src/only.ts', 'Singleton', 'Class:src/only.ts:Singleton', 'Class');
 
-    const result = resolveSymbolInternal('Singleton', 'src/other.ts', symbolTable, importMap);
+    const result = resolveInternal(ctx, 'Singleton', 'src/other.ts');
 
     expect(result).not.toBeNull();
-    expect(result!.tier).toBe('unique-global');
+    expect(result!.tier).toBe('global');
     expect(result!.candidateCount).toBe(1);
   });
 
   it('returns null for ambiguous global — refuses to guess', () => {
-    symbolTable.add('src/a.ts', 'Config', 'Class:src/a.ts:Config', 'Class');
-    symbolTable.add('src/b.ts', 'Config', 'Class:src/b.ts:Config', 'Class');
+    ctx.symbols.add('src/a.ts', 'Config', 'Class:src/a.ts:Config', 'Class');
+    ctx.symbols.add('src/b.ts', 'Config', 'Class:src/b.ts:Config', 'Class');
 
-    const result = resolveSymbolInternal('Config', 'src/other.ts', symbolTable, importMap);
+    const result = resolveInternal(ctx, 'Config', 'src/other.ts');
 
     expect(result).toBeNull();
   });
 
   it('returns null for unknown symbol', () => {
-    const result = resolveSymbolInternal('Ghost', 'src/any.ts', symbolTable, importMap);
+    const result = resolveInternal(ctx, 'Ghost', 'src/any.ts');
     expect(result).toBeNull();
   });
 
   it('Tier 1 wins over Tier 2 — same-file takes priority', () => {
-    symbolTable.add('src/app.ts', 'Util', 'Function:src/app.ts:Util', 'Function');
-    symbolTable.add('src/lib.ts', 'Util', 'Function:src/lib.ts:Util', 'Function');
-    importMap.set('src/app.ts', new Set(['src/lib.ts']));
+    ctx.symbols.add('src/app.ts', 'Util', 'Function:src/app.ts:Util', 'Function');
+    ctx.symbols.add('src/lib.ts', 'Util', 'Function:src/lib.ts:Util', 'Function');
+    ctx.importMap.set('src/app.ts', new Set(['src/lib.ts']));
 
-    const result = resolveSymbolInternal('Util', 'src/app.ts', symbolTable, importMap);
+    const result = resolveInternal(ctx, 'Util', 'src/app.ts');
 
     expect(result!.tier).toBe('same-file');
     expect(result!.definition.filePath).toBe('src/app.ts');
@@ -220,71 +237,62 @@ describe('resolveSymbolInternal — tier metadata', () => {
 });
 
 describe('negative tests — ambiguous refusal per language family', () => {
-  let symbolTable: ReturnType<typeof createSymbolTable>;
-  let importMap: ImportMap;
+  let ctx: ResolutionContext;
 
   beforeEach(() => {
-    symbolTable = createSymbolTable();
-    importMap = createImportMap();
+    ctx = createResolutionContext();
   });
 
   it('TS/JS: two Logger definitions with no import → returns null', () => {
-    symbolTable.add('src/services/logger.ts', 'Logger', 'Class:src/services/logger.ts:Logger', 'Class');
-    symbolTable.add('src/testing/logger.ts', 'Logger', 'Class:src/testing/logger.ts:Logger', 'Class');
+    ctx.symbols.add('src/services/logger.ts', 'Logger', 'Class:src/services/logger.ts:Logger', 'Class');
+    ctx.symbols.add('src/testing/logger.ts', 'Logger', 'Class:src/testing/logger.ts:Logger', 'Class');
 
-    const result = resolveSymbol('Logger', 'src/app.ts', symbolTable, importMap);
+    const result = resolveOne(ctx, 'Logger', 'src/app.ts');
     expect(result).toBeNull();
   });
 
   it('Java: same-named class in different packages, no import → returns null', () => {
-    symbolTable.add('com/example/models/User.java', 'User', 'Class:com/example/models/User.java:User', 'Class');
-    symbolTable.add('com/example/dto/User.java', 'User', 'Class:com/example/dto/User.java:User', 'Class');
+    ctx.symbols.add('com/example/models/User.java', 'User', 'Class:com/example/models/User.java:User', 'Class');
+    ctx.symbols.add('com/example/dto/User.java', 'User', 'Class:com/example/dto/User.java:User', 'Class');
 
-    const result = resolveSymbol('User', 'com/example/services/UserService.java', symbolTable, importMap);
+    const result = resolveOne(ctx, 'User', 'com/example/services/UserService.java');
     expect(result).toBeNull();
   });
 
   it('C/C++: type defined in transitively-included header → returns null (not reachable via direct import)', () => {
-    // a.c includes b.h (direct), b.h includes c.h (transitive — not in ImportMap)
-    symbolTable.add('src/c.h', 'Widget', 'Struct:src/c.h:Widget', 'Struct');
-    symbolTable.add('src/d.h', 'Widget', 'Struct:src/d.h:Widget', 'Struct');
-    importMap.set('src/a.c', new Set(['src/b.h']));
+    ctx.symbols.add('src/c.h', 'Widget', 'Struct:src/c.h:Widget', 'Struct');
+    ctx.symbols.add('src/d.h', 'Widget', 'Struct:src/d.h:Widget', 'Struct');
+    ctx.importMap.set('src/a.c', new Set(['src/b.h']));
 
-    const result = resolveSymbol('Widget', 'src/a.c', symbolTable, importMap);
-    // Neither c.h nor d.h is directly imported → ambiguous global → null
+    const result = resolveOne(ctx, 'Widget', 'src/a.c');
     expect(result).toBeNull();
   });
 
   it('C#: two IService interfaces in different namespaces, no import → returns null', () => {
-    symbolTable.add('src/Services/IService.cs', 'IService', 'Interface:src/Services/IService.cs:IService', 'Interface');
-    symbolTable.add('src/Testing/IService.cs', 'IService', 'Interface:src/Testing/IService.cs:IService', 'Interface');
+    ctx.symbols.add('src/Services/IService.cs', 'IService', 'Interface:src/Services/IService.cs:IService', 'Interface');
+    ctx.symbols.add('src/Testing/IService.cs', 'IService', 'Interface:src/Testing/IService.cs:IService', 'Interface');
 
-    const result = resolveSymbol('IService', 'src/App.cs', symbolTable, importMap);
+    const result = resolveOne(ctx, 'IService', 'src/App.cs');
     expect(result).toBeNull();
   });
 });
 
 describe('heritage false-positive guard', () => {
-  let symbolTable: ReturnType<typeof createSymbolTable>;
-  let importMap: ImportMap;
+  let ctx: ResolutionContext;
 
   beforeEach(() => {
-    symbolTable = createSymbolTable();
-    importMap = createImportMap();
+    ctx = createResolutionContext();
   });
 
-  it('null from resolveSymbol prevents false edge — generateId fallback produces synthetic ID, not wrong match', () => {
-    // Two BaseController in different files — ambiguous
-    symbolTable.add('src/api/base.ts', 'BaseController', 'Class:src/api/base.ts:BaseController', 'Class');
-    symbolTable.add('src/testing/base.ts', 'BaseController', 'Class:src/testing/base.ts:BaseController', 'Class');
+  it('null from resolve prevents false edge — generateId fallback produces synthetic ID, not wrong match', () => {
+    ctx.symbols.add('src/api/base.ts', 'BaseController', 'Class:src/api/base.ts:BaseController', 'Class');
+    ctx.symbols.add('src/testing/base.ts', 'BaseController', 'Class:src/testing/base.ts:BaseController', 'Class');
 
-    // resolveSymbol returns null — heritage-processor would use generateId fallback
-    const result = resolveSymbol('BaseController', 'src/routes/admin.ts', symbolTable, importMap);
+    const result = resolveOne(ctx, 'BaseController', 'src/routes/admin.ts');
     expect(result).toBeNull();
 
-    // Verify: with import, it resolves correctly to the right one
-    importMap.set('src/routes/admin.ts', new Set(['src/api/base.ts']));
-    const resolved = resolveSymbol('BaseController', 'src/routes/admin.ts', symbolTable, importMap);
+    ctx.importMap.set('src/routes/admin.ts', new Set(['src/api/base.ts']));
+    const resolved = resolveOne(ctx, 'BaseController', 'src/routes/admin.ts');
     expect(resolved).not.toBeNull();
     expect(resolved!.filePath).toBe('src/api/base.ts');
   });
@@ -324,7 +332,6 @@ describe('lookupExactFull', () => {
     const fromExact = symbolTable.lookupExactFull('src/x.ts', 'Bar');
     const fromFuzzy = symbolTable.lookupFuzzy('Bar')[0];
 
-    // Same object reference — zero additional memory
     expect(fromExact).toBe(fromFuzzy);
   });
 
@@ -377,73 +384,113 @@ describe('isFileInPackageDir', () => {
 });
 
 describe('Tier 2b: PackageMap resolution (Go)', () => {
-  let symbolTable: ReturnType<typeof createSymbolTable>;
-  let importMap: ImportMap;
-  let packageMap: PackageMap;
+  let ctx: ResolutionContext;
 
   beforeEach(() => {
-    symbolTable = createSymbolTable();
-    importMap = createImportMap();
-    packageMap = createPackageMap();
+    ctx = createResolutionContext();
   });
 
   it('resolves symbol via PackageMap when not in ImportMap', () => {
-    symbolTable.add('internal/auth/handler.go', 'HandleLogin', 'Function:internal/auth/handler.go:HandleLogin', 'Function');
-    // No ImportMap entry — but PackageMap has the package directory
-    packageMap.set('cmd/server/main.go', new Set(['/internal/auth/']));
+    ctx.symbols.add('internal/auth/handler.go', 'HandleLogin', 'Function:internal/auth/handler.go:HandleLogin', 'Function');
+    ctx.packageMap.set('cmd/server/main.go', new Set(['/internal/auth/']));
 
-    const result = resolveSymbolInternal('HandleLogin', 'cmd/server/main.go', symbolTable, importMap, packageMap);
+    const result = ctx.resolve('HandleLogin', 'cmd/server/main.go');
 
     expect(result).not.toBeNull();
     expect(result!.tier).toBe('import-scoped');
-    expect(result!.definition.filePath).toBe('internal/auth/handler.go');
+    expect(result!.candidates[0].filePath).toBe('internal/auth/handler.go');
   });
 
   it('does not resolve symbol from wrong package', () => {
-    symbolTable.add('internal/db/connection.go', 'Connect', 'Function:internal/db/connection.go:Connect', 'Function');
-    packageMap.set('cmd/server/main.go', new Set(['/internal/auth/']));
+    ctx.symbols.add('internal/db/connection.go', 'Connect', 'Function:internal/db/connection.go:Connect', 'Function');
+    ctx.packageMap.set('cmd/server/main.go', new Set(['/internal/auth/']));
 
-    const result = resolveSymbolInternal('Connect', 'cmd/server/main.go', symbolTable, importMap, packageMap);
+    const result = ctx.resolve('Connect', 'cmd/server/main.go');
 
-    // Not in imported package, and not unique global (only 1 def) → unique-global
+    // Not in imported package, single global def → global tier
     expect(result).not.toBeNull();
-    expect(result!.tier).toBe('unique-global');
+    expect(result!.tier).toBe('global');
   });
 
   it('Tier 2a (ImportMap) takes precedence over Tier 2b (PackageMap)', () => {
-    symbolTable.add('internal/auth/handler.go', 'Validate', 'Function:internal/auth/handler.go:Validate', 'Function');
-    symbolTable.add('internal/db/validator.go', 'Validate', 'Function:internal/db/validator.go:Validate', 'Function');
+    ctx.symbols.add('internal/auth/handler.go', 'Validate', 'Function:internal/auth/handler.go:Validate', 'Function');
+    ctx.symbols.add('internal/db/validator.go', 'Validate', 'Function:internal/db/validator.go:Validate', 'Function');
 
-    // ImportMap points to db, PackageMap points to auth
-    importMap.set('cmd/server/main.go', new Set(['internal/db/validator.go']));
-    packageMap.set('cmd/server/main.go', new Set(['/internal/auth/']));
+    ctx.importMap.set('cmd/server/main.go', new Set(['internal/db/validator.go']));
+    ctx.packageMap.set('cmd/server/main.go', new Set(['/internal/auth/']));
 
-    const result = resolveSymbolInternal('Validate', 'cmd/server/main.go', symbolTable, importMap, packageMap);
+    const result = ctx.resolve('Validate', 'cmd/server/main.go');
 
     expect(result).not.toBeNull();
     expect(result!.tier).toBe('import-scoped');
-    expect(result!.definition.filePath).toBe('internal/db/validator.go');
+    expect(result!.candidates[0].filePath).toBe('internal/db/validator.go');
   });
 
-  it('resolves both symbols in same imported package (first match wins)', () => {
-    symbolTable.add('internal/auth/handler.go', 'Run', 'Function:internal/auth/handler.go:Run', 'Function');
-    symbolTable.add('internal/auth/worker.go', 'Run', 'Function:internal/auth/worker.go:Run', 'Function');
-    packageMap.set('cmd/main.go', new Set(['/internal/auth/']));
+  it('resolves both symbols in same imported package', () => {
+    ctx.symbols.add('internal/auth/handler.go', 'Run', 'Function:internal/auth/handler.go:Run', 'Function');
+    ctx.symbols.add('internal/auth/worker.go', 'Run', 'Function:internal/auth/worker.go:Run', 'Function');
+    ctx.packageMap.set('cmd/main.go', new Set(['/internal/auth/']));
 
-    const result = resolveSymbolInternal('Run', 'cmd/main.go', symbolTable, importMap, packageMap);
+    const result = ctx.resolve('Run', 'cmd/main.go');
 
-    // Both match the package — returns first match as import-scoped
     expect(result).not.toBeNull();
     expect(result!.tier).toBe('import-scoped');
+    expect(result!.candidates.length).toBe(2);
   });
 
-  it('returns null without packageMap (backward compat)', () => {
-    symbolTable.add('internal/auth/handler.go', 'X', 'Function:internal/auth/handler.go:X', 'Function');
-    symbolTable.add('internal/db/handler.go', 'X', 'Function:internal/db/handler.go:X', 'Function');
+  it('returns global without packageMap when ambiguous', () => {
+    ctx.symbols.add('internal/auth/handler.go', 'X', 'Function:internal/auth/handler.go:X', 'Function');
+    ctx.symbols.add('internal/db/handler.go', 'X', 'Function:internal/db/handler.go:X', 'Function');
 
-    // No importMap entry, no packageMap → ambiguous
-    const result = resolveSymbolInternal('X', 'cmd/main.go', symbolTable, importMap);
+    const result = resolveInternal(ctx, 'X', 'cmd/main.go');
 
+    // No import or package match, 2 candidates → ambiguous → null
     expect(result).toBeNull();
+  });
+});
+
+describe('per-file cache', () => {
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    ctx = createResolutionContext();
+  });
+
+  it('caches results per file', () => {
+    ctx.symbols.add('src/a.ts', 'Foo', 'Class:src/a.ts:Foo', 'Class');
+
+    ctx.enableCache('src/a.ts');
+    const r1 = ctx.resolve('Foo', 'src/a.ts');
+    const r2 = ctx.resolve('Foo', 'src/a.ts');
+    ctx.clearCache();
+
+    // Same object reference from cache
+    expect(r1).toBe(r2);
+    expect(ctx.getStats().cacheHits).toBe(1);
+    expect(ctx.getStats().cacheMisses).toBe(1);
+  });
+
+  it('resolve works without cache enabled', () => {
+    ctx.symbols.add('src/a.ts', 'Foo', 'Class:src/a.ts:Foo', 'Class');
+
+    const result = ctx.resolve('Foo', 'src/a.ts');
+
+    expect(result).not.toBeNull();
+    expect(result!.candidates[0].nodeId).toBe('Class:src/a.ts:Foo');
+    expect(ctx.getStats().cacheHits).toBe(0);
+  });
+
+  it('cache does not leak across files', () => {
+    ctx.symbols.add('src/a.ts', 'Foo', 'Class:src/a.ts:Foo', 'Class');
+
+    ctx.enableCache('src/a.ts');
+    ctx.resolve('Foo', 'src/a.ts'); // cached for a.ts
+
+    // Resolve from different file — should NOT use cache
+    const r = ctx.resolve('Foo', 'src/b.ts');
+    ctx.clearCache();
+
+    // Foo is not in src/b.ts, so same-file fails. Falls to global with 1 candidate.
+    expect(r!.tier).toBe('global');
   });
 });

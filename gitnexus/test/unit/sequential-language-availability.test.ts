@@ -11,10 +11,10 @@ vi.mock('../../src/core/tree-sitter/parser-loader.js', () => ({
 
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
-import { createImportMap, processImports } from '../../src/core/ingestion/import-processor.js';
+import { processImports } from '../../src/core/ingestion/import-processor.js';
 import { processCalls } from '../../src/core/ingestion/call-processor.js';
 import { processHeritage } from '../../src/core/ingestion/heritage-processor.js';
-import { createSymbolTable } from '../../src/core/ingestion/symbol-table.js';
+import { createResolutionContext } from '../../src/core/ingestion/resolution-context.js';
 import * as parserLoader from '../../src/core/tree-sitter/parser-loader.js';
 
 
@@ -30,7 +30,7 @@ describe('sequential native parser availability', () => {
       createKnowledgeGraph(),
       [{ path: 'App.swift', content: 'import Foundation' }],
       createASTCache(),
-      createImportMap(),
+      createResolutionContext(),
       undefined,
       '/tmp/repo',
       ['App.swift'],
@@ -49,7 +49,7 @@ describe('sequential native parser availability', () => {
       createKnowledgeGraph(),
       [{ path: 'App.swift', content: 'import Foundation' }],
       createASTCache(),
-      createImportMap(),
+      createResolutionContext(),
       undefined,
       '/tmp/repo',
       ['App.swift'],
@@ -74,8 +74,7 @@ describe('sequential native parser availability', () => {
       createKnowledgeGraph(),
       [{ path: 'App.swift', content: 'func demo() {}' }],
       createASTCache(),
-      createSymbolTable(),
-      createImportMap(),
+      createResolutionContext(),
     )).resolves.toEqual([]);
 
     expect(parserLoader.loadLanguage).not.toHaveBeenCalled();
@@ -91,8 +90,7 @@ describe('sequential native parser availability', () => {
       createKnowledgeGraph(),
       [{ path: 'App.swift', content: 'func demo() {}' }],
       createASTCache(),
-      createSymbolTable(),
-      createImportMap(),
+      createResolutionContext(),
     );
 
     expect(warnSpy).toHaveBeenCalledWith(
@@ -114,7 +112,7 @@ describe('sequential native parser availability', () => {
       createKnowledgeGraph(),
       [{ path: 'App.swift', content: 'class AppViewController: UIViewController {}' }],
       createASTCache(),
-      createSymbolTable(),
+      createResolutionContext(),
     )).resolves.toBeUndefined();
 
     expect(parserLoader.loadLanguage).not.toHaveBeenCalled();
@@ -130,7 +128,7 @@ describe('sequential native parser availability', () => {
       createKnowledgeGraph(),
       [{ path: 'App.swift', content: 'class AppViewController: UIViewController {}' }],
       createASTCache(),
-      createSymbolTable(),
+      createResolutionContext(),
     );
 
     expect(warnSpy).toHaveBeenCalledWith(

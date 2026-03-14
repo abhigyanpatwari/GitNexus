@@ -342,6 +342,53 @@ describe('Python local definition shadows import', () => {
 // Constructor-call resolution: User("alice") resolves to User class
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Constructor-inferred type resolution: user = User(); user.save() → User.save
+// Cross-file SymbolTable verification (no explicit type annotations)
+// ---------------------------------------------------------------------------
+
+describe('Python constructor-inferred type resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-constructor-type-inference'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, both with save methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  it('resolves user.save() to models/user.py via constructor-inferred type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/user.py');
+    expect(userSave).toBeDefined();
+    expect(userSave!.source).toBe('process_entities');
+  });
+
+  it('resolves repo.save() to models/repo.py via constructor-inferred type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/repo.py');
+    expect(repoSave).toBeDefined();
+    expect(repoSave!.source).toBe('process_entities');
+  });
+
+  it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save');
+    expect(saveCalls.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Constructor-call resolution: User("alice") resolves to User class
+// ---------------------------------------------------------------------------
+
 describe('Python constructor-call resolution', () => {
   let result: PipelineResult;
 
@@ -379,5 +426,193 @@ describe('Python constructor-call resolution', () => {
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('process');
     expect(saveCall!.targetFilePath).toBe('models.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// self.save() resolves to enclosing class's own save method
+// ---------------------------------------------------------------------------
+
+describe('Python self resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-self-this-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, each with a save function', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
+    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  it('resolves self.save() inside User.process to User.save, not Repo.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('models/user.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parent class resolution: EXTENDS edge
+// ---------------------------------------------------------------------------
+
+describe('Python parent resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-parent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel and User classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'User']);
+  });
+
+  it('emits EXTENDS edge: User → BaseModel', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(1);
+    expect(extends_[0].source).toBe('User');
+    expect(extends_[0].target).toBe('BaseModel');
+  });
+
+  it('EXTENDS edge points to real graph node in base.py', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const target = result.graph.getNode(extends_[0].rel.targetId);
+    expect(target).toBeDefined();
+    expect(target!.properties.filePath).toBe('models/base.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// super().save() resolves to parent class's save method
+// ---------------------------------------------------------------------------
+
+describe('Python super resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-super-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel, User, and Repo classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'Repo', 'User']);
+  });
+
+  it('resolves super().save() inside User to BaseModel.save, not Repo.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const superSave = calls.find(c => c.source === 'save' && c.target === 'save'
+      && c.targetFilePath === 'models/base.py');
+    expect(superSave).toBeDefined();
+    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/repo.py');
+    expect(repoSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Python qualified constructor: user = models.User("alice"); user.save()
+// ---------------------------------------------------------------------------
+
+describe('Python qualified constructor inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-qualified-constructor'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.save() via qualified constructor (models.User)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.targetFilePath === 'models.py');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('main');
+  });
+
+  it('resolves user.greet() via qualified constructor (models.User)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCall = calls.find(c => c.target === 'greet' && c.targetFilePath === 'models.py');
+    expect(greetCall).toBeDefined();
+    expect(greetCall!.source).toBe('main');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Walrus operator: if (user := User("alice")): user.save()
+// ---------------------------------------------------------------------------
+
+describe('Python walrus operator type inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-walrus-operator'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User class with save and greet methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Function')).toContain('greet');
+  });
+
+  it('resolves user.save() via walrus operator constructor inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.targetFilePath === 'models.py');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('process');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Class-level annotations: file-scope `user: User` disambiguates method calls
+// ---------------------------------------------------------------------------
+
+describe('Python class-level annotation resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-class-annotations'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, both with save methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  it('resolves active_user.save() to User.save via file-level annotation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'user.py');
+    expect(userSave).toBeDefined();
+    expect(userSave!.source).toBe('process');
+  });
+
+  it('resolves active_repo.save() to Repo.save via file-level annotation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'repo.py');
+    expect(repoSave).toBeDefined();
+    expect(repoSave!.source).toBe('process');
+  });
+
+  it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save');
+    expect(saveCalls.length).toBe(2);
   });
 });

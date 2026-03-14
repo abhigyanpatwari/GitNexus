@@ -1,14 +1,12 @@
 import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
-import type { SymbolDefinition, SymbolTable } from './symbol-table.js';
-import { ImportMap, PackageMap, NamedImportMap, isFileInPackageDir } from './import-processor.js';
-import { resolveSymbolInternal } from './symbol-resolver.js';
-import { walkBindingChain } from './named-binding-extraction.js';
+import type { SymbolDefinition } from './symbol-table.js';
 import Parser from 'tree-sitter';
+import type { ResolutionContext } from './resolution-context.js';
+import { TIER_CONFIDENCE, type ResolutionTier } from './resolution-context.js';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { generateId } from '../../lib/utils.js';
-import { SupportedLanguages } from '../../config/supported-languages.js';
 import {
   getLanguageFromFilename,
   isVerboseIngestionEnabled,
@@ -21,9 +19,9 @@ import {
   extractReceiverName,
   findEnclosingClassId,
 } from './utils.js';
-import { buildTypeEnv, lookupTypeEnv } from './type-env.js';
+import { buildTypeEnv } from './type-env.js';
 import { getTreeSitterBufferSize } from './constants.js';
-import type { ExtractedCall, ExtractedHeritage, ExtractedRoute } from './workers/parse-worker.js';
+import type { ExtractedCall, ExtractedHeritage, ExtractedRoute, FileConstructorBindings } from './workers/parse-worker.js';
 import { callRouters } from './call-routing.js';
 
 /**
@@ -33,7 +31,7 @@ import { callRouters } from './call-routing.js';
 const findEnclosingFunction = (
   node: any,
   filePath: string,
-  symbolTable: SymbolTable
+  ctx: ResolutionContext
 ): string | null => {
   let current = node.parent;
 
@@ -42,8 +40,10 @@ const findEnclosingFunction = (
       const { funcName, label } = extractFunctionName(current);
 
       if (funcName) {
-        const nodeId = symbolTable.lookupExact(filePath, funcName);
-        if (nodeId) return nodeId;
+        const resolved = ctx.resolve(funcName, filePath);
+        if (resolved?.tier === 'same-file' && resolved.candidates.length > 0) {
+          return resolved.candidates[0].nodeId;
+        }
 
         return generateId(label, `${filePath}:${funcName}`);
       }
@@ -58,11 +58,8 @@ export const processCalls = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
   astCache: ASTCache,
-  symbolTable: SymbolTable,
-  importMap: ImportMap,
-  packageMap?: PackageMap,
+  ctx: ResolutionContext,
   onProgress?: (current: number, total: number) => void,
-  namedImportMap?: NamedImportMap,
 ): Promise<ExtractedHeritage[]> => {
   const parser = await loadParser();
   const collectedHeritage: ExtractedHeritage[] = [];
@@ -74,7 +71,6 @@ export const processCalls = async (
     onProgress?.(i + 1, files.length);
     if (i % 20 === 0) await yieldToEventLoop();
 
-    // 1. Check language support first
     const language = getLanguageFromFilename(file.path);
     if (!language) continue;
     if (!isLanguageAvailable(language)) {
@@ -87,24 +83,15 @@ export const processCalls = async (
     const queryStr = LANGUAGE_QUERIES[language];
     if (!queryStr) continue;
 
-    // 2. ALWAYS load the language before querying (parser is stateful)
     await loadLanguage(language, file.path);
 
-    // 3. Get AST (Try Cache First)
     let tree = astCache.get(file.path);
-    let wasReparsed = false;
-
     if (!tree) {
-      // Cache Miss: Re-parse
-      // Use larger bufferSize for files > 32KB
       try {
         tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
       } catch (parseError) {
-        // Skip files that can't be parsed
         continue;
       }
-      wasReparsed = true;
-      // Cache re-parsed tree so heritage phase gets hits
       astCache.set(file.path, tree);
     }
 
@@ -119,17 +106,16 @@ export const processCalls = async (
       continue;
     }
 
-    // Build per-file TypeEnv for receiver resolution
     const lang = getLanguageFromFilename(file.path);
-    const typeEnv = lang ? buildTypeEnv(tree, lang) : new Map();
+    const typeEnv = lang ? buildTypeEnv(tree, lang, ctx.symbols) : null;
     const callRouter = callRouters[language];
 
-    // 3. Process each call match
+    ctx.enableCache(file.path);
+
     matches.forEach(match => {
       const captureMap: Record<string, any> = {};
       match.captures.forEach(c => captureMap[c.name] = c.node);
 
-      // Only process @call captures
       if (!captureMap['call']) return;
 
       const nameNode = captureMap['call.name'];
@@ -137,12 +123,11 @@ export const processCalls = async (
 
       const calledName = nameNode.text;
 
-      // Dispatch: route language-specific calls (heritage, properties, imports)
       const routed = callRouter(calledName, captureMap['call']);
       if (routed) {
         switch (routed.kind) {
           case 'skip':
-          case 'import': // handled by import-processor
+          case 'import':
             return;
 
           case 'heritage':
@@ -171,7 +156,7 @@ export const processCalls = async (
                   description: item.accessorType,
                 },
               });
-              symbolTable.add(file.path, item.propName, nodeId, 'Property',
+              ctx.symbols.add(file.path, item.propName, nodeId, 'Property',
                 propEnclosingClassId ? { ownerId: propEnclosingClassId } : undefined);
               const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
               graph.addRelationship({
@@ -190,34 +175,28 @@ export const processCalls = async (
           }
 
           case 'call':
-            break; // fall through to normal call processing below
+            break;
         }
       }
 
-      // Skip common built-ins and noise
       if (isBuiltInOrNoise(calledName)) return;
 
       const callNode = captureMap['call'];
       const callForm = inferCallForm(callNode, nameNode);
       const receiverName = callForm === 'member' ? extractReceiverName(nameNode) : undefined;
-      const receiverTypeName = receiverName ? lookupTypeEnv(typeEnv, receiverName, callNode) : undefined;
+      const receiverTypeName = receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
 
-      // 4. Resolve the target using priority strategy (returns confidence)
       const resolved = resolveCallTarget({
         calledName,
         argCount: countCallArguments(callNode),
         callForm,
         receiverTypeName,
-      }, file.path, symbolTable, importMap, packageMap, namedImportMap);
+      }, file.path, ctx);
 
       if (!resolved) return;
 
-      // 5. Find the enclosing function (caller)
-      const enclosingFuncId = findEnclosingFunction(callNode, file.path, symbolTable);
-
-      // Use enclosing function as source, fallback to file for top-level calls
+      const enclosingFuncId = findEnclosingFunction(callNode, file.path, ctx);
       const sourceId = enclosingFuncId || generateId('File', file.path);
-
       const relId = generateId('CALLS', `${sourceId}:${calledName}->${resolved.nodeId}`);
 
       graph.addRelationship({
@@ -230,7 +209,7 @@ export const processCalls = async (
       });
     });
 
-    // Tree is now owned by the LRU cache — no manual delete needed
+    ctx.clearCache();
   }
 
   if (skippedByLang && skippedByLang.size > 0) {
@@ -249,15 +228,8 @@ export const processCalls = async (
  */
 interface ResolveResult {
   nodeId: string;
-  confidence: number;  // 0-1: how sure are we?
-  reason: string;      // 'import-resolved' | 'same-file' | 'unique-global'
-}
-
-type ResolutionTier = 'same-file' | 'import-scoped' | 'unique-global';
-
-interface TieredCandidates {
-  candidates: SymbolDefinition[];
-  tier: ResolutionTier;
+  confidence: number;
+  reason: string;
 }
 
 const CALLABLE_SYMBOL_TYPES = new Set([
@@ -268,73 +240,16 @@ const CALLABLE_SYMBOL_TYPES = new Set([
   'Delegate',
 ]);
 
-const collectTieredCandidates = (
-  calledName: string,
-  currentFile: string,
-  symbolTable: SymbolTable,
-  importMap: ImportMap,
-  packageMap?: PackageMap,
-  namedImportMap?: NamedImportMap,
-): TieredCandidates | null => {
-  const allDefs = symbolTable.lookupFuzzy(calledName);
-
-  // Tier 1: Same-file — highest priority, prevents imports from shadowing local defs
-  // (matches resolveSymbolInternal which checks lookupExactFull before named bindings)
-  const localDefs = allDefs.filter(def => def.filePath === currentFile);
-  if (localDefs.length > 0) {
-    return { candidates: localDefs, tier: 'same-file' };
-  }
-
-  // Tier 2a-named: Check named bindings with re-export chain following.
-  // Aliased imports (import { User as U }) mean lookupFuzzy('U') returns
-  // empty but we can resolve via the exported name.
-  // Re-exports (export { User } from './base') are followed up to 5 hops.
-  if (namedImportMap) {
-    const chainResult = resolveNamedBindingChainForCandidates(
-      calledName, currentFile, symbolTable, namedImportMap, allDefs,
-    );
-    if (chainResult) return chainResult;
-  }
-
-  if (allDefs.length === 0) return null;
-
-  const importedFiles = importMap.get(currentFile);
-  if (importedFiles) {
-    const importedDefs = allDefs.filter(def => importedFiles.has(def.filePath));
-    if (importedDefs.length > 0) {
-      return { candidates: importedDefs, tier: 'import-scoped' };
-    }
-  }
-
-  const importedPackages = packageMap?.get(currentFile);
-  if (importedPackages) {
-    const packageDefs = allDefs.filter(def => {
-      for (const dirSuffix of importedPackages) {
-        if (isFileInPackageDir(def.filePath, dirSuffix)) return true;
-      }
-      return false;
-    });
-    if (packageDefs.length > 0) {
-      return { candidates: packageDefs, tier: 'import-scoped' };
-    }
-  }
-
-  // Tier 3: Global — pass all candidates through; filterCallableCandidates
-  // will narrow by kind/arity and resolveCallTarget only emits when exactly 1 remains.
-  return { candidates: allDefs, tier: 'unique-global' };
-};
-
 const CONSTRUCTOR_TARGET_TYPES = new Set(['Constructor', 'Class', 'Struct', 'Record']);
 
 const filterCallableCandidates = (
-  candidates: SymbolDefinition[],
+  candidates: readonly SymbolDefinition[],
   argCount?: number,
   callForm?: 'free' | 'member' | 'constructor',
 ): SymbolDefinition[] => {
   let kindFiltered: SymbolDefinition[];
 
   if (callForm === 'constructor') {
-    // For constructor calls, prefer Constructor > Class/Struct/Record > callable fallback
     const constructors = candidates.filter(c => c.type === 'Constructor');
     if (constructors.length > 0) {
       kindFiltered = constructors;
@@ -360,19 +275,15 @@ const filterCallableCandidates = (
 const toResolveResult = (
   definition: SymbolDefinition,
   tier: ResolutionTier,
-): ResolveResult => {
-  if (tier === 'same-file') {
-    return { nodeId: definition.nodeId, confidence: 0.95, reason: 'same-file' };
-  }
-  if (tier === 'import-scoped') {
-    return { nodeId: definition.nodeId, confidence: 0.9, reason: 'import-resolved' };
-  }
-  return { nodeId: definition.nodeId, confidence: 0.5, reason: 'unique-global' };
-};
+): ResolveResult => ({
+  nodeId: definition.nodeId,
+  confidence: TIER_CONFIDENCE[tier],
+  reason: tier === 'same-file' ? 'same-file' : tier === 'import-scoped' ? 'import-resolved' : 'global',
+});
 
 /**
  * Resolve a function call to its target node ID using priority strategy:
- * A. Narrow candidates by scope tier (same-file, import-scoped, unique-global)
+ * A. Narrow candidates by scope tier via ctx.resolve()
  * B. Filter to callable symbol kinds (constructor-aware when callForm is set)
  * C. Apply arity filtering when parameter metadata is available
  * D. Apply receiver-type filtering for member calls with typed receivers
@@ -382,29 +293,48 @@ const toResolveResult = (
 const resolveCallTarget = (
   call: Pick<ExtractedCall, 'calledName' | 'argCount' | 'callForm' | 'receiverTypeName'>,
   currentFile: string,
-  symbolTable: SymbolTable,
-  importMap: ImportMap,
-  packageMap?: PackageMap,
-  namedImportMap?: NamedImportMap,
+  ctx: ResolutionContext,
 ): ResolveResult | null => {
-  const tiered = collectTieredCandidates(call.calledName, currentFile, symbolTable, importMap, packageMap, namedImportMap);
+  const tiered = ctx.resolve(call.calledName, currentFile);
   if (!tiered) return null;
 
   const filteredCandidates = filterCallableCandidates(tiered.candidates, call.argCount, call.callForm);
 
   // D. Receiver-type filtering: for member calls with a known receiver type,
-  // filter candidates by ownerId matching the resolved type's nodeId
-  if (call.callForm === 'member' && call.receiverTypeName && filteredCandidates.length > 1) {
-    const typeDefs = symbolTable.lookupFuzzy(call.receiverTypeName);
-    if (typeDefs.length > 0) {
-      const typeNodeIds = new Set(typeDefs.map(d => d.nodeId));
-      const ownerFiltered = filteredCandidates.filter(c => c.ownerId && typeNodeIds.has(c.ownerId));
+  // resolve the type through the same tiered import infrastructure, then
+  // filter method candidates to the type's defining file. Fall back to
+  // fuzzy ownerId matching only when file-based narrowing is inconclusive.
+  //
+  // Applied regardless of candidate count — the sole same-file candidate may
+  // belong to the wrong class (e.g. super.save() should hit the parent's save,
+  // not the child's own save method in the same file).
+  if (call.callForm === 'member' && call.receiverTypeName) {
+    // D1. Resolve the receiver type
+    const typeResolved = ctx.resolve(call.receiverTypeName, currentFile);
+    if (typeResolved && typeResolved.candidates.length > 0) {
+      const typeNodeIds = new Set(typeResolved.candidates.map(d => d.nodeId));
+      const typeFiles = new Set(typeResolved.candidates.map(d => d.filePath));
+
+      // D2. Widen candidates: same-file tier may miss the parent's method when
+      //     it lives in another file. Query the symbol table directly for all
+      //     global methods with this name, then apply arity/kind filtering.
+      const methodPool = filteredCandidates.length <= 1
+        ? filterCallableCandidates(ctx.symbols.lookupFuzzy(call.calledName), call.argCount, call.callForm)
+        : filteredCandidates;
+
+      // D3. File-based: prefer candidates whose filePath matches the resolved type's file
+      const fileFiltered = methodPool.filter(c => typeFiles.has(c.filePath));
+      if (fileFiltered.length === 1) {
+        return toResolveResult(fileFiltered[0], tiered.tier);
+      }
+
+      // D4. ownerId fallback: narrow by ownerId matching the type's nodeId
+      const pool = fileFiltered.length > 0 ? fileFiltered : methodPool;
+      const ownerFiltered = pool.filter(c => c.ownerId && typeNodeIds.has(c.ownerId));
       if (ownerFiltered.length === 1) {
         return toResolveResult(ownerFiltered[0], tiered.tier);
       }
-      // If receiver filtering narrows to 0, fall through to name-only resolution
-      // If still 2+, refuse (don't guess)
-      if (ownerFiltered.length > 1) return null;
+      if (fileFiltered.length > 1 || ownerFiltered.length > 1) return null;
     }
   }
 
@@ -413,62 +343,100 @@ const resolveCallTarget = (
   return toResolveResult(filteredCandidates[0], tiered.tier);
 };
 
+// ── Scope key helpers ────────────────────────────────────────────────────
+// Scope keys use the format "funcName@startIndex" (produced by type-env.ts).
+// Source IDs use "Label:filepath:funcName" (produced by parse-worker.ts).
+// NUL (\0) is used as a composite-key separator because it cannot appear
+// in source-code identifiers, preventing ambiguous concatenation.
+
+/** Extract the function name from a scope key ("funcName@startIndex" → "funcName"). */
+const extractFuncNameFromScope = (scope: string): string =>
+  scope.slice(0, scope.indexOf('@'));
+
+/** Extract the trailing function name from a sourceId ("Function:filepath:funcName" → "funcName"). */
+const extractFuncNameFromSourceId = (sourceId: string): string => {
+  const lastColon = sourceId.lastIndexOf(':');
+  return lastColon >= 0 ? sourceId.slice(lastColon + 1) : '';
+};
+
+/** Build a scope-aware composite key for receiver type lookup. */
+const receiverKey = (funcName: string, varName: string): string =>
+  `${funcName}\0${varName}`;
+
 /**
  * Fast path: resolve pre-extracted call sites from workers.
  * No AST parsing — workers already extracted calledName + sourceId.
- * This function only does symbol table lookups + graph mutations.
  */
 export const processCallsFromExtracted = async (
   graph: KnowledgeGraph,
   extractedCalls: ExtractedCall[],
-  symbolTable: SymbolTable,
-  importMap: ImportMap,
-  packageMap?: PackageMap,
+  ctx: ResolutionContext,
   onProgress?: (current: number, total: number) => void,
-  namedImportMap?: NamedImportMap,
+  constructorBindings?: FileConstructorBindings[],
 ) => {
-  // Group by file for progress reporting
+  // Scope-aware receiver types: keyed by filePath → "funcName\0varName" → typeName.
+  // The scope dimension prevents collisions when two functions in the same file
+  // have same-named locals pointing to different constructor types.
+  const fileReceiverTypes = new Map<string, Map<string, string>>();
+  if (constructorBindings) {
+    for (const { filePath, bindings } of constructorBindings) {
+      for (const { scope, varName, calleeName } of bindings) {
+        const tiered = ctx.resolve(calleeName, filePath);
+        const isClass = tiered?.candidates.some(def => def.type === 'Class') ?? false;
+        if (isClass) {
+          if (!fileReceiverTypes.has(filePath)) fileReceiverTypes.set(filePath, new Map());
+          fileReceiverTypes.get(filePath)!.set(receiverKey(extractFuncNameFromScope(scope), varName), calleeName);
+        }
+      }
+    }
+  }
+
   const byFile = new Map<string, ExtractedCall[]>();
   for (const call of extractedCalls) {
     let list = byFile.get(call.filePath);
-    if (!list) {
-      list = [];
-      byFile.set(call.filePath, list);
-    }
+    if (!list) { list = []; byFile.set(call.filePath, list); }
     list.push(call);
   }
 
   const totalFiles = byFile.size;
   let filesProcessed = 0;
 
-  for (const [_filePath, calls] of byFile) {
+  for (const [filePath, calls] of byFile) {
     filesProcessed++;
     if (filesProcessed % 100 === 0) {
       onProgress?.(filesProcessed, totalFiles);
       await yieldToEventLoop();
     }
 
+    ctx.enableCache(filePath);
+    const receiverMap = fileReceiverTypes.get(filePath);
+
     for (const call of calls) {
-      const resolved = resolveCallTarget(
-        call,
-        call.filePath,
-        symbolTable,
-        importMap,
-        packageMap,
-        namedImportMap,
-      );
+      let effectiveCall = call;
+      if (!call.receiverTypeName && call.receiverName && receiverMap) {
+        const callFuncName = extractFuncNameFromSourceId(call.sourceId);
+        const resolvedType = receiverMap.get(receiverKey(callFuncName, call.receiverName))
+          ?? receiverMap.get(receiverKey('', call.receiverName)); // fall back to file-level scope
+        if (resolvedType) {
+          effectiveCall = { ...call, receiverTypeName: resolvedType };
+        }
+      }
+
+      const resolved = resolveCallTarget(effectiveCall, effectiveCall.filePath, ctx);
       if (!resolved) continue;
 
-      const relId = generateId('CALLS', `${call.sourceId}:${call.calledName}->${resolved.nodeId}`);
+      const relId = generateId('CALLS', `${effectiveCall.sourceId}:${effectiveCall.calledName}->${resolved.nodeId}`);
       graph.addRelationship({
         id: relId,
-        sourceId: call.sourceId,
+        sourceId: effectiveCall.sourceId,
         targetId: resolved.nodeId,
         type: 'CALLS',
         confidence: resolved.confidence,
         reason: resolved.reason,
       });
     }
+
+    ctx.clearCache();
   }
 
   onProgress?.(totalFiles, totalFiles);
@@ -480,10 +448,8 @@ export const processCallsFromExtracted = async (
 export const processRoutesFromExtracted = async (
   graph: KnowledgeGraph,
   extractedRoutes: ExtractedRoute[],
-  symbolTable: SymbolTable,
-  importMap: ImportMap,
-  packageMap?: PackageMap,
-  onProgress?: (current: number, total: number) => void
+  ctx: ResolutionContext,
+  onProgress?: (current: number, total: number) => void,
 ) => {
   for (let i = 0; i < extractedRoutes.length; i++) {
     const route = extractedRoutes[i];
@@ -494,23 +460,18 @@ export const processRoutesFromExtracted = async (
 
     if (!route.controllerName || !route.methodName) continue;
 
-    // Resolve controller class using shared resolver (Tier 1: same file,
-    // Tier 2: import-scoped, Tier 3: unique global).
-    const resolution = resolveSymbolInternal(route.controllerName, route.filePath, symbolTable, importMap, packageMap);
-    if (!resolution) continue;
+    const controllerResolved = ctx.resolve(route.controllerName, route.filePath);
+    if (!controllerResolved || controllerResolved.candidates.length === 0) continue;
+    if (controllerResolved.tier === 'global' && controllerResolved.candidates.length > 1) continue;
 
-    const controllerDef = resolution.definition;
-    // Derive confidence from the resolution tier
-    const confidence = resolution.tier === 'same-file' ? 0.95
-      : resolution.tier === 'import-scoped' ? 0.9
-      : 0.7;
+    const controllerDef = controllerResolved.candidates[0];
+    const confidence = TIER_CONFIDENCE[controllerResolved.tier];
 
-    // Find the method on the controller
-    const methodId = symbolTable.lookupExact(controllerDef.filePath, route.methodName);
+    const methodResolved = ctx.resolve(route.methodName, controllerDef.filePath);
+    const methodId = methodResolved?.tier === 'same-file' ? methodResolved.candidates[0]?.nodeId : undefined;
     const sourceId = generateId('File', route.filePath);
 
     if (!methodId) {
-      // Construct method ID manually
       const guessedId = generateId('Method', `${controllerDef.filePath}:${route.methodName}`);
       const relId = generateId('CALLS', `${sourceId}:route->${guessedId}`);
       graph.addRelationship({
@@ -536,23 +497,4 @@ export const processRoutesFromExtracted = async (
   }
 
   onProgress?.(extractedRoutes.length, extractedRoutes.length);
-};
-
-/**
- * Follow re-export chains through NamedImportMap for call candidate collection.
- * Delegates chain-walking to the shared walkBindingChain utility, then
- * applies call-processor semantics: any number of matches accepted.
- */
-const resolveNamedBindingChainForCandidates = (
-  calledName: string,
-  currentFile: string,
-  symbolTable: SymbolTable,
-  namedImportMap: NamedImportMap,
-  allDefs: SymbolDefinition[],
-): TieredCandidates | null => {
-  const defs = walkBindingChain(calledName, currentFile, symbolTable, namedImportMap, allDefs);
-  if (defs && defs.length > 0) {
-    return { candidates: defs, tier: 'import-scoped' };
-  }
-  return null;
 };

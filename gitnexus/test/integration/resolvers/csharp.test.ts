@@ -58,7 +58,7 @@ describe('C# heritage resolution', () => {
     // Calls resolve via directory-based PackageMap (import-resolved) when ambiguous,
     // or via unique-global when the symbol name is globally unique.
     for (const call of calls) {
-      expect(['import-resolved', 'unique-global']).toContain(call.rel.reason);
+      expect(['import-resolved', 'global']).toContain(call.rel.reason);
     }
   });
 
@@ -384,5 +384,177 @@ describe('C# local definition shadows import', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveToUtils = calls.find(c => c.target === 'Save' && c.targetFilePath === 'Utils/Logger.cs');
     expect(saveToUtils).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// this.Save() resolves to enclosing class's own Save method
+// ---------------------------------------------------------------------------
+
+describe('C# this resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-self-this-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, each with a Save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'Save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves this.Save() inside User.Process to User.Save, not Repo.Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'Save' && c.source === 'Process');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('src/Models/User.cs');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parent class resolution: EXTENDS + IMPLEMENTS via base_list
+// ---------------------------------------------------------------------------
+
+describe('C# parent resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-parent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel and User classes plus ISerializable interface', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'User']);
+    expect(getNodesByLabel(result, 'Interface')).toEqual(['ISerializable']);
+  });
+
+  it('emits EXTENDS edge: User → BaseModel (from base_list)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(1);
+    expect(extends_[0].source).toBe('User');
+    expect(extends_[0].target).toBe('BaseModel');
+  });
+
+  it('emits IMPLEMENTS edge: User → ISerializable', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(implements_.length).toBe(1);
+    expect(implements_[0].source).toBe('User');
+    expect(implements_[0].target).toBe('ISerializable');
+  });
+
+  it('all heritage edges point to real graph nodes', () => {
+    for (const edge of [...getRelationships(result, 'EXTENDS'), ...getRelationships(result, 'IMPLEMENTS')]) {
+      const target = result.graph.getNode(edge.rel.targetId);
+      expect(target).toBeDefined();
+      expect(target!.properties.name).toBe(edge.target);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// base.Save() resolves to parent class's Save method
+// ---------------------------------------------------------------------------
+
+describe('C# base resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-super-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel, User, and Repo classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'Repo', 'User']);
+  });
+
+  it('resolves base.Save() inside User to BaseModel.Save, not Repo.Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const baseSave = calls.find(c => c.source === 'Save' && c.target === 'Save'
+      && c.targetFilePath === 'src/Models/BaseModel.cs');
+    expect(baseSave).toBeDefined();
+    const repoSave = calls.find(c => c.target === 'Save' && c.targetFilePath === 'src/Models/Repo.cs');
+    expect(repoSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// base.Save() resolves to generic parent class's Save method
+// ---------------------------------------------------------------------------
+
+describe('C# generic parent base resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-generic-parent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel, User, and Repo classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'Repo', 'User']);
+  });
+
+  it('resolves base.Save() inside User to BaseModel.Save, not Repo.Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const baseSave = calls.find(c => c.source === 'Save' && c.target === 'Save'
+      && c.targetFilePath === 'src/Models/BaseModel.cs');
+    expect(baseSave).toBeDefined();
+    const repoSave = calls.find(c => c.target === 'Save' && c.targetFilePath === 'src/Models/Repo.cs');
+    expect(repoSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pattern matching: `if (animal is Dog dog)` binds `dog` as type `Dog`
+// ---------------------------------------------------------------------------
+
+describe('C# is pattern matching resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-pattern-matching'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Animal, Dog, and Cat classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Animal');
+    expect(classes).toContain('Dog');
+    expect(classes).toContain('Cat');
+  });
+
+  it('detects Bark and Meow methods', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('Bark');
+    expect(methods).toContain('Meow');
+  });
+
+  it('resolves dog.Bark() to Dog.Bark via is-pattern type binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const barkCall = calls.find(c => c.target === 'Bark');
+    expect(barkCall).toBeDefined();
+    expect(barkCall!.source).toBe('HandleAnimal');
+    expect(barkCall!.targetFilePath).toBe('Models/Animal.cs');
+  });
+
+  it('emits EXTENDS edges for Dog and Cat', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const dogExtends = extends_.find(e => e.source === 'Dog');
+    const catExtends = extends_.find(e => e.source === 'Cat');
+    expect(dogExtends).toBeDefined();
+    expect(dogExtends!.target).toBe('Animal');
+    expect(catExtends).toBeDefined();
+    expect(catExtends!.target).toBe('Animal');
   });
 });

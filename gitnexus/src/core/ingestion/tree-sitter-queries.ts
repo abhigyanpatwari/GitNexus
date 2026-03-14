@@ -306,7 +306,7 @@ export const CPP_QUERIES = `
 (field_declaration_list
   (function_definition
     declarator: (function_declarator
-      declarator: [(field_identifier) (identifier) (operator_name) (destructor_name)] @name))) @definition.method
+      declarator: [(field_identifier) (identifier) (operator_name) (destructor_name)] @name)) @definition.method)
 
 ; Templates
 (template_declaration (class_specifier name: (type_identifier) @name)) @definition.template

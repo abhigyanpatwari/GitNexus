@@ -315,3 +315,193 @@ describe('Ruby local definition shadows import', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Constructor-inferred type resolution: user = User.new; user.save → User.save
+// ---------------------------------------------------------------------------
+
+describe('Ruby constructor-inferred type resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-constructor-type-inference'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User, Repo, and AppService classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    expect(getNodesByLabel(result, 'Class')).toContain('AppService');
+  });
+
+  it('detects save on User and Repo, cleanup on all three', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods.filter(m => m === 'save').length).toBe(2);
+    expect(methods.filter(m => m === 'cleanup').length).toBe(3);
+  });
+
+  it('resolves user.save to models/user.rb via constructor-inferred type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/user.rb');
+    expect(userSave).toBeDefined();
+    expect(userSave!.source).toBe('process_entities');
+  });
+
+  it('resolves repo.save to models/repo.rb via constructor-inferred type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/repo.rb');
+    expect(repoSave).toBeDefined();
+    expect(repoSave!.source).toBe('process_entities');
+  });
+
+  it('emits exactly 2 save CALLS edges (one per receiver type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save');
+    expect(saveCalls.length).toBe(2);
+  });
+
+  it('resolves self.process_entities to services/app.rb (unique method)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const selfCall = calls.find(c =>
+      c.source === 'greet' && c.target === 'process_entities'
+    );
+    expect(selfCall).toBeDefined();
+    expect(selfCall!.targetFilePath).toContain('app.rb');
+  });
+
+  it('resolves self.cleanup to services/app.rb, not models/user.rb or models/repo.rb', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const selfCleanup = calls.find(c =>
+      c.source === 'greet' && c.target === 'cleanup'
+    );
+    expect(selfCleanup).toBeDefined();
+    expect(selfCleanup!.targetFilePath).toContain('app.rb');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// self.save resolves to enclosing class's own save method
+// ---------------------------------------------------------------------------
+
+describe('Ruby self resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-self-this-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, each with a save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves self.save inside User#process to User#save, not Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('lib/models/user.rb');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parent class resolution: < BaseModel + include Module
+// ---------------------------------------------------------------------------
+
+describe('Ruby parent resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-parent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel and User classes plus Serializable module', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'User']);
+    expect(getNodesByLabel(result, 'Module')).toEqual(['Serializable']);
+  });
+
+  it('emits EXTENDS edge: User < BaseModel', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(1);
+    expect(extends_[0].source).toBe('User');
+    expect(extends_[0].target).toBe('BaseModel');
+  });
+
+  it('emits IMPLEMENTS edge: User includes Serializable', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const includeEdge = implements_.find(e => e.source === 'User' && e.target === 'Serializable');
+    expect(includeEdge).toBeDefined();
+    expect(includeEdge!.rel.reason).toBe('include');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ruby super: standalone keyword calls same-named method on parent
+// ---------------------------------------------------------------------------
+
+describe('Ruby super resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-super-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects BaseModel, User, and Repo classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'Repo', 'User']);
+  });
+
+  it('emits EXTENDS edge: User < BaseModel', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(1);
+    expect(extends_[0].source).toBe('User');
+    expect(extends_[0].target).toBe('BaseModel');
+  });
+
+  it('detects save methods on all three classes', () => {
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ruby constant constructor: SERVICE = UserService.new; SERVICE.process
+// ---------------------------------------------------------------------------
+
+describe('Ruby constant constructor binding resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-constant-constructor'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects UserService class with process and validate methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('UserService');
+    expect(getNodesByLabel(result, 'Method')).toContain('process');
+    expect(getNodesByLabel(result, 'Method')).toContain('validate');
+  });
+
+  it('resolves SERVICE.process() via constant constructor binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const processCall = calls.find(c => c.target === 'process' && c.targetFilePath === 'models.rb');
+    expect(processCall).toBeDefined();
+  });
+
+  it('resolves SERVICE.validate() via constant constructor binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const validateCall = calls.find(c => c.target === 'validate' && c.targetFilePath === 'models.rb');
+    expect(validateCall).toBeDefined();
+  });
+});

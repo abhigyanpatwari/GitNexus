@@ -307,6 +307,23 @@ describe('extractReceiverName', () => {
       expect(match).toBeDefined();
       expect(extractReceiverName(match!.nameNode)).toBeUndefined();
     });
+
+    it('extracts receiver from optional chain call user?.save()', () => {
+      parser.setLanguage(TypeScript.typescript);
+      const captures = extractCallCaptures(parser, 'user?.save()', SupportedLanguages.TypeScript);
+      const match = captures.find(c => c.calledName === 'save');
+      expect(match).toBeDefined();
+      expect(extractReceiverName(match!.nameNode)).toBe('user');
+    });
+
+    it('extracts "this" from optional chain call this?.save()', () => {
+      parser.setLanguage(TypeScript.typescript);
+      const code = `class Foo { run() { this?.save(); } }`;
+      const captures = extractCallCaptures(parser, code, SupportedLanguages.TypeScript);
+      const match = captures.find(c => c.calledName === 'save');
+      expect(match).toBeDefined();
+      expect(extractReceiverName(match!.nameNode)).toBe('this');
+    });
   });
 
   describe('Python', () => {
@@ -369,12 +386,31 @@ describe('extractReceiverName', () => {
       expect(match).toBeDefined();
       expect(extractReceiverName(match!.nameNode)).toBe('user');
     });
+
+    it('does not capture null-conditional user?.Save() with current queries', () => {
+      parser.setLanguage(CSharp);
+      const code = `class Foo { void Run() { user?.Save(); } }`;
+      const captures = extractCallCaptures(parser, code, SupportedLanguages.CSharp);
+      const match = captures.find(c => c.calledName === 'Save');
+      // C# conditional_access_expression uses member_binding_expression, not member_access_expression
+      // The tree-sitter query doesn't match — this documents the gap for future work
+      expect(match).toBeUndefined();
+    });
   });
 
   describe('Kotlin', () => {
     it('extracts receiver from navigation_expression', () => {
       parser.setLanguage(Kotlin);
       const code = `fun main() { user.save() }`;
+      const captures = extractCallCaptures(parser, code, SupportedLanguages.Kotlin);
+      const match = captures.find(c => c.calledName === 'save');
+      expect(match).toBeDefined();
+      expect(extractReceiverName(match!.nameNode)).toBe('user');
+    });
+
+    it('extracts receiver from safe navigation user?.save()', () => {
+      parser.setLanguage(Kotlin);
+      const code = `fun main() { user?.save() }`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.Kotlin);
       const match = captures.find(c => c.calledName === 'save');
       expect(match).toBeDefined();

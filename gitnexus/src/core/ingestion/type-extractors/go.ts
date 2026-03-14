@@ -59,7 +59,51 @@ const extractGoShortVarDeclaration = (node: SyntaxNode, env: Map<string, string>
   // Pair each LHS name with its corresponding RHS value
   const count = Math.min(lhsNodes.length, rhsNodes.length);
   for (let i = 0; i < count; i++) {
-    const valueNode = rhsNodes[i];
+    let valueNode = rhsNodes[i];
+    // Unwrap &User{} — unary_expression (address-of) wrapping composite_literal
+    if (valueNode.type === 'unary_expression' && valueNode.firstNamedChild?.type === 'composite_literal') {
+      valueNode = valueNode.firstNamedChild;
+    }
+    // Go built-in new(User) — call_expression with 'new' callee and type argument
+    // Go built-in make([]User, 0) / make(map[string]User) — extract element/value type
+    if (valueNode.type === 'call_expression') {
+      const funcNode = valueNode.childForFieldName('function');
+      if (funcNode?.text === 'new') {
+        const args = valueNode.childForFieldName('arguments');
+        if (args?.firstNamedChild) {
+          const typeName = extractSimpleTypeName(args.firstNamedChild);
+          const varName = extractVarName(lhsNodes[i]);
+          if (varName && typeName) env.set(varName, typeName);
+        }
+      } else if (funcNode?.text === 'make') {
+        const args = valueNode.childForFieldName('arguments');
+        const firstArg = args?.firstNamedChild;
+        if (firstArg) {
+          let innerType: SyntaxNode | null = null;
+          if (firstArg.type === 'slice_type') {
+            innerType = firstArg.childForFieldName('element');
+          } else if (firstArg.type === 'map_type') {
+            innerType = firstArg.childForFieldName('value');
+          }
+          if (innerType) {
+            const typeName = extractSimpleTypeName(innerType);
+            const varName = extractVarName(lhsNodes[i]);
+            if (varName && typeName) env.set(varName, typeName);
+          }
+        }
+      }
+      continue;
+    }
+    // Go type assertion: user := iface.(User) — type_assertion_expression with 'type' field
+    if (valueNode.type === 'type_assertion_expression') {
+      const typeNode = valueNode.childForFieldName('type');
+      if (typeNode) {
+        const typeName = extractSimpleTypeName(typeNode);
+        const varName = extractVarName(lhsNodes[i]);
+        if (varName && typeName) env.set(varName, typeName);
+      }
+      continue;
+    }
     if (valueNode.type !== 'composite_literal') continue;
     const typeNode = valueNode.childForFieldName('type');
     if (!typeNode) continue;

@@ -39,6 +39,24 @@ export const extractSimpleTypeName = (typeNode: SyntaxNode): string | undefined 
     if (inner) return extractSimpleTypeName(inner);
   }
 
+  // Nullable union types (TS/JS: User | null, User | undefined, User | null | undefined)
+  // Extract the single non-null/undefined type from the union.
+  if (typeNode.type === 'union_type') {
+    const nonNullTypes: SyntaxNode[] = [];
+    for (let i = 0; i < typeNode.namedChildCount; i++) {
+      const child = typeNode.namedChild(i);
+      if (!child) continue;
+      // Skip null/undefined/void literal types
+      const text = child.text;
+      if (text === 'null' || text === 'undefined' || text === 'void') continue;
+      nonNullTypes.push(child);
+    }
+    // Only unwrap if exactly one meaningful type remains
+    if (nonNullTypes.length === 1) {
+      return extractSimpleTypeName(nonNullTypes[0]);
+    }
+  }
+
   // Type annotations that wrap the actual type (TS/Python: `: Foo`, Kotlin: user_type)
   if (typeNode.type === 'type_annotation' || typeNode.type === 'type'
     || typeNode.type === 'user_type') {
@@ -50,6 +68,11 @@ export const extractSimpleTypeName = (typeNode: SyntaxNode): string | undefined 
   if (typeNode.type === 'pointer_type' || typeNode.type === 'reference_type') {
     const inner = typeNode.firstNamedChild;
     if (inner) return extractSimpleTypeName(inner);
+  }
+
+  // PHP primitive_type (string, int, float, bool)
+  if (typeNode.type === 'primitive_type') {
+    return typeNode.text;
   }
 
   // PHP named_type / optional_type
@@ -80,6 +103,11 @@ export const extractVarName = (node: SyntaxNode): string | undefined => {
     const nameChild = node.childForFieldName('name');
     if (nameChild) return extractVarName(nameChild);
   }
+  // Rust: let mut x = ... — mut_pattern wraps an identifier
+  if (node.type === 'mut_pattern') {
+    const inner = node.firstNamedChild;
+    if (inner) return extractVarName(inner);
+  }
   return undefined;
 };
 
@@ -91,6 +119,7 @@ export const TYPED_PARAMETER_TYPES = new Set([
   'parameter',               // C#/Rust/Go/Python/Swift
   'parameter_declaration',   // C/C++ void f(Type name)
   'simple_parameter',        // PHP function(Foo $x)
+  'property_promotion_parameter', // PHP 8.0+ constructor promotion: __construct(private Foo $x)
 ]);
 
 /** Find the first named child with the given node type */

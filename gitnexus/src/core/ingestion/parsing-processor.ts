@@ -9,7 +9,7 @@ import { getLanguageFromFilename, yieldToEventLoop, DEFINITION_CAPTURE_KEYS, get
 import { isNodeExported } from './export-detection.js';
 import { detectFrameworkFromAST } from './framework-detection.js';
 import { WorkerPool } from './workers/worker-pool.js';
-import type { ParseWorkerResult, ParseWorkerInput, ExtractedImport, ExtractedCall, ExtractedHeritage, ExtractedRoute } from './workers/parse-worker.js';
+import type { ParseWorkerResult, ParseWorkerInput, ExtractedImport, ExtractedCall, ExtractedHeritage, ExtractedRoute, FileConstructorBindings } from './workers/parse-worker.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
@@ -19,6 +19,7 @@ export interface WorkerExtractedData {
   calls: ExtractedCall[];
   heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
+  constructorBindings: FileConstructorBindings[];
 }
 
 // isNodeExported imported from ./export-detection.js (shared module)
@@ -44,7 +45,7 @@ const processParsingWithWorkers = async (
     if (lang) parseableFiles.push({ path: file.path, content: file.content });
   }
 
-  if (parseableFiles.length === 0) return { imports: [], calls: [], heritage: [], routes: [] };
+  if (parseableFiles.length === 0) return { imports: [], calls: [], heritage: [], routes: [], constructorBindings: [] };
 
   const total = files.length;
 
@@ -61,6 +62,7 @@ const processParsingWithWorkers = async (
   const allCalls: ExtractedCall[] = [];
   const allHeritage: ExtractedHeritage[] = [];
   const allRoutes: ExtractedRoute[] = [];
+  const allConstructorBindings: FileConstructorBindings[] = [];
   for (const result of chunkResults) {
     for (const node of result.nodes) {
       graph.addNode({
@@ -85,11 +87,12 @@ const processParsingWithWorkers = async (
     allCalls.push(...result.calls);
     allHeritage.push(...result.heritage);
     allRoutes.push(...result.routes);
+    allConstructorBindings.push(...result.constructorBindings);
   }
 
   // Final progress
   onFileProgress?.(total, total, 'done');
-  return { imports: allImports, calls: allCalls, heritage: allHeritage, routes: allRoutes };
+  return { imports: allImports, calls: allCalls, heritage: allHeritage, routes: allRoutes, constructorBindings: allConstructorBindings };
 };
 
 // ============================================================================

@@ -33,6 +33,7 @@ import {
   resolveRubyImport,
 } from './resolvers/index.js';
 import { callRouters } from './call-routing.js';
+import type { ResolutionContext } from './resolution-context.js';
 import type {
   SuffixIndex,
   TsconfigPaths,
@@ -56,14 +57,10 @@ const isDev = process.env.NODE_ENV === 'development';
 // Stores all files that a given file imports from
 export type ImportMap = Map<string, Set<string>>;
 
-export const createImportMap = (): ImportMap => new Map();
-
 // Type: Map<FilePath, Set<PackageDirSuffix>>
 // Stores Go package directory suffixes imported by a file (e.g., "/internal/auth/").
 // Avoids expanding every Go package import into N individual ImportMap edges.
 export type PackageMap = Map<string, Set<string>>;
-
-export const createPackageMap = (): PackageMap => new Map();
 
 // Type: Map<ImportingFilePath, Map<LocalName, {sourcePath, exportedName}>>
 // Tracks which specific names a file imports from which sources (TS/Python only).
@@ -73,8 +70,6 @@ export const createPackageMap = (): PackageMap => new Map();
 // aliased imports (`import { User as U }`) can resolve U → User in the source file.
 export interface NamedImportBinding { sourcePath: string; exportedName: string }
 export type NamedImportMap = Map<string, Map<string, NamedImportBinding>>;
-
-export const createNamedImportMap = (): NamedImportMap => new Map();
 
 /**
  * Check if a file path is directly inside a package directory identified by its suffix.
@@ -309,13 +304,14 @@ export const processImports = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
   astCache: ASTCache,
-  importMap: ImportMap,
+  ctx: ResolutionContext,
   onProgress?: (current: number, total: number) => void,
   repoRoot?: string,
   allPaths?: string[],
-  packageMap?: PackageMap,
-  namedImportMap?: NamedImportMap,
 ) => {
+  const importMap = ctx.importMap;
+  const packageMap = ctx.packageMap;
+  const namedImportMap = ctx.namedImportMap;
   // Use allPaths (full repo) when available for cross-chunk resolution, else fall back to chunk files
   const allFileList = allPaths ?? files.map(f => f.path);
   const allFilePaths = new Set(allFileList);
@@ -341,7 +337,7 @@ export const processImports = async (
     swiftPackageConfig: await loadSwiftPackageConfig(effectiveRoot),
     csharpConfigs: await loadCSharpProjectConfig(effectiveRoot),
   };
-  const ctx: ResolveCtx = { allFilePaths, allFileList, normalizedFileList, index, resolveCache };
+  const resolveCtx: ResolveCtx = { allFilePaths, allFileList, normalizedFileList, index, resolveCache };
 
   // Helper: add an IMPORTS edge to the graph only (no ImportMap update)
   const addImportGraphEdge = (filePath: string, resolvedPath: string) => {
@@ -448,7 +444,7 @@ export const processImports = async (
           : sourceNode.text.replace(/['"<>]/g, '');
         totalImportsFound++;
 
-        const result = resolveLanguageImport(file.path, rawImportPath, language, configs, ctx);
+        const result = resolveLanguageImport(file.path, rawImportPath, language, configs, resolveCtx);
         const bindings = namedImportMap ? extractNamedBindings(captureMap['import'], language) : undefined;
         applyImportResult(result, file.path, importMap, packageMap, addImportEdge, addImportGraphEdge, bindings, namedImportMap);
       }
@@ -461,7 +457,7 @@ export const processImports = async (
           const routed = callRouter(callNameNode.text, captureMap['call']);
           if (routed && routed.kind === 'import') {
             totalImportsFound++;
-            const result = resolveLanguageImport(file.path, routed.importPath, language, configs, ctx);
+            const result = resolveLanguageImport(file.path, routed.importPath, language, configs, resolveCtx);
             applyImportResult(result, file.path, importMap, packageMap, addImportEdge, addImportGraphEdge);
           }
         }
@@ -492,15 +488,16 @@ export const processImportsFromExtracted = async (
   graph: KnowledgeGraph,
   files: { path: string }[],
   extractedImports: ExtractedImport[],
-  importMap: ImportMap,
+  ctx: ResolutionContext,
   onProgress?: (current: number, total: number) => void,
   repoRoot?: string,
   prebuiltCtx?: ImportResolutionContext,
-  packageMap?: PackageMap,
-  namedImportMap?: NamedImportMap,
 ) => {
-  const ctx = prebuiltCtx ?? buildImportResolutionContext(files.map(f => f.path));
-  const { allFilePaths, allFileList, normalizedFileList, suffixIndex: index, resolveCache } = ctx;
+  const importMap = ctx.importMap;
+  const packageMap = ctx.packageMap;
+  const namedImportMap = ctx.namedImportMap;
+  const importCtx = prebuiltCtx ?? buildImportResolutionContext(files.map(f => f.path));
+  const { allFilePaths, allFileList, normalizedFileList, suffixIndex: index, resolveCache } = importCtx;
 
   let totalImportsFound = 0;
   let totalImportsResolved = 0;
