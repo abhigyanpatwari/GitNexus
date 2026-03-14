@@ -517,3 +517,32 @@ describe('Python super resolution', () => {
     expect(repoSave).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Python qualified constructor: user = models.User("alice"); user.save()
+// ---------------------------------------------------------------------------
+
+describe('Python qualified constructor inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-qualified-constructor'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.save() via qualified constructor (models.User)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.targetFilePath === 'models.py');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('main');
+  });
+
+  it('resolves user.greet() via qualified constructor (models.User)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCall = calls.find(c => c.target === 'greet' && c.targetFilePath === 'models.py');
+    expect(greetCall).toBeDefined();
+    expect(greetCall!.source).toBe('main');
+  });
+});

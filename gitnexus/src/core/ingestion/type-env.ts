@@ -463,8 +463,11 @@ const CONSTRUCTOR_BINDING_SCANNERS: Partial<Record<SupportedLanguages, (node: Sy
     if (left.type !== 'identifier') return undefined;
     if (right.type !== 'call') return undefined;
     const func = right.childForFieldName('function');
-    if (!func || func.type !== 'identifier') return undefined;
-    return { varName: left.text, calleeName: func.text };
+    if (!func) return undefined;
+    // Support both direct calls (User()) and qualified calls (models.User())
+    const calleeName = extractSimpleTypeName(func);
+    if (!calleeName) return undefined;
+    return { varName: left.text, calleeName };
   },
 
   // Swift: let user = User(name: "alice") — property_declaration with call_expression
@@ -487,8 +490,20 @@ const CONSTRUCTOR_BINDING_SCANNERS: Partial<Record<SupportedLanguages, (node: Sy
     }
     if (!callExpr) return undefined;
     const callee = callExpr.firstNamedChild;
-    if (!callee || callee.type !== 'simple_identifier') return undefined;
-    return { varName, calleeName: callee.text };
+    if (!callee) return undefined;
+    // Direct call: User(name: "alice") — simple_identifier callee
+    if (callee.type === 'simple_identifier') {
+      return { varName, calleeName: callee.text };
+    }
+    // Explicit init: User.init(name: "alice") — navigation_expression with .init suffix
+    if (callee.type === 'navigation_expression') {
+      const receiver = callee.firstNamedChild;
+      const suffix = callee.lastNamedChild;
+      if (receiver?.type === 'simple_identifier' && suffix?.text === 'init') {
+        return { varName, calleeName: receiver.text };
+      }
+    }
+    return undefined;
   },
 
   // C++: auto x = User() where User is parsed as identifier (cross-file)

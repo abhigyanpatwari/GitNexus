@@ -116,3 +116,32 @@ describe.skip('Swift parent resolution', () => {
     expect(implEdge).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Swift cross-file User.init() type inference
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift cross-file User.init() inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'swift-init-cross-file'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.save() via User.init(name:) inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.targetFilePath === 'User.swift');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('main');
+  });
+
+  it('resolves user.greet() via User.init(name:) inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCall = calls.find(c => c.target === 'greet' && c.targetFilePath === 'User.swift');
+    expect(greetCall).toBeDefined();
+    expect(greetCall!.source).toBe('main');
+  });
+});

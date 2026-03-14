@@ -512,3 +512,32 @@ describe('Rust parent resolution (trait impl)', () => {
     expect(extends_.length).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Struct literal inference: let user = User { ... }; user.save()
+// ---------------------------------------------------------------------------
+
+describe('Rust struct literal type inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-struct-literal-inference'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.save() via struct literal inference (User { ... })', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.targetFilePath === 'models.rs');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('main');
+  });
+
+  it('resolves config.validate() via struct literal inference (Config { ... })', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const validateCall = calls.find(c => c.target === 'validate' && c.targetFilePath === 'models.rs');
+    expect(validateCall).toBeDefined();
+    expect(validateCall!.source).toBe('main');
+  });
+});

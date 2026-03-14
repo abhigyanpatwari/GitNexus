@@ -30,13 +30,25 @@ const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
   if (varName && typeName) env.set(varName, typeName);
 };
 
-/** Rust: let x = User::new() or let x = User::default() */
+/** Rust: let x = User::new(), let x = User::default(), or let x = User { ... } */
 const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, _classNames: ClassNameLookup): void => {
   // Skip if there's an explicit type annotation — Tier 0 already handled it
   if (node.childForFieldName('type') !== null) return;
   const pattern = node.childForFieldName('pattern');
   const value = node.childForFieldName('value');
   if (!pattern || !value) return;
+
+  // Rust struct literal: let user = User { name: "alice", age: 30 }
+  // tree-sitter-rust: struct_expression with 'name' field holding the type
+  if (value.type === 'struct_expression') {
+    const typeNode = value.childForFieldName('name');
+    if (!typeNode) return;
+    const typeName = extractSimpleTypeName(typeNode);
+    const varName = extractVarName(pattern);
+    if (varName && typeName) env.set(varName, typeName);
+    return;
+  }
+
   if (value.type !== 'call_expression') return;
   const func = value.childForFieldName('function');
   if (!func || func.type !== 'scoped_identifier') return;

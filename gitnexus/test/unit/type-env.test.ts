@@ -188,6 +188,28 @@ describe('buildTypeEnv', () => {
       expect(flatGet(env, 'repo')).toBe('Repo');
     });
 
+    it('infers type from new(User) built-in', () => {
+      const tree = parse(`
+        package main
+        func main() {
+          user := new(User)
+        }
+      `, Go);
+      const { env } = buildTypeEnv(tree, 'go');
+      expect(flatGet(env, 'user')).toBe('User');
+    });
+
+    it('does not infer from non-new function calls', () => {
+      const tree = parse(`
+        package main
+        func main() {
+          user := getUser()
+        }
+      `, Go);
+      const { env } = buildTypeEnv(tree, 'go');
+      expect(flatGet(env, 'user')).toBeUndefined();
+    });
+
     it('extracts type from function parameters', () => {
       const tree = parse(`
         package main
@@ -765,6 +787,36 @@ class RepoService {
         const { env } = buildTypeEnv(tree, 'rust');
         expect(flatGet(env, 'user')).toBeUndefined();
       });
+
+      it('infers type from struct literal (User { ... })', () => {
+        const tree = parse(`
+          fn main() {
+            let user = User { name: "alice", age: 30 };
+          }
+        `, Rust);
+        const { env } = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('infers type from empty struct literal (Config {})', () => {
+        const tree = parse(`
+          fn main() {
+            let config = Config {};
+          }
+        `, Rust);
+        const { env } = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'config')).toBe('Config');
+      });
+
+      it('prefers explicit annotation over struct literal inference', () => {
+        const tree = parse(`
+          fn main() {
+            let user: BaseUser = Admin { name: "alice" };
+          }
+        `, Rust);
+        const { env } = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'user')).toBe('BaseUser');
+      });
     });
 
     describe('PHP', () => {
@@ -973,6 +1025,42 @@ class RepoService {
         expect(flatGet(env, 'user')).toBe('BaseEntity');
       });
     });
+
+    describe('Python constructor inference', () => {
+      it('infers type from direct constructor call when class is known', () => {
+        const tree = parse(`
+class User:
+    pass
+
+def main():
+    user = User("alice")
+`, Python);
+        const { env } = buildTypeEnv(tree, 'python');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('infers type from qualified constructor call (models.User)', () => {
+        const tree = parse(`
+class User:
+    pass
+
+def main():
+    user = models.User("alice")
+`, Python);
+        const { env } = buildTypeEnv(tree, 'python');
+        // extractSimpleTypeName extracts "User" from attribute node "models.User"
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('does not infer from plain function call', () => {
+        const tree = parse(`
+def main():
+    user = get_user()
+`, Python);
+        const { env } = buildTypeEnv(tree, 'python');
+        expect(flatGet(env, 'user')).toBeUndefined();
+      });
+    });
   });
 
   describe('edge cases', () => {
@@ -1170,6 +1258,17 @@ def main():
       expect(constructorBindings.length).toBe(1);
       expect(constructorBindings[0].varName).toBe('user');
       expect(constructorBindings[0].calleeName).toBe('SomeClass');
+    });
+
+    it('returns constructor bindings for Python qualified call (models.User)', () => {
+      const tree = parse(`
+def main():
+    user = models.User("alice")
+`, Python);
+      const { constructorBindings } = buildTypeEnv(tree, 'python');
+      expect(constructorBindings.length).toBe(1);
+      expect(constructorBindings[0].varName).toBe('user');
+      expect(constructorBindings[0].calleeName).toBe('User');
     });
 
     it('returns empty bindings for language without scanner (Go)', () => {

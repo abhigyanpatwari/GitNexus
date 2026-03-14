@@ -454,3 +454,32 @@ describe('Go parent resolution (struct embedding)', () => {
     expect(extends_[0].target).toBe('BaseModel');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Go new() builtin type inference: user := new(User); user.Save()
+// ---------------------------------------------------------------------------
+
+describe('Go new() builtin type inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-new-builtin'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.Save() via new(User) inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'Save' && c.targetFilePath === 'models.go');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('main');
+  });
+
+  it('resolves user.Greet() via new(User) inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCall = calls.find(c => c.target === 'Greet' && c.targetFilePath === 'models.go');
+    expect(greetCall).toBeDefined();
+    expect(greetCall!.source).toBe('main');
+  });
+});

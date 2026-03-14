@@ -51,9 +51,12 @@ const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<str
   if (!varName || env.has(varName)) return;
   if (right.type !== 'call') return;
   const func = right.childForFieldName('function');
-  if (!func || func.type !== 'identifier') return;
-  const calleeName = func.text;
-  if (calleeName && classNames.has(calleeName)) {
+  if (!func) return;
+  // Support both direct calls (User()) and qualified calls (models.User())
+  // tree-sitter-python: direct → identifier, qualified → attribute
+  const calleeName = extractSimpleTypeName(func);
+  if (!calleeName) return;
+  if (classNames.has(calleeName)) {
     env.set(varName, calleeName);
   }
 };

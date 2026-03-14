@@ -64,6 +64,19 @@ const extractGoShortVarDeclaration = (node: SyntaxNode, env: Map<string, string>
     if (valueNode.type === 'unary_expression' && valueNode.firstNamedChild?.type === 'composite_literal') {
       valueNode = valueNode.firstNamedChild;
     }
+    // Go built-in new(User) — call_expression with 'new' callee and type argument
+    if (valueNode.type === 'call_expression') {
+      const funcNode = valueNode.childForFieldName('function');
+      if (funcNode?.text === 'new') {
+        const args = valueNode.childForFieldName('arguments');
+        if (args?.firstNamedChild) {
+          const typeName = extractSimpleTypeName(args.firstNamedChild);
+          const varName = extractVarName(lhsNodes[i]);
+          if (varName && typeName) env.set(varName, typeName);
+        }
+      }
+      continue;
+    }
     if (valueNode.type !== 'composite_literal') continue;
     const typeNode = valueNode.childForFieldName('type');
     if (!typeNode) continue;
