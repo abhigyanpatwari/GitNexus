@@ -512,3 +512,49 @@ describe('C# generic parent base resolution', () => {
     expect(repoSave).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Pattern matching: `if (animal is Dog dog)` binds `dog` as type `Dog`
+// ---------------------------------------------------------------------------
+
+describe('C# is pattern matching resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-pattern-matching'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Animal, Dog, and Cat classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Animal');
+    expect(classes).toContain('Dog');
+    expect(classes).toContain('Cat');
+  });
+
+  it('detects Bark and Meow methods', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('Bark');
+    expect(methods).toContain('Meow');
+  });
+
+  it('resolves dog.Bark() to Dog.Bark via is-pattern type binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const barkCall = calls.find(c => c.target === 'Bark');
+    expect(barkCall).toBeDefined();
+    expect(barkCall!.source).toBe('HandleAnimal');
+    expect(barkCall!.targetFilePath).toBe('Models/Animal.cs');
+  });
+
+  it('emits EXTENDS edges for Dog and Cat', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const dogExtends = extends_.find(e => e.source === 'Dog');
+    const catExtends = extends_.find(e => e.source === 'Cat');
+    expect(dogExtends).toBeDefined();
+    expect(dogExtends!.target).toBe('Animal');
+    expect(catExtends).toBeDefined();
+    expect(catExtends!.target).toBe('Animal');
+  });
+});

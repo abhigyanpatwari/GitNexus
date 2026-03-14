@@ -4,6 +4,7 @@ import { extractSimpleTypeName, extractVarName } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
   'declaration',
+  'for_range_loop',
 ]);
 
 /** C++: Type x = ...; Type* x; Type& x; */

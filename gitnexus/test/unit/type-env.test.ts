@@ -165,6 +165,21 @@ describe('buildTypeEnv', () => {
       expect(flatGet(env, 'user')).toBe('User');
       expect(flatGet(env, 'repo')).toBe('Repository');
     });
+
+    it('extracts type from is pattern matching (obj is User user)', () => {
+      const tree = parse(`
+        class User { public void Save() {} }
+        class App {
+          void Process(object obj) {
+            if (obj is User user) {
+              user.Save();
+            }
+          }
+        }
+      `, CSharp);
+      const { env } = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(env, 'user')).toBe('User');
+    });
   });
 
   describe('Go', () => {
@@ -335,6 +350,39 @@ describe('buildTypeEnv', () => {
       const { env } = buildTypeEnv(tree, 'python');
       // Python uses typed_parameter nodes, check if they match
     });
+
+    it('extracts type from class-level annotation with default value', () => {
+      const tree = parse(`class User:
+    name: str = "default"
+    age: int = 0
+`, Python);
+      const { env } = buildTypeEnv(tree, 'python');
+      expect(flatGet(env, 'name')).toBe('str');
+      expect(flatGet(env, 'age')).toBe('int');
+    });
+
+    it('extracts type from class-level annotation without default value', () => {
+      const tree = parse(`class User:
+    repo: UserRepo
+`, Python);
+      const { env } = buildTypeEnv(tree, 'python');
+      expect(flatGet(env, 'repo')).toBe('UserRepo');
+    });
+
+    it('extracts types from mixed class-level annotations and methods', () => {
+      const tree = parse(`class User:
+    name: str = "default"
+    age: int = 0
+    repo: UserRepo
+
+    def save(self):
+        pass
+`, Python);
+      const { env } = buildTypeEnv(tree, 'python');
+      expect(flatGet(env, 'name')).toBe('str');
+      expect(flatGet(env, 'age')).toBe('int');
+      expect(flatGet(env, 'repo')).toBe('UserRepo');
+    });
   });
 
   describe('C++', () => {
@@ -375,6 +423,32 @@ describe('buildTypeEnv', () => {
       const { env } = buildTypeEnv(tree, 'cpp');
       expect(flatGet(env, 'user')).toBe('User');
       expect(flatGet(env, 'repo')).toBe('Repository');
+    });
+
+    it('extracts type from range-for with explicit type', () => {
+      const tree = parse(`
+        void run() {
+          std::vector<User> users;
+          for (User& user : users) {
+            user.save();
+          }
+        }
+      `, CPP);
+      const { env } = buildTypeEnv(tree, 'cpp');
+      expect(flatGet(env, 'user')).toBe('User');
+    });
+
+    it('extracts type from range-for with const ref', () => {
+      const tree = parse(`
+        void run() {
+          std::vector<User> users;
+          for (const User& user : users) {
+            user.save();
+          }
+        }
+      `, CPP);
+      const { env } = buildTypeEnv(tree, 'cpp');
+      expect(flatGet(env, 'user')).toBe('User');
     });
   });
 
@@ -943,6 +1017,98 @@ class RepoService {
         `, Rust);
         const { env } = buildTypeEnv(tree, 'rust');
         expect(flatGet(env, 'x')).toBeUndefined();
+      });
+    });
+
+    describe('Rust if-let / while-let pattern bindings', () => {
+      it('extracts type from captured_pattern in if let (user @ User { .. })', () => {
+        const tree = parse(`
+          fn process() {
+            if let user @ User { .. } = get_user() {
+              user.save();
+            }
+          }
+        `, Rust);
+        const { env } = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('extracts type from nested captured_pattern in if let Some(user @ User { .. })', () => {
+        const tree = parse(`
+          fn process(opt: Option<User>) {
+            if let Some(user @ User { .. }) = opt {
+              user.save();
+            }
+          }
+        `, Rust);
+        const { env } = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('extracts type from captured_pattern in while let', () => {
+        const tree = parse(`
+          fn process() {
+            while let item @ Config { .. } = iter.next() {
+              item.validate();
+            }
+          }
+        `, Rust);
+        const { env } = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'item')).toBe('Config');
+      });
+
+      it('does NOT extract binding from if let Some(x) = opt (requires generic unwrapping)', () => {
+        const tree = parse(`
+          fn process(opt: Option<User>) {
+            if let Some(user) = opt {
+              user.save();
+            }
+          }
+        `, Rust);
+        const { env } = buildTypeEnv(tree, 'rust');
+        // user's type is Option's inner type — requires generic unwrapping (Phase 3)
+        expect(flatGet(env, 'user')).toBeUndefined();
+      });
+
+      it('does NOT extract field bindings from struct pattern destructuring', () => {
+        const tree = parse(`
+          fn process(val: User) {
+            if let User { name } = val {
+              name.len();
+            }
+          }
+        `, Rust);
+        const { env } = buildTypeEnv(tree, 'rust');
+        // 'name' is a field of User — we don't know its type without field-type resolution
+        expect(flatGet(env, 'name')).toBeUndefined();
+        // 'val' should still be extracted from the parameter annotation
+        expect(flatGet(env, 'val')).toBe('User');
+      });
+
+      it('extracts type from scoped struct pattern (Message::Data)', () => {
+        const tree = parse(`
+          fn process() {
+            if let msg @ Message::Data { .. } = get_msg() {
+              msg.process();
+            }
+          }
+        `, Rust);
+        const { env } = buildTypeEnv(tree, 'rust');
+        // scoped_type_identifier: Message::Data — extractSimpleTypeName returns "Data"
+        expect(flatGet(env, 'msg')).toBe('Data');
+      });
+
+      it('still extracts parameter types alongside if-let bindings', () => {
+        const tree = parse(`
+          fn process(opt: Option<User>) {
+            if let user @ User { .. } = get_user() {
+              user.save();
+            }
+          }
+        `, Rust);
+        const { env } = buildTypeEnv(tree, 'rust');
+        expect(flatGet(env, 'opt')).toBe('Option');
+        expect(flatGet(env, 'user')).toBe('User');
       });
     });
 

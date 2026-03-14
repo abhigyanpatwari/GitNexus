@@ -574,3 +574,45 @@ describe('Python walrus operator type inference', () => {
     expect(saveCall!.source).toBe('process');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Class-level annotations: file-scope `user: User` disambiguates method calls
+// ---------------------------------------------------------------------------
+
+describe('Python class-level annotation resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-class-annotations'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, both with save methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  it('resolves active_user.save() to User.save via file-level annotation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'user.py');
+    expect(userSave).toBeDefined();
+    expect(userSave!.source).toBe('process');
+  });
+
+  it('resolves active_repo.save() to Repo.save via file-level annotation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'repo.py');
+    expect(repoSave).toBeDefined();
+    expect(repoSave!.source).toBe('process');
+  });
+
+  it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save');
+    expect(saveCalls.length).toBe(2);
+  });
+});

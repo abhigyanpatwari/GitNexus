@@ -4,6 +4,7 @@ import { extractSimpleTypeName, extractVarName } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
   'let_declaration',
+  'let_condition',
 ]);
 
 /** Walk up the AST to find the enclosing impl block and extract the implementing type name. */
@@ -20,8 +21,70 @@ const findEnclosingImplType = (node: SyntaxNode): string | undefined => {
   return undefined;
 };
 
-/** Rust: let x: Foo = ... */
+/**
+ * Extract the type name from a struct_pattern's 'type' field.
+ * Handles both simple `User { .. }` and scoped `Message::Data { .. }`.
+ */
+const extractStructPatternType = (structPattern: SyntaxNode): string | undefined => {
+  const typeNode = structPattern.childForFieldName('type');
+  if (!typeNode) return undefined;
+  return extractSimpleTypeName(typeNode);
+};
+
+/**
+ * Recursively scan a pattern tree for captured_pattern nodes (x @ StructType { .. })
+ * and extract variable → type bindings from them.
+ */
+const extractCapturedPatternBindings = (pattern: SyntaxNode, env: Map<string, string>): void => {
+  if (pattern.type === 'captured_pattern') {
+    // captured_pattern: identifier @ inner_pattern
+    // The first named child is the identifier, followed by the inner pattern.
+    const nameNode = pattern.firstNamedChild;
+    if (!nameNode || nameNode.type !== 'identifier') return;
+    // Find the struct_pattern child — that gives us the type
+    for (let i = 0; i < pattern.namedChildCount; i++) {
+      const child = pattern.namedChild(i);
+      if (child?.type === 'struct_pattern') {
+        const typeName = extractStructPatternType(child);
+        if (typeName) env.set(nameNode.text, typeName);
+        return;
+      }
+    }
+    return;
+  }
+  // Recurse into tuple_struct_pattern children to find nested captured_patterns
+  // e.g., Some(user @ User { .. })
+  if (pattern.type === 'tuple_struct_pattern') {
+    for (let i = 0; i < pattern.namedChildCount; i++) {
+      const child = pattern.namedChild(i);
+      if (child) extractCapturedPatternBindings(child, env);
+    }
+  }
+};
+
+/** Rust: let x: Foo = ... | if let / while let pattern bindings */
 const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+  if (node.type === 'let_condition') {
+    // if let / while let: extract type bindings from pattern matching.
+    //
+    // Supported patterns:
+    // - captured_pattern: `if let user @ User { .. } = expr` → user: User
+    // - tuple_struct_pattern with nested captured_pattern:
+    //   `if let Some(user @ User { .. }) = expr` → user: User
+    //
+    // NOT supported (requires generic unwrapping — Phase 3):
+    // - `if let Some(x) = opt` where opt: Option<T> → x: T
+    //
+    // struct_pattern without capture (`if let User { name } = expr`)
+    // destructures fields — individual field types are unknown without
+    // field-type resolution, so no bindings are extracted.
+    const pattern = node.childForFieldName('pattern');
+    if (!pattern) return;
+    extractCapturedPatternBindings(pattern, env);
+    return;
+  }
+
+  // Standard let_declaration: let x: Foo = ...
   const pattern = node.childForFieldName('pattern');
   const typeNode = node.childForFieldName('type');
   if (!pattern || !typeNode) return;

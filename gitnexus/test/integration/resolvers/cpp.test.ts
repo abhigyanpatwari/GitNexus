@@ -444,3 +444,36 @@ describe('C++ scoped brace-init resolution (ns::Type{})', () => {
     expect(sendCall!.source).toBe('run');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Range-for with explicit type: for (User& user : users) { user.save(); }
+// ---------------------------------------------------------------------------
+
+describe('C++ range-for explicit type resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-range-for'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User class and save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
+  });
+
+  it('resolves user.save() inside range-for to User.save via explicit type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.targetFilePath === 'user.h');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('processUsers');
+  });
+
+  it('emits HAS_METHOD edge from User to save', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const edge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
+    expect(edge).toBeDefined();
+  });
+});

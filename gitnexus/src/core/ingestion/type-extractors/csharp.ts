@@ -6,10 +6,26 @@ const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
   'local_declaration_statement',
   'variable_declaration',
   'field_declaration',
+  'is_pattern_expression',
 ]);
 
-/** C#: Type x = ...; var x = new Type(); */
+/** C#: Type x = ...; var x = new Type(); obj is Type x */
 const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+  // C# pattern matching: `obj is User user` → is_pattern_expression > declaration_pattern
+  if (node.type === 'is_pattern_expression') {
+    const pattern = node.childForFieldName('pattern');
+    if (pattern?.type === 'declaration_pattern') {
+      const typeNode = pattern.childForFieldName('type');
+      const nameNode = pattern.childForFieldName('name');
+      if (typeNode && nameNode) {
+        const typeName = extractSimpleTypeName(typeNode);
+        const varName = extractVarName(nameNode);
+        if (typeName && varName) env.set(varName, typeName);
+      }
+    }
+    return;
+  }
+
   // C# tree-sitter: local_declaration_statement > variable_declaration > ...
   // Recursively descend through wrapper nodes
   for (let i = 0; i < node.namedChildCount; i++) {

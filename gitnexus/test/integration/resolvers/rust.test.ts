@@ -563,3 +563,40 @@ describe('Rust Self {} struct literal resolution', () => {
     expect(validateCall!.targetFilePath).toBe('models.rs');
   });
 });
+
+// ---------------------------------------------------------------------------
+// if let / while let: captured_pattern type extraction
+// Extracts type from `user @ User { .. }` patterns in if-let/while-let
+// ---------------------------------------------------------------------------
+
+describe('Rust if-let captured_pattern type resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-if-let'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Config structs with their methods', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Config');
+    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Function')).toContain('validate');
+  });
+
+  it('resolves user.save() inside if-let via captured_pattern binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process_if_let');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('models.rs');
+  });
+
+  it('resolves cfg.validate() inside while-let via captured_pattern binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const validateCall = calls.find(c => c.target === 'validate' && c.source === 'process_while_let');
+    expect(validateCall).toBeDefined();
+    expect(validateCall!.targetFilePath).toBe('models.rs');
+  });
+});
