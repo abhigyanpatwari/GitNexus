@@ -31,6 +31,18 @@ interface PoolEntry {
 
 const pool = new Map<string, PoolEntry>();
 
+/**
+ * Shared Database cache keyed by resolved dbPath.
+ * Multiple repoIds pointing to the same path share one native Database
+ * object to avoid exhausting the buffer manager's mmap budget.
+ */
+interface SharedDB {
+  db: lbug.Database;
+  refCount: number;
+  ftsLoaded: boolean;
+}
+const dbCache = new Map<string, SharedDB>();
+
 /** Max repos in the pool (LRU eviction) */
 const MAX_POOL_SIZE = 5;
 /** Idle timeout before closing a repo's connections */
@@ -84,7 +96,7 @@ function evictLRU(): void {
 }
 
 /**
- * Remove a repo from the pool without calling native close methods.
+ * Remove a repo from the pool and release its shared Database ref.
  *
  * LadybugDB's native .closeSync() triggers N-API destructor hooks that
  * segfault on Linux/macOS.  Pool databases are opened read-only, so
@@ -92,6 +104,13 @@ function evictLRU(): void {
  * the GC (or process exit) reclaim native resources is safe.
  */
 function closeOne(repoId: string): void {
+  const entry = pool.get(repoId);
+  if (entry) {
+    const shared = dbCache.get(entry.dbPath);
+    if (shared && shared.refCount > 0) {
+      shared.refCount--;
+    }
+  }
   pool.delete(repoId);
 }
 
@@ -149,52 +168,66 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
 
   evictLRU();
 
-  // Open in read-only mode — MCP server never writes to the database.
-  // This allows multiple MCP server instances to read concurrently, and
-  // avoids lock conflicts when `gitnexus analyze` is writing.
-  let lastError: Error | null = null;
-  for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
-    silenceStdout();
-    try {
-      const db = new lbug.Database(
-        dbPath,
-        0,     // bufferManagerSize (default)
-        false, // enableCompression (default)
-        true,  // readOnly
-      );
-      restoreStdout();
-
-      // Pre-create a small pool of connections
-      const available: lbug.Connection[] = [];
-      for (let i = 0; i < INITIAL_CONNS_PER_REPO; i++) {
-        available.push(createConnection(db));
-      }
-
-      pool.set(repoId, { db, available, checkedOut: 0, waiters: [], lastUsed: Date.now(), dbPath });
-      ensureIdleTimer();
-
-      // Load FTS extension so QUERY_FTS_INDEX is available on read-only connections
+  // Reuse an existing native Database if another repoId already opened this path.
+  // This prevents buffer manager exhaustion from multiple mmap regions on the same file.
+  let shared = dbCache.get(dbPath);
+  if (!shared) {
+    // Open in read-only mode — MCP server never writes to the database.
+    // This allows multiple MCP server instances to read concurrently, and
+    // avoids lock conflicts when `gitnexus analyze` is writing.
+    let lastError: Error | null = null;
+    for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
+      silenceStdout();
       try {
-        await available[0].query('LOAD EXTENSION fts');
-      } catch {
-        // Extension may not be installed — FTS queries will fail gracefully
+        const db = new lbug.Database(
+          dbPath,
+          0,     // bufferManagerSize (default)
+          false, // enableCompression (default)
+          true,  // readOnly
+        );
+        restoreStdout();
+        shared = { db, refCount: 0, ftsLoaded: false };
+        dbCache.set(dbPath, shared);
+        break;
+      } catch (err: any) {
+        restoreStdout();
+        lastError = err instanceof Error ? err : new Error(String(err));
+        const isLockError = lastError.message.includes('Could not set lock')
+          || lastError.message.includes('lock');
+        if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
+        await new Promise(resolve => setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt));
       }
+    }
 
-      return;
-    } catch (err: any) {
-      restoreStdout();
-      lastError = err instanceof Error ? err : new Error(String(err));
-      const isLockError = lastError.message.includes('Could not set lock')
-        || lastError.message.includes('lock');
-      if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
-      await new Promise(resolve => setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt));
+    if (!shared) {
+      throw new Error(
+        `LadybugDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
+        `Retry later. (${lastError?.message || 'unknown error'})`
+      );
     }
   }
 
-  throw new Error(
-    `LadybugDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
-    `Retry later. (${lastError?.message || 'unknown error'})`
-  );
+  shared.refCount++;
+  const db = shared.db;
+
+  // Pre-create a small pool of connections
+  const available: lbug.Connection[] = [];
+  for (let i = 0; i < INITIAL_CONNS_PER_REPO; i++) {
+    available.push(createConnection(db));
+  }
+
+  pool.set(repoId, { db, available, checkedOut: 0, waiters: [], lastUsed: Date.now(), dbPath });
+  ensureIdleTimer();
+
+  // Load FTS extension once per shared Database
+  if (!shared.ftsLoaded) {
+    try {
+      await available[0].query('LOAD EXTENSION fts');
+      shared.ftsLoaded = true;
+    } catch {
+      // Extension may not be installed — FTS queries will fail gracefully
+    }
+  }
 };
 
 /**
