@@ -84,7 +84,8 @@ export const initEmbedder = async (
   forceDevice?: 'dml' | 'cuda' | 'cpu' | 'wasm'
 ): Promise<FeatureExtractionPipeline> => {
   // Return existing instance if available
-  if (embedderInstance) {
+  // Skip singleton check when debugging (GITNEXUS_DEBUG_NO_CACHE=1)
+  if (embedderInstance && !process.env.GITNEXUS_DEBUG_NO_CACHE) {
     return embedderInstance;
   }
 
@@ -108,10 +109,15 @@ export const initEmbedder = async (
     try {
       // Configure transformers.js environment
       env.allowLocalModels = false;
-      
+
+      // Set remote host from config
+      debugger;
+      env.remoteHost = finalConfig.remoteHost;
+
       const isDev = process.env.NODE_ENV === 'development';
       if (isDev) {
         console.log(`🧠 Loading embedding model: ${finalConfig.modelId}`);
+        console.log(`📡 Remote host: ${env.remoteHost}`);
       }
 
       const progressCallback = onProgress ? (data: any) => {

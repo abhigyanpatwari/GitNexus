@@ -237,6 +237,7 @@ export const wikiCommand = async (
   }, 1000);
 
   // ── Run generator ───────────────────────────────────────────────────
+  const cliConfig = await loadCLIConfig();
   const wikiOptions: WikiOptions = {
     force: options?.force,
     model: options?.model,
@@ -258,6 +259,7 @@ export const wikiCommand = async (
       }
       bar.update(percent, { phase: label });
     },
+    cliConfig.wiki,
   );
 
   try {

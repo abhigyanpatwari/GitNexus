@@ -55,6 +55,8 @@ export interface EmbeddingProgress {
 export interface EmbeddingConfig {
   /** Model identifier for transformers.js */
   modelId: string;
+  /** Remote host URL for downloading models (e.g., Hugging Face mirror) */
+  remoteHost: string;
   /** Number of nodes to embed in each batch */
   batchSize: number;
   /** Embedding vector dimensions */
@@ -72,6 +74,7 @@ export interface EmbeddingConfig {
  */
 export const DEFAULT_EMBEDDING_CONFIG: EmbeddingConfig = {
   modelId: 'Snowflake/snowflake-arctic-embed-xs',
+  remoteHost: 'https://huggingface.co/',
   batchSize: 16,
   dimensions: 384,
   device: 'auto',

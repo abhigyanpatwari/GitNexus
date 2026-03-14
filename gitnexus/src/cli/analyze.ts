@@ -14,7 +14,7 @@ import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReuse
 // loaded when embeddings are not requested. This avoids crashes on Node
 // versions whose ABI is not yet supported by the native binary (#89).
 // disposeEmbedder intentionally not called — ONNX Runtime segfaults on cleanup (see #38)
-import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath } from '../storage/repo-manager.js';
+import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath, loadCLIConfig } from '../storage/repo-manager.js';
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
 import { generateSkillFiles, type GeneratedSkillInfo } from './skill-gen.js';
@@ -266,6 +266,11 @@ export const analyzeCommand = async (
     updateBar(90, 'Loading embedding model...');
     const t0Emb = Date.now();
     const { runEmbeddingPipeline } = await import('../core/embeddings/embedding-pipeline.js');
+
+    // Load embedding config from ~/.gitnexus/config.json
+    const cliConfig = await loadCLIConfig();
+    const embeddingConfig = cliConfig.embedding || {};
+
     await runEmbeddingPipeline(
       executeQuery,
       executeWithReusedStatement,
@@ -274,7 +279,7 @@ export const analyzeCommand = async (
         const label = progress.phase === 'loading-model' ? 'Loading embedding model...' : `Embedding ${progress.nodesProcessed || 0}/${progress.totalNodes || '?'}`;
         updateBar(scaled, label);
       },
-      {},
+      embeddingConfig,
       cachedEmbeddingNodeIds.size > 0 ? cachedEmbeddingNodeIds : undefined,
     );
     embeddingTime = ((Date.now() - t0Emb) / 1000).toFixed(1);

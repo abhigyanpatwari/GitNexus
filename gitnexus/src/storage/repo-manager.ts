@@ -273,6 +273,24 @@ export interface CLIConfig {
   apiKey?: string;
   model?: string;
   baseUrl?: string;
+  embedding?: {
+    modelId?: string;
+    remoteHost?: string;
+    batchSize?: number;
+    dimensions?: number;
+    device?: 'auto' | 'dml' | 'cuda' | 'cpu' | 'wasm';
+    maxSnippetLength?: number;
+  };
+  wiki?: {
+    groupingSystemPrompt?: string;
+    groupingUserPrompt?: string;
+    moduleSystemPrompt?: string;
+    moduleUserPrompt?: string;
+    parentSystemPrompt?: string;
+    parentUserPrompt?: string;
+    overviewSystemPrompt?: string;
+    overviewUserPrompt?: string;
+  };
 }
 
 /**
