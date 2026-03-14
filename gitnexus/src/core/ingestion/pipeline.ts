@@ -1,5 +1,6 @@
 import { createKnowledgeGraph } from '../graph/graph.js';
 import { processStructure } from './structure-processor.js';
+import { processMarkdown } from './markdown-processor.js';
 import { processParsing } from './parsing-processor.js';
 import {
   processImports,
@@ -92,6 +93,20 @@ export const runPipelineFromRepo = async (
       message: 'Project structure analyzed',
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
     });
+
+    // ── Phase 2.5: Markdown processing (headings + cross-links) ────────
+    const mdScanned = scannedFiles.filter(f => f.path.endsWith('.md'));
+    if (mdScanned.length > 0) {
+      const mdContents = await readFileContents(repoPath, mdScanned.map(f => f.path));
+      const mdFiles = mdScanned
+        .filter(f => mdContents.has(f.path))
+        .map(f => ({ path: f.path, content: mdContents.get(f.path)! }));
+      const allPathSet = new Set(allPaths);
+      const mdResult = processMarkdown(graph, mdFiles, allPathSet);
+      if (isDev) {
+        console.log(`📝 Markdown: ${mdScanned.length} files, ${mdResult.sections} sections, ${mdResult.links} cross-links`);
+      }
+    }
 
     // ── Phase 3+4: Chunked read + parse ────────────────────────────────
     // Group parseable files into byte-budget chunks so only ~20MB of source

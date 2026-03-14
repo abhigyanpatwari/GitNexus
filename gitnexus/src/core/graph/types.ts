@@ -32,7 +32,8 @@ export type NodeLabel =
   | 'Delegate'
   | 'Annotation'
   | 'Constructor'
-  | 'Template';
+  | 'Template'
+  | 'Section';
 
 
 import { SupportedLanguages } from '../../config/supported-languages.js';
