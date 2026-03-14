@@ -112,6 +112,17 @@ program
   .option('-r, --repo <name>', 'Target repository')
   .action(createLazyAction(() => import('./tool.js'), 'cypherCommand'));
 
+// ─── Export Command ─────────────────────────────────────────────────
+
+program
+  .command('export [path]')
+  .description('Export the indexed knowledge graph to a portable format')
+  .option('-f, --format <format>', 'Output format: json, graphml, cypher, bundle (default: json)', 'json')
+  .option('-o, --output <file>', 'Output file path (default: <repo>-<commit>.<ext>)')
+  .option('-r, --repo <name>', 'Target repository name (from registry)')
+  .option('--include-embeddings', 'Include embeddings in bundle (default: false, increases file size)')
+  .action(createLazyAction(() => import('./export.js'), 'exportCommand'));
+
 // ─── Eval Server (persistent daemon for SWE-bench) ─────────────────
 
 program
