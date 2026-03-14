@@ -13,6 +13,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { execSync, execFileSync } from 'child_process';
+import type { CLIConfig } from '../../storage/repo-manager.js';
 
 import {
   initWikiDb,
@@ -37,14 +38,7 @@ import {
 } from './llm-client.js';
 
 import {
-  GROUPING_SYSTEM_PROMPT,
-  GROUPING_USER_PROMPT,
-  MODULE_SYSTEM_PROMPT,
-  MODULE_USER_PROMPT,
-  PARENT_SYSTEM_PROMPT,
-  PARENT_USER_PROMPT,
-  OVERVIEW_SYSTEM_PROMPT,
-  OVERVIEW_USER_PROMPT,
+  getPrompts,
   fillTemplate,
   formatFileListForGrouping,
   formatDirectoryTree,
@@ -99,6 +93,7 @@ export class WikiGenerator {
   private concurrency: number;
   private options: WikiOptions;
   private onProgress: ProgressCallback;
+  private prompts: ReturnType<typeof getPrompts>;
   private failedModules: string[] = [];
 
   constructor(
@@ -108,6 +103,7 @@ export class WikiGenerator {
     llmConfig: LLMConfig,
     options: WikiOptions = {},
     onProgress?: ProgressCallback,
+    wikiPrompts?: CLIConfig['wiki'],
   ) {
     this.repoPath = repoPath;
     this.storagePath = storagePath;
@@ -117,6 +113,7 @@ export class WikiGenerator {
     this.llmConfig = llmConfig;
     this.maxTokensPerModule = options.maxTokensPerModule ?? DEFAULT_MAX_TOKENS_PER_MODULE;
     this.concurrency = options.concurrency ?? 3;
+    this.prompts = getPrompts(wikiPrompts);
     const progressFn = onProgress || (() => {});
     this.onProgress = (phase, percent, detail) => {
       if (percent > 0) this.lastPercent = percent;
@@ -325,13 +322,13 @@ export class WikiGenerator {
     const fileList = formatFileListForGrouping(files);
     const dirTree = formatDirectoryTree(files.map(f => f.filePath));
 
-    const prompt = fillTemplate(GROUPING_USER_PROMPT, {
+    const prompt = fillTemplate(this.prompts.GROUPING_USER_PROMPT, {
       FILE_LIST: fileList,
       DIRECTORY_TREE: dirTree,
     });
 
     const response = await callLLM(
-      prompt, this.llmConfig, GROUPING_SYSTEM_PROMPT,
+      prompt, this.llmConfig, this.prompts.GROUPING_SYSTEM_PROMPT,
       this.streamOpts('Grouping files', 15),
     );
     const grouping = this.parseGroupingResponse(response.content, files);
@@ -478,7 +475,7 @@ export class WikiGenerator {
       getProcessesForFiles(filePaths, 5),
     ]);
 
-    const prompt = fillTemplate(MODULE_USER_PROMPT, {
+    const prompt = fillTemplate(this.prompts.MODULE_USER_PROMPT, {
       MODULE_NAME: node.name,
       SOURCE_CODE: finalSourceCode,
       INTRA_CALLS: formatCallEdges(intraCalls),
@@ -488,7 +485,7 @@ export class WikiGenerator {
     });
 
     const response = await callLLM(
-      prompt, this.llmConfig, MODULE_SYSTEM_PROMPT,
+      prompt, this.llmConfig, this.prompts.MODULE_SYSTEM_PROMPT,
       this.streamOpts(node.name),
     );
 
@@ -523,7 +520,7 @@ export class WikiGenerator {
     const crossCalls = await getIntraModuleCallEdges(allChildFiles);
     const processes = await getProcessesForFiles(allChildFiles, 3);
 
-    const prompt = fillTemplate(PARENT_USER_PROMPT, {
+    const prompt = fillTemplate(this.prompts.PARENT_USER_PROMPT, {
       MODULE_NAME: node.name,
       CHILDREN_DOCS: childDocs.join('\n\n'),
       CROSS_MODULE_CALLS: formatCallEdges(crossCalls),
@@ -531,7 +528,7 @@ export class WikiGenerator {
     });
 
     const response = await callLLM(
-      prompt, this.llmConfig, PARENT_SYSTEM_PROMPT,
+      prompt, this.llmConfig, this.prompts.PARENT_SYSTEM_PROMPT,
       this.streamOpts(node.name),
     );
 
@@ -570,7 +567,7 @@ export class WikiGenerator {
       ? moduleEdges.map(e => `${e.from} → ${e.to} (${e.count} calls)`).join('\n')
       : 'No inter-module call edges detected';
 
-    const prompt = fillTemplate(OVERVIEW_USER_PROMPT, {
+    const prompt = fillTemplate(this.prompts.OVERVIEW_USER_PROMPT, {
       PROJECT_INFO: projectInfo,
       MODULE_SUMMARIES: moduleSummaries.join('\n\n'),
       MODULE_EDGES: edgesText,
@@ -578,7 +575,7 @@ export class WikiGenerator {
     });
 
     const response = await callLLM(
-      prompt, this.llmConfig, OVERVIEW_SYSTEM_PROMPT,
+      prompt, this.llmConfig, this.prompts.OVERVIEW_SYSTEM_PROMPT,
       this.streamOpts('Generating overview', 88),
     );
 

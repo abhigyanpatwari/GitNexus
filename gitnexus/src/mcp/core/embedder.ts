@@ -1,11 +1,12 @@
 /**
  * Embedder Module (Read-Only)
- * 
+ *
  * Singleton factory for transformers.js embedding pipeline.
  * For MCP, we only need to compute query embeddings, not batch embed.
  */
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import { loadCLIConfig } from '../../storage/repo-manager.js';
 
 // Model config
 const MODEL_ID = 'Snowflake/snowflake-arctic-embed-xs';
@@ -33,7 +34,12 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
   initPromise = (async () => {
     try {
       env.allowLocalModels = false;
-      
+
+      // Load remote host from config
+      const cliConfig = await loadCLIConfig();
+      const remoteHost = cliConfig.embedding?.remoteHost || 'https://huggingface.co/';
+      env.remoteHost = remoteHost;
+
       console.error('GitNexus: Loading embedding model (first search may take a moment)...');
 
       // Try GPU first (DirectML on Windows, CUDA on Linux), fall back to CPU

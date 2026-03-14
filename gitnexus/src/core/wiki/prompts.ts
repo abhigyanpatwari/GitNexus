@@ -1,13 +1,15 @@
 /**
  * LLM Prompt Templates for Wiki Generation
- * 
+ *
  * All prompts produce deterministic, source-grounded documentation.
  * Templates use {{PLACEHOLDER}} substitution.
  */
 
-// ─── Grouping Prompt ──────────────────────────────────────────────────
+import type { CLIConfig } from '../../storage/repo-manager.js';
 
-export const GROUPING_SYSTEM_PROMPT = `You are a documentation architect. Given a list of source files with their exported symbols, group them into logical documentation modules.
+// ─── Default Prompts ──────────────────────────────────────────────────
+
+const DEFAULT_GROUPING_SYSTEM_PROMPT = `You are a documentation architect. Given a list of source files with their exported symbols, group them into logical documentation modules.
 
 Rules:
 - Each module should represent a cohesive feature, layer, or domain
@@ -17,7 +19,7 @@ Rules:
 - Group by functionality, not by file type or directory structure alone
 - Do NOT create modules for tests, configs, or non-source files`;
 
-export const GROUPING_USER_PROMPT = `Group these source files into documentation modules.
+const DEFAULT_GROUPING_USER_PROMPT = `Group these source files into documentation modules.
 
 **Files and their exports:**
 {{FILE_LIST}}
@@ -34,7 +36,7 @@ Example format:
 
 // ─── Leaf Module Prompt ───────────────────────────────────────────────
 
-export const MODULE_SYSTEM_PROMPT = `You are a technical documentation writer. Write clear, developer-focused documentation for a code module.
+const DEFAULT_MODULE_SYSTEM_PROMPT = `You are a technical documentation writer. Write clear, developer-focused documentation for a code module.
 
 Rules:
 - Reference actual function names, class names, and code patterns — do NOT invent APIs
@@ -43,7 +45,7 @@ Rules:
 - Structure the document however makes sense for this module — there is no mandatory format
 - Write for a developer who needs to understand and contribute to this code`;
 
-export const MODULE_USER_PROMPT = `Write documentation for the **{{MODULE_NAME}}** module.
+const DEFAULT_MODULE_USER_PROMPT = `Write documentation for the **{{MODULE_NAME}}** module.
 
 ## Source Code
 
@@ -62,7 +64,7 @@ Write comprehensive documentation for this module. Cover its purpose, how it wor
 
 // ─── Parent Module Prompt ─────────────────────────────────────────────
 
-export const PARENT_SYSTEM_PROMPT = `You are a technical documentation writer. Write a summary page for a module that contains sub-modules. Synthesize the children's documentation — do not re-read source code.
+const DEFAULT_PARENT_SYSTEM_PROMPT = `You are a technical documentation writer. Write a summary page for a module that contains sub-modules. Synthesize the children's documentation — do not re-read source code.
 
 Rules:
 - Reference actual components from the child modules
@@ -70,7 +72,7 @@ Rules:
 - Keep it concise — the reader can click through to child pages for detail
 - Include a Mermaid diagram only if it genuinely clarifies how the sub-modules relate`;
 
-export const PARENT_USER_PROMPT = `Write documentation for the **{{MODULE_NAME}}** module, which contains these sub-modules:
+const DEFAULT_PARENT_USER_PROMPT = `Write documentation for the **{{MODULE_NAME}}** module, which contains these sub-modules:
 
 {{CHILDREN_DOCS}}
 
@@ -83,7 +85,7 @@ Write a concise overview of this module group. Explain its purpose, how the sub-
 
 // ─── Overview Prompt ──────────────────────────────────────────────────
 
-export const OVERVIEW_SYSTEM_PROMPT = `You are a technical documentation writer. Write the top-level overview page for a repository wiki. This is the first page a new developer sees.
+const DEFAULT_OVERVIEW_SYSTEM_PROMPT = `You are a technical documentation writer. Write the top-level overview page for a repository wiki. This is the first page a new developer sees.
 
 Rules:
 - Be clear and welcoming — this is the entry point to the entire codebase
@@ -92,7 +94,7 @@ Rules:
 - Do NOT create module index tables or list every module with descriptions — just link to module pages naturally within the text
 - Use the inter-module edges and execution flow data for accuracy, but do NOT dump them raw`;
 
-export const OVERVIEW_USER_PROMPT = `Write the overview page for this repository's wiki.
+const DEFAULT_OVERVIEW_USER_PROMPT = `Write the overview page for this repository's wiki.
 
 ## Project Info
 
@@ -204,4 +206,22 @@ export function formatProcesses(
 function shortPath(fp: string): string {
   const parts = fp.replace(/\\/g, '/').split('/');
   return parts.length > 3 ? parts.slice(-3).join('/') : fp;
+}
+
+// ─── Prompt Getter Functions ───────────────────────────────────────────
+
+/**
+ * Get prompts from config or use defaults
+ */
+export function getPrompts(config?: CLIConfig['wiki']) {
+  return {
+    GROUPING_SYSTEM_PROMPT: config?.groupingSystemPrompt || DEFAULT_GROUPING_SYSTEM_PROMPT,
+    GROUPING_USER_PROMPT: config?.groupingUserPrompt || DEFAULT_GROUPING_USER_PROMPT,
+    MODULE_SYSTEM_PROMPT: config?.moduleSystemPrompt || DEFAULT_MODULE_SYSTEM_PROMPT,
+    MODULE_USER_PROMPT: config?.moduleUserPrompt || DEFAULT_MODULE_USER_PROMPT,
+    PARENT_SYSTEM_PROMPT: config?.parentSystemPrompt || DEFAULT_PARENT_SYSTEM_PROMPT,
+    PARENT_USER_PROMPT: config?.parentUserPrompt || DEFAULT_PARENT_USER_PROMPT,
+    OVERVIEW_SYSTEM_PROMPT: config?.overviewSystemPrompt || DEFAULT_OVERVIEW_SYSTEM_PROMPT,
+    OVERVIEW_USER_PROMPT: config?.overviewUserPrompt || DEFAULT_OVERVIEW_USER_PROMPT,
+  };
 }
