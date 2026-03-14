@@ -39,7 +39,7 @@ import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
 import { extractNamedBindings } from '../named-binding-extraction.js';
 import { appendKotlinWildcard } from '../resolvers/index.js';
-import { routeRubyCall } from '../ruby-call-routing.js';
+import { callRouters } from '../call-routing.js';
 
 // ============================================================================
 // Types for serializable results
@@ -826,6 +826,7 @@ const processFileGroup = (
 
     // Build per-file TypeEnv from explicit type annotations (for receiver resolution)
     const typeEnv = buildTypeEnv(tree, language);
+    const callRouter = callRouters[language];
 
     let matches;
     try {
@@ -862,88 +863,69 @@ const processFileGroup = (
         if (callNameNode) {
           const calledName = callNameNode.text;
 
-          // Ruby: route special calls to imports, heritage, or properties
-          if (language === SupportedLanguages.Ruby) {
-            const callNode = captureMap['call'];
-            const routed = routeRubyCall(calledName, callNode);
+          // Dispatch: route language-specific calls (heritage, properties, imports)
+          const routed = callRouter(calledName, captureMap['call']);
+          if (routed) {
+            if (routed.kind === 'skip') continue;
 
-            switch (routed.kind) {
-              case 'skip':
-                continue;
-
-              case 'import':
-                result.imports.push({
-                  filePath: file.path,
-                  rawImportPath: routed.importPath,
-                  language,
-                });
-                continue;
-
-              case 'heritage':
-                for (const item of routed.items) {
-                  result.heritage.push({
-                    filePath: file.path,
-                    className: item.enclosingClass,
-                    parentName: item.mixinName,
-                    kind: 'trait-impl',
-                  });
-                }
-                continue;
-
-              case 'properties':
-                for (const item of routed.items) {
-                  const nodeId = generateId('Property', `${file.path}:${item.propName}`);
-                  result.nodes.push({
-                    id: nodeId,
-                    label: 'Property',
-                    properties: {
-                      name: item.propName,
-                      filePath: file.path,
-                      startLine: item.startLine,
-                      endLine: item.endLine,
-                      language,
-                      isExported: true,
-                      description: item.accessorType,
-                    },
-                  });
-                  result.symbols.push({
-                    filePath: file.path,
-                    name: item.propName,
-                    nodeId,
-                    type: 'Property',
-                  });
-                  const fileId = generateId('File', file.path);
-                  const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-                  result.relationships.push({
-                    id: relId,
-                    sourceId: fileId,
-                    targetId: nodeId,
-                    type: 'DEFINES',
-                    confidence: 1.0,
-                    reason: '',
-                  });
-                }
-                continue;
-
-              case 'call':
-                if (!isBuiltInOrNoise(calledName)) {
-                  const sourceId = findEnclosingFunctionId(callNode, file.path)
-                    || generateId('File', file.path);
-                  const callForm = inferCallForm(callNode, callNameNode);
-                  const receiverName = callForm === 'member' ? extractReceiverName(callNameNode) : undefined;
-                  const receiverTypeName = receiverName ? lookupTypeEnv(typeEnv, receiverName, callNode) : undefined;
-                  result.calls.push({
-                    filePath: file.path,
-                    calledName,
-                    sourceId,
-                    argCount: countCallArguments(callNode),
-                    ...(callForm !== undefined ? { callForm } : {}),
-                    ...(receiverName !== undefined ? { receiverName } : {}),
-                    ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
-                  });
-                }
-                continue;
+            if (routed.kind === 'import') {
+              result.imports.push({
+                filePath: file.path,
+                rawImportPath: routed.importPath,
+                language,
+              });
+              continue;
             }
+
+            if (routed.kind === 'heritage') {
+              for (const item of routed.items) {
+                result.heritage.push({
+                  filePath: file.path,
+                  className: item.enclosingClass,
+                  parentName: item.mixinName,
+                  kind: 'trait-impl',
+                });
+              }
+              continue;
+            }
+
+            if (routed.kind === 'properties') {
+              for (const item of routed.items) {
+                const nodeId = generateId('Property', `${file.path}:${item.propName}`);
+                result.nodes.push({
+                  id: nodeId,
+                  label: 'Property',
+                  properties: {
+                    name: item.propName,
+                    filePath: file.path,
+                    startLine: item.startLine,
+                    endLine: item.endLine,
+                    language,
+                    isExported: true,
+                    description: item.accessorType,
+                  },
+                });
+                result.symbols.push({
+                  filePath: file.path,
+                  name: item.propName,
+                  nodeId,
+                  type: 'Property',
+                });
+                const fileId = generateId('File', file.path);
+                const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
+                result.relationships.push({
+                  id: relId,
+                  sourceId: fileId,
+                  targetId: nodeId,
+                  type: 'DEFINES',
+                  confidence: 1.0,
+                  reason: '',
+                });
+              }
+              continue;
+            }
+
+            // kind === 'call' — fall through to normal call processing below
           }
 
           if (!isBuiltInOrNoise(calledName)) {

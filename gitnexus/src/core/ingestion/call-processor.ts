@@ -23,7 +23,7 @@ import {
 import { buildTypeEnv, lookupTypeEnv } from './type-env.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type { ExtractedCall, ExtractedHeritage, ExtractedRoute } from './workers/parse-worker.js';
-import { routeRubyCall } from './ruby-call-routing.js';
+import { callRouters } from './call-routing.js';
 
 /**
  * Walk up the AST from a node to find the enclosing function/method.
@@ -121,6 +121,7 @@ export const processCalls = async (
     // Build per-file TypeEnv for receiver resolution
     const lang = getLanguageFromFilename(file.path);
     const typeEnv = lang ? buildTypeEnv(tree, lang) : new Map();
+    const callRouter = callRouters[language];
 
     // 3. Process each call match
     matches.forEach(match => {
@@ -135,11 +136,9 @@ export const processCalls = async (
 
       const calledName = nameNode.text;
 
-      // Ruby: route special calls to heritage or properties (imports handled by import-processor)
-      if (language === SupportedLanguages.Ruby) {
-        const callNode = captureMap['call'];
-        const routed = routeRubyCall(calledName, callNode);
-
+      // Dispatch: route language-specific calls (heritage, properties, imports)
+      const routed = callRouter(calledName, captureMap['call']);
+      if (routed) {
         switch (routed.kind) {
           case 'skip':
           case 'import': // handled by import-processor
@@ -166,7 +165,7 @@ export const processCalls = async (
                 properties: {
                   name: item.propName, filePath: file.path,
                   startLine: item.startLine, endLine: item.endLine,
-                  language: SupportedLanguages.Ruby, isExported: true,
+                  language, isExported: true,
                   description: item.accessorType,
                 },
               });

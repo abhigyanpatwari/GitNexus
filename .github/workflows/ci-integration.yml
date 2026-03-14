@@ -23,7 +23,7 @@ jobs:
   #                on Linux, and its C++ destructors segfault during
   #                process.exit(). Running each file in its own process lets
   #                the OS reclaim all resources cleanly.
-  #   pipeline   — 12 files: ingestion pipeline + csv + 9 resolver tests
+  #   pipeline   — 13 files: ingestion pipeline + csv + 10 resolver tests
   #   e2e        — 2 files: child-process only (spawnSync), no in-process kuzu
   #   standalone — 4 files: pure logic, no kuzu, no child processes
   test-matrix:
@@ -51,6 +51,7 @@ jobs:
               test/integration/resolvers/go.test.ts
               test/integration/resolvers/kotlin.test.ts
               test/integration/resolvers/php.test.ts
+              test/integration/resolvers/ruby.test.ts
           - test-group: e2e
             test-glob: >-
               test/integration/cli-e2e.test.ts
@@ -159,6 +160,7 @@ jobs:
           test/integration/resolvers/go.test.ts
           test/integration/resolvers/kotlin.test.ts
           test/integration/resolvers/php.test.ts
+          test/integration/resolvers/ruby.test.ts
 
       - name: Upload integration coverage
         if: always()

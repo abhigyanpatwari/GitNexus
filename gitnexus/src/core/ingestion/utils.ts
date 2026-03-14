@@ -77,6 +77,9 @@ export const FUNCTION_NODE_TYPES = new Set([
   // Swift
   'init_declaration',
   'deinit_declaration',
+  // Ruby
+  'method',           // def foo
+  'singleton_method', // def self.foo
 ]);
 
 /**
@@ -265,6 +268,9 @@ export const CLASS_CONTAINER_TYPES = new Set([
   'class_definition',
   'trait_declaration',
   'protocol_declaration',
+  // Ruby
+  'class',
+  'module',
 ]);
 
 export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
@@ -280,6 +286,8 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   trait_declaration: 'Trait',
   record_declaration: 'Record',
   protocol_declaration: 'Interface',
+  class: 'Class',
+  module: 'Module',
 };
 
 /** Walk up AST to find enclosing class/struct/interface/impl, return its generateId or null.
@@ -322,7 +330,7 @@ export const findEnclosingClassId = (node: any, filePath: string): string | null
       }
       const nameNode = current.childForFieldName?.('name')
         ?? current.children?.find((c: any) =>
-          c.type === 'type_identifier' || c.type === 'identifier' || c.type === 'name'
+          c.type === 'type_identifier' || c.type === 'identifier' || c.type === 'name' || c.type === 'constant'
         );
       if (nameNode) {
         const label = CONTAINER_TYPE_TO_LABEL[current.type] || 'Class';
@@ -421,6 +429,11 @@ export const extractFunctionName = (node: any): { funcName: string | null; label
                         parent.children?.find((c: any) => c.type === 'identifier');
       funcName = nameNode?.text;
     }
+  } else if (node.type === 'method' || node.type === 'singleton_method') {
+    const nameNode = node.childForFieldName?.('name') ||
+                      node.children?.find((c: any) => c.type === 'identifier');
+    funcName = nameNode?.text;
+    label = 'Method';
   }
 
   return { funcName, label };
@@ -743,6 +756,11 @@ export const inferCallForm = (
     return 'member';
   }
 
+  // 4b. Ruby call with receiver: obj.method
+  if (callNode.type === 'call' && callNode.childForFieldName('receiver')) {
+    return 'member';
+  }
+
   // 5. Scoped calls (Rust Foo::new(), C++ ns::func()): treat as free
   //    The receiver is a type, not an instance — handled differently in Phase 3
   if (nameParent && SCOPED_CALL_NODE_TYPES.has(nameParent.type)) {
@@ -799,6 +817,11 @@ export const extractReceiverName = (
   // PHP: member_call_expression has 'object' on the call node
   if (!receiver && (callNode.type === 'member_call_expression' || callNode.type === 'nullsafe_member_call_expression')) {
     receiver = callNode.childForFieldName('object');
+  }
+
+  // Ruby: call node has 'receiver' field
+  if (!receiver && parent.type === 'call') {
+    receiver = parent.childForFieldName('receiver');
   }
 
   // Kotlin/Swift: navigation_expression target is the first child

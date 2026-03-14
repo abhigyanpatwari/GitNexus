@@ -6,8 +6,7 @@ import { loadParser, loadLanguage } from '../tree-sitter/parser-loader';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries';
 import { generateId } from '../../lib/utils';
 import { getLanguageFromFilename } from './utils';
-import { SupportedLanguages } from '../../config/supported-languages';
-import { routeRubyCall } from './ruby-call-routing';
+import { callRouters } from './call-routing';
 
 /**
  * Node types that represent function/method definitions across languages.
@@ -188,6 +187,8 @@ export const processCalls = async (
       continue;
     }
 
+    const callRouter = callRouters[language];
+
     // 3. Process each call match
     matches.forEach(match => {
       const captureMap: Record<string, any> = {};
@@ -201,11 +202,9 @@ export const processCalls = async (
 
       const calledName = nameNode.text;
 
-      // Ruby: route special calls to heritage or properties (imports handled by import-processor)
-      if (language === SupportedLanguages.Ruby) {
-        const callNode = captureMap['call'];
-        const routed = routeRubyCall(calledName, callNode);
-
+      // Dispatch: route language-specific calls (heritage, properties, imports)
+      const routed = callRouter(calledName, captureMap['call']);
+      if (routed) {
         switch (routed.kind) {
           case 'skip':
           case 'import': // handled by import-processor
@@ -238,7 +237,7 @@ export const processCalls = async (
                 properties: {
                   name: item.propName, filePath: file.path,
                   startLine: item.startLine, endLine: item.endLine,
-                  language: SupportedLanguages.Ruby, isExported: true,
+                  language, isExported: true,
                   description: item.accessorType,
                 },
               });

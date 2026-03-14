@@ -524,6 +524,10 @@ export const RUBY_QUERIES = `
 (call
   method: (identifier) @call.name) @call
 
+; ── Bare calls without parens (identifiers at statement level are method calls) ─
+(body_statement
+  (identifier) @call.name @call)
+
 ; ── Heritage: class < SuperClass ─────────────────────────────────────────────
 (class
   name: (constant) @heritage.class
