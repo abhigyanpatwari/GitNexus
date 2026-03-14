@@ -1,0 +1,287 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://gitnexus.dev/schemas/code_context_packet_v1.json",
+  "title": "Code Context Packet v1",
+  "description": "結構化程式碼上下文封包，用於 AI agents 間的知識傳遞與重用",
+  "type": "object",
+  "required": ["packet_id", "version", "source", "timestamp", "context_type", "data"],
+  "properties": {
+    "packet_id": {
+      "type": "string",
+      "description": "封包唯一識別碼 (UUID v4)",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "封包格式版本"
+    },
+    "source": {
+      "type": "object",
+      "required": ["tool", "agent_id"],
+      "properties": {
+        "tool": {
+          "type": "string",
+          "enum": ["gitnexus", "sourcegraph", "github_copilot", "cursor", "claude_code", "custom"],
+          "description": "產生此封包的工具"
+        },
+        "agent_id": {
+          "type": "string",
+          "description": "產生封包的 AI agent 識別碼"
+        },
+        "session_id": {
+          "type": "string",
+          "description": "對話 session 識別碼（可選）"
+        }
+      }
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "封包建立時間 (ISO 8601)"
+    },
+    "context_type": {
+      "type": "string",
+      "enum": ["symbol_context", "impact_analysis", "search_results", "execution_flow", "dependency_graph", "refactor_plan"],
+      "description": "上下文類型"
+    },
+    "query": {
+      "type": "object",
+      "required": ["original_query"],
+      "properties": {
+        "original_query": {
+          "type": "string",
+          "description": "原始查詢字串"
+        },
+        "normalized_query": {
+          "type": "string",
+          "description": "正規化後的查詢"
+        },
+        "intent": {
+          "type": "string",
+          "enum": ["explore", "understand", "modify", "debug", "refactor", "impact_assess"],
+          "description": "查詢意圖"
+        }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "專案名稱"
+        },
+        "commit_hash": {
+          "type": "string",
+          "description": "Git commit hash（可選）"
+        },
+        "branch": {
+          "type": "string",
+          "description": "Git branch（可選）"
+        }
+      }
+    },
+    "data": {
+      "type": "object",
+      "description": "核心資料內容，依 context_type 而異",
+      "oneOf": [
+        {"$ref": "#/definitions/symbol_context_data"},
+        {"$ref": "#/definitions/impact_analysis_data"},
+        {"$ref": "#/definitions/search_results_data"},
+        {"$ref": "#/definitions/execution_flow_data"},
+        {"$ref": "#/definitions/dependency_graph_data"},
+        {"$ref": "#/definitions/refactor_plan_data"}
+      ]
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "confidence_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "結果信心分數"
+        },
+        "token_cost": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "產生此封包的 token 消耗"
+        },
+        "processing_time_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "處理時間（毫秒）"
+        },
+        "cache_hit": {
+          "type": "boolean",
+          "description": "是否為快取結果"
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "description": "人類可讀的結果摘要",
+      "maxLength": 500
+    },
+    "ai_instructions": {
+      "type": "string",
+      "description": "給下一個 AI agent 的使用指示",
+      "maxLength": 1000
+    }
+  },
+  "definitions": {
+    "symbol_context_data": {
+      "type": "object",
+      "required": ["symbol"],
+      "properties": {
+        "symbol": {
+          "type": "object",
+          "required": ["name", "type", "file_path"],
+          "properties": {
+            "name": {"type": "string"},
+            "type": {"type": "string", "enum": ["function", "class", "method", "variable", "constant", "interface", "type"]},
+            "file_path": {"type": "string"},
+            "line_range": {
+              "type": "object",
+              "properties": {
+                "start": {"type": "integer"},
+                "end": {"type": "integer"}
+              }
+            }
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/symbol_reference"}
+        },
+        "dependents": {
+          "type": "array", 
+          "items": {"$ref": "#/definitions/symbol_reference"}
+        },
+        "processes": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "參與的執行流程"
+        }
+      }
+    },
+    "impact_analysis_data": {
+      "type": "object",
+      "required": ["target_symbol", "risk_level", "affected_symbols"],
+      "properties": {
+        "target_symbol": {"$ref": "#/definitions/symbol_reference"},
+        "risk_level": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]},
+        "affected_symbols": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["symbol", "impact_type", "depth"],
+            "properties": {
+              "symbol": {"$ref": "#/definitions/symbol_reference"},
+              "impact_type": {"type": "string", "enum": ["direct_caller", "indirect_caller", "data_flow", "control_flow"]},
+              "depth": {"type": "integer", "minimum": 1}
+            }
+          }
+        }
+      }
+    },
+    "search_results_data": {
+      "type": "object",
+      "required": ["results"],
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["symbol", "relevance_score"],
+            "properties": {
+              "symbol": {"$ref": "#/definitions/symbol_reference"},
+              "relevance_score": {"type": "number", "minimum": 0, "maximum": 1},
+              "match_type": {"type": "string", "enum": ["exact", "semantic", "fuzzy"]},
+              "context_snippet": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "execution_flow_data": {
+      "type": "object",
+      "required": ["flow_name", "steps"],
+      "properties": {
+        "flow_name": {"type": "string"},
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["step_id", "symbol", "action"],
+            "properties": {
+              "step_id": {"type": "integer"},
+              "symbol": {"$ref": "#/definitions/symbol_reference"},
+              "action": {"type": "string"},
+              "conditions": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "dependency_graph_data": {
+      "type": "object",
+      "required": ["nodes", "edges"],
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/symbol_reference"}
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["from", "to", "relationship"],
+            "properties": {
+              "from": {"type": "string"},
+              "to": {"type": "string"},
+              "relationship": {"type": "string", "enum": ["imports", "calls", "extends", "implements", "uses"]}
+            }
+          }
+        }
+      }
+    },
+    "refactor_plan_data": {
+      "type": "object",
+      "required": ["plan_id", "operations"],
+      "properties": {
+        "plan_id": {"type": "string"},
+        "operations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["operation_type", "target"],
+            "properties": {
+              "operation_type": {"type": "string", "enum": ["rename", "move", "extract", "inline", "split"]},
+              "target": {"$ref": "#/definitions/symbol_reference"},
+              "new_name": {"type": "string"},
+              "new_location": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "symbol_reference": {
+      "type": "object",
+      "required": ["name", "type", "file_path"],
+      "properties": {
+        "name": {"type": "string"},
+        "type": {"type": "string"},
+        "file_path": {"type": "string"},
+        "line_range": {
+          "type": "object",
+          "properties": {
+            "start": {"type": "integer"},
+            "end": {"type": "integer"}
+          }
+        }
+      }
+    }
+  }
+}
