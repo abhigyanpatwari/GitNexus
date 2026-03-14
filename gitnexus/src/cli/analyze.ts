@@ -102,8 +102,12 @@ export const analyzeCommand = async (
 
   const { storagePath, lbugPath } = getStoragePaths(repoPath);
 
-  // Clean up stale KuzuDB files from before the LadybugDB migration
-  await cleanupOldKuzuFiles(storagePath);
+  // Clean up stale KuzuDB files from before the LadybugDB migration.
+  // If kuzu existed but lbug doesn't, we're doing a migration re-index — say so.
+  const kuzuResult = await cleanupOldKuzuFiles(storagePath);
+  if (kuzuResult.found && kuzuResult.needsReindex) {
+    console.log('  Migrating from KuzuDB to LadybugDB — rebuilding index...\n');
+  }
 
   const currentCommit = getCurrentCommit(repoPath);
   const existingMeta = await loadMeta(storagePath);

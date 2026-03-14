@@ -15,6 +15,7 @@ import { initLbug, executeQuery, executeParameterized, closeLbug, isLbugReady } 
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
 import {
   listRegisteredRepos,
+  cleanupOldKuzuFiles,
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
 // AI context generation is CLI-only (gitnexus analyze)
@@ -114,6 +115,13 @@ export class LocalBackend {
 
       const storagePath = entry.storagePath;
       const lbugPath = path.join(storagePath, 'lbug');
+
+      // Clean up any leftover KuzuDB files from before the LadybugDB migration.
+      // If kuzu exists but lbug doesn't, warn so the user knows to re-analyze.
+      const kuzu = await cleanupOldKuzuFiles(storagePath);
+      if (kuzu.found && kuzu.needsReindex) {
+        console.error(`GitNexus: "${entry.name}" has a stale KuzuDB index. Run: gitnexus analyze ${entry.path}`);
+      }
 
       const handle: RepoHandle = {
         id,

@@ -68,31 +68,51 @@ export const getStoragePaths = (repoPath: string) => {
 };
 
 /**
- * Clean up stale KuzuDB files after migration to LadybugDB.
- * If .gitnexus/kuzu exists but .gitnexus/lbug does not, warn and delete the old file.
+ * Check whether a KuzuDB index exists in the given storage path.
+ * Non-destructive — safe to call from status commands.
  */
-export const cleanupOldKuzuFiles = async (storagePath: string): Promise<void> => {
+export const hasKuzuIndex = async (storagePath: string): Promise<boolean> => {
+  try {
+    await fs.stat(path.join(storagePath, 'kuzu'));
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Clean up stale KuzuDB files after migration to LadybugDB.
+ *
+ * Returns:
+ *   found        — true if .gitnexus/kuzu existed and was deleted
+ *   needsReindex — true if kuzu existed but lbug does not (re-analyze required)
+ *
+ * Callers own the user-facing messaging; this function only deletes files.
+ */
+export const cleanupOldKuzuFiles = async (
+  storagePath: string,
+): Promise<{ found: boolean; needsReindex: boolean }> => {
   const oldPath = path.join(storagePath, 'kuzu');
   const newPath = path.join(storagePath, 'lbug');
   try {
     await fs.stat(oldPath);
-    // Old file exists — check if new file already exists
+    // Old kuzu file/dir exists — determine if lbug is already present
+    let needsReindex = false;
     try {
       await fs.stat(newPath);
-      // Both exist — just clean up old
     } catch {
-      // New doesn't exist — warn user to re-index
-      console.error(
-        `⚠️  Found stale KuzuDB index at ${oldPath}. ` +
-        `GitNexus now uses LadybugDB. Run: npx gitnexus analyze`
-      );
+      needsReindex = true;
     }
-    // Delete old files and sidecars
+    // Delete kuzu database file and its sidecars (.wal, .lock)
     for (const suffix of ['', '.wal', '.lock']) {
       try { await fs.unlink(oldPath + suffix); } catch {}
     }
+    // Also handle the case where kuzu was stored as a directory
+    try { await fs.rm(oldPath, { recursive: true, force: true }); } catch {}
+    return { found: true, needsReindex };
   } catch {
     // Old path doesn't exist — nothing to do
+    return { found: false, needsReindex: false };
   }
 };
 
