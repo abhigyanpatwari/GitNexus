@@ -2,10 +2,10 @@
  * Embedding Pipeline Module
  * 
  * Orchestrates the background embedding process:
- * 1. Query embeddable nodes from KuzuDB
+ * 1. Query embeddable nodes from LadybugDB
  * 2. Generate text representations
  * 3. Batch embed using transformers.js
- * 4. Update KuzuDB with embeddings
+ * 4. Update LadybugDB with embeddings
  * 5. Create vector index for semantic search
  */
 
@@ -29,7 +29,7 @@ const isDev = process.env.NODE_ENV === 'development';
 export type EmbeddingProgressCallback = (progress: EmbeddingProgress) => void;
 
 /**
- * Query all embeddable nodes from KuzuDB
+ * Query all embeddable nodes from LadybugDB
  * Uses table-specific queries (File has different schema than code elements)
  */
 const queryEmbeddableNodes = async (
@@ -107,6 +107,19 @@ const batchInsertEmbeddings = async (
 const createVectorIndex = async (
   executeQuery: (cypher: string) => Promise<any[]>
 ): Promise<void> => {
+  // LadybugDB v0.15+ requires explicit VECTOR extension loading
+  try {
+    await executeQuery('INSTALL VECTOR');
+    await executeQuery('LOAD EXTENSION VECTOR');
+  } catch (error: any) {
+    const msg = error?.message || '';
+    if (!msg.includes('already loaded') && !msg.includes('already installed') && !msg.includes('already exists')) {
+      if (isDev) {
+        console.warn('Vector extension load warning:', msg);
+      }
+    }
+  }
+
   const cypher = `
     CALL CREATE_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', 'embedding', metric := 'cosine')
   `;
@@ -124,7 +137,7 @@ const createVectorIndex = async (
 /**
  * Run the embedding pipeline
  * 
- * @param executeQuery - Function to execute Cypher queries against KuzuDB
+ * @param executeQuery - Function to execute Cypher queries against LadybugDB
  * @param executeWithReusedStatement - Function to execute with reused prepared statement
  * @param onProgress - Callback for progress updates
  * @param config - Optional configuration override
@@ -219,7 +232,7 @@ export const runEmbeddingPipeline = async (
       // Embed the batch
       const embeddings = await embedBatch(texts);
 
-      // Update KuzuDB with embeddings
+      // Update LadybugDB with embeddings
       const updates = batch.map((node, i) => ({
         id: node.id,
         embedding: embeddingToArray(embeddings[i]),

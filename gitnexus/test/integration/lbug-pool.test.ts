@@ -1,19 +1,19 @@
 /**
- * P0 Integration Tests: KuzuDB Connection Pool
+ * P0 Integration Tests: LadybugDB Connection Pool
  *
- * Tests: initKuzu, executeQuery, executeParameterized, closeKuzu lifecycle
+ * Tests: initLbug, executeQuery, executeParameterized, closeLbug lifecycle
  * Covers hardening fixes: parameterized queries, query timeout,
  * waiter queue timeout, idle eviction guards, stdout silencing race
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import {
-  initKuzu,
+  initLbug,
   executeQuery,
   executeParameterized,
-  closeKuzu,
-  isKuzuReady,
-} from '../../src/mcp/core/kuzu-adapter.js';
-import { withTestKuzuDB } from '../helpers/test-indexed-db.js';
+  closeLbug,
+  isLbugReady,
+} from '../../src/mcp/core/lbug-adapter.js';
+import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
 const POOL_SEED_DATA = [
   `CREATE (f:File {id: 'file:index.ts', name: 'index.ts', filePath: 'src/index.ts', content: ''})`,
@@ -26,20 +26,20 @@ const POOL_SEED_DATA = [
 
 // ─── Pool lifecycle tests — test the pool adapter API directly ───────
 
-withTestKuzuDB('kuzu-pool', (handle) => {
+withTestLbugDB('lbug-pool', (handle) => {
   afterEach(async () => {
-    try { await closeKuzu('test-repo'); } catch { /* best-effort */ }
-    try { await closeKuzu('repo1'); } catch { /* best-effort */ }
-    try { await closeKuzu('repo2'); } catch { /* best-effort */ }
-    try { await closeKuzu(''); } catch { /* best-effort */ }
+    try { await closeLbug('test-repo'); } catch { /* best-effort */ }
+    try { await closeLbug('repo1'); } catch { /* best-effort */ }
+    try { await closeLbug('repo2'); } catch { /* best-effort */ }
+    try { await closeLbug(''); } catch { /* best-effort */ }
   });
 
   // ─── Lifecycle: init → query → close ─────────────────────────────────
 
   describe('pool lifecycle', () => {
-    it('initKuzu + executeQuery + closeKuzu', async () => {
-      await initKuzu('test-repo', handle.dbPath);
-      expect(isKuzuReady('test-repo')).toBe(true);
+    it('initLbug + executeQuery + closeLbug', async () => {
+      await initLbug('test-repo', handle.dbPath);
+      expect(isLbugReady('test-repo')).toBe(true);
 
       const rows = await executeQuery('test-repo', 'MATCH (n:Function) RETURN n.name AS name');
       expect(rows.length).toBeGreaterThanOrEqual(2);
@@ -47,32 +47,32 @@ withTestKuzuDB('kuzu-pool', (handle) => {
       expect(names).toContain('main');
       expect(names).toContain('helper');
 
-      await closeKuzu('test-repo');
-      expect(isKuzuReady('test-repo')).toBe(false);
+      await closeLbug('test-repo');
+      expect(isLbugReady('test-repo')).toBe(false);
     });
 
-    it('initKuzu reuses existing pool entry', async () => {
-      await initKuzu('test-repo', handle.dbPath);
-      await initKuzu('test-repo', handle.dbPath); // second call should be no-op
-      expect(isKuzuReady('test-repo')).toBe(true);
+    it('initLbug reuses existing pool entry', async () => {
+      await initLbug('test-repo', handle.dbPath);
+      await initLbug('test-repo', handle.dbPath); // second call should be no-op
+      expect(isLbugReady('test-repo')).toBe(true);
     });
 
-    it('closeKuzu is idempotent', async () => {
-      await initKuzu('test-repo', handle.dbPath);
-      await closeKuzu('test-repo');
-      await closeKuzu('test-repo'); // second close should not throw
-      expect(isKuzuReady('test-repo')).toBe(false);
+    it('closeLbug is idempotent', async () => {
+      await initLbug('test-repo', handle.dbPath);
+      await closeLbug('test-repo');
+      await closeLbug('test-repo'); // second close should not throw
+      expect(isLbugReady('test-repo')).toBe(false);
     });
 
-    it('closeKuzu with no args closes all repos', async () => {
-      await initKuzu('repo1', handle.dbPath);
-      await initKuzu('repo2', handle.dbPath);
-      expect(isKuzuReady('repo1')).toBe(true);
-      expect(isKuzuReady('repo2')).toBe(true);
+    it('closeLbug with no args closes all repos', async () => {
+      await initLbug('repo1', handle.dbPath);
+      await initLbug('repo2', handle.dbPath);
+      expect(isLbugReady('repo1')).toBe(true);
+      expect(isLbugReady('repo2')).toBe(true);
 
-      await closeKuzu();
-      expect(isKuzuReady('repo1')).toBe(false);
-      expect(isKuzuReady('repo2')).toBe(false);
+      await closeLbug();
+      expect(isLbugReady('repo1')).toBe(false);
+      expect(isLbugReady('repo2')).toBe(false);
     });
   });
 
@@ -80,7 +80,7 @@ withTestKuzuDB('kuzu-pool', (handle) => {
 
   describe('executeParameterized', () => {
     it('works with parameterized query', async () => {
-      await initKuzu('test-repo', handle.dbPath);
+      await initLbug('test-repo', handle.dbPath);
       const rows = await executeParameterized(
         'test-repo',
         'MATCH (n:Function) WHERE n.name = $name RETURN n.name AS name',
@@ -91,7 +91,7 @@ withTestKuzuDB('kuzu-pool', (handle) => {
     });
 
     it('injection attempt is harmless with parameterized query', async () => {
-      await initKuzu('test-repo', handle.dbPath);
+      await initLbug('test-repo', handle.dbPath);
       const rows = await executeParameterized(
         'test-repo',
         'MATCH (n:Function) WHERE n.name = $name RETURN n.name AS name',
@@ -111,12 +111,12 @@ withTestKuzuDB('kuzu-pool', (handle) => {
     });
 
     it('throws when db path does not exist', async () => {
-      await expect(initKuzu('bad-repo', '/nonexistent/path/kuzu'))
+      await expect(initLbug('bad-repo', '/nonexistent/path/lbug'))
         .rejects.toThrow();
     });
 
     it('read-only mode: write query throws', async () => {
-      await initKuzu('test-repo', handle.dbPath);
+      await initLbug('test-repo', handle.dbPath);
       await expect(executeQuery('test-repo', "CREATE (n:Function {id: 'new', name: 'new', filePath: '', startLine: 0, endLine: 0, isExported: false, content: '', description: ''})"))
         .rejects.toThrow();
     });
@@ -126,7 +126,7 @@ withTestKuzuDB('kuzu-pool', (handle) => {
 
   describe('relationship queries', () => {
     it('can query relationships', async () => {
-      await initKuzu('test-repo', handle.dbPath);
+      await initLbug('test-repo', handle.dbPath);
       const rows = await executeQuery(
         'test-repo',
         `MATCH (a:Function)-[r:CodeRelation {type: 'CALLS'}]->(b:Function) RETURN a.name AS caller, b.name AS callee`,
@@ -147,13 +147,13 @@ withTestKuzuDB('kuzu-pool', (handle) => {
     });
 
     it('executeQuery rejects invalid Cypher syntax', async () => {
-      await initKuzu('test-repo', handle.dbPath);
+      await initLbug('test-repo', handle.dbPath);
       await expect(executeQuery('test-repo', 'THIS IS NOT CYPHER'))
         .rejects.toThrow();
     });
 
     it('executeParameterized rejects when referenced parameter is missing', async () => {
-      await initKuzu('test-repo', handle.dbPath);
+      await initLbug('test-repo', handle.dbPath);
       await expect(executeParameterized(
         'test-repo',
         'MATCH (n:Function) WHERE n.name = $name RETURN n',
@@ -161,23 +161,23 @@ withTestKuzuDB('kuzu-pool', (handle) => {
       )).rejects.toThrow();
     });
 
-    it('closeKuzu with unknown repoId does not throw', async () => {
-      await expect(closeKuzu('never-existed-repo')).resolves.toBeUndefined();
+    it('closeLbug with unknown repoId does not throw', async () => {
+      await expect(closeLbug('never-existed-repo')).resolves.toBeUndefined();
     });
 
-    it('isKuzuReady returns false for unknown repoId', () => {
-      expect(isKuzuReady('never-existed-repo')).toBe(false);
+    it('isLbugReady returns false for unknown repoId', () => {
+      expect(isLbugReady('never-existed-repo')).toBe(false);
     });
 
-    it('initKuzu with empty string repoId stores entry under empty key', async () => {
-      await initKuzu('', handle.dbPath);
-      expect(isKuzuReady('')).toBe(true);
-      await closeKuzu('');
-      expect(isKuzuReady('')).toBe(false);
+    it('initLbug with empty string repoId stores entry under empty key', async () => {
+      await initLbug('', handle.dbPath);
+      expect(isLbugReady('')).toBe(true);
+      await closeLbug('');
+      expect(isLbugReady('')).toBe(false);
     });
 
     it('executeQuery with empty query string rejects', async () => {
-      await initKuzu('test-repo', handle.dbPath);
+      await initLbug('test-repo', handle.dbPath);
       await expect(executeQuery('test-repo', '')).rejects.toThrow();
     });
   });

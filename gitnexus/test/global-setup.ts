@@ -1,29 +1,29 @@
 /**
  * Vitest globalSetup — runs once in the MAIN process before any forks.
  *
- * Creates a single shared KuzuDB with full schema so that forked test
+ * Creates a single shared LadybugDB with full schema so that forked test
  * files only need to clear + reseed data instead of recreating the
  * entire schema each time (~29 DDL queries per file eliminated).
  *
  * The dbPath is shared with test files via vitest's provide/inject API.
  */
 import path from 'path';
-import kuzu from 'kuzu';
+import lbug from '@ladybugdb/core';
 import type { GlobalSetupContext } from 'vitest/node';
 import { createTempDir } from './helpers/test-db.js';
 import {
   NODE_SCHEMA_QUERIES,
   REL_SCHEMA_QUERIES,
   EMBEDDING_SCHEMA,
-} from '../src/core/kuzu/schema.js';
+} from '../src/core/lbug/schema.js';
 
 export default async function setup({ provide }: GlobalSetupContext) {
   const tmpHandle = await createTempDir('gitnexus-shared-');
-  const dbPath = path.join(tmpHandle.dbPath, 'kuzu');
+  const dbPath = path.join(tmpHandle.dbPath, 'lbug');
 
   // Create DB with full schema
-  const db = new kuzu.Database(dbPath);
-  const conn = new kuzu.Connection(db);
+  const db = new lbug.Database(dbPath);
+  const conn = new lbug.Connection(db);
 
   for (const q of NODE_SCHEMA_QUERIES) {
     await conn.query(q);
@@ -50,8 +50,8 @@ export default async function setup({ provide }: GlobalSetupContext) {
     db.close();
   }
 
-  // Share the dbPath with all test files via inject('kuzuDbPath')
-  provide('kuzuDbPath', dbPath);
+  // Share the dbPath with all test files via inject('lbugDbPath')
+  provide('lbugDbPath', dbPath);
 
   // Teardown: remove temp directory after all tests complete
   return async () => {

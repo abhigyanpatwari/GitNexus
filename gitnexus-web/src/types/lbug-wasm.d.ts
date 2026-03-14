@@ -1,4 +1,4 @@
-declare module 'kuzu-wasm' {
+declare module '@ladybugdb/wasm-core' {
   export function init(): Promise<void>;
   export class Database {
     constructor(path: string);
@@ -17,12 +17,11 @@ declare module 'kuzu-wasm' {
     writeFile(path: string, data: string): Promise<void>;
     unlink(path: string): Promise<void>;
   };
-  const kuzu: {
+  const lbug: {
     init: typeof init;
     Database: typeof Database;
     Connection: typeof Connection;
     FS: typeof FS;
   };
-  export default kuzu;
+  export default lbug;
 }
-

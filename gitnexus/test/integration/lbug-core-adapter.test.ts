@@ -1,25 +1,25 @@
 /**
- * P0 Integration Tests: Core KuzuDB Adapter
+ * P0 Integration Tests: Core LadybugDB Adapter
  *
- * Tests: loadGraphToKuzu CSV round-trip, createFTSIndex, getKuzuStats.
+ * Tests: loadGraphToLbug CSV round-trip, createFTSIndex, getLbugStats.
  *
- * IMPORTANT: All core adapter tests share ONE coreHandle and ONE coreInitKuzu
+ * IMPORTANT: All core adapter tests share ONE coreHandle and ONE coreInitLbug
  * call because the core adapter is a module-level singleton. Calling
- * coreInitKuzu with a different path would close the previous native DB
+ * coreInitLbug with a different path would close the previous native DB
  * handle, which segfaults in forked processes. Sharing a single handle
  * avoids this entirely.
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
-import { withTestKuzuDB } from '../helpers/test-indexed-db.js';
+import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
-// ─── Core KuzuDB Adapter ─────────────────────────────────────────────
+// ─── Core LadybugDB Adapter ─────────────────────────────────────────────
 
-withTestKuzuDB('core-adapter', (handle) => {
+withTestLbugDB('core-adapter', (handle) => {
   describe('core adapter', () => {
-    it('loadGraphToKuzu: loads a minimal graph and node counts match', async () => {
-      const { executeQuery: coreExecuteQuery } = await import('../../src/core/kuzu/kuzu-adapter.js');
+    it('loadGraphToLbug: loads a minimal graph and node counts match', async () => {
+      const { executeQuery: coreExecuteQuery } = await import('../../src/core/lbug/lbug-adapter.js');
 
       // createMinimalTestGraph has 2 File, 2 Function, 1 Class, 1 Folder = 6 nodes
       const fileRows = await coreExecuteQuery('MATCH (n:File) RETURN n.id AS id');
@@ -36,17 +36,17 @@ withTestKuzuDB('core-adapter', (handle) => {
     });
 
     it('createFTSIndex: creates FTS index on Function table without error', async () => {
-      const { createFTSIndex } = await import('../../src/core/kuzu/kuzu-adapter.js');
+      const { createFTSIndex } = await import('../../src/core/lbug/lbug-adapter.js');
 
       await expect(
         createFTSIndex('Function', 'function_fts', ['name', 'content']),
       ).resolves.toBeUndefined();
     });
 
-    it('getKuzuStats: returns correct node and edge counts for seeded data', async () => {
-      const { getKuzuStats } = await import('../../src/core/kuzu/kuzu-adapter.js');
+    it('getLbugStats: returns correct node and edge counts for seeded data', async () => {
+      const { getLbugStats } = await import('../../src/core/lbug/lbug-adapter.js');
 
-      const stats = await getKuzuStats();
+      const stats = await getLbugStats();
 
       // createMinimalTestGraph: 6 nodes (2 File, 2 Function, 1 Class, 1 Folder)
       expect(stats.nodes).toBe(6);
@@ -57,14 +57,14 @@ withTestKuzuDB('core-adapter', (handle) => {
 
     describe('unhappy path', () => {
       it('throws on malformed Cypher query', async () => {
-        const { executeQuery } = await import('../../src/core/kuzu/kuzu-adapter.js');
+        const { executeQuery } = await import('../../src/core/lbug/lbug-adapter.js');
 
         // Deliberately broken syntax: MATCH without a pattern clause
         await expect(executeQuery('MATCH RETURN 1')).rejects.toThrow();
       });
 
       it('returns empty results for query matching no nodes', async () => {
-        const { executeQuery } = await import('../../src/core/kuzu/kuzu-adapter.js');
+        const { executeQuery } = await import('../../src/core/lbug/lbug-adapter.js');
 
         // Valid Cypher, but the id will never exist in the seeded graph
         const rows = await executeQuery(
@@ -74,9 +74,9 @@ withTestKuzuDB('core-adapter', (handle) => {
       });
 
       it('handles query with non-existent table/node label', async () => {
-        const { executeQuery } = await import('../../src/core/kuzu/kuzu-adapter.js');
+        const { executeQuery } = await import('../../src/core/lbug/lbug-adapter.js');
 
-        // KuzuDB throws when the node table does not exist in the schema
+        // LadybugDB throws when the node table does not exist in the schema
         await expect(
           executeQuery('MATCH (n:GhostTable) RETURN n'),
         ).rejects.toThrow();
@@ -85,7 +85,7 @@ withTestKuzuDB('core-adapter', (handle) => {
 
     describe('error handling', () => {
       it('createFTSIndex handles already-existing index gracefully', async () => {
-        const { createFTSIndex } = await import('../../src/core/kuzu/kuzu-adapter.js');
+        const { createFTSIndex } = await import('../../src/core/lbug/lbug-adapter.js');
 
         // First call creates the index (may already exist from earlier test)
         await createFTSIndex('Function', 'function_fts_dup', ['name', 'content']);
@@ -96,11 +96,11 @@ withTestKuzuDB('core-adapter', (handle) => {
         ).resolves.toBeUndefined();
       });
 
-      it('getKuzuStats returns valid counts', async () => {
-        const { getKuzuStats } = await import('../../src/core/kuzu/kuzu-adapter.js');
+      it('getLbugStats returns valid counts', async () => {
+        const { getLbugStats } = await import('../../src/core/lbug/lbug-adapter.js');
 
-        // getKuzuStats NEVER throws — it has silent catch blocks per table
-        const stats = await getKuzuStats();
+        // getLbugStats NEVER throws — it has silent catch blocks per table
+        const stats = await getLbugStats();
         expect(typeof stats.nodes).toBe('number');
         expect(typeof stats.edges).toBe('number');
         expect(stats.nodes).toBeGreaterThanOrEqual(0);
@@ -108,14 +108,14 @@ withTestKuzuDB('core-adapter', (handle) => {
       });
 
       it('executeQuery with empty string rejects', async () => {
-        const { executeQuery } = await import('../../src/core/kuzu/kuzu-adapter.js');
+        const { executeQuery } = await import('../../src/core/lbug/lbug-adapter.js');
 
-        // KuzuDB throws on empty query string
+        // LadybugDB throws on empty query string
         await expect(executeQuery('')).rejects.toThrow();
       });
 
       it('deleteNodesForFile with non-existent path returns zero deleted', async () => {
-        const { deleteNodesForFile } = await import('../../src/core/kuzu/kuzu-adapter.js');
+        const { deleteNodesForFile } = await import('../../src/core/lbug/lbug-adapter.js');
 
         // deleteNodesForFile has per-query try/catch, returns {deletedNodes: 0} for missing paths
         const result = await deleteNodesForFile('/absolutely/nonexistent/path/file.ts');
@@ -126,13 +126,13 @@ withTestKuzuDB('core-adapter', (handle) => {
 }, {
   afterSetup: async (handle) => {
     // Load a minimal graph via CSV round-trip (core adapter is already initialized by wrapper)
-    const { loadGraphToKuzu } = await import('../../src/core/kuzu/kuzu-adapter.js');
+    const { loadGraphToLbug } = await import('../../src/core/lbug/lbug-adapter.js');
     const { createMinimalTestGraph } = await import('../helpers/test-graph.js');
 
     const graph = createMinimalTestGraph();
     const storagePath = path.join(handle.tmpHandle.dbPath, 'storage');
     await fs.mkdir(storagePath, { recursive: true });
 
-    await loadGraphToKuzu(graph, '/test/repo', storagePath);
+    await loadGraphToLbug(graph, '/test/repo', storagePath);
   },
 });

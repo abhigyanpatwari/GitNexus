@@ -19,9 +19,9 @@ import {
   RELATION_SCHEMA,
   EMBEDDING_SCHEMA,
   CREATE_VECTOR_INDEX_QUERY,
-} from '../../src/core/kuzu/schema.js';
+} from '../../src/core/lbug/schema.js';
 
-describe('KuzuDB Schema', () => {
+describe('LadybugDB Schema', () => {
   describe('NODE_TABLES', () => {
     it('includes all core node types', () => {
       const core = ['File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement', 'Community', 'Process'];

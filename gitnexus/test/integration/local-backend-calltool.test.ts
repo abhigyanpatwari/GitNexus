@@ -1,14 +1,14 @@
 /**
  * P0 Integration Tests: Local Backend — callTool dispatch
  *
- * Tests the full LocalBackend.callTool() dispatch with a real KuzuDB
+ * Tests the full LocalBackend.callTool() dispatch with a real LadybugDB
  * instance, verifying cypher, context, impact, and query tools work
  * end-to-end against seeded graph data with FTS indexes.
  */
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
-import { withTestKuzuDB } from '../helpers/test-indexed-db.js';
+import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import { LOCAL_BACKEND_SEED_DATA, LOCAL_BACKEND_FTS_INDEXES } from '../fixtures/local-backend-seed.js';
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
@@ -17,7 +17,7 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
 
 // ─── Block 2: callTool dispatch tests ────────────────────────────────
 
-withTestKuzuDB('local-backend-calltool', (handle) => {
+withTestLbugDB('local-backend-calltool', (handle) => {
 
   describe('callTool dispatch with real DB', () => {
     let backend: LocalBackend;

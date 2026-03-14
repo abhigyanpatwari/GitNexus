@@ -1,30 +1,30 @@
 /**
- * KuzuDB Adapter (Connection Pool)
- * 
- * Manages a pool of KuzuDB databases keyed by repoId, each with
+ * LadybugDB Adapter (Connection Pool)
+ *
+ * Manages a pool of LadybugDB databases keyed by repoId, each with
  * multiple Connection objects for safe concurrent query execution.
- * 
- * KuzuDB Connections are NOT thread-safe — a single Connection
+ *
+ * LadybugDB Connections are NOT thread-safe — a single Connection
  * segfaults if concurrent .query() calls hit it simultaneously.
  * This adapter provides a checkout/return connection pool so each
  * concurrent query gets its own Connection from the same Database.
- * 
- * @see https://docs.kuzudb.com/concurrency — multiple Connections
+ *
+ * @see https://docs.ladybugdb.com/concurrency — multiple Connections
  * from the same Database is the officially supported concurrency pattern.
  */
 
 import fs from 'fs/promises';
-import kuzu from 'kuzu';
+import lbug from '@ladybugdb/core';
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
-  db: kuzu.Database;
+  db: lbug.Database;
   /** Available connections ready for checkout */
-  available: kuzu.Connection[];
+  available: lbug.Connection[];
   /** Number of connections currently checked out */
   checkedOut: number;
   /** Queued waiters for when all connections are busy */
-  waiters: Array<(conn: kuzu.Connection) => void>;
+  waiters: Array<(conn: lbug.Connection) => void>;
   lastUsed: number;
   dbPath: string;
 }
@@ -42,7 +42,7 @@ const INITIAL_CONNS_PER_REPO = 2;
 
 let idleTimer: ReturnType<typeof setInterval> | null = null;
 
-/** Saved real stdout.write — used to silence KuzuDB native output without race conditions */
+/** Saved real stdout.write — used to silence LadybugDB native output without race conditions */
 const realStdoutWrite = process.stdout.write.bind(process.stdout);
 let stdoutSilenceCount = 0;
 
@@ -86,7 +86,7 @@ function evictLRU(): void {
 /**
  * Remove a repo from the pool without calling native close methods.
  *
- * KuzuDB's native .closeSync() triggers N-API destructor hooks that
+ * LadybugDB's native .closeSync() triggers N-API destructor hooks that
  * segfault on Linux/macOS.  Pool databases are opened read-only, so
  * there is no WAL to flush — just deleting the pool entry and letting
  * the GC (or process exit) reclaim native resources is safe.
@@ -112,10 +112,10 @@ function restoreStdout(): void {
   }
 }
 
-function createConnection(db: kuzu.Database): kuzu.Connection {
+function createConnection(db: lbug.Database): lbug.Connection {
   silenceStdout();
   try {
-    return new kuzu.Connection(db);
+    return new lbug.Connection(db);
   } finally {
     restoreStdout();
   }
@@ -133,7 +133,7 @@ const LOCK_RETRY_DELAY_MS = 2000;
  * Initialize (or reuse) a Database + connection pool for a specific repo.
  * Retries on lock errors (e.g., when `gitnexus analyze` is running).
  */
-export const initKuzu = async (repoId: string, dbPath: string): Promise<void> => {
+export const initLbug = async (repoId: string, dbPath: string): Promise<void> => {
   const existing = pool.get(repoId);
   if (existing) {
     existing.lastUsed = Date.now();
@@ -144,7 +144,7 @@ export const initKuzu = async (repoId: string, dbPath: string): Promise<void> =>
   try {
     await fs.stat(dbPath);
   } catch {
-    throw new Error(`KuzuDB not found at ${dbPath}. Run: gitnexus analyze`);
+    throw new Error(`LadybugDB not found at ${dbPath}. Run: gitnexus analyze`);
   }
 
   evictLRU();
@@ -156,7 +156,7 @@ export const initKuzu = async (repoId: string, dbPath: string): Promise<void> =>
   for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
     silenceStdout();
     try {
-      const db = new kuzu.Database(
+      const db = new lbug.Database(
         dbPath,
         0,     // bufferManagerSize (default)
         false, // enableCompression (default)
@@ -165,7 +165,7 @@ export const initKuzu = async (repoId: string, dbPath: string): Promise<void> =>
       restoreStdout();
 
       // Pre-create a small pool of connections
-      const available: kuzu.Connection[] = [];
+      const available: lbug.Connection[] = [];
       for (let i = 0; i < INITIAL_CONNS_PER_REPO; i++) {
         available.push(createConnection(db));
       }
@@ -184,7 +184,7 @@ export const initKuzu = async (repoId: string, dbPath: string): Promise<void> =>
   }
 
   throw new Error(
-    `KuzuDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
+    `LadybugDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
     `Retry later. (${lastError?.message || 'unknown error'})`
   );
 };
@@ -194,7 +194,7 @@ export const initKuzu = async (repoId: string, dbPath: string): Promise<void> =>
  * Returns an available connection, or creates a new one if under the cap.
  * If all connections are busy and at cap, queues the caller until one is returned.
  */
-function checkout(entry: PoolEntry): Promise<kuzu.Connection> {
+function checkout(entry: PoolEntry): Promise<lbug.Connection> {
   // Fast path: grab an available connection
   if (entry.available.length > 0) {
     entry.checkedOut++;
@@ -209,8 +209,8 @@ function checkout(entry: PoolEntry): Promise<kuzu.Connection> {
   }
 
   // At capacity — queue the caller with a timeout.
-  return new Promise<kuzu.Connection>((resolve, reject) => {
-    const waiter = (conn: kuzu.Connection) => {
+  return new Promise<lbug.Connection>((resolve, reject) => {
+    const waiter = (conn: lbug.Connection) => {
       clearTimeout(timer);
       resolve(conn);
     };
@@ -228,7 +228,7 @@ function checkout(entry: PoolEntry): Promise<kuzu.Connection> {
  * If there are queued waiters, hand the connection directly to the next one
  * instead of putting it back in the available array (avoids race conditions).
  */
-function checkin(entry: PoolEntry, conn: kuzu.Connection): void {
+function checkin(entry: PoolEntry, conn: lbug.Connection): void {
   if (entry.waiters.length > 0) {
     // Hand directly to the next waiter — no intermediate available state
     const waiter = entry.waiters.shift()!;
@@ -255,7 +255,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export const executeQuery = async (repoId: string, cypher: string): Promise<any[]> => {
   const entry = pool.get(repoId);
   if (!entry) {
-    throw new Error(`KuzuDB not initialized for repo "${repoId}". Call initKuzu first.`);
+    throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
   }
 
   entry.lastUsed = Date.now();
@@ -282,7 +282,7 @@ export const executeParameterized = async (
 ): Promise<any[]> => {
   const entry = pool.get(repoId);
   if (!entry) {
-    throw new Error(`KuzuDB not initialized for repo "${repoId}". Call initKuzu first.`);
+    throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
   }
 
   entry.lastUsed = Date.now();
@@ -308,7 +308,7 @@ export const executeParameterized = async (
  * If repoId is provided, close only that repo's connections.
  * If omitted, close all repos.
  */
-export const closeKuzu = async (repoId?: string): Promise<void> => {
+export const closeLbug = async (repoId?: string): Promise<void> => {
   if (repoId) {
     closeOne(repoId);
     return;
@@ -328,4 +328,4 @@ export const closeKuzu = async (repoId?: string): Promise<void> => {
 /**
  * Check if a specific repo's pool is active
  */
-export const isKuzuReady = (repoId: string): boolean => pool.has(repoId);
+export const isLbugReady = (repoId: string): boolean => pool.has(repoId);

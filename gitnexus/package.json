@@ -58,7 +58,7 @@
     "graphology": "^0.25.4",
     "graphology-indices": "^0.17.0",
     "graphology-utils": "^2.3.0",
-    "kuzu": "^0.11.3",
+    "@ladybugdb/core": "^0.15.1",
     "lru-cache": "^11.0.0",
     "mnemonist": "^0.39.0",
     "pandemonium": "^2.4.0",

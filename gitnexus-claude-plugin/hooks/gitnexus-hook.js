@@ -160,7 +160,7 @@ function handlePreToolUse(input) {
  * PostToolUse handler — detect index staleness after git mutations.
  *
  * Instead of spawning a full `gitnexus analyze` synchronously (which blocks
- * the agent for up to 120s and risks KuzuDB corruption on timeout), we do a
+ * the agent for up to 120s and risks LadybugDB corruption on timeout), we do a
  * lightweight staleness check: compare `git rev-parse HEAD` against the
  * lastCommit stored in `.gitnexus/meta.json`. If they differ, notify the
  * agent so it can decide when to reindex.

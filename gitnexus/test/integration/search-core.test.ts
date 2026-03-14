@@ -1,23 +1,23 @@
 /**
- * P0 Integration Tests: BM25/FTS Search against real KuzuDB
+ * P0 Integration Tests: BM25/FTS Search against real LadybugDB
  *
- * Tests: searchFTSFromKuzu via core adapter (no repoId) path against
+ * Tests: searchFTSFromLbug via core adapter (no repoId) path against
  * indexed test data. Verifies ranked result ordering, score merging,
  * and empty-match behavior.
  *
- * Uses withTestKuzuDB wrapper for full lifecycle management.
+ * Uses withTestLbugDB wrapper for full lifecycle management.
  */
 import { describe, it, expect } from 'vitest';
-import { withTestKuzuDB } from '../helpers/test-indexed-db.js';
-import { searchFTSFromKuzu } from '../../src/core/search/bm25-index.js';
+import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+import { searchFTSFromLbug } from '../../src/core/search/bm25-index.js';
 import { SEARCH_SEED_DATA, SEARCH_FTS_INDEXES } from '../fixtures/search-seed.js';
 
 // ─── Core adapter path (no repoId) ──────────────────────────────────
 
-withTestKuzuDB('search-core', (_handle) => {
-  describe('searchFTSFromKuzu — core adapter (no repoId)', () => {
+withTestLbugDB('search-core', (_handle) => {
+  describe('searchFTSFromLbug — core adapter (no repoId)', () => {
     it('returns ranked results for a matching query', async () => {
-      const results = await searchFTSFromKuzu('user authentication', 10);
+      const results = await searchFTSFromLbug('user authentication', 10);
 
       expect(results.length).toBeGreaterThan(0);
 
@@ -38,7 +38,7 @@ withTestKuzuDB('search-core', (_handle) => {
     });
 
     it('results are ordered by descending score', async () => {
-      const results = await searchFTSFromKuzu('user authentication', 10);
+      const results = await searchFTSFromLbug('user authentication', 10);
 
       for (let i = 1; i < results.length; i++) {
         expect(results[i - 1].score).toBeGreaterThanOrEqual(results[i].score);
@@ -46,7 +46,7 @@ withTestKuzuDB('search-core', (_handle) => {
     });
 
     it('auth-related files rank higher than unrelated files', async () => {
-      const results = await searchFTSFromKuzu('user authentication', 10);
+      const results = await searchFTSFromLbug('user authentication', 10);
       const filePaths = results.map((r) => r.filePath);
 
       expect(filePaths).toContain('src/auth.ts');
@@ -59,7 +59,7 @@ withTestKuzuDB('search-core', (_handle) => {
     });
 
     it('merges scores from multiple node types for the same filePath', async () => {
-      const results = await searchFTSFromKuzu('user authentication', 20);
+      const results = await searchFTSFromLbug('user authentication', 20);
 
       const authResult = results.find((r) => r.filePath === 'src/auth.ts');
       expect(authResult).toBeDefined();
@@ -71,12 +71,12 @@ withTestKuzuDB('search-core', (_handle) => {
     });
 
     it('respects limit parameter', async () => {
-      const results = await searchFTSFromKuzu('user authentication', 2);
+      const results = await searchFTSFromLbug('user authentication', 2);
       expect(results.length).toBeLessThanOrEqual(2);
     });
 
     it('returns empty array for a non-matching query', async () => {
-      const results = await searchFTSFromKuzu('xyzzyplughtwisty', 10);
+      const results = await searchFTSFromLbug('xyzzyplughtwisty', 10);
       expect(results).toEqual([]);
     });
   });
@@ -85,32 +85,32 @@ withTestKuzuDB('search-core', (_handle) => {
 
   describe('unhappy paths', () => {
     it('returns empty array for empty query string', async () => {
-      const results = await searchFTSFromKuzu('', 10);
+      const results = await searchFTSFromLbug('', 10);
       expect(results).toEqual([]);
     });
 
     it('returns empty array for whitespace-only query', async () => {
-      const results = await searchFTSFromKuzu('   ', 10);
+      const results = await searchFTSFromLbug('   ', 10);
       expect(results).toEqual([]);
     });
 
     it('handles special characters in query gracefully', async () => {
-      const results = await searchFTSFromKuzu('user* OR auth+', 10);
+      const results = await searchFTSFromLbug('user* OR auth+', 10);
       expect(Array.isArray(results)).toBe(true);
     });
 
     it('handles limit of 0', async () => {
-      const results = await searchFTSFromKuzu('user authentication', 0);
+      const results = await searchFTSFromLbug('user authentication', 0);
       expect(results).toEqual([]);
     });
 
     it('handles negative limit gracefully', async () => {
-      const results = await searchFTSFromKuzu('user authentication', -1);
+      const results = await searchFTSFromLbug('user authentication', -1);
       expect(Array.isArray(results)).toBe(true);
     });
 
     it('handles very large limit', async () => {
-      const results = await searchFTSFromKuzu('user authentication', 100000);
+      const results = await searchFTSFromLbug('user authentication', 100000);
       expect(results.length).toBeLessThanOrEqual(100000);
       expect(results.length).toBeGreaterThan(0);
     });

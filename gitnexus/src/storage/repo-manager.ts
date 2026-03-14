@@ -27,7 +27,7 @@ export interface RepoMeta {
 export interface IndexedRepo {
   repoPath: string;
   storagePath: string;
-  kuzuPath: string;
+  lbugPath: string;
   metaPath: string;
   meta: RepoMeta;
 }
@@ -62,9 +62,38 @@ export const getStoragePaths = (repoPath: string) => {
   const storagePath = getStoragePath(repoPath);
   return {
     storagePath,
-    kuzuPath: path.join(storagePath, 'kuzu'),
+    lbugPath: path.join(storagePath, 'lbug'),
     metaPath: path.join(storagePath, 'meta.json'),
   };
+};
+
+/**
+ * Clean up stale KuzuDB files after migration to LadybugDB.
+ * If .gitnexus/kuzu exists but .gitnexus/lbug does not, warn and delete the old file.
+ */
+export const cleanupOldKuzuFiles = async (storagePath: string): Promise<void> => {
+  const oldPath = path.join(storagePath, 'kuzu');
+  const newPath = path.join(storagePath, 'lbug');
+  try {
+    await fs.stat(oldPath);
+    // Old file exists — check if new file already exists
+    try {
+      await fs.stat(newPath);
+      // Both exist — just clean up old
+    } catch {
+      // New doesn't exist — warn user to re-index
+      console.error(
+        `⚠️  Found stale KuzuDB index at ${oldPath}. ` +
+        `GitNexus now uses LadybugDB. Run: npx gitnexus analyze`
+      );
+    }
+    // Delete old files and sidecars
+    for (const suffix of ['', '.wal', '.lock']) {
+      try { await fs.unlink(oldPath + suffix); } catch {}
+    }
+  } catch {
+    // Old path doesn't exist — nothing to do
+  }
 };
 
 /**

@@ -1,5 +1,5 @@
 /**
- * CSV Generator for KuzuDB Hybrid Schema
+ * CSV Generator for LadybugDB Hybrid Schema
  * 
  * Generates separate CSV files for each node table and one relation CSV.
  * This enables efficient bulk loading via COPY FROM for hybrid schema.
@@ -18,10 +18,10 @@ import { NODE_TABLES, NodeTableName } from './schema';
 // ============================================================================
 
 /**
- * Sanitize string to ensure valid UTF-8 and safe CSV content for KuzuDB
+ * Sanitize string to ensure valid UTF-8 and safe CSV content for LadybugDB
  * Removes or replaces invalid characters that would break CSV parsing.
  * 
- * Critical: KuzuDB's CSV parser can misinterpret \r\n inside quoted fields.
+ * Critical: LadybugDB's CSV parser can misinterpret \r\n inside quoted fields.
  * We normalize all line endings to \n only.
  */
 const sanitizeUTF8 = (str: string): string => {
@@ -213,7 +213,7 @@ const generateCommunityCSV = (nodes: GraphNode[]): string => {
   for (const node of nodes) {
     if (node.label !== 'Community') continue;
     
-    // Handle keywords array - convert to KuzuDB array format
+    // Handle keywords array - convert to LadybugDB array format
     const keywords = (node.properties as any).keywords || [];
     const keywordsStr = `[${keywords.map((k: string) => `'${k.replace(/'/g, "''")}'`).join(',')}]`;
     
@@ -221,7 +221,7 @@ const generateCommunityCSV = (nodes: GraphNode[]): string => {
       escapeCSVField(node.id),
       escapeCSVField(node.properties.name || ''),  // label is stored in name
       escapeCSVField(node.properties.heuristicLabel || ''),
-      keywordsStr,  // Array format for KuzuDB
+      keywordsStr,  // Array format for LadybugDB
       escapeCSVField((node.properties as any).description || ''),
       escapeCSVField((node.properties as any).enrichedBy || 'heuristic'),
       escapeCSVNumber(node.properties.cohesion, 0),

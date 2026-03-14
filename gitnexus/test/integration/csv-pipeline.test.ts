@@ -9,7 +9,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
 import { buildTestGraph } from '../helpers/test-graph.js';
-import { streamAllCSVsToDisk } from '../../src/core/kuzu/csv-generator.js';
+import { streamAllCSVsToDisk } from '../../src/core/lbug/csv-generator.js';
 
 let tmpHandle: TestDBHandle;
 let csvDir: string;

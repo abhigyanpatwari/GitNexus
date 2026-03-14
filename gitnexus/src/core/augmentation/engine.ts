@@ -24,7 +24,7 @@ import { listRegisteredRepos } from '../../storage/repo-manager.js';
 async function findRepoForCwd(cwd: string): Promise<{
   name: string;
   storagePath: string;
-  kuzuPath: string;
+  lbugPath: string;
 } | null> {
   try {
     const entries = await listRegisteredRepos({ validate: true });
@@ -66,7 +66,7 @@ async function findRepoForCwd(cwd: string): Promise<{
     return {
       name: bestMatch.name,
       storagePath: bestMatch.storagePath,
-      kuzuPath: path.join(bestMatch.storagePath, 'kuzu'),
+      lbugPath: path.join(bestMatch.storagePath, 'lbug'),
     };
   } catch {
     return null;
@@ -92,19 +92,19 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
     const repo = await findRepoForCwd(workDir);
     if (!repo) return '';
     
-    // Lazy-load kuzu adapter (skip unnecessary init)
-    const { initKuzu, executeQuery, isKuzuReady } = await import('../../mcp/core/kuzu-adapter.js');
-    const { searchFTSFromKuzu } = await import('../search/bm25-index.js');
-    
+    // Lazy-load lbug adapter (skip unnecessary init)
+    const { initLbug, executeQuery, isLbugReady } = await import('../../mcp/core/lbug-adapter.js');
+    const { searchFTSFromLbug } = await import('../search/bm25-index.js');
+
     const repoId = repo.name.toLowerCase();
-    
-    // Init KuzuDB if not already
-    if (!isKuzuReady(repoId)) {
-      await initKuzu(repoId, repo.kuzuPath);
+
+    // Init LadybugDB if not already
+    if (!isLbugReady(repoId)) {
+      await initLbug(repoId, repo.lbugPath);
     }
-    
+
     // Step 1: BM25 search (fast, no embeddings)
-    const bm25Results = await searchFTSFromKuzu(pattern, 10, repoId);
+    const bm25Results = await searchFTSFromLbug(pattern, 10, repoId);
     
     if (bm25Results.length === 0) return '';
     
