@@ -55,6 +55,7 @@ export type RubyCallRouting =
 export interface RubyHeritageItem {
   enclosingClass: string;
   mixinName: string;
+  heritageKind: 'include' | 'extend' | 'prepend';
 }
 
 export type RubyAccessorType = 'attr_accessor' | 'attr_reader' | 'attr_writer';
@@ -120,7 +121,7 @@ export function routeRubyCall(calledName: string, callNode: any): RubyCallRoutin
     const argList = callNode.childForFieldName?.('arguments');
     for (const arg of (argList?.children ?? [])) {
       if (arg.type === 'constant' || arg.type === 'scope_resolution') {
-        items.push({ enclosingClass, mixinName: arg.text });
+        items.push({ enclosingClass, mixinName: arg.text, heritageKind: calledName as 'include' | 'extend' | 'prepend' });
       }
     }
     return items.length > 0 ? { kind: 'heritage', items } : SKIP_RESULT;

@@ -298,7 +298,7 @@ export const processHeritageFromExtracted = async (
           reason: '',
         });
       }
-    } else if (h.kind === 'trait-impl') {
+    } else if (h.kind === 'trait-impl' || h.kind === 'include' || h.kind === 'extend' || h.kind === 'prepend') {
       const structId = symbolTable.lookupExact(h.filePath, h.className) ||
                        resolveSymbol(h.className, h.filePath, symbolTable, importMap, packageMap)?.nodeId ||
                        generateId('Struct', `${h.filePath}:${h.className}`);
@@ -308,12 +308,12 @@ export const processHeritageFromExtracted = async (
 
       if (structId && traitId) {
         graph.addRelationship({
-          id: generateId('IMPLEMENTS', `${structId}->${traitId}`),
+          id: generateId('IMPLEMENTS', `${structId}->${traitId}:${h.kind}`),
           sourceId: structId,
           targetId: traitId,
           type: 'IMPLEMENTS',
           confidence: 1.0,
-          reason: 'trait-impl',
+          reason: h.kind,
         });
       }
     }

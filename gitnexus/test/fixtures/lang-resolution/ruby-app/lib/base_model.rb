@@ -1,3 +1,5 @@
+require 'lib/concerns/serializable'
+
 class BaseModel
   attr_accessor :id, :created_at
 
@@ -7,5 +9,9 @@ class BaseModel
 
   def run_validations
     true
+  end
+
+  def self.factory
+    run_validations
   end
 end

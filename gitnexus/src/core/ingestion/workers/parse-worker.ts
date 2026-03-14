@@ -883,13 +883,14 @@ const processFileGroup = (
                   filePath: file.path,
                   className: item.enclosingClass,
                   parentName: item.mixinName,
-                  kind: 'trait-impl',
+                  kind: item.heritageKind,
                 });
               }
               continue;
             }
 
             if (routed.kind === 'properties') {
+              const propEnclosingClassId = findEnclosingClassId(captureMap['call'], file.path);
               for (const item of routed.items) {
                 const nodeId = generateId('Property', `${file.path}:${item.propName}`);
                 result.nodes.push({
@@ -910,6 +911,7 @@ const processFileGroup = (
                   name: item.propName,
                   nodeId,
                   type: 'Property',
+                  ...(propEnclosingClassId ? { ownerId: propEnclosingClassId } : {}),
                 });
                 const fileId = generateId('File', file.path);
                 const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
@@ -921,6 +923,16 @@ const processFileGroup = (
                   confidence: 1.0,
                   reason: '',
                 });
+                if (propEnclosingClassId) {
+                  result.relationships.push({
+                    id: generateId('HAS_METHOD', `${propEnclosingClassId}->${nodeId}`),
+                    sourceId: propEnclosingClassId,
+                    targetId: nodeId,
+                    type: 'HAS_METHOD',
+                    confidence: 1.0,
+                    reason: '',
+                  });
+                }
               }
               continue;
             }

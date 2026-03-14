@@ -19,6 +19,7 @@ import {
   countCallArguments,
   inferCallForm,
   extractReceiverName,
+  findEnclosingClassId,
 } from './utils.js';
 import { buildTypeEnv, lookupTypeEnv } from './type-env.js';
 import { getTreeSitterBufferSize } from './constants.js';
@@ -150,13 +151,14 @@ export const processCalls = async (
                 filePath: file.path,
                 className: item.enclosingClass,
                 parentName: item.mixinName,
-                kind: 'trait-impl',
+                kind: item.heritageKind,
               });
             }
             return;
 
           case 'properties': {
             const fileId = generateId('File', file.path);
+            const propEnclosingClassId = findEnclosingClassId(captureMap['call'], file.path);
             for (const item of routed.items) {
               const nodeId = generateId('Property', `${file.path}:${item.propName}`);
               graph.addNode({
@@ -169,12 +171,20 @@ export const processCalls = async (
                   description: item.accessorType,
                 },
               });
-              symbolTable.add(file.path, item.propName, nodeId, 'Property');
+              symbolTable.add(file.path, item.propName, nodeId, 'Property',
+                propEnclosingClassId ? { ownerId: propEnclosingClassId } : undefined);
               const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
               graph.addRelationship({
                 id: relId, sourceId: fileId, targetId: nodeId,
                 type: 'DEFINES', confidence: 1.0, reason: '',
               });
+              if (propEnclosingClassId) {
+                graph.addRelationship({
+                  id: generateId('HAS_METHOD', `${propEnclosingClassId}->${nodeId}`),
+                  sourceId: propEnclosingClassId, targetId: nodeId,
+                  type: 'HAS_METHOD', confidence: 1.0, reason: '',
+                });
+              }
             }
             return;
           }

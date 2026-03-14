@@ -32,8 +32,8 @@ describe('Ruby require_relative, heritage & property resolution', () => {
     ]);
   });
 
-  it('detects 1 module', () => {
-    expect(getNodesByLabel(result, 'Module')).toEqual(['Serializable']);
+  it('detects 3 modules', () => {
+    expect(getNodesByLabel(result, 'Module')).toEqual(['Cacheable', 'Loggable', 'Serializable']);
   });
 
   it('detects methods on classes and modules', () => {
@@ -45,22 +45,60 @@ describe('Ruby require_relative, heritage & property resolution', () => {
     expect(methods).toContain('create_user');
   });
 
+  it('detects singleton method (def self.factory) as Method', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('factory');
+  });
+
+  it('emits CALLS from singleton method: factory → run_validations', () => {
+    const calls = getRelationships(result, 'CALLS')
+      .filter(e => e.source === 'factory' && e.target === 'run_validations');
+    expect(calls.length).toBe(1);
+    expect(calls[0].sourceLabel).toBe('Method');
+  });
+
   // --- Import resolution via require_relative ---
 
-  it('resolves 3 require_relative imports to IMPORTS edges', () => {
+  it('resolves 5 require_relative imports to IMPORTS edges', () => {
     const imports = getRelationships(result, 'IMPORTS');
     const importEdges = edgeSet(imports);
     expect(importEdges).toContain('user.rb → base_model.rb');
     expect(importEdges).toContain('user.rb → serializable.rb');
+    expect(importEdges).toContain('user.rb → loggable.rb');
+    expect(importEdges).toContain('user.rb → cacheable.rb');
     expect(importEdges).toContain('service.rb → user.rb');
+  });
+
+  it('resolves bare require to IMPORTS edge', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const bareRequire = imports.find(e =>
+      e.sourceFilePath.includes('base_model.rb') &&
+      e.targetFilePath.includes('serializable.rb')
+    );
+    expect(bareRequire).toBeDefined();
   });
 
   // --- Heritage: include → IMPLEMENTS ---
 
-  it('emits IMPLEMENTS edge for include Serializable', () => {
+  it('emits IMPLEMENTS edge for include Serializable with reason "include"', () => {
     const implements_ = getRelationships(result, 'IMPLEMENTS');
-    const edges = edgeSet(implements_);
-    expect(edges).toContain('User → Serializable');
+    const edge = implements_.find(e => e.source === 'User' && e.target === 'Serializable');
+    expect(edge).toBeDefined();
+    expect(edge!.rel.reason).toBe('include');
+  });
+
+  it('emits IMPLEMENTS edge for extend Loggable with reason "extend"', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const edge = implements_.find(e => e.source === 'User' && e.target === 'Loggable');
+    expect(edge).toBeDefined();
+    expect(edge!.rel.reason).toBe('extend');
+  });
+
+  it('emits IMPLEMENTS edge for prepend Cacheable with reason "prepend"', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const edge = implements_.find(e => e.source === 'User' && e.target === 'Cacheable');
+    expect(edge).toBeDefined();
+    expect(edge!.rel.reason).toBe('prepend');
   });
 
   // --- Extends: class inheritance ---
@@ -84,6 +122,18 @@ describe('Ruby require_relative, heritage & property resolution', () => {
     const props = getNodesByLabel(result, 'Property');
     expect(props).toContain('name');
     expect(props).toContain('email');
+  });
+
+  it('emits HAS_METHOD from User to attr_reader :name', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const edge = hasMethod.find(e => e.source === 'User' && e.target === 'name');
+    expect(edge).toBeDefined();
+  });
+
+  it('emits HAS_METHOD from BaseModel to attr_accessor :id', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const edge = hasMethod.find(e => e.source === 'BaseModel' && e.target === 'id');
+    expect(edge).toBeDefined();
   });
 
   // --- Call resolution: method-level attribution ---
