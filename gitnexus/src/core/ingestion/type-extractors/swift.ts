@@ -55,10 +55,25 @@ const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<str
   const callExpr = findChildByType(node, 'call_expression');
   if (!callExpr) return;
   const callee = callExpr.firstNamedChild;
-  if (!callee || callee.type !== 'simple_identifier') return;
-  const calleeName = callee.text;
-  if (calleeName && classNames.has(calleeName)) {
-    env.set(varName, calleeName);
+  if (!callee) return;
+  // Direct call: User(name: "alice")
+  if (callee.type === 'simple_identifier') {
+    const calleeName = callee.text;
+    if (calleeName && classNames.has(calleeName)) {
+      env.set(varName, calleeName);
+    }
+    return;
+  }
+  // Explicit init: User.init(name: "alice") — navigation_expression with .init suffix
+  if (callee.type === 'navigation_expression') {
+    const receiver = callee.firstNamedChild;
+    const suffix = callee.lastNamedChild;
+    if (receiver?.type === 'simple_identifier' && suffix?.text === 'init') {
+      const calleeName = receiver.text;
+      if (calleeName && classNames.has(calleeName)) {
+        env.set(varName, calleeName);
+      }
+    }
   }
 };
 

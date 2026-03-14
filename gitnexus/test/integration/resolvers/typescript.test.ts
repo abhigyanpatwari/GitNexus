@@ -768,3 +768,36 @@ describe('TypeScript cast/non-null constructor inference', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Double-cast constructor inference: new X() as unknown as T
+// ---------------------------------------------------------------------------
+
+describe('TypeScript double-cast constructor inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-double-cast-inference'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, both with save methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves user.save() to User.save via new User() as unknown as any', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/user.ts');
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves repo.save() to Repo.save via new Repo() as unknown as object', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/repo.ts');
+    expect(repoSave).toBeDefined();
+  });
+});
+

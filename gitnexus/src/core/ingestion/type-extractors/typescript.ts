@@ -50,8 +50,8 @@ const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<str
     // handles the annotated case and this function is called as a fallback.
     if (declarator.childForFieldName('type') !== null) continue;
     let valueNode = declarator.childForFieldName('value');
-    // Unwrap `new User() as T` (as_expression) and `new User()!` (non_null_expression)
-    if (valueNode?.type === 'as_expression' || valueNode?.type === 'non_null_expression') {
+    // Unwrap `new User() as T`, `new User()!`, and double-cast `new User() as unknown as T`
+    while (valueNode?.type === 'as_expression' || valueNode?.type === 'non_null_expression') {
       valueNode = valueNode.firstNamedChild;
     }
     if (valueNode?.type !== 'new_expression') continue;

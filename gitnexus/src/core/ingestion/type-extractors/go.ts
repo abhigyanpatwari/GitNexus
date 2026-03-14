@@ -59,7 +59,11 @@ const extractGoShortVarDeclaration = (node: SyntaxNode, env: Map<string, string>
   // Pair each LHS name with its corresponding RHS value
   const count = Math.min(lhsNodes.length, rhsNodes.length);
   for (let i = 0; i < count; i++) {
-    const valueNode = rhsNodes[i];
+    let valueNode = rhsNodes[i];
+    // Unwrap &User{} — unary_expression (address-of) wrapping composite_literal
+    if (valueNode.type === 'unary_expression' && valueNode.firstNamedChild?.type === 'composite_literal') {
+      valueNode = valueNode.firstNamedChild;
+    }
     if (valueNode.type !== 'composite_literal') continue;
     const typeNode = valueNode.childForFieldName('type');
     if (!typeNode) continue;

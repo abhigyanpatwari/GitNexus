@@ -165,6 +165,29 @@ describe('buildTypeEnv', () => {
       expect(flatGet(env, 'user')).toBe('User');
     });
 
+    it('extracts type from address-of composite literal (&User{})', () => {
+      const tree = parse(`
+        package main
+        func main() {
+          user := &User{Name: "Alice"}
+        }
+      `, Go);
+      const { env } = buildTypeEnv(tree, 'go');
+      expect(flatGet(env, 'user')).toBe('User');
+    });
+
+    it('extracts type from address-of in multi-assignment', () => {
+      const tree = parse(`
+        package main
+        func main() {
+          user, repo := &User{}, &Repo{}
+        }
+      `, Go);
+      const { env } = buildTypeEnv(tree, 'go');
+      expect(flatGet(env, 'user')).toBe('User');
+      expect(flatGet(env, 'repo')).toBe('Repo');
+    });
+
     it('extracts type from function parameters', () => {
       const tree = parse(`
         package main
@@ -593,6 +616,13 @@ class RepoService {
         const tree = parse('const x = new User()!;', TypeScript.typescript);
         const { env } = buildTypeEnv(tree, 'typescript');
         // Unwraps non_null_expression to find the inner new_expression → User
+        expect(flatGet(env, 'x')).toBe('User');
+      });
+
+      it('infers type from double-cast (new X() as unknown as T)', () => {
+        const tree = parse('const x = new User() as unknown as Admin;', TypeScript.typescript);
+        const { env } = buildTypeEnv(tree, 'typescript');
+        // Unwraps nested as_expression to find inner new_expression → User
         expect(flatGet(env, 'x')).toBe('User');
       });
 

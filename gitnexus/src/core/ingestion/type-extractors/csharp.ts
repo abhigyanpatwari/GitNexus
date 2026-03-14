@@ -44,7 +44,8 @@ const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
   let typeName: string | undefined;
   if (typeNode.type === 'implicit_type' && typeNode.text === 'var') {
     // Try to infer from initializer: var x = new Foo()
-    // C# tree-sitter puts object_creation_expression as direct child of variable_declarator
+    // tree-sitter-c-sharp may put object_creation_expression as direct child
+    // or inside equals_value_clause depending on grammar version
     if (declarators.length === 1) {
       const initializer = findChildByType(declarators[0], 'object_creation_expression')
         ?? findChildByType(declarators[0], 'equals_value_clause')?.firstNamedChild;
