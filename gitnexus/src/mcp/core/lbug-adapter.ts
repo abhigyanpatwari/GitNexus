@@ -172,6 +172,14 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
 
       pool.set(repoId, { db, available, checkedOut: 0, waiters: [], lastUsed: Date.now(), dbPath });
       ensureIdleTimer();
+
+      // Load FTS extension so QUERY_FTS_INDEX is available on read-only connections
+      try {
+        await available[0].query('LOAD EXTENSION fts');
+      } catch {
+        // Extension may not be installed — FTS queries will fail gracefully
+      }
+
       return;
     } catch (err: any) {
       restoreStdout();
