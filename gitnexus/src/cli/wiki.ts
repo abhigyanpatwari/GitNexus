@@ -123,6 +123,7 @@ export const wikiCommand = async (
     console.log('  Config saved to ~/.gitnexus/config.json\n');
   }
 
+  // Re-load config after saving to get the updated values
   const savedConfig = await loadCLIConfig();
   const hasSavedConfig = !!(savedConfig.apiKey && savedConfig.baseUrl);
   const hasCLIOverrides = !!(options?.apiKey || options?.model || options?.baseUrl);
@@ -237,7 +238,6 @@ export const wikiCommand = async (
   }, 1000);
 
   // ── Run generator ───────────────────────────────────────────────────
-  const cliConfig = await loadCLIConfig();
   const wikiOptions: WikiOptions = {
     force: options?.force,
     model: options?.model,
@@ -259,7 +259,7 @@ export const wikiCommand = async (
       }
       bar.update(percent, { phase: label });
     },
-    cliConfig.wiki,
+    savedConfig.wiki, // Pass wiki prompts from config
   );
 
   try {

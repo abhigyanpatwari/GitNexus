@@ -306,8 +306,21 @@ export const getGlobalConfigPath = (): string => {
 export const loadCLIConfig = async (): Promise<CLIConfig> => {
   try {
     const raw = await fs.readFile(getGlobalConfigPath(), 'utf-8');
-    return JSON.parse(raw) as CLIConfig;
-  } catch {
+    const config = JSON.parse(raw) as CLIConfig;
+    
+    // Validate config structure
+    if (typeof config !== 'object' || config === null) {
+      console.warn(`GitNexus: Invalid config file format at ${getGlobalConfigPath()}. Using defaults.`);
+      return {};
+    }
+    
+    return config;
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      console.warn(`GitNexus: Invalid JSON in config file at ${getGlobalConfigPath()}: ${error.message}. Using defaults.`);
+    } else if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.warn(`GitNexus: Error reading config file at ${getGlobalConfigPath()}: ${(error as Error).message}. Using defaults.`);
+    }
     return {};
   }
 };

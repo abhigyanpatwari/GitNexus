@@ -1,0 +1,14 @@
+{"$schema": "./config.schema.json", "apiKey": "your-api-key-here", "model": "gpt-4", "baseUrl": "https://api.openai.com/v1", "embedding": {"modelId": "Snowflake/snowflake-arctic-embed-xs", "remoteHost": "https://huggingface.co/", "batchSize": 16, "dimensions": 384, "device": "auto", "maxSnippetLength": 500}, "wiki": {"groupingSystemPrompt": "You are a documentation architect...", "groupingUserPrompt": "Group these source files into documentation modules.
+
+**Files and their exports:**
+{{FILE_LIST}}", "moduleSystemPrompt": "You are a technical documentation writer...", "moduleUserPrompt": "Write documentation for the **{{MODULE_NAME}}** module.
+
+## Source Code
+
+{{SOURCE_CODE}}", "parentSystemPrompt": "You are a technical documentation writer...", "parentUserPrompt": "Write documentation for the **{{MODULE_NAME}}** module, which contains these sub-modules:
+
+{{CHILDREN_DOCS}}", "overviewSystemPrompt": "You are a technical documentation writer...", "overviewUserPrompt": "Write the overview page for this repository's wiki.
+
+## Project Info
+
+{{PROJECT_INFO}}"}}

@@ -166,6 +166,16 @@ export function formatDirectoryTree(filePaths: string[]): string {
 }
 
 /**
+ * Validate that required placeholders are present in a prompt template.
+ */
+function validatePromptPlaceholders(template: string, requiredPlaceholders: string[]): void {
+  const missing = requiredPlaceholders.filter(placeholder => !template.includes(placeholder));
+  if (missing.length > 0) {
+    console.warn(`GitNexus: Custom prompt is missing required placeholders: ${missing.join(', ')}. Using default prompt.`);
+  }
+}
+
+/**
  * Format call edges as readable text.
  */
 export function formatCallEdges(
@@ -211,17 +221,34 @@ function shortPath(fp: string): string {
 // ─── Prompt Getter Functions ───────────────────────────────────────────
 
 /**
- * Get prompts from config or use defaults
+ * Get prompts from config, falling back to defaults.
+ * Validates that custom prompts contain required placeholders.
  */
 export function getPrompts(config?: CLIConfig['wiki']) {
-  return {
-    GROUPING_SYSTEM_PROMPT: config?.groupingSystemPrompt || DEFAULT_GROUPING_SYSTEM_PROMPT,
-    GROUPING_USER_PROMPT: config?.groupingUserPrompt || DEFAULT_GROUPING_USER_PROMPT,
-    MODULE_SYSTEM_PROMPT: config?.moduleSystemPrompt || DEFAULT_MODULE_SYSTEM_PROMPT,
-    MODULE_USER_PROMPT: config?.moduleUserPrompt || DEFAULT_MODULE_USER_PROMPT,
-    PARENT_SYSTEM_PROMPT: config?.parentSystemPrompt || DEFAULT_PARENT_SYSTEM_PROMPT,
-    PARENT_USER_PROMPT: config?.parentUserPrompt || DEFAULT_PARENT_USER_PROMPT,
-    OVERVIEW_SYSTEM_PROMPT: config?.overviewSystemPrompt || DEFAULT_OVERVIEW_SYSTEM_PROMPT,
-    OVERVIEW_USER_PROMPT: config?.overviewUserPrompt || DEFAULT_OVERVIEW_USER_PROMPT,
+  const prompts = {
+    groupingSystemPrompt: config?.groupingSystemPrompt || DEFAULT_GROUPING_SYSTEM_PROMPT,
+    groupingUserPrompt: config?.groupingUserPrompt || DEFAULT_GROUPING_USER_PROMPT,
+    moduleSystemPrompt: config?.moduleSystemPrompt || DEFAULT_MODULE_SYSTEM_PROMPT,
+    moduleUserPrompt: config?.moduleUserPrompt || DEFAULT_MODULE_USER_PROMPT,
+    parentSystemPrompt: config?.parentSystemPrompt || DEFAULT_PARENT_SYSTEM_PROMPT,
+    parentUserPrompt: config?.parentUserPrompt || DEFAULT_PARENT_USER_PROMPT,
+    overviewSystemPrompt: config?.overviewSystemPrompt || DEFAULT_OVERVIEW_SYSTEM_PROMPT,
+    overviewUserPrompt: config?.overviewUserPrompt || DEFAULT_OVERVIEW_USER_PROMPT,
   };
+
+  // Validate required placeholders for custom prompts
+  if (config?.groupingUserPrompt) {
+    validatePromptPlaceholders(config.groupingUserPrompt, ['{{FILE_LIST}}', '{{DIRECTORY_TREE}}']);
+  }
+  if (config?.moduleUserPrompt) {
+    validatePromptPlaceholders(config.moduleUserPrompt, ['{{MODULE_NAME}}', '{{SOURCE_CODE}}']);
+  }
+  if (config?.parentUserPrompt) {
+    validatePromptPlaceholders(config.parentUserPrompt, ['{{MODULE_NAME}}', '{{CHILDREN_DOCS}}']);
+  }
+  if (config?.overviewUserPrompt) {
+    validatePromptPlaceholders(config.overviewUserPrompt, ['{{PROJECT_INFO}}', '{{MODULE_SUMMARIES}}']);
+  }
+
+  return prompts;
 }

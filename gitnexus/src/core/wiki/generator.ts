@@ -322,13 +322,13 @@ export class WikiGenerator {
     const fileList = formatFileListForGrouping(files);
     const dirTree = formatDirectoryTree(files.map(f => f.filePath));
 
-    const prompt = fillTemplate(this.prompts.GROUPING_USER_PROMPT, {
+    const prompt = fillTemplate(this.prompts.groupingUserPrompt, {
       FILE_LIST: fileList,
       DIRECTORY_TREE: dirTree,
     });
 
     const response = await callLLM(
-      prompt, this.llmConfig, this.prompts.GROUPING_SYSTEM_PROMPT,
+      prompt, this.llmConfig, this.prompts.groupingSystemPrompt,
       this.streamOpts('Grouping files', 15),
     );
     const grouping = this.parseGroupingResponse(response.content, files);
@@ -475,7 +475,7 @@ export class WikiGenerator {
       getProcessesForFiles(filePaths, 5),
     ]);
 
-    const prompt = fillTemplate(this.prompts.MODULE_USER_PROMPT, {
+    const prompt = fillTemplate(this.prompts.moduleUserPrompt, {
       MODULE_NAME: node.name,
       SOURCE_CODE: finalSourceCode,
       INTRA_CALLS: formatCallEdges(intraCalls),
@@ -485,7 +485,7 @@ export class WikiGenerator {
     });
 
     const response = await callLLM(
-      prompt, this.llmConfig, this.prompts.MODULE_SYSTEM_PROMPT,
+      prompt, this.llmConfig, this.prompts.moduleSystemPrompt,
       this.streamOpts(node.name),
     );
 
@@ -520,7 +520,7 @@ export class WikiGenerator {
     const crossCalls = await getIntraModuleCallEdges(allChildFiles);
     const processes = await getProcessesForFiles(allChildFiles, 3);
 
-    const prompt = fillTemplate(this.prompts.PARENT_USER_PROMPT, {
+    const prompt = fillTemplate(this.prompts.parentUserPrompt, {
       MODULE_NAME: node.name,
       CHILDREN_DOCS: childDocs.join('\n\n'),
       CROSS_MODULE_CALLS: formatCallEdges(crossCalls),
@@ -528,7 +528,7 @@ export class WikiGenerator {
     });
 
     const response = await callLLM(
-      prompt, this.llmConfig, this.prompts.PARENT_SYSTEM_PROMPT,
+      prompt, this.llmConfig, this.prompts.parentSystemPrompt,
       this.streamOpts(node.name),
     );
 
@@ -567,7 +567,7 @@ export class WikiGenerator {
       ? moduleEdges.map(e => `${e.from} → ${e.to} (${e.count} calls)`).join('\n')
       : 'No inter-module call edges detected';
 
-    const prompt = fillTemplate(this.prompts.OVERVIEW_USER_PROMPT, {
+    const prompt = fillTemplate(this.prompts.overviewUserPrompt, {
       PROJECT_INFO: projectInfo,
       MODULE_SUMMARIES: moduleSummaries.join('\n\n'),
       MODULE_EDGES: edgesText,
@@ -575,7 +575,7 @@ export class WikiGenerator {
     });
 
     const response = await callLLM(
-      prompt, this.llmConfig, this.prompts.OVERVIEW_SYSTEM_PROMPT,
+      prompt, this.llmConfig, this.prompts.overviewSystemPrompt,
       this.streamOpts('Generating overview', 88),
     );
 

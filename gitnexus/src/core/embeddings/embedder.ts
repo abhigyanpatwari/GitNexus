@@ -111,7 +111,6 @@ export const initEmbedder = async (
       env.allowLocalModels = false;
 
       // Set remote host from config
-      debugger;
       env.remoteHost = finalConfig.remoteHost;
 
       const isDev = process.env.NODE_ENV === 'development';
