@@ -652,3 +652,71 @@ describe('Python return type inference', () => {
     expect(saveCall!.targetFilePath).toContain('models.py');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #289: static/classmethod classes must have HAS_METHOD edges
+// ---------------------------------------------------------------------------
+
+describe('Python static/classmethod class resolution (issue #289)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-static-class-methods'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects UserService and AdminService classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('UserService');
+    expect(getNodesByLabel(result, 'Class')).toContain('AdminService');
+  });
+
+  it('detects all static/class methods as symbols', () => {
+    const allSymbols = [...getNodesByLabel(result, 'Function'), ...getNodesByLabel(result, 'Method')];
+    expect(allSymbols).toContain('find_user');
+    expect(allSymbols).toContain('create_user');
+    expect(allSymbols).toContain('from_config');
+    expect(allSymbols).toContain('delete_user');
+  });
+
+  it('emits HAS_METHOD edges linking static methods to their enclosing class', () => {
+    // This is the core of issue #289: without HAS_METHOD, context() and impact()
+    // return empty for classes whose methods are all @staticmethod/@classmethod
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+
+    const userServiceMethods = hasMethod.filter(e => e.source === 'UserService');
+    expect(userServiceMethods.length).toBeGreaterThanOrEqual(3); // find_user, create_user, from_config
+
+    const adminServiceMethods = hasMethod.filter(e => e.source === 'AdminService');
+    expect(adminServiceMethods.length).toBeGreaterThanOrEqual(2); // find_user, delete_user
+  });
+
+  it('resolves unique static method calls (create_user, delete_user, from_config)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // delete_user is unique to AdminService — should resolve
+    const deleteCall = calls.find(c =>
+      c.target === 'delete_user' && c.source === 'process' && c.targetFilePath.includes('service.py'),
+    );
+    expect(deleteCall).toBeDefined();
+
+    // create_user is unique to UserService — should resolve
+    const createCall = calls.find(c =>
+      c.target === 'create_user' && c.source === 'process' && c.targetFilePath.includes('service.py'),
+    );
+    expect(createCall).toBeDefined();
+  });
+
+  it('does not emit ambiguous find_user() when both classes define it (known limitation)', () => {
+    // UserService.find_user() and AdminService.find_user() are ambiguous — the pipeline
+    // refuses to guess. Static method calls like ClassName.method() don't have a typed
+    // receiver variable, so receiver-constrained disambiguation doesn't apply.
+    // This is expected: no false edges is better than wrong edges.
+    const calls = getRelationships(result, 'CALLS');
+    const findCalls = calls.filter(c =>
+      c.target === 'find_user' && c.source === 'process',
+    );
+    // Either 0 (refused ambiguous) or 2 (both resolved) — not 1 (wrong guess)
+    expect(findCalls.length === 0 || findCalls.length === 2).toBe(true);
+  });
+});
