@@ -1,6 +1,6 @@
 import type { SyntaxNode } from '../utils.js';
 import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner } from './types.js';
-import { extractSimpleTypeName, extractVarName, hasTypeAnnotation } from './shared.js';
+import { extractSimpleTypeName, extractVarName, hasTypeAnnotation, unwrapAwait } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
   'let_declaration',
@@ -167,7 +167,8 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
     if (!patternNode) return undefined;
   }
   if (patternNode.type !== 'identifier') return undefined;
-  const value = node.childForFieldName('value');
+  // Unwrap `.await`: `let user = get_user().await` → await_expression wraps call_expression
+  const value = unwrapAwait(node.childForFieldName('value'));
   if (!value || value.type !== 'call_expression') return undefined;
   const func = value.childForFieldName('function');
   if (!func) return undefined;

@@ -1864,6 +1864,33 @@ svc = App::Models::Service.new
       expect(binding!.calleeName).toBe('GetUser');
     });
 
+    it('unwraps .await in Rust: let user = get_user().await', () => {
+      const tree = parse(`
+        async fn process() {
+          let user = get_user().await;
+        }
+      `, Rust);
+      const { constructorBindings } = buildTypeEnv(tree, 'rust');
+      expect(constructorBindings.length).toBe(1);
+      expect(constructorBindings[0].varName).toBe('user');
+      expect(constructorBindings[0].calleeName).toBe('get_user');
+    });
+
+    it('unwraps await in C#: var user = await svc.GetUserAsync()', () => {
+      const tree = parse(`
+        class App {
+          async void Run() {
+            var svc = new UserService();
+            var user = await svc.GetUserAsync("alice");
+          }
+        }
+      `, CSharp);
+      const { constructorBindings } = buildTypeEnv(tree, 'csharp');
+      const binding = constructorBindings.find(b => b.varName === 'user');
+      expect(binding).toBeDefined();
+      expect(binding!.calleeName).toBe('GetUserAsync');
+    });
+
     it('returns constructor binding for C# var user = GetUser() (standalone call)', () => {
       const tree = parse(`
         class App {

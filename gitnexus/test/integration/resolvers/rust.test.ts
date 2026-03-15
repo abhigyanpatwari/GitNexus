@@ -748,3 +748,50 @@ describe('Rust ::default() constructor resolution', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rust async .await constructor binding resolution
+// Verifies that `let user = create_user().await` correctly unwraps the
+// await_expression to find the call_expression underneath, producing a
+// constructor binding that enables receiver-based disambiguation of user.save().
+// ---------------------------------------------------------------------------
+
+describe('Rust async .await constructor binding resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-async-binding'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    expect(structs).toContain('User');
+    expect(structs).toContain('Repo');
+  });
+
+  it('detects save function(s) in models.rs', () => {
+    // Both User and Repo impl blocks have save(), but generateId deduplicates
+    // same-name functions in the same file — at least 1 save must exist
+    const methods = [...getNodesByLabel(result, 'Function'), ...getNodesByLabel(result, 'Method')];
+    expect(methods.filter((m: string) => m === 'save').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('resolves user.save() after .await to models.rs via return type of create_user()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'process_user' && c.targetFilePath.includes('models'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves repo.save() after .await to models.rs via return type of create_repo()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'process_repo' && c.targetFilePath.includes('models'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+});

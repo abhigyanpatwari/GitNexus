@@ -525,9 +525,9 @@ export const extractReturnTypeName = (raw: string): string | undefined => {
     return PRIMITIVE_TYPES.has(base.toLowerCase()) ? undefined : base;
   }
 
-  // Handle qualified names: models.User → User, Models::User → User
-  if (text.includes('::') || text.includes('.')) {
-    text = text.split(/::|\./).pop()!;
+  // Handle qualified names: models.User → User, Models::User → User, \App\Models\User → User
+  if (text.includes('::') || text.includes('.') || text.includes('\\')) {
+    text = text.split(/::|[.\\]/).pop()!;
   }
 
   // Final check: skip primitives

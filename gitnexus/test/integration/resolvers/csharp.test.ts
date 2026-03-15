@@ -655,3 +655,42 @@ describe('C# null-conditional call resolution (user?.Save())', () => {
     expect(repoTargeted.length).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// C# async/await constructor binding resolution
+// Verifies that `var user = await svc.GetUserAsync()` correctly unwraps the
+// await_expression to find the invocation_expression underneath, producing a
+// constructor binding that enables receiver-based disambiguation of user.Save().
+// ---------------------------------------------------------------------------
+
+describe('C# async await constructor binding resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-async-binding'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User, UserService, and OrderService classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('User');
+    expect(classes).toContain('UserService');
+    expect(classes).toContain('OrderService');
+  });
+
+  it('detects competing Save methods and GetUserAsync on both services', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('Save');
+    expect(methods).toContain('GetUserAsync');
+  });
+
+  it('resolves user.Save() after await to User#Save via return type inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'Main' && c.targetFilePath.includes('User.cs'),
+    );
+    expect(userSave).toBeDefined();
+  });
+});

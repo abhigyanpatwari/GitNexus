@@ -304,10 +304,11 @@ const fallbackRelationshipInserts = async (
       const confidence = parseFloat(confidenceStr) || 1.0;
       const step = parseInt(stepStr) || 0;
 
+      const esc = (s: string) => s.replace(/'/g, "''").replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
       await conn.query(`
-        MATCH (a:${escapeLabel(fromLabel)} {id: '${fromId.replace(/'/g, "''")}' }),
-              (b:${escapeLabel(toLabel)} {id: '${toId.replace(/'/g, "''")}' })
-        CREATE (a)-[:${REL_TABLE_NAME} {type: '${relType}', confidence: ${confidence}, reason: '${reason.replace(/'/g, "''")}', step: ${step}}]->(b)
+        MATCH (a:${escapeLabel(fromLabel)} {id: '${esc(fromId)}' }),
+              (b:${escapeLabel(toLabel)} {id: '${esc(toId)}' })
+        CREATE (a)-[:${REL_TABLE_NAME} {type: '${esc(relType)}', confidence: ${confidence}, reason: '${esc(reason)}', step: ${step}}]->(b)
       `);
     } catch {
       // skip

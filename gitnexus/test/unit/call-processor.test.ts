@@ -683,4 +683,16 @@ describe('extractReturnTypeName', () => {
   it('returns undefined for lowercase non-class types', () => {
     expect(extractReturnTypeName('error')).toBeUndefined();
   });
+
+  it('extracts PHP backslash-namespaced type: \\App\\Models\\User → User', () => {
+    expect(extractReturnTypeName('\\App\\Models\\User')).toBe('User');
+  });
+
+  it('extracts PHP single-segment namespace: \\User → User', () => {
+    expect(extractReturnTypeName('\\User')).toBe('User');
+  });
+
+  it('extracts PHP deep namespace: \\Vendor\\Package\\Sub\\Client → Client', () => {
+    expect(extractReturnTypeName('\\Vendor\\Package\\Sub\\Client')).toBe('Client');
+  });
 });

@@ -1,6 +1,6 @@
 import type { SyntaxNode } from '../utils.js';
 import type { ConstructorBindingScanner, LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor } from './types.js';
-import { extractSimpleTypeName, extractVarName, findChildByType } from './shared.js';
+import { extractSimpleTypeName, extractVarName, findChildByType, unwrapAwait } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
   'local_declaration_statement',
@@ -127,8 +127,11 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
     const child = declarator.namedChild(i);
     if (!child) continue;
     if (child.type === 'equals_value_clause') { value = child.firstNamedChild; break; }
-    if (child.type === 'invocation_expression' || child.type === 'object_creation_expression') { value = child; break; }
+    if (child.type === 'invocation_expression' || child.type === 'object_creation_expression' || child.type === 'await_expression') { value = child; break; }
   }
+  if (!value) return undefined;
+  // Unwrap await: `var user = await svc.GetUserAsync()` → await_expression wraps invocation_expression
+  value = unwrapAwait(value);
   if (!value) return undefined;
   // Skip object_creation_expression (new User()) — handled by extractInitializer
   if (value.type === 'object_creation_expression') return undefined;
