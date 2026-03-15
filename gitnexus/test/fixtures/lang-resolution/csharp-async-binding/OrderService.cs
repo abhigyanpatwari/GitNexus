@@ -2,8 +2,8 @@ namespace CSharpAsyncBinding;
 
 public class OrderService
 {
-    public async Task<User> GetUserAsync(string name)
+    public async Task<Order> GetOrderAsync(string name)
     {
-        return new User { Name = name };
+        return new Order { Name = name };
     }
 }

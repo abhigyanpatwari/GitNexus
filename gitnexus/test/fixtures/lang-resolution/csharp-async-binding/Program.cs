@@ -10,7 +10,7 @@ public class Program
         var user = await userSvc.GetUserAsync("alice");
         user.Save();
 
-        var order = await orderSvc.GetUserAsync("bob");
+        var order = await orderSvc.GetOrderAsync("bob");
         order.Save();
     }
 }

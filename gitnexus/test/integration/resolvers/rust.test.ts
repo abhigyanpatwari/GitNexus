@@ -772,26 +772,40 @@ describe('Rust async .await constructor binding resolution', () => {
     expect(structs).toContain('Repo');
   });
 
-  it('detects save function(s) in models.rs', () => {
-    // Both User and Repo impl blocks have save(), but generateId deduplicates
-    // same-name functions in the same file — at least 1 save must exist
+  it('detects save methods in separate files', () => {
     const methods = [...getNodesByLabel(result, 'Function'), ...getNodesByLabel(result, 'Method')];
-    expect(methods.filter((m: string) => m === 'save').length).toBeGreaterThanOrEqual(1);
+    expect(methods.filter((m: string) => m === 'save').length).toBeGreaterThanOrEqual(2);
   });
 
-  it('resolves user.save() after .await to models.rs via return type of create_user()', () => {
+  it('resolves user.save() after .await to user.rs via return type of get_user()', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'process_user' && c.targetFilePath.includes('models'),
+      c.target === 'save' && c.source === 'process_user' && c.targetFilePath.includes('user'),
     );
     expect(saveCall).toBeDefined();
   });
 
-  it('resolves repo.save() after .await to models.rs via return type of create_repo()', () => {
+  it('user.save() does NOT resolve to Repo#save in repo.rs', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_user' && c.targetFilePath.includes('repo'),
+    );
+    expect(wrongSave).toBeUndefined();
+  });
+
+  it('resolves repo.save() after .await to repo.rs via return type of get_repo()', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'process_repo' && c.targetFilePath.includes('models'),
+      c.target === 'save' && c.source === 'process_repo' && c.targetFilePath.includes('repo'),
     );
     expect(saveCall).toBeDefined();
+  });
+
+  it('repo.save() does NOT resolve to User#save in user.rs', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_repo' && c.targetFilePath.includes('user'),
+    );
+    expect(wrongSave).toBeUndefined();
   });
 });

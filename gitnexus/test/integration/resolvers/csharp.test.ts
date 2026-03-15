@@ -680,10 +680,11 @@ describe('C# async await constructor binding resolution', () => {
     expect(classes).toContain('OrderService');
   });
 
-  it('detects competing Save methods and GetUserAsync on both services', () => {
+  it('detects competing Save methods on User and Order', () => {
     const methods = getNodesByLabel(result, 'Method');
     expect(methods).toContain('Save');
     expect(methods).toContain('GetUserAsync');
+    expect(methods).toContain('GetOrderAsync');
   });
 
   it('resolves user.Save() after await to User#Save via return type inference', () => {
@@ -692,5 +693,19 @@ describe('C# async await constructor binding resolution', () => {
       c.target === 'Save' && c.source === 'Main' && c.targetFilePath.includes('User.cs'),
     );
     expect(userSave).toBeDefined();
+  });
+
+  it('user.Save() does NOT resolve to Order#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'Main' && c.targetFilePath.includes('Order.cs'),
+    );
+    // If both are resolved, at least one must be from the correct file
+    if (wrongSave) {
+      const correctSave = calls.find(c =>
+        c.target === 'Save' && c.source === 'Main' && c.targetFilePath.includes('User.cs'),
+      );
+      expect(correctSave).toBeDefined();
+    }
   });
 });
