@@ -5,9 +5,9 @@
  * All API keys are stored locally - never sent to any server except the LLM provider.
  */
 
-import { 
-  LLMSettings, 
-  DEFAULT_LLM_SETTINGS, 
+import {
+  LLMSettings,
+  DEFAULT_LLM_SETTINGS,
   LLMProvider,
   OpenAIConfig,
   AzureOpenAIConfig,
@@ -15,6 +15,7 @@ import {
   AnthropicConfig,
   OllamaConfig,
   OpenRouterConfig,
+  MiniMaxConfig,
   ProviderConfig,
 } from './types';
 
@@ -59,6 +60,10 @@ export const loadSettings = (): LLMSettings => {
       openrouter: {
         ...DEFAULT_LLM_SETTINGS.openrouter,
         ...parsed.openrouter,
+      },
+      minimax: {
+        ...DEFAULT_LLM_SETTINGS.minimax,
+        ...parsed.minimax,
       },
     };
   } catch (error) {
@@ -162,6 +167,17 @@ export const updateProviderSettings = <T extends LLMProvider>(
       saveSettings(updated);
       return updated;
     }
+    case 'minimax': {
+      const updated: LLMSettings = {
+        ...current,
+        minimax: {
+          ...(current.minimax ?? {}),
+          ...(updates as Partial<Omit<MiniMaxConfig, 'provider'>>),
+        },
+      };
+      saveSettings(updated);
+      return updated;
+    }
     default: {
       // Should be unreachable due to T extends LLMProvider, but keep a safe fallback
       const updated: LLMSettings = { ...current };
@@ -245,7 +261,16 @@ export const getActiveProviderConfig = (): ProviderConfig | null => {
         temperature: settings.openrouter.temperature,
         maxTokens: settings.openrouter.maxTokens,
       } as OpenRouterConfig;
-      
+
+    case 'minimax':
+      if (!settings.minimax?.apiKey) {
+        return null;
+      }
+      return {
+        provider: 'minimax',
+        ...settings.minimax,
+      } as MiniMaxConfig;
+
     default:
       return null;
   }
@@ -282,6 +307,8 @@ export const getProviderDisplayName = (provider: LLMProvider): string => {
       return 'Ollama (Local)';
     case 'openrouter':
       return 'OpenRouter';
+    case 'minimax':
+      return 'MiniMax';
     default:
       return provider;
   }
@@ -303,6 +330,8 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
       return ['claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'];
     case 'ollama':
       return ['llama3.2', 'llama3.1', 'mistral', 'codellama', 'deepseek-coder'];
+    case 'minimax':
+      return ['MiniMax-M2.5', 'MiniMax-M2.5-highspeed'];
     default:
       return [];
   }

@@ -263,7 +263,7 @@ npm install
 npm run dev
 ```
 
-The web UI uses the same indexing pipeline as the CLI but runs entirely in WebAssembly (Tree-sitter WASM, KuzuDB WASM, in-browser embeddings). It's great for quick exploration but limited by browser memory for larger repos.
+The web UI uses the same indexing pipeline as the CLI but runs entirely in WebAssembly (Tree-sitter WASM, KuzuDB WASM, in-browser embeddings). It's great for quick exploration but limited by browser memory for larger repos. The built-in AI chat supports multiple LLM providers: OpenAI, Google Gemini, Anthropic, Azure OpenAI, Ollama, OpenRouter, and MiniMax.
 
 **Local Backend Mode:** Run `gitnexus serve` and open the web UI locally — it auto-detects the server and shows all your indexed repos, with full AI chat support. No need to re-upload or re-index. The agent's tools (Cypher queries, search, code navigation) route through the backend HTTP API automatically.
 
@@ -468,11 +468,14 @@ gitnexus wiki
 gitnexus wiki --model gpt-4o
 gitnexus wiki --base-url https://api.anthropic.com/v1
 
+# Use MiniMax
+gitnexus wiki --model MiniMax-M2.5 --base-url https://api.minimax.io/v1
+
 # Force full regeneration
 gitnexus wiki --force
 ```
 
-The wiki generator reads the indexed graph structure, groups files into modules via LLM, generates per-module documentation pages, and creates an overview page — all with cross-references to the knowledge graph.
+The wiki generator reads the indexed graph structure, groups files into modules via LLM, generates per-module documentation pages, and creates an overview page — all with cross-references to the knowledge graph. It supports any OpenAI-compatible provider including OpenAI, Anthropic, MiniMax, and others.
 
 ---
 
