@@ -33,7 +33,7 @@ const normalizeJsDocType = (raw: string): string | undefined => {
 };
 
 /** Regex to extract JSDoc @param annotations: `@param {Type} name` */
-const JSDOC_PARAM_RE = /@param\s*\{([^}]+)\}\s+(\w+)/g;
+const JSDOC_PARAM_RE = /@param\s*\{([^}]+)\}\s+\[?(\w+)[\]=]?[^\s]*/g;
 
 /**
  * Collect JSDoc @param type bindings from comment nodes preceding a function/method.

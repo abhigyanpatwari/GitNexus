@@ -690,7 +690,7 @@ describe('C# async await constructor binding resolution', () => {
   it('resolves user.Save() after await to User#Save via return type inference', () => {
     const calls = getRelationships(result, 'CALLS');
     const userSave = calls.find(c =>
-      c.target === 'Save' && c.source === 'Main' && c.targetFilePath.includes('User.cs'),
+      c.target === 'Save' && c.source === 'ProcessUser' && c.targetFilePath.includes('User.cs'),
     );
     expect(userSave).toBeDefined();
   });
@@ -698,14 +698,24 @@ describe('C# async await constructor binding resolution', () => {
   it('user.Save() does NOT resolve to Order#Save', () => {
     const calls = getRelationships(result, 'CALLS');
     const wrongSave = calls.find(c =>
-      c.target === 'Save' && c.source === 'Main' && c.targetFilePath.includes('Order.cs'),
+      c.target === 'Save' && c.source === 'ProcessUser' && c.targetFilePath.includes('Order.cs'),
     );
-    // If both are resolved, at least one must be from the correct file
-    if (wrongSave) {
-      const correctSave = calls.find(c =>
-        c.target === 'Save' && c.source === 'Main' && c.targetFilePath.includes('User.cs'),
-      );
-      expect(correctSave).toBeDefined();
-    }
+    expect(wrongSave).toBeUndefined();
+  });
+
+  it('resolves order.Save() after await to Order#Save via return type inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const orderSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'ProcessOrder' && c.targetFilePath.includes('Order.cs'),
+    );
+    expect(orderSave).toBeDefined();
+  });
+
+  it('order.Save() does NOT resolve to User#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'ProcessOrder' && c.targetFilePath.includes('User.cs'),
+    );
+    expect(wrongSave).toBeUndefined();
   });
 });

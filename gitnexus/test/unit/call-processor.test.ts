@@ -695,4 +695,16 @@ describe('extractReturnTypeName', () => {
   it('extracts PHP deep namespace: \\Vendor\\Package\\Sub\\Client → Client', () => {
     expect(extractReturnTypeName('\\Vendor\\Package\\Sub\\Client')).toBe('Client');
   });
+
+  it('returns undefined for bare wrapper type names without generic arguments', () => {
+    expect(extractReturnTypeName('Task')).toBeUndefined();
+    expect(extractReturnTypeName('Promise')).toBeUndefined();
+    expect(extractReturnTypeName('Future')).toBeUndefined();
+    expect(extractReturnTypeName('Option')).toBeUndefined();
+    expect(extractReturnTypeName('Result')).toBeUndefined();
+    expect(extractReturnTypeName('Observable')).toBeUndefined();
+    expect(extractReturnTypeName('ValueTask')).toBeUndefined();
+    expect(extractReturnTypeName('CompletableFuture')).toBeUndefined();
+    expect(extractReturnTypeName('Optional')).toBeUndefined();
+  });
 });

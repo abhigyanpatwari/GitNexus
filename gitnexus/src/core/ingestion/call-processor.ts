@@ -525,6 +525,10 @@ export const extractReturnTypeName = (raw: string): string | undefined => {
     return PRIMITIVE_TYPES.has(base.toLowerCase()) ? undefined : base;
   }
 
+  // Bare wrapper type without generic argument (e.g. Task, Promise, Option)
+  // should not produce a binding — these are meaningless without a type parameter
+  if (WRAPPER_GENERICS.has(text)) return undefined;
+
   // Handle qualified names: models.User → User, Models::User → User, \App\Models\User → User
   if (text.includes('::') || text.includes('.') || text.includes('\\')) {
     text = text.split(/::|[.\\]/).pop()!;
