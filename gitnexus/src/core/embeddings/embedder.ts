@@ -144,15 +144,22 @@ export const initEmbedder = async (
             console.log('🔧 Using WASM backend (slower)...');
           }
 
+          // Build pipeline options - force CPU providers when using CPU device to avoid
+          // CUDA provider bridge crash (#288). When using GPU, let ONNX pick the provider.
+          const pipelineOptions: any = {
+            device: device,
+            dtype: 'fp32',
+            progress_callback: progressCallback,
+            session_options: { logSeverityLevel: 3 },
+          };
+          if (device === 'cpu' || device === 'wasm') {
+            pipelineOptions.executionProviders = ['cpu'];
+          }
+
           embedderInstance = await (pipeline as any)(
             'feature-extraction',
             finalConfig.modelId,
-            {
-              device: device,
-              dtype: 'fp32',
-              progress_callback: progressCallback,
-              session_options: { logSeverityLevel: 3 },
-            }
+            pipelineOptions
           );
           currentDevice = device;
 
