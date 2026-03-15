@@ -1,7 +1,7 @@
 /**
- * Test helper: Temporary KuzuDB factory
+ * Test helper: Temporary LadybugDB factory
  *
- * Creates a temp directory, initializes KuzuDB with schema, and
+ * Creates a temp directory, initializes LadybugDB with schema, and
  * optionally loads minimal test data. Returns a cleanup function.
  */
 import fs from 'fs/promises';
@@ -14,7 +14,7 @@ export interface TestDBHandle {
 }
 
 /**
- * Create a temporary directory for KuzuDB tests.
+ * Create a temporary directory for LadybugDB tests.
  * Returns the path and a cleanup function.
  */
 export async function createTempDir(prefix: string = 'gitnexus-test-'): Promise<TestDBHandle> {

@@ -1,5 +1,5 @@
 /**
- * CSV Generator for KuzuDB Hybrid Schema
+ * CSV Generator for LadybugDB Hybrid Schema
  *
  * Streams CSV rows directly to disk files in a single pass over graph nodes.
  * File contents are lazy-read from disk per-node to avoid holding the entire

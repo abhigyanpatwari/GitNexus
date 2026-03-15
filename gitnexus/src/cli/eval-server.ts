@@ -1,7 +1,7 @@
 /**
  * Eval Server — Lightweight HTTP server for SWE-bench evaluation
  * 
- * Keeps KuzuDB warm in memory so tool calls from the agent are near-instant.
+ * Keeps LadybugDB warm in memory so tool calls from the agent are near-instant.
  * Designed to run inside Docker containers during SWE-bench evaluation.
  * 
  * KEY DESIGN: Returns LLM-friendly text, not raw JSON.

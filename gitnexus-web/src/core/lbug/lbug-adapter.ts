@@ -1,51 +1,51 @@
 /**
- * KuzuDB Adapter
- * 
- * Manages the KuzuDB WASM instance for client-side graph database operations.
+ * LadybugDB Adapter
+ *
+ * Manages the LadybugDB WASM instance for client-side graph database operations.
  * Uses the "Snapshot / Bulk Load" pattern with COPY FROM for performance.
- * 
+ *
  * Multi-table schema: separate tables for File, Function, Class, etc.
  */
 
 import { KnowledgeGraph } from '../graph/types';
-import { 
-  NODE_TABLES, 
+import {
+  NODE_TABLES,
   REL_TABLE_NAME,
-  SCHEMA_QUERIES, 
+  SCHEMA_QUERIES,
   EMBEDDING_TABLE_NAME,
   NodeTableName,
 } from './schema';
 import { generateAllCSVs } from './csv-generator';
 
 // Holds the reference to the dynamically loaded module
-let kuzu: any = null;
+let lbug: any = null;
 let db: any = null;
 let conn: any = null;
 
 /**
- * Initialize KuzuDB WASM module and create in-memory database
+ * Initialize LadybugDB WASM module and create in-memory database
  */
-export const initKuzu = async () => {
-  if (conn) return { db, conn, kuzu };
+export const initLbug = async () => {
+  if (conn) return { db, conn, lbug };
 
   try {
-    if (import.meta.env.DEV) console.log('🚀 Initializing KuzuDB...');
+    if (import.meta.env.DEV) console.log('🚀 Initializing LadybugDB...');
 
     // 1. Dynamic Import (Fixes the "not a function" bundler issue)
-    const kuzuModule = await import('kuzu-wasm');
-    
+    const lbugModule = await import('@ladybugdb/wasm-core');
+
     // 2. Handle Vite/Webpack "default" wrapping
-    kuzu = kuzuModule.default || kuzuModule;
+    lbug = lbugModule.default || lbugModule;
 
     // 3. Initialize WASM
-    await kuzu.init();
-    
-    // 4. Create Database with 512MB buffer pool
+    await lbug.init();
+
+    // 4. Create Database with 512MB buffer manager
     const BUFFER_POOL_SIZE = 512 * 1024 * 1024; // 512MB
-    db = new kuzu.Database(':memory:', BUFFER_POOL_SIZE);
-    conn = new kuzu.Connection(db);
-    
-    if (import.meta.env.DEV) console.log('✅ KuzuDB WASM Initialized');
+    db = new lbug.Database(':memory:', BUFFER_POOL_SIZE);
+    conn = new lbug.Connection(db);
+
+    if (import.meta.env.DEV) console.log('✅ LadybugDB WASM Initialized');
 
     // 5. Initialize Schema (all node tables, then rel tables, then embedding table)
     for (const schemaQuery of SCHEMA_QUERIES) {
@@ -58,60 +58,60 @@ export const initKuzu = async () => {
         }
       }
     }
-    
-    if (import.meta.env.DEV) console.log('✅ KuzuDB Multi-Table Schema Created');
 
-    return { db, conn, kuzu };
+    if (import.meta.env.DEV) console.log('✅ LadybugDB Multi-Table Schema Created');
+
+    return { db, conn, lbug };
   } catch (error) {
-    if (import.meta.env.DEV) console.error('❌ KuzuDB Initialization Failed:', error);
+    if (import.meta.env.DEV) console.error('❌ LadybugDB Initialization Failed:', error);
     throw error;
   }
 };
 
 /**
- * Load a KnowledgeGraph into KuzuDB using COPY FROM (bulk load)
+ * Load a KnowledgeGraph into LadybugDB using COPY FROM (bulk load)
  * Uses batched CSV writes and COPY statements for optimal performance
  */
-export const loadGraphToKuzu = async (
-  graph: KnowledgeGraph, 
+export const loadGraphToLbug = async (
+  graph: KnowledgeGraph,
   fileContents: Map<string, string>
 ) => {
-  const { conn, kuzu } = await initKuzu();
-  
+  const { conn, lbug } = await initLbug();
+
   try {
-    if (import.meta.env.DEV) console.log(`KuzuDB: Generating CSVs for ${graph.nodeCount} nodes...`);
-    
+    if (import.meta.env.DEV) console.log(`LadybugDB: Generating CSVs for ${graph.nodeCount} nodes...`);
+
     // 1. Generate all CSVs (per-table)
     const csvData = generateAllCSVs(graph, fileContents);
-    
-    const fs = kuzu.FS;
-    
+
+    const fs = lbug.FS;
+
     // 2. Write all node CSVs to virtual filesystem
     const nodeFiles: Array<{ table: NodeTableName; path: string }> = [];
     for (const [tableName, csv] of csvData.nodes.entries()) {
       // Skip empty CSVs (only header row)
       if (csv.split('\n').length <= 1) continue;
-      
+
       const path = `/${tableName.toLowerCase()}.csv`;
       try { await fs.unlink(path); } catch {}
       await fs.writeFile(path, csv);
       nodeFiles.push({ table: tableName, path });
     }
-    
+
     // 3. Parse relation CSV and prepare for INSERT (COPY FROM doesn't work with multi-pair tables)
     const relLines = csvData.relCSV.split('\n').slice(1).filter(line => line.trim());
     const relCount = relLines.length;
-    
+
     if (import.meta.env.DEV) {
-      console.log(`KuzuDB: Wrote ${nodeFiles.length} node CSVs, ${relCount} relations to insert`);
+      console.log(`LadybugDB: Wrote ${nodeFiles.length} node CSVs, ${relCount} relations to insert`);
     }
-    
+
     // 4. COPY all node tables (must complete before rels due to FK constraints)
     for (const { table, path } of nodeFiles) {
       const copyQuery = getCopyQuery(table, path);
       await conn.query(copyQuery);
     }
-    
+
     // 5. INSERT relations one by one (COPY doesn't work with multi-pair REL tables)
     // Build a set of valid table names for fast lookup
     const validTables = new Set<string>(NODE_TABLES as readonly string[]);
@@ -135,13 +135,13 @@ export const loadGraphToKuzu = async (
         // Format: "from","to","type",confidence,"reason",step
         const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)",([0-9-]+)/);
         if (!match) continue;
-        
+
         const [, fromId, toId, relType, confidenceStr, reason, stepStr] = match;
 
         const fromLabel = getNodeLabel(fromId);
         const toLabel = getNodeLabel(toId);
 
-        // Skip relationships where either node's label doesn't have a table in KuzuDB
+        // Skip relationships where either node's label doesn't have a table in LadybugDB
         // Querying a non-existent table causes a fatal native crash
         if (!validTables.has(fromLabel) || !validTables.has(toLabel)) {
           skippedRels++;
@@ -150,7 +150,7 @@ export const loadGraphToKuzu = async (
 
         const confidence = parseFloat(confidenceStr) || 1.0;
         const step = parseInt(stepStr) || 0;
-        
+
         const insertQuery = `
           MATCH (a:${escapeLabel(fromLabel)} {id: '${fromId.replace(/'/g, "''")}'}),
                 (b:${escapeLabel(toLabel)} {id: '${toId.replace(/'/g, "''")}'})
@@ -167,38 +167,39 @@ export const loadGraphToKuzu = async (
           const toLabel = getNodeLabel(toId);
           const key = `${relType}:${fromLabel}->` + toLabel;
           skippedRelStats.set(key, (skippedRelStats.get(key) || 0) + 1);
-          
+
           if (import.meta.env.DEV) {
             console.warn(`⚠️ Skipped: ${key} | "${fromId}" → "${toId}" | ${err instanceof Error ? err.message : String(err)}`);
           }
         }
       }
     }
-    
+
     if (import.meta.env.DEV) {
-      console.log(`KuzuDB: Inserted ${insertedRels}/${relCount} relations`);
+      console.log(`LadybugDB: Inserted ${insertedRels}/${relCount} relations`);
       if (skippedRels > 0) {
         const topSkipped = Array.from(skippedRelStats.entries())
           .sort((a, b) => b[1] - a[1])
           .slice(0, 10);
-        console.warn(`KuzuDB: Skipped ${skippedRels}/${relCount} relations (top by kind/pair):`, topSkipped);
+        console.warn(`LadybugDB: Skipped ${skippedRels}/${relCount} relations (top by kind/pair):`, topSkipped);
       }
     }
-    
+
     // 6. Verify results
     let totalNodes = 0;
     for (const tableName of NODE_TABLES) {
       try {
         const countRes = await conn.query(`MATCH (n:${tableName}) RETURN count(n) AS cnt`);
-        const countRow = await countRes.getNext();
+        const countRows = await countRes.getAll();
+        const countRow = countRows[0];
         const count = countRow ? (countRow.cnt ?? countRow[0] ?? 0) : 0;
         totalNodes += Number(count);
       } catch {
         // Table might be empty, skip
       }
     }
-    
-    if (import.meta.env.DEV) console.log(`✅ KuzuDB Bulk Load Complete. Total nodes: ${totalNodes}, edges: ${insertedRels}`);
+
+    if (import.meta.env.DEV) console.log(`✅ LadybugDB Bulk Load Complete. Total nodes: ${totalNodes}, edges: ${insertedRels}`);
 
     // 7. Cleanup CSV files
     for (const { path } of nodeFiles) {
@@ -208,12 +209,12 @@ export const loadGraphToKuzu = async (
     return { success: true, count: totalNodes };
 
   } catch (error) {
-    if (import.meta.env.DEV) console.error('❌ KuzuDB Bulk Load Failed:', error);
+    if (import.meta.env.DEV) console.error('❌ LadybugDB Bulk Load Failed:', error);
     return { success: false, count: 0 };
   }
 };
 
-// KuzuDB default ESCAPE is '\' (backslash), but our CSV uses RFC 4180 escaping ("" for literal quotes).
+// LadybugDB default ESCAPE is '\' (backslash), but our CSV uses RFC 4180 escaping ("" for literal quotes).
 // Source code content is full of backslashes which confuse the auto-detection.
 // We MUST explicitly set ESCAPE='"' and disable auto_detect.
 const COPY_CSV_OPTS = `(HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=false, auto_detect=false)`;
@@ -228,6 +229,9 @@ const BACKTICK_TABLES = new Set([
 const escapeTableName = (table: string): string => {
   return BACKTICK_TABLES.has(table) ? `\`${table}\`` : table;
 };
+
+/** Tables with isExported column (TypeScript/JS-native types) */
+const TABLES_WITH_EXPORTED = new Set<string>(['Function', 'Class', 'Interface', 'Method', 'CodeElement']);
 
 /**
  * Get the COPY query for a node table with correct column mapping
@@ -246,8 +250,12 @@ const getCopyQuery = (table: NodeTableName, path: string): string => {
   if (table === 'Process') {
     return `COPY ${t}(id, label, heuristicLabel, processType, stepCount, communities, entryPointId, terminalId) FROM "${path}" ${COPY_CSV_OPTS}`;
   }
-  // Code element tables (Function, Class, Interface, Method, CodeElement, and multi-language)
-  return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content) FROM "${path}" ${COPY_CSV_OPTS}`;
+  // TypeScript/JS code element tables have isExported; multi-language tables do not
+  if (TABLES_WITH_EXPORTED.has(table)) {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content) FROM "${path}" ${COPY_CSV_OPTS}`;
+  }
+  // Multi-language tables (Struct, Impl, Trait, Macro, etc.)
+  return `COPY ${t}(id, name, filePath, startLine, endLine, content) FROM "${path}" ${COPY_CSV_OPTS}`;
 };
 
 /**
@@ -256,12 +264,12 @@ const getCopyQuery = (table: NodeTableName, path: string): string => {
  */
 export const executeQuery = async (cypher: string): Promise<any[]> => {
   if (!conn) {
-    await initKuzu();
+    await initLbug();
   }
-  
+
   try {
     const result = await conn.query(cypher);
-    
+
     // Extract column names from RETURN clause
     const returnMatch = cypher.match(/RETURN\s+(.+?)(?:\s+ORDER|\s+LIMIT|\s+SKIP|\s*$)/is);
     let columnNames: string[] = [];
@@ -284,12 +292,11 @@ export const executeQuery = async (cypher: string): Promise<any[]> => {
         return col.replace(/[^a-zA-Z0-9_]/g, '_');
       });
     }
-    
+
     // Collect all rows
+    const allRows = await result.getAll();
     const rows: any[] = [];
-    while (await result.hasNext()) {
-      const row = await result.getNext();
-      
+    for (const row of allRows) {
       // Convert tuple to named object if we have column names and row is array
       if (Array.isArray(row) && columnNames.length === row.length) {
         const namedRow: Record<string, any> = {};
@@ -302,7 +309,7 @@ export const executeQuery = async (cypher: string): Promise<any[]> => {
         rows.push(row);
       }
     }
-    
+
     return rows;
   } catch (error) {
     if (import.meta.env.DEV) console.error('Query execution failed:', error);
@@ -313,7 +320,7 @@ export const executeQuery = async (cypher: string): Promise<any[]> => {
 /**
  * Get database statistics
  */
-export const getKuzuStats = async (): Promise<{ nodes: number; edges: number }> => {
+export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> => {
   if (!conn) {
     return { nodes: 0, edges: 0 };
   }
@@ -324,43 +331,45 @@ export const getKuzuStats = async (): Promise<{ nodes: number; edges: number }> 
     for (const tableName of NODE_TABLES) {
       try {
         const nodeResult = await conn.query(`MATCH (n:${tableName}) RETURN count(n) AS cnt`);
-        const nodeRow = await nodeResult.getNext();
+        const nodeRows = await nodeResult.getAll();
+        const nodeRow = nodeRows[0];
         totalNodes += Number(nodeRow?.cnt ?? nodeRow?.[0] ?? 0);
       } catch {
         // Table might not exist or be empty
       }
     }
-    
+
     // Count edges from single relation table
     let totalEdges = 0;
     try {
       const edgeResult = await conn.query(`MATCH ()-[r:${REL_TABLE_NAME}]->() RETURN count(r) AS cnt`);
-      const edgeRow = await edgeResult.getNext();
+      const edgeRows = await edgeResult.getAll();
+      const edgeRow = edgeRows[0];
       totalEdges = Number(edgeRow?.cnt ?? edgeRow?.[0] ?? 0);
     } catch {
       // Table might not exist or be empty
     }
-    
+
     return { nodes: totalNodes, edges: totalEdges };
   } catch (error) {
     if (import.meta.env.DEV) {
-      console.warn('Failed to get Kuzu stats:', error);
+      console.warn('Failed to get LadybugDB stats:', error);
     }
     return { nodes: 0, edges: 0 };
   }
 };
 
 /**
- * Check if KuzuDB is initialized and has data
+ * Check if LadybugDB is initialized and has data
  */
-export const isKuzuReady = (): boolean => {
+export const isLbugReady = (): boolean => {
   return conn !== null && db !== null;
 };
 
 /**
  * Close the database connection (cleanup)
  */
-export const closeKuzu = async (): Promise<void> => {
+export const closeLbug = async (): Promise<void> => {
   if (conn) {
     try {
       await conn.close();
@@ -373,7 +382,7 @@ export const closeKuzu = async (): Promise<void> => {
     } catch {}
     db = null;
   }
-  kuzu = null;
+  lbug = null;
 };
 
 /**
@@ -387,24 +396,20 @@ export const executePrepared = async (
   params: Record<string, any>
 ): Promise<any[]> => {
   if (!conn) {
-    await initKuzu();
+    await initLbug();
   }
-  
+
   try {
     const stmt = await conn.prepare(cypher);
     if (!stmt.isSuccess()) {
       const errMsg = await stmt.getErrorMessage();
       throw new Error(`Prepare failed: ${errMsg}`);
     }
-    
+
     const result = await conn.execute(stmt, params);
-    
-    const rows: any[] = [];
-    while (await result.hasNext()) {
-      const row = await result.getNext();
-      rows.push(row);
-    }
-    
+
+    const rows = await result.getAll();
+
     await stmt.close();
     return rows;
   } catch (error) {
@@ -421,22 +426,22 @@ export const executeWithReusedStatement = async (
   paramsList: Array<Record<string, any>>
 ): Promise<void> => {
   if (!conn) {
-    await initKuzu();
+    await initLbug();
   }
-  
+
   if (paramsList.length === 0) return;
-  
+
   const SUB_BATCH_SIZE = 4;
-  
+
   for (let i = 0; i < paramsList.length; i += SUB_BATCH_SIZE) {
     const subBatch = paramsList.slice(i, i + SUB_BATCH_SIZE);
-    
+
     const stmt = await conn.prepare(cypher);
     if (!stmt.isSuccess()) {
       const errMsg = await stmt.getErrorMessage();
       throw new Error(`Prepare failed: ${errMsg}`);
     }
-    
+
     try {
       for (const params of subBatch) {
         await conn.execute(stmt, params);
@@ -444,7 +449,7 @@ export const executeWithReusedStatement = async (
     } finally {
       await stmt.close();
     }
-    
+
     if (i + SUB_BATCH_SIZE < paramsList.length) {
       await new Promise(r => setTimeout(r, 0));
     }
@@ -456,65 +461,67 @@ export const executeWithReusedStatement = async (
  */
 export const testArrayParams = async (): Promise<{ success: boolean; error?: string }> => {
   if (!conn) {
-    await initKuzu();
+    await initLbug();
   }
-  
+
   try {
     const testEmbedding = new Array(384).fill(0).map((_, i) => i / 384);
-    
+
     // Get any node ID to test with (try File first, then others)
     let testNodeId: string | null = null;
     for (const tableName of NODE_TABLES) {
       try {
         const nodeResult = await conn.query(`MATCH (n:${tableName}) RETURN n.id AS id LIMIT 1`);
-        const nodeRow = await nodeResult.getNext();
+        const nodeRows = await nodeResult.getAll();
+        const nodeRow = nodeRows[0];
         if (nodeRow) {
           testNodeId = nodeRow.id ?? nodeRow[0];
           break;
         }
       } catch {}
     }
-    
+
     if (!testNodeId) {
       return { success: false, error: 'No nodes found to test with' };
     }
-    
+
     if (import.meta.env.DEV) {
       console.log('🧪 Testing array params with node:', testNodeId);
     }
-    
+
     // First create an embedding entry
     const createQuery = `CREATE (e:${EMBEDDING_TABLE_NAME} {nodeId: $nodeId, embedding: $embedding})`;
     const stmt = await conn.prepare(createQuery);
-    
+
     if (!stmt.isSuccess()) {
       const errMsg = await stmt.getErrorMessage();
       return { success: false, error: `Prepare failed: ${errMsg}` };
     }
-    
+
     await conn.execute(stmt, {
       nodeId: testNodeId,
       embedding: testEmbedding,
     });
-    
+
     await stmt.close();
-    
+
     // Verify it was stored
     const verifyResult = await conn.query(
       `MATCH (e:${EMBEDDING_TABLE_NAME} {nodeId: '${testNodeId}'}) RETURN e.embedding AS emb`
     );
-    const verifyRow = await verifyResult.getNext();
+    const verifyRows = await verifyResult.getAll();
+    const verifyRow = verifyRows[0];
     const storedEmb = verifyRow?.emb ?? verifyRow?.[0];
-    
+
     if (storedEmb && Array.isArray(storedEmb) && storedEmb.length === 384) {
       if (import.meta.env.DEV) {
         console.log('✅ Array params WORK! Stored embedding length:', storedEmb.length);
       }
       return { success: true };
     } else {
-      return { 
-        success: false, 
-        error: `Embedding not stored correctly. Got: ${typeof storedEmb}, length: ${storedEmb?.length}` 
+      return {
+        success: false,
+        error: `Embedding not stored correctly. Got: ${typeof storedEmb}, length: ${storedEmb?.length}`
       };
     }
   } catch (error) {

@@ -10,7 +10,7 @@
  *   gitnexus impact --target "AuthService" --direction upstream
  *   gitnexus cypher "MATCH (n:Function) RETURN n.name LIMIT 10"
  * 
- * Note: Output goes to stderr because KuzuDB's native module captures stdout
+ * Note: Output goes to stderr because LadybugDB's native module captures stdout
  * at the OS level during init. This is consistent with augment.ts.
  */
 
@@ -31,7 +31,7 @@ async function getBackend(): Promise<LocalBackend> {
 
 function output(data: any): void {
   const text = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
-  // stderr because KuzuDB captures stdout at OS level
+  // stderr because LadybugDB captures stdout at OS level
   process.stderr.write(text + '\n');
 }
 

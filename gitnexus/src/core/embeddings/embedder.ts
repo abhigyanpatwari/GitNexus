@@ -262,7 +262,7 @@ export const embedBatch = async (texts: string[]): Promise<Float32Array[]> => {
 };
 
 /**
- * Convert Float32Array to regular number array (for KuzuDB storage)
+ * Convert Float32Array to regular number array (for LadybugDB storage)
  */
 export const embeddingToArray = (embedding: Float32Array): number[] => {
   return Array.from(embedding);

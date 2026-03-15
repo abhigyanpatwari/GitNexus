@@ -10,7 +10,7 @@ import {
   escapeCSVNumber,
   sanitizeUTF8,
   isBinaryContent,
-} from '../../src/core/kuzu/csv-generator.js';
+} from '../../src/core/lbug/csv-generator.js';
 
 // ─── escapeCSVField ──────────────────────────────────────────────────
 

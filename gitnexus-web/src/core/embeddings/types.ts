@@ -92,7 +92,7 @@ export interface SemanticSearchResult {
 }
 
 /**
- * Node data for embedding (minimal structure from KuzuDB query)
+ * Node data for embedding (minimal structure from LadybugDB query)
  */
 export interface EmbeddableNode {
   id: string;

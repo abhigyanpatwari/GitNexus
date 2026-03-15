@@ -23,7 +23,7 @@ export async function augmentCommand(pattern: string): Promise<void> {
     
     if (result) {
       // IMPORTANT: Write to stderr, NOT stdout.
-      // KuzuDB's native module captures stdout fd at OS level during init,
+      // LadybugDB's native module captures stdout fd at OS level during init,
       // which makes stdout permanently broken in subprocess contexts.
       // stderr is never captured, so it works reliably everywhere.
       // The hook reads from the subprocess's stderr.

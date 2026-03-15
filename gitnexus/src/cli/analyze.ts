@@ -9,12 +9,12 @@ import { execFileSync } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
 import { runPipelineFromRepo } from '../core/ingestion/pipeline.js';
-import { initKuzu, loadGraphToKuzu, getKuzuStats, executeQuery, executeWithReusedStatement, closeKuzu, createFTSIndex, loadCachedEmbeddings } from '../core/kuzu/kuzu-adapter.js';
+import { initLbug, loadGraphToLbug, getLbugStats, executeQuery, executeWithReusedStatement, closeLbug, createFTSIndex, loadCachedEmbeddings } from '../core/lbug/lbug-adapter.js';
 // Embedding imports are lazy (dynamic import) so onnxruntime-node is never
 // loaded when embeddings are not requested. This avoids crashes on Node
 // versions whose ABI is not yet supported by the native binary (#89).
 // disposeEmbedder intentionally not called — ONNX Runtime segfaults on cleanup (see #38)
-import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath } from '../storage/repo-manager.js';
+import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath, cleanupOldKuzuFiles } from '../storage/repo-manager.js';
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
 import { generateSkillFiles, type GeneratedSkillInfo } from './skill-gen.js';
@@ -63,7 +63,7 @@ const PHASE_LABELS: Record<string, string> = {
   communities: 'Detecting communities',
   processes: 'Detecting processes',
   complete: 'Pipeline complete',
-  kuzu: 'Loading into KuzuDB',
+  lbug: 'Loading into LadybugDB',
   fts: 'Creating search indexes',
   embeddings: 'Generating embeddings',
   done: 'Done',
@@ -100,7 +100,15 @@ export const analyzeCommand = async (
     return;
   }
 
-  const { storagePath, kuzuPath } = getStoragePaths(repoPath);
+  const { storagePath, lbugPath } = getStoragePaths(repoPath);
+
+  // Clean up stale KuzuDB files from before the LadybugDB migration.
+  // If kuzu existed but lbug doesn't, we're doing a migration re-index — say so.
+  const kuzuResult = await cleanupOldKuzuFiles(storagePath);
+  if (kuzuResult.found && kuzuResult.needsReindex) {
+    console.log('  Migrating from KuzuDB to LadybugDB — rebuilding index...\n');
+  }
+
   const currentCommit = getCurrentCommit(repoPath);
   const existingMeta = await loadMeta(storagePath);
 
@@ -130,7 +138,7 @@ export const analyzeCommand = async (
     aborted = true;
     bar.stop();
     console.log('\n  Interrupted — cleaning up...');
-    closeKuzu().catch(() => {}).finally(() => process.exit(130));
+    closeLbug().catch(() => {}).finally(() => process.exit(130));
   };
   process.on('SIGINT', sigintHandler);
 
@@ -180,13 +188,13 @@ export const analyzeCommand = async (
   if (options?.embeddings && existingMeta && !options?.force) {
     try {
       updateBar(0, 'Caching embeddings...');
-      await initKuzu(kuzuPath);
+      await initLbug(lbugPath);
       const cached = await loadCachedEmbeddings();
       cachedEmbeddingNodeIds = cached.embeddingNodeIds;
       cachedEmbeddings = cached.embeddings;
-      await closeKuzu();
+      await closeLbug();
     } catch {
-      try { await closeKuzu(); } catch {}
+      try { await closeLbug(); } catch {}
     }
   }
 
@@ -197,25 +205,25 @@ export const analyzeCommand = async (
     updateBar(scaled, phaseLabel);
   });
 
-  // ── Phase 2: KuzuDB (60–85%) ──────────────────────────────────────
-  updateBar(60, 'Loading into KuzuDB...');
+  // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────────
+  updateBar(60, 'Loading into LadybugDB...');
 
-  await closeKuzu();
-  const kuzuFiles = [kuzuPath, `${kuzuPath}.wal`, `${kuzuPath}.lock`];
-  for (const f of kuzuFiles) {
+  await closeLbug();
+  const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
+  for (const f of lbugFiles) {
     try { await fs.rm(f, { recursive: true, force: true }); } catch {}
   }
 
-  const t0Kuzu = Date.now();
-  await initKuzu(kuzuPath);
-  let kuzuMsgCount = 0;
-  const kuzuResult = await loadGraphToKuzu(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
-    kuzuMsgCount++;
-    const progress = Math.min(84, 60 + Math.round((kuzuMsgCount / (kuzuMsgCount + 10)) * 24));
+  const t0Lbug = Date.now();
+  await initLbug(lbugPath);
+  let lbugMsgCount = 0;
+  const lbugResult = await loadGraphToLbug(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
+    lbugMsgCount++;
+    const progress = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
     updateBar(progress, msg);
   });
-  const kuzuTime = ((Date.now() - t0Kuzu) / 1000).toFixed(1);
-  const kuzuWarnings = kuzuResult.warnings;
+  const lbugTime = ((Date.now() - t0Lbug) / 1000).toFixed(1);
+  const lbugWarnings = lbugResult.warnings;
 
   // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
   updateBar(85, 'Creating search indexes...');
@@ -249,7 +257,7 @@ export const analyzeCommand = async (
   }
 
   // ── Phase 4: Embeddings (90–98%) ──────────────────────────────────
-  const stats = await getKuzuStats();
+  const stats = await getLbugStats();
   let embeddingTime = '0.0';
   let embeddingSkipped = true;
   let embeddingSkipReason = 'off (use --embeddings to enable)';
@@ -334,7 +342,7 @@ export const analyzeCommand = async (
     processes: pipelineResult.processResult?.stats.totalProcesses,
   }, generatedSkills);
 
-  await closeKuzu();
+  await closeLbug();
   // Note: we intentionally do NOT call disposeEmbedder() here.
   // ONNX Runtime's native cleanup segfaults on macOS and some Linux configs.
   // Since the process exits immediately after, Node.js reclaims everything.
@@ -355,7 +363,7 @@ export const analyzeCommand = async (
   const embeddingsCached = cachedEmbeddings.length > 0;
   console.log(`\n  Repository indexed successfully (${totalTime}s)${embeddingsCached ? ` [${cachedEmbeddings.length} embeddings cached]` : ''}\n`);
   console.log(`  ${stats.nodes.toLocaleString()} nodes | ${stats.edges.toLocaleString()} edges | ${pipelineResult.communityResult?.stats.totalCommunities || 0} clusters | ${pipelineResult.processResult?.stats.totalProcesses || 0} flows`);
-  console.log(`  KuzuDB ${kuzuTime}s | FTS ${ftsTime}s | Embeddings ${embeddingSkipped ? embeddingSkipReason : embeddingTime + 's'}`);
+  console.log(`  LadybugDB ${lbugTime}s | FTS ${ftsTime}s | Embeddings ${embeddingSkipped ? embeddingSkipReason : embeddingTime + 's'}`);
   console.log(`  ${repoPath}`);
 
   if (aiContext.files.length > 0) {
@@ -363,12 +371,12 @@ export const analyzeCommand = async (
   }
 
   // Show a quiet summary if some edge types needed fallback insertion
-  if (kuzuWarnings.length > 0) {
-    const totalFallback = kuzuWarnings.reduce((sum, w) => {
+  if (lbugWarnings.length > 0) {
+    const totalFallback = lbugWarnings.reduce((sum, w) => {
       const m = w.match(/\((\d+) edges\)/);
       return sum + (m ? parseInt(m[1]) : 0);
     }, 0);
-    console.log(`  Note: ${totalFallback} edges across ${kuzuWarnings.length} types inserted via fallback (schema will be updated in next release)`);
+    console.log(`  Note: ${totalFallback} edges across ${lbugWarnings.length} types inserted via fallback (schema will be updated in next release)`);
   }
 
   try {
@@ -379,7 +387,7 @@ export const analyzeCommand = async (
 
   console.log('');
 
-  // KuzuDB's native module holds open handles that prevent Node from exiting.
+  // LadybugDB's native module holds open handles that prevent Node from exiting.
   // ONNX Runtime also registers native atexit hooks that segfault on some
   // platforms (#38, #40). Force-exit to ensure clean termination.
   process.exit(0);

@@ -19,7 +19,7 @@ export interface PipelineProgress {
 // Original result type (used internally in pipeline)
 export interface PipelineResult {
   graph: KnowledgeGraph;
-  /** Absolute path to the repo root — used for lazy file reads during KuzuDB loading */
+  /** Absolute path to the repo root — used for lazy file reads during LadybugDB loading */
   repoPath: string;
   /** Total files scanned (for stats) */
   totalFileCount: number;

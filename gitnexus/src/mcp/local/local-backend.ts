@@ -3,18 +3,19 @@
  * 
  * Provides tool implementations using local .gitnexus/ indexes.
  * Supports multiple indexed repositories via a global registry.
- * KuzuDB connections are opened lazily per repo on first query.
+ * LadybugDB connections are opened lazily per repo on first query.
  */
 
 import fs from 'fs/promises';
 import path from 'path';
-import { initKuzu, executeQuery, executeParameterized, closeKuzu, isKuzuReady } from '../core/kuzu-adapter.js';
+import { initLbug, executeQuery, executeParameterized, closeLbug, isLbugReady } from '../core/lbug-adapter.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
 import {
   listRegisteredRepos,
+  cleanupOldKuzuFiles,
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
 // AI context generation is CLI-only (gitnexus analyze)
@@ -37,7 +38,7 @@ export function isTestFilePath(filePath: string): boolean {
   );
 }
 
-/** Valid KuzuDB node labels for safe Cypher query construction */
+/** Valid LadybugDB node labels for safe Cypher query construction */
 export const VALID_NODE_LABELS = new Set([
   'File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement',
   'Community', 'Process', 'Struct', 'Enum', 'Macro', 'Typedef', 'Union',
@@ -77,7 +78,7 @@ interface RepoHandle {
   name: string;
   repoPath: string;
   storagePath: string;
-  kuzuPath: string;
+  lbugPath: string;
   indexedAt: string;
   lastCommit: string;
   stats?: RegistryEntry['stats'];
@@ -102,7 +103,7 @@ export class LocalBackend {
   /**
    * Re-read the global registry and update the in-memory repo map.
    * New repos are added, existing repos are updated, removed repos are pruned.
-   * KuzuDB connections for removed repos are NOT closed (they idle-timeout naturally).
+   * LadybugDB connections for removed repos are NOT closed (they idle-timeout naturally).
    */
   private async refreshRepos(): Promise<void> {
     const entries = await listRegisteredRepos({ validate: true });
@@ -113,14 +114,21 @@ export class LocalBackend {
       freshIds.add(id);
 
       const storagePath = entry.storagePath;
-      const kuzuPath = path.join(storagePath, 'kuzu');
+      const lbugPath = path.join(storagePath, 'lbug');
+
+      // Clean up any leftover KuzuDB files from before the LadybugDB migration.
+      // If kuzu exists but lbug doesn't, warn so the user knows to re-analyze.
+      const kuzu = await cleanupOldKuzuFiles(storagePath);
+      if (kuzu.found && kuzu.needsReindex) {
+        console.error(`GitNexus: "${entry.name}" has a stale KuzuDB index. Run: gitnexus analyze ${entry.path}`);
+      }
 
       const handle: RepoHandle = {
         id,
         name: entry.name,
         repoPath: entry.path,
         storagePath,
-        kuzuPath,
+        lbugPath,
         indexedAt: entry.indexedAt,
         lastCommit: entry.lastCommit,
         stats: entry.stats,
@@ -128,7 +136,7 @@ export class LocalBackend {
 
       this.repos.set(id, handle);
 
-      // Build lightweight context (no KuzuDB needed)
+      // Build lightweight context (no LadybugDB needed)
       const s = entry.stats || {};
       this.contextCache.set(id, {
         projectName: entry.name,
@@ -235,17 +243,17 @@ export class LocalBackend {
     return null; // Multiple repos, no param — ambiguous
   }
 
-  // ─── Lazy KuzuDB Init ────────────────────────────────────────────
+  // ─── Lazy LadybugDB Init ────────────────────────────────────────────
 
   private async ensureInitialized(repoId: string): Promise<void> {
     // Always check the actual pool — the idle timer may have evicted the connection
-    if (this.initializedRepos.has(repoId) && isKuzuReady(repoId)) return;
+    if (this.initializedRepos.has(repoId) && isLbugReady(repoId)) return;
 
     const handle = this.repos.get(repoId);
     if (!handle) throw new Error(`Unknown repo: ${repoId}`);
 
     try {
-      await initKuzu(repoId, handle.kuzuPath);
+      await initLbug(repoId, handle.lbugPath);
       this.initializedRepos.add(repoId);
     } catch (err: any) {
       // If lock error, mark as not initialized so next call retries
@@ -534,13 +542,13 @@ export class LocalBackend {
   }
 
   /**
-   * BM25 keyword search helper - uses KuzuDB FTS for always-fresh results
+   * BM25 keyword search helper - uses LadybugDB FTS for always-fresh results
    */
   private async bm25Search(repo: RepoHandle, query: string, limit: number): Promise<any[]> {
-    const { searchFTSFromKuzu } = await import('../../core/search/bm25-index.js');
+    const { searchFTSFromLbug } = await import('../../core/search/bm25-index.js');
     let bm25Results;
     try {
-      bm25Results = await searchFTSFromKuzu(query, limit, repo.id);
+      bm25Results = await searchFTSFromLbug(query, limit, repo.id);
     } catch (err: any) {
       console.error('GitNexus: BM25/FTS search failed (FTS indexes may not exist) -', err.message);
       return [];
@@ -669,8 +677,8 @@ export class LocalBackend {
   private async cypher(repo: RepoHandle, params: { query: string }): Promise<any> {
     await this.ensureInitialized(repo.id);
 
-    if (!isKuzuReady(repo.id)) {
-      return { error: 'KuzuDB not ready. Index may be corrupted.' };
+    if (!isLbugReady(repo.id)) {
+      return { error: 'LadybugDB not ready. Index may be corrupted.' };
     }
 
     // Block write operations (defense-in-depth — DB is already read-only)
@@ -719,7 +727,7 @@ export class LocalBackend {
   /**
    * Aggregate same-named clusters: group by heuristicLabel, sum symbols,
    * weighted-average cohesion, filter out tiny clusters (<5 symbols).
-   * Raw communities stay intact in KuzuDB for Cypher queries.
+   * Raw communities stay intact in LadybugDB for Cypher queries.
    */
   private aggregateClusters(clusters: any[]): any[] {
     const groups = new Map<string, { ids: string[]; totalSymbols: number; weightedCohesion: number; largest: any }>();
@@ -1622,7 +1630,7 @@ export class LocalBackend {
   }
 
   async disconnect(): Promise<void> {
-    await closeKuzu(); // close all connections
+    await closeLbug(); // close all connections
     // Note: we intentionally do NOT call disposeEmbedder() here.
     // ONNX Runtime's native cleanup segfaults on macOS and some Linux configs,
     // and importing the embedder module on Node v24+ crashes if onnxruntime

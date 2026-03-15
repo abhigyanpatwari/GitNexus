@@ -224,7 +224,7 @@ export interface AgentStep {
  * Graph schema information for LLM context
  */
 export const GRAPH_SCHEMA_DESCRIPTION = `
-KUZU GRAPH DATABASE SCHEMA (Multi-Table):
+LADYBUG GRAPH DATABASE SCHEMA (Multi-Table):
 
 NODE TABLES:
 1. File - Source files

@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import { createReadStream } from 'fs';
 import { createInterface } from 'readline';
 import path from 'path';
-import kuzu from 'kuzu';
+import lbug from '@ladybugdb/core';
 import { KnowledgeGraph } from '../graph/types.js';
 import {
   NODE_TABLES,
@@ -13,12 +13,12 @@ import {
 } from './schema.js';
 import { streamAllCSVsToDisk } from './csv-generator.js';
 
-let db: kuzu.Database | null = null;
-let conn: kuzu.Connection | null = null;
+let db: lbug.Database | null = null;
+let conn: lbug.Connection | null = null;
 let currentDbPath: string | null = null;
 let ftsLoaded = false;
 
-// Global session lock for operations that touch module-level kuzu globals.
+// Global session lock for operations that touch module-level lbug globals.
 // This guarantees no DB switch can happen while an operation is running.
 let sessionLock: Promise<void> = Promise.resolve();
 
@@ -39,30 +39,30 @@ const runWithSessionLock = async <T>(operation: () => Promise<T>): Promise<T> =>
 
 const normalizeCopyPath = (filePath: string): string => filePath.replace(/\\/g, '/');
 
-export const initKuzu = async (dbPath: string) => {
-  return runWithSessionLock(() => ensureKuzuInitialized(dbPath));
+export const initLbug = async (dbPath: string) => {
+  return runWithSessionLock(() => ensureLbugInitialized(dbPath));
 };
 
 /**
  * Execute multiple queries against one repo DB atomically.
  * While the callback runs, no other request can switch the active DB.
  */
-export const withKuzuDb = async <T>(dbPath: string, operation: () => Promise<T>): Promise<T> => {
+export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>): Promise<T> => {
   return runWithSessionLock(async () => {
-    await ensureKuzuInitialized(dbPath);
+    await ensureLbugInitialized(dbPath);
     return operation();
   });
 };
 
-const ensureKuzuInitialized = async (dbPath: string) => {
+const ensureLbugInitialized = async (dbPath: string) => {
   if (conn && currentDbPath === dbPath) {
     return { db, conn };
   }
-  await doInitKuzu(dbPath);
+  await doInitLbug(dbPath);
   return { db, conn };
 };
 
-const doInitKuzu = async (dbPath: string) => {
+const doInitLbug = async (dbPath: string) => {
   // Different database requested — close the old one first
   if (conn || db) {
     try { if (conn) await conn.close(); } catch {}
@@ -73,32 +73,36 @@ const doInitKuzu = async (dbPath: string) => {
     ftsLoaded = false;
   }
 
-  // kuzu v0.11 stores the database as a single file (not a directory).
-  // If the path already exists, it must be a valid kuzu database file.
+  // LadybugDB stores the database as a single file (not a directory).
+  // If the path already exists, it must be a valid LadybugDB database file.
   // Remove stale empty directories or files from older versions.
   try {
-    const stat = await fs.stat(dbPath);
-    if (stat.isDirectory()) {
-      // Old-style directory database or empty leftover - remove it
-      const files = await fs.readdir(dbPath);
-      if (files.length === 0) {
-        await fs.rmdir(dbPath);
-      } else {
-        // Non-empty directory from older kuzu version - remove entire directory
-        await fs.rm(dbPath, { recursive: true, force: true });
+    const stat = await fs.lstat(dbPath);
+    if (stat.isSymbolicLink()) {
+      // Never follow symlinks — just remove the link itself
+      await fs.unlink(dbPath);
+    } else if (stat.isDirectory()) {
+      // Verify path is within expected storage directory before deleting
+      const realPath = await fs.realpath(dbPath);
+      const parentDir = path.dirname(dbPath);
+      const realParent = await fs.realpath(parentDir);
+      if (!realPath.startsWith(realParent + path.sep) && realPath !== realParent) {
+        throw new Error(`Refusing to delete ${dbPath}: resolved path ${realPath} is outside storage directory`);
       }
+      // Old-style directory database or empty leftover - remove it
+      await fs.rm(dbPath, { recursive: true, force: true });
     }
-    // If it's a file, assume it's an existing kuzu database - kuzu will open it
+    // If it's a file, assume it's an existing LadybugDB database - LadybugDB will open it
   } catch {
-    // Path doesn't exist, which is what kuzu wants for a new database
+    // Path doesn't exist, which is what LadybugDB wants for a new database
   }
 
   // Ensure parent directory exists
   const parentDir = path.dirname(dbPath);
   await fs.mkdir(parentDir, { recursive: true });
 
-  db = new kuzu.Database(dbPath);
-  conn = new kuzu.Connection(db);
+  db = new lbug.Database(dbPath);
+  conn = new lbug.Connection(db);
 
   for (const schemaQuery of SCHEMA_QUERIES) {
     try {
@@ -116,16 +120,16 @@ const doInitKuzu = async (dbPath: string) => {
   return { db, conn };
 };
 
-export type KuzuProgressCallback = (message: string) => void;
+export type LbugProgressCallback = (message: string) => void;
 
-export const loadGraphToKuzu = async (
+export const loadGraphToLbug = async (
   graph: KnowledgeGraph,
   repoPath: string,
   storagePath: string,
-  onProgress?: KuzuProgressCallback
+  onProgress?: LbugProgressCallback
 ) => {
   if (!conn) {
-    throw new Error('KuzuDB not initialized. Call initKuzu first.');
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
   const log = onProgress || (() => {});
@@ -142,7 +146,7 @@ export const loadGraphToKuzu = async (
     return nodeId.split(':')[0];
   };
 
-  // Bulk COPY all node CSVs (sequential — KuzuDB allows only one write txn at a time)
+  // Bulk COPY all node CSVs (sequential — LadybugDB allows only one write txn at a time)
   const nodeFiles = [...csvResult.nodeFiles.entries()];
   const totalSteps = nodeFiles.length + 1; // +1 for relationships
   let stepsDone = 0;
@@ -167,7 +171,7 @@ export const loadGraphToKuzu = async (
     }
   }
 
-  // Bulk COPY relationships — split by FROM→TO label pair (KuzuDB requires it)
+  // Bulk COPY relationships — split by FROM→TO label pair (LadybugDB requires it)
   // Stream-read the relation CSV line by line to avoid exceeding V8 max string length
   let relHeader = '';
   const relsByPair = new Map<string, string[]>();
@@ -258,10 +262,10 @@ export const loadGraphToKuzu = async (
   return { success: true, insertedRels, skippedRels, warnings };
 };
 
-// KuzuDB default ESCAPE is '\' (backslash), but our CSV uses RFC 4180 escaping ("" for literal quotes).
+// LadybugDB default ESCAPE is '\' (backslash), but our CSV uses RFC 4180 escaping ("" for literal quotes).
 // Source code content is full of backslashes which confuse the auto-detection.
 // We MUST explicitly set ESCAPE='"' to use RFC 4180 escaping, and disable auto_detect to prevent
-// KuzuDB from overriding our settings based on sample rows.
+// LadybugDB from overriding our settings based on sample rows.
 const COPY_CSV_OPTS = `(HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=false, auto_detect=false)`;
 
 // Multi-language table names that were created with backticks in CODE_ELEMENT_BASE
@@ -340,12 +344,12 @@ const getCopyQuery = (table: NodeTableName, filePath: string): string => {
 };
 
 /**
- * Insert a single node to KuzuDB
+ * Insert a single node to LadybugDB
  * @param label - Node type (File, Function, Class, etc.)
  * @param properties - Node properties
- * @param dbPath - Path to KuzuDB database (optional if already initialized)
+ * @param dbPath - Path to LadybugDB database (optional if already initialized)
  */
-export const insertNodeToKuzu = async (
+export const insertNodeToLbug = async (
   label: string,
   properties: Record<string, any>,
   dbPath?: string
@@ -353,7 +357,7 @@ export const insertNodeToKuzu = async (
   // Use provided dbPath or fall back to module-level db
   const targetDbPath = dbPath || (db ? undefined : null);
   if (!targetDbPath && !db) {
-    throw new Error('KuzuDB not initialized. Provide dbPath or call initKuzu first.');
+    throw new Error('LadybugDB not initialized. Provide dbPath or call initLbug first.');
   }
 
   try {
@@ -380,11 +384,11 @@ export const insertNodeToKuzu = async (
       const descPart = properties.description ? `, description: ${escapeValue(properties.description)}` : '';
       query = `CREATE (n:${t} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${escapeValue(properties.content || '')}${descPart}})`;
     }
-    
+
     // Use per-query connection if dbPath provided (avoids lock conflicts)
     if (targetDbPath) {
-      const tempDb = new kuzu.Database(targetDbPath);
-      const tempConn = new kuzu.Connection(tempDb);
+      const tempDb = new lbug.Database(targetDbPath);
+      const tempConn = new lbug.Connection(tempDb);
       try {
         await tempConn.query(query);
         return true;
@@ -397,7 +401,7 @@ export const insertNodeToKuzu = async (
       await conn.query(query);
       return true;
     }
-    
+
     return false;
   } catch (e: any) {
     // Node may already exist or other error
@@ -407,36 +411,36 @@ export const insertNodeToKuzu = async (
 };
 
 /**
- * Batch insert multiple nodes to KuzuDB using a single connection
+ * Batch insert multiple nodes to LadybugDB using a single connection
  * @param nodes - Array of {label, properties} to insert
- * @param dbPath - Path to KuzuDB database
+ * @param dbPath - Path to LadybugDB database
  * @returns Object with success count and error count
  */
-export const batchInsertNodesToKuzu = async (
+export const batchInsertNodesToLbug = async (
   nodes: Array<{ label: string; properties: Record<string, any> }>,
   dbPath: string
 ): Promise<{ inserted: number; failed: number }> => {
   if (nodes.length === 0) return { inserted: 0, failed: 0 };
-  
+
   const escapeValue = (v: any): string => {
     if (v === null || v === undefined) return 'NULL';
     if (typeof v === 'number') return String(v);
     // Escape backslashes first (for Windows paths), then single quotes
     return `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`;
   };
-  
+
   // Open a single connection for all inserts
-  const tempDb = new kuzu.Database(dbPath);
-  const tempConn = new kuzu.Connection(tempDb);
-  
+  const tempDb = new lbug.Database(dbPath);
+  const tempConn = new lbug.Connection(tempDb);
+
   let inserted = 0;
   let failed = 0;
-  
+
   try {
     for (const { label, properties } of nodes) {
       try {
         let query: string;
-        
+
         // Use MERGE instead of CREATE for upsert behavior (handles duplicates gracefully)
         const t = escapeTableName(label);
         if (label === 'File') {
@@ -450,7 +454,7 @@ export const batchInsertNodesToKuzu = async (
           const descPart = properties.description ? `, n.description = ${escapeValue(properties.description)}` : '';
           query = `MERGE (n:${t} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
         }
-        
+
         await tempConn.query(query);
         inserted++;
       } catch (e: any) {
@@ -462,17 +466,17 @@ export const batchInsertNodesToKuzu = async (
     try { await tempConn.close(); } catch {}
     try { await tempDb.close(); } catch {}
   }
-  
+
   return { inserted, failed };
 };
 
 export const executeQuery = async (cypher: string): Promise<any[]> => {
   if (!conn) {
-    throw new Error('KuzuDB not initialized. Call initKuzu first.');
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
   const queryResult = await conn.query(cypher);
-  // kuzu v0.11 uses getAll() instead of hasNext()/getNext()
+  // LadybugDB uses getAll() instead of hasNext()/getNext()
   // Query returns QueryResult for single queries, QueryResult[] for multi-statement
   const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
   const rows = await result.getAll();
@@ -484,7 +488,7 @@ export const executeWithReusedStatement = async (
   paramsList: Array<Record<string, any>>
 ): Promise<void> => {
   if (!conn) {
-    throw new Error('KuzuDB not initialized. Call initKuzu first.');
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
   if (paramsList.length === 0) return;
 
@@ -504,11 +508,11 @@ export const executeWithReusedStatement = async (
       // Log the error and continue with next batch
       console.warn('Batch execution error:', e);
     }
-    // Note: kuzu 0.8.2 PreparedStatement doesn't require explicit close()
+    // Note: LadybugDB PreparedStatement doesn't require explicit close()
   }
 };
 
-export const getKuzuStats = async (): Promise<{ nodes: number; edges: number }> => {
+export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> => {
   if (!conn) return { nodes: 0, edges: 0 };
 
   let totalNodes = 0;
@@ -541,7 +545,7 @@ export const getKuzuStats = async (): Promise<{ nodes: number; edges: number }> 
 };
 
 /**
- * Load cached embeddings from KuzuDB before a rebuild.
+ * Load cached embeddings from LadybugDB before a rebuild.
  * Returns all embedding vectors so they can be re-inserted after the graph is reloaded,
  * avoiding expensive re-embedding of unchanged nodes.
  */
@@ -575,7 +579,7 @@ export const loadCachedEmbeddings = async (): Promise<{
   return { embeddingNodeIds, embeddings };
 };
 
-export const closeKuzu = async (): Promise<void> => {
+export const closeLbug = async (): Promise<void> => {
   if (conn) {
     try {
       await conn.close();
@@ -592,41 +596,41 @@ export const closeKuzu = async (): Promise<void> => {
   ftsLoaded = false;
 };
 
-export const isKuzuReady = (): boolean => conn !== null && db !== null;
+export const isLbugReady = (): boolean => conn !== null && db !== null;
 
 
 /**
- * Delete all nodes (and their relationships) for a specific file from KuzuDB
+ * Delete all nodes (and their relationships) for a specific file from LadybugDB
  * @param filePath - The file path to delete nodes for
- * @param dbPath - Optional path to KuzuDB for per-query connection
+ * @param dbPath - Optional path to LadybugDB for per-query connection
  * @returns Object with counts of deleted nodes
  */
 export const deleteNodesForFile = async (filePath: string, dbPath?: string): Promise<{ deletedNodes: number }> => {
   const usePerQuery = !!dbPath;
-  
+
   // Set up connection (either use existing or create per-query)
-  let tempDb: kuzu.Database | null = null;
-  let tempConn: kuzu.Connection | null = null;
-  let targetConn: kuzu.Connection | null = conn;
-  
+  let tempDb: lbug.Database | null = null;
+  let tempConn: lbug.Connection | null = null;
+  let targetConn: lbug.Connection | null = conn;
+
   if (usePerQuery) {
-    tempDb = new kuzu.Database(dbPath);
-    tempConn = new kuzu.Connection(tempDb);
+    tempDb = new lbug.Database(dbPath);
+    tempConn = new lbug.Connection(tempDb);
     targetConn = tempConn;
   } else if (!conn) {
-    throw new Error('KuzuDB not initialized. Provide dbPath or call initKuzu first.');
+    throw new Error('LadybugDB not initialized. Provide dbPath or call initLbug first.');
   }
-  
+
   try {
     let deletedNodes = 0;
     const escapedPath = filePath.replace(/'/g, "''");
-    
+
     // Delete nodes from each table that has filePath
     // DETACH DELETE removes the node and all its relationships
     for (const tableName of NODE_TABLES) {
       // Skip tables that don't have filePath (Community, Process)
       if (tableName === 'Community' || tableName === 'Process') continue;
-      
+
       try {
         // First count how many we'll delete
         const tn = escapeTableName(tableName);
@@ -648,7 +652,7 @@ export const deleteNodesForFile = async (filePath: string, dbPath?: string): Pro
         // Some tables may not support this query, skip
       }
     }
-    
+
     // Also delete any embeddings for nodes in this file
     try {
       await targetConn!.query(
@@ -657,7 +661,7 @@ export const deleteNodesForFile = async (filePath: string, dbPath?: string): Pro
     } catch {
       // Embedding table may not exist or nodeId format may differ
     }
-    
+
     return { deletedNodes };
   } finally {
     // Close per-query connection if used
@@ -683,7 +687,7 @@ export const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
 export const loadFTSExtension = async (): Promise<void> => {
   if (ftsLoaded) return;
   if (!conn) {
-    throw new Error('KuzuDB not initialized. Call initKuzu first.');
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
   try {
     await conn.query('INSTALL fts');
@@ -713,7 +717,7 @@ export const createFTSIndex = async (
   stemmer: string = 'porter'
 ): Promise<void> => {
   if (!conn) {
-    throw new Error('KuzuDB not initialized. Call initKuzu first.');
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
   await loadFTSExtension();
@@ -747,24 +751,24 @@ export const queryFTS = async (
   conjunctive: boolean = false
 ): Promise<Array<{ nodeId: string; name: string; filePath: string; score: number; [key: string]: any }>> => {
   if (!conn) {
-    throw new Error('KuzuDB not initialized. Call initKuzu first.');
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
-  
+
   // Escape backslashes and single quotes to prevent Cypher injection
   const escapedQuery = query.replace(/\\/g, '\\\\').replace(/'/g, "''");
-  
+
   const cypher = `
     CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', '${escapedQuery}', conjunctive := ${conjunctive})
     RETURN node, score
     ORDER BY score DESC
     LIMIT ${limit}
   `;
-  
+
   try {
     const queryResult = await conn.query(cypher);
     const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
     const rows = await result.getAll();
-    
+
     return rows.map((row: any) => {
       const node = row.node || row[0] || {};
       const score = row.score ?? row[1] ?? 0;
@@ -790,9 +794,9 @@ export const queryFTS = async (
  */
 export const dropFTSIndex = async (tableName: string, indexName: string): Promise<void> => {
   if (!conn) {
-    throw new Error('KuzuDB not initialized. Call initKuzu first.');
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
-  
+
   try {
     await conn.query(`CALL DROP_FTS_INDEX('${tableName}', '${indexName}')`);
   } catch {

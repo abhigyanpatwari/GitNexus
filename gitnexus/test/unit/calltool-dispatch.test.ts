@@ -2,29 +2,30 @@
  * Unit Tests: LocalBackend callTool dispatch & lifecycle
  *
  * Tests the callTool dispatch logic, resolveRepo, init/disconnect,
- * error cases, and silent failure patterns — all with mocked KuzuDB.
+ * error cases, and silent failure patterns — all with mocked LadybugDB.
  *
- * These are pure unit tests that mock the KuzuDB layer to test
+ * These are pure unit tests that mock the LadybugDB layer to test
  * the dispatch and error handling logic in isolation.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// We need to mock the KuzuDB adapter and repo-manager BEFORE importing LocalBackend
-vi.mock('../../src/mcp/core/kuzu-adapter.js', () => ({
-  initKuzu: vi.fn().mockResolvedValue(undefined),
+// We need to mock the LadybugDB adapter and repo-manager BEFORE importing LocalBackend
+vi.mock('../../src/mcp/core/lbug-adapter.js', () => ({
+  initLbug: vi.fn().mockResolvedValue(undefined),
   executeQuery: vi.fn().mockResolvedValue([]),
   executeParameterized: vi.fn().mockResolvedValue([]),
-  closeKuzu: vi.fn().mockResolvedValue(undefined),
-  isKuzuReady: vi.fn().mockReturnValue(true),
+  closeLbug: vi.fn().mockResolvedValue(undefined),
+  isLbugReady: vi.fn().mockReturnValue(true),
 }));
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn().mockResolvedValue([]),
+  cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
 }));
 
 // Also mock the search modules to avoid loading onnxruntime
 vi.mock('../../src/core/search/bm25-index.js', () => ({
-  searchFTSFromKuzu: vi.fn().mockResolvedValue([]),
+  searchFTSFromLbug: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../../src/mcp/core/embedder.js', () => ({
@@ -32,9 +33,9 @@ vi.mock('../../src/mcp/core/embedder.js', () => ({
   getEmbeddingDims: vi.fn().mockReturnValue(384),
 }));
 
-import { LocalBackend, isWriteQuery, CYPHER_WRITE_RE } from '../../src/mcp/local/local-backend.js';
-import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
-import { initKuzu, executeQuery, executeParameterized, isKuzuReady, closeKuzu } from '../../src/mcp/core/kuzu-adapter.js';
+import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { listRegisteredRepos, cleanupOldKuzuFiles } from '../../src/storage/repo-manager.js';
+import { initLbug, executeQuery, executeParameterized, isLbugReady, closeLbug } from '../../src/mcp/core/lbug-adapter.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -110,11 +111,11 @@ describe('LocalBackend.disconnect', () => {
     await expect(backend.disconnect()).resolves.not.toThrow();
   });
 
-  it('calls closeKuzu on disconnect', async () => {
+  it('calls closeLbug on disconnect', async () => {
     setupSingleRepo();
     await backend.init();
     await backend.disconnect();
-    expect(closeKuzu).toHaveBeenCalled();
+    expect(closeLbug).toHaveBeenCalled();
   });
 });
 
@@ -384,7 +385,7 @@ describe('LocalBackend.getContext', () => {
   });
 });
 
-// ─── KuzuDB lazy initialization ──────────────────────────────────────
+// ─── LadybugDB lazy initialization ──────────────────────────────────────
 
 describe('ensureInitialized', () => {
   let backend: LocalBackend;
@@ -396,26 +397,26 @@ describe('ensureInitialized', () => {
     await backend.init();
   });
 
-  it('calls initKuzu on first tool call', async () => {
+  it('calls initLbug on first tool call', async () => {
     (executeParameterized as any).mockResolvedValue([]);
     await backend.callTool('query', { query: 'test' });
-    expect(initKuzu).toHaveBeenCalled();
+    expect(initLbug).toHaveBeenCalled();
   });
 
-  it('retries initKuzu if connection was evicted', async () => {
+  it('retries initLbug if connection was evicted', async () => {
     (executeParameterized as any).mockResolvedValue([]);
     // First call initializes
     await backend.callTool('query', { query: 'test' });
-    expect(initKuzu).toHaveBeenCalledTimes(1);
+    expect(initLbug).toHaveBeenCalledTimes(1);
 
     // Simulate idle eviction
-    (isKuzuReady as any).mockReturnValueOnce(false);
+    (isLbugReady as any).mockReturnValueOnce(false);
     await backend.callTool('query', { query: 'test' });
-    expect(initKuzu).toHaveBeenCalledTimes(2);
+    expect(initLbug).toHaveBeenCalledTimes(2);
   });
 
-  it('handles initKuzu failure gracefully', async () => {
-    (initKuzu as any).mockRejectedValueOnce(new Error('DB locked'));
+  it('handles initLbug failure gracefully', async () => {
+    (initLbug as any).mockRejectedValueOnce(new Error('DB locked'));
     await expect(backend.callTool('query', { query: 'test' }))
       .rejects.toThrow('DB locked');
   });
@@ -503,9 +504,9 @@ describe('LocalBackend.listRepos', () => {
   });
 });
 
-// ─── Cypher KuzuDB not ready ────────────────────────────────────────
+// ─── Cypher LadybugDB not ready ────────────────────────────────────────
 
-describe('cypher tool KuzuDB not ready', () => {
+describe('cypher tool LadybugDB not ready', () => {
   let backend: LocalBackend;
 
   beforeEach(async () => {
@@ -515,19 +516,19 @@ describe('cypher tool KuzuDB not ready', () => {
     await backend.init();
   });
 
-  it('returns error when KuzuDB is not ready', async () => {
-    (isKuzuReady as any).mockReturnValue(false);
-    // initKuzu will succeed but isKuzuReady returns false after ensureInitialized
-    // Actually ensureInitialized checks isKuzuReady and re-inits — let's make that pass
-    // then the cypher method checks isKuzuReady again
-    (isKuzuReady as any)
+  it('returns error when LadybugDB is not ready', async () => {
+    (isLbugReady as any).mockReturnValue(false);
+    // initLbug will succeed but isLbugReady returns false after ensureInitialized
+    // Actually ensureInitialized checks isLbugReady and re-inits — let's make that pass
+    // then the cypher method checks isLbugReady again
+    (isLbugReady as any)
       .mockReturnValueOnce(false)  // ensureInitialized check
       .mockReturnValueOnce(false); // cypher's own check
 
     const result = await backend.callTool('cypher', {
       query: 'MATCH (n) RETURN n LIMIT 1',
     });
-    expect(result.error).toContain('KuzuDB not ready');
+    expect(result.error).toContain('LadybugDB not ready');
   });
 });
 
@@ -540,9 +541,10 @@ describe('cypher result formatting', () => {
     // Full reset of all mocks to prevent state leaking from other tests
     vi.resetAllMocks();
     (listRegisteredRepos as any).mockResolvedValue([MOCK_REPO_ENTRY]);
-    (initKuzu as any).mockResolvedValue(undefined);
-    (isKuzuReady as any).mockReturnValue(true);
-    (closeKuzu as any).mockResolvedValue(undefined);
+    (cleanupOldKuzuFiles as any).mockResolvedValue({ found: false, needsReindex: false });
+    (initLbug as any).mockResolvedValue(undefined);
+    (isLbugReady as any).mockReturnValue(true);
+    (closeLbug as any).mockResolvedValue(undefined);
     (executeParameterized as any).mockResolvedValue([]);
 
     backend = new LocalBackend();

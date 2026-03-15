@@ -1,5 +1,5 @@
 /**
- * KuzuDB Schema Definitions
+ * LadybugDB Schema Definitions
  * 
  * Hybrid Schema:
  * - Separate node tables for each code element type (File, Function, Class, etc.)

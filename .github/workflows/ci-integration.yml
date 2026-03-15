@@ -12,29 +12,29 @@ on:
 jobs:
   # ── Integration test matrix ─────────────────────────────────────────
   # Each test-group runs on a SEPARATE runner per OS, giving full process
-  # isolation for the KuzuDB native C++ addon.
+  # isolation for the LadybugDB native C++ addon.
   # 3 OS x 4 groups = 12 parallel jobs.
   #
   # Groups:
-  #   kuzu-db    — 7 files using withTestKuzuDB / kuzu-adapter (native addon)
+  #   lbug-db    — 7 files using withTestLbugDB / lbug-adapter (native addon)
   #                Each file runs as its own `vitest run` invocation for full
-  #                process isolation. KuzuDB's native N-API addon registers
+  #                process isolation. LadybugDB's native N-API addon registers
   #                persistent handles that prevent fork workers from exiting
   #                on Linux, and its C++ destructors segfault during
   #                process.exit(). Running each file in its own process lets
   #                the OS reclaim all resources cleanly.
-  #   pipeline   — 13 files: ingestion pipeline + csv + 10 resolver tests
-  #   e2e        — 2 files: child-process only (spawnSync), no in-process kuzu
-  #   standalone — 4 files: pure logic, no kuzu, no child processes
+  #   pipeline   — 12 files: ingestion pipeline + csv + 9 resolver tests
+  #   e2e        — 2 files: child-process only (spawnSync), no in-process lbug
+  #   standalone — 4 files: pure logic, no lbug, no child processes
   test-matrix:
     name: integration (${{ matrix.os }} / ${{ matrix.test-group }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        test-group: [kuzu-db, pipeline, e2e, standalone]
+        test-group: [lbug-db, pipeline, e2e, standalone]
         include:
-          - test-group: kuzu-db
+          - test-group: lbug-db
             # Marker — actual files are listed in the run step below
             test-glob: ''
           - test-group: pipeline
@@ -72,18 +72,18 @@ jobs:
         with:
           build: 'true'
 
-      # kuzu-db: run each file in its own vitest process for full isolation.
-      # KuzuDB's native addon hangs fork workers on Linux — process isolation
+      # lbug-db: run each file in its own vitest process for full isolation.
+      # LadybugDB's native addon hangs fork workers on Linux — process isolation
       # is the only reliable fix boundary.
-      - name: Run integration tests — kuzu-db (process-isolated)
-        if: matrix.test-group == 'kuzu-db'
+      - name: Run integration tests — lbug-db (process-isolated)
+        if: matrix.test-group == 'lbug-db'
         working-directory: gitnexus
         shell: bash
         run: |
           set -e
           files=(
-            test/integration/kuzu-core-adapter.test.ts
-            test/integration/kuzu-pool.test.ts
+            test/integration/lbug-core-adapter.test.ts
+            test/integration/lbug-pool.test.ts
             test/integration/local-backend.test.ts
             test/integration/local-backend-calltool.test.ts
             test/integration/search-core.test.ts
@@ -101,9 +101,9 @@ jobs:
           done
           exit $exit_code
 
-      # Non-kuzu groups: run all files in a single vitest invocation
+      # Non-lbug groups: run all files in a single vitest invocation
       - name: Run integration tests — ${{ matrix.test-group }}
-        if: matrix.test-group != 'kuzu-db'
+        if: matrix.test-group != 'lbug-db'
         shell: bash
         env:
           TEST_GLOB: ${{ matrix.test-glob }}
@@ -111,9 +111,9 @@ jobs:
         working-directory: gitnexus
 
   # ── Coverage collection (ubuntu only) ─────────────────────────────────
-  # Runs non-kuzu integration tests with coverage enabled so the PR report
+  # Runs non-lbug integration tests with coverage enabled so the PR report
   # can merge integration + unit coverage for a combined view.
-  # kuzu-db tests are excluded because each file must run in its own vitest
+  # lbug-db tests are excluded because each file must run in its own vitest
   # process (native addon isolation) which prevents single-run coverage merge.
   coverage:
     name: integration (ubuntu / coverage)

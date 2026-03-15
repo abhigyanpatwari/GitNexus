@@ -93,7 +93,7 @@ export class WikiGenerator {
   private repoPath: string;
   private storagePath: string;
   private wikiDir: string;
-  private kuzuPath: string;
+  private lbugPath: string;
   private llmConfig: LLMConfig;
   private maxTokensPerModule: number;
   private concurrency: number;
@@ -104,7 +104,7 @@ export class WikiGenerator {
   constructor(
     repoPath: string,
     storagePath: string,
-    kuzuPath: string,
+    lbugPath: string,
     llmConfig: LLMConfig,
     options: WikiOptions = {},
     onProgress?: ProgressCallback,
@@ -112,7 +112,7 @@ export class WikiGenerator {
     this.repoPath = repoPath;
     this.storagePath = storagePath;
     this.wikiDir = path.join(storagePath, WIKI_DIR);
-    this.kuzuPath = kuzuPath;
+    this.lbugPath = lbugPath;
     this.options = options;
     this.llmConfig = llmConfig;
     this.maxTokensPerModule = options.maxTokensPerModule ?? DEFAULT_MAX_TOKENS_PER_MODULE;
@@ -171,7 +171,7 @@ export class WikiGenerator {
 
     // Init graph
     this.onProgress('init', 2, 'Connecting to knowledge graph...');
-    await initWikiDb(this.kuzuPath);
+    await initWikiDb(this.lbugPath);
 
     let result: { pagesGenerated: number; mode: 'full' | 'incremental' | 'up-to-date'; failedModules: string[] };
     try {

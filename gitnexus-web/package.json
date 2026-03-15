@@ -33,7 +33,7 @@
     "graphology-layout-noverlap": "^0.4.2",
     "isomorphic-git": "^1.36.1",
     "jszip": "^3.10.1",
-    "kuzu-wasm": "^0.11.1",
+    "@ladybugdb/wasm-core": "^0.15.1",
     "langchain": "^1.2.10",
     "lru-cache": "^11.2.4",
     "lucide-react": "^0.562.0",

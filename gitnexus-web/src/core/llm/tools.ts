@@ -17,7 +17,7 @@ import { z } from 'zod';
 import { WebGPUNotAvailableError, embedText, embeddingToArray, initEmbedder, isEmbedderReady } from '../embeddings/embedder';
 
 /**
- * Tool factory - creates tools bound to the KuzuDB query functions
+ * Tool factory - creates tools bound to the LadybugDB query functions
  */
 export const createGraphRAGTools = (
   executeQuery: (cypher: string) => Promise<any[]>,
@@ -975,7 +975,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       // For code elements (Function, Class, etc.), use the direct id
       const isFileTarget = targetType === 'File';
       
-      // Query each depth level separately (KuzuDB doesn't support list comprehensions on paths)
+      // Query each depth level separately (LadybugDB doesn't support list comprehensions on paths)
       // For depth 1: direct connections only
       // For depth 2+: chain multiple single-hop queries
       const depthQueries: Promise<any[]>[] = [];

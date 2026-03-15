@@ -1,11 +1,11 @@
 /**
  * Graph Queries for Wiki Generation
- * 
+ *
  * Encapsulated Cypher queries against the GitNexus knowledge graph.
- * Uses the MCP-style pooled kuzu-adapter for connection management.
+ * Uses the MCP-style pooled lbug-adapter for connection management.
  */
 
-import { initKuzu, executeQuery, closeKuzu } from '../../mcp/core/kuzu-adapter.js';
+import { initLbug, executeQuery, closeLbug } from '../../mcp/core/lbug-adapter.js';
 
 const REPO_ID = '__wiki__';
 
@@ -35,17 +35,17 @@ export interface ProcessInfo {
 }
 
 /**
- * Initialize the KuzuDB connection for wiki generation.
+ * Initialize the LadybugDB connection for wiki generation.
  */
-export async function initWikiDb(kuzuPath: string): Promise<void> {
-  await initKuzu(REPO_ID, kuzuPath);
+export async function initWikiDb(lbugPath: string): Promise<void> {
+  await initLbug(REPO_ID, lbugPath);
 }
 
 /**
- * Close the KuzuDB connection.
+ * Close the LadybugDB connection.
  */
 export async function closeWikiDb(): Promise<void> {
-  await closeKuzu(REPO_ID);
+  await closeLbug(REPO_ID);
 }
 
 /**
