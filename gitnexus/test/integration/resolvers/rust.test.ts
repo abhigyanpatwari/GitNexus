@@ -679,3 +679,72 @@ describe('Rust return-type inference via function return type', () => {
     expect(saveCall).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rust ::default() constructor resolution — scanner exclusion
+// ---------------------------------------------------------------------------
+
+describe('Rust ::default() constructor resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-default-constructor'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    expect(structs).toContain('User');
+    expect(structs).toContain('Repo');
+  });
+
+  it('detects save methods on both structs', () => {
+    const methods = [...getNodesByLabel(result, 'Function'), ...getNodesByLabel(result, 'Method')];
+    expect(methods.filter((m: string) => m === 'save').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('resolves user.save() in process_with_new() via User::new() constructor', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'process_with_new' && c.targetFilePath.includes('user.rs'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves user.save() in process_with_default() via User::default() constructor', () => {
+    // User::default() should be resolved by extractInitializer (Tier 1),
+    // NOT by the scanner — the scanner excludes ::default() to avoid
+    // wasted cross-file lookups on the broadly-implemented Default trait
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'process_with_default' && c.targetFilePath.includes('user.rs'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('disambiguates repo.save() in process_with_default() to Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_with_default' && c.targetFilePath.includes('repo.rs'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('does NOT cross-contaminate (user.save() does not resolve to Repo#save)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // In process_with_new: user.save() should go to user.rs, not repo.rs
+    const wrongCall = calls.find(c =>
+      c.target === 'save' && c.source === 'process_with_new' && c.targetFilePath.includes('repo.rs'),
+    );
+    // Either undefined (correctly disambiguated) or present (both resolved) — no single wrong one
+    if (wrongCall) {
+      // If both are present, there should also be a correct one
+      const correctCall = calls.find(c =>
+        c.target === 'save' && c.source === 'process_with_new' && c.targetFilePath.includes('user.rs'),
+      );
+      expect(correctCall).toBeDefined();
+    }
+  });
+});

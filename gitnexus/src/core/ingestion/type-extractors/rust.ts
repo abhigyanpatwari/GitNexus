@@ -173,7 +173,7 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   if (!func) return undefined;
   if (func.type === 'scoped_identifier') {
     const methodName = func.lastNamedChild;
-    if (methodName?.text === 'new') return undefined;
+    if (methodName?.text === 'new' || methodName?.text === 'default') return undefined;
   }
   const calleeName = extractSimpleTypeName(func);
   if (!calleeName) return undefined;

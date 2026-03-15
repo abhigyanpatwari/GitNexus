@@ -425,8 +425,8 @@ export const batchInsertNodesToLbug = async (
   const escapeValue = (v: any): string => {
     if (v === null || v === undefined) return 'NULL';
     if (typeof v === 'number') return String(v);
-    // Escape backslashes first (for Windows paths), then single quotes
-    return `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`;
+    // Escape backslashes first (for Windows paths), then single quotes, then newlines
+    return `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`;
   };
 
   // Open a single connection for all inserts

@@ -1008,6 +1008,30 @@ class RepoService {
         expect(flatGet(env, 'config')).toBe('Config');
       });
 
+      it('does NOT emit scanner binding for Type::default() (handled by extractInitializer)', () => {
+        const tree = parse(`
+          fn main() {
+            let config = Config::default();
+          }
+        `, Rust);
+        const { constructorBindings } = buildTypeEnv(tree, 'rust');
+        // ::default() should be excluded from scanConstructorBinding just like ::new()
+        // extractInitializer already resolves it, so a scanner binding would be redundant
+        const defaultBinding = constructorBindings.find(b => b.calleeName === 'default');
+        expect(defaultBinding).toBeUndefined();
+      });
+
+      it('does NOT emit scanner binding for Type::new() (handled by extractInitializer)', () => {
+        const tree = parse(`
+          fn main() {
+            let user = User::new();
+          }
+        `, Rust);
+        const { constructorBindings } = buildTypeEnv(tree, 'rust');
+        const newBinding = constructorBindings.find(b => b.calleeName === 'new');
+        expect(newBinding).toBeUndefined();
+      });
+
       it('prefers explicit annotation over constructor inference', () => {
         // Uses DIFFERENT types to catch Tier 0 overwrite bugs
         const tree = parse(`
