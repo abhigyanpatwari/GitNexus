@@ -69,8 +69,10 @@ const normalizePhpType = (raw: string): string | undefined => {
  *  PHP 8+ attributes (#[Route(...)]) appear as named siblings between PHPDoc and method. */
 const SKIP_NODE_TYPES: ReadonlySet<string> = new Set(['attribute_list', 'attribute']);
 
-/** Regex to extract PHPDoc @param annotations: `@param Type $name` */
+/** Regex to extract PHPDoc @param annotations: `@param Type $name` (standard order) */
 const PHPDOC_PARAM_RE = /@param\s+(\S+)\s+\$(\w+)/g;
+/** Alternate PHPDoc order: `@param $name Type` (name first) */
+const PHPDOC_PARAM_ALT_RE = /@param\s+\$(\w+)\s+(\S+)/g;
 
 /**
  * Collect PHPDoc @param type bindings from comment nodes preceding a method/function.
@@ -98,6 +100,17 @@ const collectPhpDocParams = (methodNode: SyntaxNode): Map<string, string> => {
     const paramName = match[2]; // without $ prefix
     if (typeName) {
       // Store with $ prefix to match how PHP variables appear in the env
+      params.set('$' + paramName, typeName);
+    }
+  }
+
+  // Also check alternate PHPDoc order: @param $name Type
+  PHPDOC_PARAM_ALT_RE.lastIndex = 0;
+  while ((match = PHPDOC_PARAM_ALT_RE.exec(commentBlock)) !== null) {
+    const paramName = match[1];
+    if (params.has('$' + paramName)) continue; // standard format takes priority
+    const typeName = normalizePhpType(match[2]);
+    if (typeName) {
       params.set('$' + paramName, typeName);
     }
   }

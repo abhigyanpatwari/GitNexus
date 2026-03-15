@@ -387,14 +387,15 @@ describe('extractReceiverName', () => {
       expect(extractReceiverName(match!.nameNode)).toBe('user');
     });
 
-    it('does not capture null-conditional user?.Save() with current queries', () => {
+    it('captures null-conditional user?.Save() and extracts receiver', () => {
       parser.setLanguage(CSharp);
       const code = `class Foo { void Run() { user?.Save(); } }`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.CSharp);
       const match = captures.find(c => c.calledName === 'Save');
-      // C# conditional_access_expression uses member_binding_expression, not member_access_expression
-      // The tree-sitter query doesn't match — this documents the gap for future work
-      expect(match).toBeUndefined();
+      // C# conditional_access_expression (user?.Save()) is now captured via member_binding_expression
+      expect(match).toBeDefined();
+      expect(inferCallForm(match!.callNode, match!.nameNode)).toBe('member');
+      expect(extractReceiverName(match!.nameNode)).toBe('user');
     });
   });
 

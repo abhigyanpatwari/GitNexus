@@ -25,6 +25,8 @@ import { SyntaxNode } from '../utils.js';
 
 /** Regex to extract @param annotations: `@param name [Type]` */
 const YARD_PARAM_RE = /@param\s+(\w+)\s+\[([^\]]+)\]/g;
+/** Alternate YARD order: `@param [Type] name` */
+const YARD_PARAM_ALT_RE = /@param\s+\[([^\]]+)\]\s+(\w+)/g;
 
 /** Regex to extract @return annotations: `@return [Type]` */
 const YARD_RETURN_RE = /@return\s+\[([^\]]+)\]/;
@@ -42,10 +44,22 @@ const extractYardTypeName = (yardType: string): string | undefined => {
   const trimmed = yardType.trim();
 
   // Handle nullable: "Type, nil" or "nil, Type"
-  const parts = trimmed.split(',').map(p => p.trim()).filter(p => p !== 'nil');
-  if (parts.length !== 1) return undefined; // ambiguous union
+  // Use bracket-balanced split to avoid breaking on commas inside generics like Hash<Symbol, User>
+  const parts: string[] = [];
+  let depth = 0, start = 0;
+  for (let i = 0; i < trimmed.length; i++) {
+    if (trimmed[i] === '<') depth++;
+    else if (trimmed[i] === '>') depth--;
+    else if (trimmed[i] === ',' && depth === 0) {
+      parts.push(trimmed.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  parts.push(trimmed.slice(start).trim());
+  const filtered = parts.filter(p => p !== '' && p !== 'nil');
+  if (filtered.length !== 1) return undefined; // ambiguous union
 
-  const typePart = parts[0];
+  const typePart = filtered[0];
 
   // Handle qualified: "Models::User" → "User"
   const segments = typePart.split('::');
@@ -116,6 +130,18 @@ const collectYardParams = (methodNode: SyntaxNode): Map<string, string> => {
   while ((match = YARD_PARAM_RE.exec(commentBlock)) !== null) {
     const paramName = match[1];
     const rawType = match[2];
+    const typeName = extractYardTypeName(rawType);
+    if (typeName) {
+      params.set(paramName, typeName);
+    }
+  }
+
+  // Also check alternate YARD order: @param [Type] name
+  YARD_PARAM_ALT_RE.lastIndex = 0;
+  while ((match = YARD_PARAM_ALT_RE.exec(commentBlock)) !== null) {
+    const rawType = match[1];
+    const paramName = match[2];
+    if (params.has(paramName)) continue; // standard format takes priority
     const typeName = extractYardTypeName(rawType);
     if (typeName) {
       params.set(paramName, typeName);

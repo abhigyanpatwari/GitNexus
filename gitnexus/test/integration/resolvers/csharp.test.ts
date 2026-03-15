@@ -606,3 +606,52 @@ describe('C# return type inference via var + invocation', () => {
     expect(repoSave).toBeUndefined();
   });
 });
+
+describe('C# null-conditional call resolution (user?.Save())', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-null-conditional'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes with competing Save methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m: string) => m === 'Save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('captures null-conditional user?.Save() call', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'Save' && c.source === 'Process');
+    expect(saveCalls.length).toBeGreaterThan(0);
+  });
+
+  it('resolves user?.Save() to User#Save via receiver typing', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'Process' && c.targetFilePath.includes('User.cs'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves repo?.Save() to Repo#Save via receiver typing', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'Process' && c.targetFilePath.includes('Repo.cs'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('does NOT cross-contaminate (exactly 1 Save per receiver file)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'Save' && c.source === 'Process');
+    const userTargeted = saveCalls.filter(c => c.targetFilePath.includes('User.cs'));
+    const repoTargeted = saveCalls.filter(c => c.targetFilePath.includes('Repo.cs'));
+    expect(userTargeted.length).toBe(1);
+    expect(repoTargeted.length).toBe(1);
+  });
+});

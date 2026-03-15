@@ -518,6 +518,36 @@ class UserService {
       const { env } = buildTypeEnv(tree, 'php');
       expect(flatGet(env, '$name')).toBe('string');
     });
+
+    it('extracts PHPDoc @param with standard order: @param Type $name', () => {
+      const tree = parse(`<?php
+/**
+ * @param UserRepo $repo the repository
+ * @param string $name the user name
+ */
+function create($repo, $name) {
+  $repo->save();
+}
+      `, PHP.php);
+      const { env } = buildTypeEnv(tree, 'php');
+      expect(flatGet(env, '$repo')).toBe('UserRepo');
+      expect(flatGet(env, '$name')).toBe('string');
+    });
+
+    it('extracts PHPDoc @param with alternate order: @param $name Type', () => {
+      const tree = parse(`<?php
+/**
+ * @param $repo UserRepo the repository
+ * @param $name string the user name
+ */
+function process($repo, $name) {
+  $repo->save();
+}
+      `, PHP.php);
+      const { env } = buildTypeEnv(tree, 'php');
+      expect(flatGet(env, '$repo')).toBe('UserRepo');
+      expect(flatGet(env, '$name')).toBe('string');
+    });
   });
 
   describe('Ruby YARD annotations', () => {

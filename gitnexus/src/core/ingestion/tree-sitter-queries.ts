@@ -365,6 +365,13 @@ export const CSHARP_QUERIES = `
 (invocation_expression function: (identifier) @call.name) @call
 (invocation_expression function: (member_access_expression name: (identifier) @call.name)) @call
 
+; Null-conditional method calls: user?.Save()
+; Parses as: invocation_expression → conditional_access_expression → member_binding_expression → identifier
+(invocation_expression
+  function: (conditional_access_expression
+    (member_binding_expression
+      (identifier) @call.name))) @call
+
 ; Constructor calls: new Foo() and new Foo { Props }
 (object_creation_expression type: (identifier) @call.name) @call
 

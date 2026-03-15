@@ -361,7 +361,7 @@ export const insertNodeToKuzu = async (
       if (v === null || v === undefined) return 'NULL';
       if (typeof v === 'number') return String(v);
       // Escape backslashes first (for Windows paths), then single quotes
-      return `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`;
+      return `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`;
     };
 
     // Build INSERT query based on node type

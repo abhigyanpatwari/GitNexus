@@ -719,6 +719,7 @@ const MEMBER_ACCESS_NODE_TYPES = new Set([
   'field_expression',            // Rust/C++: obj.method() / ptr->method()
   'selector_expression',         // Go: obj.Method()
   'navigation_suffix',           // Kotlin/Swift: obj.method() — nameNode sits inside navigation_suffix
+  'member_binding_expression',   // C#: user?.Method() — null-conditional access
 ]);
 
 /**
@@ -860,6 +861,14 @@ export const extractReceiverName = (
     // relative_scope wraps 'parent'/'self'/'static' — unwrap to get the keyword
     if (receiver?.type === 'relative_scope') {
       receiver = receiver.firstChild;
+    }
+  }
+
+  // C# null-conditional: user?.Save() → conditional_access_expression wraps member_binding_expression
+  if (!receiver && parent.type === 'member_binding_expression') {
+    const condAccess = parent.parent;
+    if (condAccess?.type === 'conditional_access_expression') {
+      receiver = condAccess.firstNamedChild;
     }
   }
 
