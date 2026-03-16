@@ -1,11 +1,11 @@
 import { KnowledgeGraph, GraphNode, GraphRelationship } from '../graph/types.js';
 import Parser from 'tree-sitter';
-import { loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
+import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { generateId } from '../../lib/utils.js';
 import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
-import { getLanguageFromFilename, yieldToEventLoop, DEFINITION_CAPTURE_KEYS, getDefinitionNodeFromCaptures, findEnclosingClassId, extractMethodSignature } from './utils.js';
+import { getLanguageFromFilename, isVerboseIngestionEnabled, yieldToEventLoop, DEFINITION_CAPTURE_KEYS, getDefinitionNodeFromCaptures, findEnclosingClassId, extractMethodSignature } from './utils.js';
 import { isNodeExported } from './export-detection.js';
 import { detectFrameworkFromAST } from './framework-detection.js';
 import { typeConfigs } from './type-extractors/index.js';
@@ -110,6 +110,8 @@ const processParsingSequential = async (
 ) => {
   const parser = await loadParser();
   const total = files.length;
+  const logSkipped = isVerboseIngestionEnabled();
+  const skippedByLang = logSkipped ? new Map<string, number>() : null;
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
@@ -121,6 +123,12 @@ const processParsingSequential = async (
     const language = getLanguageFromFilename(file.path);
 
     if (!language) continue;
+    if (!isLanguageAvailable(language)) {
+      if (skippedByLang) {
+        skippedByLang.set(language, (skippedByLang.get(language) ?? 0) + 1);
+      }
+      continue;
+    }
 
     // Skip files larger than the max tree-sitter buffer (32 MB)
     if (file.content.length > TREE_SITTER_MAX_BUFFER) continue;
@@ -131,7 +139,7 @@ const processParsingSequential = async (
       continue;  // parser unavailable — already warned in pipeline
     }
 
-    let tree;
+    let tree: Parser.Tree;
     try {
       tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
     } catch (parseError) {
@@ -146,8 +154,8 @@ const processParsingSequential = async (
       continue;
     }
 
-    let query;
-    let matches;
+    let query: Parser.Query;
+    let matches: Parser.QueryMatch[];
     try {
       const language = parser.getLanguage();
       query = new Parser.Query(language, queryString);
@@ -285,6 +293,14 @@ const processParsingSequential = async (
         });
       }
     });
+  }
+
+  if (skippedByLang && skippedByLang.size > 0) {
+    for (const [lang, count] of skippedByLang.entries()) {
+      console.warn(
+        `[ingestion] Skipped ${count} ${lang} file(s) in parsing processing — ${lang} parser not available.`,
+      );
+    }
   }
 };
 
