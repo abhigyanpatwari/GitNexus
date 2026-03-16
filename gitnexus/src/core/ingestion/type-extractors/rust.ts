@@ -228,7 +228,7 @@ const extractPatternBinding: PatternBindingExtractor = (
   const wrapperTypeNode = patternNode.childForFieldName('type');
   if (!wrapperTypeNode) return undefined;
   const wrapperName = extractSimpleTypeName(wrapperTypeNode);
-  if (wrapperName !== 'Some' && wrapperName !== 'Ok') return undefined;
+  if (wrapperName !== 'Some' && wrapperName !== 'Ok' && wrapperName !== 'Err') return undefined;
 
   // Extract the inner variable name from the single child of the tuple_struct_pattern.
   // `Some(x)` → the first named child after the type field is the identifier.
@@ -258,13 +258,15 @@ const extractPatternBinding: PatternBindingExtractor = (
     return { varName: innerVar, typeName: innerType };
   }
 
-  // wrapperName === 'Ok': look up the Result<T, E> type AST node to extract T.
+  // wrapperName === 'Ok' or 'Err': look up the Result<T, E> type AST node.
+  // Ok(x) → extract T (typeArgs[0]), Err(e) → extract E (typeArgs[1]).
   const typeNodeKey = `${scope}\0${sourceVarName}`;
   const typeAstNode = declarationTypeNodes.get(typeNodeKey);
   if (!typeAstNode) return undefined;
   const typeArgs = extractGenericTypeArgs(typeAstNode);
-  if (typeArgs.length < 1) return undefined;
-  return { varName: innerVar, typeName: typeArgs[0] };
+  const argIndex = wrapperName === 'Err' ? 1 : 0;
+  if (typeArgs.length < argIndex + 1) return undefined;
+  return { varName: innerVar, typeName: typeArgs[argIndex] };
 };
 
 export const typeConfig: LanguageTypeConfig = {

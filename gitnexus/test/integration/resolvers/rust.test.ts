@@ -968,3 +968,55 @@ describe('Rust if-let Some(x) = opt pattern binding (Phase 5.2)', () => {
     expect(repoSave).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rust if-let Err(e) = res pattern binding (Phase 5 review fix)
+// Result<User, AppError> → Err(e) should type e as AppError (typeArgs[1]).
+// Also tests Ok(user) in the same fixture to verify both arms work.
+// ---------------------------------------------------------------------------
+
+describe('Rust if-let Err(e) pattern binding (Phase 5 review fix)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-err-unwrap'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and AppError structs', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    expect(structs).toContain('User');
+    expect(structs).toContain('AppError');
+  });
+
+  it('resolves e.report() inside if-let Err(e) to AppError#report', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const reportCall = calls.find(c =>
+      c.target === 'report' &&
+      c.source === 'handle_err' &&
+      c.targetFilePath?.includes('error.rs'),
+    );
+    expect(reportCall).toBeDefined();
+  });
+
+  it('resolves user.save() inside if-let Ok(user) to User#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'handle_ok' &&
+      c.targetFilePath?.includes('user.rs'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('does NOT resolve e.report() to User#save (no cross-contamination)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongCall = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'handle_err',
+    );
+    expect(wrongCall).toBeUndefined();
+  });
+});

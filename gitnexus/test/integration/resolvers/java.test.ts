@@ -871,3 +871,50 @@ describe('Java instanceof pattern variable resolution (Phase 5.2)', () => {
     expect(repoSave).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Enum static method calls: Status.fromCode(200) should resolve via
+// class-as-receiver with Enum type included in the filter.
+// ---------------------------------------------------------------------------
+
+describe('Java enum static method call resolution (Phase 5 review fix)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-enum-static-call'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Status as an Enum and App as a Class', () => {
+    expect(getNodesByLabel(result, 'Enum')).toContain('Status');
+    expect(getNodesByLabel(result, 'Class')).toContain('App');
+  });
+
+  it('detects fromCode and label methods on Status', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('fromCode');
+    expect(methods).toContain('label');
+  });
+
+  it('resolves Status.fromCode(200) to Status#fromCode via class-as-receiver', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fromCodeCall = calls.find(c =>
+      c.target === 'fromCode' &&
+      c.source === 'process' &&
+      c.targetFilePath?.includes('Status.java'),
+    );
+    expect(fromCodeCall).toBeDefined();
+  });
+
+  it('resolves s.label() to Status#label', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const labelCall = calls.find(c =>
+      c.target === 'label' &&
+      c.source === 'process' &&
+      c.targetFilePath?.includes('Status.java'),
+    );
+    expect(labelCall).toBeDefined();
+  });
+});

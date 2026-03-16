@@ -1032,7 +1032,8 @@ export function extractCallChain(
   while (CALL_EXPRESSION_TYPES.has(current.type) && chain.length < MAX_CHAIN_DEPTH) {
     // Extract the method name from this call node.
     const funcNode = current.childForFieldName?.('function')
-      ?? current.childForFieldName?.('name');
+      ?? current.childForFieldName?.('name')
+      ?? current.childForFieldName?.('method');  // Ruby `call` node
     let methodName: string | undefined;
     if (funcNode) {
       // member_expression / attribute: last named child is the method identifier
@@ -1056,6 +1057,10 @@ export function extractCallChain(
     // PHP member_call_expression
     if (!innerReceiver && (current.type === 'member_call_expression' || current.type === 'nullsafe_member_call_expression')) {
       innerReceiver = current.childForFieldName?.('object');
+    }
+    // Ruby `call` node: receiver field is on the call node itself
+    if (!innerReceiver && current.type === 'call') {
+      innerReceiver = current.childForFieldName?.('receiver');
     }
 
     if (!innerReceiver) break;

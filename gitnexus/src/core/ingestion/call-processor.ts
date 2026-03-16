@@ -265,7 +265,7 @@ export const processCalls = async (
       if (!receiverTypeName && receiverName && callForm === 'member') {
         const typeResolved = ctx.resolve(receiverName, file.path);
         if (typeResolved && typeResolved.candidates.some(
-          d => d.type === 'Class' || d.type === 'Interface' || d.type === 'Struct',
+          d => d.type === 'Class' || d.type === 'Interface' || d.type === 'Struct' || d.type === 'Enum',
         )) {
           receiverTypeName = receiverName;
         }
@@ -753,7 +753,7 @@ export const processCallsFromExtracted = async (
       if (!effectiveCall.receiverTypeName && effectiveCall.receiverName && effectiveCall.callForm === 'member') {
         const typeResolved = ctx.resolve(effectiveCall.receiverName, effectiveCall.filePath);
         if (typeResolved && typeResolved.candidates.some(
-          d => d.type === 'Class' || d.type === 'Interface' || d.type === 'Struct',
+          d => d.type === 'Class' || d.type === 'Interface' || d.type === 'Struct' || d.type === 'Enum',
         )) {
           effectiveCall = { ...effectiveCall, receiverTypeName: effectiveCall.receiverName };
         }

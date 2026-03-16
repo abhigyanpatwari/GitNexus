@@ -755,3 +755,59 @@ describe('Ruby YARD generic type annotations (Hash<Symbol, User>)', () => {
     expect(findCall).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Chained method calls: svc.get_user.save
+// Tests that Ruby's `call` node uses `method` and `receiver` fields correctly
+// for chain extraction — the tree-sitter-ruby grammar differs from other languages.
+// ---------------------------------------------------------------------------
+
+describe('Ruby chained method call resolution (Phase 5 review fix)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-chain-call'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User, Repo, UserService and App classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('User');
+    expect(classes).toContain('Repo');
+    expect(classes).toContain('UserService');
+    expect(classes).toContain('App');
+  });
+
+  it('detects save methods on both User and Repo', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    const saveMethods = methods.filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('detects get_user method on UserService', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('get_user');
+  });
+
+  it('resolves svc.get_user.save to User#save via chain resolution', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'process' &&
+      c.targetFilePath?.includes('user.rb'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('does NOT resolve svc.get_user.save to Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'process' &&
+      c.targetFilePath?.includes('repo.rb'),
+    );
+    expect(repoSave).toBeUndefined();
+  });
+});
