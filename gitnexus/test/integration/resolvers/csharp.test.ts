@@ -824,3 +824,67 @@ describe('C# assignment chain propagation', () => {
     expect(userSave!.targetFilePath).not.toBe(repoSave!.targetFilePath);
   });
 });
+
+// ---------------------------------------------------------------------------
+// C# mixed declarations: assignment chain + is-pattern in the same file.
+// Tests that the type guard in extractPendingAssignment correctly skips
+// is_pattern_expression nodes while still handling local_declaration_statement.
+// ---------------------------------------------------------------------------
+
+describe('C# assignment chain + is-pattern coexistence', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-mixed-decl-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes each with a Save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'Save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves alias.Save() to User#Save via assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'ProcessWithChain' && c.targetFilePath?.includes('User.cs'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('assignment chain alias does NOT resolve to Repo#Save (negative)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongCall = calls.find(c =>
+      c.target === 'Save' && c.source === 'ProcessWithChain' && c.targetFilePath?.includes('Repo.cs'),
+    );
+    expect(wrongCall).toBeUndefined();
+  });
+
+  it('resolves u.Save() to User#Save via is-pattern binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const patternSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'ProcessWithPattern' && c.targetFilePath?.includes('User.cs'),
+    );
+    expect(patternSave).toBeDefined();
+  });
+
+  it('resolves alias.Save() to Repo#Save via Repo assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'ProcessRepoChain' && c.targetFilePath?.includes('Repo.cs'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('Repo chain alias does NOT resolve to User#Save (negative)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongCall = calls.find(c =>
+      c.target === 'Save' && c.source === 'ProcessRepoChain' && c.targetFilePath?.includes('User.cs'),
+    );
+    expect(wrongCall).toBeUndefined();
+  });
+});

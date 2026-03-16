@@ -2189,6 +2189,18 @@ def process():
       expect(flatGet(env, 'u')).toBe('User');
       expect(flatGet(env, 'alias')).toBe('User');
     });
+
+    it('propagates walrus alias := u when u has a type annotation', () => {
+      const tree = parse(`
+def process():
+    u: User = get_user()
+    if (alias := u):
+        pass
+      `, Python);
+      const { env } = buildTypeEnv(tree, 'python');
+      expect(flatGet(env, 'u')).toBe('User');
+      expect(flatGet(env, 'alias')).toBe('User');
+    });
   });
 
   describe('assignment chain — Rust let_declaration', () => {

@@ -160,8 +160,11 @@ const extractForLoopBinding: ForLoopExtractor = (node: SyntaxNode, scopeEnv: Map
   if (typeName && varName) scopeEnv.set(varName, typeName);
 };
 
-/** C#: var alias = u → variable_declarator with name + equals_value_clause */
+/** C#: var alias = u → variable_declarator with name + equals_value_clause.
+ *  Only local_declaration_statement and variable_declaration contain variable_declarator children;
+ *  is_pattern_expression and field_declaration never do — skip them early. */
 const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
+  if (node.type === 'is_pattern_expression' || node.type === 'field_declaration') return undefined;
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (!child || child.type !== 'variable_declarator') continue;

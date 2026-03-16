@@ -73,7 +73,7 @@ const scanJavaConstructorBinding: ConstructorBindingScanner = (node) => {
   const typeNode = node.childForFieldName('type');
   if (!typeNode) return undefined;
   if (typeNode.text !== 'var') return undefined;
-  const declarator = node.namedChildren.find((c: SyntaxNode) => c.type === 'variable_declarator');
+  const declarator = findChildByType(node, 'variable_declarator');
   if (!declarator) return undefined;
   const nameNode = declarator.childForFieldName('name');
   const value = declarator.childForFieldName('value');
@@ -220,10 +220,10 @@ const extractKotlinInitializer: InitializerExtractor = (node: SyntaxNode, env: M
 /** Kotlin: val x = User(...) — constructor binding for property_declaration with call_expression */
 const scanKotlinConstructorBinding: ConstructorBindingScanner = (node) => {
   if (node.type !== 'property_declaration') return undefined;
-  const varDecl = node.namedChildren.find(c => c.type === 'variable_declaration');
+  const varDecl = findChildByType(node, 'variable_declaration');
   if (!varDecl) return undefined;
-  if (varDecl.namedChildren.some(c => c.type === 'user_type')) return undefined;
-  const callExpr = node.namedChildren.find(c => c.type === 'call_expression');
+  if (findChildByType(varDecl, 'user_type')) return undefined;
+  const callExpr = findChildByType(node, 'call_expression');
   if (!callExpr) return undefined;
   const callee = callExpr.firstNamedChild;
   if (!callee) return undefined;
@@ -242,7 +242,7 @@ const scanKotlinConstructorBinding: ConstructorBindingScanner = (node) => {
     }
   }
   if (!calleeName) return undefined;
-  const nameNode = varDecl.namedChildren.find(c => c.type === 'simple_identifier');
+  const nameNode = findChildByType(varDecl, 'simple_identifier');
   if (!nameNode) return undefined;
   return { varName: nameNode.text, calleeName };
 };
@@ -266,29 +266,54 @@ const extractKotlinForLoopBinding: ForLoopExtractor = (node: SyntaxNode, scopeEn
   if (typeName && varName) scopeEnv.set(varName, typeName);
 };
 
-/** Kotlin: val alias = u → property_declaration with variable_declaration child.
- *  Kotlin AST is structurally different from Java: no variable_declarator node.
+/** Kotlin: val alias = u → property_declaration or variable_declaration.
  *  property_declaration has: binding_pattern_kind("val"), variable_declaration("alias"),
- *  "=", and the RHS value (simple_identifier "u"). */
+ *  "=", and the RHS value (simple_identifier "u").
+ *  variable_declaration appears directly inside functions and has simple_identifier children. */
 const extractKotlinPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
-  if (node.type !== 'property_declaration') return undefined;
-  // Find the variable name from variable_declaration child
-  const varDecl = findChildByType(node, 'variable_declaration');
-  if (!varDecl) return undefined;
-  const nameNode = varDecl.firstNamedChild;
-  if (!nameNode || nameNode.type !== 'simple_identifier') return undefined;
-  const lhs = nameNode.text;
-  if (scopeEnv.has(lhs)) return undefined;
-  // Find the RHS: a simple_identifier sibling after the "=" token
-  let foundEq = false;
-  for (let i = 0; i < node.childCount; i++) {
-    const child = node.child(i);
-    if (!child) continue;
-    if (child.type === '=') { foundEq = true; continue; }
-    if (foundEq && child.type === 'simple_identifier') {
-      return { lhs, rhs: child.text };
+  if (node.type === 'property_declaration') {
+    // Find the variable name from variable_declaration child
+    const varDecl = findChildByType(node, 'variable_declaration');
+    if (!varDecl) return undefined;
+    const nameNode = varDecl.firstNamedChild;
+    if (!nameNode || nameNode.type !== 'simple_identifier') return undefined;
+    const lhs = nameNode.text;
+    if (scopeEnv.has(lhs)) return undefined;
+    // Find the RHS: a simple_identifier sibling after the "=" token
+    let foundEq = false;
+    for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i);
+      if (!child) continue;
+      if (child.type === '=') { foundEq = true; continue; }
+      if (foundEq && child.type === 'simple_identifier') {
+        return { lhs, rhs: child.text };
+      }
     }
+    return undefined;
   }
+
+  if (node.type === 'variable_declaration') {
+    // variable_declaration directly inside functions: simple_identifier children
+    const nameNode = findChildByType(node, 'simple_identifier');
+    if (!nameNode) return undefined;
+    const lhs = nameNode.text;
+    if (scopeEnv.has(lhs)) return undefined;
+    // Look for RHS simple_identifier after "=" in the parent (property_declaration)
+    // variable_declaration itself doesn't contain "=" — it's in the parent
+    const parent = node.parent;
+    if (!parent) return undefined;
+    let foundEq = false;
+    for (let i = 0; i < parent.childCount; i++) {
+      const child = parent.child(i);
+      if (!child) continue;
+      if (child.type === '=') { foundEq = true; continue; }
+      if (foundEq && child.type === 'simple_identifier') {
+        return { lhs, rhs: child.text };
+      }
+    }
+    return undefined;
+  }
+
   return undefined;
 };
 

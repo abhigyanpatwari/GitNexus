@@ -893,3 +893,59 @@ describe('Python nullable (User | None) + assignment chain combined', () => {
     expect(wrongCall).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Python walrus operator (:=) assignment chain.
+// Tests that extractPendingAssignment handles named_expression nodes
+// in addition to regular assignment nodes.
+// ---------------------------------------------------------------------------
+
+describe('Python walrus operator (:=) assignment chain', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-walrus-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes each with a save function', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  it('resolves alias.save() to User#save via regular + walrus chains', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'walrus_chain_user' && c.targetFilePath?.includes('user.py'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('save() in walrus_chain_user does NOT resolve to Repo#save (negative)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongCall = calls.find(c =>
+      c.target === 'save' && c.source === 'walrus_chain_user' && c.targetFilePath?.includes('repo.py'),
+    );
+    expect(wrongCall).toBeUndefined();
+  });
+
+  it('resolves alias.save() to Repo#save via regular + walrus chains', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.source === 'walrus_chain_repo' && c.targetFilePath?.includes('repo.py'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('save() in walrus_chain_repo does NOT resolve to User#save (negative)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongCall = calls.find(c =>
+      c.target === 'save' && c.source === 'walrus_chain_repo' && c.targetFilePath?.includes('user.py'),
+    );
+    expect(wrongCall).toBeUndefined();
+  });
+});

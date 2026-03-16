@@ -762,3 +762,60 @@ describe('Kotlin assignment chain propagation', () => {
     expect(userSave!.targetFilePath).not.toBe(repoSave!.targetFilePath);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Kotlin assignment chain inside class method body.
+// Tests that extractKotlinPendingAssignment handles variable_declaration
+// nodes (not just property_declaration) that tree-sitter-kotlin may emit
+// for function-local val/var inside class methods.
+// ---------------------------------------------------------------------------
+
+describe('Kotlin assignment chain inside class method', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-class-method-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes each with a save function', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  it('resolves alias.save() to User#save via chain inside function', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'processUser' && c.targetFilePath?.includes('User.kt'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('alias.save() in processUser does NOT resolve to Repo (negative)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongCall = calls.find(c =>
+      c.target === 'save' && c.source === 'processUser' && c.targetFilePath?.includes('Repo.kt'),
+    );
+    expect(wrongCall).toBeUndefined();
+  });
+
+  it('resolves alias.save() to Repo#save via chain inside function', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.source === 'processRepo' && c.targetFilePath?.includes('Repo.kt'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('alias.save() in processRepo does NOT resolve to User (negative)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongCall = calls.find(c =>
+      c.target === 'save' && c.source === 'processRepo' && c.targetFilePath?.includes('User.kt'),
+    );
+    expect(wrongCall).toBeUndefined();
+  });
+});

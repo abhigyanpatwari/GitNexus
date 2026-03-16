@@ -107,11 +107,22 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   return { varName: left.text, calleeName };
 };
 
-/** Python: alias = u → assignment with left/right fields */
+/** Python: alias = u → assignment with left/right fields.
+ *  Also handles walrus operator: alias := u → named_expression with name/value fields. */
 const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
-  if (node.type !== 'assignment') return undefined;
-  const left = node.childForFieldName('left');
-  const right = node.childForFieldName('right');
+  let left: SyntaxNode | null;
+  let right: SyntaxNode | null;
+
+  if (node.type === 'assignment') {
+    left = node.childForFieldName('left');
+    right = node.childForFieldName('right');
+  } else if (node.type === 'named_expression') {
+    left = node.childForFieldName('name');
+    right = node.childForFieldName('value');
+  } else {
+    return undefined;
+  }
+
   if (!left || !right) return undefined;
   const lhs = left.type === 'identifier' ? left.text : undefined;
   if (!lhs || scopeEnv.has(lhs)) return undefined;
