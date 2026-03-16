@@ -346,6 +346,12 @@ describe('buildTypeEnv', () => {
       expect(flatGet(env, 'user')).toBe('User');
     });
 
+    it('extracts type from standalone annotation without value (file scope)', () => {
+      const tree = parse('active_user: User', Python);
+      const { env } = buildTypeEnv(tree, 'python');
+      expect(flatGet(env, 'active_user')).toBe('User');
+    });
+
     it('extracts type from function parameters', () => {
       const tree = parse('def process(user: User, repo: Repository): pass', Python);
       const { env } = buildTypeEnv(tree, 'python');
@@ -1191,7 +1197,7 @@ class RepoService {
         expect(flatGet(env, 'item')).toBe('Config');
       });
 
-      it('does NOT extract binding from if let Some(x) = opt (requires generic unwrapping)', () => {
+      it('extracts binding from if let Some(x) = opt via Phase 5.2 pattern binding', () => {
         const tree = parse(`
           fn process(opt: Option<User>) {
             if let Some(user) = opt {
@@ -1200,8 +1206,9 @@ class RepoService {
           }
         `, Rust);
         const { env } = buildTypeEnv(tree, 'rust');
-        // user's type is Option's inner type — requires generic unwrapping (Phase 3)
-        expect(flatGet(env, 'user')).toBeUndefined();
+        // Option<User> is unwrapped to "User" in TypeEnv via NULLABLE_WRAPPER_TYPES.
+        // extractPatternBinding maps `user` → "User" from the scopeEnv lookup for `opt`.
+        expect(flatGet(env, 'user')).toBe('User');
       });
 
       it('does NOT extract field bindings from struct pattern destructuring', () => {
@@ -1244,6 +1251,93 @@ class RepoService {
         // Option<User> unwraps to User (nullable wrapper unwrapping)
         expect(flatGet(env, 'opt')).toBe('User');
         expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('Phase 5.2: extracts binding from if let Some(x) = opt where opt: Option<User>', () => {
+        const tree = parse(`
+          fn process(opt: Option<User>) {
+            if let Some(user) = opt {
+              user.save();
+            }
+          }
+        `, Rust);
+        const { env } = buildTypeEnv(tree, 'rust');
+        // opt: Option<User> → scopeEnv stores "User" (NULLABLE_WRAPPER_TYPES unwrapping)
+        // extractPatternBinding maps user → opt's type → "User"
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('Phase 5.2: does NOT extract binding when source variable is unknown', () => {
+        const tree = parse(`
+          fn process() {
+            if let Some(x) = unknown_var {
+              x.foo();
+            }
+          }
+        `, Rust);
+        const { env } = buildTypeEnv(tree, 'rust');
+        // unknown_var is not in scopeEnv — conservative, produces no binding
+        expect(flatGet(env, 'x')).toBeUndefined();
+      });
+
+      it('Phase 5.2: does NOT extract binding for non-Option/Result wrappers', () => {
+        const tree = parse(`
+          fn process(vec: Vec<User>) {
+            if let SomeOtherVariant(x) = vec {
+              x.save();
+            }
+          }
+        `, Rust);
+        const { env } = buildTypeEnv(tree, 'rust');
+        // SomeOtherVariant is not a known unwrap wrapper — no binding
+        expect(flatGet(env, 'x')).toBeUndefined();
+      });
+    });
+
+    describe('Java instanceof pattern variable (Phase 5.2)', () => {
+      it('extracts binding from x instanceof User user', () => {
+        const tree = parse(`
+          class App {
+            void process(Object obj) {
+              if (obj instanceof User user) {
+                user.save();
+              }
+            }
+          }
+        `, Java);
+        const { env } = buildTypeEnv(tree, 'java');
+        expect(flatGet(env, 'user')).toBe('User');
+      });
+
+      it('does NOT extract binding from plain instanceof without variable', () => {
+        const tree = parse(`
+          class App {
+            void process(Object obj) {
+              boolean b = obj instanceof User;
+            }
+          }
+        `, Java);
+        const { env } = buildTypeEnv(tree, 'java');
+        // No pattern variable declared — no binding
+        expect(flatGet(env, 'b')).toBeUndefined();
+      });
+
+      it('extracts correct type when multiple instanceof patterns exist', () => {
+        const tree = parse(`
+          class App {
+            void process(Object obj) {
+              if (obj instanceof User user) {
+                user.save();
+              }
+              if (obj instanceof Repo repo) {
+                repo.save();
+              }
+            }
+          }
+        `, Java);
+        const { env } = buildTypeEnv(tree, 'java');
+        expect(flatGet(env, 'user')).toBe('User');
+        expect(flatGet(env, 'repo')).toBe('Repo');
       });
     });
 

@@ -707,17 +707,17 @@ describe('Python static/classmethod class resolution (issue #289)', () => {
     expect(createCall).toBeDefined();
   });
 
-  it('does not emit ambiguous find_user() when both classes define it (known limitation)', () => {
-    // UserService.find_user() and AdminService.find_user() are ambiguous — the pipeline
-    // refuses to guess. Static method calls like ClassName.method() don't have a typed
-    // receiver variable, so receiver-constrained disambiguation doesn't apply.
-    // This is expected: no false edges is better than wrong edges.
+  it('resolves find_user() via class-as-receiver for static method calls', () => {
+    // UserService.find_user() and AdminService.find_user() are both resolved because
+    // the class name (UserService / AdminService) is used as the receiver type for
+    // disambiguation. Both find_user methods share the same nodeId (same file, same name)
+    // so exactly 1 CALLS edge is emitted — which is correct (not ambiguous, not missing).
     const calls = getRelationships(result, 'CALLS');
     const findCalls = calls.filter(c =>
       c.target === 'find_user' && c.source === 'process',
     );
-    // Either 0 (refused ambiguous) or 2 (both resolved) — not 1 (wrong guess)
-    expect(findCalls.length === 0 || findCalls.length === 2).toBe(true);
+    expect(findCalls.length).toBe(1);
+    expect(findCalls[0].targetFilePath).toContain('service.py');
   });
 });
 

@@ -24,7 +24,7 @@ try { Swift = _require('tree-sitter-swift'); } catch {}
 // tree-sitter-kotlin is an optionalDependency — may not be installed
 let Kotlin: any = null;
 try { Kotlin = _require('tree-sitter-kotlin'); } catch {}
-import { 
+import {
   getLanguageFromFilename,
   FUNCTION_NODE_TYPES,
   extractFunctionName,
@@ -34,7 +34,10 @@ import {
   extractMethodSignature,
   countCallArguments,
   inferCallForm,
-  extractReceiverName
+  extractReceiverName,
+  extractReceiverNode,
+  CALL_EXPRESSION_TYPES,
+  extractCallChain,
 } from '../utils.js';
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
@@ -107,6 +110,14 @@ export interface ExtractedCall {
   receiverName?: string;
   /** Resolved type name of the receiver (e.g., 'User' for user.save() when user: User) */
   receiverTypeName?: string;
+  /**
+   * Chained call names when the receiver is itself a call expression.
+   * For `svc.getUser().save()`, the `save` ExtractedCall gets receiverCallChain = ['getUser']
+   * with receiverName = 'svc'.  The chain is ordered outermost-last, e.g.:
+   *   `a.b().c().d()` → calledName='d', receiverCallChain=['b','c'], receiverName='a'
+   * Length is capped at MAX_CHAIN_DEPTH (3).
+   */
+  receiverCallChain?: string[];
 }
 
 export interface ExtractedHeritage {
@@ -987,8 +998,34 @@ const processFileGroup = (
             const sourceId = findEnclosingFunctionId(callNode, file.path)
               || generateId('File', file.path);
             const callForm = inferCallForm(callNode, callNameNode);
-            const receiverName = callForm === 'member' ? extractReceiverName(callNameNode) : undefined;
-            const receiverTypeName = receiverName ? typeEnv.lookup(receiverName, callNode) : undefined;
+            let receiverName = callForm === 'member' ? extractReceiverName(callNameNode) : undefined;
+            let receiverTypeName = receiverName ? typeEnv.lookup(receiverName, callNode) : undefined;
+            let receiverCallChain: string[] | undefined;
+
+            // When the receiver is a call_expression (e.g. svc.getUser().save()),
+            // extractReceiverName returns undefined because it refuses complex expressions.
+            // Instead, walk the receiver node to build a call chain for deferred resolution.
+            // We capture the base receiver name so processCallsFromExtracted can look it up
+            // from constructor bindings. receiverTypeName is intentionally left unset here —
+            // the chain resolver in processCallsFromExtracted needs the base type as input and
+            // produces the final receiver type as output.
+            if (callForm === 'member' && receiverName === undefined && !receiverTypeName) {
+              const receiverNode = extractReceiverNode(callNameNode);
+              if (receiverNode && CALL_EXPRESSION_TYPES.has(receiverNode.type)) {
+                const extracted = extractCallChain(receiverNode);
+                if (extracted) {
+                  receiverCallChain = extracted.chain;
+                  // Set receiverName to the base object so Step 1 in processCallsFromExtracted
+                  // can resolve it via constructor bindings to a base type for the chain.
+                  receiverName = extracted.baseReceiverName;
+                  // Also try the type environment immediately (covers explicitly-typed locals).
+                  // This sets a base type that chain resolution will use as input.
+                  // We do NOT set this as receiverTypeName on the call — instead, we rely on
+                  // processCallsFromExtracted Step 2 to run the chain regardless of Step 1.
+                }
+              }
+            }
+
             result.calls.push({
               filePath: file.path,
               calledName,
@@ -997,6 +1034,7 @@ const processFileGroup = (
               ...(callForm !== undefined ? { callForm } : {}),
               ...(receiverName !== undefined ? { receiverName } : {}),
               ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
+              ...(receiverCallChain !== undefined ? { receiverCallChain } : {}),
             });
           }
         }

@@ -888,3 +888,47 @@ describe('C# assignment chain + is-pattern coexistence', () => {
     expect(wrongCall).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// C# is-pattern disambiguation: `if (obj is User user)` should bind user → User
+// and resolve user.Save() to User#Save, NOT Repo#Save.
+// Validates the Phase 5.2 is_pattern_expression extraction in extractDeclaration.
+// ---------------------------------------------------------------------------
+
+describe('C# is-pattern type binding disambiguation (Phase 5.2)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-is-pattern'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes each with a Save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'Save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves user.Save() inside if (obj is User user) to User#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'Save' &&
+      c.source === 'Process' &&
+      c.targetFilePath?.includes('User.cs'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('does NOT resolve user.Save() to Repo#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'Save' &&
+      c.source === 'Process' &&
+      c.targetFilePath?.includes('Repo.cs'),
+    );
+    expect(repoSave).toBeUndefined();
+  });
+});

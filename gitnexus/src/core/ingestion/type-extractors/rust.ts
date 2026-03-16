@@ -1,6 +1,6 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, PendingAssignmentExtractor } from './types.js';
-import { extractSimpleTypeName, extractVarName, hasTypeAnnotation, unwrapAwait } from './shared.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, PendingAssignmentExtractor, PatternBindingExtractor } from './types.js';
+import { extractSimpleTypeName, extractVarName, hasTypeAnnotation, unwrapAwait, extractGenericTypeArgs } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
   'let_declaration',
@@ -193,6 +193,80 @@ const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) =>
   return undefined;
 };
 
+/**
+ * Rust pattern binding extractor for `if let` / `while let` constructs that unwrap
+ * enum variants and introduce new typed variables.
+ *
+ * Supported patterns:
+ * - `if let Some(x) = opt`  → x: T  (opt: Option<T>, T already in scopeEnv via NULLABLE_WRAPPER_TYPES)
+ * - `if let Ok(x) = res`    → x: T  (res: Result<T, E>, T extracted from declarationTypeNodes)
+ *
+ * These complement the captured_pattern support in extractDeclaration (which handles
+ * `if let x @ Struct { .. } = expr` but NOT tuple struct unwrapping like Some(x) / Ok(x)).
+ *
+ * Conservative: returns undefined when:
+ * - The source variable's type is unknown (not in scopeEnv)
+ * - The wrapper is not a known single-unwrap variant (Some / Ok)
+ * - The value side is not a simple identifier
+ */
+const extractPatternBinding: PatternBindingExtractor = (
+  node,
+  scopeEnv,
+  declarationTypeNodes,
+  scope,
+) => {
+  if (node.type !== 'let_condition') return undefined;
+
+  const patternNode = node.childForFieldName('pattern');
+  const valueNode = node.childForFieldName('value');
+  if (!patternNode || !valueNode) return undefined;
+
+  // Only handle tuple_struct_pattern: Some(x) or Ok(x)
+  if (patternNode.type !== 'tuple_struct_pattern') return undefined;
+
+  // Extract the wrapper type name: Some | Ok
+  const wrapperTypeNode = patternNode.childForFieldName('type');
+  if (!wrapperTypeNode) return undefined;
+  const wrapperName = extractSimpleTypeName(wrapperTypeNode);
+  if (wrapperName !== 'Some' && wrapperName !== 'Ok') return undefined;
+
+  // Extract the inner variable name from the single child of the tuple_struct_pattern.
+  // `Some(x)` → the first named child after the type field is the identifier.
+  // tree-sitter-rust: tuple_struct_pattern has 'type' field + unnamed children for args.
+  let innerVar: string | undefined;
+  for (let i = 0; i < patternNode.namedChildCount; i++) {
+    const child = patternNode.namedChild(i);
+    if (!child) continue;
+    // Skip the type node itself
+    if (child === wrapperTypeNode) continue;
+    if (child.type === 'identifier') {
+      innerVar = child.text;
+      break;
+    }
+  }
+  if (!innerVar) return undefined;
+
+  // The value must be a simple identifier so we can look it up in scopeEnv
+  const sourceVarName = valueNode.type === 'identifier' ? valueNode.text : undefined;
+  if (!sourceVarName) return undefined;
+
+  // For `Some(x)`: Option<T> is already unwrapped to T in scopeEnv (via NULLABLE_WRAPPER_TYPES).
+  // For `Ok(x)`: Result<T, E> stores "Result" in scopeEnv — must use declarationTypeNodes.
+  if (wrapperName === 'Some') {
+    const innerType = scopeEnv.get(sourceVarName);
+    if (!innerType) return undefined;
+    return { varName: innerVar, typeName: innerType };
+  }
+
+  // wrapperName === 'Ok': look up the Result<T, E> type AST node to extract T.
+  const typeNodeKey = `${scope}\0${sourceVarName}`;
+  const typeAstNode = declarationTypeNodes.get(typeNodeKey);
+  if (!typeAstNode) return undefined;
+  const typeArgs = extractGenericTypeArgs(typeAstNode);
+  if (typeArgs.length < 1) return undefined;
+  return { varName: innerVar, typeName: typeArgs[0] };
+};
+
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
   extractDeclaration,
@@ -200,4 +274,5 @@ export const typeConfig: LanguageTypeConfig = {
   extractParameter,
   scanConstructorBinding,
   extractPendingAssignment,
+  extractPatternBinding,
 };

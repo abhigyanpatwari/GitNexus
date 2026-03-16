@@ -921,12 +921,155 @@ export const extractReceiverName = (
   return undefined;
 };
 
+/**
+ * Extract the raw receiver AST node for a member call.
+ * Unlike extractReceiverName, this returns the receiver node regardless of its type —
+ * including call_expression / method_invocation nodes that appear in chained calls
+ * like `svc.getUser().save()`.
+ *
+ * Returns undefined when the call is not a member call or when no receiver node
+ * can be found (e.g. top-level free calls).
+ */
+export const extractReceiverNode = (
+  nameNode: SyntaxNode,
+): SyntaxNode | undefined => {
+  const parent = nameNode.parent;
+  if (!parent) return undefined;
+
+  const callNode = parent.parent ?? parent;
+
+  let receiver: SyntaxNode | null = null;
+
+  receiver = parent.childForFieldName('object')
+    ?? parent.childForFieldName('value')
+    ?? parent.childForFieldName('operand')
+    ?? parent.childForFieldName('expression')
+    ?? parent.childForFieldName('argument');
+
+  if (!receiver && callNode.type === 'method_invocation') {
+    receiver = callNode.childForFieldName('object');
+  }
+
+  if (!receiver && (callNode.type === 'member_call_expression' || callNode.type === 'nullsafe_member_call_expression')) {
+    receiver = callNode.childForFieldName('object');
+  }
+
+  if (!receiver && parent.type === 'call') {
+    receiver = parent.childForFieldName('receiver');
+  }
+
+  if (!receiver && (parent.type === 'scoped_call_expression' || callNode.type === 'scoped_call_expression')) {
+    const scopedCall = parent.type === 'scoped_call_expression' ? parent : callNode;
+    receiver = scopedCall.childForFieldName('scope');
+    if (receiver?.type === 'relative_scope') {
+      receiver = receiver.firstChild;
+    }
+  }
+
+  if (!receiver && parent.type === 'member_binding_expression') {
+    const condAccess = parent.parent;
+    if (condAccess?.type === 'conditional_access_expression') {
+      receiver = condAccess.firstNamedChild;
+    }
+  }
+
+  if (!receiver && parent.type === 'navigation_suffix') {
+    const navExpr = parent.parent;
+    if (navExpr?.type === 'navigation_expression') {
+      for (const child of navExpr.children) {
+        if (child.isNamed && child !== parent) {
+          receiver = child;
+          break;
+        }
+      }
+    }
+  }
+
+  return receiver ?? undefined;
+};
+
 export const isVerboseIngestionEnabled = (): boolean => {
   const raw = process.env.GITNEXUS_VERBOSE;
   if (!raw) return false;
   const value = raw.toLowerCase();
   return value === '1' || value === 'true' || value === 'yes';
 };
+
+// ── Chained-call extraction ───────────────────────────────────────────────
+
+/** Node types representing call expressions across supported languages. */
+export const CALL_EXPRESSION_TYPES = new Set([
+  'call_expression',                   // TS/JS/C/C++/Go/Rust
+  'method_invocation',                 // Java
+  'member_call_expression',            // PHP
+  'nullsafe_member_call_expression',   // PHP ?.
+  'call',                              // Python/Ruby
+  'invocation_expression',             // C#
+]);
+
+/**
+ * Hard limit on chain depth to prevent runaway recursion.
+ * For `a.b().c().d()`, the chain has depth 2 (b and c before d).
+ */
+export const MAX_CHAIN_DEPTH = 3;
+
+/**
+ * Walk a receiver AST node that is itself a call expression, accumulating the
+ * chain of intermediate method names up to MAX_CHAIN_DEPTH.
+ *
+ * For `svc.getUser().save()`, called with the receiver of `save` (getUser() call):
+ *   returns { chain: ['getUser'], baseReceiverName: 'svc' }
+ *
+ * For `a.b().c().d()`, called with the receiver of `d` (c() call):
+ *   returns { chain: ['b', 'c'], baseReceiverName: 'a' }
+ */
+export function extractCallChain(
+  receiverCallNode: SyntaxNode,
+): { chain: string[]; baseReceiverName: string | undefined } | undefined {
+  const chain: string[] = [];
+  let current: SyntaxNode = receiverCallNode;
+
+  while (CALL_EXPRESSION_TYPES.has(current.type) && chain.length < MAX_CHAIN_DEPTH) {
+    // Extract the method name from this call node.
+    const funcNode = current.childForFieldName?.('function')
+      ?? current.childForFieldName?.('name');
+    let methodName: string | undefined;
+    if (funcNode) {
+      // member_expression / attribute: last named child is the method identifier
+      methodName = funcNode.lastNamedChild?.text ?? funcNode.text;
+    }
+    if (!methodName) break;
+    chain.unshift(methodName); // build chain outermost-last
+
+    // Walk into the receiver of this call to continue the chain
+    let innerReceiver: SyntaxNode | null = null;
+    if (funcNode) {
+      innerReceiver = funcNode.childForFieldName?.('object')
+        ?? funcNode.childForFieldName?.('value')
+        ?? funcNode.childForFieldName?.('operand')
+        ?? funcNode.childForFieldName?.('expression');
+    }
+    // Java method_invocation: object field is on the call node
+    if (!innerReceiver && current.type === 'method_invocation') {
+      innerReceiver = current.childForFieldName?.('object');
+    }
+    // PHP member_call_expression
+    if (!innerReceiver && (current.type === 'member_call_expression' || current.type === 'nullsafe_member_call_expression')) {
+      innerReceiver = current.childForFieldName?.('object');
+    }
+
+    if (!innerReceiver) break;
+
+    if (CALL_EXPRESSION_TYPES.has(innerReceiver.type)) {
+      current = innerReceiver; // continue walking
+    } else {
+      // Reached a simple identifier — the base receiver
+      return { chain, baseReceiverName: innerReceiver.text || undefined };
+    }
+  }
+
+  return chain.length > 0 ? { chain, baseReceiverName: undefined } : undefined;
+}
 
 
 

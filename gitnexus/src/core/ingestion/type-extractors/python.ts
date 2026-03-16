@@ -5,12 +5,39 @@ import { extractSimpleTypeName, extractVarName } from './shared.js';
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
   'assignment',
   'named_expression',
+  'expression_statement',
 ]);
 
-/** Python: x: Foo = ... (PEP 484 annotations) */
+/** Python: x: Foo = ... (PEP 484 annotated assignment) or x: Foo (standalone annotation).
+ *
+ * tree-sitter-python grammar produces two distinct shapes:
+ *
+ *   1. Annotated assignment with value:  `name: str = ""`
+ *      Node type: `assignment`
+ *      Fields: left=identifier, type=identifier/type, right=value
+ *
+ *   2. Standalone annotation (no value):  `name: str`
+ *      Node type: `expression_statement`
+ *      Child: `type` node with fields name=identifier, type=identifier/type
+ *
+ * Both appear at file scope and inside class bodies (PEP 526 class variable annotations).
+ */
 const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
-  // Python annotated assignment: left : type = value
-  // tree-sitter represents this differently based on grammar version
+  if (node.type === 'expression_statement') {
+    // Standalone annotation: expression_statement > type { name: identifier, type: identifier }
+    const typeChild = node.firstNamedChild;
+    if (!typeChild || typeChild.type !== 'type') return;
+    const nameNode = typeChild.childForFieldName('name');
+    const typeNode = typeChild.childForFieldName('type');
+    if (!nameNode || !typeNode) return;
+    const varName = extractVarName(nameNode);
+    const inner = typeNode.type === 'type' ? (typeNode.firstNamedChild ?? typeNode) : typeNode;
+    const typeName = extractSimpleTypeName(inner) ?? inner.text;
+    if (varName && typeName) env.set(varName, typeName);
+    return;
+  }
+
+  // Annotated assignment: left : type = value
   const left = node.childForFieldName('left');
   const typeNode = node.childForFieldName('type');
   if (!left || !typeNode) return;

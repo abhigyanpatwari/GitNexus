@@ -476,6 +476,122 @@ describe('processCallsFromExtracted', () => {
 
   // ---- Scope-aware constructor bindings (Phase 3) ----
 
+  it('receiverKey collision: same method name in different classes does not collide', async () => {
+    // User.save@100 and Repo.save@200 are two methods named "save" in different classes.
+    // Each has a local variable "db" pointing to a different type.
+    // Without @startIndex in the key, the second binding would overwrite the first.
+    ctx.symbols.add('src/db/Database.ts', 'Database', 'Class:src/db/Database.ts:Database', 'Class');
+    ctx.symbols.add('src/db/Cache.ts', 'Cache', 'Class:src/db/Cache.ts:Cache', 'Class');
+    ctx.symbols.add('src/db/Database.ts', 'query', 'Method:src/db/Database.ts:query', 'Method', { ownerId: 'Class:src/db/Database.ts:Database' });
+    ctx.symbols.add('src/db/Cache.ts', 'query', 'Method:src/db/Cache.ts:query', 'Method', { ownerId: 'Class:src/db/Cache.ts:Cache' });
+    ctx.importMap.set('src/models/User.ts', new Set(['src/db/Database.ts']));
+    ctx.importMap.set('src/models/Repo.ts', new Set(['src/db/Cache.ts']));
+
+    // Two bindings: both enclosing scope is named "save" but at different startIndexes
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/models/User.ts',
+        bindings: [
+          // save@100: inside User.save(), db = new Database()
+          { scope: 'save@100', varName: 'db', calleeName: 'Database' },
+        ],
+      },
+      {
+        filePath: 'src/models/Repo.ts',
+        bindings: [
+          // save@200: inside Repo.save(), db = new Cache()
+          { scope: 'save@200', varName: 'db', calleeName: 'Cache' },
+        ],
+      },
+    ];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/models/User.ts',
+        calledName: 'query',
+        sourceId: 'Method:src/models/User.ts:save',
+        receiverName: 'db',
+        callForm: 'member',
+      },
+      {
+        filePath: 'src/models/Repo.ts',
+        calledName: 'query',
+        sourceId: 'Method:src/models/Repo.ts:save',
+        receiverName: 'db',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx, undefined, constructorBindings);
+
+    const rels = graph.relationships.filter(r => r.type === 'CALLS');
+    expect(rels).toHaveLength(2);
+    const userQueryRel = rels.find(r => r.sourceId === 'Method:src/models/User.ts:save');
+    const repoQueryRel = rels.find(r => r.sourceId === 'Method:src/models/Repo.ts:save');
+    expect(userQueryRel?.targetId).toBe('Method:src/db/Database.ts:query');
+    expect(repoQueryRel?.targetId).toBe('Method:src/db/Cache.ts:query');
+  });
+
+  it('receiverKey collision: same scope funcName + same varName + same type resolves (non-ambiguous)', async () => {
+    // Two save@* scopes both bind "db" to the same type — not ambiguous, should resolve.
+    ctx.symbols.add('src/db/Database.ts', 'Database', 'Class:src/db/Database.ts:Database', 'Class');
+    ctx.symbols.add('src/db/Database.ts', 'query', 'Method:src/db/Database.ts:query', 'Method', { ownerId: 'Class:src/db/Database.ts:Database' });
+    ctx.importMap.set('src/service.ts', new Set(['src/db/Database.ts']));
+
+    const constructorBindings: FileConstructorBindings[] = [{
+      filePath: 'src/service.ts',
+      bindings: [
+        { scope: 'save@10', varName: 'db', calleeName: 'Database' },
+        { scope: 'save@50', varName: 'db', calleeName: 'Database' },
+      ],
+    }];
+
+    const calls: ExtractedCall[] = [{
+      filePath: 'src/service.ts',
+      calledName: 'query',
+      sourceId: 'Method:src/service.ts:save',
+      receiverName: 'db',
+      callForm: 'member',
+    }];
+
+    await processCallsFromExtracted(graph, calls, ctx, undefined, constructorBindings);
+
+    const rels = graph.relationships.filter(r => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe('Method:src/db/Database.ts:query');
+  });
+
+  it('receiverKey collision: same scope funcName + same varName + different types → ambiguous, no CALLS edge', async () => {
+    // Two save@* scopes in the same file bind "db" to different types — truly ambiguous.
+    ctx.symbols.add('src/db/Database.ts', 'Database', 'Class:src/db/Database.ts:Database', 'Class');
+    ctx.symbols.add('src/db/Cache.ts', 'Cache', 'Class:src/db/Cache.ts:Cache', 'Class');
+    ctx.symbols.add('src/db/Database.ts', 'query', 'Method:src/db/Database.ts:query', 'Method', { ownerId: 'Class:src/db/Database.ts:Database' });
+    ctx.symbols.add('src/db/Cache.ts', 'query', 'Method:src/db/Cache.ts:query', 'Method', { ownerId: 'Class:src/db/Cache.ts:Cache' });
+    ctx.importMap.set('src/service.ts', new Set(['src/db/Database.ts', 'src/db/Cache.ts']));
+
+    const constructorBindings: FileConstructorBindings[] = [{
+      filePath: 'src/service.ts',
+      bindings: [
+        { scope: 'save@10', varName: 'db', calleeName: 'Database' },
+        { scope: 'save@50', varName: 'db', calleeName: 'Cache' },
+      ],
+    }];
+
+    const calls: ExtractedCall[] = [{
+      filePath: 'src/service.ts',
+      calledName: 'query',
+      sourceId: 'Method:src/service.ts:save',
+      receiverName: 'db',
+      callForm: 'member',
+    }];
+
+    await processCallsFromExtracted(graph, calls, ctx, undefined, constructorBindings);
+
+    // Ambiguous — different types for same funcName+varName, should not emit a CALLS edge
+    const rels = graph.relationships.filter(r => r.type === 'CALLS');
+    expect(rels).toHaveLength(0);
+  });
+
   it('scope-aware bindings: same varName in different functions resolves to correct type', async () => {
     ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
     ctx.symbols.add('src/models.ts', 'Repo', 'Class:src/models.ts:Repo', 'Class');

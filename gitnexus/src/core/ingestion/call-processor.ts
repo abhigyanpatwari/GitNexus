@@ -17,7 +17,11 @@ import {
   countCallArguments,
   inferCallForm,
   extractReceiverName,
+  extractReceiverNode,
   findEnclosingClassId,
+  CALL_EXPRESSION_TYPES,
+  MAX_CHAIN_DEPTH,
+  extractCallChain,
 } from './utils.js';
 import { buildTypeEnv } from './type-env.js';
 import type { ConstructorBinding } from './type-env.js';
@@ -72,7 +76,7 @@ const verifyConstructorBindings = (
     const isClass = tiered?.candidates.some(def => def.type === 'Class') ?? false;
 
     if (isClass) {
-      verified.set(receiverKey(extractFuncNameFromScope(scope), varName), calleeName);
+      verified.set(receiverKey(scope, varName), calleeName);
     } else {
       let callableDefs = tiered?.candidates.filter(d =>
         d.type === 'Function' || d.type === 'Method'
@@ -105,7 +109,7 @@ const verifyConstructorBindings = (
       if (callableDefs && callableDefs.length === 1 && callableDefs[0].returnType) {
         const typeName = extractReturnTypeName(callableDefs[0].returnType);
         if (typeName) {
-          verified.set(receiverKey(extractFuncNameFromScope(scope), varName), typeName);
+          verified.set(receiverKey(scope, varName), typeName);
         }
       }
     }
@@ -253,8 +257,38 @@ export const processCalls = async (
       if (!receiverTypeName && receiverName && verifiedReceivers.size > 0) {
         const enclosingFunc = findEnclosingFunction(callNode, file.path, ctx);
         const funcName = enclosingFunc ? extractFuncNameFromSourceId(enclosingFunc) : '';
-        receiverTypeName = verifiedReceivers.get(receiverKey(funcName, receiverName))
-          ?? verifiedReceivers.get(receiverKey('', receiverName));
+        receiverTypeName = lookupReceiverType(verifiedReceivers, funcName, receiverName);
+      }
+      // Fall back to class-as-receiver for static method calls (e.g. UserService.find_user()).
+      // When the receiver name is not a variable in TypeEnv but resolves to a Class/Struct/Interface
+      // through the standard tiered resolution, use it directly as the receiver type.
+      if (!receiverTypeName && receiverName && callForm === 'member') {
+        const typeResolved = ctx.resolve(receiverName, file.path);
+        if (typeResolved && typeResolved.candidates.some(
+          d => d.type === 'Class' || d.type === 'Interface' || d.type === 'Struct',
+        )) {
+          receiverTypeName = receiverName;
+        }
+      }
+      // Fall back to chained call resolution when the receiver is a call expression
+      // (e.g. svc.getUser().save() — receiver of save() is getUser(), not a simple identifier).
+      if (callForm === 'member' && !receiverTypeName && !receiverName) {
+        const receiverNode = extractReceiverNode(nameNode);
+        if (receiverNode && CALL_EXPRESSION_TYPES.has(receiverNode.type)) {
+          const extracted = extractCallChain(receiverNode);
+          if (extracted) {
+            // Resolve the base receiver type if possible
+            let baseType = extracted.baseReceiverName && typeEnv
+              ? typeEnv.lookup(extracted.baseReceiverName, callNode)
+              : undefined;
+            if (!baseType && extracted.baseReceiverName && verifiedReceivers.size > 0) {
+              const enclosingFunc = findEnclosingFunction(callNode, file.path, ctx);
+              const funcName = enclosingFunc ? extractFuncNameFromSourceId(enclosingFunc) : '';
+              baseType = lookupReceiverType(verifiedReceivers, funcName, extracted.baseReceiverName);
+            }
+            receiverTypeName = resolveChainedReceiver(extracted.chain, baseType, file.path, ctx);
+          }
+        }
       }
 
       const resolved = resolveCallTarget({
@@ -351,6 +385,47 @@ const toResolveResult = (
   confidence: TIER_CONFIDENCE[tier],
   reason: tier === 'same-file' ? 'same-file' : tier === 'import-scoped' ? 'import-resolved' : 'global',
 });
+
+/**
+ * Resolve a chain of intermediate method calls to find the receiver type for a
+ * final member call.  Called when the receiver of a call is itself a call
+ * expression (e.g. `svc.getUser().save()`).
+ *
+ * @param chainNames  Ordered list of method names from outermost to innermost
+ *                    intermediate call (e.g. ['getUser'] for `svc.getUser().save()`).
+ * @param baseReceiverTypeName  The already-resolved type of the base receiver
+ *                              (e.g. 'UserService' for `svc`), or undefined.
+ * @param currentFile  The file path for resolution context.
+ * @param ctx  The resolution context for symbol lookup.
+ * @returns The type name of the final intermediate call's return type, or undefined
+ *          if resolution fails at any step.
+ */
+function resolveChainedReceiver(
+  chainNames: string[],
+  baseReceiverTypeName: string | undefined,
+  currentFile: string,
+  ctx: ResolutionContext,
+): string | undefined {
+  let currentType = baseReceiverTypeName;
+  for (const name of chainNames) {
+    const resolved = resolveCallTarget(
+      { calledName: name, callForm: 'member', receiverTypeName: currentType },
+      currentFile,
+      ctx,
+    );
+    if (!resolved) return undefined;
+
+    const candidates = ctx.symbols.lookupFuzzy(name);
+    const symDef = candidates.find(c => c.nodeId === resolved.nodeId);
+    if (!symDef?.returnType) return undefined;
+
+    const returnTypeName = extractReturnTypeName(symDef.returnType);
+    if (!returnTypeName) return undefined;
+
+    currentType = returnTypeName;
+  }
+  return currentType;
+}
 
 /**
  * Resolve a function call to its target node ID using priority strategy:
@@ -491,7 +566,8 @@ function extractFirstTypeArg(args: string): string {
   return args.trim();
 }
 
-export const extractReturnTypeName = (raw: string): string | undefined => {
+export const extractReturnTypeName = (raw: string, depth = 0): string | undefined => {
+  if (depth > 10) return undefined;
   let text = raw.trim();
   if (!text) return undefined;
 
@@ -519,7 +595,7 @@ export const extractReturnTypeName = (raw: string): string | undefined => {
       // so that nested generics like Result<User, Error> are not split at the inner
       // comma. Lifetime parameters (Rust 'a, '_) are skipped.
       const firstArg = extractFirstTypeArg(args);
-      return extractReturnTypeName(firstArg);
+      return extractReturnTypeName(firstArg, depth + 1);
     }
     // Non-wrapper generic: return the base type (e.g., Map<K,V> → Map)
     return PRIMITIVE_TYPES.has(base.toLowerCase()) ? undefined : base;
@@ -548,6 +624,11 @@ export const extractReturnTypeName = (raw: string): string | undefined => {
 // Source IDs use "Label:filepath:funcName" (produced by parse-worker.ts).
 // NUL (\0) is used as a composite-key separator because it cannot appear
 // in source-code identifiers, preventing ambiguous concatenation.
+//
+// receiverKey stores the FULL scope (funcName@startIndex) to prevent
+// collisions between overloaded methods with the same name in different
+// classes (e.g. User.save@100 and Repo.save@200 are distinct keys).
+// Lookup uses a secondary funcName-only index built in lookupReceiverType.
 
 /** Extract the function name from a scope key ("funcName@startIndex" → "funcName"). */
 const extractFuncNameFromScope = (scope: string): string =>
@@ -559,9 +640,58 @@ const extractFuncNameFromSourceId = (sourceId: string): string => {
   return lastColon >= 0 ? sourceId.slice(lastColon + 1) : '';
 };
 
-/** Build a scope-aware composite key for receiver type lookup. */
-const receiverKey = (funcName: string, varName: string): string =>
-  `${funcName}\0${varName}`;
+/**
+ * Build a composite key for receiver type storage.
+ * Uses the full scope string (e.g. "save@100") to distinguish overloaded
+ * methods with the same name in different classes.
+ */
+const receiverKey = (scope: string, varName: string): string =>
+  `${scope}\0${varName}`;
+
+/**
+ * Look up a receiver type from a verified receiver map.
+ * The map is keyed by `scope\0varName` (full scope with @startIndex).
+ * Since the lookup side only has `funcName` (no startIndex), we scan for
+ * all entries whose key starts with `funcName@` and has the matching varName.
+ * If exactly one unique type is found, return it. If multiple distinct types
+ * exist (true overload collision), return undefined (refuse to guess).
+ * Falls back to the file-level scope key `\0varName` (empty funcName).
+ */
+const lookupReceiverType = (
+  map: Map<string, string>,
+  funcName: string,
+  varName: string,
+): string | undefined => {
+  // Fast path: file-level scope (empty funcName — used as fallback)
+  const fileLevelKey = receiverKey('', varName);
+
+  const prefix = `${funcName}@`;
+  const suffix = `\0${varName}`;
+  let found: string | undefined;
+  let ambiguous = false;
+
+  for (const [key, value] of map) {
+    if (key === fileLevelKey) continue; // handled separately below
+    if (key.startsWith(prefix) && key.endsWith(suffix)) {
+      // Verify the key is exactly "funcName@<digits>\0varName" with no extra chars.
+      // The part between prefix and suffix should be the startIndex (digits only),
+      // but we accept any non-empty segment to be forward-compatible.
+      const middle = key.slice(prefix.length, key.length - suffix.length);
+      if (middle.length === 0) continue; // malformed key — skip
+      if (found === undefined) {
+        found = value;
+      } else if (found !== value) {
+        ambiguous = true;
+        break;
+      }
+    }
+  }
+
+  if (!ambiguous && found !== undefined) return found;
+
+  // Fallback: file-level scope (bindings outside any function)
+  return map.get(fileLevelKey);
+};
 
 /**
  * Fast path: resolve pre-extracted call sites from workers.
@@ -609,12 +739,49 @@ export const processCallsFromExtracted = async (
 
     for (const call of calls) {
       let effectiveCall = call;
+
+      // Step 1: resolve receiver type from constructor bindings
       if (!call.receiverTypeName && call.receiverName && receiverMap) {
         const callFuncName = extractFuncNameFromSourceId(call.sourceId);
-        const resolvedType = receiverMap.get(receiverKey(callFuncName, call.receiverName))
-          ?? receiverMap.get(receiverKey('', call.receiverName)); // fall back to file-level scope
+        const resolvedType = lookupReceiverType(receiverMap, callFuncName, call.receiverName);
         if (resolvedType) {
           effectiveCall = { ...call, receiverTypeName: resolvedType };
+        }
+      }
+
+      // Step 1b: class-as-receiver for static method calls (e.g. UserService.find_user())
+      if (!effectiveCall.receiverTypeName && effectiveCall.receiverName && effectiveCall.callForm === 'member') {
+        const typeResolved = ctx.resolve(effectiveCall.receiverName, effectiveCall.filePath);
+        if (typeResolved && typeResolved.candidates.some(
+          d => d.type === 'Class' || d.type === 'Interface' || d.type === 'Struct',
+        )) {
+          effectiveCall = { ...effectiveCall, receiverTypeName: effectiveCall.receiverName };
+        }
+      }
+
+      // Step 2: if the call has a receiver call chain (e.g. svc.getUser().save()),
+      // resolve the chain to determine the final receiver type.
+      // This runs whenever receiverCallChain is present — even when Step 1 set a
+      // receiverTypeName, that type is the BASE receiver (e.g. UserService for svc),
+      // and the chain must be walked to produce the FINAL receiver (e.g. User from
+      // getUser() : User).
+      if (effectiveCall.receiverCallChain?.length) {
+        // Step 1 may have resolved the base receiver type (e.g. svc → UserService).
+        // Use it as the starting point for chain resolution.
+        let baseType = effectiveCall.receiverTypeName;
+        // If Step 1 didn't resolve it, try the receiver map directly.
+        if (!baseType && effectiveCall.receiverName && receiverMap) {
+          const callFuncName = extractFuncNameFromSourceId(effectiveCall.sourceId);
+          baseType = lookupReceiverType(receiverMap, callFuncName, effectiveCall.receiverName);
+        }
+        const chainedType = resolveChainedReceiver(
+          effectiveCall.receiverCallChain,
+          baseType,
+          effectiveCall.filePath,
+          ctx,
+        );
+        if (chainedType) {
+          effectiveCall = { ...effectiveCall, receiverTypeName: chainedType };
         }
       }
 

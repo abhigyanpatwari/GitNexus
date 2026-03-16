@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, ForLoopExtractor, PendingAssignmentExtractor } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, ForLoopExtractor, PendingAssignmentExtractor, PatternBindingExtractor } from './types.js';
 import { extractSimpleTypeName, extractVarName, findChildByType } from './shared.js';
 
 // ── Java ──────────────────────────────────────────────────────────────────
@@ -114,6 +114,33 @@ const extractJavaPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv
   return undefined;
 };
 
+/**
+ * Java 16+ `instanceof` pattern variable: `x instanceof User user`
+ *
+ * AST structure:
+ *   instanceof_expression
+ *     left: expression (the variable being tested)
+ *     instanceof keyword
+ *     right: type (the type to test against)
+ *     name: identifier (the pattern variable — optional, Java 16+)
+ *
+ * Conservative: returns undefined when the `name` field is absent (plain instanceof
+ * without pattern variable, e.g. `x instanceof User`) or when the type cannot be
+ * extracted. The source variable's existing type is NOT used — the pattern explicitly
+ * declares the new type, so no scopeEnv lookup is needed.
+ */
+const extractJavaPatternBinding: PatternBindingExtractor = (node) => {
+  if (node.type !== 'instanceof_expression') return undefined;
+  const nameNode = node.childForFieldName('name');
+  if (!nameNode) return undefined;
+  const typeNode = node.childForFieldName('right');
+  if (!typeNode) return undefined;
+  const typeName = extractSimpleTypeName(typeNode);
+  const varName = extractVarName(nameNode);
+  if (!typeName || !varName) return undefined;
+  return { varName, typeName };
+};
+
 export const javaTypeConfig: LanguageTypeConfig = {
   declarationNodeTypes: JAVA_DECLARATION_NODE_TYPES,
   extractDeclaration: extractJavaDeclaration,
@@ -123,6 +150,7 @@ export const javaTypeConfig: LanguageTypeConfig = {
   forLoopNodeTypes: JAVA_FOR_LOOP_NODE_TYPES,
   extractForLoopBinding: extractJavaForLoopBinding,
   extractPendingAssignment: extractJavaPendingAssignment,
+  extractPatternBinding: extractJavaPatternBinding,
 };
 
 // ── Kotlin ────────────────────────────────────────────────────────────────

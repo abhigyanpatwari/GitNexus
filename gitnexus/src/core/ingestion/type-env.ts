@@ -292,6 +292,10 @@ export const buildTypeEnv = (
   const config = typeConfigs[language];
   const bindings: ConstructorBinding[] = [];
   const pendingAssignments: Array<{ scope: string; lhs: string; rhs: string }> = [];
+  // Maps `scope\0varName` → the type annotation AST node from the original declaration.
+  // Allows pattern extractors to navigate back to the declaration's generic type arguments
+  // (e.g., to extract T from Result<T, E> for `if let Ok(x) = res`).
+  const declarationTypeNodes = new Map<string, SyntaxNode>();
 
   /**
    * Try to extract a (variableName → typeName) binding from a single AST node.
@@ -299,11 +303,26 @@ export const buildTypeEnv = (
    * Resolution tiers (first match wins):
    * - Tier 0: explicit type annotations via extractDeclaration / extractForLoopBinding
    * - Tier 1: constructor-call inference via extractInitializer (fallback)
+   *
+   * Side effect: populates declarationTypeNodes for variables that have an explicit
+   * type annotation field on the declaration node. This allows pattern extractors to
+   * retrieve generic type arguments from the original declaration (e.g., extracting T
+   * from Result<T, E> for `if let Ok(x) = res`).
    */
-  const extractTypeBinding = (node: SyntaxNode, scopeEnv: Map<string, string>): void => {
+  const extractTypeBinding = (node: SyntaxNode, scopeEnv: Map<string, string>, scope: string): void => {
     // This guard eliminates 90%+ of calls before any language dispatch.
     if (TYPED_PARAMETER_TYPES.has(node.type)) {
+      const keysBefore = new Set(scopeEnv.keys());
       config.extractParameter(node, scopeEnv);
+      // Capture the type node for newly introduced parameter bindings
+      const typeNode = node.childForFieldName('type');
+      if (typeNode) {
+        for (const varName of scopeEnv.keys()) {
+          if (!keysBefore.has(varName)) {
+            declarationTypeNodes.set(`${scope}\0${varName}`, typeNode);
+          }
+        }
+      }
       return;
     }
     // For-each loop variable bindings (Java/C#/Kotlin): explicit element types in the AST.
@@ -313,7 +332,19 @@ export const buildTypeEnv = (
       return;
     }
     if (config.declarationNodeTypes.has(node.type)) {
+      const keysBefore = new Set(scopeEnv.keys());
       config.extractDeclaration(node, scopeEnv);
+      // Capture the type annotation AST node for newly introduced bindings.
+      // Only declarations with an explicit 'type' field are recorded — constructor
+      // inferences (Tier 1) don't have a type annotation node to preserve.
+      const typeNode = node.childForFieldName('type');
+      if (typeNode) {
+        for (const varName of scopeEnv.keys()) {
+          if (!keysBefore.has(varName)) {
+            declarationTypeNodes.set(`${scope}\0${varName}`, typeNode);
+          }
+        }
+      }
       // Tier 1: constructor-call inference as fallback.
       // Always called when available — each language's extractInitializer
       // internally skips declarators that already have explicit annotations,
@@ -346,7 +377,18 @@ export const buildTypeEnv = (
     if (!env.has(scope)) env.set(scope, new Map());
     const scopeEnv = env.get(scope)!;
 
-    extractTypeBinding(node, scopeEnv);
+    extractTypeBinding(node, scopeEnv, scope);
+
+    // Pattern binding extraction: handles constructs that introduce NEW typed variables
+    // via pattern matching (e.g. `if let Some(x) = opt`, `x instanceof T t`).
+    // Runs after Tier 0/1 so scopeEnv already contains the source variable's type.
+    // Conservative: extractor returns undefined when source type is unknown.
+    if (config.extractPatternBinding) {
+      const patternBinding = config.extractPatternBinding(node, scopeEnv, declarationTypeNodes, scope);
+      if (patternBinding && !scopeEnv.has(patternBinding.varName)) {
+        scopeEnv.set(patternBinding.varName, patternBinding.typeName);
+      }
+    }
 
     // Tier 2: collect plain-identifier RHS assignments for post-walk propagation.
     // Delegates to per-language extractPendingAssignment — AST shapes differ widely

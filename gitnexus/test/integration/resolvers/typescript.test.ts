@@ -1211,3 +1211,119 @@ describe('TypeScript nullable + assignment chain combined', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Chained method call resolution: svc.getUser().save()
+// The receiver of save() is a call_expression (getUser()), not a simple identifier.
+// Resolution must walk the chain: getUser() returns User, so save() → User#save.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript chained method call resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-chain-call'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User, Repo and UserService classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('User');
+    expect(classes).toContain('Repo');
+    expect(classes).toContain('UserService');
+  });
+
+  it('detects save methods on both User and Repo', () => {
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('detects getUser method on UserService', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('getUser');
+  });
+
+  it('resolves svc.getUser().save() to User#save, NOT Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'processUser' &&
+      c.targetFilePath.includes('User'),
+    );
+    const repoSave = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'processUser' &&
+      c.targetFilePath.includes('Repo'),
+    );
+    expect(userSave).toBeDefined();
+    expect(repoSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Overloaded receiver: two classes with the same method name (save) must not
+// collide in the receiverKey map. The fix preserves @startIndex in the key so
+// User.save@idx1 and Repo.save@idx2 remain distinct even when the enclosing
+// scope funcName is the same.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript overloaded-receiver resolution (receiverKey collision fix)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-overloaded-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, both with a save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves user.save() to User#save (models/User.ts), not Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.targetFilePath.includes('User'),
+    );
+    expect(userSave).toBeDefined();
+    expect(userSave!.source).toBe('run');
+    // Negative: must not resolve to Repo#save
+    const wrongSave = calls.find(c =>
+      c.target === 'save' && c.source === 'run' && c.targetFilePath.includes('Repo'),
+    );
+    // If only one save target resolves to User (not Repo), we correctly exclude Repo
+    expect(userSave!.targetFilePath).toContain('User');
+  });
+
+  it('resolves repo.save() to Repo#save (models/Repo.ts), not User#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.targetFilePath.includes('Repo'),
+    );
+    expect(repoSave).toBeDefined();
+    expect(repoSave!.source).toBe('run');
+    expect(repoSave!.targetFilePath).toContain('Repo');
+  });
+
+  it('emits exactly 2 save() CALLS edges — one per class', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save');
+    expect(saveCalls.length).toBe(2);
+    const targets = saveCalls.map(c => c.targetFilePath).sort();
+    expect(targets[0]).toContain('Repo');
+    expect(targets[1]).toContain('User');
+  });
+
+  it('resolves constructor calls for both User and Repo', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userCtor = calls.find(c => c.target === 'User' && c.targetLabel === 'Class');
+    const repoCtor = calls.find(c => c.target === 'Repo' && c.targetLabel === 'Class');
+    expect(userCtor).toBeDefined();
+    expect(repoCtor).toBeDefined();
+  });
+});

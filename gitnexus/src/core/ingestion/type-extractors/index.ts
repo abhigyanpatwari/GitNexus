@@ -40,6 +40,7 @@ export type {
   ConstructorBindingScanner,
   ForLoopExtractor,
   PendingAssignmentExtractor,
+  PatternBindingExtractor,
 } from './types.js';
 export { 
   TYPED_PARAMETER_TYPES,
