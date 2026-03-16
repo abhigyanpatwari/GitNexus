@@ -12,11 +12,11 @@ export default defineConfig({
     tailwindcss(),
     wasm(),
     topLevelAwait(),
-    // Copy kuzu-wasm worker file to assets folder for production
+    // Copy lbug-wasm worker file to assets folder for production
     viteStaticCopy({
       targets: [
         {
-          src: 'node_modules/kuzu-wasm/kuzu_wasm_worker.js',
+          src: 'node_modules/@ladybugdb/wasm-core/lbug_wasm_worker.js',
           dest: 'assets'
         }
       ]
@@ -35,12 +35,12 @@ export default defineConfig({
   define: {
     global: 'globalThis',
   },
-  // Optimize deps - exclude kuzu-wasm from pre-bundling (it has WASM files)
+  // Optimize deps - exclude lbug-wasm from pre-bundling (it has WASM files)
   optimizeDeps: {
-    exclude: ['kuzu-wasm'],
+    exclude: ['@ladybugdb/wasm-core'],
     include: ['buffer'],
   },
-  // Required for KuzuDB WASM (SharedArrayBuffer needs Cross-Origin Isolation)
+  // Required for LadybugDB WASM (SharedArrayBuffer needs Cross-Origin Isolation)
   server: {
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',

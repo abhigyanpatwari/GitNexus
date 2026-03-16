@@ -13,7 +13,7 @@
 import { detectFrameworkFromPath } from './framework-detection';
 
 // ============================================================================
-// NAME PATTERNS - All 9 supported languages
+// NAME PATTERNS - All 11 supported languages
 // ============================================================================
 
 /**
@@ -142,6 +142,13 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
     /^findAll$/,              // Repository::findAll()
     /^save$/,                 // Repository::save()
     /^delete$/,               // Repository::delete()
+  ],
+
+  // Ruby
+  'ruby': [
+    /^call$/,                 // Service objects (MyService.call)
+    /^perform$/,              // Background jobs (Sidekiq, ActiveJob)
+    /^execute$/,              // Command pattern
   ],
 };
 
@@ -302,7 +309,12 @@ export function isTestFile(filePath: string): boolean {
     p.endsWith('test.php') ||
     p.endsWith('spec.php') ||
     p.includes('/tests/feature/') ||
-    p.includes('/tests/unit/')
+    p.includes('/tests/unit/') ||
+    // Ruby test patterns
+    p.endsWith('_spec.rb') ||
+    p.endsWith('_test.rb') ||
+    p.includes('/spec/') ||
+    p.includes('/test/fixtures/')
   );
 }
 

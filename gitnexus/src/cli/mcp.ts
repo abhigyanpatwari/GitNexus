@@ -11,7 +11,7 @@ import { LocalBackend } from '../mcp/local/local-backend.js';
 
 export const mcpCommand = async () => {
   // Prevent unhandled errors from crashing the MCP server process.
-  // KuzuDB lock conflicts and transient errors should degrade gracefully.
+  // LadybugDB lock conflicts and transient errors should degrade gracefully.
   process.on('uncaughtException', (err) => {
     console.error(`GitNexus MCP: uncaught exception — ${err.message}`);
     // Process is in an undefined state after uncaughtException — exit after flushing

@@ -26,13 +26,13 @@ import {
   type HybridSearchResult,
 } from '../core/search';
 
-// Lazy import for Kuzu to avoid breaking worker if SharedArrayBuffer unavailable
-let kuzuAdapter: typeof import('../core/kuzu/kuzu-adapter') | null = null;
-const getKuzuAdapter = async () => {
-  if (!kuzuAdapter) {
-    kuzuAdapter = await import('../core/kuzu/kuzu-adapter');
+// Lazy import for LadybugDB to avoid breaking worker if SharedArrayBuffer unavailable
+let lbugAdapter: typeof import('../core/lbug/lbug-adapter') | null = null;
+const getLbugAdapter = async () => {
+  if (!lbugAdapter) {
+    lbugAdapter = await import('../core/lbug/lbug-adapter');
   }
-  return kuzuAdapter;
+  return lbugAdapter;
 };
 
 // Embedding state
@@ -172,52 +172,52 @@ const workerApi = {
       console.log(`🔍 BM25 index built: ${bm25DocCount} documents`);
     }
     
-    // Load graph into KuzuDB for querying (optional - gracefully degrades)
+    // Load graph into LadybugDB for querying (optional - gracefully degrades)
     try {
       onProgress({
         phase: 'complete',
         percent: 98,
-        message: 'Loading into KuzuDB...',
+        message: 'Loading into LadybugDB...',
         stats: {
           filesProcessed: result.graph.nodeCount,
           totalFiles: result.graph.nodeCount,
           nodesCreated: result.graph.nodeCount,
         },
       });
-      
-      const kuzu = await getKuzuAdapter();
-      await kuzu.loadGraphToKuzu(result.graph, result.fileContents);
-      
+
+      const lbug = await getLbugAdapter();
+      await lbug.loadGraphToLbug(result.graph, result.fileContents);
+
       if (import.meta.env.DEV) {
-        const stats = await kuzu.getKuzuStats();
-        console.log('KuzuDB loaded:', stats);
+        const stats = await lbug.getLbugStats();
+        console.log('LadybugDB loaded:', stats);
         console.log('📁 Stored', storedFileContents.size, 'files for grep/read tools');
       }
     } catch {
-      // KuzuDB is optional - silently continue without it
+      // LadybugDB is optional - silently continue without it
     }
-    
+
     // Store clustering config for background enrichment (runs after graph loads)
     if (clusteringConfig) {
       pendingEnrichmentConfig = clusteringConfig;
       console.log('📋 Clustering config saved for background enrichment');
     }
-    
+
     // Convert to serializable format for transfer back to main thread
     return serializePipelineResult(result);
   },
 
   /**
-   * Execute a Cypher query against the KuzuDB database
+   * Execute a Cypher query against the LadybugDB database
    * @param cypher - The Cypher query string
    * @returns Query results as an array of objects
    */
   async runQuery(cypher: string): Promise<any[]> {
-    const kuzu = await getKuzuAdapter();
-    if (!kuzu.isKuzuReady()) {
+    const lbug = await getLbugAdapter();
+    if (!lbug.isLbugReady()) {
       throw new Error('Database not ready. Please load a repository first.');
     }
-    return kuzu.executeQuery(cypher);
+    return lbug.executeQuery(cypher);
   },
 
   /**
@@ -225,8 +225,8 @@ const workerApi = {
    */
   async isReady(): Promise<boolean> {
     try {
-      const kuzu = await getKuzuAdapter();
-      return kuzu.isKuzuReady();
+      const lbug = await getLbugAdapter();
+      return lbug.isLbugReady();
     } catch {
       return false;
     }
@@ -237,8 +237,8 @@ const workerApi = {
    */
   async getStats(): Promise<{ nodes: number; edges: number }> {
     try {
-      const kuzu = await getKuzuAdapter();
-      return kuzu.getKuzuStats();
+      const lbug = await getLbugAdapter();
+      return lbug.getLbugStats();
     } catch {
       return { nodes: 0, edges: 0 };
     }
@@ -276,29 +276,29 @@ const workerApi = {
       console.log(`🔍 BM25 index built: ${bm25DocCount} documents`);
     }
     
-    // Load graph into KuzuDB for querying (optional - gracefully degrades)
+    // Load graph into LadybugDB for querying (optional - gracefully degrades)
     try {
       onProgress({
         phase: 'complete',
         percent: 98,
-        message: 'Loading into KuzuDB...',
+        message: 'Loading into LadybugDB...',
         stats: {
           filesProcessed: result.graph.nodeCount,
           totalFiles: result.graph.nodeCount,
           nodesCreated: result.graph.nodeCount,
         },
       });
-      
-      const kuzu = await getKuzuAdapter();
-      await kuzu.loadGraphToKuzu(result.graph, result.fileContents);
-      
+
+      const lbug = await getLbugAdapter();
+      await lbug.loadGraphToLbug(result.graph, result.fileContents);
+
       if (import.meta.env.DEV) {
-        const stats = await kuzu.getKuzuStats();
-        console.log('KuzuDB loaded:', stats);
+        const stats = await lbug.getLbugStats();
+        console.log('LadybugDB loaded:', stats);
         console.log('📁 Stored', storedFileContents.size, 'files for grep/read tools');
       }
     } catch {
-      // KuzuDB is optional - silently continue without it
+      // LadybugDB is optional - silently continue without it
     }
     
     // Store clustering config for background enrichment (runs after graph loads)
@@ -325,8 +325,8 @@ const workerApi = {
     onProgress: (progress: EmbeddingProgress) => void,
     forceDevice?: 'webgpu' | 'wasm'
   ): Promise<void> {
-    const kuzu = await getKuzuAdapter();
-    if (!kuzu.isKuzuReady()) {
+    const lbug = await getLbugAdapter();
+    if (!lbug.isLbugReady()) {
       throw new Error('Database not ready. Please load a repository first.');
     }
 
@@ -343,8 +343,8 @@ const workerApi = {
     };
 
     await runEmbeddingPipeline(
-      kuzu.executeQuery, 
-      kuzu.executeWithReusedStatement, 
+      lbug.executeQuery,
+      lbug.executeWithReusedStatement,
       progressCallback,
       forceDevice ? { device: forceDevice } : {}
     );
@@ -400,15 +400,15 @@ const workerApi = {
     k: number = 10,
     maxDistance: number = 0.5
   ): Promise<SemanticSearchResult[]> {
-    const kuzu = await getKuzuAdapter();
-    if (!kuzu.isKuzuReady()) {
+    const lbug = await getLbugAdapter();
+    if (!lbug.isLbugReady()) {
       throw new Error('Database not ready. Please load a repository first.');
     }
     if (!isEmbeddingComplete) {
       throw new Error('Embeddings not ready. Please wait for embedding pipeline to complete.');
     }
 
-    return doSemanticSearch(kuzu.executeQuery, query, k, maxDistance);
+    return doSemanticSearch(lbug.executeQuery, query, k, maxDistance);
   },
 
   /**
@@ -424,15 +424,15 @@ const workerApi = {
     k: number = 5,
     hops: number = 2
   ): Promise<any[]> {
-    const kuzu = await getKuzuAdapter();
-    if (!kuzu.isKuzuReady()) {
+    const lbug = await getLbugAdapter();
+    if (!lbug.isLbugReady()) {
       throw new Error('Database not ready. Please load a repository first.');
     }
     if (!isEmbeddingComplete) {
       throw new Error('Embeddings not ready. Please wait for embedding pipeline to complete.');
     }
 
-    return doSemanticSearchWithContext(kuzu.executeQuery, query, k, hops);
+    return doSemanticSearchWithContext(lbug.executeQuery, query, k, hops);
   },
 
   /**
@@ -458,9 +458,9 @@ const workerApi = {
     let semanticResults: SemanticSearchResult[] = [];
     if (isEmbeddingComplete) {
       try {
-        const kuzu = await getKuzuAdapter();
-        if (kuzu.isKuzuReady()) {
-          semanticResults = await doSemanticSearch(kuzu.executeQuery, query, k * 3, 0.5);
+        const lbug = await getLbugAdapter();
+        if (lbug.isLbugReady()) {
+          semanticResults = await doSemanticSearch(lbug.executeQuery, query, k * 3, 0.5);
         }
       } catch {
         // Semantic search failed, continue with BM25 only
@@ -516,15 +516,15 @@ const workerApi = {
   },
 
   /**
-   * Test if KuzuDB supports array parameters in prepared statements
+   * Test if LadybugDB supports array parameters in prepared statements
    * This is a diagnostic function
    */
   async testArrayParams(): Promise<{ success: boolean; error?: string }> {
-    const kuzu = await getKuzuAdapter();
-    if (!kuzu.isKuzuReady()) {
+    const lbug = await getLbugAdapter();
+    if (!lbug.isLbugReady()) {
       return { success: false, error: 'Database not ready' };
     }
-    return kuzu.testArrayParams();
+    return lbug.testArrayParams();
   },
 
   // ============================================================
@@ -539,8 +539,8 @@ const workerApi = {
    */
   async initializeAgent(config: ProviderConfig, projectName?: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const kuzu = await getKuzuAdapter();
-      if (!kuzu.isKuzuReady()) {
+      const lbug = await getLbugAdapter();
+      if (!lbug.isLbugReady()) {
         return { success: false, error: 'Database not ready. Please load a repository first.' };
       }
 
@@ -549,31 +549,31 @@ const workerApi = {
         if (!isEmbeddingComplete) {
           throw new Error('Embeddings not ready');
         }
-        return doSemanticSearch(kuzu.executeQuery, query, k, maxDistance);
+        return doSemanticSearch(lbug.executeQuery, query, k, maxDistance);
       };
 
       const semanticSearchWithContextWrapper = async (query: string, k?: number, hops?: number) => {
         if (!isEmbeddingComplete) {
           throw new Error('Embeddings not ready');
         }
-        return doSemanticSearchWithContext(kuzu.executeQuery, query, k, hops);
+        return doSemanticSearchWithContext(lbug.executeQuery, query, k, hops);
       };
 
       // Hybrid search wrapper - combines BM25 + semantic
       const hybridSearchWrapper = async (query: string, k?: number) => {
         // Get BM25 results (always available after ingestion)
         const bm25Results = searchBM25(query, (k ?? 10) * 3);
-        
+
         // Get semantic results if embeddings are ready
         let semanticResults: any[] = [];
         if (isEmbeddingComplete) {
           try {
-            semanticResults = await doSemanticSearch(kuzu.executeQuery, query, (k ?? 10) * 3, 0.5);
+            semanticResults = await doSemanticSearch(lbug.executeQuery, query, (k ?? 10) * 3, 0.5);
           } catch {
             // Semantic search failed, continue with BM25 only
           }
         }
-        
+
         // Merge with RRF
         return mergeWithRRF(bm25Results, semanticResults, k ?? 10);
       };
@@ -586,7 +586,7 @@ const workerApi = {
       
       let codebaseContext;
       try {
-        codebaseContext = await buildCodebaseContext(kuzu.executeQuery, resolvedProjectName);
+        codebaseContext = await buildCodebaseContext(lbug.executeQuery, resolvedProjectName);
         if (import.meta.env.DEV) {
           console.log('📊 Codebase context built:', {
             files: codebaseContext.stats.fileCount,
@@ -600,7 +600,7 @@ const workerApi = {
 
       currentAgent = createGraphRAGAgent(
         config,
-        kuzu.executeQuery,
+        lbug.executeQuery,
         semanticSearchWrapper,
         semanticSearchWithContextWrapper,
         hybridSearchWrapper,
@@ -627,7 +627,7 @@ const workerApi = {
 
   /**
    * Initialize the Graph RAG agent in backend mode (HTTP-backed tools).
-   * Uses HTTP wrappers instead of local KuzuDB for all tool queries.
+   * Uses HTTP wrappers instead of local LadybugDB for all tool queries.
    * @param config - Provider configuration for the LLM
    * @param backendUrl - Base URL of the gitnexus serve backend
    * @param repoName - Repository name on the backend
@@ -848,9 +848,9 @@ const workerApi = {
       }
     });
 
-    // Update KuzuDB with new data
+    // Update LadybugDB with new data
     try {
-      const kuzu = await getKuzuAdapter();
+      const lbug = await getLbugAdapter();
         
       onProgress(enrichments.size, enrichments.size); // Done
       
@@ -872,11 +872,11 @@ const workerApi = {
                c.enrichedBy = "llm"
          `;
          
-         await kuzu.executeQuery(query);
+         await lbug.executeQuery(query);
       }
-      
+
     } catch (err) {
-      console.error('Failed to update KuzuDB with enrichment:', err);
+      console.error('Failed to update LadybugDB with enrichment:', err);
     }
     
     // Convert Map to Record for serialization

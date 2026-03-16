@@ -1,0 +1,13 @@
+model: deepseek-ai/deepseek-chat
+provider: openrouter
+cost:
+  input: 0.14  # per 1M tokens
+  output: 0.28  # per 1M tokens
+  
+# Native DeepSeek API (direct)
+api_key: null
+base_url: null
+
+# For OpenRouter, uncomment below and comment out direct config above
+# api_key: \${OPENROUTER_API_KEY}
+# base_url: https://openrouter.ai/api/v1

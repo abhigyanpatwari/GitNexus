@@ -9,6 +9,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { type GeneratedSkillInfo } from './skill-gen.js';
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -37,7 +38,22 @@ const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
  * - Exact tool commands with parameters — vague directives get ignored
  * - Self-review checklist — forces model to verify its own work
  */
-function generateGitNexusContent(projectName: string, stats: RepoStats): string {
+function generateGitNexusContent(projectName: string, stats: RepoStats, generatedSkills?: GeneratedSkillInfo[]): string {
+  const generatedRows = (generatedSkills && generatedSkills.length > 0)
+    ? generatedSkills.map(s =>
+        `| Work in the ${s.label} area (${s.symbolCount} symbols) | \`.claude/skills/generated/${s.name}/SKILL.md\` |`
+      ).join('\n')
+    : '';
+
+  const skillsTable = `| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | \`.claude/skills/gitnexus/gitnexus-exploring/SKILL.md\` |
+| Blast radius / "What breaks if I change X?" | \`.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md\` |
+| Trace bugs / "Why is X failing?" | \`.claude/skills/gitnexus/gitnexus-debugging/SKILL.md\` |
+| Rename / extract / split / refactor | \`.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md\` |
+| Tools, resources, schema reference | \`.claude/skills/gitnexus/gitnexus-guide/SKILL.md\` |
+| Index, status, clean, wiki CLI commands | \`.claude/skills/gitnexus/gitnexus-cli/SKILL.md\` |${generatedRows ? '\n' + generatedRows : ''}`;
+
   return `${GITNEXUS_START_MARKER}
 # GitNexus — Code Intelligence
 
@@ -129,9 +145,7 @@ To check whether embeddings exist, inspect \`.gitnexus/meta.json\` — the \`sta
 
 ## CLI
 
-- Re-index: \`npx gitnexus analyze\`
-- Check freshness: \`npx gitnexus status\`
-- Generate docs: \`npx gitnexus wiki\`
+${skillsTable}
 
 ${GITNEXUS_END_MARKER}`;
 }
@@ -270,9 +284,10 @@ export async function generateAIContextFiles(
   repoPath: string,
   _storagePath: string,
   projectName: string,
-  stats: RepoStats
+  stats: RepoStats,
+  generatedSkills?: GeneratedSkillInfo[]
 ): Promise<{ files: string[] }> {
-  const content = generateGitNexusContent(projectName, stats);
+  const content = generateGitNexusContent(projectName, stats, generatedSkills);
   const createdFiles: string[] = [];
 
   // Create AGENTS.md (standard for Cursor, Windsurf, OpenCode, Cline, etc.)

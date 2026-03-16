@@ -10,6 +10,7 @@ import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import Kotlin from 'tree-sitter-kotlin';
 import PHP from 'tree-sitter-php';
+import Ruby from 'tree-sitter-ruby';
 import { createRequire } from 'node:module';
 import { SupportedLanguages } from '../../config/supported-languages.js';
 
@@ -33,6 +34,7 @@ const languageMap: Record<string, any> = {
   [SupportedLanguages.Rust]: Rust,
   [SupportedLanguages.Kotlin]: Kotlin,
   [SupportedLanguages.PHP]: PHP.php_only,
+  [SupportedLanguages.Ruby]: Ruby,
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
 };
 

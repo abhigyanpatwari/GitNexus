@@ -257,6 +257,17 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
     return { framework: 'laravel', entryPointMultiplier: 1.5, reason: 'laravel-repository' };
   }
 
+  // ========== RUBY ==========
+
+  // Ruby: bin/ or exe/ (CLI entry points)
+  if ((p.includes('/bin/') || p.includes('/exe/')) && p.endsWith('.rb')) {
+    return { framework: 'ruby', entryPointMultiplier: 2.5, reason: 'ruby-executable' };
+  }
+
+  // Ruby: Rakefile or *.rake (task definitions)
+  if (p.endsWith('/rakefile') || p.endsWith('.rake')) {
+    return { framework: 'ruby', entryPointMultiplier: 1.5, reason: 'ruby-rake' };
+  }
   // ========== SWIFT / iOS ==========
 
   // iOS App entry points (highest priority)

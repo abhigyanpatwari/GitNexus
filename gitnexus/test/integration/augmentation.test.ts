@@ -1,13 +1,13 @@
 /**
  * Integration Tests: Augmentation Engine
  *
- * augment() against a real indexed KuzuDB
+ * augment() against a real indexed LadybugDB
  *   - Matching pattern returns non-empty string with callers/callees
  *   - Non-matching pattern returns empty string
  *   - Pattern shorter than 3 chars returns empty string
  */
 import { describe, it, expect, vi } from 'vitest';
-import { withTestKuzuDB } from '../helpers/test-indexed-db.js';
+import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
 // ─── Seed data & FTS indexes for augmentation ────────
 
@@ -58,7 +58,7 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
 
 let augment: (pattern: string, cwd?: string) => Promise<string>;
 
-withTestKuzuDB('augment', (handle) => {
+withTestLbugDB('augment', (handle) => {
   describe('augment()', () => {
     it('returns non-empty string with relationship info for a matching pattern', async () => {
       const result = await augment('login', handle.dbPath);

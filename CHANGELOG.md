@@ -2,6 +2,50 @@
 
 All notable changes to GitNexus will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- Migrated from KuzuDB to LadybugDB v0.15 (`@ladybugdb/core`, `@ladybugdb/wasm-core`)
+- Renamed all internal paths from `kuzu` to `lbug` (storage: `.gitnexus/kuzu` → `.gitnexus/lbug`)
+- Added automatic cleanup of stale KuzuDB index files
+- LadybugDB v0.15 requires explicit VECTOR extension loading for semantic search
+
+## [1.4.0] - 2026-03-13
+
+### Added
+
+- **Language-aware symbol resolution engine** with 3-tier resolver: exact FQN → scope-walk → guarded fuzzy fallback that refuses ambiguous matches (#238) — @magyargergo
+- **Method Resolution Order (MRO)** with 5 language-specific strategies: C++ leftmost-base, C#/Java class-over-interface, Python C3 linearization, Rust qualified syntax, default BFS (#238) — @magyargergo
+- **Constructor & struct literal resolution** across all languages — `new Foo()`, `User{...}`, C# primary constructors, target-typed new (#238) — @magyargergo
+- **Receiver-constrained resolution** using per-file TypeEnv — disambiguates `user.save()` vs `repo.save()` via `ownerId` matching (#238) — @magyargergo
+- **Heritage & ownership edges** — HAS_METHOD, OVERRIDES, Go struct embedding, Swift extension heritage, method signatures (`parameterCount`, `returnType`) (#238) — @magyargergo
+- **Language-specific resolver directory** (`resolvers/`) — extracted JVM, Go, C#, PHP, Rust resolvers from monolithic import-processor (#238) — @magyargergo
+- **Type extractor directory** (`type-extractors/`) — per-language type binding extraction with `Record<SupportedLanguages, Handler>` + `satisfies` dispatch (#238) — @magyargergo
+- **Export detection dispatch table** — compile-time exhaustive `Record` + `satisfies` pattern replacing switch/if chains (#238) — @magyargergo
+- **Language config module** (`language-config.ts`) — centralized tsconfig, go.mod, composer.json, .csproj, Swift package config loaders (#238) — @magyargergo
+- **Optional skill generation** via `npx gitnexus analyze --skills` — generates AI agent skills from KuzuDB knowledge graph (#171) — @zander-raycraft
+- **First-class C# support** — sibling-based modifier scanning, record/delegate/property/field/event declaration types (#163, #170, #178 via #237) — @Alice523, @benny-yamagata, @jnMetaCode
+- **C/C++ support fixes** — `.h` → C++ mapping, static-linkage export detection, qualified/parenthesized declarators, 48 entry point patterns (#163, #227 via #237) — @Alice523, @bitgineer
+- **Rust support fixes** — sibling-based `visibility_modifier` scanning for `pub` detection (#227 via #237) — @bitgineer
+- **Adaptive tree-sitter buffer sizing** — `Math.min(Math.max(contentLength * 2, 512KB), 32MB)` (#216 via #237) — @JasonOA888
+- **Call expression matching** in tree-sitter queries (#234 via #237) — @ex-nihilo-jg
+- **DeepSeek model configurations** (#217) — @JasonOA888
+- 282+ new unit tests, 178 integration resolver tests across 9 languages, 53 test files, 1146 total tests passing
+
+### Fixed
+
+- Skip unavailable native Swift parsers in sequential ingestion (#188) — @Gujiassh
+- Heritage heuristic language-gated — no longer applies class/interface rules to wrong languages (#238) — @magyargergo
+- C# `base_list` distinguishes EXTENDS vs IMPLEMENTS via symbol table + `I[A-Z]` heuristic (#238) — @magyargergo
+- Go `qualified_type` (`models.User`) correctly unwrapped in TypeEnv (#238) — @magyargergo
+- Global tier no longer blocks resolution when kind/arity filtering can narrow to 1 candidate (#238) — @magyargergo
+
+### Changed
+
+- `import-processor.ts` reduced from 1412 → 711 lines (50% reduction) via resolver and config extraction (#238) — @magyargergo
+- `type-env.ts` reduced from 635 → ~125 lines via type-extractor extraction (#238) — @magyargergo
+- CI/CD workflows hardened with security fixes and fork PR support (#222, #225) — @magyargergo
+
 ## [1.3.11] - 2026-03-08
 
 ### Security

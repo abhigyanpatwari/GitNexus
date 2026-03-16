@@ -1,11 +1,11 @@
 /**
- * Test helper: Indexed KuzuDB lifecycle manager
+ * Test helper: Indexed LadybugDB lifecycle manager
  *
- * Uses a shared KuzuDB created by globalSetup (test/global-setup.ts).
+ * Uses a shared LadybugDB created by globalSetup (test/global-setup.ts).
  * Each test file clears all data, reseeds, and initializes adapters —
  * avoiding per-file schema creation overhead.
  *
- * Cleanup is intentionally a no-op: CI runs each KuzuDB test file in its
+ * Cleanup is intentionally a no-op: CI runs each LadybugDB test file in its
  * own vitest process, so the OS reclaims all native resources on exit.
  *
  * Each test file gets a unique repoId to prevent MCP pool map collisions.
@@ -18,10 +18,10 @@ import type { TestDBHandle } from './test-db.js';
 import {
   NODE_TABLES,
   EMBEDDING_TABLE_NAME,
-} from '../../src/core/kuzu/schema.js';
+} from '../../src/core/lbug/schema.js';
 
 export interface IndexedDBHandle {
-  /** Path to the KuzuDB database file */
+  /** Path to the LadybugDB database file */
   dbPath: string;
   /** Unique repoId for MCP pool adapter — prevents cross-file collisions */
   repoId: string;
@@ -33,7 +33,7 @@ export interface IndexedDBHandle {
 
 let repoCounter = 0;
 
-/** FTS index definition for withTestKuzuDB */
+/** FTS index definition for withTestLbugDB */
 export interface FTSIndexDef {
   table: string;
   indexName: string;
@@ -41,12 +41,12 @@ export interface FTSIndexDef {
 }
 
 /**
- * Options for withTestKuzuDB lifecycle.
+ * Options for withTestLbugDB lifecycle.
  *
- * Lifecycle: initKuzu → loadFTS → dropFTS → clearData → seed
- *            → createFTS → [closeCoreKuzu + poolInitKuzu] → afterSetup
+ * Lifecycle: initLbug → loadFTS → dropFTS → clearData → seed
+ *            → createFTS → [closeCoreLbug + poolInitLbug] → afterSetup
  */
-export interface WithTestKuzuDBOptions {
+export interface WithTestLbugDBOptions {
   /** Cypher CREATE queries to insert seed data (runs before core adapter opens). */
   seed?: string[];
   /** FTS indexes to create after seeding. */
@@ -60,34 +60,34 @@ export interface WithTestKuzuDBOptions {
 }
 
 /**
- * Manages the full KuzuDB test lifecycle using the shared global DB:
+ * Manages the full LadybugDB test lifecycle using the shared global DB:
  * data clearing, reseeding, FTS indexes, adapter init/teardown.
  *
  * All data operations go through the core adapter's writable connection —
- * no raw kuzu.Database() connections are opened.  This avoids file-lock
+ * no raw lbug.Database() connections are opened.  This avoids file-lock
  * conflicts with orphaned native objects from previous test files.
  *
  * Each call is wrapped in its own `describe` block to isolate lifecycle
  * hooks — safe to call multiple times in the same file.
  */
-export function withTestKuzuDB(
+export function withTestLbugDB(
   prefix: string,
   fn: (handle: IndexedDBHandle) => void,
-  options?: WithTestKuzuDBOptions,
+  options?: WithTestLbugDBOptions,
 ): void {
   const ref: { handle: IndexedDBHandle | undefined } = { handle: undefined };
   const timeout = options?.timeout ?? 30000;
 
   const setup = async () => {
     // Get shared DB path from globalSetup (created once with full schema)
-    const dbPath = inject<'kuzuDbPath'>('kuzuDbPath');
+    const dbPath = inject<'lbugDbPath'>('lbugDbPath');
     const repoId = `test-${prefix}-${Date.now()}-${repoCounter++}`;
 
-    const adapter = await import('../../src/core/kuzu/kuzu-adapter.js');
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
 
     // 1. Init core adapter (writable) — reuses existing connection if
     //    already open for this dbPath (no new native objects created).
-    await adapter.initKuzu(dbPath);
+    await adapter.initLbug(dbPath);
 
     // 2. Load FTS extension (idempotent — skips if already loaded)
     await adapter.loadFTSExtension();
@@ -120,26 +120,26 @@ export function withTestKuzuDB(
     }
 
     // 7. Close core adapter (Windows only), then open pool adapter (read-only).
-    //    On Windows, KuzuDB enforces file locks — writable + read-only
+    //    On Windows, LadybugDB enforces file locks — writable + read-only
     //    can't coexist on the same path, so we must close the core first.
     //    On Linux/macOS, .close() deadlocks or segfaults via N-API
     //    destructor hooks, but concurrent Database instances on the same
     //    path are allowed, so we skip the close entirely.
     if (options?.poolAdapter) {
       if (process.platform === 'win32') {
-        await adapter.closeKuzu();
+        await adapter.closeLbug();
       }
-      const { initKuzu: poolInitKuzu } = await import('../../src/mcp/core/kuzu-adapter.js');
-      await poolInitKuzu(repoId, dbPath);
+      const { initLbug: poolInitLbug } = await import('../../src/mcp/core/lbug-adapter.js');
+      await poolInitLbug(repoId, dbPath);
     }
 
-    // Cleanup: intentionally a no-op. We do NOT call detachKuzu() here
-    // because .closeSync() segfaults on Linux (KuzuDB N-API destructor bug).
-    // CI runs each KuzuDB test file in its own vitest process, so the OS
+    // Cleanup: intentionally a no-op. We do NOT call detachLbug() here
+    // because .closeSync() segfaults on Linux (LadybugDB N-API destructor bug).
+    // CI runs each LadybugDB test file in its own vitest process, so the OS
     // reclaims all native resources on process exit — no explicit cleanup needed.
     const cleanup = async () => {};
 
-    // tmpHandle.dbPath → parent temp dir (not the kuzu file) so tests
+    // tmpHandle.dbPath → parent temp dir (not the lbug file) so tests
     // that create sibling directories (e.g. 'storage') still work.
     const tmpDir = path.dirname(dbPath);
     const tmpHandle: TestDBHandle = { dbPath: tmpDir, cleanup: async () => {} };
@@ -153,14 +153,14 @@ export function withTestKuzuDB(
 
   const lazyHandle = new Proxy({} as IndexedDBHandle, {
     get(_target, prop) {
-      if (!ref.handle) throw new Error('withTestKuzuDB: handle not initialized — beforeAll has not run yet');
+      if (!ref.handle) throw new Error('withTestLbugDB: handle not initialized — beforeAll has not run yet');
       return (ref.handle as any)[prop];
     },
   });
 
   // Wrap in describe to scope beforeAll/afterAll — prevents lifecycle
-  // collisions when multiple withTestKuzuDB calls share the same file.
-  describe(`withTestKuzuDB(${prefix})`, () => {
+  // collisions when multiple withTestLbugDB calls share the same file.
+  describe(`withTestLbugDB(${prefix})`, () => {
     beforeAll(setup, timeout);
     afterAll(async () => { if (ref.handle) await ref.handle.cleanup(); });
     fn(lazyHandle);

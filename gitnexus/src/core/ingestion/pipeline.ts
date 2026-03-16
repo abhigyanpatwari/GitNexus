@@ -1,12 +1,17 @@
 import { createKnowledgeGraph } from '../graph/graph.js';
 import { processStructure } from './structure-processor.js';
 import { processParsing } from './parsing-processor.js';
-import { processImports, processImportsFromExtracted, createImportMap, buildImportResolutionContext } from './import-processor.js';
+import {
+  processImports,
+  processImportsFromExtracted,
+  buildImportResolutionContext
+} from './import-processor.js';
 import { processCalls, processCallsFromExtracted, processRoutesFromExtracted } from './call-processor.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
+import { computeMRO } from './mro-processor.js';
 import { processCommunities } from './community-processor.js';
 import { processProcesses } from './process-processor.js';
-import { createSymbolTable } from './symbol-table.js';
+import { createResolutionContext } from './resolution-context.js';
 import { createASTCache } from './ast-cache.js';
 import { PipelineProgress, PipelineResult } from '../../types/pipeline.js';
 import { walkRepositoryPaths, readFileContents } from './filesystem-walker.js';
@@ -33,13 +38,13 @@ export const runPipelineFromRepo = async (
   onProgress: (progress: PipelineProgress) => void
 ): Promise<PipelineResult> => {
   const graph = createKnowledgeGraph();
-  const symbolTable = createSymbolTable();
+  const ctx = createResolutionContext();
+  const symbolTable = ctx.symbols;
   let astCache = createASTCache(AST_CACHE_CAP);
-  const importMap = createImportMap();
 
   const cleanup = () => {
     astCache.clear();
-    symbolTable.clear();
+    ctx.clear();
   };
 
   try {
@@ -211,23 +216,69 @@ export const runPipelineFromRepo = async (
           workerPool,
         );
 
+        const chunkBasePercent = 20 + ((filesParsedSoFar / totalParseable) * 62);
+
         if (chunkWorkerData) {
           // Imports
-          await processImportsFromExtracted(graph, allPathObjects, chunkWorkerData.imports, importMap, undefined, repoPath, importCtx);
-          // Calls — resolve immediately, then free the array
-          if (chunkWorkerData.calls.length > 0) {
-            await processCallsFromExtracted(graph, chunkWorkerData.calls, symbolTable, importMap);
-          }
-          // Heritage — resolve immediately, then free
-          if (chunkWorkerData.heritage.length > 0) {
-            await processHeritageFromExtracted(graph, chunkWorkerData.heritage, symbolTable);
-          }
-          // Routes — resolve immediately (Laravel route→controller CALLS edges)
-          if (chunkWorkerData.routes && chunkWorkerData.routes.length > 0) {
-            await processRoutesFromExtracted(graph, chunkWorkerData.routes, symbolTable, importMap);
-          }
+          await processImportsFromExtracted(graph, allPathObjects, chunkWorkerData.imports, ctx, (current, total) => {
+            onProgress({
+              phase: 'parsing',
+              percent: Math.round(chunkBasePercent),
+              message: `Resolving imports (chunk ${chunkIdx + 1}/${numChunks})...`,
+              detail: `${current}/${total} files`,
+              stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
+            });
+          }, repoPath, importCtx);
+          // Calls + Heritage + Routes — resolve in parallel (no shared mutable state between them)
+          // This is safe because each writes disjoint relationship types into idempotent id-keyed Maps,
+          // and the single-threaded event loop prevents races between synchronous addRelationship calls.
+          await Promise.all([
+            processCallsFromExtracted(
+              graph,
+              chunkWorkerData.calls,
+              ctx,
+              (current, total) => {
+                onProgress({
+                  phase: 'parsing',
+                  percent: Math.round(chunkBasePercent),
+                  message: `Resolving calls (chunk ${chunkIdx + 1}/${numChunks})...`,
+                  detail: `${current}/${total} files`,
+                  stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
+                });
+              },
+              chunkWorkerData.constructorBindings,
+            ),
+            processHeritageFromExtracted(
+              graph,
+              chunkWorkerData.heritage,
+              ctx,
+              (current, total) => {
+                onProgress({
+                  phase: 'parsing',
+                  percent: Math.round(chunkBasePercent),
+                  message: `Resolving heritage (chunk ${chunkIdx + 1}/${numChunks})...`,
+                  detail: `${current}/${total} records`,
+                  stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
+                });
+              },
+            ),
+            processRoutesFromExtracted(
+              graph,
+              chunkWorkerData.routes ?? [],
+              ctx,
+              (current, total) => {
+                onProgress({
+                  phase: 'parsing',
+                  percent: Math.round(chunkBasePercent),
+                  message: `Resolving routes (chunk ${chunkIdx + 1}/${numChunks})...`,
+                  detail: `${current}/${total} routes`,
+                  stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
+                });
+              },
+            ),
+          ]);
         } else {
-          await processImports(graph, chunkFiles, astCache, importMap, undefined, repoPath, allPaths);
+          await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
           sequentialChunkPaths.push(chunkPaths);
         }
 
@@ -248,9 +299,20 @@ export const runPipelineFromRepo = async (
         .filter(p => chunkContents.has(p))
         .map(p => ({ path: p, content: chunkContents.get(p)! }));
       astCache = createASTCache(chunkFiles.length);
-      await processCalls(graph, chunkFiles, astCache, symbolTable, importMap);
-      await processHeritage(graph, chunkFiles, astCache, symbolTable);
+      const rubyHeritage = await processCalls(graph, chunkFiles, astCache, ctx);
+      await processHeritage(graph, chunkFiles, astCache, ctx);
+      if (rubyHeritage.length > 0) {
+        await processHeritageFromExtracted(graph, rubyHeritage, ctx);
+      }
       astCache.clear();
+    }
+
+    // Log resolution cache stats
+    if (isDev) {
+      const rcStats = ctx.getStats();
+      const total = rcStats.cacheHits + rcStats.cacheMisses;
+      const hitRate = total > 0 ? ((rcStats.cacheHits / total) * 100).toFixed(1) : '0';
+      console.log(`🔍 Resolution cache: ${rcStats.cacheHits} hits, ${rcStats.cacheMisses} misses (${hitRate}% hit rate)`);
     }
 
     // Free import resolution context — suffix index + resolve cache no longer needed
@@ -260,12 +322,17 @@ export const runPipelineFromRepo = async (
     (importCtx as any).suffixIndex = null;
     (importCtx as any).normalizedFileList = null;
 
-    if (isDev) {
-      let importsCount = 0;
-      for (const r of graph.iterRelationships()) {
-        if (r.type === 'IMPORTS') importsCount++;
-      }
-      console.log(`📊 Pipeline: graph has ${importsCount} IMPORTS, ${graph.relationshipCount} total relationships`);
+    // ── Phase 4.5: Method Resolution Order ──────────────────────────────
+    onProgress({
+      phase: 'parsing',
+      percent: 81,
+      message: 'Computing method resolution order...',
+      stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
+    });
+
+    const mroResult = computeMRO(graph);
+    if (isDev && mroResult.entries.length > 0) {
+      console.log(`🔀 MRO: ${mroResult.entries.length} classes analyzed, ${mroResult.ambiguityCount} ambiguities found, ${mroResult.overrideEdges} OVERRIDES edges`);
     }
 
     // ── Phase 5: Communities ───────────────────────────────────────────

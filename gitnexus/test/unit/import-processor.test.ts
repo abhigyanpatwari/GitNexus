@@ -1,15 +1,16 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createImportMap, buildImportResolutionContext, type ImportMap, type ImportResolutionContext } from '../../src/core/ingestion/import-processor.js';
+import { buildImportResolutionContext, type ImportResolutionContext } from '../../src/core/ingestion/import-processor.js';
+import { createResolutionContext } from '../../src/core/ingestion/resolution-context.js';
 
-describe('createImportMap', () => {
+describe('ResolutionContext.importMap', () => {
   it('creates an empty Map', () => {
-    const map = createImportMap();
+    const map = createResolutionContext().importMap;
     expect(map).toBeInstanceOf(Map);
     expect(map.size).toBe(0);
   });
 
   it('can be used to store import relationships', () => {
-    const map = createImportMap();
+    const map = createResolutionContext().importMap;
     map.set('src/index.ts', new Set(['src/utils.ts', 'src/types.ts']));
     expect(map.get('src/index.ts')!.size).toBe(2);
     expect(map.get('src/index.ts')!.has('src/utils.ts')).toBe(true);

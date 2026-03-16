@@ -13,6 +13,7 @@
 import { KnowledgeGraph, GraphNode, GraphRelationship, NodeLabel } from '../graph/types.js';
 import { CommunityMembership } from './community-processor.js';
 import { calculateEntryPointScore, isTestFile } from './entry-point-scoring.js';
+import { SupportedLanguages } from '../../config/supported-languages.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -287,7 +288,7 @@ const findEntryPoints = (
     // Calculate entry point score using new scoring system
     const { score: baseScore, reasons } = calculateEntryPointScore(
       node.properties.name,
-      node.properties.language || 'javascript',
+      node.properties.language ?? SupportedLanguages.JavaScript,
       node.properties.isExported ?? false,
       callers.length,
       callees.length,

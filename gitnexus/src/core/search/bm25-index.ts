@@ -1,11 +1,11 @@
 /**
- * Full-Text Search via KuzuDB FTS
- * 
- * Uses KuzuDB's built-in full-text search indexes for keyword-based search.
+ * Full-Text Search via LadybugDB FTS
+ *
+ * Uses LadybugDB's built-in full-text search indexes for keyword-based search.
  * Always reads from the database (no cached state to drift).
  */
 
-import { queryFTS } from '../kuzu/kuzu-adapter.js';
+import { queryFTS } from '../lbug/lbug-adapter.js';
 
 export interface BM25SearchResult {
   filePath: string;
@@ -15,7 +15,7 @@ export interface BM25SearchResult {
 
 /**
  * Execute a single FTS query via a custom executor (for MCP connection pool).
- * Returns the same shape as core queryFTS.
+ * Returns the same shape as core queryFTS (from LadybugDB adapter).
  */
 async function queryFTSViaExecutor(
   executor: (cypher: string) => Promise<any[]>,
@@ -48,24 +48,24 @@ async function queryFTSViaExecutor(
 }
 
 /**
- * Search using KuzuDB's built-in FTS (always fresh, reads from disk)
- * 
+ * Search using LadybugDB's built-in FTS (always fresh, reads from disk)
+ *
  * Queries multiple node tables (File, Function, Class, Method) in parallel
  * and merges results by filePath, summing scores for the same file.
- * 
+ *
  * @param query - Search query string
  * @param limit - Maximum results
  * @param repoId - If provided, queries will be routed via the MCP connection pool
  * @returns Ranked search results from FTS indexes
  */
-export const searchFTSFromKuzu = async (query: string, limit: number = 20, repoId?: string): Promise<BM25SearchResult[]> => {
+export const searchFTSFromLbug = async (query: string, limit: number = 20, repoId?: string): Promise<BM25SearchResult[]> => {
   let fileResults: any[], functionResults: any[], classResults: any[], methodResults: any[], interfaceResults: any[];
 
   if (repoId) {
     // Use MCP connection pool via dynamic import
-    // IMPORTANT: KuzuDB uses a single connection per repo — queries must be sequential
-    // to avoid deadlocking. Do NOT use Promise.all here.
-    const { executeQuery } = await import('../../mcp/core/kuzu-adapter.js');
+    // IMPORTANT: FTS queries run sequentially to avoid connection contention.
+    // The MCP pool supports multiple connections, but FTS is best run serially.
+    const { executeQuery } = await import('../../mcp/core/lbug-adapter.js');
     const executor = (cypher: string) => executeQuery(repoId, cypher);
     fileResults = await queryFTSViaExecutor(executor, 'File', 'file_fts', query, limit);
     functionResults = await queryFTSViaExecutor(executor, 'Function', 'function_fts', query, limit);
@@ -73,7 +73,7 @@ export const searchFTSFromKuzu = async (query: string, limit: number = 20, repoI
     methodResults = await queryFTSViaExecutor(executor, 'Method', 'method_fts', query, limit);
     interfaceResults = await queryFTSViaExecutor(executor, 'Interface', 'interface_fts', query, limit);
   } else {
-    // Use core kuzu adapter (CLI / pipeline context) — also sequential for safety
+    // Use core lbug adapter (CLI / pipeline context) — also sequential for safety
     fileResults = await queryFTS('File', 'file_fts', query, limit, false).catch(() => []);
     functionResults = await queryFTS('Function', 'function_fts', query, limit, false).catch(() => []);
     classResults = await queryFTS('Class', 'class_fts', query, limit, false).catch(() => []);

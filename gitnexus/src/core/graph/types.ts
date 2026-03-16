@@ -35,12 +35,14 @@ export type NodeLabel =
   | 'Template';
 
 
+import { SupportedLanguages } from '../../config/supported-languages.js';
+
 export type NodeProperties = {
   name: string,
   filePath: string,
   startLine?: number,
   endLine?: number,
-  language?: string,
+  language?: SupportedLanguages,
   isExported?: boolean,
   // Optional AST-derived framework hint (e.g. @Controller, @GetMapping)
   astFrameworkMultiplier?: number,
@@ -61,19 +63,23 @@ export type NodeProperties = {
   // Entry point scoring (computed by process detection)
   entryPointScore?: number,
   entryPointReason?: string,
+  // Method signature (for MRO disambiguation)
+  parameterCount?: number,
+  returnType?: string,
 }
 
-export type RelationshipType = 
-  | 'CONTAINS' 
-  | 'CALLS' 
-  | 'INHERITS' 
-  | 'OVERRIDES' 
+export type RelationshipType =
+  | 'CONTAINS'
+  | 'CALLS'
+  | 'INHERITS'
+  | 'OVERRIDES'
   | 'IMPORTS'
   | 'USES'
   | 'DEFINES'
   | 'DECORATES'
   | 'IMPLEMENTS'
   | 'EXTENDS'
+  | 'HAS_METHOD'
   | 'MEMBER_OF'
   | 'STEP_IN_PROCESS'
 

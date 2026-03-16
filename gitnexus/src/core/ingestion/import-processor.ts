@@ -1,14 +1,55 @@
-import fs from 'fs/promises';
-import path from 'path';
 import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
 import Parser from 'tree-sitter';
-import { loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
+import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { generateId } from '../../lib/utils.js';
-import { getLanguageFromFilename, yieldToEventLoop } from './utils.js';
+import { getLanguageFromFilename, isVerboseIngestionEnabled, yieldToEventLoop } from './utils.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
+import { extractNamedBindings } from './named-binding-extraction.js';
 import type { ExtractedImport } from './workers/parse-worker.js';
+import { getTreeSitterBufferSize } from './constants.js';
+import {
+  loadTsconfigPaths,
+  loadGoModulePath,
+  loadComposerConfig,
+  loadCSharpProjectConfig,
+  loadSwiftPackageConfig,
+  type SwiftPackageConfig,
+} from './language-config.js';
+import {
+  buildSuffixIndex,
+  resolveImportPath,
+  appendKotlinWildcard,
+  KOTLIN_EXTENSIONS,
+  resolveJvmWildcard,
+  resolveJvmMemberImport,
+  resolveGoPackageDir,
+  resolveGoPackage,
+  resolveCSharpImport,
+  resolveCSharpNamespaceDir,
+  resolvePhpImport,
+  resolveRustImport,
+  resolveRubyImport,
+} from './resolvers/index.js';
+import { callRouters } from './call-routing.js';
+import type { ResolutionContext } from './resolution-context.js';
+import type {
+  SuffixIndex,
+  TsconfigPaths,
+  GoModuleConfig,
+  CSharpProjectConfig,
+  ComposerConfig
+} from './resolvers/index.js';
+
+// Re-export resolver types for consumers
+export type {
+  SuffixIndex,
+  TsconfigPaths,
+  GoModuleConfig,
+  CSharpProjectConfig,
+  ComposerConfig
+} from './resolvers/index.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -16,7 +57,31 @@ const isDev = process.env.NODE_ENV === 'development';
 // Stores all files that a given file imports from
 export type ImportMap = Map<string, Set<string>>;
 
-export const createImportMap = (): ImportMap => new Map();
+// Type: Map<FilePath, Set<PackageDirSuffix>>
+// Stores Go package directory suffixes imported by a file (e.g., "/internal/auth/").
+// Avoids expanding every Go package import into N individual ImportMap edges.
+export type PackageMap = Map<string, Set<string>>;
+
+// Type: Map<ImportingFilePath, Map<LocalName, {sourcePath, exportedName}>>
+// Tracks which specific names a file imports from which sources (TS/Python only).
+// Used to tighten Tier 2a resolution: `import { User } from './models'`
+// means only `User` (not `Repo`) is visible from models.ts via this import.
+// Stores both the resolved source path and the original exported name so that
+// aliased imports (`import { User as U }`) can resolve U → User in the source file.
+export interface NamedImportBinding { sourcePath: string; exportedName: string }
+export type NamedImportMap = Map<string, Map<string, NamedImportBinding>>;
+
+/**
+ * Check if a file path is directly inside a package directory identified by its suffix.
+ * Used by the symbol resolver for Go and C# directory-level import matching.
+ */
+export function isFileInPackageDir(filePath: string, dirSuffix: string): boolean {
+  // Prepend '/' so paths like "internal/auth/service.go" match suffix "/internal/auth/"
+  const normalized = '/' + filePath.replace(/\\/g, '/');
+  if (!normalized.includes(dirSuffix)) return false;
+  const afterDir = normalized.substring(normalized.indexOf(dirSuffix) + dirSuffix.length);
+  return !afterDir.includes('/');
+}
 
 /** Pre-built lookup structures for import resolution. Build once, reuse across chunks. */
 export interface ImportResolutionContext {
@@ -27,10 +92,6 @@ export interface ImportResolutionContext {
   resolveCache: Map<string, string | null>;
 }
 
-/** Max entries in the resolve cache. Beyond this, the cache is cleared to bound memory.
- *  100K entries ≈ 15MB — covers the most common import patterns. */
-const RESOLVE_CACHE_CAP = 100_000;
-
 export function buildImportResolutionContext(allPaths: string[]): ImportResolutionContext {
   const allFileList = allPaths;
   const normalizedFileList = allFileList.map(p => p.replace(/\\/g, '/'));
@@ -39,681 +100,200 @@ export function buildImportResolutionContext(allPaths: string[]): ImportResoluti
   return { allFilePaths, allFileList, normalizedFileList, suffixIndex, resolveCache: new Map() };
 }
 
-// ============================================================================
-// LANGUAGE-SPECIFIC CONFIG
-// ============================================================================
-
-/** TypeScript path alias config parsed from tsconfig.json */
-interface TsconfigPaths {
-  /** Map of alias prefix -> target prefix (e.g., "@/" -> "src/") */
-  aliases: Map<string, string>;
-  /** Base URL for path resolution (relative to repo root) */
-  baseUrl: string;
-}
-
-/** Go module config parsed from go.mod */
-interface GoModuleConfig {
-  /** Module path (e.g., "github.com/user/repo") */
-  modulePath: string;
-}
-
-/**
- * Parse tsconfig.json to extract path aliases.
- * Tries tsconfig.json, tsconfig.app.json, tsconfig.base.json in order.
- */
-async function loadTsconfigPaths(repoRoot: string): Promise<TsconfigPaths | null> {
-  const candidates = ['tsconfig.json', 'tsconfig.app.json', 'tsconfig.base.json'];
-
-  for (const filename of candidates) {
-    try {
-      const tsconfigPath = path.join(repoRoot, filename);
-      const raw = await fs.readFile(tsconfigPath, 'utf-8');
-      // Strip JSON comments (// and /* */ style) for robustness
-      const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
-      const tsconfig = JSON.parse(stripped);
-      const compilerOptions = tsconfig.compilerOptions;
-      if (!compilerOptions?.paths) continue;
-
-      const baseUrl = compilerOptions.baseUrl || '.';
-      const aliases = new Map<string, string>();
-
-      for (const [pattern, targets] of Object.entries(compilerOptions.paths)) {
-        if (!Array.isArray(targets) || targets.length === 0) continue;
-        const target = targets[0] as string;
-
-        // Convert glob patterns: "@/*" -> "@/", "src/*" -> "src/"
-        const aliasPrefix = pattern.endsWith('/*') ? pattern.slice(0, -1) : pattern;
-        const targetPrefix = target.endsWith('/*') ? target.slice(0, -1) : target;
-
-        aliases.set(aliasPrefix, targetPrefix);
-      }
-
-      if (aliases.size > 0) {
-        if (isDev) {
-          console.log(`📦 Loaded ${aliases.size} path aliases from ${filename}`);
-        }
-        return { aliases, baseUrl };
-      }
-    } catch {
-      // File doesn't exist or isn't valid JSON - try next
-    }
-  }
-
-  return null;
-}
-
-/**
- * Parse go.mod to extract module path.
- */
-async function loadGoModulePath(repoRoot: string): Promise<GoModuleConfig | null> {
-  try {
-    const goModPath = path.join(repoRoot, 'go.mod');
-    const content = await fs.readFile(goModPath, 'utf-8');
-    const match = content.match(/^module\s+(\S+)/m);
-    if (match) {
-      if (isDev) {
-        console.log(`📦 Loaded Go module path: ${match[1]}`);
-      }
-      return { modulePath: match[1] };
-    }
-  } catch {
-    // No go.mod
-  }
-  return null;
-}
-
-/** PHP Composer PSR-4 autoload config */
-interface ComposerConfig {
-  /** Map of namespace prefix -> directory (e.g., "App\\" -> "app/") */
-  psr4: Map<string, string>;
-}
-
-async function loadComposerConfig(repoRoot: string): Promise<ComposerConfig | null> {
-  try {
-    const composerPath = path.join(repoRoot, 'composer.json');
-    const raw = await fs.readFile(composerPath, 'utf-8');
-    const composer = JSON.parse(raw);
-    const psr4Raw = composer.autoload?.['psr-4'] ?? {};
-    const psr4Dev = composer['autoload-dev']?.['psr-4'] ?? {};
-    const merged = { ...psr4Raw, ...psr4Dev };
-
-    const psr4 = new Map<string, string>();
-    for (const [ns, dir] of Object.entries(merged)) {
-      const nsNorm = (ns as string).replace(/\\+$/, '');
-      const dirNorm = (dir as string).replace(/\\/g, '/').replace(/\/+$/, '');
-      psr4.set(nsNorm, dirNorm);
-    }
-
-    if (isDev) {
-      console.log(`📦 Loaded ${psr4.size} PSR-4 mappings from composer.json`);
-    }
-    return { psr4 };
-  } catch {
-    return null;
-  }
-}
-
-/** Swift Package Manager module config */
-interface SwiftPackageConfig {
-  /** Map of target name -> source directory path (e.g., "SiuperModel" -> "Package/Sources/SiuperModel") */
-  targets: Map<string, string>;
-}
-
-async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPackageConfig | null> {
-  // Swift imports are module-name based (e.g., `import SiuperModel`)
-  // SPM convention: Sources/<TargetName>/ or Package/Sources/<TargetName>/
-  // We scan for these directories to build a target map
-  const targets = new Map<string, string>();
-
-  const sourceDirs = ['Sources', 'Package/Sources', 'src'];
-  for (const sourceDir of sourceDirs) {
-    try {
-      const fullPath = path.join(repoRoot, sourceDir);
-      const entries = await fs.readdir(fullPath, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.isDirectory()) {
-          targets.set(entry.name, sourceDir + '/' + entry.name);
-        }
-      }
-    } catch {
-      // Directory doesn't exist
-    }
-  }
-
-  if (targets.size > 0) {
-    if (isDev) {
-      console.log(`📦 Loaded ${targets.size} Swift package targets`);
-    }
-    return { targets };
-  }
-  return null;
-}
+// Config loaders extracted to ./language-config.ts (Phase 2 refactor)
+// Resolver functions are in ./resolvers/ — imported above
 
 // ============================================================================
-// IMPORT PATH RESOLUTION
+// SHARED LANGUAGE DISPATCH
 // ============================================================================
 
-/** All file extensions to try during resolution */
-const EXTENSIONS = [
-  '',
-  // TypeScript/JavaScript
-  '.tsx', '.ts', '.jsx', '.js', '/index.tsx', '/index.ts', '/index.jsx', '/index.js',
-  // Python
-  '.py', '/__init__.py',
-  // Java
-  '.java',
-  // Kotlin
-  '.kt', '.kts',
-  // C/C++
-  '.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.hh',
-  // C#
-  '.cs',
-  // Go
-  '.go',
-  // Rust
-  '.rs', '/mod.rs',
-  // PHP
-  '.php', '.phtml',
-  // Swift
-  '.swift',
-];
+/** Bundled language-specific configs loaded once per ingestion run. */
+interface LanguageConfigs {
+  tsconfigPaths: TsconfigPaths | null;
+  goModule: GoModuleConfig | null;
+  composerConfig: ComposerConfig | null;
+  swiftPackageConfig: SwiftPackageConfig | null;
+  csharpConfigs: CSharpProjectConfig[];
+}
 
-/**
- * Try to match a path (with extensions) against the known file set.
- * Returns the matched file path or null.
- */
-function tryResolveWithExtensions(
-  basePath: string,
-  allFiles: Set<string>,
-): string | null {
-  for (const ext of EXTENSIONS) {
-    const candidate = basePath + ext;
-    if (allFiles.has(candidate)) return candidate;
-  }
-  return null;
+/** Context for import path resolution (file lists, indexes, cache). */
+interface ResolveCtx {
+  allFilePaths: Set<string>;
+  allFileList: string[];
+  normalizedFileList: string[];
+  index: SuffixIndex;
+  resolveCache: Map<string, string | null>;
 }
 
 /**
- * Build a suffix index for O(1) endsWith lookups.
- * Maps every possible path suffix to its original file path.
- * e.g. for "src/com/example/Foo.java":
- *   "Foo.java" -> "src/com/example/Foo.java"
- *   "example/Foo.java" -> "src/com/example/Foo.java"
- *   "com/example/Foo.java" -> "src/com/example/Foo.java"
- *   etc.
+ * Result of resolving an import via language-specific dispatch.
+ * - 'files': resolved to one or more files → add to ImportMap
+ * - 'package': resolved to a directory → add graph edges + store dirSuffix in PackageMap
+ * - null: no resolution (external dependency, etc.)
  */
-export interface SuffixIndex {
-  /** Exact suffix lookup (case-sensitive) */
-  get(suffix: string): string | undefined;
-  /** Case-insensitive suffix lookup */
-  getInsensitive(suffix: string): string | undefined;
-  /** Get all files in a directory suffix */
-  getFilesInDir(dirSuffix: string, extension: string): string[];
-}
-
-function buildSuffixIndex(normalizedFileList: string[], allFileList: string[]): SuffixIndex {
-  // Map: normalized suffix -> original file path
-  const exactMap = new Map<string, string>();
-  // Map: lowercase suffix -> original file path
-  const lowerMap = new Map<string, string>();
-  // Map: directory suffix -> list of file paths in that directory
-  const dirMap = new Map<string, string[]>();
-
-  for (let i = 0; i < normalizedFileList.length; i++) {
-    const normalized = normalizedFileList[i];
-    const original = allFileList[i];
-    const parts = normalized.split('/');
-
-    // Index all suffixes: "a/b/c.java" -> ["c.java", "b/c.java", "a/b/c.java"]
-    for (let j = parts.length - 1; j >= 0; j--) {
-      const suffix = parts.slice(j).join('/');
-      // Only store first match (longest path wins for ambiguous suffixes)
-      if (!exactMap.has(suffix)) {
-        exactMap.set(suffix, original);
-      }
-      const lower = suffix.toLowerCase();
-      if (!lowerMap.has(lower)) {
-        lowerMap.set(lower, original);
-      }
-    }
-
-    // Index directory membership
-    const lastSlash = normalized.lastIndexOf('/');
-    if (lastSlash >= 0) {
-      // Build all directory suffixes
-      const dirParts = parts.slice(0, -1);
-      const fileName = parts[parts.length - 1];
-      const ext = fileName.substring(fileName.lastIndexOf('.'));
-
-      for (let j = dirParts.length - 1; j >= 0; j--) {
-        const dirSuffix = dirParts.slice(j).join('/');
-        const key = `${dirSuffix}:${ext}`;
-        let list = dirMap.get(key);
-        if (!list) {
-          list = [];
-          dirMap.set(key, list);
-        }
-        list.push(original);
-      }
-    }
-  }
-
-  return {
-    get: (suffix: string) => exactMap.get(suffix),
-    getInsensitive: (suffix: string) => lowerMap.get(suffix.toLowerCase()),
-    getFilesInDir: (dirSuffix: string, extension: string) => {
-      return dirMap.get(`${dirSuffix}:${extension}`) || [];
-    },
-  };
-}
+type ImportResult =
+  | { kind: 'files'; files: string[] }
+  | { kind: 'package'; files: string[]; dirSuffix: string }
+  | null;
 
 /**
- * Suffix-based resolution using index. O(1) per lookup instead of O(files).
+ * Shared language dispatch for import resolution.
+ * Used by both processImports and processImportsFromExtracted.
  */
-function suffixResolve(
-  pathParts: string[],
-  normalizedFileList: string[],
-  allFileList: string[],
-  index?: SuffixIndex,
-): string | null {
-  if (index) {
-    for (let i = 0; i < pathParts.length; i++) {
-      const suffix = pathParts.slice(i).join('/');
-      for (const ext of EXTENSIONS) {
-        const suffixWithExt = suffix + ext;
-        const result = index.get(suffixWithExt) || index.getInsensitive(suffixWithExt);
-        if (result) return result;
-      }
-    }
-    return null;
-  }
-
-  // Fallback: linear scan (for backward compatibility)
-  for (let i = 0; i < pathParts.length; i++) {
-    const suffix = pathParts.slice(i).join('/');
-    for (const ext of EXTENSIONS) {
-      const suffixWithExt = suffix + ext;
-      const suffixPattern = '/' + suffixWithExt;
-      const matchIdx = normalizedFileList.findIndex(filePath =>
-        filePath.endsWith(suffixPattern) || filePath.toLowerCase().endsWith(suffixPattern.toLowerCase())
-      );
-      if (matchIdx !== -1) {
-        return allFileList[matchIdx];
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * Resolve an import path to a file path in the repository.
- *
- * Language-specific preprocessing is applied before the generic resolution:
- * - TypeScript/JavaScript: rewrites tsconfig path aliases
- * - Rust: converts crate::/super::/self:: to relative paths
- *
- * Java wildcards and Go package imports are handled separately in processImports
- * because they resolve to multiple files.
- */
-const resolveImportPath = (
-  currentFile: string,
-  importPath: string,
-  allFiles: Set<string>,
-  allFileList: string[],
-  normalizedFileList: string[],
-  resolveCache: Map<string, string | null>,
+function resolveLanguageImport(
+  filePath: string,
+  rawImportPath: string,
   language: SupportedLanguages,
-  tsconfigPaths: TsconfigPaths | null,
-  index?: SuffixIndex,
-): string | null => {
-  const cacheKey = `${currentFile}::${importPath}`;
-  if (resolveCache.has(cacheKey)) return resolveCache.get(cacheKey) ?? null;
+  configs: LanguageConfigs,
+  ctx: ResolveCtx,
+): ImportResult {
+  const { allFilePaths, allFileList, normalizedFileList, index, resolveCache } = ctx;
+  const { tsconfigPaths, goModule, composerConfig, swiftPackageConfig, csharpConfigs } = configs;
 
-  const cache = (result: string | null): string | null => {
-    // Evict oldest 20% when cap is reached instead of clearing all
-    if (resolveCache.size >= RESOLVE_CACHE_CAP) {
-      const evictCount = Math.floor(RESOLVE_CACHE_CAP * 0.2);
-      const iter = resolveCache.keys();
-      for (let i = 0; i < evictCount; i++) {
-        const key = iter.next().value;
-        if (key !== undefined) resolveCache.delete(key);
+  // JVM languages (Java + Kotlin): handle wildcards and member imports
+  if (language === SupportedLanguages.Java || language === SupportedLanguages.Kotlin) {
+    const exts = language === SupportedLanguages.Java ? ['.java'] : KOTLIN_EXTENSIONS;
+
+    if (rawImportPath.endsWith('.*')) {
+      const matchedFiles = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, exts, index);
+      if (matchedFiles.length === 0 && language === SupportedLanguages.Kotlin) {
+        const javaMatches = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
+        if (javaMatches.length > 0) return { kind: 'files', files: javaMatches };
       }
-    }
-    resolveCache.set(cacheKey, result);
-    return result;
-  };
-
-  // ---- TypeScript/JavaScript: rewrite path aliases ----
-  if (
-    (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) &&
-    tsconfigPaths &&
-    !importPath.startsWith('.')
-  ) {
-    for (const [aliasPrefix, targetPrefix] of tsconfigPaths.aliases) {
-      if (importPath.startsWith(aliasPrefix)) {
-        const remainder = importPath.slice(aliasPrefix.length);
-        // Build the rewritten path relative to baseUrl
-        const rewritten = tsconfigPaths.baseUrl === '.'
-          ? targetPrefix + remainder
-          : tsconfigPaths.baseUrl + '/' + targetPrefix + remainder;
-
-        // Try direct resolution from repo root
-        const resolved = tryResolveWithExtensions(rewritten, allFiles);
-        if (resolved) return cache(resolved);
-
-        // Try suffix matching as fallback
-        const parts = rewritten.split('/').filter(Boolean);
-        const suffixResult = suffixResolve(parts, normalizedFileList, allFileList, index);
-        if (suffixResult) return cache(suffixResult);
-      }
-    }
-  }
-
-  // ---- Rust: convert module path syntax to file paths ----
-  if (language === SupportedLanguages.Rust) {
-    const rustResult = resolveRustImport(currentFile, importPath, allFiles);
-    if (rustResult) return cache(rustResult);
-    // Fall through to generic resolution if Rust-specific didn't match
-  }
-
-  // ---- Generic relative import resolution (./ and ../) ----
-  const currentDir = currentFile.split('/').slice(0, -1);
-  const parts = importPath.split('/');
-
-  for (const part of parts) {
-    if (part === '.') continue;
-    if (part === '..') {
-      currentDir.pop();
+      if (matchedFiles.length > 0) return { kind: 'files', files: matchedFiles };
+      // Fall through to standard resolution
     } else {
-      currentDir.push(part);
+      let memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, exts, index);
+      if (!memberResolved && language === SupportedLanguages.Kotlin) {
+        memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
+      }
+      if (memberResolved) return { kind: 'files', files: [memberResolved] };
+      // Fall through to standard resolution
     }
   }
 
-  const basePath = currentDir.join('/');
-
-  if (importPath.startsWith('.')) {
-    const resolved = tryResolveWithExtensions(basePath, allFiles);
-    return cache(resolved);
+  // Go: handle package-level imports
+  if (language === SupportedLanguages.Go && goModule && rawImportPath.startsWith(goModule.modulePath)) {
+    const pkgSuffix = resolveGoPackageDir(rawImportPath, goModule);
+    if (pkgSuffix) {
+      const pkgFiles = resolveGoPackage(rawImportPath, goModule, normalizedFileList, allFileList);
+      if (pkgFiles.length > 0) {
+        return { kind: 'package', files: pkgFiles, dirSuffix: pkgSuffix };
+      }
+    }
+    // Fall through if no files found (package might be external)
   }
 
-  // ---- Generic package/absolute import resolution (suffix matching) ----
-  // Java wildcards are handled in processImports, not here
-  if (importPath.endsWith('.*')) {
-    return cache(null);
-  }
-
-  const pathLike = importPath.includes('/')
-    ? importPath
-    : importPath.replace(/\./g, '/');
-  const pathParts = pathLike.split('/').filter(Boolean);
-
-  const resolved = suffixResolve(pathParts, normalizedFileList, allFileList, index);
-  return cache(resolved);
-};
-
-// ============================================================================
-// RUST MODULE RESOLUTION
-// ============================================================================
-
-/**
- * Resolve Rust use-path to a file.
- * Handles crate::, super::, self:: prefixes and :: path separators.
- */
-function resolveRustImport(
-  currentFile: string,
-  importPath: string,
-  allFiles: Set<string>,
-): string | null {
-  let rustPath: string;
-
-  if (importPath.startsWith('crate::')) {
-    // crate:: resolves from src/ directory (standard Rust layout)
-    rustPath = importPath.slice(7).replace(/::/g, '/');
-
-    // Try from src/ (standard layout)
-    const fromSrc = tryRustModulePath('src/' + rustPath, allFiles);
-    if (fromSrc) return fromSrc;
-
-    // Try from repo root (non-standard)
-    const fromRoot = tryRustModulePath(rustPath, allFiles);
-    if (fromRoot) return fromRoot;
-
+  // C#: handle namespace-based imports (using directives)
+  if (language === SupportedLanguages.CSharp && csharpConfigs.length > 0) {
+    const resolvedFiles = resolveCSharpImport(rawImportPath, csharpConfigs, normalizedFileList, allFileList, index);
+    if (resolvedFiles.length > 1) {
+      const dirSuffix = resolveCSharpNamespaceDir(rawImportPath, csharpConfigs);
+      if (dirSuffix) {
+        return { kind: 'package', files: resolvedFiles, dirSuffix };
+      }
+    }
+    if (resolvedFiles.length > 0) return { kind: 'files', files: resolvedFiles };
     return null;
   }
 
-  if (importPath.startsWith('super::')) {
-    // super:: = parent directory of current file's module
-    const currentDir = currentFile.split('/').slice(0, -1);
-    currentDir.pop(); // Go up one level for super::
-    rustPath = importPath.slice(7).replace(/::/g, '/');
-    const fullPath = [...currentDir, rustPath].join('/');
-    return tryRustModulePath(fullPath, allFiles);
+  // PHP: handle namespace-based imports (use statements)
+  if (language === SupportedLanguages.PHP) {
+    const resolved = resolvePhpImport(rawImportPath, composerConfig, allFilePaths, normalizedFileList, allFileList, index);
+    return resolved ? { kind: 'files', files: [resolved] } : null;
   }
 
-  if (importPath.startsWith('self::')) {
-    // self:: = current module's directory
-    const currentDir = currentFile.split('/').slice(0, -1);
-    rustPath = importPath.slice(6).replace(/::/g, '/');
-    const fullPath = [...currentDir, rustPath].join('/');
-    return tryRustModulePath(fullPath, allFiles);
-  }
-
-  // Bare path without prefix (e.g., from a use in a nested module)
-  // Convert :: to / and try suffix matching
-  if (importPath.includes('::')) {
-    rustPath = importPath.replace(/::/g, '/');
-    return tryRustModulePath(rustPath, allFiles);
-  }
-
-  return null;
-}
-
-/**
- * Try to resolve a Rust module path to a file.
- * Tries: path.rs, path/mod.rs, and with the last segment stripped
- * (last segment might be a symbol name, not a module).
- */
-function tryRustModulePath(modulePath: string, allFiles: Set<string>): string | null {
-  // Try direct: path.rs
-  if (allFiles.has(modulePath + '.rs')) return modulePath + '.rs';
-  // Try directory: path/mod.rs
-  if (allFiles.has(modulePath + '/mod.rs')) return modulePath + '/mod.rs';
-  // Try path/lib.rs (for crate root)
-  if (allFiles.has(modulePath + '/lib.rs')) return modulePath + '/lib.rs';
-
-  // The last segment might be a symbol (function, struct, etc.), not a module.
-  // Strip it and try again.
-  const lastSlash = modulePath.lastIndexOf('/');
-  if (lastSlash > 0) {
-    const parentPath = modulePath.substring(0, lastSlash);
-    if (allFiles.has(parentPath + '.rs')) return parentPath + '.rs';
-    if (allFiles.has(parentPath + '/mod.rs')) return parentPath + '/mod.rs';
-  }
-
-  return null;
-}
-
-/**
- * Append .* to a Kotlin import path if the AST has a wildcard_import sibling node.
- * Pure function — returns a new string without mutating the input.
- */
-const appendKotlinWildcard = (importPath: string, importNode: any): string => {
-  for (let i = 0; i < importNode.childCount; i++) {
-    if (importNode.child(i)?.type === 'wildcard_import') {
-      return importPath.endsWith('.*') ? importPath : `${importPath}.*`;
-    }
-  }
-  return importPath;
-};
-
-// ============================================================================
-// JVM MULTI-FILE RESOLUTION (Java + Kotlin)
-// ============================================================================
-
-/** Kotlin file extensions for JVM resolver reuse */
-const KOTLIN_EXTENSIONS: readonly string[] = ['.kt', '.kts'];
-
-/**
- * Resolve a JVM wildcard import (com.example.*) to all matching files.
- * Works for both Java (.java) and Kotlin (.kt, .kts).
- */
-function resolveJvmWildcard(
-  importPath: string,
-  normalizedFileList: string[],
-  allFileList: string[],
-  extensions: readonly string[],
-  index?: SuffixIndex,
-): string[] {
-  // "com.example.util.*" -> "com/example/util"
-  const packagePath = importPath.slice(0, -2).replace(/\./g, '/');
-
-  if (index) {
-    const candidates = extensions.flatMap(ext => index.getFilesInDir(packagePath, ext));
-    // Filter to only direct children (no subdirectories)
-    const packageSuffix = '/' + packagePath + '/';
-    return candidates.filter(f => {
-      const normalized = f.replace(/\\/g, '/');
-      const idx = normalized.indexOf(packageSuffix);
-      if (idx < 0) return false;
-      const afterPkg = normalized.substring(idx + packageSuffix.length);
-      return !afterPkg.includes('/');
-    });
-  }
-
-  // Fallback: linear scan
-  const packageSuffix = '/' + packagePath + '/';
-  const matches: string[] = [];
-  for (let i = 0; i < normalizedFileList.length; i++) {
-    const normalized = normalizedFileList[i];
-    if (normalized.includes(packageSuffix) &&
-        extensions.some(ext => normalized.endsWith(ext))) {
-      const afterPackage = normalized.substring(normalized.indexOf(packageSuffix) + packageSuffix.length);
-      if (!afterPackage.includes('/')) {
-        matches.push(allFileList[i]);
-      }
-    }
-  }
-  return matches;
-}
-
-/**
- * Try to resolve a JVM member/static import by stripping the member name.
- * Java: "com.example.Constants.VALUE" -> resolve "com.example.Constants"
- * Kotlin: "com.example.Constants.VALUE" -> resolve "com.example.Constants"
- */
-function resolveJvmMemberImport(
-  importPath: string,
-  normalizedFileList: string[],
-  allFileList: string[],
-  extensions: readonly string[],
-  index?: SuffixIndex,
-): string | null {
-  // Member imports: com.example.Constants.VALUE or com.example.Constants.*
-  // The last segment is a member name if it starts with lowercase, is ALL_CAPS, or is a wildcard
-  const segments = importPath.split('.');
-  if (segments.length < 3) return null;
-
-  const lastSeg = segments[segments.length - 1];
-  if (lastSeg === '*' || /^[a-z]/.test(lastSeg) || /^[A-Z_]+$/.test(lastSeg)) {
-    const classPath = segments.slice(0, -1).join('/');
-
-    for (const ext of extensions) {
-      const classSuffix = classPath + ext;
-      if (index) {
-        const result = index.get(classSuffix) || index.getInsensitive(classSuffix);
-        if (result) return result;
-      } else {
-        const fullSuffix = '/' + classSuffix;
-        for (let i = 0; i < normalizedFileList.length; i++) {
-          if (normalizedFileList[i].endsWith(fullSuffix) ||
-              normalizedFileList[i].toLowerCase().endsWith(fullSuffix.toLowerCase())) {
-            return allFileList[i];
-          }
+  // Swift: handle module imports
+  if (language === SupportedLanguages.Swift && swiftPackageConfig) {
+    const targetDir = swiftPackageConfig.targets.get(rawImportPath);
+    if (targetDir) {
+      const dirPrefix = targetDir + '/';
+      const files: string[] = [];
+      for (let i = 0; i < normalizedFileList.length; i++) {
+        if (normalizedFileList[i].startsWith(dirPrefix) && normalizedFileList[i].endsWith('.swift')) {
+          files.push(allFileList[i]);
         }
       }
+      if (files.length > 0) return { kind: 'files', files };
     }
+    return null; // External framework (Foundation, UIKit, etc.)
   }
 
-  return null;
+  // Ruby: require / require_relative
+  if (language === SupportedLanguages.Ruby) {
+    const resolved = resolveRubyImport(rawImportPath, normalizedFileList, allFileList, index);
+    return resolved ? { kind: 'files', files: [resolved] } : null;
+  }
+
+  // Rust: expand top-level grouped imports: use {crate::a, crate::b}
+  if (language === SupportedLanguages.Rust && rawImportPath.startsWith('{') && rawImportPath.endsWith('}')) {
+    const inner = rawImportPath.slice(1, -1);
+    const parts = inner.split(',').map(p => p.trim()).filter(Boolean);
+    const resolved: string[] = [];
+    for (const part of parts) {
+      const r = resolveRustImport(filePath, part, allFilePaths);
+      if (r) resolved.push(r);
+    }
+    return resolved.length > 0 ? { kind: 'files', files: resolved } : null;
+  }
+
+  // Standard single-file resolution
+  const resolvedPath = resolveImportPath(
+    filePath,
+    rawImportPath,
+    allFilePaths,
+    allFileList,
+    normalizedFileList,
+    resolveCache,
+    language,
+    tsconfigPaths,
+    index,
+  );
+
+  return resolvedPath ? { kind: 'files', files: [resolvedPath] } : null;
 }
 
-// ============================================================================
-// GO PACKAGE RESOLUTION
-// ============================================================================
-
 /**
- * Resolve a Go internal package import to all .go files in the package directory.
- * Returns an array of file paths.
+ * Apply an ImportResult: emit graph edges and update ImportMap/PackageMap.
+ * If namedBindings are provided and the import resolves to a single file,
+ * also populate the NamedImportMap for precise Tier 2a resolution.
  */
-function resolveGoPackage(
-  importPath: string,
-  goModule: GoModuleConfig,
-  normalizedFileList: string[],
-  allFileList: string[],
-): string[] {
-  if (!importPath.startsWith(goModule.modulePath)) return [];
+function applyImportResult(
+  result: ImportResult,
+  filePath: string,
+  importMap: ImportMap,
+  packageMap: PackageMap | undefined,
+  addImportEdge: (from: string, to: string) => void,
+  addImportGraphEdge: (from: string, to: string) => void,
+  namedBindings?: { local: string; exported: string }[],
+  namedImportMap?: NamedImportMap,
+): void {
+  if (!result) return;
 
-  // Strip module path to get relative package path
-  const relativePkg = importPath.slice(goModule.modulePath.length + 1); // e.g., "internal/auth"
-  if (!relativePkg) return [];
+  if (result.kind === 'package' && packageMap) {
+    // Store directory suffix in PackageMap (skip ImportMap expansion)
+    for (const resolvedFile of result.files) {
+      addImportGraphEdge(filePath, resolvedFile);
+    }
+    if (!packageMap.has(filePath)) packageMap.set(filePath, new Set());
+    packageMap.get(filePath)!.add(result.dirSuffix);
+  } else {
+    // 'files' kind, or 'package' without PackageMap — use ImportMap directly
+    const files = result.files;
+    for (const resolvedFile of files) {
+      addImportEdge(filePath, resolvedFile);
+    }
 
-  const pkgSuffix = '/' + relativePkg + '/';
-  const matches: string[] = [];
-
-  for (let i = 0; i < normalizedFileList.length; i++) {
-    const normalized = normalizedFileList[i];
-    // File must be directly in the package directory (not a subdirectory)
-    if (normalized.includes(pkgSuffix) && normalized.endsWith('.go') && !normalized.endsWith('_test.go')) {
-      const afterPkg = normalized.substring(normalized.indexOf(pkgSuffix) + pkgSuffix.length);
-      if (!afterPkg.includes('/')) {
-        matches.push(allFileList[i]);
+    // Record named bindings for precise Tier 2a resolution
+    if (namedBindings && namedImportMap && files.length === 1) {
+      const resolvedFile = files[0];
+      if (!namedImportMap.has(filePath)) namedImportMap.set(filePath, new Map());
+      const fileBindings = namedImportMap.get(filePath)!;
+      for (const binding of namedBindings) {
+        fileBindings.set(binding.local, { sourcePath: resolvedFile, exportedName: binding.exported });
       }
     }
   }
-
-  return matches;
-}
-
-// ============================================================================
-// PHP PSR-4 IMPORT RESOLUTION
-// ============================================================================
-
-/**
- * Resolve a PHP use-statement import path using PSR-4 mappings.
- * e.g. "App\Http\Controllers\UserController" -> "app/Http/Controllers/UserController.php"
- */
-function resolvePhpImport(
-  importPath: string,
-  composerConfig: ComposerConfig | null,
-  allFiles: Set<string>,
-  normalizedFileList: string[],
-  allFileList: string[],
-  index?: SuffixIndex,
-): string | null {
-  // Normalize: replace backslashes with forward slashes
-  const normalized = importPath.replace(/\\/g, '/');
-
-  // Try PSR-4 resolution if composer.json was found
-  if (composerConfig) {
-    // Sort namespaces by length descending (longest match wins)
-    const sorted = [...composerConfig.psr4.entries()].sort((a, b) => b[0].length - a[0].length);
-    for (const [nsPrefix, dirPrefix] of sorted) {
-      const nsPrefixSlash = nsPrefix.replace(/\\/g, '/');
-      if (normalized.startsWith(nsPrefixSlash + '/') || normalized === nsPrefixSlash) {
-        const remainder = normalized.slice(nsPrefixSlash.length).replace(/^\//, '');
-        const filePath = dirPrefix + (remainder ? '/' + remainder : '') + '.php';
-        if (allFiles.has(filePath)) return filePath;
-        if (index) {
-          const result = index.getInsensitive(filePath);
-          if (result) return result;
-        }
-      }
-    }
-  }
-
-  // Fallback: suffix matching (works without composer.json)
-  const pathParts = normalized.split('/').filter(Boolean);
-  return suffixResolve(pathParts, normalizedFileList, allFileList, index);
 }
 
 // ============================================================================
@@ -724,15 +304,20 @@ export const processImports = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
   astCache: ASTCache,
-  importMap: ImportMap,
+  ctx: ResolutionContext,
   onProgress?: (current: number, total: number) => void,
   repoRoot?: string,
   allPaths?: string[],
 ) => {
+  const importMap = ctx.importMap;
+  const packageMap = ctx.packageMap;
+  const namedImportMap = ctx.namedImportMap;
   // Use allPaths (full repo) when available for cross-chunk resolution, else fall back to chunk files
   const allFileList = allPaths ?? files.map(f => f.path);
   const allFilePaths = new Set(allFileList);
   const parser = await loadParser();
+  const logSkipped = isVerboseIngestionEnabled();
+  const skippedByLang = logSkipped ? new Map<string, number>() : null;
   const resolveCache = new Map<string, string | null>();
   // Pre-compute normalized file list once (forward slashes)
   const normalizedFileList = allFileList.map(p => p.replace(/\\/g, '/'));
@@ -745,13 +330,17 @@ export const processImports = async (
 
   // Load language-specific configs once before the file loop
   const effectiveRoot = repoRoot || '';
-  const tsconfigPaths = await loadTsconfigPaths(effectiveRoot);
-  const goModule = await loadGoModulePath(effectiveRoot);
-  const composerConfig = await loadComposerConfig(effectiveRoot);
-  const swiftPackageConfig = await loadSwiftPackageConfig(effectiveRoot);
+  const configs: LanguageConfigs = {
+    tsconfigPaths: await loadTsconfigPaths(effectiveRoot),
+    goModule: await loadGoModulePath(effectiveRoot),
+    composerConfig: await loadComposerConfig(effectiveRoot),
+    swiftPackageConfig: await loadSwiftPackageConfig(effectiveRoot),
+    csharpConfigs: await loadCSharpProjectConfig(effectiveRoot),
+  };
+  const resolveCtx: ResolveCtx = { allFilePaths, allFileList, normalizedFileList, index, resolveCache };
 
-  // Helper: add an IMPORTS edge + update import map
-  const addImportEdge = (filePath: string, resolvedPath: string) => {
+  // Helper: add an IMPORTS edge to the graph only (no ImportMap update)
+  const addImportGraphEdge = (filePath: string, resolvedPath: string) => {
     const sourceId = generateId('File', filePath);
     const targetId = generateId('File', resolvedPath);
     const relId = generateId('IMPORTS', `${filePath}->${resolvedPath}`);
@@ -766,6 +355,11 @@ export const processImports = async (
       confidence: 1.0,
       reason: '',
     });
+  };
+
+  // Helper: add an IMPORTS edge + update import map
+  const addImportEdge = (filePath: string, resolvedPath: string) => {
+    addImportGraphEdge(filePath, resolvedPath);
 
     if (!importMap.has(filePath)) {
       importMap.set(filePath, new Set());
@@ -781,6 +375,12 @@ export const processImports = async (
     // 1. Check language support first
     const language = getLanguageFromFilename(file.path);
     if (!language) continue;
+    if (!isLanguageAvailable(language)) {
+      if (skippedByLang) {
+        skippedByLang.set(language, (skippedByLang.get(language) ?? 0) + 1);
+      }
+      continue;
+    }
 
     const queryStr = LANGUAGE_QUERIES[language];
     if (!queryStr) continue;
@@ -794,7 +394,7 @@ export const processImports = async (
 
     if (!tree) {
       try {
-        tree = parser.parse(file.content, undefined, { bufferSize: 1024 * 256 });
+        tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
       } catch (parseError) {
         continue;
       }
@@ -844,99 +444,35 @@ export const processImports = async (
           : sourceNode.text.replace(/['"<>]/g, '');
         totalImportsFound++;
 
-        // ---- JVM languages (Java + Kotlin): handle wildcards and member imports ----
-        if (language === SupportedLanguages.Java || language === SupportedLanguages.Kotlin) {
-          const exts = language === SupportedLanguages.Java ? ['.java'] : KOTLIN_EXTENSIONS;
+        const result = resolveLanguageImport(file.path, rawImportPath, language, configs, resolveCtx);
+        const bindings = namedImportMap ? extractNamedBindings(captureMap['import'], language) : undefined;
+        applyImportResult(result, file.path, importMap, packageMap, addImportEdge, addImportGraphEdge, bindings, namedImportMap);
+      }
 
-          if (rawImportPath.endsWith('.*')) {
-            const matchedFiles = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, exts, index);
-            // Kotlin can import Java files in mixed codebases — try .java as fallback
-            if (matchedFiles.length === 0 && language === SupportedLanguages.Kotlin) {
-              const javaMatches = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
-              for (const matchedFile of javaMatches) {
-                addImportEdge(file.path, matchedFile);
-              }
-              if (javaMatches.length > 0) return;
-            }
-            for (const matchedFile of matchedFiles) {
-              addImportEdge(file.path, matchedFile);
-            }
-            return; // skip single-file resolution
+      // ---- Language-specific call-as-import routing (Ruby require, etc.) ----
+      if (captureMap['call']) {
+        const callNameNode = captureMap['call.name'];
+        if (callNameNode) {
+          const callRouter = callRouters[language];
+          const routed = callRouter(callNameNode.text, captureMap['call']);
+          if (routed && routed.kind === 'import') {
+            totalImportsFound++;
+            const result = resolveLanguageImport(file.path, routed.importPath, language, configs, resolveCtx);
+            applyImportResult(result, file.path, importMap, packageMap, addImportEdge, addImportGraphEdge);
           }
-
-          // Try member/static import resolution (strip member name)
-          let memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, exts, index);
-          // Kotlin can import Java files in mixed codebases — try .java as fallback
-          if (!memberResolved && language === SupportedLanguages.Kotlin) {
-            memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
-          }
-          if (memberResolved) {
-            addImportEdge(file.path, memberResolved);
-            return;
-          }
-          // Fall through to normal resolution for regular imports
-        }
-
-        // ---- Go: handle package-level imports ----
-        if (language === SupportedLanguages.Go && goModule && rawImportPath.startsWith(goModule.modulePath)) {
-          const pkgFiles = resolveGoPackage(rawImportPath, goModule, normalizedFileList, allFileList);
-          if (pkgFiles.length > 0) {
-            for (const pkgFile of pkgFiles) {
-              addImportEdge(file.path, pkgFile);
-            }
-            return; // skip single-file resolution
-          }
-          // Fall through if no files found (package might be external)
-        }
-
-        // ---- PHP: handle namespace-based imports (use statements) ----
-        if (language === SupportedLanguages.PHP) {
-          const resolved = resolvePhpImport(rawImportPath, composerConfig, allFilePaths, normalizedFileList, allFileList, index);
-          if (resolved) {
-            addImportEdge(file.path, resolved);
-          }
-          return;
-        }
-
-        // ---- Swift: handle module imports ----
-        if (language === SupportedLanguages.Swift && swiftPackageConfig) {
-          // Swift imports are module names: `import SiuperModel`
-          // Resolve to the module's source directory → all .swift files in it
-          const targetDir = swiftPackageConfig.targets.get(rawImportPath);
-          if (targetDir) {
-            // Find all .swift files in this target directory
-            const dirPrefix = targetDir + '/';
-            for (const filePath2 of allFileList) {
-              if (filePath2.startsWith(dirPrefix) && filePath2.endsWith('.swift')) {
-                addImportEdge(file.path, filePath2);
-              }
-            }
-            return;
-          }
-          // External framework (Foundation, UIKit, etc.) — skip
-          return;
-        }
-
-        // ---- Standard single-file resolution ----
-        const resolvedPath = resolveImportPath(
-          file.path,
-          rawImportPath,
-          allFilePaths,
-          allFileList,
-          normalizedFileList,
-          resolveCache,
-          language,
-          tsconfigPaths,
-          index,
-        );
-
-        if (resolvedPath) {
-          addImportEdge(file.path, resolvedPath);
         }
       }
     });
 
     // Tree is now owned by the LRU cache — no manual delete needed
+  }
+
+  if (skippedByLang && skippedByLang.size > 0) {
+    for (const [lang, count] of skippedByLang.entries()) {
+      console.warn(
+        `[ingestion] Skipped ${count} ${lang} file(s) in import processing — ${lang} parser not available.`
+      );
+    }
   }
 
   if (isDev) {
@@ -952,24 +488,32 @@ export const processImportsFromExtracted = async (
   graph: KnowledgeGraph,
   files: { path: string }[],
   extractedImports: ExtractedImport[],
-  importMap: ImportMap,
+  ctx: ResolutionContext,
   onProgress?: (current: number, total: number) => void,
   repoRoot?: string,
   prebuiltCtx?: ImportResolutionContext,
 ) => {
-  const ctx = prebuiltCtx ?? buildImportResolutionContext(files.map(f => f.path));
-  const { allFilePaths, allFileList, normalizedFileList, suffixIndex: index, resolveCache } = ctx;
+  const importMap = ctx.importMap;
+  const packageMap = ctx.packageMap;
+  const namedImportMap = ctx.namedImportMap;
+  const importCtx = prebuiltCtx ?? buildImportResolutionContext(files.map(f => f.path));
+  const { allFilePaths, allFileList, normalizedFileList, suffixIndex: index, resolveCache } = importCtx;
 
   let totalImportsFound = 0;
   let totalImportsResolved = 0;
 
   const effectiveRoot = repoRoot || '';
-  const tsconfigPaths = await loadTsconfigPaths(effectiveRoot);
-  const goModule = await loadGoModulePath(effectiveRoot);
-  const composerConfig = await loadComposerConfig(effectiveRoot);
-  const swiftPackageConfig = await loadSwiftPackageConfig(effectiveRoot);
+  const configs: LanguageConfigs = {
+    tsconfigPaths: await loadTsconfigPaths(effectiveRoot),
+    goModule: await loadGoModulePath(effectiveRoot),
+    composerConfig: await loadComposerConfig(effectiveRoot),
+    swiftPackageConfig: await loadSwiftPackageConfig(effectiveRoot),
+    csharpConfigs: await loadCSharpProjectConfig(effectiveRoot),
+  };
+  const resolveCtx: ResolveCtx = { allFilePaths, allFileList, normalizedFileList, index, resolveCache };
 
-  const addImportEdge = (filePath: string, resolvedPath: string) => {
+  // Helper: add an IMPORTS edge to the graph only (no ImportMap update)
+  const addImportGraphEdge = (filePath: string, resolvedPath: string) => {
     const sourceId = generateId('File', filePath);
     const targetId = generateId('File', resolvedPath);
     const relId = generateId('IMPORTS', `${filePath}->${resolvedPath}`);
@@ -984,6 +528,10 @@ export const processImportsFromExtracted = async (
       confidence: 1.0,
       reason: '',
     });
+  };
+
+  const addImportEdge = (filePath: string, resolvedPath: string) => {
+    addImportGraphEdge(filePath, resolvedPath);
 
     if (!importMap.has(filePath)) {
       importMap.set(filePath, new Set());
@@ -1005,21 +553,6 @@ export const processImportsFromExtracted = async (
   const totalFiles = importsByFile.size;
   let filesProcessed = 0;
 
-  // Pre-build a suffix index for O(1) suffix lookups instead of O(n) linear scans
-  const suffixIndex = new Map<string, string[]>();
-  for (let i = 0; i < normalizedFileList.length; i++) {
-    const normalized = normalizedFileList[i];
-    // Index by last path segment (filename) for fast suffix matching
-    const lastSlash = normalized.lastIndexOf('/');
-    const filename = lastSlash >= 0 ? normalized.substring(lastSlash + 1) : normalized;
-    let list = suffixIndex.get(filename);
-    if (!list) {
-      list = [];
-      suffixIndex.set(filename, list);
-    }
-    list.push(allFileList[i]);
-  }
-
   for (const [filePath, fileImports] of importsByFile) {
     filesProcessed++;
     if (filesProcessed % 100 === 0) {
@@ -1027,100 +560,11 @@ export const processImportsFromExtracted = async (
       await yieldToEventLoop();
     }
 
-    for (const { rawImportPath, language } of fileImports) {
+    for (const imp of fileImports) {
       totalImportsFound++;
 
-      // Check resolve cache first
-      const cacheKey = `${filePath}::${rawImportPath}`;
-      if (resolveCache.has(cacheKey)) {
-        const cached = resolveCache.get(cacheKey);
-        if (cached) addImportEdge(filePath, cached);
-        continue;
-      }
-
-      // JVM languages (Java + Kotlin): handle wildcards and member imports
-      if (language === SupportedLanguages.Java || language === SupportedLanguages.Kotlin) {
-        const exts = language === SupportedLanguages.Java ? ['.java'] : KOTLIN_EXTENSIONS;
-
-        if (rawImportPath.endsWith('.*')) {
-          const matchedFiles = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, exts, index);
-          // Kotlin can import Java files in mixed codebases — try .java as fallback
-          if (matchedFiles.length === 0 && language === SupportedLanguages.Kotlin) {
-            const javaMatches = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
-            for (const matchedFile of javaMatches) {
-              addImportEdge(filePath, matchedFile);
-            }
-            if (javaMatches.length > 0) continue;
-          }
-          for (const matchedFile of matchedFiles) {
-            addImportEdge(filePath, matchedFile);
-          }
-          continue;
-        }
-
-        let memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, exts, index);
-        // Kotlin can import Java files in mixed codebases — try .java as fallback
-        if (!memberResolved && language === SupportedLanguages.Kotlin) {
-          memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
-        }
-        if (memberResolved) {
-          resolveCache.set(cacheKey, memberResolved);
-          addImportEdge(filePath, memberResolved);
-          continue;
-        }
-      }
-
-      // Go: handle package-level imports
-      if (language === SupportedLanguages.Go && goModule && rawImportPath.startsWith(goModule.modulePath)) {
-        const pkgFiles = resolveGoPackage(rawImportPath, goModule, normalizedFileList, allFileList);
-        if (pkgFiles.length > 0) {
-          for (const pkgFile of pkgFiles) {
-            addImportEdge(filePath, pkgFile);
-          }
-          continue;
-        }
-      }
-
-      // PHP: handle namespace-based imports (use statements)
-      if (language === SupportedLanguages.PHP) {
-        const resolved = resolvePhpImport(rawImportPath, composerConfig, allFilePaths, normalizedFileList, allFileList, index);
-        if (resolved) {
-          resolveCache.set(cacheKey, resolved);
-          addImportEdge(filePath, resolved);
-        }
-        continue;
-      }
-
-      // Swift: handle module imports
-      if (language === SupportedLanguages.Swift && swiftPackageConfig) {
-        const targetDir = swiftPackageConfig.targets.get(rawImportPath);
-        if (targetDir) {
-          const dirPrefix = targetDir + '/';
-          for (const fp of allFileList) {
-            if (fp.startsWith(dirPrefix) && fp.endsWith('.swift')) {
-              addImportEdge(filePath, fp);
-            }
-          }
-        }
-        continue;
-      }
-
-      // Standard resolution (has its own internal cache)
-      const resolvedPath = resolveImportPath(
-        filePath,
-        rawImportPath,
-        allFilePaths,
-        allFileList,
-        normalizedFileList,
-        resolveCache,
-        language as SupportedLanguages,
-        tsconfigPaths,
-        index,
-      );
-
-      if (resolvedPath) {
-        addImportEdge(filePath, resolvedPath);
-      }
+      const result = resolveLanguageImport(filePath, imp.rawImportPath, imp.language, configs, resolveCtx);
+      applyImportResult(result, filePath, importMap, packageMap, addImportEdge, addImportGraphEdge, imp.namedBindings, namedImportMap);
     }
   }
 

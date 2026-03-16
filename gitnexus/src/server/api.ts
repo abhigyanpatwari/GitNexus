@@ -13,10 +13,10 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
 import { loadMeta, listRegisteredRepos } from '../storage/repo-manager.js';
-import { executeQuery, closeKuzu, withKuzuDb } from '../core/kuzu/kuzu-adapter.js';
-import { NODE_TABLES } from '../core/kuzu/schema.js';
+import { executeQuery, closeLbug, withLbugDb } from '../core/lbug/lbug-adapter.js';
+import { NODE_TABLES } from '../core/lbug/schema.js';
 import { GraphNode, GraphRelationship } from '../core/graph/types.js';
-import { searchFTSFromKuzu } from '../core/search/bm25-index.js';
+import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at server startup — crashes on unsupported Node ABI versions (#89)
@@ -179,8 +179,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
-      const kuzuPath = path.join(entry.storagePath, 'kuzu');
-      const graph = await withKuzuDb(kuzuPath, async () => buildGraph());
+      const lbugPath = path.join(entry.storagePath, 'lbug');
+      const graph = await withLbugDb(lbugPath, async () => buildGraph());
       res.json(graph);
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to build graph' });
@@ -201,8 +201,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
-      const kuzuPath = path.join(entry.storagePath, 'kuzu');
-      const result = await withKuzuDb(kuzuPath, () => executeQuery(cypher));
+      const lbugPath = path.join(entry.storagePath, 'lbug');
+      const result = await withLbugDb(lbugPath, () => executeQuery(cypher));
       res.json({ result });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Query failed' });
@@ -223,20 +223,20 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
-      const kuzuPath = path.join(entry.storagePath, 'kuzu');
+      const lbugPath = path.join(entry.storagePath, 'lbug');
       const parsedLimit = Number(req.body.limit ?? 10);
       const limit = Number.isFinite(parsedLimit)
         ? Math.max(1, Math.min(100, Math.trunc(parsedLimit)))
         : 10;
 
-      const results = await withKuzuDb(kuzuPath, async () => {
+      const results = await withLbugDb(lbugPath, async () => {
         const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
         if (isEmbedderReady()) {
           const { semanticSearch } = await import('../core/embeddings/embedding-pipeline.js');
           return hybridSearch(query, limit, executeQuery, semanticSearch);
         }
         // FTS-only fallback when embeddings aren't loaded
-        return searchFTSFromKuzu(query, limit);
+        return searchFTSFromLbug(query, limit);
       });
       res.json({ results });
     } catch (err: any) {
@@ -347,11 +347,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     console.log(`GitNexus server running on http://${host}:${port}`);
   });
 
-  // Graceful shutdown — close Express + KuzuDB cleanly
+  // Graceful shutdown — close Express + LadybugDB cleanly
   const shutdown = async () => {
     server.close();
     await cleanupMcp();
-    await closeKuzu();
+    await closeLbug();
     await backend.disconnect();
     process.exit(0);
   };

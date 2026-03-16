@@ -67,8 +67,12 @@ describe('parser-loader', () => {
       await expect(loadLanguage(SupportedLanguages.TypeScript, 'utils.ts')).resolves.not.toThrow();
     });
 
+    it('loads Ruby language', async () => {
+      await expect(loadLanguage(SupportedLanguages.Ruby)).resolves.not.toThrow();
+    });
+
     it('throws for unsupported language', async () => {
-      await expect(loadLanguage('ruby' as SupportedLanguages)).rejects.toThrow('Unsupported language');
+      await expect(loadLanguage('erlang' as SupportedLanguages)).rejects.toThrow('Unsupported language');
     });
   });
 

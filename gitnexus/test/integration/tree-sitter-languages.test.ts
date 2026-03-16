@@ -133,6 +133,31 @@ describe('Tree-sitter multi-language parsing', () => {
       expect(defs.length).toBeGreaterThan(0);
       const defTypes = defs.map(d => d.type);
       expect(defTypes).toContain('definition.function');
+      const names = defs.map(d => d.name);
+      expect(names).toContain('add');
+      expect(names).toContain('internal_helper');
+      expect(names).toContain('print_message');
+    });
+
+    it('captures pointer-returning function definitions', async () => {
+      await loadLanguage(SupportedLanguages.C);
+      const code = `int* get_ptr() { return 0; }\nchar** get_strs() { return 0; }`;
+      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.C]);
+      const defs = extractDefinitions(matches);
+      const names = defs.map(d => d.name);
+      expect(names).toContain('get_ptr');
+      expect(names).toContain('get_strs');
+    });
+
+    it('captures macros and typedefs', async () => {
+      await loadLanguage(SupportedLanguages.C);
+      const code = `#define MAX_SIZE 100\ntypedef unsigned int uint;\nstruct Point { int x; int y; };`;
+      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.C]);
+      const defs = extractDefinitions(matches);
+      const names = defs.map(d => d.name);
+      expect(names).toContain('MAX_SIZE');
+      expect(names).toContain('uint');
+      expect(names).toContain('Point');
     });
   });
 
@@ -146,21 +171,106 @@ describe('Tree-sitter multi-language parsing', () => {
       expect(defs.length).toBeGreaterThan(0);
       const defTypes = defs.map(d => d.type);
       expect(defTypes).toContain('definition.class');
+      const names = defs.map(d => d.name);
+      expect(names).toContain('UserManager');
+      expect(names).toContain('helperFunction');
+    });
+
+    it('captures pointer-returning methods and functions', async () => {
+      await loadLanguage(SupportedLanguages.CPlusPlus);
+      const code = `int* Factory::create() { return nullptr; }\nchar** getNames() { return 0; }`;
+      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.CPlusPlus]);
+      const defs = extractDefinitions(matches);
+      const names = defs.map(d => d.name);
+      expect(names).toContain('create');
+      expect(names).toContain('getNames');
+    });
+
+    it('captures reference-returning functions', async () => {
+      await loadLanguage(SupportedLanguages.CPlusPlus);
+      const code = `int& Container::at(int i) { static int x; return x; }`;
+      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.CPlusPlus]);
+      const defs = extractDefinitions(matches);
+      const names = defs.map(d => d.name);
+      expect(names).toContain('at');
+    });
+
+    it('captures destructor definitions', async () => {
+      await loadLanguage(SupportedLanguages.CPlusPlus);
+      const code = `MyClass::~MyClass() { cleanup(); }`;
+      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.CPlusPlus]);
+      const defs = extractDefinitions(matches);
+      const names = defs.map(d => d.name);
+      expect(names).toContain('~MyClass');
+    });
+
+    it('captures template declarations', async () => {
+      await loadLanguage(SupportedLanguages.CPlusPlus);
+      const code = `template<typename T> class Container { T value; };`;
+      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.CPlusPlus]);
+      const defs = extractDefinitions(matches);
+      const names = defs.map(d => d.name);
+      expect(names).toContain('Container');
+    });
+
+    it('captures namespace definitions', async () => {
+      await loadLanguage(SupportedLanguages.CPlusPlus);
+      const code = `namespace utils { void helper() {} }`;
+      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.CPlusPlus]);
+      const defs = extractDefinitions(matches);
+      const names = defs.map(d => d.name);
+      expect(names).toContain('utils');
+      expect(names).toContain('helper');
     });
   });
 
   describe('C#', () => {
-    it('parses class, method, and property declarations', async () => {
+    it('parses class, method, and namespace declarations', async () => {
       await loadLanguage(SupportedLanguages.CSharp);
       const content = readFixture('simple.cs');
-      try {
-        const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.CSharp]);
-        const defs = extractDefinitions(matches);
-        expect(defs.length).toBeGreaterThan(0);
-      } catch (e: any) {
-        // Some tree-sitter-c-sharp versions don't support all query node types
-        expect(e.message).toContain('TSQueryError');
-      }
+      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.CSharp]);
+      const defs = extractDefinitions(matches);
+
+      expect(defs.length).toBeGreaterThan(0);
+      const defTypes = defs.map(d => d.type);
+      expect(defTypes).toContain('definition.class');
+      expect(defTypes).toContain('definition.method');
+      expect(defTypes).toContain('definition.namespace');
+      const names = defs.map(d => d.name);
+      expect(names).toContain('Calculator');
+      expect(names).toContain('Add');
+    });
+
+    it('captures interfaces, enums, records, structs', async () => {
+      await loadLanguage(SupportedLanguages.CSharp);
+      const content = readFixture('simple.cs');
+      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.CSharp]);
+      const defs = extractDefinitions(matches);
+      const names = defs.map(d => d.name);
+      expect(names).toContain('ICalculator');
+      expect(names).toContain('Operation');
+      expect(names).toContain('CalculationResult');
+      expect(names).toContain('Point');
+    });
+
+    it('captures file-scoped namespace declarations', async () => {
+      await loadLanguage(SupportedLanguages.CSharp);
+      const code = `namespace MyApp;\npublic class Program { }`;
+      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.CSharp]);
+      const defs = extractDefinitions(matches);
+      const names = defs.map(d => d.name);
+      expect(names).toContain('MyApp');
+      expect(names).toContain('Program');
+    });
+
+    it('captures constructors and properties', async () => {
+      await loadLanguage(SupportedLanguages.CSharp);
+      const content = readFixture('simple.cs');
+      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.CSharp]);
+      const defs = extractDefinitions(matches);
+      const defTypes = defs.map(d => d.type);
+      expect(defTypes).toContain('definition.constructor');
+      expect(defTypes).toContain('definition.property');
     });
   });
 
@@ -174,6 +284,58 @@ describe('Tree-sitter multi-language parsing', () => {
       expect(defs.length).toBeGreaterThan(0);
       const defTypes = defs.map(d => d.type);
       expect(defTypes).toContain('definition.function');
+      const names = defs.map(d => d.name);
+      expect(names).toContain('public_function');
+      expect(names).toContain('private_function');
+      expect(names).toContain('Config');
+    });
+
+    it('captures impl blocks and methods', async () => {
+      await loadLanguage(SupportedLanguages.Rust);
+      const content = readFixture('simple.rs');
+      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Rust]);
+      const defs = extractDefinitions(matches);
+      const defTypes = defs.map(d => d.type);
+      expect(defTypes).toContain('definition.impl');
+      const names = defs.map(d => d.name);
+      expect(names).toContain('new');
+    });
+
+    it('captures generic impl blocks', async () => {
+      await loadLanguage(SupportedLanguages.Rust);
+      const code = `struct Vec<T> { data: Vec<T> }\nimpl<T> Vec<T> { fn len(&self) -> usize { 0 } }`;
+      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.Rust]);
+      const defs = extractDefinitions(matches);
+      const names = defs.map(d => d.name);
+      expect(names).toContain('Vec');
+    });
+
+    it('captures trait impl heritage', async () => {
+      await loadLanguage(SupportedLanguages.Rust);
+      const code = `trait Display { fn fmt(&self); }\nstruct Foo;\nimpl Display for Foo { fn fmt(&self) {} }`;
+      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.Rust]);
+      // Look for heritage captures
+      const heritageCaptures: string[] = [];
+      for (const match of matches) {
+        for (const capture of match.captures) {
+          if (capture.name.startsWith('heritage.')) {
+            heritageCaptures.push(`${capture.name}:${capture.node.text}`);
+          }
+        }
+      }
+      expect(heritageCaptures).toContain('heritage.trait:Display');
+      expect(heritageCaptures).toContain('heritage.class:Foo');
+    });
+
+    it('captures modules, consts, and statics', async () => {
+      await loadLanguage(SupportedLanguages.Rust);
+      const code = `mod utils { pub fn helper() {} }\npub const MAX: usize = 100;\nstatic INSTANCE: i32 = 0;`;
+      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.Rust]);
+      const defs = extractDefinitions(matches);
+      const names = defs.map(d => d.name);
+      expect(names).toContain('utils');
+      expect(names).toContain('MAX');
+      expect(names).toContain('INSTANCE');
     });
   });
 
@@ -252,14 +414,9 @@ describe('Tree-sitter multi-language parsing', () => {
       for (const [lang, fixture, filePath] of langFixtures) {
         await loadLanguage(lang, filePath || fixture);
         const content = readFixture(fixture);
-        try {
-          const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[lang]);
-          const defs = extractDefinitions(matches);
-          expect(defs.length, `${lang} (${fixture}) should have definitions`).toBeGreaterThan(0);
-        } catch (e: any) {
-          // Some grammars may have query compatibility issues
-          if (!e.message?.includes('TSQueryError')) throw e;
-        }
+        const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[lang]);
+        const defs = extractDefinitions(matches);
+        expect(defs.length, `${lang} (${fixture}) should have definitions`).toBeGreaterThan(0);
       }
     });
   });

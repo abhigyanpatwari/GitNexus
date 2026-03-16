@@ -4,6 +4,7 @@ import { loadParser, loadLanguage } from '../tree-sitter/parser-loader';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries';
 import { generateId } from '../../lib/utils';
 import { getLanguageFromFilename } from './utils';
+import { callRouters } from './call-routing';
 
 // Type: Map<FilePath, Set<ResolvedFilePath>>
 // Stores all files that a given file imports from
@@ -53,7 +54,9 @@ const resolveImportPath = (
     // Go
     '.go',
     // Rust
-    '.rs', '/mod.rs'
+    '.rs', '/mod.rs',
+    // Ruby
+    '.rb', '.rake',
   ];
   
   if (importPath.startsWith('.')) {
@@ -218,6 +221,35 @@ export const processImports = async (
             importMap.set(file.path, new Set());
           }
           importMap.get(file.path)!.add(resolvedPath);
+        }
+      }
+
+      // ---- Language-specific call-as-import routing (Ruby require, etc.) ----
+      if (captureMap['call']) {
+        const callNameNode = captureMap['call.name'];
+        if (callNameNode) {
+          const callRouter = callRouters[language];
+          const routed = callRouter(callNameNode.text, captureMap['call']);
+          if (routed && routed.kind === 'import') {
+            totalImportsFound++;
+            const resolvedPath = resolveImportPath(
+              file.path, routed.importPath, allFilePaths, allFileList, resolveCache
+            );
+            if (resolvedPath) {
+              const sourceId = generateId('File', file.path);
+              const targetId = generateId('File', resolvedPath);
+              const relId = generateId('IMPORTS', `${file.path}->${resolvedPath}`);
+              totalImportsResolved++;
+              graph.addRelationship({
+                id: relId, sourceId, targetId,
+                type: 'IMPORTS', confidence: 1.0, reason: '',
+              });
+              if (!importMap.has(file.path)) {
+                importMap.set(file.path, new Set());
+              }
+              importMap.get(file.path)!.add(resolvedPath);
+            }
+          }
         }
       }
     });

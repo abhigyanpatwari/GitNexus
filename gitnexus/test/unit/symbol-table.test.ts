@@ -101,6 +101,42 @@ describe('SymbolTable', () => {
     });
   });
 
+  describe('returnType metadata', () => {
+    it('stores returnType in SymbolDefinition', () => {
+      table.add('src/utils.ts', 'getUser', 'func:getUser', 'Function', { returnType: 'User' });
+      const def = table.lookupExactFull('src/utils.ts', 'getUser');
+      expect(def).toBeDefined();
+      expect(def!.returnType).toBe('User');
+    });
+
+    it('returnType is available via lookupFuzzy', () => {
+      table.add('src/utils.ts', 'getUser', 'func:getUser', 'Function', { returnType: 'Promise<User>' });
+      const results = table.lookupFuzzy('getUser');
+      expect(results).toHaveLength(1);
+      expect(results[0].returnType).toBe('Promise<User>');
+    });
+
+    it('omits returnType when not provided', () => {
+      table.add('src/utils.ts', 'helper', 'func:helper', 'Function');
+      const def = table.lookupExactFull('src/utils.ts', 'helper');
+      expect(def).toBeDefined();
+      expect(def!.returnType).toBeUndefined();
+    });
+
+    it('stores returnType alongside parameterCount and ownerId', () => {
+      table.add('src/models.ts', 'save', 'method:save', 'Method', {
+        parameterCount: 1,
+        returnType: 'boolean',
+        ownerId: 'class:User',
+      });
+      const def = table.lookupExactFull('src/models.ts', 'save');
+      expect(def).toBeDefined();
+      expect(def!.parameterCount).toBe(1);
+      expect(def!.returnType).toBe('boolean');
+      expect(def!.ownerId).toBe('class:User');
+    });
+  });
+
   describe('clear', () => {
     it('resets all state', () => {
       table.add('src/a.ts', 'foo', 'func:foo', 'Function');

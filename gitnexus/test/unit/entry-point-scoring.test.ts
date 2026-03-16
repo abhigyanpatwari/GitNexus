@@ -123,6 +123,25 @@ describe('calculateEntryPointScore', () => {
       const result = calculateEntryPointScore('main', 'c', false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
     });
+
+    // C-specific patterns
+    it.each([
+      'init_server', 'server_init', 'start_server', 'handle_request',
+      'signal_handler', 'event_callback', 'cmd_new_window', 'server_start',
+      'client_connect', 'session_create', 'window_resize',
+    ])('recognizes C pattern "%s"', (name) => {
+      const result = calculateEntryPointScore(name, 'c', false, 0, 2);
+      expect(result.reasons).toContain('entry-pattern');
+    });
+
+    // C++-specific patterns
+    it.each([
+      'CreateInstance', 'create_session', 'Run', 'run', 'Start', 'start',
+      'OnEventReceived', 'on_click',
+    ])('recognizes C++ pattern "%s"', (name) => {
+      const result = calculateEntryPointScore(name, 'cpp', false, 0, 2);
+      expect(result.reasons).toContain('entry-pattern');
+    });
   });
 
   describe('utility pattern penalty', () => {

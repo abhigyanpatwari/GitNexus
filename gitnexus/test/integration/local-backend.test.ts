@@ -1,7 +1,7 @@
 /**
  * P0 Integration Tests: Local Backend
  *
- * Tests tool implementations via direct KuzuDB queries.
+ * Tests tool implementations via direct LadybugDB queries.
  * The full LocalBackend.callTool() requires a global registry,
  * so here we test the security-critical behaviors directly:
  * - Write-operation blocking in cypher
@@ -17,18 +17,18 @@ import { describe, it, expect } from 'vitest';
 import {
   executeQuery,
   executeParameterized,
-} from '../../src/mcp/core/kuzu-adapter.js';
+} from '../../src/mcp/core/lbug-adapter.js';
 import {
   CYPHER_WRITE_RE,
   VALID_RELATION_TYPES,
   isWriteQuery,
 } from '../../src/mcp/local/local-backend.js';
-import { withTestKuzuDB } from '../helpers/test-indexed-db.js';
+import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import { LOCAL_BACKEND_SEED_DATA } from '../fixtures/local-backend-seed.js';
 
 // ─── Block 1: Pool adapter tests ─────────────────────────────────────
 
-withTestKuzuDB('local-backend', (handle) => {
+withTestLbugDB('local-backend', (handle) => {
 
   // ─── Cypher write blocking ───────────────────────────────────────────
 
@@ -219,7 +219,7 @@ withTestKuzuDB('local-backend', (handle) => {
 
   describe('query error handling via pool', () => {
     it('returns empty rows for unknown node label', async () => {
-      // KuzuDB throws a Binder exception for unknown node labels
+      // LadybugDB throws a Binder exception for unknown node labels
       await expect(
         executeQuery(handle.repoId, 'MATCH (n:NonExistentTable) RETURN n.name AS name')
       ).rejects.toThrow();
