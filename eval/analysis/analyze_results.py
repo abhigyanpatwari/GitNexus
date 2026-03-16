@@ -152,24 +152,37 @@ def run_swebench_evaluation(results_dir: Path, run_id: str, subset: str = "lite"
     
     Requires: pip install swebench
     """
-    preds_path = results_dir / run_id / "preds.json"
-    if not preds_path.exists():
-        return None
-
+    import re
+    
+    # Validate subset to prevent command injection - only allow known values
     dataset_mapping = {
         "lite": "princeton-nlp/SWE-Bench_Lite",
         "verified": "princeton-nlp/SWE-Bench_Verified",
         "full": "princeton-nlp/SWE-Bench",
     }
+    
+    if subset not in dataset_mapping:
+        logger.error(f"Invalid subset '{subset}'. Must be one of: {', '.join(dataset_mapping.keys())}")
+        return None
+    
+    # Sanitize run_id to prevent path traversal and command injection
+    # Only allow alphanumeric characters, underscores, hyphens, and periods
+    if not re.match(r'^[a-zA-Z0-9_\-\.]+$', run_id):
+        logger.error(f"Invalid run_id '{run_id}'. Must contain only alphanumeric characters, underscores, hyphens, and periods.")
+        return None
+    
+    preds_path = results_dir / run_id / "preds.json"
+    if not preds_path.exists():
+        return None
 
     try:
         eval_output = results_dir / run_id / "swebench_eval"
         cmd = [
             sys.executable, "-m", "swebench.harness.run_evaluation",
-            "--dataset_name", dataset_mapping.get(subset, subset),
+            "--dataset_name", dataset_mapping[subset],  # Use validated subset from mapping
             "--predictions_path", str(preds_path),
             "--max_workers", "4",
-            "--run_id", run_id,
+            "--run_id", run_id,  # Already validated above
             "--output_dir", str(eval_output),
         ]
 
