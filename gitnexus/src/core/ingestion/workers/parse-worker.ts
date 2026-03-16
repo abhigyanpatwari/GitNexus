@@ -24,6 +24,10 @@ try { Swift = _require('tree-sitter-swift'); } catch {}
 // tree-sitter-kotlin is an optionalDependency — may not be installed
 let Kotlin: any = null;
 try { Kotlin = _require('tree-sitter-kotlin'); } catch {}
+
+// tree-sitter-elixir is an optionalDependency — may not be installed
+let Elixir: any = null;
+try { Elixir = _require('tree-sitter-elixir'); } catch {}
 import {
   getLanguageFromFilename,
   FUNCTION_NODE_TYPES,
@@ -38,6 +42,7 @@ import {
   extractReceiverNode,
   extractMixedChain,
   type MixedChainStep,
+  isElixirFunctionDef,
 } from '../utils.js';
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
@@ -201,6 +206,7 @@ const languageMap: Record<string, any> = {
   [SupportedLanguages.PHP]: PHP.php_only,
   [SupportedLanguages.Ruby]: Ruby,
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
+  ...(Elixir ? { [SupportedLanguages.Elixir]: Elixir } : {}),
 };
 
 /**
@@ -240,6 +246,11 @@ const findEnclosingFunctionId = (node: any, filePath: string): string | null => 
       if (funcName) {
         return generateId(label, `${filePath}:${funcName}`);
       }
+    }
+    // Elixir: call nodes with def/defp/defmacro target are function definitions
+    const elixirName = isElixirFunctionDef(current);
+    if (elixirName) {
+      return generateId('Function', `${filePath}:${elixirName}`);
     }
     current = current.parent;
   }
@@ -1058,11 +1069,17 @@ const processFileGroup = (
             // kind === 'call' — fall through to normal call processing below
           }
 
-          if (!isBuiltInOrNoise(calledName)) {
+          {
             const callNode = captureMap['call'];
+            const callForm = inferCallForm(callNode, callNameNode);
+            // Skip built-in/noise names for free and constructor calls.
+            // Member calls (Repo.insert, Enum.map, etc.) have explicit receiver context
+            // that disambiguates common names, so the noise filter is not applied.
+            // Elixir member calls (e.g. Repo.insert) have explicit module receiver context
+            // that disambiguates common names; bypass the noise filter for those only.
+            if (isBuiltInOrNoise(calledName) && (callForm !== 'member' || language !== SupportedLanguages.Elixir)) continue;
             const sourceId = findEnclosingFunctionId(callNode, file.path)
               || generateId('File', file.path);
-            const callForm = inferCallForm(callNode, callNameNode);
             let receiverName = callForm === 'member' ? extractReceiverName(callNameNode) : undefined;
             let receiverTypeName = receiverName ? typeEnv.lookup(receiverName, callNode) : undefined;
             let receiverMixedChain: MixedChainStep[] | undefined;

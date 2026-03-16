@@ -22,10 +22,12 @@ import {
   CALL_EXPRESSION_TYPES,
   extractMixedChain,
   type MixedChainStep,
+  isElixirFunctionDef,
 } from './utils.js';
 import { buildTypeEnv } from './type-env.js';
 import type { ConstructorBinding } from './type-env.js';
 import { getTreeSitterBufferSize } from './constants.js';
+import { SupportedLanguages } from '../../config/supported-languages.js';
 import type { ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, FileConstructorBindings } from './workers/parse-worker.js';
 import { callRouters } from './call-routing.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
@@ -63,6 +65,15 @@ const findEnclosingFunction = (
 
         return generateId(label, `${filePath}:${funcName}`);
       }
+    }
+    // Elixir: call nodes with def/defp/defmacro target are function definitions
+    const elixirName = isElixirFunctionDef(current);
+    if (elixirName) {
+      const resolved = ctx.resolve(elixirName, filePath);
+      if (resolved?.tier === 'same-file' && resolved.candidates.length > 0) {
+        return resolved.candidates[0].nodeId;
+      }
+      return generateId('Function', `${filePath}:${elixirName}`);
     }
     current = current.parent;
   }
@@ -319,10 +330,12 @@ export const processCalls = async (
         }
       }
 
-      if (isBuiltInOrNoise(calledName)) return;
-
       const callNode = captureMap['call'];
       const callForm = inferCallForm(callNode, nameNode);
+      // Skip built-in/noise names for free and constructor calls.
+      // Elixir member calls (e.g. Repo.insert) have explicit module receiver context
+      // that disambiguates common names — skip the filter for those only.
+      if (isBuiltInOrNoise(calledName) && (callForm !== 'member' || language !== SupportedLanguages.Elixir)) return;
       const receiverName = callForm === 'member' ? extractReceiverName(nameNode) : undefined;
       let receiverTypeName = receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
       // Fall back to verified constructor bindings for return type inference

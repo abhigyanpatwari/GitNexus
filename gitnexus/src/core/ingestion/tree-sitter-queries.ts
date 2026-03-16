@@ -896,6 +896,211 @@ export const SWIFT_QUERIES = `
 
 `;
 
+// Elixir queries - works with tree-sitter-elixir
+// NOTE: Elixir's macro-based syntax means defmodule, def, alias, etc. are all `call` nodes.
+// We use #eq? predicates on target identifiers to distinguish definition keywords from
+// regular function calls. Module attributes (@spec, @behaviour) are `unary_operator` nodes.
+// Pipe operator `|>` chains produce nested `binary_operator` nodes whose RHS calls are
+// captured by the regular call queries below.
+export const ELIXIR_QUERIES = `
+; ── Definitions ───────────────────────────────────────────────────────────────
+
+; defmodule MyApp.User do ... end
+(call
+  target: (identifier) @_kw
+  (arguments (alias) @name)
+  (#eq? @_kw "defmodule")) @definition.module
+
+; def func(args) do ... end
+(call
+  target: (identifier) @_kw
+  (arguments
+    (call
+      target: (identifier) @name))
+  (#eq? @_kw "def")) @definition.function
+
+; defp func(args) do ... end (private)
+(call
+  target: (identifier) @_kw
+  (arguments
+    (call
+      target: (identifier) @name))
+  (#eq? @_kw "defp")) @definition.function
+
+; defmacro name(args) do ... end
+(call
+  target: (identifier) @_kw
+  (arguments
+    (call
+      target: (identifier) @name))
+  (#eq? @_kw "defmacro")) @definition.macro
+
+; defmacrop name(args) do ... end (private macro)
+(call
+  target: (identifier) @_kw
+  (arguments
+    (call
+      target: (identifier) @name))
+  (#eq? @_kw "defmacrop")) @definition.macro
+
+; defguard name(args) when ... (public guard)
+(call
+  target: (identifier) @_kw
+  (arguments
+    (call
+      target: (identifier) @name))
+  (#eq? @_kw "defguard")) @definition.macro
+
+; defguardp name(args) when ... (private guard)
+(call
+  target: (identifier) @_kw
+  (arguments
+    (call
+      target: (identifier) @name))
+  (#eq? @_kw "defguardp")) @definition.macro
+
+; defguard with when clause (binary_operator wraps the call)
+(call
+  target: (identifier) @_kw
+  (arguments
+    (binary_operator
+      left: (call
+        target: (identifier) @name)))
+  (#eq? @_kw "defguard")) @definition.macro
+
+; defguardp with when clause (binary_operator wraps the call)
+(call
+  target: (identifier) @_kw
+  (arguments
+    (binary_operator
+      left: (call
+        target: (identifier) @name)))
+  (#eq? @_kw "defguardp")) @definition.macro
+
+; defdelegate func(arg), to: OtherModule
+(call
+  target: (identifier) @_kw
+  (arguments
+    (call
+      target: (identifier) @name))
+  (#eq? @_kw "defdelegate")) @definition.function
+
+; defstruct — excluded from @call captures; the enclosing defmodule provides the struct name.
+
+; defprotocol Printable do ... end
+(call
+  target: (identifier) @_kw
+  (arguments (alias) @name)
+  (#eq? @_kw "defprotocol")) @definition.interface
+
+; defimpl Printable, for: MyApp.User do ... end
+(call
+  target: (identifier) @_kw
+  (arguments (alias) @name)
+  (#eq? @_kw "defimpl")) @definition.impl
+
+; ── Imports ───────────────────────────────────────────────────────────────────
+
+; alias MyApp.Repo / alias MyApp.{User, Admin}
+(call
+  target: (identifier) @_kw
+  (arguments [(alias) (dot)] @import.source)
+  (#eq? @_kw "alias")) @import
+
+; import Ecto.Query
+(call
+  target: (identifier) @_kw
+  (arguments (alias) @import.source)
+  (#eq? @_kw "import")) @import
+
+; require Logger
+(call
+  target: (identifier) @_kw
+  (arguments (alias) @import.source)
+  (#eq? @_kw "require")) @import
+
+; use Phoenix.Controller (also captured as heritage below)
+(call
+  target: (identifier) @_kw
+  (arguments (alias) @import.source)
+  (#eq? @_kw "use")) @import
+
+; ── Calls (excluding definition/import keywords) ─────────────────────────────
+
+; Regular function calls
+(call
+  target: (identifier) @call.name
+  (#not-eq? @call.name "defmodule")
+  (#not-eq? @call.name "def")
+  (#not-eq? @call.name "defp")
+  (#not-eq? @call.name "defmacro")
+  (#not-eq? @call.name "defmacrop")
+  (#not-eq? @call.name "defstruct")
+  (#not-eq? @call.name "defprotocol")
+  (#not-eq? @call.name "defimpl")
+  (#not-eq? @call.name "defguard")
+  (#not-eq? @call.name "defguardp")
+  (#not-eq? @call.name "defdelegate")
+  (#not-eq? @call.name "alias")
+  (#not-eq? @call.name "import")
+  (#not-eq? @call.name "require")
+  (#not-eq? @call.name "use")) @call
+
+; Qualified calls: Module.func()
+(call
+  target: (dot
+    right: (identifier) @call.name)) @call
+
+; ── Heritage ──────────────────────────────────────────────────────────────────
+
+; use Module inside defmodule → heritage extends
+(call
+  target: (identifier) @_kw
+  (arguments (alias) @heritage.class)
+  (do_block
+    (call
+      target: (identifier) @_use
+      (arguments (alias) @heritage.extends)
+      (#eq? @_use "use")))
+  (#eq? @_kw "defmodule")) @heritage
+
+; @behaviour Module inside defmodule → heritage implements
+(call
+  target: (identifier) @_kw
+  (arguments (alias) @heritage.class)
+  (do_block
+    (unary_operator
+      operand: (call
+        target: (identifier) @_attr
+        (arguments (alias) @heritage.implements)
+        (#eq? @_attr "behaviour"))))
+  (#eq? @_kw "defmodule")) @heritage
+
+; @behaviour :atom_module inside defmodule → heritage implements (OTP atom form)
+(call
+  target: (identifier) @_kw
+  (arguments (alias) @heritage.class)
+  (do_block
+    (unary_operator
+      operand: (call
+        target: (identifier) @_attr
+        (arguments (atom) @heritage.implements)
+        (#eq? @_attr "behaviour"))))
+  (#eq? @_kw "defmodule")) @heritage
+
+; defimpl Protocol, for: Module → IMPLEMENTS edge
+(call
+  target: (identifier) @_kw
+  (arguments
+    (alias) @heritage.implements
+    (keywords
+      (pair
+        (keyword) @_for_kw
+        (alias) @heritage.class)))
+  (#eq? @_kw "defimpl")
+  (#match? @_for_kw "^for")) @heritage
+`;
+
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.TypeScript]: TYPESCRIPT_QUERIES,
   [SupportedLanguages.JavaScript]: JAVASCRIPT_QUERIES,
@@ -910,5 +1115,6 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.PHP]: PHP_QUERIES,
   [SupportedLanguages.Kotlin]: KOTLIN_QUERIES,
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
+  [SupportedLanguages.Elixir]: ELIXIR_QUERIES,
 };
  

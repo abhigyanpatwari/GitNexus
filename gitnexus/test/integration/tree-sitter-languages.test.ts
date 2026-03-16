@@ -379,6 +379,126 @@ describe('Tree-sitter multi-language parsing', () => {
     });
   });
 
+  describe('Elixir', () => {
+    it('parses modules, functions, macros, protocol, and impl if tree-sitter-elixir is available', async () => {
+      try {
+        await loadLanguage(SupportedLanguages.Elixir);
+      } catch {
+        // tree-sitter-elixir not installed — skip
+        return;
+      }
+
+      const content = readFixture('simple.ex');
+      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Elixir]);
+      const defs = extractDefinitions(matches);
+
+      expect(defs.length).toBeGreaterThan(0);
+
+      const names = defs.map(d => d.name);
+      const types = defs.map(d => d.type);
+
+      // Module
+      expect(names).toContain('MyApp.Accounts.User');
+      expect(types).toContain('definition.module');
+
+      // Functions
+      expect(names).toContain('create');
+      expect(names).toContain('validate');
+      expect(types).toContain('definition.function');
+
+      // Macro
+      expect(names).toContain('my_macro');
+      expect(types).toContain('definition.macro');
+
+      // Guard with when clause
+      expect(names).toContain('is_positive');
+
+      // Protocol
+      expect(names).toContain('Printable');
+      expect(types).toContain('definition.interface');
+
+      // Impl
+      expect(types).toContain('definition.impl');
+    });
+
+    it('captures imports from alias, import, require, use', async () => {
+      try {
+        await loadLanguage(SupportedLanguages.Elixir);
+      } catch {
+        return;
+      }
+
+      const content = readFixture('simple.ex');
+      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Elixir]);
+
+      const imports: string[] = [];
+      for (const match of matches) {
+        for (const capture of match.captures) {
+          if (capture.name === 'import.source') {
+            imports.push(capture.node.text);
+          }
+        }
+      }
+
+      expect(imports).toContain('MyApp.Repo');
+      expect(imports).toContain('Ecto.Query');
+      expect(imports).toContain('Logger');
+      expect(imports).toContain('GenServer');
+    });
+
+    it('captures heritage from use and @behaviour', async () => {
+      try {
+        await loadLanguage(SupportedLanguages.Elixir);
+      } catch {
+        return;
+      }
+
+      const content = readFixture('simple.ex');
+      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Elixir]);
+
+      const heritage: { cls: string; ext: string }[] = [];
+      for (const match of matches) {
+        const cls = match.captures.find((c: any) => c.name === 'heritage.class');
+        const ext = match.captures.find((c: any) => c.name === 'heritage.extends');
+        if (cls && ext) {
+          heritage.push({ cls: cls.node.text, ext: ext.node.text });
+        }
+      }
+
+      expect(heritage).toContainEqual({ cls: 'MyApp.Accounts.User', ext: 'GenServer' });
+    });
+
+    it('captures defimpl heritage (IMPLEMENTS edge)', async () => {
+      try {
+        await loadLanguage(SupportedLanguages.Elixir);
+      } catch {
+        return;
+      }
+
+      const content = readFixture('simple.ex');
+      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Elixir]);
+
+      const implHeritage: { cls: string; impl: string }[] = [];
+      for (const match of matches) {
+        const cls = match.captures.find((c: any) => c.name === 'heritage.class');
+        const impl = match.captures.find((c: any) => c.name === 'heritage.implements');
+        if (cls && impl) {
+          implHeritage.push({ cls: cls.node.text, impl: impl.node.text });
+        }
+      }
+
+      expect(implHeritage).toContainEqual({ cls: 'MyApp.Accounts.User', impl: 'Printable' });
+    });
+
+    it('gracefully handles missing tree-sitter-elixir', async () => {
+      try {
+        await loadLanguage(SupportedLanguages.Elixir);
+      } catch (e: any) {
+        expect(e.message).toContain('Unsupported language');
+      }
+    });
+  });
+
   describe('unhappy path', () => {
     it('returns null/undefined for unsupported file extensions', () => {
       expect(getLanguageFromFilename('archive.xyz')).toBeNull();

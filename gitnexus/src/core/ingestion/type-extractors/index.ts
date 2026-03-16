@@ -16,6 +16,7 @@ import { typeConfig as swiftConfig } from './swift.js';
 import { typeConfig as cCppConfig } from './c-cpp.js';
 import { typeConfig as phpConfig } from './php.js';
 import { typeConfig as rubyConfig } from './ruby.js';
+import { typeConfig as elixirConfig } from './elixir.js';
 
 export const typeConfigs = {
   [SupportedLanguages.JavaScript]: typescriptConfig,
@@ -31,6 +32,7 @@ export const typeConfigs = {
   [SupportedLanguages.CPlusPlus]: cCppConfig,
   [SupportedLanguages.PHP]: phpConfig,
   [SupportedLanguages.Ruby]: rubyConfig,
+  [SupportedLanguages.Elixir]: elixirConfig,
 } satisfies Record<SupportedLanguages, LanguageTypeConfig>;
 
 export type {

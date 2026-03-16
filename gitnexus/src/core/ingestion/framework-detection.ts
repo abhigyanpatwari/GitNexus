@@ -330,6 +330,55 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
     return { framework: 'laravel', entryPointMultiplier: 1.5, reason: 'laravel-repository' };
   }
 
+  // ========== ELIXIR / PHOENIX ==========
+
+  // Phoenix controllers (highest — HTTP entry points)
+  if (p.includes('/controllers/') && (p.endsWith('.ex') || p.endsWith('.exs'))) {
+    return { framework: 'phoenix', entryPointMultiplier: 3.0, reason: 'phoenix-controller' };
+  }
+  if (p.endsWith('_controller.ex')) {
+    return { framework: 'phoenix', entryPointMultiplier: 3.0, reason: 'phoenix-controller-file' };
+  }
+
+  // Phoenix LiveView (high — real-time entry points)
+  if (p.includes('/live/') && (p.endsWith('.ex') || p.endsWith('.exs'))) {
+    return { framework: 'phoenix-liveview', entryPointMultiplier: 3.0, reason: 'phoenix-liveview' };
+  }
+  if (p.endsWith('_live.ex')) {
+    return { framework: 'phoenix-liveview', entryPointMultiplier: 3.0, reason: 'phoenix-liveview-file' };
+  }
+
+  // Phoenix channels
+  if (p.includes('/channels/') && p.endsWith('.ex')) {
+    return { framework: 'phoenix-channel', entryPointMultiplier: 2.5, reason: 'phoenix-channel' };
+  }
+  if (p.endsWith('_channel.ex')) {
+    return { framework: 'phoenix-channel', entryPointMultiplier: 2.5, reason: 'phoenix-channel-file' };
+  }
+
+  // Phoenix router and endpoint
+  if (p.endsWith('/router.ex') && p.includes('_web')) {
+    return { framework: 'phoenix', entryPointMultiplier: 3.0, reason: 'phoenix-router' };
+  }
+  if (p.endsWith('/endpoint.ex') && p.includes('_web')) {
+    return { framework: 'phoenix', entryPointMultiplier: 3.0, reason: 'phoenix-endpoint' };
+  }
+
+  // Phoenix views and components
+  if ((p.includes('/views/') || p.includes('/components/')) && p.includes('_web') && p.endsWith('.ex')) {
+    return { framework: 'phoenix', entryPointMultiplier: 2.0, reason: 'phoenix-view' };
+  }
+
+  // Elixir OTP application entry point
+  if (p.endsWith('/application.ex')) {
+    return { framework: 'elixir-otp', entryPointMultiplier: 3.0, reason: 'elixir-otp-application' };
+  }
+
+  // mix.exs project definition
+  if (p.endsWith('/mix.exs')) {
+    return { framework: 'elixir', entryPointMultiplier: 1.5, reason: 'elixir-mix' };
+  }
+
   // ========== RUBY ==========
 
   // Ruby: bin/ or exe/ (CLI entry points)
@@ -447,6 +496,15 @@ export const FRAMEWORK_AST_PATTERNS = {
   'uikit': ['viewDidLoad', 'viewWillAppear', 'viewDidAppear', 'UIViewController'],
   'swiftui': ['@main', 'WindowGroup', 'ContentView', '@StateObject', '@ObservedObject'],
   'combine': ['sink', 'assign', 'Publisher', 'Subscriber'],
+
+  // Elixir/Phoenix
+  'phoenix': ['use Phoenix.Router', 'use Phoenix.Controller', 'use Phoenix.LiveView',
+              'use Phoenix.Channel', 'use Phoenix.Component', 'plug ', 'pipe_through',
+              'live ', 'resources '],
+  'phoenix-liveview': ['use Phoenix.LiveView', 'use Phoenix.LiveComponent',
+                       'handle_event', 'handle_params', 'mount'],
+  'elixir-otp': ['use GenServer', 'use Supervisor', 'use Agent', 'use Task',
+                 'handle_call', 'handle_cast', 'handle_info'],
 };
 
 import { SupportedLanguages } from '../../config/supported-languages.js';
@@ -487,6 +545,11 @@ const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE: Record<string, AstFrameworkPatternConf
   ],
   [SupportedLanguages.PHP]: [
     { framework: 'laravel', entryPointMultiplier: 3.0, reason: 'php-route-attribute', patterns: FRAMEWORK_AST_PATTERNS.laravel },
+  ],
+  [SupportedLanguages.Elixir]: [
+    { framework: 'phoenix', entryPointMultiplier: 3.0, reason: 'phoenix-pattern', patterns: FRAMEWORK_AST_PATTERNS.phoenix },
+    { framework: 'phoenix-liveview', entryPointMultiplier: 3.0, reason: 'phoenix-liveview-pattern', patterns: FRAMEWORK_AST_PATTERNS['phoenix-liveview'] },
+    { framework: 'elixir-otp', entryPointMultiplier: 2.5, reason: 'elixir-otp-pattern', patterns: FRAMEWORK_AST_PATTERNS['elixir-otp'] },
   ],
 };
 

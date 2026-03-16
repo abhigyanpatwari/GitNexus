@@ -11,7 +11,7 @@
  * Keep both copies in sync until a shared package is introduced.
  */
 
-import { SupportedLanguages } from '../../config/supported-languages.js';
+import { SupportedLanguages } from "../../config/supported-languages.js";
 
 // ── Call routing dispatch table ─────────────────────────────────────────────
 
@@ -41,24 +41,28 @@ export const callRouters = {
   [SupportedLanguages.CPlusPlus]: noRouting,
   [SupportedLanguages.C]: noRouting,
   [SupportedLanguages.Ruby]: routeRubyCall,
+  [SupportedLanguages.Elixir]: routeElixirCall,
 } satisfies Record<SupportedLanguages, CallRouter>;
 
 // ── Result types ────────────────────────────────────────────────────────────
 
 export type RubyCallRouting =
-  | { kind: 'import'; importPath: string; isRelative: boolean }
-  | { kind: 'heritage'; items: RubyHeritageItem[] }
-  | { kind: 'properties'; items: RubyPropertyItem[] }
-  | { kind: 'call' }
-  | { kind: 'skip' };
+  | { kind: "import"; importPath: string; isRelative: boolean }
+  | { kind: "heritage"; items: HeritageItem[] }
+  | { kind: "properties"; items: RubyPropertyItem[] }
+  | { kind: "call" }
+  | { kind: "skip" };
 
-export interface RubyHeritageItem {
+export interface HeritageItem {
   enclosingClass: string;
   mixinName: string;
-  heritageKind: 'include' | 'extend' | 'prepend';
+  heritageKind: "include" | "extend" | "prepend" | "use" | "behaviour";
 }
 
-export type RubyAccessorType = 'attr_accessor' | 'attr_reader' | 'attr_writer';
+/** @deprecated Use HeritageItem instead */
+export type RubyHeritageItem = HeritageItem;
+
+export type RubyAccessorType = "attr_accessor" | "attr_reader" | "attr_writer";
 
 export interface RubyPropertyItem {
   propName: string;
@@ -70,8 +74,8 @@ export interface RubyPropertyItem {
 }
 
 // ── Pre-allocated singletons for common return values ────────────────────────
-const CALL_RESULT: RubyCallRouting = { kind: 'call' };
-const SKIP_RESULT: RubyCallRouting = { kind: 'skip' };
+const CALL_RESULT: RubyCallRouting = { kind: "call" };
+const SKIP_RESULT: RubyCallRouting = { kind: "skip" };
 
 /** Max depth for parent-walking loops to prevent pathological AST traversals */
 const MAX_PARENT_DEPTH = 50;
@@ -85,48 +89,68 @@ const MAX_PARENT_DEPTH = 50;
  * @param callNode   - The tree-sitter `call` AST node
  * @returns A discriminated union describing the call's semantic role
  */
-export function routeRubyCall(calledName: string, callNode: any): RubyCallRouting {
+export function routeRubyCall(
+  calledName: string,
+  callNode: any,
+): RubyCallRouting {
   // ── require / require_relative → import ─────────────────────────────────
-  if (calledName === 'require' || calledName === 'require_relative') {
-    const argList = callNode.childForFieldName?.('arguments');
-    const stringNode = argList?.children?.find((c: any) => c.type === 'string');
-    const contentNode = stringNode?.children?.find((c: any) => c.type === 'string_content');
+  if (calledName === "require" || calledName === "require_relative") {
+    const argList = callNode.childForFieldName?.("arguments");
+    const stringNode = argList?.children?.find((c: any) => c.type === "string");
+    const contentNode = stringNode?.children?.find(
+      (c: any) => c.type === "string_content",
+    );
     if (!contentNode) return SKIP_RESULT;
 
     let importPath: string = contentNode.text;
     // Validate: reject null bytes, control chars, excessively long paths
-    if (!importPath || importPath.length > 1024 || /[\x00-\x1f]/.test(importPath)) {
+    if (
+      !importPath ||
+      importPath.length > 1024 ||
+      /[\x00-\x1f]/.test(importPath)
+    ) {
       return SKIP_RESULT;
     }
-    const isRelative = calledName === 'require_relative';
-    if (isRelative && !importPath.startsWith('.')) {
-      importPath = './' + importPath;
+    const isRelative = calledName === "require_relative";
+    if (isRelative && !importPath.startsWith(".")) {
+      importPath = "./" + importPath;
     }
-    return { kind: 'import', importPath, isRelative };
+    return { kind: "import", importPath, isRelative };
   }
 
   // ── include / extend / prepend → heritage (mixin) ──────────────────────
-  if (calledName === 'include' || calledName === 'extend' || calledName === 'prepend') {
+  if (
+    calledName === "include" ||
+    calledName === "extend" ||
+    calledName === "prepend"
+  ) {
     let enclosingClass: string | null = null;
     let current = callNode.parent;
     let depth = 0;
     while (current && ++depth <= MAX_PARENT_DEPTH) {
-      if (current.type === 'class' || current.type === 'module') {
-        const nameNode = current.childForFieldName?.('name');
-        if (nameNode) { enclosingClass = nameNode.text; break; }
+      if (current.type === "class" || current.type === "module") {
+        const nameNode = current.childForFieldName?.("name");
+        if (nameNode) {
+          enclosingClass = nameNode.text;
+          break;
+        }
       }
       current = current.parent;
     }
     if (!enclosingClass) return SKIP_RESULT;
 
-    const items: RubyHeritageItem[] = [];
-    const argList = callNode.childForFieldName?.('arguments');
-    for (const arg of (argList?.children ?? [])) {
-      if (arg.type === 'constant' || arg.type === 'scope_resolution') {
-        items.push({ enclosingClass, mixinName: arg.text, heritageKind: calledName as 'include' | 'extend' | 'prepend' });
+    const items: HeritageItem[] = [];
+    const argList = callNode.childForFieldName?.("arguments");
+    for (const arg of argList?.children ?? []) {
+      if (arg.type === "constant" || arg.type === "scope_resolution") {
+        items.push({
+          enclosingClass,
+          mixinName: arg.text,
+          heritageKind: calledName as "include" | "extend" | "prepend",
+        });
       }
     }
-    return items.length > 0 ? { kind: 'heritage', items } : SKIP_RESULT;
+    return items.length > 0 ? { kind: "heritage", items } : SKIP_RESULT;
   }
 
   // ── attr_accessor / attr_reader / attr_writer → property definitions ───
@@ -151,11 +175,11 @@ export function routeRubyCall(calledName: string, callNode: any): RubyCallRoutin
     }
 
     const items: RubyPropertyItem[] = [];
-    const argList = callNode.childForFieldName?.('arguments');
-    for (const arg of (argList?.children ?? [])) {
-      if (arg.type === 'simple_symbol') {
+    const argList = callNode.childForFieldName?.("arguments");
+    for (const arg of argList?.children ?? []) {
+      if (arg.type === "simple_symbol") {
         items.push({
-          propName: arg.text.startsWith(':') ? arg.text.slice(1) : arg.text,
+          propName: arg.text.startsWith(":") ? arg.text.slice(1) : arg.text,
           accessorType: calledName as RubyAccessorType,
           startLine: arg.startPosition.row,
           endLine: arg.endPosition.row,
@@ -163,9 +187,44 @@ export function routeRubyCall(calledName: string, callNode: any): RubyCallRoutin
         });
       }
     }
-    return items.length > 0 ? { kind: 'properties', items } : SKIP_RESULT;
+    return items.length > 0 ? { kind: "properties", items } : SKIP_RESULT;
   }
 
   // ── Everything else → regular call ─────────────────────────────────────
+  return CALL_RESULT;
+}
+
+// ── Elixir call routing ──────────────────────────────────────────────────────
+
+/** Elixir call routing reuses the shared RubyCallRouting type with extended heritage kinds. */
+export type ElixirCallRouting = RubyCallRouting;
+
+/** Names that produce definition nodes rather than call edges */
+const ELIXIR_DEF_KEYWORDS = new Set([
+  "defmodule",
+  "def",
+  "defp",
+  "defmacro",
+  "defmacrop",
+  "defstruct",
+  "defprotocol",
+  "defimpl",
+  "defguard",
+  "defguardp",
+  "defdelegate",
+]);
+
+/**
+ * Classify an Elixir call node and extract its semantic payload.
+ *
+ * Import keywords (alias/import/require/use) are excluded by #not-eq? in
+ * the tree-sitter queries and handled by dedicated @import/@heritage captures,
+ * so this function only needs to filter definition keywords.
+ */
+export function routeElixirCall(
+  calledName: string,
+  _callNode: any,
+): ElixirCallRouting {
+  if (ELIXIR_DEF_KEYWORDS.has(calledName)) return SKIP_RESULT;
   return CALL_RESULT;
 }

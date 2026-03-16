@@ -1,5 +1,5 @@
 import type { SyntaxNode } from './utils.js';
-import { FUNCTION_NODE_TYPES, extractFunctionName, CLASS_CONTAINER_TYPES, isBuiltInOrNoise } from './utils.js';
+import { FUNCTION_NODE_TYPES, extractFunctionName, CLASS_CONTAINER_TYPES, isBuiltInOrNoise, isElixirFunctionDef } from './utils.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
 import { typeConfigs, TYPED_PARAMETER_TYPES } from './type-extractors/index.js';
 import type { ClassNameLookup, ReturnTypeLookup, ForLoopExtractorContext, PendingAssignment } from './type-extractors/types.js';
@@ -84,7 +84,13 @@ const findNarrowingBranchScope = (node: SyntaxNode): SyntaxNode | undefined => {
 };
 
 /** Bare nullable keywords that fastStripNullable must reject. */
-const FAST_NULLABLE_KEYWORDS = new Set(['null', 'undefined', 'void', 'None', 'nil']);
+const FAST_NULLABLE_KEYWORDS = new Set([
+  'null',
+  'undefined',
+  'void',
+  'None',
+  'nil',
+]);
 
 /**
  * Fast-path nullable check: 90%+ of type names are simple identifiers (e.g. "User")
@@ -93,7 +99,7 @@ const FAST_NULLABLE_KEYWORDS = new Set(['null', 'undefined', 'void', 'None', 'ni
  */
 const fastStripNullable = (typeName: string): string | undefined => {
   if (FAST_NULLABLE_KEYWORDS.has(typeName)) return undefined;
-  return (typeName.indexOf('|') === -1 && typeName.indexOf('?') === -1)
+  return typeName.indexOf('|') === -1 && typeName.indexOf('?') === -1
     ? typeName
     : stripNullable(typeName);
 };
@@ -106,7 +112,12 @@ const lookupInEnv = (
   patternOverrides?: PatternOverrides,
 ): string | undefined => {
   // Self/this receiver: resolve to enclosing class name via AST walk
-  if (varName === 'self' || varName === 'this' || varName === '$this') {
+  if (
+    varName === 'self' ||
+    varName === 'this' ||
+    varName === '$this' ||
+    varName === '__MODULE__'
+  ) {
     return findEnclosingClassName(callNode);
   }
 
@@ -148,7 +159,6 @@ const lookupInEnv = (
   return raw ? fastStripNullable(raw) : undefined;
 };
 
-
 /**
  * Walk up the AST from a node to find the enclosing class/module name.
  * Used to resolve `self`/`this` receivers to their containing type.
@@ -156,9 +166,18 @@ const lookupInEnv = (
 const findEnclosingClassName = (node: SyntaxNode): string | undefined => {
   let current = node.parent;
   while (current) {
+    // Elixir: defmodule is a call node with target "defmodule"
+    if (current.type === 'call') {
+      const target = current.childForFieldName('target');
+      if (target?.type === 'identifier' && target.text === 'defmodule') {
+        const args = current.children?.find((c: any) => c.type === 'arguments');
+        const aliasNode = args?.children?.find((c: any) => c.type === 'alias');
+        if (aliasNode) return aliasNode.text;
+      }
+    }
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
-      const nameNode = current.childForFieldName('name')
-        ?? findTypeIdentifierChild(current);
+      const nameNode =
+        current.childForFieldName('name') ?? findTypeIdentifierChild(current);
       if (nameNode) return nameNode.text;
     }
     current = current.parent;
@@ -209,14 +228,17 @@ const findEnclosingParentClassName = (node: SyntaxNode): string | undefined => {
 };
 
 /** Extract the parent/superclass name from a class declaration AST node. */
-const extractParentClassFromNode = (classNode: SyntaxNode): string | undefined => {
+const extractParentClassFromNode = (
+  classNode: SyntaxNode,
+): string | undefined => {
   // 1. Named fields: Java (superclass), Ruby (superclass), Python (superclasses)
   const superclassNode = classNode.childForFieldName('superclass');
   if (superclassNode) {
     // Java: superclass > type_identifier or generic_type, Ruby: superclass > constant
-    const inner = superclassNode.childForFieldName('type')
-      ?? superclassNode.firstNamedChild
-      ?? superclassNode;
+    const inner =
+      superclassNode.childForFieldName('type') ??
+      superclassNode.firstNamedChild ??
+      superclassNode;
     return extractSimpleTypeName(inner) ?? inner.text;
   }
 
@@ -240,10 +262,14 @@ const extractParentClassFromNode = (classNode: SyntaxNode): string | undefined =
           const clause = child.child(j);
           if (clause?.type === 'extends_clause') {
             const typeNode = clause.firstNamedChild;
-            if (typeNode) return extractSimpleTypeName(typeNode) ?? typeNode.text;
+            if (typeNode)
+              return extractSimpleTypeName(typeNode) ?? typeNode.text;
           }
           // JS: direct identifier child (no extends_clause wrapper)
-          if (clause?.type === 'identifier' || clause?.type === 'type_identifier') {
+          if (
+            clause?.type === 'identifier' ||
+            clause?.type === 'type_identifier'
+          ) {
             return clause.text;
           }
         }
@@ -256,7 +282,8 @@ const extractParentClassFromNode = (classNode: SyntaxNode): string | undefined =
         if (first) {
           // generic_name wraps the identifier: BaseClass<T>
           if (first.type === 'generic_name') {
-            const inner = first.childForFieldName('name') ?? first.firstNamedChild;
+            const inner =
+              first.childForFieldName('name') ?? first.firstNamedChild;
             if (inner) return inner.text;
           }
           return first.text;
@@ -300,7 +327,8 @@ const extractParentClassFromNode = (classNode: SyntaxNode): string | undefined =
 
       // Swift: inheritance_specifier > user_type > type_identifier
       case 'inheritance_specifier': {
-        const userType = child.childForFieldName('inherits_from') ?? child.firstNamedChild;
+        const userType =
+          child.childForFieldName('inherits_from') ?? child.firstNamedChild;
         if (userType?.type === 'user_type') {
           const typeId = userType.firstNamedChild;
           if (typeId) return typeId.text;
@@ -321,6 +349,8 @@ const findEnclosingScopeKey = (node: SyntaxNode): string | undefined => {
       const { funcName } = extractFunctionName(current);
       if (funcName) return `${funcName}@${current.startIndex}`;
     }
+    const elixirName = isElixirFunctionDef(current);
+    if (elixirName) return `${elixirName}@${current.startIndex}`;
     current = current.parent;
   }
   return undefined;
@@ -347,9 +377,14 @@ const createClassNameLookup = (
       if (localNames.has(name)) return true;
       const cached = memo.get(name);
       if (cached !== undefined) return cached;
-      const result = symbolTable.lookupFuzzy(name).some(def =>
-        def.type === 'Class' || def.type === 'Enum' || def.type === 'Struct',
-      );
+      const result = symbolTable
+        .lookupFuzzy(name)
+        .some(
+          (def) =>
+            def.type === 'Class' ||
+            def.type === 'Enum' ||
+            def.type === 'Struct',
+        );
       memo.set(name, result);
       return result;
     },
@@ -375,15 +410,25 @@ const createClassNameLookup = (
 const SKIP_SUBTREE_TYPES = new Set([
   // Plain string literals (NOT template_string — it contains interpolated expressions
   // that can hold arrow functions with typed parameters, e.g. `${(x: T) => x}`)
-  'string',              'string_literal',
-  'string_content',      'string_fragment',      'heredoc_body',
+  'string',
+  'string_literal',
+  'string_content',
+  'string_fragment',
+  'heredoc_body',
   // Comments
-  'comment',             'line_comment',         'block_comment',
+  'comment',
+  'line_comment',
+  'block_comment',
   // Numeric/boolean/null literals
-  'number',              'integer_literal',      'float_literal',
-  'true',                'false',                'null',
+  'number',
+  'integer_literal',
+  'float_literal',
+  'true',
+  'false',
+  'null',
   // Regex
-  'regex',               'regex_pattern',
+  'regex',
+  'regex_pattern',
 ]);
 
 const CLASS_LIKE_TYPES = new Set(['Class', 'Struct', 'Interface']);
@@ -615,7 +660,7 @@ export const buildTypeEnv = (
       const callables = symbolTable.lookupFuzzyCallable(callee);
       if (callables.length !== 1) return undefined;
       return callables[0].returnType;
-    }
+    },
   };
 
   // Pre-compute combined set of node types that need extractTypeBinding.
@@ -651,7 +696,11 @@ export const buildTypeEnv = (
    * retrieve generic type arguments from the original declaration (e.g., extracting T
    * from Result<T, E> for `if let Ok(x) = res`).
    */
-  const extractTypeBinding = (node: SyntaxNode, scopeEnv: Map<string, string>, scope: string): void => {
+  const extractTypeBinding = (
+    node: SyntaxNode,
+    scopeEnv: Map<string, string>,
+    scope: string,
+  ): void => {
     // This guard eliminates 90%+ of calls before any language dispatch.
     if (TYPED_PARAMETER_TYPES.has(node.type)) {
       // Capture the raw type annotation BEFORE extractParameter.
@@ -677,7 +726,10 @@ export const buildTypeEnv = (
         for (let i = 0; i < node.namedChildCount; i++) {
           const child = node.namedChild(i);
           if (!child) continue;
-          if (!fallbackName && (child.type === 'simple_identifier' || child.type === 'identifier')) {
+          if (
+            !fallbackName &&
+            (child.type === 'simple_identifier' || child.type === 'identifier')
+          ) {
             fallbackName = child;
           }
           if (!fallbackType && (child.type === 'user_type' || child.type === 'type_identifier'
@@ -727,15 +779,19 @@ export const buildTypeEnv = (
         if (!wrapped) {
           for (let i = 0; i < node.namedChildCount; i++) {
             const c = node.namedChild(i);
-            if (c?.type === 'variable_declaration') { wrapped = c; break; }
+            if (c?.type === 'variable_declaration') {
+              wrapped = c;
+              break;
+            }
           }
         }
         if (wrapped) typeNode = wrapped.childForFieldName('type');
       }
       if (typeNode) {
-        const nameNode = node.childForFieldName('name')
-          ?? node.childForFieldName('left')
-          ?? node.childForFieldName('pattern');
+        const nameNode =
+          node.childForFieldName('name') ??
+          node.childForFieldName('left') ??
+          node.childForFieldName('pattern');
         if (nameNode) {
           const varName = extractVarName(nameNode);
           if (varName && !declarationTypeNodes.has(`${scope}\0${varName}`)) {
@@ -750,7 +806,10 @@ export const buildTypeEnv = (
       // is on variable_declarator children, capture via keysBefore/keysAfter diff.
       if (typeNode && keysBefore) {
         for (const varName of scopeEnv.keys()) {
-          if (!keysBefore.has(varName) && !declarationTypeNodes.has(`${scope}\0${varName}`)) {
+          if (
+            !keysBefore.has(varName) &&
+            !declarationTypeNodes.has(`${scope}\0${varName}`)
+          ) {
             declarationTypeNodes.set(`${scope}\0${varName}`, typeNode);
           }
         }
@@ -774,8 +833,8 @@ export const buildTypeEnv = (
     // Currently only C++ uses this locally; other languages rely on the SymbolTable path.
     if (CLASS_CONTAINER_TYPES.has(node.type)) {
       // Most languages use 'name' field; Kotlin uses a type_identifier child instead
-      const nameNode = node.childForFieldName('name')
-        ?? findTypeIdentifierChild(node);
+      const nameNode =
+        node.childForFieldName('name') ?? findTypeIdentifierChild(node);
       if (nameNode) localClassNames.add(nameNode.text);
     }
 
@@ -784,6 +843,9 @@ export const buildTypeEnv = (
     if (FUNCTION_NODE_TYPES.has(node.type)) {
       const { funcName } = extractFunctionName(node);
       if (funcName) scope = `${funcName}@${node.startIndex}`;
+    } else {
+      const elixirName = isElixirFunctionDef(node);
+      if (elixirName) scope = `${elixirName}@${node.startIndex}`;
     }
 
     // Only create scope map and call extractTypeBinding for interesting node types.
@@ -799,11 +861,20 @@ export const buildTypeEnv = (
     // or narrow existing variables within a branch (null-check narrowing).
     // Runs after Tier 0/1 so scopeEnv already contains the source variable's type.
     // Conservative: extractor returns undefined when source type is unknown.
-    if (config.extractPatternBinding && (!config.patternBindingNodeTypes || config.patternBindingNodeTypes.has(node.type))) {
+    if (
+      config.extractPatternBinding &&
+      (!config.patternBindingNodeTypes ||
+        config.patternBindingNodeTypes.has(node.type))
+    ) {
       // Ensure scopeEnv exists for pattern binding reads/writes
       if (!env.has(scope)) env.set(scope, new Map());
       const scopeEnv = env.get(scope)!;
-      const patternBinding = config.extractPatternBinding(node, scopeEnv, declarationTypeNodes, scope);
+      const patternBinding = config.extractPatternBinding(
+        node,
+        scopeEnv,
+        declarationTypeNodes,
+        scope,
+      );
       if (patternBinding) {
         if (patternBinding.narrowingRange) {
           // Explicit narrowing range (null-check narrowing): always store in patternOverrides
@@ -822,9 +893,11 @@ export const buildTypeEnv = (
           // preventing cross-arm contamination (e.g., Kotlin when/is).
           const branchNode = findNarrowingBranchScope(node);
           if (branchNode) {
-            if (!patternOverrides.has(scope)) patternOverrides.set(scope, new Map());
+            if (!patternOverrides.has(scope))
+              patternOverrides.set(scope, new Map());
             const varMap = patternOverrides.get(scope)!;
-            if (!varMap.has(patternBinding.varName)) varMap.set(patternBinding.varName, []);
+            if (!varMap.has(patternBinding.varName))
+              varMap.set(patternBinding.varName, []);
             varMap.get(patternBinding.varName)!.push({
               rangeStart: branchNode.startIndex,
               rangeEnd: branchNode.endIndex,
@@ -911,7 +984,8 @@ export const buildTypeEnv = (
   }
 
   return {
-    lookup: (varName, callNode) => lookupInEnv(env, varName, callNode, patternOverrides),
+    lookup: (varName, callNode) =>
+      lookupInEnv(env, varName, callNode, patternOverrides),
     constructorBindings: bindings,
     env,
   };
@@ -932,5 +1006,3 @@ export interface ConstructorBinding {
   /** Enclosing class name when callee is a method on a known receiver (e.g. $this) */
   receiverClassName?: string;
 }
-
-

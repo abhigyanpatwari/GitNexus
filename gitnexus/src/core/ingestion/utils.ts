@@ -80,6 +80,8 @@ export const FUNCTION_NODE_TYPES = new Set([
   // Ruby
   'method',           // def foo
   'singleton_method', // def self.foo
+  // Elixir: `call` nodes with def/defp/defmacro/defmacrop target
+  // are handled via isElixirFunctionDef() since `call` is too generic to add here
 ]);
 
 /**
@@ -254,6 +256,14 @@ export const BUILT_IN_NAMES = new Set([
   'any?', 'all?', 'none?', 'count', 'first', 'last',
   'sort_by', 'min_by', 'max_by',
   'group_by', 'partition', 'compact', 'flatten', 'uniq',
+  // Elixir built-ins and Kernel functions
+  'IO', 'Enum', 'Map', 'String', 'List', 'Keyword', 'Tuple',
+  'Agent', 'Task', 'Logger',
+  'raise', 'throw', 'exit', 'spawn', 'send', 'self',
+  'dbg', 'tap', 'then',
+  'is_nil', 'is_map', 'is_list', 'is_binary', 'is_atom', 'is_integer',
+  'length', 'elem', 'hd', 'tl', 'div', 'rem', 'abs', 'max', 'min',
+  'inspect', 'puts',
 ]);
 
 /** Check if a name is a built-in function or common noise that should be filtered out */
@@ -335,6 +345,17 @@ export const findEnclosingClassId = (node: any, filePath: string): string | null
         }
       }
     }
+    // Elixir: defmodule is a call node with target "defmodule"
+    if (current.type === 'call') {
+      const target = current.childForFieldName?.('target');
+      if (target?.type === 'identifier' && target.text === 'defmodule') {
+        const args = current.children?.find((c: any) => c.type === 'arguments');
+        const aliasNode = args?.children?.find((c: any) => c.type === 'alias');
+        if (aliasNode) {
+          return generateId('Module', `${filePath}:${aliasNode.text}`);
+        }
+      }
+    }
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
       // Rust impl_item: for `impl Trait for Struct {}`, pick the type after `for`
       if (current.type === 'impl_item') {
@@ -368,7 +389,39 @@ export const findEnclosingClassId = (node: any, filePath: string): string | null
  * Extract function name and label from a function_definition or similar AST node.
  * Handles C/C++ qualified_identifier (ClassName::MethodName) and other language patterns.
  */
-export const extractFunctionName = (node: SyntaxNode): { funcName: string | null; label: string } => {
+/**
+ * Elixir def keywords that create function/macro definitions.
+ * Used to identify `call` nodes that are actually function definitions.
+ */
+const ELIXIR_FUNCTION_DEF_KEYWORDS = new Set([
+  'def', 'defp', 'defmacro', 'defmacrop', 'defguard', 'defguardp', 'defdelegate',
+]);
+
+/**
+ * Check if a `call` node is an Elixir function definition (def/defp/defmacro/etc.).
+ * Returns the function name if it is, null otherwise.
+ */
+export const isElixirFunctionDef = (node: any): string | null => {
+  if (node.type !== 'call') return null;
+  const target = node.childForFieldName?.('target');
+  if (!target || target.type !== 'identifier') return null;
+  if (!ELIXIR_FUNCTION_DEF_KEYWORDS.has(target.text)) return null;
+
+  // The function name is in the first argument, which is itself a call node.
+  // In tree-sitter-elixir, `arguments` is a named child but NOT a field,
+  // so childForFieldName('arguments') returns null — use children.find instead.
+  const args = node.children?.find((c: any) => c.type === 'arguments');
+  if (!args) return null;
+  const firstArg = args.children?.find((c: any) => c.type === 'call');
+  if (firstArg) {
+    const funcTarget = firstArg.childForFieldName?.('target')
+      ?? firstArg.children?.find((c: any) => c.type === 'identifier');
+    if (funcTarget?.type === 'identifier') return funcTarget.text;
+  }
+  return null;
+};
+
+export const extractFunctionName = (node: any): { funcName: string | null; label: string } => {
   let funcName: string | null = null;
   let label = 'Function';
 
@@ -517,6 +570,12 @@ export const extractFunctionName = (node: SyntaxNode): { funcName: string | null
     }
     funcName = nameNode?.text;
     label = 'Method';
+  } else {
+    // Elixir: call nodes with def/defp/defmacro target are function definitions
+    const elixirName = isElixirFunctionDef(node);
+    if (elixirName) {
+      funcName = elixirName;
+    }
   }
 
   return { funcName, label };
@@ -594,6 +653,8 @@ export const getLanguageFromFilename = (filename: string): SupportedLanguages | 
   }
   // Swift (extensions)
   if (filename.endsWith('.swift')) return SupportedLanguages.Swift;
+  // Elixir
+  if (filename.endsWith('.ex') || filename.endsWith('.exs')) return SupportedLanguages.Elixir;
   return null;
 };
 
@@ -688,6 +749,21 @@ export const extractMethodSignature = (node: SyntaxNode | null | undefined): Met
           isVariadic = true;
           break;
         }
+      }
+    }
+  }
+
+  // Elixir: def/defp/defmacro/... node — parameters are in the inner call's arguments.
+  // Structure: call(target: "def", arguments: (arguments (call(target: "insert", arguments: (arguments ...params...)))))
+  // NOTE: `arguments` is NOT a named field in tree-sitter-elixir — must use children.find().
+  if (parameterCount === 0 && node.type === 'call') {
+    const kw = node.childForFieldName?.('target');
+    if (kw && ELIXIR_FUNCTION_DEF_KEYWORDS.has(kw.text)) {
+      const outerArgs = node.children?.find((c: any) => c.type === 'arguments');
+      const innerCall = outerArgs?.children?.find((c: any) => c.type === 'call');
+      const innerArgs = innerCall?.children?.find((c: any) => c.type === 'arguments');
+      if (innerArgs) {
+        parameterCount = innerArgs.namedChildren.filter((c: any) => c.type !== 'comment').length;
       }
     }
   }
@@ -800,6 +876,16 @@ export const countCallArguments = (callNode: SyntaxNode | null | undefined): num
     count++;
   }
 
+  // Elixir pipe operator: if this call is the right-hand side of a |> binary_operator,
+  // the piped value is an implicit first argument — add 1 to the explicit count.
+  if (callNode.parent?.type === 'binary_operator') {
+    const parent = callNode.parent;
+    const pipeOp = parent.children.find((c: any) => !c.isNamed && c.text === '|>');
+    if (pipeOp && callNode.startIndex > pipeOp.startIndex) {
+      count += 1;
+    }
+  }
+
   return count;
 };
 
@@ -817,6 +903,7 @@ const MEMBER_ACCESS_NODE_TYPES = new Set([
   'selector_expression',         // Go: obj.Method()
   'navigation_suffix',           // Kotlin/Swift: obj.method() — nameNode sits inside navigation_suffix
   'member_binding_expression',   // C#: user?.Method() — null-conditional access
+  'dot',                         // Elixir: Module.func() — nameNode sits inside dot node
 ]);
 
 /**
@@ -910,6 +997,7 @@ const SIMPLE_RECEIVER_TYPES = new Set([
   'self',              // Rust/Python self.method()
   'super',             // TS/JS/Java/Kotlin/Ruby super.method()
   'super_expression',  // Kotlin wraps super in super_expression
+  'alias',             // Elixir: capitalized module names (Repo, MyApp.User)
   'base',              // C# base.Method()
   'parent',            // PHP parent::method()
   'constant',          // Ruby CONSTANT.method() (uppercase identifiers)
@@ -981,6 +1069,11 @@ export const extractReceiverName = (
         }
       }
     }
+  }
+
+  // Elixir dot node: (dot left: (alias "Module") right: (identifier "func"))
+  if (!receiver && parent.type === 'dot') {
+    receiver = parent.childForFieldName('left');
   }
 
   if (!receiver) return undefined;

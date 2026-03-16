@@ -23,5 +23,7 @@ export { resolveRubyImport } from './ruby.js';
 
 export { resolvePythonImport } from './python.js';
 
+export { resolveElixirImport, resolveElixirImports } from './elixir.js';
+
 export { resolveImportPath, RESOLVE_CACHE_CAP } from './standard.js';
 export type { TsconfigPaths } from './standard.js';

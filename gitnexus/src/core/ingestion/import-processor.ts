@@ -32,6 +32,7 @@ import {
   resolveRustImport,
   resolveRubyImport,
   resolvePythonImport,
+  resolveElixirImports,
 } from './resolvers/index.js';
 import { callRouters } from './call-routing.js';
 import type { ResolutionContext } from './resolution-context.js';
@@ -232,6 +233,13 @@ function resolveLanguageImport(
   if (language === SupportedLanguages.Ruby) {
     const resolved = resolveRubyImport(rawImportPath, normalizedFileList, allFileList, index);
     return resolved ? { kind: 'files', files: [resolved] } : null;
+  }
+
+  // Elixir: alias / import / require / use (module dot paths)
+  // resolveElixirImports handles multi-alias expansion (MyApp.{User, Admin} → both files)
+  if (language === SupportedLanguages.Elixir) {
+    const resolved = resolveElixirImports(rawImportPath, normalizedFileList, allFileList, index);
+    return resolved.length > 0 ? { kind: 'files', files: resolved } : null;
   }
 
   // Rust: expand top-level grouped imports: use {crate::a, crate::b}

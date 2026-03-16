@@ -205,6 +205,31 @@ const swiftExportChecker: ExportChecker = (node, _name) => {
   return false;
 };
 
+/**
+ * Elixir: `def`/`defmacro`/`defguard`/`defdelegate`/`defmodule`/`defstruct`/`defprotocol`/`defimpl` = public.
+ * `defp`/`defmacrop`/`defguardp` = private.
+ * Walk up from the name node to find the enclosing `call` node whose target
+ * identifier tells us if it's a public or private definition.
+ */
+const elixirExportChecker: ExportChecker = (node, _name) => {
+  let current: SyntaxNode | null = node;
+  while (current) {
+    if (current.type === 'call') {
+      const target = current.childForFieldName?.('target');
+      if (target?.type === 'identifier') {
+        const text = target.text;
+        if (text === 'defp' || text === 'defmacrop' || text === 'defguardp') return false;
+        if (text === 'def' || text === 'defmacro' || text === 'defguard' ||
+            text === 'defdelegate' || text === 'defmodule' || text === 'defstruct' ||
+            text === 'defprotocol' || text === 'defimpl') return true;
+      }
+    }
+    current = current.parent;
+  }
+  // Top-level module definitions are public by default
+  return true;
+};
+
 // ============================================================================
 // Exhaustive dispatch table — satisfies enforces all SupportedLanguages are covered
 // ============================================================================
@@ -223,6 +248,7 @@ const exportCheckers = {
   [SupportedLanguages.PHP]: phpExportChecker,
   [SupportedLanguages.Swift]: swiftExportChecker,
   [SupportedLanguages.Ruby]: (_node, _name) => true,
+  [SupportedLanguages.Elixir]: elixirExportChecker,
 } satisfies Record<SupportedLanguages, ExportChecker>;
 
 // ============================================================================
