@@ -1,11 +1,11 @@
 {
   "name": "gitnexus",
   "description": "Code intelligence powered by a knowledge graph. Provides execution flow tracing, blast radius analysis, and augmented search across your codebase.",
-  "version": "1.3.3",
+  "version": "1.3.6",
   "author": {
     "name": "GitNexus"
   },
-  "homepage": "https://github.com/nicosxt/gitnexus",
-  "repository": "https://github.com/nicosxt/gitnexus",
+  "homepage": "https://github.com/abhigyanpatwari/GitNexus",
+  "repository": "https://github.com/abhigyanpatwari/GitNexus",
   "keywords": ["code-intelligence", "knowledge-graph", "mcp", "static-analysis"]
 }

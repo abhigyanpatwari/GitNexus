@@ -10,6 +10,12 @@ on:
   pull_request_review:
     types: [submitted]
 
+# Serialize per-PR so concurrent @claude comments don't race on the
+# temporary fork branch push/delete.
+concurrency:
+  group: claude-code-${{ github.event.issue.number || github.event.pull_request.number || github.event.issue.id }}
+  cancel-in-progress: false
+
 jobs:
   claude:
     if: |
@@ -18,21 +24,80 @@ jobs:
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
-      contents: read
-      pull-requests: read
-      issues: read
+      contents: write       # needed to create fork branch ref via API
+      pull-requests: write
+      issues: write
       id-token: write
-      actions: read # Required for Claude to read CI results on PRs
+      actions: read         # required for Claude to read CI results on PRs
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      # For PR-related triggers, resolve fork context so we can create a
+      # temporary branch ref (claude-code-action fetches by branch name).
+      - name: Resolve PR context
+        id: pr
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
+          script: |
+            // Determine if this event is PR-related
+            let prNumber = null;
+            if (context.eventName === 'issue_comment' && context.payload.issue.pull_request) {
+              prNumber = context.payload.issue.number;
+            } else if (context.eventName === 'pull_request_review_comment') {
+              prNumber = context.payload.pull_request.number;
+            } else if (context.eventName === 'pull_request_review') {
+              prNumber = context.payload.pull_request.number;
+            }
+
+            if (!prNumber) {
+              core.setOutput('is_pr', 'false');
+              core.setOutput('is_fork', 'false');
+              return;
+            }
+
+            const resp = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const pr = resp.data;
+            const isFork = pr.head.repo.full_name !== pr.base.repo.full_name;
+
+            core.setOutput('is_pr', 'true');
+            core.setOutput('is_fork', String(isFork));
+            core.setOutput('branch', pr.head.ref);
+            core.setOutput('sha', pr.head.sha);
+
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ steps.pr.outputs.is_fork == 'true' && steps.pr.outputs.sha || '' }}
           fetch-depth: 1
+
+      # claude-code-action fetches branches by name from origin, which fails
+      # for fork PRs. Create a temporary branch ref via the API so the action
+      # can find it. Using the API (not git push) avoids the GITHUB_TOKEN
+      # restriction that blocks pushing commits containing workflow file changes.
+      - name: Create fork branch ref on origin
+        id: push-fork
+        if: steps.pr.outputs.is_fork == 'true'
+        env:
+          FORK_BRANCH: ${{ steps.pr.outputs.branch }}
+          FORK_SHA: ${{ steps.pr.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/git/refs" \
+            --method POST \
+            -f ref="refs/heads/$FORK_BRANCH" \
+            -f sha="$FORK_SHA" \
+          || gh api "repos/${{ github.repository }}/git/refs/heads/$FORK_BRANCH" \
+            --method PATCH \
+            -f sha="$FORK_SHA" \
+            -F force=true
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@9469d113c6afd29550c402740f22d1a97dd1209b # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -40,11 +105,11 @@ jobs:
           additional_permissions: |
             actions: read
 
-          # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
-          # prompt: 'Update the pull request description to include a summary of changes.'
-
-          # Optional: Add claude_args to customize behavior and configuration
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
-          # claude_args: '--allowed-tools Bash(gh pr:*)'
-
+      # Clean up the temporary branch ref we created for fork PRs.
+      # Only delete if the create step actually succeeded.
+      - name: Delete fork branch ref from origin
+        if: always() && steps.push-fork.outcome == 'success'
+        env:
+          FORK_BRANCH: ${{ steps.pr.outputs.branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/${{ github.repository }}/git/refs/heads/$FORK_BRANCH" --method DELETE || true

@@ -1,5 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import os from 'node:os';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 export interface WorkerPool {
   /**
@@ -30,6 +32,13 @@ const SUB_BATCH_TIMEOUT_MS = 30_000;
  * Create a pool of worker threads.
  */
 export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool => {
+  // Validate worker script exists before spawning to prevent uncaught
+  // MODULE_NOT_FOUND crashes in worker threads (e.g. when running from src/ via vitest)
+  const workerPath = fileURLToPath(workerUrl);
+  if (!fs.existsSync(workerPath)) {
+    throw new Error(`Worker script not found: ${workerPath}`);
+  }
+
   const size = poolSize ?? Math.min(8, Math.max(1, os.cpus().length - 1));
   const workers: Worker[] = [];
 

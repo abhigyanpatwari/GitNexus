@@ -1,4 +1,5 @@
 import { execSync } from 'child_process';
+import path from 'path';
 
 // Git utilities for repository detection, commit tracking, and diff analysis
 
@@ -24,9 +25,11 @@ export const getCurrentCommit = (repoPath: string): string => {
  */
 export const getGitRoot = (fromPath: string): string | null => {
   try {
-    return execSync('git rev-parse --show-toplevel', { cwd: fromPath })
+    const raw = execSync('git rev-parse --show-toplevel', { cwd: fromPath })
       .toString()
       .trim();
+    // On Windows, git returns /d/Projects/Foo — path.resolve normalizes to D:\Projects\Foo
+    return path.resolve(raw);
   } catch {
     return null;
   }

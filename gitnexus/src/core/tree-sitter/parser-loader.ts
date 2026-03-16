@@ -9,7 +9,18 @@ import CSharp from 'tree-sitter-c-sharp';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import PHP from 'tree-sitter-php';
+import Ruby from 'tree-sitter-ruby';
+import { createRequire } from 'node:module';
 import { SupportedLanguages } from '../../config/supported-languages.js';
+
+// tree-sitter-swift is an optionalDependency — may not be installed
+const _require = createRequire(import.meta.url);
+let Swift: any = null;
+try { Swift = _require('tree-sitter-swift'); } catch {}
+
+// tree-sitter-kotlin is an optionalDependency — may not be installed
+let Kotlin: any = null;
+try { Kotlin = _require('tree-sitter-kotlin'); } catch {}
 
 let parser: Parser | null = null;
 
@@ -24,8 +35,14 @@ const languageMap: Record<string, any> = {
   [SupportedLanguages.CSharp]: CSharp,
   [SupportedLanguages.Go]: Go,
   [SupportedLanguages.Rust]: Rust,
+  ...(Kotlin ? { [SupportedLanguages.Kotlin]: Kotlin } : {}),
   [SupportedLanguages.PHP]: PHP.php_only,
+  [SupportedLanguages.Ruby]: Ruby,
+  ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
 };
+
+export const isLanguageAvailable = (language: SupportedLanguages): boolean =>
+  language in languageMap;
 
 export const loadParser = async (): Promise<Parser> => {
   if (parser) return parser;

@@ -69,7 +69,9 @@ export async function fetchRepoInfo(baseUrl: string, repoName?: string): Promise
   if (!response.ok) {
     throw new Error(`Server returned ${response.status}: ${response.statusText}`);
   }
-  return response.json();
+  const data = await response.json();
+  // npm gitnexus@1.3.3 returns "path"; git HEAD returns "repoPath"
+  return { ...data, repoPath: data.repoPath ?? data.path };
 }
 
 export async function fetchGraph(

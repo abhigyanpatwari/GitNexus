@@ -27,7 +27,7 @@ export interface RepoMeta {
 export interface IndexedRepo {
   repoPath: string;
   storagePath: string;
-  kuzuPath: string;
+  lbugPath: string;
   metaPath: string;
   meta: RepoMeta;
 }
@@ -62,9 +62,58 @@ export const getStoragePaths = (repoPath: string) => {
   const storagePath = getStoragePath(repoPath);
   return {
     storagePath,
-    kuzuPath: path.join(storagePath, 'kuzu'),
+    lbugPath: path.join(storagePath, 'lbug'),
     metaPath: path.join(storagePath, 'meta.json'),
   };
+};
+
+/**
+ * Check whether a KuzuDB index exists in the given storage path.
+ * Non-destructive — safe to call from status commands.
+ */
+export const hasKuzuIndex = async (storagePath: string): Promise<boolean> => {
+  try {
+    await fs.stat(path.join(storagePath, 'kuzu'));
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Clean up stale KuzuDB files after migration to LadybugDB.
+ *
+ * Returns:
+ *   found        — true if .gitnexus/kuzu existed and was deleted
+ *   needsReindex — true if kuzu existed but lbug does not (re-analyze required)
+ *
+ * Callers own the user-facing messaging; this function only deletes files.
+ */
+export const cleanupOldKuzuFiles = async (
+  storagePath: string,
+): Promise<{ found: boolean; needsReindex: boolean }> => {
+  const oldPath = path.join(storagePath, 'kuzu');
+  const newPath = path.join(storagePath, 'lbug');
+  try {
+    await fs.stat(oldPath);
+    // Old kuzu file/dir exists — determine if lbug is already present
+    let needsReindex = false;
+    try {
+      await fs.stat(newPath);
+    } catch {
+      needsReindex = true;
+    }
+    // Delete kuzu database file and its sidecars (.wal, .lock)
+    for (const suffix of ['', '.wal', '.lock']) {
+      try { await fs.unlink(oldPath + suffix); } catch {}
+    }
+    // Also handle the case where kuzu was stored as a directory
+    try { await fs.rm(oldPath, { recursive: true, force: true }); } catch {}
+    return { found: true, needsReindex };
+  } catch {
+    // Old path doesn't exist — nothing to do
+    return { found: false, needsReindex: false };
+  }
 };
 
 /**
@@ -201,9 +250,13 @@ export const registerRepo = async (repoPath: string, meta: RepoMeta): Promise<vo
   const { storagePath } = getStoragePaths(resolved);
 
   const entries = await readRegistry();
-  const existing = entries.findIndex(
-    (e) => path.resolve(e.path) === resolved
-  );
+  const existing = entries.findIndex((e) => {
+    const a = path.resolve(e.path);
+    const b = resolved;
+    return process.platform === 'win32'
+      ? a.toLowerCase() === b.toLowerCase()
+      : a === b;
+  });
 
   const entry: RegistryEntry = {
     name,
@@ -296,5 +349,10 @@ export const loadCLIConfig = async (): Promise<CLIConfig> => {
 export const saveCLIConfig = async (config: CLIConfig): Promise<void> => {
   const dir = getGlobalDir();
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(getGlobalConfigPath(), JSON.stringify(config, null, 2), 'utf-8');
+  const configPath = getGlobalConfigPath();
+  await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+  // Restrict file permissions on Unix (config may contain API keys)
+  if (process.platform !== 'win32') {
+    try { await fs.chmod(configPath, 0o600); } catch { /* best-effort */ }
+  }
 };

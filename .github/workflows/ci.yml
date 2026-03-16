@@ -1,20 +1,99 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   pull_request:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# ── Reusable workflow orchestration ─────────────────────────────────
+# Each concern lives in its own workflow file for maintainability:
+#   ci-quality.yml       — typecheck (tsc --noEmit)
+#   ci-unit-tests.yml    — unit tests with coverage + cross-platform
+#   ci-integration.yml   — integration test matrix (3 OS x 4 groups)
+#
+# Shared setup is DRY via .github/actions/setup-gitnexus composite action.
 
 jobs:
-  typecheck:
+  quality:
+    uses: ./.github/workflows/ci-quality.yml
+    permissions:
+      contents: read
+
+  unit-tests:
+    uses: ./.github/workflows/ci-unit-tests.yml
+    permissions:
+      contents: read
+
+  integration:
+    uses: ./.github/workflows/ci-integration.yml
+    with:
+      collect-coverage: ${{ github.event_name == 'pull_request' }}
+    permissions:
+      contents: read
+
+  # ── Save PR metadata for the reporting workflow ─────────────────
+  # The ci-report.yml workflow (triggered by workflow_run) needs the
+  # PR number and job results to post a comment.  We save them as an
+  # artifact because workflow_run context doesn't reliably carry PR
+  # info for fork PRs.
+  save-pr-meta:
+    name: Save PR Metadata
+    if: always() && github.event_name == 'pull_request'
+    needs: [quality, unit-tests, integration]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Write metadata
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.number }}
+          QUALITY: ${{ needs.quality.result }}
+          UNIT: ${{ needs.unit-tests.result }}
+          INTEG: ${{ needs.integration.result }}
+        run: |
+          mkdir -p pr-meta
+          echo "$PR_NUMBER"  > pr-meta/pr_number
+          echo "$QUALITY"    > pr-meta/quality_result
+          echo "$UNIT"       > pr-meta/unit_result
+          echo "$INTEG"      > pr-meta/integration_result
+
+      - name: Upload PR metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: gitnexus/package-lock.json
-      - run: npm ci
-        working-directory: gitnexus
-      - run: npx tsc --noEmit
-        working-directory: gitnexus
+          name: pr-meta
+          path: pr-meta/
+          retention-days: 1
+
+  # ── Unified CI gate ──────────────────────────────────────────────
+  # Single required check for branch protection.
+  ci-status:
+    name: CI Gate
+    needs: [quality, unit-tests, integration]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check all jobs passed
+        shell: bash
+        env:
+          QUALITY: ${{ needs.quality.result }}
+          UNIT: ${{ needs.unit-tests.result }}
+          INTEG: ${{ needs.integration.result }}
+        run: |
+          echo "Quality:     $QUALITY"
+          echo "Unit Tests:  $UNIT"
+          echo "Integration: $INTEG"
+          if [[ "$QUALITY" != "success" ]] ||
+             [[ "$UNIT" != "success" ]] ||
+             [[ "$INTEG" != "success" ]]; then
+            echo "::error::One or more CI jobs failed"
+            exit 1
+          fi

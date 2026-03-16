@@ -3,7 +3,7 @@
  *
  * Mounts the GitNexus MCP server on Express using StreamableHTTP transport.
  * Each connecting client gets its own stateful session; the LocalBackend
- * is shared across all sessions (thread-safe — lazy KuzuDB per repo).
+ * is shared across all sessions (thread-safe — lazy LadybugDB per repo).
  *
  * Sessions are cleaned up on explicit close or after SESSION_TTL_MS of inactivity
  * (guards against network drops that never trigger onclose).

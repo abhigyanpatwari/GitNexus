@@ -1,7 +1,7 @@
 /**
  * Eval Server — Lightweight HTTP server for SWE-bench evaluation
  * 
- * Keeps KuzuDB warm in memory so tool calls from the agent are near-instant.
+ * Keeps LadybugDB warm in memory so tool calls from the agent are near-instant.
  * Designed to run inside Docker containers during SWE-bench evaluation.
  * 
  * KEY DESIGN: Returns LLM-friendly text, not raw JSON.
@@ -36,7 +36,7 @@ export interface EvalServerOptions {
 // Convert structured JSON results into compact, LLM-friendly text.
 // Design: minimize tokens, maximize actionability.
 
-function formatQueryResult(result: any): string {
+export function formatQueryResult(result: any): string {
   if (result.error) return `Error: ${result.error}`;
 
   const lines: string[] = [];
@@ -77,7 +77,7 @@ function formatQueryResult(result: any): string {
   return lines.join('\n').trim();
 }
 
-function formatContextResult(result: any): string {
+export function formatContextResult(result: any): string {
   if (result.error) return `Error: ${result.error}`;
 
   if (result.status === 'ambiguous') {
@@ -141,7 +141,7 @@ function formatContextResult(result: any): string {
   return lines.join('\n').trim();
 }
 
-function formatImpactResult(result: any): string {
+export function formatImpactResult(result: any): string {
   if (result.error) return `Error: ${result.error}`;
 
   const target = result.target;
@@ -181,7 +181,7 @@ function formatImpactResult(result: any): string {
   return lines.join('\n').trim();
 }
 
-function formatCypherResult(result: any): string {
+export function formatCypherResult(result: any): string {
   if (result.error) return `Error: ${result.error}`;
 
   if (Array.isArray(result)) {
@@ -202,7 +202,7 @@ function formatCypherResult(result: any): string {
   return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
 }
 
-function formatDetectChangesResult(result: any): string {
+export function formatDetectChangesResult(result: any): string {
   if (result.error) return `Error: ${result.error}`;
 
   const summary = result.summary || {};
@@ -238,7 +238,7 @@ function formatDetectChangesResult(result: any): string {
   return lines.join('\n').trim();
 }
 
-function formatListReposResult(result: any): string {
+export function formatListReposResult(result: any): string {
   if (!Array.isArray(result) || result.length === 0) {
     return 'No indexed repositories.';
   }
@@ -420,10 +420,20 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
   process.on('SIGTERM', shutdown);
 }
 
+export const MAX_BODY_SIZE = 1024 * 1024; // 1MB
+
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    let totalSize = 0;
+    req.on('data', (chunk: Buffer) => {
+      totalSize += chunk.length;
+      if (totalSize > MAX_BODY_SIZE) {
+        req.destroy(new Error('Request body too large (max 1MB)'));
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
     req.on('error', reject);
   });

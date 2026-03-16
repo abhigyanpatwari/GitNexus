@@ -1,6 +1,6 @@
 {
   "name": "gitnexus",
-  "version": "1.3.3",
+  "version": "1.4.0",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -32,13 +32,20 @@
   "files": [
     "dist",
     "hooks",
+    "scripts",
     "skills",
     "vendor"
   ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/cli/index.ts",
-    "prepare": "npm run build"
+    "test": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "test:all": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "prepare": "npm run build",
+    "postinstall": "node scripts/patch-tree-sitter-swift.cjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.0.0",
@@ -51,8 +58,8 @@
     "graphology": "^0.25.4",
     "graphology-indices": "^0.17.0",
     "graphology-utils": "^2.3.0",
+    "@ladybugdb/core": "^0.15.1",
     "ignore": "^7.0.5",
-    "kuzu": "^0.11.3",
     "lru-cache": "^11.0.0",
     "mnemonist": "^0.39.0",
     "pandemonium": "^2.4.0",
@@ -65,10 +72,14 @@
     "tree-sitter-javascript": "^0.21.0",
     "tree-sitter-php": "^0.23.12",
     "tree-sitter-python": "^0.21.0",
+    "tree-sitter-ruby": "^0.23.1",
     "tree-sitter-rust": "^0.21.0",
     "tree-sitter-typescript": "^0.21.0",
-    "typescript": "^5.4.5",
     "uuid": "^13.0.0"
+  },
+  "optionalDependencies": {
+    "tree-sitter-kotlin": "^0.3.8",
+    "tree-sitter-swift": "^0.6.0"
   },
   "devDependencies": {
     "@types/cli-progress": "^3.11.6",
@@ -76,7 +87,10 @@
     "@types/express": "^4.17.21",
     "@types/node": "^20.0.0",
     "@types/uuid": "^10.0.0",
-    "tsx": "^4.0.0"
+    "@vitest/coverage-v8": "^4.0.18",
+    "tsx": "^4.0.0",
+    "typescript": "^5.4.5",
+    "vitest": "^4.0.18"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -1,0 +1,9 @@
+FROM node:22-bookworm
+WORKDIR /app
+RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+COPY . .
+RUN npm ci --ignore-scripts \
+    && node scripts/patch-tree-sitter-swift.cjs \
+    && (npm rebuild 2>&1 || true) \
+    && cd node_modules/tree-sitter-kotlin && npx --yes node-gyp rebuild 2>&1
+CMD ["npx", "vitest", "run", "test/integration", "--reporter=verbose"]

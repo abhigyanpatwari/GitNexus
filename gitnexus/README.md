@@ -96,7 +96,7 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 5. **Processes** — Traces execution flows from entry points through call chains
 6. **Search** — Builds hybrid search indexes for fast retrieval
 
-The result is a **KuzuDB graph database** stored locally in `.gitnexus/` with full-text search and semantic embeddings.
+The result is a **LadybugDB graph database** stored locally in `.gitnexus/` with full-text search and semantic embeddings.
 
 ## MCP Tools
 
@@ -139,7 +139,8 @@ Your AI agent gets these tools automatically:
 gitnexus setup                    # Configure MCP for your editors (one-time)
 gitnexus analyze [path]           # Index a repository (or update stale index)
 gitnexus analyze --force          # Force full re-index
-gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
+gitnexus analyze --embeddings     # Enable embedding generation (slower, better search)
+gitnexus analyze --verbose        # Log skipped files when parsers are unavailable
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI
 gitnexus list                    # List all indexed repositories
@@ -156,7 +157,27 @@ GitNexus supports indexing multiple repositories. Each `gitnexus analyze` regist
 
 ## Supported Languages
 
-TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust
+TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, Ruby
+
+### Language Feature Matrix
+
+| Language | Imports | Named Bindings | Exports | Heritage | Type Annotations | Constructor Inference | Config | Frameworks | Entry Points |
+|----------|---------|----------------|---------|----------|-----------------|---------------------|--------|------------|-------------|
+| TypeScript | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| JavaScript | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ |
+| Python | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Java | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
+| Kotlin | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
+| C# | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Go | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Rust | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
+| PHP | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Ruby | ✓ | — | ✓ | ✓ | — | ✓ | — | ✓ | ✓ |
+| Swift | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| C | — | — | ✓ | — | ✓ | ✓ | — | ✓ | ✓ |
+| C++ | — | — | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
+
+**Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
 
 ## Agent Skills
 

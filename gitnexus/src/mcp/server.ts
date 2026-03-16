@@ -11,8 +11,9 @@
  * Resources: repos, repo/{name}/context, repo/{name}/clusters, ...
  */
 
+import { createRequire } from 'module';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { CompatibleStdioServerTransport } from './compatible-stdio-transport.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -80,10 +81,12 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
  * Transport-agnostic — caller connects the desired transport.
  */
 export function createMCPServer(backend: LocalBackend): Server {
+  const require = createRequire(import.meta.url);
+  const pkgVersion: string = require('../../package.json').version;
   const server = new Server(
     {
       name: 'gitnexus',
-      version: '1.1.9',
+      version: pkgVersion,
     },
     {
       capabilities: {
@@ -274,19 +277,25 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
   const server = createMCPServer(backend);
 
   // Connect to stdio transport
-  const transport = new StdioServerTransport();
+  const transport = new CompatibleStdioServerTransport();
   await server.connect(transport);
 
-  // Handle graceful shutdown
-  process.on('SIGINT', async () => {
-    await backend.disconnect();
-    await server.close();
+  // Graceful shutdown helper
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try { await backend.disconnect(); } catch {}
+    try { await server.close(); } catch {}
     process.exit(0);
-  });
+  };
 
-  process.on('SIGTERM', async () => {
-    await backend.disconnect();
-    await server.close();
-    process.exit(0);
-  });
+  // Handle graceful shutdown
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+
+  // Handle stdio errors — stdin close means the parent process is gone
+  process.stdin.on('end', shutdown);
+  process.stdin.on('error', () => shutdown());
+  process.stdout.on('error', () => shutdown());
 }

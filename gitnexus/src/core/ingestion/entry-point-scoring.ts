@@ -11,9 +11,10 @@
  */
 
 import { detectFrameworkFromPath } from './framework-detection.js';
+import { SupportedLanguages } from '../../config/supported-languages.js';
 
 // ============================================================================
-// NAME PATTERNS - All 9 supported languages
+// NAME PATTERNS - All 11 supported languages
 // ============================================================================
 
 /**
@@ -38,39 +39,47 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
   ],
   
   // JavaScript/TypeScript
-  'javascript': [
+  [SupportedLanguages.JavaScript]: [
     /^use[A-Z]/,              // React hooks (useEffect, etc.)
   ],
-  'typescript': [
+  [SupportedLanguages.TypeScript]: [
     /^use[A-Z]/,              // React hooks
   ],
-  
+
   // Python
-  'python': [
+  [SupportedLanguages.Python]: [
     /^app$/,                  // Flask/FastAPI app
     /^(get|post|put|delete|patch)_/i,  // REST conventions
     /^api_/,                  // API functions
     /^view_/,                 // Django views
   ],
-  
+
   // Java
-  'java': [
+  [SupportedLanguages.Java]: [
     /^do[A-Z]/,               // doGet, doPost (Servlets)
     /^create[A-Z]/,           // Factory patterns
     /^build[A-Z]/,            // Builder patterns
     /Service$/,               // UserService
   ],
-  
+
   // C#
-  'csharp': [
-    /^(Get|Post|Put|Delete)/,  // ASP.NET conventions
-    /Action$/,                 // MVC actions
-    /^On[A-Z]/,               // Event handlers
-    /Async$/,                 // Async entry points
+  [SupportedLanguages.CSharp]: [
+    /^(Get|Post|Put|Delete|Patch)/,  // ASP.NET action methods
+    /Action$/,                        // MVC actions
+    /^On[A-Z]/,                      // Event handlers / Blazor lifecycle
+    /Async$/,                        // Async entry points
+    /^Configure$/,                   // Startup.Configure
+    /^ConfigureServices$/,           // Startup.ConfigureServices
+    /^Handle$/,                      // MediatR / generic handler
+    /^Execute$/,                     // Command pattern
+    /^Invoke$/,                      // Middleware Invoke
+    /^Map[A-Z]/,                     // Minimal API MapGet, MapPost
+    /Service$/,                      // Service classes
+    /^Seed/,                         // Database seeding
   ],
   
   // Go
-  'go': [
+  [SupportedLanguages.Go]: [
     /Handler$/,               // http.Handler pattern
     /^Serve/,                 // ServeHTTP
     /^New[A-Z]/,              // Constructor pattern (returns new instance)
@@ -78,7 +87,7 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
   ],
   
   // Rust
-  'rust': [
+  [SupportedLanguages.Rust]: [
     /^(get|post|put|delete)_handler$/i,
     /^handle_/,               // handle_request
     /^new$/,                  // Constructor pattern
@@ -86,25 +95,84 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
     /^spawn/,                 // Async spawn
   ],
   
-  // C - explicit main() boost (critical for C programs)
-  'c': [
+  // C - explicit main() boost plus common C entry point conventions
+  [SupportedLanguages.C]: [
     /^main$/,                 // THE entry point
-    /^init_/,                 // Initialization functions
-    /^start_/,                // Start functions
-    /^run_/,                  // Run functions
+    /^init_/,                 // init_server, init_client
+    /_init$/,                 // module_init, server_init
+    /^start_/,                // start_server
+    /_start$/,                // thread_start
+    /^run_/,                  // run_loop
+    /_run$/,                  // event_run
+    /^stop_/,                 // stop_server
+    /_stop$/,                 // service_stop
+    /^open_/,                 // open_connection
+    /_open$/,                 // file_open
+    /^close_/,                // close_connection
+    /_close$/,                // socket_close
+    /^create_/,               // create_session
+    /_create$/,               // object_create
+    /^destroy_/,              // destroy_session
+    /_destroy$/,              // object_destroy
+    /^handle_/,               // handle_request
+    /_handler$/,              // signal_handler
+    /_callback$/,             // event_callback
+    /^cmd_/,                  // tmux: cmd_new_window, cmd_attach_session
+    /^server_/,               // server_start, server_loop
+    /^client_/,               // client_connect
+    /^session_/,              // session_create
+    /^window_/,               // window_resize (tmux)
+    /^key_/,                  // key_press
+    /^input_/,                // input_parse
+    /^output_/,               // output_write
+    /^notify_/,               // notify_client
+    /^control_/,              // control_start
   ],
-  
-  // C++ - same as C plus class patterns
-  'cpp': [
+
+  // C++ - same as C plus OOP/template patterns
+  [SupportedLanguages.CPlusPlus]: [
     /^main$/,                 // THE entry point
     /^init_/,
+    /_init$/,
     /^Create[A-Z]/,           // Factory patterns
+    /^create_/,
     /^Run$/,                  // Run methods
+    /^run$/,
     /^Start$/,                // Start methods
+    /^start$/,
+    /^handle_/,
+    /_handler$/,
+    /_callback$/,
+    /^OnEvent/,               // Event callbacks
+    /^on_/,
+    /::Run$/,                 // Class::Run
+    /::Start$/,               // Class::Start
+    /::Init$/,                // Class::Init
+    /::Execute$/,             // Class::Execute
+  ],
+
+  // Swift / iOS
+  [SupportedLanguages.Swift]: [
+    /^viewDidLoad$/,                  // UIKit lifecycle
+    /^viewWillAppear$/,               // UIKit lifecycle
+    /^viewDidAppear$/,                // UIKit lifecycle
+    /^viewWillDisappear$/,            // UIKit lifecycle
+    /^viewDidDisappear$/,             // UIKit lifecycle
+    /^application\(/,                 // AppDelegate methods
+    /^scene\(/,                       // SceneDelegate methods
+    /^body$/,                         // SwiftUI View.body
+    /Coordinator$/,                   // Coordinator pattern
+    /^sceneDidBecomeActive$/,         // SceneDelegate lifecycle
+    /^sceneWillResignActive$/,        // SceneDelegate lifecycle
+    /^didFinishLaunchingWithOptions$/, // AppDelegate
+    /ViewController$/,                // ViewController classes
+    /^configure[A-Z]/,               // Configuration methods
+    /^setup[A-Z]/,                    // Setup methods
+    /^makeBody$/,                     // SwiftUI ViewModifier
   ],
 
   // PHP / Laravel
-  'php': [
+  [SupportedLanguages.PHP]: [
     /Controller$/,            // UserController (class name convention)
     /^handle$/,               // Job::handle(), Listener::handle()
     /^execute$/,              // Command::execute()
@@ -123,7 +191,22 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
     /^save$/,                 // Repository::save()
     /^delete$/,               // Repository::delete()
   ],
+
+  // Ruby
+  [SupportedLanguages.Ruby]: [
+    /^call$/,                 // Service objects (MyService.call)
+    /^perform$/,              // Background jobs (Sidekiq, ActiveJob)
+    /^execute$/,              // Command pattern
+  ],
 };
+
+/** Pre-computed merged patterns (universal + language-specific) to avoid per-call array allocation. */
+const MERGED_ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {};
+const UNIVERSAL_PATTERNS = ENTRY_POINT_PATTERNS['*'] || [];
+for (const [lang, patterns] of Object.entries(ENTRY_POINT_PATTERNS)) {
+  if (lang === '*') continue;
+  MERGED_ENTRY_POINT_PATTERNS[lang] = [...UNIVERSAL_PATTERNS, ...patterns];
+}
 
 // ============================================================================
 // UTILITY PATTERNS - Functions that should be penalized
@@ -179,7 +262,7 @@ export interface EntryPointScoreResult {
  */
 export function calculateEntryPointScore(
   name: string,
-  language: string,
+  language: SupportedLanguages,
   isExported: boolean,
   callerCount: number,
   calleeCount: number,
@@ -212,9 +295,7 @@ export function calculateEntryPointScore(
     reasons.push('utility-pattern');
   } else {
     // Check positive patterns
-    const universalPatterns = ENTRY_POINT_PATTERNS['*'] || [];
-    const langPatterns = ENTRY_POINT_PATTERNS[language] || [];
-    const allPatterns = [...universalPatterns, ...langPatterns];
+    const allPatterns = MERGED_ENTRY_POINT_PATTERNS[language] || UNIVERSAL_PATTERNS;
     
     if (allPatterns.some(p => p.test(name))) {
       nameMultiplier = 1.5;  // Bonus for matching entry point pattern
@@ -271,14 +352,28 @@ export function isTestFile(filePath: string): boolean {
     p.includes('/src/test/') ||
     // Rust test patterns (inline tests are different, but test files)
     p.includes('/tests/') ||
+    // Swift/iOS test patterns
+    p.endsWith('tests.swift') ||
+    p.endsWith('test.swift') ||
+    p.includes('uitests/') ||
     // C# test patterns
+    p.endsWith('tests.cs') ||
+    p.endsWith('test.cs') ||
     p.includes('.tests/') ||
-    p.includes('tests.cs') ||
+    p.includes('.test/') ||
+    p.includes('.integrationtests/') ||
+    p.includes('.unittests/') ||
+    p.includes('/testproject/') ||
     // PHP/Laravel test patterns
     p.endsWith('test.php') ||
     p.endsWith('spec.php') ||
     p.includes('/tests/feature/') ||
-    p.includes('/tests/unit/')
+    p.includes('/tests/unit/') ||
+    // Ruby test patterns
+    p.endsWith('_spec.rb') ||
+    p.endsWith('_test.rb') ||
+    p.includes('/spec/') ||
+    p.includes('/test/fixtures/')
   );
 }
 

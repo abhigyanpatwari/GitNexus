@@ -5,6 +5,42 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useAppState } from '../hooks/useAppState';
 import { NODE_COLORS } from '../lib/constants';
 
+/** Map file extension to Prism syntax highlighter language identifier */
+const getSyntaxLanguage = (filePath: string | undefined): string => {
+  if (!filePath) return 'text';
+  const ext = filePath.split('.').pop()?.toLowerCase();
+  switch (ext) {
+    case 'js': case 'jsx': case 'mjs': case 'cjs': return 'javascript';
+    case 'ts': case 'tsx': case 'mts': case 'cts': return 'typescript';
+    case 'py': case 'pyw': return 'python';
+    case 'rb': case 'rake': case 'gemspec': return 'ruby';
+    case 'java': return 'java';
+    case 'go': return 'go';
+    case 'rs': return 'rust';
+    case 'c': case 'h': return 'c';
+    case 'cpp': case 'cc': case 'cxx': case 'hpp': case 'hxx': case 'hh': return 'cpp';
+    case 'cs': return 'csharp';
+    case 'php': return 'php';
+    case 'kt': case 'kts': return 'kotlin';
+    case 'swift': return 'swift';
+    case 'json': return 'json';
+    case 'yaml': case 'yml': return 'yaml';
+    case 'md': case 'mdx': return 'markdown';
+    case 'html': case 'htm': case 'erb': return 'markup';
+    case 'css': case 'scss': case 'sass': return 'css';
+    case 'sh': case 'bash': case 'zsh': return 'bash';
+    case 'sql': return 'sql';
+    case 'xml': return 'xml';
+    default: break;
+  }
+  // Handle extensionless Ruby files
+  const basename = filePath.split('/').pop() || '';
+  if (['Rakefile', 'Gemfile', 'Guardfile', 'Vagrantfile', 'Brewfile'].includes(basename)) return 'ruby';
+  if (['Makefile'].includes(basename)) return 'makefile';
+  if (['Dockerfile'].includes(basename)) return 'docker';
+  return 'text';
+};
+
 // Match the code theme used elsewhere in the app
 const customTheme = {
   ...vscDarkPlus,
@@ -267,12 +303,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
             <div className="flex-1 min-h-0 overflow-auto scrollbar-thin">
               {selectedFileContent ? (
                 <SyntaxHighlighter
-                  language={
-                    selectedFilePath?.endsWith('.py') ? 'python' :
-                    selectedFilePath?.endsWith('.js') || selectedFilePath?.endsWith('.jsx') ? 'javascript' :
-                    selectedFilePath?.endsWith('.ts') || selectedFilePath?.endsWith('.tsx') ? 'typescript' :
-                    'text'
-                  }
+                  language={getSyntaxLanguage(selectedFilePath)}
                   style={customTheme as any}
                   showLineNumbers
                   startingLineNumber={1}
@@ -339,11 +370,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
           const hasRange = typeof ref.startLine === 'number';
           const startDisplay = hasRange ? (ref.startLine ?? 0) + 1 : undefined;
           const endDisplay = hasRange ? (ref.endLine ?? ref.startLine ?? 0) + 1 : undefined;
-          const language =
-            ref.filePath.endsWith('.py') ? 'python' :
-            ref.filePath.endsWith('.js') || ref.filePath.endsWith('.jsx') ? 'javascript' :
-            ref.filePath.endsWith('.ts') || ref.filePath.endsWith('.tsx') ? 'typescript' :
-            'text';
+          const language = getSyntaxLanguage(ref.filePath);
 
           const isGlowing = glowRefId === ref.id;
 

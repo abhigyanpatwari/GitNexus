@@ -1,8 +1,10 @@
 /**
  * Framework Detection
  * 
- * Detects frameworks from file path patterns and provides entry point multipliers.
- * This enables framework-aware entry point scoring.
+ * Detects frameworks from:
+ * 1) file path patterns
+ * 2) AST definition text (decorators/annotations/attributes)
+ * and provides entry point multipliers for process scoring.
  * 
  * DESIGN: Returns null for unknown frameworks, which causes a 1.0 multiplier
  * (no bonus, no penalty) - same behavior as before this feature.
@@ -127,6 +129,49 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
     return { framework: 'java-service', entryPointMultiplier: 1.8, reason: 'java-service' };
   }
   
+  // ========== KOTLIN FRAMEWORKS ==========
+
+  // Spring Boot Kotlin controllers
+  if ((p.includes('/controller/') || p.includes('/controllers/')) && p.endsWith('.kt')) {
+    return { framework: 'spring-kotlin', entryPointMultiplier: 3.0, reason: 'spring-kotlin-controller' };
+  }
+
+  // Spring Boot - files ending in Controller.kt
+  if (p.endsWith('controller.kt')) {
+    return { framework: 'spring-kotlin', entryPointMultiplier: 3.0, reason: 'spring-kotlin-controller-file' };
+  }
+
+  // Ktor routes
+  if (p.includes('/routes/') && p.endsWith('.kt')) {
+    return { framework: 'ktor', entryPointMultiplier: 2.5, reason: 'ktor-routes' };
+  }
+
+  // Ktor plugins folder or Routing.kt files
+  if (p.includes('/plugins/') && p.endsWith('.kt')) {
+    return { framework: 'ktor', entryPointMultiplier: 2.0, reason: 'ktor-plugin' };
+  }
+  if (p.endsWith('routing.kt') || p.endsWith('routes.kt')) {
+    return { framework: 'ktor', entryPointMultiplier: 2.5, reason: 'ktor-routing-file' };
+  }
+
+  // Android Activities, Fragments
+  if ((p.includes('/activity/') || p.includes('/ui/')) && p.endsWith('.kt')) {
+    return { framework: 'android-kotlin', entryPointMultiplier: 2.5, reason: 'android-ui' };
+  }
+  if (p.endsWith('activity.kt') || p.endsWith('fragment.kt')) {
+    return { framework: 'android-kotlin', entryPointMultiplier: 2.5, reason: 'android-component' };
+  }
+
+  // Kotlin main entry point
+  if (p.endsWith('/main.kt')) {
+    return { framework: 'kotlin', entryPointMultiplier: 3.0, reason: 'kotlin-main' };
+  }
+
+  // Kotlin Application entry point (common naming)
+  if (p.endsWith('/application.kt')) {
+    return { framework: 'kotlin', entryPointMultiplier: 2.5, reason: 'kotlin-application' };
+  }
+
   // ========== C# / .NET FRAMEWORKS ==========
   
   // ASP.NET Controllers
@@ -138,7 +183,35 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
   if (p.endsWith('controller.cs')) {
     return { framework: 'aspnet', entryPointMultiplier: 3.0, reason: 'aspnet-controller-file' };
   }
-  
+
+  // ASP.NET Services
+  if ((p.includes('/services/') || p.includes('/service/')) && p.endsWith('.cs')) {
+    return { framework: 'aspnet', entryPointMultiplier: 1.8, reason: 'aspnet-service' };
+  }
+
+  // ASP.NET Middleware
+  if (p.includes('/middleware/') && p.endsWith('.cs')) {
+    return { framework: 'aspnet', entryPointMultiplier: 2.5, reason: 'aspnet-middleware' };
+  }
+
+  // SignalR Hubs
+  if (p.includes('/hubs/') && p.endsWith('.cs')) {
+    return { framework: 'signalr', entryPointMultiplier: 2.5, reason: 'signalr-hub' };
+  }
+  if (p.endsWith('hub.cs')) {
+    return { framework: 'signalr', entryPointMultiplier: 2.5, reason: 'signalr-hub-file' };
+  }
+
+  // Minimal API / Program.cs / Startup.cs
+  if (p.endsWith('/program.cs') || p.endsWith('/startup.cs')) {
+    return { framework: 'aspnet', entryPointMultiplier: 3.0, reason: 'aspnet-entry' };
+  }
+
+  // Background services / Hosted services
+  if ((p.includes('/backgroundservices/') || p.includes('/hostedservices/')) && p.endsWith('.cs')) {
+    return { framework: 'aspnet', entryPointMultiplier: 2.0, reason: 'aspnet-background-service' };
+  }
+
   // Blazor pages
   if (p.includes('/pages/') && p.endsWith('.razor')) {
     return { framework: 'blazor', entryPointMultiplier: 2.5, reason: 'blazor-page' };
@@ -257,6 +330,65 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
     return { framework: 'laravel', entryPointMultiplier: 1.5, reason: 'laravel-repository' };
   }
 
+  // ========== RUBY ==========
+
+  // Ruby: bin/ or exe/ (CLI entry points)
+  if ((p.includes('/bin/') || p.includes('/exe/')) && p.endsWith('.rb')) {
+    return { framework: 'ruby', entryPointMultiplier: 2.5, reason: 'ruby-executable' };
+  }
+
+  // Ruby: Rakefile or *.rake (task definitions)
+  if (p.endsWith('/rakefile') || p.endsWith('.rake')) {
+    return { framework: 'ruby', entryPointMultiplier: 1.5, reason: 'ruby-rake' };
+  }
+  
+  // ========== SWIFT / iOS ==========
+
+  // iOS App entry points (highest priority)
+  if (p.endsWith('/appdelegate.swift') || p.endsWith('/scenedelegate.swift') || p.endsWith('/app.swift')) {
+    return { framework: 'ios', entryPointMultiplier: 3.0, reason: 'ios-app-entry' };
+  }
+
+  // SwiftUI App entry (@main)
+  if (p.endsWith('app.swift') && p.includes('/sources/')) {
+    return { framework: 'swiftui', entryPointMultiplier: 3.0, reason: 'swiftui-app' };
+  }
+
+  // UIKit ViewControllers (high priority - screen entry points)
+  if ((p.includes('/viewcontrollers/') || p.includes('/controllers/') || p.includes('/screens/')) && p.endsWith('.swift')) {
+    return { framework: 'uikit', entryPointMultiplier: 2.5, reason: 'uikit-viewcontroller' };
+  }
+
+  // ViewController by filename convention
+  if (p.endsWith('viewcontroller.swift') || p.endsWith('vc.swift')) {
+    return { framework: 'uikit', entryPointMultiplier: 2.5, reason: 'uikit-viewcontroller-file' };
+  }
+
+  // Coordinator pattern (navigation entry points)
+  if (p.includes('/coordinators/') && p.endsWith('.swift')) {
+    return { framework: 'ios-coordinator', entryPointMultiplier: 2.5, reason: 'ios-coordinator' };
+  }
+
+  // Coordinator by filename
+  if (p.endsWith('coordinator.swift')) {
+    return { framework: 'ios-coordinator', entryPointMultiplier: 2.5, reason: 'ios-coordinator-file' };
+  }
+
+  // SwiftUI Views (moderate - reusable components)
+  if ((p.includes('/views/') || p.includes('/scenes/')) && p.endsWith('.swift')) {
+    return { framework: 'swiftui', entryPointMultiplier: 1.8, reason: 'swiftui-view' };
+  }
+
+  // Service layer
+  if (p.includes('/services/') && p.endsWith('.swift')) {
+    return { framework: 'ios-service', entryPointMultiplier: 1.8, reason: 'ios-service' };
+  }
+
+  // Router / navigation
+  if (p.includes('/router/') && p.endsWith('.swift')) {
+    return { framework: 'ios-router', entryPointMultiplier: 2.0, reason: 'ios-router' };
+  }
+
   // ========== GENERIC PATTERNS ==========
 
   // Any language: index files in API folders
@@ -272,12 +404,12 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
 }
 
 // ============================================================================
-// FUTURE: AST-BASED PATTERNS (for Phase 3)
+// AST-BASED FRAMEWORK DETECTION
 // ============================================================================
 
 /**
- * Patterns that indicate entry points within code (for future AST-based detection)
- * These would require parsing decorators/annotations in the code itself.
+ * Patterns that indicate framework entry points within code definitions.
+ * These are matched against AST node text (class/method/function declaration text).
  */
 export const FRAMEWORK_AST_PATTERNS = {
   // JavaScript/TypeScript decorators
@@ -293,7 +425,11 @@ export const FRAMEWORK_AST_PATTERNS = {
   'jaxrs': ['@Path', '@GET', '@POST', '@PUT', '@DELETE'],
   
   // C# attributes
-  'aspnet': ['[ApiController]', '[HttpGet]', '[HttpPost]', '[Route]'],
+  'aspnet': ['[ApiController]', '[HttpGet]', '[HttpPost]', '[HttpPut]', '[HttpDelete]',
+             '[Route]', '[Authorize]', '[AllowAnonymous]'],
+  'signalr': ['[HubMethodName]', ': Hub', ': Hub<'],
+  'blazor': ['@page', '[Parameter]', '@inject'],
+  'efcore': ['DbContext', 'DbSet<', 'OnModelCreating'],
   
   // Go patterns (function signatures)
   'go-http': ['http.Handler', 'http.HandlerFunc', 'ServeHTTP'],
@@ -306,4 +442,90 @@ export const FRAMEWORK_AST_PATTERNS = {
   'actix': ['#[get', '#[post', '#[put', '#[delete'],
   'axum': ['Router::new'],
   'rocket': ['#[get', '#[post'],
+
+  // Swift/iOS
+  'uikit': ['viewDidLoad', 'viewWillAppear', 'viewDidAppear', 'UIViewController'],
+  'swiftui': ['@main', 'WindowGroup', 'ContentView', '@StateObject', '@ObservedObject'],
+  'combine': ['sink', 'assign', 'Publisher', 'Subscriber'],
 };
+
+import { SupportedLanguages } from '../../config/supported-languages.js';
+
+interface AstFrameworkPatternConfig {
+  framework: string;
+  entryPointMultiplier: number;
+  reason: string;
+  patterns: string[];
+}
+
+const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE: Record<string, AstFrameworkPatternConfig[]> = {
+  [SupportedLanguages.JavaScript]: [
+    { framework: 'nestjs', entryPointMultiplier: 3.2, reason: 'nestjs-decorator', patterns: FRAMEWORK_AST_PATTERNS.nestjs },
+  ],
+  [SupportedLanguages.TypeScript]: [
+    { framework: 'nestjs', entryPointMultiplier: 3.2, reason: 'nestjs-decorator', patterns: FRAMEWORK_AST_PATTERNS.nestjs },
+  ],
+  [SupportedLanguages.Python]: [
+    { framework: 'fastapi', entryPointMultiplier: 3.0, reason: 'fastapi-decorator', patterns: FRAMEWORK_AST_PATTERNS.fastapi },
+    { framework: 'flask', entryPointMultiplier: 2.8, reason: 'flask-decorator', patterns: FRAMEWORK_AST_PATTERNS.flask },
+  ],
+  [SupportedLanguages.Java]: [
+    { framework: 'spring', entryPointMultiplier: 3.2, reason: 'spring-annotation', patterns: FRAMEWORK_AST_PATTERNS.spring },
+    { framework: 'jaxrs', entryPointMultiplier: 3.0, reason: 'jaxrs-annotation', patterns: FRAMEWORK_AST_PATTERNS.jaxrs },
+  ],
+  [SupportedLanguages.Kotlin]: [
+    { framework: 'spring-kotlin', entryPointMultiplier: 3.2, reason: 'spring-kotlin-annotation', patterns: FRAMEWORK_AST_PATTERNS.spring },
+    { framework: 'jaxrs', entryPointMultiplier: 3.0, reason: 'jaxrs-annotation', patterns: FRAMEWORK_AST_PATTERNS.jaxrs },
+    { framework: 'ktor', entryPointMultiplier: 2.8, reason: 'ktor-routing', patterns: ['routing', 'embeddedServer', 'Application.module'] },
+    { framework: 'android-kotlin', entryPointMultiplier: 2.5, reason: 'android-annotation', patterns: ['@AndroidEntryPoint', 'AppCompatActivity', 'Fragment('] },
+  ],
+  [SupportedLanguages.CSharp]: [
+    { framework: 'aspnet', entryPointMultiplier: 3.2, reason: 'aspnet-attribute', patterns: FRAMEWORK_AST_PATTERNS.aspnet },
+    { framework: 'signalr', entryPointMultiplier: 2.8, reason: 'signalr-attribute', patterns: FRAMEWORK_AST_PATTERNS.signalr },
+    { framework: 'blazor', entryPointMultiplier: 2.5, reason: 'blazor-attribute', patterns: FRAMEWORK_AST_PATTERNS.blazor },
+    { framework: 'efcore', entryPointMultiplier: 2.0, reason: 'efcore-pattern', patterns: FRAMEWORK_AST_PATTERNS.efcore },
+  ],
+  [SupportedLanguages.PHP]: [
+    { framework: 'laravel', entryPointMultiplier: 3.0, reason: 'php-route-attribute', patterns: FRAMEWORK_AST_PATTERNS.laravel },
+  ],
+};
+
+/** Pre-lowercased patterns for O(1) pattern matching at runtime */
+const AST_PATTERNS_LOWERED: Record<string, Array<{ framework: string; entryPointMultiplier: number; reason: string; patterns: string[] }>> =
+  Object.fromEntries(
+    Object.entries(AST_FRAMEWORK_PATTERNS_BY_LANGUAGE).map(([lang, cfgs]) => [
+      lang,
+      cfgs.map(cfg => ({ ...cfg, patterns: cfg.patterns.map(p => p.toLowerCase()) })),
+    ])
+  );
+
+/**
+ * Detect framework entry points from AST definition text (decorators/annotations/attributes).
+ * Returns null if no known pattern is found.
+ * Note: callers should slice definitionText to ~300 chars since annotations appear at the start.
+ */
+export function detectFrameworkFromAST(
+  language: SupportedLanguages,
+  definitionText: string
+): FrameworkHint | null {
+  if (!language || !definitionText) return null;
+
+  const configs = AST_PATTERNS_LOWERED[language.toLowerCase()];
+  if (!configs || configs.length === 0) return null;
+
+  const normalized = definitionText.toLowerCase();
+
+  for (const cfg of configs) {
+    for (const pattern of cfg.patterns) {
+      if (normalized.includes(pattern)) {
+        return {
+          framework: cfg.framework,
+          entryPointMultiplier: cfg.entryPointMultiplier,
+          reason: cfg.reason,
+        };
+      }
+    }
+  }
+
+  return null;
+}

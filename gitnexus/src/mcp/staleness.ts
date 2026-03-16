@@ -5,7 +5,7 @@
  * Returns a hint for the LLM to call analyze if stale.
  */
 
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import path from 'path';
 
 export interface StalenessInfo {
@@ -20,8 +20,8 @@ export interface StalenessInfo {
 export function checkStaleness(repoPath: string, lastCommit: string): StalenessInfo {
   try {
     // Get count of commits between lastCommit and HEAD
-    const result = execSync(
-      `git rev-list --count ${lastCommit}..HEAD`,
+    const result = execFileSync(
+      'git', ['rev-list', '--count', `${lastCommit}..HEAD`],
       { cwd: repoPath, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
     ).trim();
     

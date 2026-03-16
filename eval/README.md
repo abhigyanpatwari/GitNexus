@@ -148,7 +148,7 @@ Each mode has a `system_{mode}.jinja` + `instance_{mode}.jinja` pair. The agent 
 
 1. Docker container starts with SWE-bench instance (repo at specific commit)
 2. **GitNexus setup**: Node.js + gitnexus installed, `gitnexus analyze` runs (or restores from cache)
-3. **Eval-server starts**: `gitnexus eval-server` daemon (persistent HTTP server, keeps KuzuDB warm)
+3. **Eval-server starts**: `gitnexus eval-server` daemon (persistent HTTP server, keeps LadybugDB warm)
 4. **Standalone tool scripts installed** in `/usr/local/bin/` — works with `subprocess.run` (no `.bashrc` needed)
 5. Agent runs with the configured model + system prompt + GitNexus tools
 6. Agent's patch is extracted as a git diff
@@ -167,7 +167,7 @@ Each tool script in `/usr/local/bin/` is standalone — no sourcing, no env inhe
 ### Eval-server
 
 The eval-server is a lightweight HTTP daemon that:
-- Keeps KuzuDB warm in memory (no cold start per tool call)
+- Keeps LadybugDB warm in memory (no cold start per tool call)
 - Returns LLM-friendly text (not raw JSON — saves tokens)
 - Includes next-step hints to guide tool chaining (query → context → impact → fix)
 - Auto-shuts down after idle timeout

@@ -13,6 +13,7 @@
 import { KnowledgeGraph, GraphNode, GraphRelationship, NodeLabel } from '../graph/types.js';
 import { CommunityMembership } from './community-processor.js';
 import { calculateEntryPointScore, isTestFile } from './entry-point-scoring.js';
+import { SupportedLanguages } from '../../config/supported-languages.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -285,14 +286,21 @@ const findEntryPoints = (
     if (callees.length === 0) continue;
 
     // Calculate entry point score using new scoring system
-    const { score, reasons } = calculateEntryPointScore(
+    const { score: baseScore, reasons } = calculateEntryPointScore(
       node.properties.name,
-      node.properties.language || 'javascript',
+      node.properties.language ?? SupportedLanguages.JavaScript,
       node.properties.isExported ?? false,
       callers.length,
       callees.length,
       filePath  // Pass filePath for framework detection
     );
+
+    let score = baseScore;
+    const astFrameworkMultiplier = node.properties.astFrameworkMultiplier ?? 1.0;
+    if (astFrameworkMultiplier > 1.0) {
+      score *= astFrameworkMultiplier;
+      reasons.push(`framework-ast:${node.properties.astFrameworkReason || 'decorator'}`);
+    }
 
     if (score > 0) {
       entryPointCandidates.push({ id: node.id, score, reasons });
@@ -337,8 +345,7 @@ const traceFromEntryPoint = (
   // BFS with path tracking
   // Each queue item: [currentNodeId, pathSoFar]
   const queue: [string, string[]][] = [[entryId, [entryId]]];
-  const visited = new Set<string>();
-  
+
   while (queue.length > 0 && traces.length < config.maxBranching * 3) {
     const [currentId, path] = queue.shift()!;
     

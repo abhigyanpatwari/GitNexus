@@ -14,7 +14,7 @@ export const EmbeddingStatus = () => {
     startEmbeddings,
     graph,
     viewMode,
-    isBackendMode,
+    serverBaseUrl,
     testArrayParams,
   } = useAppState();
 
@@ -22,7 +22,7 @@ export const EmbeddingStatus = () => {
   const [showFallbackDialog, setShowFallbackDialog] = useState(false);
 
   // Only show when exploring a loaded graph; hide in backend mode (no WASM DB)
-  if (viewMode !== 'exploring' || !graph || isBackendMode) return null;
+  if (viewMode !== 'exploring' || !graph || serverBaseUrl) return null;
 
   const nodeCount = graph.nodes.length;
 
@@ -83,7 +83,7 @@ export const EmbeddingStatus = () => {
             <button
               onClick={handleTestArrayParams}
               className="flex items-center gap-1 px-2 py-1.5 bg-surface border border-border-subtle rounded-lg text-xs text-text-muted hover:bg-hover hover:text-text-secondary transition-all"
-              title="Test if KuzuDB supports array params"
+              title="Test if LadybugDB supports array params"
             >
               <FlaskConical className="w-3 h-3" />
               {testResult || 'Test'}

@@ -2,8 +2,10 @@
 /**
  * GitNexus Claude Code Plugin Hook
  *
- * PreToolUse handler — intercepts Grep/Glob/Bash searches
- * and augments with graph context from the GitNexus index.
+ * PreToolUse  — intercepts Grep/Glob/Bash searches and augments
+ *               with graph context from the GitNexus index.
+ * PostToolUse — detects stale index after git mutations and notifies
+ *               the agent to reindex.
  *
  * NOTE: SessionStart hooks are broken on Windows (Claude Code bug #23576).
  * Session context is injected via CLAUDE.md / skills instead.
@@ -26,19 +28,19 @@ function readInput() {
 }
 
 /**
- * Check if a directory (or ancestor) has a .gitnexus index.
+ * Find the .gitnexus directory by walking up from startDir.
+ * Returns the path to .gitnexus/ or null if not found.
  */
-function findGitNexusIndex(startDir) {
+function findGitNexusDir(startDir) {
   let dir = startDir || process.cwd();
   for (let i = 0; i < 5; i++) {
-    if (fs.existsSync(path.join(dir, '.gitnexus'))) {
-      return true;
-    }
+    const candidate = path.join(dir, '.gitnexus');
+    if (fs.existsSync(candidate)) return candidate;
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  return false;
+  return null;
 }
 
 /**
@@ -83,64 +85,146 @@ function extractPattern(toolName, toolInput) {
   return null;
 }
 
+/**
+ * Spawn a gitnexus CLI command synchronously.
+ * Detects binary on PATH once, then runs exactly once.
+ *
+ * SECURITY: Never use shell: true with user-controlled arguments.
+ * On Windows, invoke gitnexus.cmd directly (no shell needed).
+ */
+function runGitNexusCli(args, cwd, timeout) {
+  const isWin = process.platform === 'win32';
+
+  // Detect whether 'gitnexus' is on PATH (cheap check, no execution)
+  let useDirectBinary = false;
+  try {
+    const which = spawnSync(
+      isWin ? 'where' : 'which', ['gitnexus'],
+      { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+    useDirectBinary = which.status === 0;
+  } catch { /* not on PATH */ }
+
+  if (useDirectBinary) {
+    return spawnSync(
+      isWin ? 'gitnexus.cmd' : 'gitnexus', args,
+      { encoding: 'utf-8', timeout, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+  }
+  // npx fallback needs shell on Windows since npx is a .cmd script
+  return spawnSync(
+    isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...args],
+    { encoding: 'utf-8', timeout: timeout + 5000, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
+  );
+}
+
+/**
+ * Emit a hook response with additional context for the agent.
+ */
+function sendHookResponse(hookEventName, message) {
+  console.log(JSON.stringify({
+    hookSpecificOutput: { hookEventName, additionalContext: message }
+  }));
+}
+
+/**
+ * PreToolUse handler — augment searches with graph context.
+ */
+function handlePreToolUse(input) {
+  const cwd = input.cwd || process.cwd();
+  if (!path.isAbsolute(cwd)) return;
+  if (!findGitNexusDir(cwd)) return;
+
+  const toolName = input.tool_name || '';
+  const toolInput = input.tool_input || {};
+
+  if (toolName !== 'Grep' && toolName !== 'Glob' && toolName !== 'Bash') return;
+
+  const pattern = extractPattern(toolName, toolInput);
+  if (!pattern || pattern.length < 3) return;
+
+  let result = '';
+  try {
+    const child = runGitNexusCli(['augment', '--', pattern], cwd, 7000);
+    if (!child.error && child.status === 0) {
+      result = child.stderr || '';
+    }
+  } catch { /* graceful failure */ }
+
+  if (result && result.trim()) {
+    sendHookResponse('PreToolUse', result.trim());
+  }
+}
+
+/**
+ * PostToolUse handler — detect index staleness after git mutations.
+ *
+ * Instead of spawning a full `gitnexus analyze` synchronously (which blocks
+ * the agent for up to 120s and risks LadybugDB corruption on timeout), we do a
+ * lightweight staleness check: compare `git rev-parse HEAD` against the
+ * lastCommit stored in `.gitnexus/meta.json`. If they differ, notify the
+ * agent so it can decide when to reindex.
+ */
+function handlePostToolUse(input) {
+  const toolName = input.tool_name || '';
+  if (toolName !== 'Bash') return;
+
+  const command = (input.tool_input || {}).command || '';
+  if (!/\bgit\s+(commit|merge|rebase|cherry-pick|pull)(\s|$)/.test(command)) return;
+
+  // Only proceed if the command succeeded
+  const toolOutput = input.tool_output || {};
+  if (toolOutput.exit_code !== undefined && toolOutput.exit_code !== 0) return;
+
+  const cwd = input.cwd || process.cwd();
+  if (!path.isAbsolute(cwd)) return;
+  const gitNexusDir = findGitNexusDir(cwd);
+  if (!gitNexusDir) return;
+
+  // Compare HEAD against last indexed commit — skip if unchanged
+  let currentHead = '';
+  try {
+    const headResult = spawnSync('git', ['rev-parse', 'HEAD'], {
+      encoding: 'utf-8', timeout: 3000, cwd, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    currentHead = (headResult.stdout || '').trim();
+  } catch { return; }
+
+  if (!currentHead) return;
+
+  let lastCommit = '';
+  let hadEmbeddings = false;
+  try {
+    const meta = JSON.parse(fs.readFileSync(path.join(gitNexusDir, 'meta.json'), 'utf-8'));
+    lastCommit = meta.lastCommit || '';
+    hadEmbeddings = (meta.stats && meta.stats.embeddings > 0);
+  } catch { /* no meta — treat as stale */ }
+
+  // If HEAD matches last indexed commit, no reindex needed
+  if (currentHead && currentHead === lastCommit) return;
+
+  const analyzeCmd = `npx gitnexus analyze${hadEmbeddings ? ' --embeddings' : ''}`;
+  sendHookResponse('PostToolUse',
+    `GitNexus index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +
+    `Run \`${analyzeCmd}\` to update the knowledge graph.`
+  );
+}
+
+// Dispatch map for hook events
+const handlers = {
+  PreToolUse: handlePreToolUse,
+  PostToolUse: handlePostToolUse,
+};
+
 function main() {
   try {
     const input = readInput();
-    const hookEvent = input.hook_event_name || '';
-
-    if (hookEvent !== 'PreToolUse') return;
-
-    const cwd = input.cwd || process.cwd();
-    if (!findGitNexusIndex(cwd)) return;
-
-    const toolName = input.tool_name || '';
-    const toolInput = input.tool_input || {};
-
-    if (toolName !== 'Grep' && toolName !== 'Glob' && toolName !== 'Bash') return;
-
-    const pattern = extractPattern(toolName, toolInput);
-    if (!pattern || pattern.length < 3) return;
-
-    // augment CLI writes result to stderr (KuzuDB's native module captures
-    // stdout fd at OS level, making it unusable in subprocess contexts).
-    let result = '';
-
-    // Try direct gitnexus binary first (faster if globally installed)
-    try {
-      const child = spawnSync(
-        'gitnexus',
-        ['augment', pattern],
-        { encoding: 'utf-8', timeout: 8000, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
-      );
-      if (child.status === 0 && child.stderr && child.stderr.trim()) {
-        result = child.stderr;
-      }
-    } catch { /* not on PATH */ }
-
-    // Fallback to npx if direct binary didn't produce output
-    if (!result || !result.trim()) {
-      try {
-        const child = spawnSync(
-          'npx',
-          ['-y', 'gitnexus', 'augment', pattern],
-          { encoding: 'utf-8', timeout: 15000, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
-        );
-        if (child.status === 0 && child.stderr && child.stderr.trim()) {
-          result = child.stderr;
-        }
-      } catch { /* graceful failure */ }
+    const handler = handlers[input.hook_event_name || ''];
+    if (handler) handler(input);
+  } catch (err) {
+    if (process.env.GITNEXUS_DEBUG) {
+      console.error('GitNexus hook error:', (err.message || '').slice(0, 200));
     }
-
-    if (result && result.trim()) {
-      console.log(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          additionalContext: result.trim()
-        }
-      }));
-    }
-  } catch {
-    // Graceful failure
   }
 }
 
