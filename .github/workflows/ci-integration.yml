@@ -24,8 +24,8 @@ jobs:
   #                process.exit(). Running each file in its own process lets
   #                the OS reclaim all resources cleanly.
   #   pipeline   — 12 files: ingestion pipeline + csv + 9 resolver tests
-  #   e2e        — 2 files: child-process only (spawnSync), no in-process lbug
-  #   standalone — 5 files: pure logic, no lbug, no child processes
+  #   e2e        — 4 files: child-process only (spawnSync), no in-process lbug
+  #   standalone — 4 files: pure logic, no lbug, no child processes
   test-matrix:
     name: integration (${{ matrix.os }} / ${{ matrix.test-group }})
     strategy:
@@ -58,13 +58,13 @@ jobs:
               test/integration/cli-e2e.test.ts
               test/integration/hooks-e2e.test.ts
               test/integration/skills-e2e.test.ts
+              test/integration/ignore-and-skip-e2e.test.ts
           - test-group: standalone
             test-glob: >-
               test/integration/filesystem-walker.test.ts
               test/integration/enrichment.test.ts
               test/integration/tree-sitter-languages.test.ts
               test/integration/worker-pool.test.ts
-              test/integration/ignore-and-skip-e2e.test.ts
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
