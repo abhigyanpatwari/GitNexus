@@ -119,8 +119,17 @@ describe('getLanguageFromFilename', () => {
     );
   });
 
+  describe('Scala', () => {
+    it.each(['.scala', '.sc'])(
+      'detects %s files',
+      (ext) => {
+        expect(getLanguageFromFilename(`file${ext}`)).toBe(SupportedLanguages.Scala);
+      }
+    );
+  });
+
   describe('unsupported', () => {
-    it.each(['.scala', '.r', '.lua', '.zig', '.txt', '.md', '.json', '.yaml'])(
+    it.each(['.r', '.lua', '.zig', '.txt', '.md', '.json', '.yaml'])(
       'returns null for %s files',
       (ext) => {
         expect(getLanguageFromFilename(`file${ext}`)).toBeNull();

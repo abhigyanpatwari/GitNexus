@@ -40,6 +40,7 @@ export const callRouters: Record<SupportedLanguages, CallRouter> = {
   [SupportedLanguages.Swift]: noRouting,
   [SupportedLanguages.CPlusPlus]: noRouting,
   [SupportedLanguages.C]: noRouting,
+  [SupportedLanguages.Scala]: noRouting,
   [SupportedLanguages.Ruby]: routeRubyCall,
 };
 

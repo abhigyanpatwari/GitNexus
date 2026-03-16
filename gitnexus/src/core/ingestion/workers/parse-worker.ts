@@ -24,6 +24,10 @@ try { Swift = _require('tree-sitter-swift'); } catch {}
 // tree-sitter-kotlin is an optionalDependency — may not be installed
 let Kotlin: any = null;
 try { Kotlin = _require('tree-sitter-kotlin'); } catch {}
+
+// tree-sitter-scala is an optionalDependency — may not be installed
+let Scala: any = null;
+try { Scala = _require('tree-sitter-scala'); } catch {}
 import {
   getLanguageFromFilename,
   FUNCTION_NODE_TYPES,
@@ -184,6 +188,7 @@ const languageMap: Record<string, any> = {
   [SupportedLanguages.PHP]: PHP.php_only,
   [SupportedLanguages.Ruby]: Ruby,
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
+  ...(Scala ? { [SupportedLanguages.Scala]: Scala } : {}),
 };
 
 /**

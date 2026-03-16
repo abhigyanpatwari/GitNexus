@@ -172,6 +172,38 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
     return { framework: 'kotlin', entryPointMultiplier: 2.5, reason: 'kotlin-application' };
   }
 
+  // ========== SCALA FRAMEWORKS ==========
+
+  // Play Framework controllers
+  if ((p.includes('/controllers/') || p.includes('/controller/')) && p.endsWith('.scala')) {
+    return { framework: 'play', entryPointMultiplier: 3.0, reason: 'play-controller' };
+  }
+
+  // Play Framework controller by filename
+  if (p.endsWith('controller.scala')) {
+    return { framework: 'play', entryPointMultiplier: 3.0, reason: 'play-controller-file' };
+  }
+
+  // Akka actors
+  if (p.includes('/actors/') && p.endsWith('.scala')) {
+    return { framework: 'akka', entryPointMultiplier: 2.5, reason: 'akka-actor' };
+  }
+
+  // http4s routes
+  if (p.includes('/routes/') && p.endsWith('.scala')) {
+    return { framework: 'http4s', entryPointMultiplier: 2.5, reason: 'http4s-routes' };
+  }
+
+  // Scala main entry point
+  if (p.endsWith('/main.scala')) {
+    return { framework: 'scala', entryPointMultiplier: 3.0, reason: 'scala-main' };
+  }
+
+  // Scala Application entry point
+  if (p.endsWith('/application.scala') || p.endsWith('/app.scala')) {
+    return { framework: 'scala', entryPointMultiplier: 2.5, reason: 'scala-application' };
+  }
+
   // ========== C# / .NET FRAMEWORKS ==========
   
   // ASP.NET Controllers
@@ -478,6 +510,11 @@ const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE: Record<string, AstFrameworkPatternConf
     { framework: 'jaxrs', entryPointMultiplier: 3.0, reason: 'jaxrs-annotation', patterns: FRAMEWORK_AST_PATTERNS.jaxrs },
     { framework: 'ktor', entryPointMultiplier: 2.8, reason: 'ktor-routing', patterns: ['routing', 'embeddedServer', 'Application.module'] },
     { framework: 'android-kotlin', entryPointMultiplier: 2.5, reason: 'android-annotation', patterns: ['@AndroidEntryPoint', 'AppCompatActivity', 'Fragment('] },
+  ],
+  [SupportedLanguages.Scala]: [
+    { framework: 'play', entryPointMultiplier: 3.0, reason: 'play-annotation', patterns: ['Action', 'BaseController', 'AbstractController', 'InjectedController'] },
+    { framework: 'akka', entryPointMultiplier: 2.5, reason: 'akka-actor', patterns: ['Actor', 'ActorRef', 'Props', 'receive', 'Behavior'] },
+    { framework: 'http4s', entryPointMultiplier: 2.5, reason: 'http4s-routes', patterns: ['HttpRoutes', 'HttpApp', 'BlazeServerBuilder'] },
   ],
   [SupportedLanguages.CSharp]: [
     { framework: 'aspnet', entryPointMultiplier: 3.2, reason: 'aspnet-attribute', patterns: FRAMEWORK_AST_PATTERNS.aspnet },

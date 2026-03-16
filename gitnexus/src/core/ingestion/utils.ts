@@ -239,6 +239,17 @@ export const BUILT_IN_NAMES = new Set([
   'lock', 'read', 'write', 'try_lock',
   'spawn', 'join', 'sleep',
   'Some', 'None', 'Ok', 'Err',
+  // Scala stdlib
+  'println', 'print', 'require', 'assert',
+  'List', 'Map', 'Set', 'Vector', 'Seq', 'Array', 'Option', 'Some', 'None',
+  'Future', 'Try', 'Success', 'Failure', 'Either', 'Left', 'Right',
+  'Nil', 'Tuple2', 'Tuple3',
+  'map', 'flatMap', 'filter', 'foreach', 'collect', 'fold', 'foldLeft', 'foldRight',
+  'reduce', 'reduceLeft', 'reduceRight', 'exists', 'forall', 'contains',
+  'head', 'tail', 'last', 'init', 'isEmpty', 'nonEmpty', 'size', 'length',
+  'mkString', 'toString', 'toList', 'toMap', 'toSet', 'toSeq', 'toVector', 'toArray',
+  'getOrElse', 'orElse', 'isDefined', 'get',
+  'apply', 'unapply', 'copy', 'hashCode', 'equals',
   // Ruby built-ins and Kernel methods
   'puts', 'p', 'pp', 'raise', 'fail',
   'require', 'require_relative', 'load', 'autoload',
@@ -274,6 +285,9 @@ export const CLASS_CONTAINER_TYPES = new Set([
   // Kotlin
   'object_declaration',
   'companion_object',
+  // Scala
+  'object_definition',
+  'trait_definition',
 ]);
 
 export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
@@ -293,6 +307,8 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   module: 'Module',
   object_declaration: 'Class',
   companion_object: 'Class',
+  object_definition: 'Class',
+  trait_definition: 'Trait',
 };
 
 /** Walk up AST to find enclosing class/struct/interface/impl, return its generateId or null.
@@ -499,6 +515,8 @@ export const getLanguageFromFilename = (filename: string): SupportedLanguages | 
   if (filename.endsWith('.rs')) return SupportedLanguages.Rust;
   // Kotlin
   if (filename.endsWith('.kt') || filename.endsWith('.kts')) return SupportedLanguages.Kotlin;
+  // Scala
+  if (filename.endsWith('.scala') || filename.endsWith('.sc')) return SupportedLanguages.Scala;
   // PHP (all common extensions)
   if (filename.endsWith('.php') || filename.endsWith('.phtml') ||
       filename.endsWith('.php3') || filename.endsWith('.php4') ||

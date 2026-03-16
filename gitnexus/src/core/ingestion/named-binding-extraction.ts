@@ -89,6 +89,9 @@ export function extractNamedBindings(
   if (language === SupportedLanguages.Java) {
     return extractJavaNamedBindings(importNode);
   }
+  if (language === SupportedLanguages.Scala) {
+    return extractScalaNamedBindings(importNode);
+  }
   return undefined;
 }
 
@@ -373,6 +376,74 @@ export function extractJavaNamedBindings(importNode: any): { local: string; expo
   if (className[0] && className[0] === className[0].toLowerCase()) return undefined;
 
   return [{ local: className, exported: className }];
+}
+
+export function extractScalaNamedBindings(importNode: any): { local: string; exported: string }[] | undefined {
+  // import_declaration > import path with optional namespace_selectors { User, Repo => R }
+  if (importNode.type !== 'import_declaration') return undefined;
+
+  const bindings: { local: string; exported: string }[] = [];
+
+  // Look for namespace_selectors child (e.g., import com.example.{User, Repo => R})
+  collectScalaBindings(importNode, bindings);
+
+  if (bindings.length > 0) return bindings;
+
+  // No selectors — single import: import com.example.User
+  // Walk the identifier chain to get the last segment
+  const identifiers: string[] = [];
+  collectScalaIdentifiers(importNode, identifiers);
+  if (identifiers.length > 0) {
+    const lastName = identifiers[identifiers.length - 1];
+    // Skip wildcard imports (ending in _)
+    if (lastName === '_') return undefined;
+    // Skip lowercase last segments (package imports)
+    if (lastName[0] && lastName[0] === lastName[0].toLowerCase()) return undefined;
+    return [{ local: lastName, exported: lastName }];
+  }
+
+  return undefined;
+}
+
+function collectScalaIdentifiers(node: any, result: string[]): void {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child?.type === 'identifier') {
+      result.push(child.text);
+    }
+    if (child?.namedChildCount > 0 && child?.type !== 'namespace_selectors') {
+      collectScalaIdentifiers(child, result);
+    }
+  }
+}
+
+function collectScalaBindings(node: any, bindings: { local: string; exported: string }[]): void {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child?.type === 'namespace_selectors') {
+      for (let j = 0; j < child.childCount; j++) {
+        const selector = child.child(j);
+        if (selector?.type === 'identifier') {
+          // Simple import: {User}
+          bindings.push({ local: selector.text, exported: selector.text });
+        } else if (selector?.type === 'arrow_renamed_identifier' || selector?.type === 'renamed_identifier') {
+          // Aliased import: {Repo => R}
+          const idents: string[] = [];
+          for (let k = 0; k < selector.childCount; k++) {
+            const kid = selector.child(k);
+            if (kid?.type === 'identifier') idents.push(kid.text);
+          }
+          if (idents.length === 2) {
+            bindings.push({ local: idents[1], exported: idents[0] });
+          }
+        }
+      }
+    }
+    // Recurse but don't go into namespace_selectors again
+    if (child?.namedChildCount > 0 && child?.type !== 'namespace_selectors') {
+      collectScalaBindings(child, bindings);
+    }
+  }
 }
 
 function findChild(node: any, type: string): any {

@@ -686,6 +686,67 @@ export const SWIFT_QUERIES = `
   (inheritance_specifier inherits_from: (user_type (type_identifier) @heritage.extends))) @heritage
 `;
 
+// Scala queries - works with tree-sitter-scala v0.24.0
+export const SCALA_QUERIES = `
+; ── Objects (Scala singletons) ────────────────────────────────────────────
+(object_definition
+  name: (identifier) @name) @definition.class
+
+; ── Classes ───────────────────────────────────────────────────────────────
+(class_definition
+  name: (identifier) @name) @definition.class
+
+; ── Traits ────────────────────────────────────────────────────────────────
+(trait_definition
+  name: (identifier) @name) @definition.trait
+
+; ── Functions/Methods ─────────────────────────────────────────────────────
+(function_definition
+  name: (identifier) @name) @definition.function
+
+; ── Val definitions ───────────────────────────────────────────────────────
+(val_definition
+  pattern: (identifier) @name) @definition.property
+
+; ── Imports ───────────────────────────────────────────────────────────────
+(import_declaration
+  (identifier) @import.source) @import
+
+; ── Function calls (direct) ──────────────────────────────────────────────
+(call_expression
+  function: (identifier) @call.name) @call
+
+; ── Method calls (via field_expression: obj.method()) ────────────────────
+(call_expression
+  function: (field_expression
+    field: (identifier) @call.name)) @call
+
+; ── Generic function calls: foo[T](...) ──────────────────────────────────
+(call_expression
+  function: (generic_function
+    function: (identifier) @call.name)) @call
+
+; ── Constructor calls: new Foo() ─────────────────────────────────────────
+(instance_expression
+  (type_identifier) @call.name) @call
+
+; ── Heritage: extends clause ─────────────────────────────────────────────
+(class_definition
+  name: (identifier) @heritage.class
+  (extends_clause
+    (type_identifier) @heritage.extends)) @heritage
+
+(trait_definition
+  name: (identifier) @heritage.class
+  (extends_clause
+    (type_identifier) @heritage.extends)) @heritage
+
+(object_definition
+  name: (identifier) @heritage.class
+  (extends_clause
+    (type_identifier) @heritage.extends)) @heritage
+`;
+
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.TypeScript]: TYPESCRIPT_QUERIES,
   [SupportedLanguages.JavaScript]: JAVASCRIPT_QUERIES,
@@ -700,5 +761,6 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.PHP]: PHP_QUERIES,
   [SupportedLanguages.Kotlin]: KOTLIN_QUERIES,
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
+  [SupportedLanguages.Scala]: SCALA_QUERIES,
 };
  

@@ -8,6 +8,9 @@ import type { SuffixIndex } from './utils.js';
 /** Kotlin file extensions for JVM resolver reuse */
 export const KOTLIN_EXTENSIONS: readonly string[] = ['.kt', '.kts'];
 
+/** Scala file extensions for JVM resolver reuse */
+export const SCALA_EXTENSIONS: readonly string[] = ['.scala', '.sc'];
+
 /**
  * Append .* to a Kotlin import path if the AST has a wildcard_import sibling node.
  * Pure function — returns a new string without mutating the input.

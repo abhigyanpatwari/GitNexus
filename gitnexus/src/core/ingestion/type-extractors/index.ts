@@ -31,6 +31,7 @@ export const typeConfigs = {
   [SupportedLanguages.CPlusPlus]: cCppConfig,
   [SupportedLanguages.PHP]: phpConfig,
   [SupportedLanguages.Ruby]: rubyConfig,
+  [SupportedLanguages.Scala]: kotlinTypeConfig,
 } satisfies Record<SupportedLanguages, LanguageTypeConfig>;
 
 export type {

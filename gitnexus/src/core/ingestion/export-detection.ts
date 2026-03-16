@@ -205,6 +205,28 @@ const swiftExportChecker: ExportChecker = (node, _name) => {
   return false;
 };
 
+/**
+ * Scala: default visibility is public (like Kotlin).
+ * Check for 'private' or 'protected' access modifiers in parent nodes.
+ */
+const scalaExportChecker: ExportChecker = (node, _name) => {
+  let current: SyntaxNode | null = node;
+  while (current) {
+    if (current.parent) {
+      for (let i = 0; i < current.parent.childCount; i++) {
+        const child = current.parent.child(i);
+        if (child?.type === 'modifiers' || child?.type === 'access_modifier') {
+          const text = child.text || '';
+          if (text.includes('private') || text.includes('protected')) return false;
+        }
+      }
+    }
+    current = current.parent;
+  }
+  // No visibility modifier = public (Scala default)
+  return true;
+};
+
 // ============================================================================
 // Exhaustive dispatch table — satisfies enforces all SupportedLanguages are covered
 // ============================================================================
@@ -222,6 +244,7 @@ const exportCheckers = {
   [SupportedLanguages.CPlusPlus]: cCppExportChecker,
   [SupportedLanguages.PHP]: phpExportChecker,
   [SupportedLanguages.Swift]: swiftExportChecker,
+  [SupportedLanguages.Scala]: scalaExportChecker,
   [SupportedLanguages.Ruby]: (_node, _name) => true,
 } satisfies Record<SupportedLanguages, ExportChecker>;
 

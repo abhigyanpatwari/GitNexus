@@ -14,6 +14,8 @@ export const EXTENSIONS = [
   '.java',
   // Kotlin
   '.kt', '.kts',
+  // Scala
+  '.scala', '.sc',
   // C/C++
   '.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.hh',
   // C#
