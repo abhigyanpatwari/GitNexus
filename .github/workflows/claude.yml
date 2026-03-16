@@ -26,15 +26,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write       # needed to push fork branch to origin
-      workflows: write      # needed when fork PR modifies .github/workflows/
+      contents: write       # needed to create fork branch ref via API
       pull-requests: write
       issues: write
       id-token: write
       actions: read         # required for Claude to read CI results on PRs
     steps:
-      # For PR-related triggers, resolve fork context so we can push the
-      # branch to origin (claude-code-action fetches by branch name).
+      # For PR-related triggers, resolve fork context so we can create a
+      # temporary branch ref (claude-code-action fetches by branch name).
       - name: Resolve PR context
         id: pr
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
@@ -76,13 +75,25 @@ jobs:
           fetch-depth: 1
 
       # claude-code-action fetches branches by name from origin, which fails
-      # for fork PRs. Push the fork branch to origin so the action can find it.
-      - name: Push fork branch to origin
+      # for fork PRs. Create a temporary branch ref via the API so the action
+      # can find it. Using the API (not git push) avoids the GITHUB_TOKEN
+      # restriction that blocks pushing commits containing workflow file changes.
+      - name: Create fork branch ref on origin
         id: push-fork
         if: steps.pr.outputs.is_fork == 'true'
         env:
           FORK_BRANCH: ${{ steps.pr.outputs.branch }}
-        run: git push origin HEAD:refs/heads/"$FORK_BRANCH"
+          FORK_SHA: ${{ steps.pr.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/git/refs" \
+            --method POST \
+            -f ref="refs/heads/$FORK_BRANCH" \
+            -f sha="$FORK_SHA" \
+          || gh api "repos/${{ github.repository }}/git/refs/heads/$FORK_BRANCH" \
+            --method PATCH \
+            -f sha="$FORK_SHA" \
+            -F force=true
 
       - name: Run Claude Code
         id: claude
@@ -94,10 +105,11 @@ jobs:
           additional_permissions: |
             actions: read
 
-      # Clean up the temporary branch we pushed for fork PRs.
-      # Only delete if the push step actually succeeded.
-      - name: Delete fork branch from origin
+      # Clean up the temporary branch ref we created for fork PRs.
+      # Only delete if the create step actually succeeded.
+      - name: Delete fork branch ref from origin
         if: always() && steps.push-fork.outcome == 'success'
         env:
           FORK_BRANCH: ${{ steps.pr.outputs.branch }}
-        run: git push origin --delete refs/heads/"$FORK_BRANCH" || true
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/${{ github.repository }}/git/refs/heads/$FORK_BRANCH" --method DELETE || true
