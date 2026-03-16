@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, ReturnTypeExtractor } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, ReturnTypeExtractor, PendingAssignmentExtractor } from './types.js';
 import { extractSimpleTypeName, extractVarName, extractCalleeName } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
@@ -245,6 +245,20 @@ const extractReturnType: ReturnTypeExtractor = (node) => {
   return undefined;
 };
 
+/** PHP: $alias = $user → assignment_expression with variable_name left/right.
+ *  PHP TypeEnv stores variables WITH $ prefix ($user → User), so we keep $ in lhs/rhs. */
+const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
+  if (node.type !== 'assignment_expression') return undefined;
+  const left = node.childForFieldName('left');
+  const right = node.childForFieldName('right');
+  if (!left || !right) return undefined;
+  if (left.type !== 'variable_name' || right.type !== 'variable_name') return undefined;
+  const lhs = left.text;
+  const rhs = right.text;
+  if (!lhs || !rhs || scopeEnv.has(lhs)) return undefined;
+  return { lhs, rhs };
+};
+
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
   extractDeclaration,
@@ -252,4 +266,5 @@ export const typeConfig: LanguageTypeConfig = {
   extractInitializer,
   scanConstructorBinding,
   extractReturnType,
+  extractPendingAssignment,
 };

@@ -99,8 +99,8 @@ const extractJavaForLoopBinding: ForLoopExtractor = (node: SyntaxNode, scopeEnv:
   if (typeName && varName) scopeEnv.set(varName, typeName);
 };
 
-/** Java/Kotlin: var alias = u → variable_declarator with name/value fields */
-const extractJvmPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
+/** Java: var alias = u → local_variable_declaration > variable_declarator with name/value */
+const extractJavaPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (!child || child.type !== 'variable_declarator') continue;
@@ -122,7 +122,7 @@ export const javaTypeConfig: LanguageTypeConfig = {
   scanConstructorBinding: scanJavaConstructorBinding,
   forLoopNodeTypes: JAVA_FOR_LOOP_NODE_TYPES,
   extractForLoopBinding: extractJavaForLoopBinding,
-  extractPendingAssignment: extractJvmPendingAssignment,
+  extractPendingAssignment: extractJavaPendingAssignment,
 };
 
 // ── Kotlin ────────────────────────────────────────────────────────────────
@@ -266,6 +266,32 @@ const extractKotlinForLoopBinding: ForLoopExtractor = (node: SyntaxNode, scopeEn
   if (typeName && varName) scopeEnv.set(varName, typeName);
 };
 
+/** Kotlin: val alias = u → property_declaration with variable_declaration child.
+ *  Kotlin AST is structurally different from Java: no variable_declarator node.
+ *  property_declaration has: binding_pattern_kind("val"), variable_declaration("alias"),
+ *  "=", and the RHS value (simple_identifier "u"). */
+const extractKotlinPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
+  if (node.type !== 'property_declaration') return undefined;
+  // Find the variable name from variable_declaration child
+  const varDecl = node.children.find(c => c.type === 'variable_declaration');
+  if (!varDecl) return undefined;
+  const nameNode = varDecl.firstNamedChild;
+  if (!nameNode || nameNode.type !== 'simple_identifier') return undefined;
+  const lhs = nameNode.text;
+  if (scopeEnv.has(lhs)) return undefined;
+  // Find the RHS: a simple_identifier sibling after the "=" token
+  let foundEq = false;
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (!child) continue;
+    if (child.type === '=' || child.text === '=') { foundEq = true; continue; }
+    if (foundEq && child.type === 'simple_identifier') {
+      return { lhs, rhs: child.text };
+    }
+  }
+  return undefined;
+};
+
 export const kotlinTypeConfig: LanguageTypeConfig = {
   declarationNodeTypes: KOTLIN_DECLARATION_NODE_TYPES,
   forLoopNodeTypes: KOTLIN_FOR_LOOP_NODE_TYPES,
@@ -274,5 +300,5 @@ export const kotlinTypeConfig: LanguageTypeConfig = {
   extractInitializer: extractKotlinInitializer,
   scanConstructorBinding: scanKotlinConstructorBinding,
   extractForLoopBinding: extractKotlinForLoopBinding,
-  extractPendingAssignment: extractJvmPendingAssignment,
+  extractPendingAssignment: extractKotlinPendingAssignment,
 };

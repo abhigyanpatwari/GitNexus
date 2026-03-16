@@ -19,3 +19,13 @@ func processEntities() {
 	rAlias := r
 	rAlias.Save()
 }
+
+func processWithVar() {
+	var u models.User = getUser()
+	var alias = u
+	alias.Save()
+
+	var r models.Repo = getRepo()
+	var rAlias = r
+	rAlias.Save()
+}

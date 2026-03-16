@@ -181,19 +181,34 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   return { varName: leftIds[0].text, calleeName };
 };
 
-/** Go: alias := u → short_var_declaration with left/right expression_lists */
+/** Go: alias := u (short_var_declaration) or var b = u (var_spec) */
 const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
-  if (node.type !== 'short_var_declaration') return undefined;
-  const left = node.childForFieldName('left');
-  const right = node.childForFieldName('right');
-  if (!left || !right) return undefined;
-  const lhsNode = left.type === 'expression_list' ? left.firstNamedChild : left;
-  const rhsNode = right.type === 'expression_list' ? right.firstNamedChild : right;
-  if (!lhsNode || !rhsNode) return undefined;
-  if (lhsNode.type !== 'identifier') return undefined;
-  const lhs = lhsNode.text;
-  if (scopeEnv.has(lhs)) return undefined;
-  if (rhsNode.type === 'identifier') return { lhs, rhs: rhsNode.text };
+  if (node.type === 'short_var_declaration') {
+    const left = node.childForFieldName('left');
+    const right = node.childForFieldName('right');
+    if (!left || !right) return undefined;
+    const lhsNode = left.type === 'expression_list' ? left.firstNamedChild : left;
+    const rhsNode = right.type === 'expression_list' ? right.firstNamedChild : right;
+    if (!lhsNode || !rhsNode) return undefined;
+    if (lhsNode.type !== 'identifier') return undefined;
+    const lhs = lhsNode.text;
+    if (scopeEnv.has(lhs)) return undefined;
+    if (rhsNode.type === 'identifier') return { lhs, rhs: rhsNode.text };
+  }
+  if (node.type === 'var_spec' || node.type === 'var_declaration') {
+    // var_declaration contains var_spec children; var_spec has name + expression_list value
+    const specs = node.type === 'var_declaration' ? node.namedChildren.filter(c => c.type === 'var_spec') : [node];
+    for (const spec of specs) {
+      const nameNode = spec.childForFieldName('name');
+      if (!nameNode || nameNode.type !== 'identifier') continue;
+      const lhs = nameNode.text;
+      if (scopeEnv.has(lhs)) continue;
+      // Check if the last named child is a bare identifier (no type annotation between name and value)
+      const exprList = spec.children.find(c => c.type === 'expression_list');
+      const rhsNode = exprList?.firstNamedChild;
+      if (rhsNode?.type === 'identifier') return { lhs, rhs: rhsNode.text };
+    }
+  }
   return undefined;
 };
 

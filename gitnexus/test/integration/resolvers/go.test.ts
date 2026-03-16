@@ -769,4 +769,30 @@ describe('Go assignment chain propagation', () => {
     expect(repoSave).toBeDefined();
     expect(userSave!.targetFilePath).not.toBe(repoSave!.targetFilePath);
   });
+
+  // --- var form assignment chain ---
+
+  it('resolves var alias.Save() to User via var assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processWithVar' && c.targetFilePath.includes('user.go'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves var rAlias.Save() to Repo via var assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processWithVar' && c.targetFilePath.includes('repo.go'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('var alias.Save() does NOT resolve to Repo (negative)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSaves = calls.filter(c =>
+      c.target === 'Save' && c.source === 'processWithVar' && c.targetFilePath.includes('user.go'),
+    );
+    expect(userSaves.length).toBe(1);
+  });
 });

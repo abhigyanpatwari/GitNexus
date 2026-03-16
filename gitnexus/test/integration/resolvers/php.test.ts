@@ -929,3 +929,63 @@ describe('PHP nullable receiver resolution (?Type hint)', () => {
     expect(repoTargeted.length).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Assignment chain propagation
+// ---------------------------------------------------------------------------
+
+describe('PHP assignment chain propagation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'php-assignment-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes each with a save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves alias->save() to User#save via assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User.php'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves rAlias->save() to Repo#save via assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('Repo.php'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('alias->save() does NOT resolve to Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // There should be exactly one save() call targeting User.php from process
+    const userSaves = calls.filter(c =>
+      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User.php'),
+    );
+    expect(userSaves.length).toBe(1);
+  });
+
+  it('each alias resolves to its own class, not the other', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User.php'),
+    );
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('Repo.php'),
+    );
+    expect(userSave).toBeDefined();
+    expect(repoSave).toBeDefined();
+    expect(userSave!.targetFilePath).not.toBe(repoSave!.targetFilePath);
+  });
+});
