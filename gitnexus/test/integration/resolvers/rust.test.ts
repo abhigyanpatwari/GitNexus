@@ -882,3 +882,41 @@ describe('Rust assignment chain propagation', () => {
     expect(saveCalls.filter(c => c.targetFilePath?.includes('repo.rs')).length).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rust Option<User> receiver resolution — extractSimpleTypeName unwraps
+// Option<User> to "User" via NULLABLE_WRAPPER_TYPES. The variable declared
+// as Option<User> now stores "User" in TypeEnv, enabling direct receiver
+// disambiguation without chained .unwrap() inference.
+// ---------------------------------------------------------------------------
+
+describe('Rust Option<User> receiver resolution via wrapper unwrapping', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-option-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs each with a save function', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
+    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  // TypeEnv correctly stores User (not Option) — verified by unit tests.
+  // Full pipeline resolution requires call-processor to handle the Option→User
+  // chain through member access, which is separate infrastructure.
+  it.todo('resolves alias.save() to User#save via Option<User> → assignment chain (requires call-processor enhancement)');
+
+  it('resolves repo.save() to Repo#save alongside Option usage', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_entities' && c.targetFilePath?.includes('repo.rs'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+});

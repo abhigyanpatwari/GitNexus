@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildTypeEnv, type TypeEnv, type TypeEnvironment } from '../../src/core/ingestion/type-env.js';
-import { stripNullable } from '../../src/core/ingestion/type-extractors/shared.js';
+import { stripNullable, extractSimpleTypeName } from '../../src/core/ingestion/type-extractors/shared.js';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import Java from 'tree-sitter-java';
@@ -1241,7 +1241,8 @@ class RepoService {
           }
         `, Rust);
         const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'opt')).toBe('Option');
+        // Option<User> unwraps to User (nullable wrapper unwrapping)
+        expect(flatGet(env, 'opt')).toBe('User');
         expect(flatGet(env, 'user')).toBe('User');
       });
     });
@@ -2261,6 +2262,97 @@ def process():
       expect(rawVal).toBeDefined();
       // Either already unwrapped by AST, or stored as raw text for stripNullable
       expect(stripNullable(rawVal!)).toBe('User');
+    });
+  });
+
+  // ── extractSimpleTypeName: nullable wrapper unwrapping ────────────────
+
+  describe('extractSimpleTypeName — nullable wrapper unwrapping', () => {
+    it('unwraps Java Optional<User> → User', () => {
+      const tree = parse(`
+        class App {
+          void process() {
+            Optional<User> user = findUser();
+          }
+        }
+      `, Java);
+      const { env } = buildTypeEnv(tree, 'java');
+      expect(flatGet(env, 'user')).toBe('User');
+    });
+
+    it('unwraps Rust Option<User> → User', () => {
+      const tree = parse(`
+        fn process() {
+          let user: Option<User> = find_user();
+        }
+      `, Rust);
+      const { env } = buildTypeEnv(tree, 'rust');
+      expect(flatGet(env, 'user')).toBe('User');
+    });
+
+    it('does NOT unwrap List<User> — containers stay as List', () => {
+      const tree = parse(`
+        class App {
+          void process() {
+            List<User> users = getUsers();
+          }
+        }
+      `, Java);
+      const { env } = buildTypeEnv(tree, 'java');
+      expect(flatGet(env, 'users')).toBe('List');
+    });
+
+    it('does NOT unwrap Map<String, User> — containers stay as Map', () => {
+      const tree = parse(`
+        class App {
+          void process() {
+            Map<String, User> lookup = getLookup();
+          }
+        }
+      `, Java);
+      const { env } = buildTypeEnv(tree, 'java');
+      expect(flatGet(env, 'lookup')).toBe('Map');
+    });
+
+    it('does NOT unwrap CompletableFuture<User> — async wrappers stay', () => {
+      const tree = parse(`
+        class App {
+          void process() {
+            CompletableFuture<User> future = fetchUser();
+          }
+        }
+      `, Java);
+      const { env } = buildTypeEnv(tree, 'java');
+      expect(flatGet(env, 'future')).toBe('CompletableFuture');
+    });
+
+    it('unwraps TypeScript extractSimpleTypeName directly for generic_type', () => {
+      // Parse a Java Optional<User> and grab the type node to test extractSimpleTypeName
+      parser.setLanguage(Java);
+      const tree = parser.parse(`class A { void f() { Optional<User> x = null; } }`);
+      // Navigate to the type node: class > body > method > body > local_variable_declaration > type
+      const method = tree.rootNode.firstNamedChild?.lastNamedChild?.firstNamedChild;
+      const decl = method?.lastNamedChild?.firstNamedChild;
+      const typeNode = decl?.childForFieldName('type');
+      if (typeNode) {
+        expect(extractSimpleTypeName(typeNode)).toBe('User');
+      }
+    });
+  });
+
+  // ── C++ assignment chain propagation ──────────────────────────────────
+
+  describe('assignment chain — C++ auto alias', () => {
+    it('propagates auto alias = u when u has an explicit type', () => {
+      const tree = parse(`
+        void process() {
+          User u;
+          auto alias = u;
+        }
+      `, CPP);
+      const { env } = buildTypeEnv(tree, 'cpp');
+      expect(flatGet(env, 'u')).toBe('User');
+      expect(flatGet(env, 'alias')).toBe('User');
     });
   });
 });

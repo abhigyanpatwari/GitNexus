@@ -724,3 +724,56 @@ describe('Java assignment chain propagation', () => {
     expect(userSave!.targetFilePath).not.toBe(repoSave!.targetFilePath);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Java Optional<User> receiver resolution — extractSimpleTypeName unwraps
+// Optional<User> to "User" via NULLABLE_WRAPPER_TYPES, enabling receiver
+// disambiguation when the declaration type is Optional<T>.
+// ---------------------------------------------------------------------------
+
+describe('Java Optional<User> receiver resolution via wrapper unwrapping', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-optional-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes each with a save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves user.save() to User#save with Optional<User> in scope', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath?.includes('User.java'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves repo.save() to Repo#save alongside Optional usage', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath?.includes('Repo.java'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('disambiguates user.save() and repo.save() to different files', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath?.includes('User.java'),
+    );
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath?.includes('Repo.java'),
+    );
+    expect(userSave).toBeDefined();
+    expect(repoSave).toBeDefined();
+    expect(userSave!.targetFilePath).not.toBe(repoSave!.targetFilePath);
+  });
+});

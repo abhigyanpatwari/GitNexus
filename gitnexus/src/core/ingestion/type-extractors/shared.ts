@@ -1,5 +1,15 @@
 import type { SyntaxNode } from '../utils.js';
 
+/** Known single-arg nullable wrapper types that unwrap to their inner type
+ *  for receiver resolution. Optional<User> → "User", Option<User> → "User".
+ *  Only nullable wrappers — NOT containers (List, Vec) or async wrappers (Promise, Future).
+ *  See call-processor.ts WRAPPER_GENERICS for the full set used in return-type inference. */
+const NULLABLE_WRAPPER_TYPES = new Set([
+  'Optional',    // Java
+  'Option',      // Rust, Scala
+  'Maybe',       // Haskell-style, Kotlin Arrow
+]);
+
 /**
  * Extract the simple type name from a type AST node.
  * Handles generic types (e.g., List<User> → List), qualified names
@@ -31,11 +41,19 @@ export const extractSimpleTypeName = (typeNode: SyntaxNode): string | undefined 
   }
 
   // Generic types: extract the base type (e.g., List<User> → List)
+  // For nullable wrappers (Optional<User>, Option<User>), unwrap to inner type.
   if (typeNode.type === 'generic_type' || typeNode.type === 'parameterized_type') {
     const base = typeNode.childForFieldName('name')
       ?? typeNode.childForFieldName('type')
       ?? typeNode.firstNamedChild;
-    if (base) return extractSimpleTypeName(base);
+    if (!base) return undefined;
+    const baseName = extractSimpleTypeName(base);
+    // Unwrap known nullable wrappers: Optional<User> → User, Option<User> → User
+    if (baseName && NULLABLE_WRAPPER_TYPES.has(baseName)) {
+      const args = extractGenericTypeArgs(typeNode);
+      if (args.length >= 1) return args[0];
+    }
+    return baseName;
   }
 
   // Nullable types (Kotlin User?, C# User?)
@@ -132,8 +150,7 @@ export const TYPED_PARAMETER_TYPES = new Set([
  * Extract type arguments from a generic type node.
  * e.g., List<User, String> → ['User', 'String'], Vec<User> → ['User']
  *
- * Phase 5 infrastructure: not yet wired into production code.
- * Will be used for container-type unwrapping (Optional<User> → User).
+ * Used by extractSimpleTypeName to unwrap nullable wrappers (Optional<User> → User).
  *
  * Handles language-specific AST structures:
  * - TS/Java/Rust/Go: generic_type > type_arguments > type nodes

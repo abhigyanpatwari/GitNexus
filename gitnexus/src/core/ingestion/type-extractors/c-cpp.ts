@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, PendingAssignmentExtractor } from './types.js';
 import { extractSimpleTypeName, extractVarName } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
@@ -160,10 +160,34 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   return { varName, calleeName: func.text };
 };
 
+/** C++: auto alias = user → declaration with auto type + init_declarator where value is identifier */
+const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
+  if (node.type !== 'declaration') return undefined;
+  const typeNode = node.childForFieldName('type');
+  if (!typeNode) return undefined;
+  // Only handle auto — typed declarations already resolved by extractDeclaration
+  const typeText = typeNode.text;
+  if (typeText !== 'auto' && typeText !== 'decltype(auto)'
+    && typeNode.type !== 'placeholder_type_specifier') return undefined;
+  const declarator = node.childForFieldName('declarator');
+  if (!declarator || declarator.type !== 'init_declarator') return undefined;
+  const value = declarator.childForFieldName('value');
+  if (!value || value.type !== 'identifier') return undefined;
+  const nameNode = declarator.childForFieldName('declarator');
+  if (!nameNode) return undefined;
+  const finalName = nameNode.type === 'pointer_declarator' || nameNode.type === 'reference_declarator'
+    ? nameNode.firstNamedChild : nameNode;
+  if (!finalName) return undefined;
+  const lhs = extractVarName(finalName);
+  if (!lhs || scopeEnv.has(lhs)) return undefined;
+  return { lhs, rhs: value.text };
+};
+
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
   extractDeclaration,
   extractParameter,
   extractInitializer,
   scanConstructorBinding,
+  extractPendingAssignment,
 };

@@ -602,3 +602,32 @@ describe('C++ nullable receiver resolution (pointer types)', () => {
     expect(repoTargeted.length).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// C++ assignment chain propagation: auto alias = u; alias.save()
+// Tests extractPendingAssignment for C++ auto declarations.
+// ---------------------------------------------------------------------------
+
+describe('C++ assignment chain propagation (auto alias)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-assignment-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes each with a save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  // TypeEnv correctly stores alias → User via C++ auto assignment chain (verified by unit tests).
+  // Full pipeline CALLS resolution for C++ auto chains requires call-processor enhancement.
+  it.todo('resolves alias.save() to User#save via auto assignment chain (requires call-processor C++ auto support)');
+
+  it.todo('each alias resolves to its own class, not the other (requires call-processor C++ auto support)');
+});
