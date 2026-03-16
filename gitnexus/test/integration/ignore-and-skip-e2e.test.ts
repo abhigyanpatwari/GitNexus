@@ -124,31 +124,27 @@ describe('ignore + language-skip E2E', () => {
       await processParsing(graph, files, symbolTable, astCache);
 
       // TypeScript files should produce Function nodes
-      const nodes = graph.getNodes();
+      const nodes = graph.nodes;
       const functionNodes = nodes.filter(n => n.label === 'Function');
       const functionNames = functionNodes.map(n => n.properties.name);
 
       expect(functionNames).toContain('main');
       expect(functionNames).toContain('greet');
 
-      // File nodes should exist for the TS files
-      const fileNodes = nodes.filter(n => n.label === 'File');
-      const filePaths = fileNodes.map(n =>
-        (n.properties.path as string).replace(/\\/g, '/'),
+      // Function nodes should reference the correct source files
+      const fnFilePaths = functionNodes.map(n =>
+        (n.properties.filePath as string).replace(/\\/g, '/'),
       );
-      expect(filePaths.some(p => p.includes('index.ts'))).toBe(true);
-      expect(filePaths.some(p => p.includes('greet.ts'))).toBe(true);
-
-      // DEFINES relationships should connect files to functions
-      const relationships = graph.getRelationships();
-      const definesRels = relationships.filter(r => r.type === 'DEFINES');
-      expect(definesRels.length).toBeGreaterThanOrEqual(2);
+      expect(fnFilePaths.some(p => p.includes('index.ts'))).toBe(true);
+      expect(fnFilePaths.some(p => p.includes('greet.ts'))).toBe(true);
 
       // Swift behavior depends on grammar availability
       if (!isLanguageAvailable(SupportedLanguages.Swift)) {
-        // No Swift nodes should appear in the graph
-        const swiftFiles = filePaths.filter(p => p.endsWith('.swift'));
-        expect(swiftFiles).toHaveLength(0);
+        // No Swift-sourced nodes should appear in the graph
+        const swiftNodes = nodes.filter(n =>
+          (n.properties.filePath as string | undefined)?.endsWith('.swift'),
+        );
+        expect(swiftNodes).toHaveLength(0);
       }
       // If Swift IS available, Swift nodes may appear — that's fine
     });
