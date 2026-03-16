@@ -194,17 +194,29 @@ const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) =>
     const lhs = lhsNode.text;
     if (scopeEnv.has(lhs)) return undefined;
     if (rhsNode.type === 'identifier') return { lhs, rhs: rhsNode.text };
+    return undefined;
   }
   if (node.type === 'var_spec' || node.type === 'var_declaration') {
     // var_declaration contains var_spec children; var_spec has name + expression_list value
-    const specs = node.type === 'var_declaration' ? node.namedChildren.filter(c => c.type === 'var_spec') : [node];
+    const specs: SyntaxNode[] = [];
+    if (node.type === 'var_declaration') {
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const c = node.namedChild(i);
+        if (c?.type === 'var_spec') specs.push(c);
+      }
+    } else {
+      specs.push(node);
+    }
     for (const spec of specs) {
       const nameNode = spec.childForFieldName('name');
       if (!nameNode || nameNode.type !== 'identifier') continue;
       const lhs = nameNode.text;
       if (scopeEnv.has(lhs)) continue;
       // Check if the last named child is a bare identifier (no type annotation between name and value)
-      const exprList = spec.children.find(c => c.type === 'expression_list');
+      let exprList: SyntaxNode | null = null;
+      for (let i = 0; i < spec.childCount; i++) {
+        if (spec.child(i)?.type === 'expression_list') { exprList = spec.child(i); break; }
+      }
       const rhsNode = exprList?.firstNamedChild;
       if (rhsNode?.type === 'identifier') return { lhs, rhs: rhsNode.text };
     }

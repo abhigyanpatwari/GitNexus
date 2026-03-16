@@ -836,3 +836,60 @@ describe('Python assignment chain propagation', () => {
     expect(userSave!.targetFilePath).not.toBe(repoSave!.targetFilePath);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Python nullable (User | None) + assignment chain combined.
+// Python 3.10+ union syntax is parsed as binary_operator by tree-sitter,
+// stored as raw text "User | None" in TypeEnv. stripNullable's
+// NULLABLE_KEYWORDS.has() path must resolve it at lookup time.
+// ---------------------------------------------------------------------------
+
+describe('Python nullable (User | None) + assignment chain combined', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-nullable-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes each with a save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  it('resolves alias.save() to User#save when source is User | None', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'nullable_chain_user' && c.targetFilePath?.includes('user.py'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('alias.save() from User | None does NOT resolve to Repo#save (negative)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongCall = calls.find(c =>
+      c.target === 'save' && c.source === 'nullable_chain_user' && c.targetFilePath?.includes('repo.py'),
+    );
+    expect(wrongCall).toBeUndefined();
+  });
+
+  it('resolves alias.save() to Repo#save when source is Repo | None', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.source === 'nullable_chain_repo' && c.targetFilePath?.includes('repo.py'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('alias.save() from Repo | None does NOT resolve to User#save (negative)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongCall = calls.find(c =>
+      c.target === 'save' && c.source === 'nullable_chain_repo' && c.targetFilePath?.includes('user.py'),
+    );
+    expect(wrongCall).toBeUndefined();
+  });
+});

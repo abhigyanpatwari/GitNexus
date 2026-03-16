@@ -13,7 +13,7 @@ import type { SymbolTable } from './symbol-table.js';
  *
  * Design constraints:
  * - Explicit-only: Tier 0 uses type annotations; Tier 1 infers from constructors
- * - Tier 2: single-pass assignment chain propagation (depth-1) — resolves
+ * - Tier 2: single-pass assignment chain propagation in source order — resolves
  *   `const b = a` when `a` already has a type from Tier 0/1
  * - Scope-aware: function-local variables don't collide across functions
  * - Conservative: complex/generic types extract the base name only
@@ -377,9 +377,11 @@ export const buildTypeEnv = (
 
   walk(tree.rootNode, FILE_SCOPE);
 
-  // Tier 2: single-pass assignment chain propagation (depth-1 only).
+  // Tier 2: single-pass assignment chain propagation in source order.
   // Resolves `const b = a` where `a` has a known type from Tier 0/1.
-  // No fixpoint iteration — depth-1 covers 95%+ of real-world patterns.
+  // Multi-hop chains resolve when forward-declared (a→b→c in source order);
+  // reverse-order assignments are depth-1 only. No fixpoint iteration —
+  // this covers 95%+ of real-world patterns.
   for (const { scope, lhs, rhs } of pendingAssignments) {
     const scopeEnv = env.get(scope);
     if (!scopeEnv || scopeEnv.has(lhs)) continue;

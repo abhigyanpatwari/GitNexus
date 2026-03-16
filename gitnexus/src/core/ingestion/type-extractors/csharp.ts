@@ -170,7 +170,10 @@ const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) =>
     const lhs = nameNode.text;
     if (scopeEnv.has(lhs)) continue;
     // C# wraps value in equals_value_clause; fall back to last named child
-    const evc = child.children.find(c => c.type === 'equals_value_clause');
+    let evc: SyntaxNode | null = null;
+    for (let j = 0; j < child.childCount; j++) {
+      if (child.child(j)?.type === 'equals_value_clause') { evc = child.child(j); break; }
+    }
     const valueNode = evc?.firstNamedChild ?? child.namedChild(child.namedChildCount - 1);
     if (valueNode && valueNode !== nameNode && (valueNode.type === 'identifier' || valueNode.type === 'simple_identifier')) {
       return { lhs, rhs: valueNode.text };

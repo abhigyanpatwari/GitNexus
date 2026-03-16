@@ -273,7 +273,7 @@ const extractKotlinForLoopBinding: ForLoopExtractor = (node: SyntaxNode, scopeEn
 const extractKotlinPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
   if (node.type !== 'property_declaration') return undefined;
   // Find the variable name from variable_declaration child
-  const varDecl = node.children.find(c => c.type === 'variable_declaration');
+  const varDecl = findChildByType(node, 'variable_declaration');
   if (!varDecl) return undefined;
   const nameNode = varDecl.firstNamedChild;
   if (!nameNode || nameNode.type !== 'simple_identifier') return undefined;
@@ -284,7 +284,7 @@ const extractKotlinPendingAssignment: PendingAssignmentExtractor = (node, scopeE
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
     if (!child) continue;
-    if (child.type === '=' || child.text === '=') { foundEq = true; continue; }
+    if (child.type === '=') { foundEq = true; continue; }
     if (foundEq && child.type === 'simple_identifier') {
       return { lhs, rhs: child.text };
     }

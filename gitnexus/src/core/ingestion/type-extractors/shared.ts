@@ -132,6 +132,9 @@ export const TYPED_PARAMETER_TYPES = new Set([
  * Extract type arguments from a generic type node.
  * e.g., List<User, String> → ['User', 'String'], Vec<User> → ['User']
  *
+ * Phase 5 infrastructure: not yet wired into production code.
+ * Will be used for container-type unwrapping (Optional<User> → User).
+ *
  * Handles language-specific AST structures:
  * - TS/Java/Rust/Go: generic_type > type_arguments > type nodes
  * - C#:              generic_type > type_argument_list > type nodes
@@ -233,6 +236,9 @@ export const hasTypeAnnotation = (node: SyntaxNode): boolean => {
   return false;
 };
 
+/** Bare nullable keywords that should not produce a receiver binding. */
+const NULLABLE_KEYWORDS = new Set(['null', 'undefined', 'void', 'None', 'nil']);
+
 /**
  * Strip nullable wrappers from a type name string.
  * Used by both lookupInEnv (TypeEnv annotations) and extractReturnTypeName
@@ -245,9 +251,6 @@ export const hasTypeAnnotation = (node: SyntaxNode): boolean => {
  *   "User | Repo"           → undefined  (genuine union — refuse)
  *   "null"                  → undefined
  */
-/** Bare nullable keywords that should not produce a receiver binding. */
-const NULLABLE_KEYWORDS = new Set(['null', 'undefined', 'void', 'None', 'nil']);
-
 export const stripNullable = (typeName: string): string | undefined => {
   let text = typeName.trim();
   if (!text) return undefined;
@@ -260,7 +263,7 @@ export const stripNullable = (typeName: string): string | undefined => {
   // Strip union with null/undefined/None/nil/void
   if (text.includes('|')) {
     const parts = text.split('|').map(p => p.trim()).filter(p =>
-      p !== 'null' && p !== 'undefined' && p !== 'void' && p !== 'None' && p !== 'nil'
+      p !== '' && !NULLABLE_KEYWORDS.has(p)
     );
     if (parts.length === 1) return parts[0];
     return undefined; // genuine union or all-nullable — refuse
