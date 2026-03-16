@@ -10,6 +10,12 @@ on:
   pull_request_review:
     types: [submitted]
 
+# Serialize per-PR so concurrent @claude comments don't race on the
+# temporary fork branch push/delete.
+concurrency:
+  group: claude-code-${{ github.event.issue.number || github.event.pull_request.number || github.event.issue.id }}
+  cancel-in-progress: false
+
 jobs:
   claude:
     if: |
@@ -20,16 +26,63 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: read
+      contents: write       # needed to push fork branch to origin
+      workflows: write      # needed when fork PR modifies .github/workflows/
       pull-requests: write
       issues: write
       id-token: write
-      actions: read # Required for Claude to read CI results on PRs
+      actions: read         # required for Claude to read CI results on PRs
     steps:
+      # For PR-related triggers, resolve fork context so we can push the
+      # branch to origin (claude-code-action fetches by branch name).
+      - name: Resolve PR context
+        id: pr
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            // Determine if this event is PR-related
+            let prNumber = null;
+            if (context.eventName === 'issue_comment' && context.payload.issue.pull_request) {
+              prNumber = context.payload.issue.number;
+            } else if (context.eventName === 'pull_request_review_comment') {
+              prNumber = context.payload.pull_request.number;
+            } else if (context.eventName === 'pull_request_review') {
+              prNumber = context.payload.pull_request.number;
+            }
+
+            if (!prNumber) {
+              core.setOutput('is_pr', 'false');
+              core.setOutput('is_fork', 'false');
+              return;
+            }
+
+            const resp = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const pr = resp.data;
+            const isFork = pr.head.repo.full_name !== pr.base.repo.full_name;
+
+            core.setOutput('is_pr', 'true');
+            core.setOutput('is_fork', String(isFork));
+            core.setOutput('branch', pr.head.ref);
+            core.setOutput('sha', pr.head.sha);
+
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ steps.pr.outputs.is_fork == 'true' && steps.pr.outputs.sha || '' }}
           fetch-depth: 1
+
+      # claude-code-action fetches branches by name from origin, which fails
+      # for fork PRs. Push the fork branch to origin so the action can find it.
+      - name: Push fork branch to origin
+        id: push-fork
+        if: steps.pr.outputs.is_fork == 'true'
+        env:
+          FORK_BRANCH: ${{ steps.pr.outputs.branch }}
+        run: git push origin HEAD:refs/heads/"$FORK_BRANCH"
 
       - name: Run Claude Code
         id: claude
@@ -40,3 +93,11 @@ jobs:
           # This is an optional setting that allows Claude to read CI results on PRs
           additional_permissions: |
             actions: read
+
+      # Clean up the temporary branch we pushed for fork PRs.
+      # Only delete if the push step actually succeeded.
+      - name: Delete fork branch from origin
+        if: always() && steps.push-fork.outcome == 'success'
+        env:
+          FORK_BRANCH: ${{ steps.pr.outputs.branch }}
+        run: git push origin --delete refs/heads/"$FORK_BRANCH" || true

@@ -38,7 +38,6 @@ jobs:
       collect-coverage: ${{ github.event_name == 'pull_request' }}
     permissions:
       contents: read
-      workflows: write
 
   # ── Save PR metadata for the reporting workflow ─────────────────
   # The ci-report.yml workflow (triggered by workflow_run) needs the

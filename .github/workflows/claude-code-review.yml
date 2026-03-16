@@ -15,6 +15,12 @@ on:
   issue_comment:
     types: [created]
 
+# Serialize per-PR so concurrent @claude comments don't race on the
+# temporary fork branch push/delete.
+concurrency:
+  group: claude-review-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
   claude-review:
     # Run only when:
@@ -42,6 +48,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write       # needed to push fork branch to origin
+      workflows: write      # needed when fork PR modifies .github/workflows/
       pull-requests: write
       issues: read
       id-token: write
@@ -79,8 +86,11 @@ jobs:
       # for fork PRs. Work around by pushing the fork branch to origin so
       # the action can find it.  Cleaned up in the post step below.
       - name: Push fork branch to origin
+        id: push-fork
         if: steps.pr.outputs.is_fork == 'true'
-        run: git push origin HEAD:refs/heads/${{ steps.pr.outputs.branch }}
+        env:
+          FORK_BRANCH: ${{ steps.pr.outputs.branch }}
+        run: git push origin HEAD:refs/heads/"$FORK_BRANCH"
 
       - name: Run Claude Code Review
         id: claude-review
@@ -91,7 +101,11 @@ jobs:
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ steps.pr.outputs.number }}'
 
-      # Clean up the temporary branch we pushed for fork PRs
+      # Clean up the temporary branch we pushed for fork PRs.
+      # Only delete if the push step actually succeeded — otherwise we might
+      # delete a pre-existing branch that wasn't ours to manage.
       - name: Delete fork branch from origin
-        if: always() && steps.pr.outputs.is_fork == 'true'
-        run: git push origin --delete refs/heads/${{ steps.pr.outputs.branch }} || true
+        if: always() && steps.push-fork.outcome == 'success'
+        env:
+          FORK_BRANCH: ${{ steps.pr.outputs.branch }}
+        run: git push origin --delete refs/heads/"$FORK_BRANCH" || true
