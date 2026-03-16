@@ -1018,10 +1018,12 @@ const processFileGroup = (
                   // Set receiverName to the base object so Step 1 in processCallsFromExtracted
                   // can resolve it via constructor bindings to a base type for the chain.
                   receiverName = extracted.baseReceiverName;
-                  // Also try the type environment immediately (covers explicitly-typed locals).
-                  // This sets a base type that chain resolution will use as input.
-                  // We do NOT set this as receiverTypeName on the call — instead, we rely on
-                  // processCallsFromExtracted Step 2 to run the chain regardless of Step 1.
+                  // Also try the type environment immediately (covers explicitly-typed locals
+                  // and annotated parameters like `fn process(svc: &UserService)`).
+                  // This sets a base type that chain resolution (Step 2) will use as input.
+                  if (receiverName) {
+                    receiverTypeName = typeEnv.lookup(receiverName, callNode);
+                  }
                 }
               }
             }

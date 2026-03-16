@@ -286,6 +286,15 @@ export const processCalls = async (
               const funcName = enclosingFunc ? extractFuncNameFromSourceId(enclosingFunc) : '';
               baseType = lookupReceiverType(verifiedReceivers, funcName, extracted.baseReceiverName);
             }
+            // Class-as-receiver for chain base (e.g. UserService.find_user().save())
+            if (!baseType && extracted.baseReceiverName) {
+              const cr = ctx.resolve(extracted.baseReceiverName, file.path);
+              if (cr?.candidates.some(d =>
+                d.type === 'Class' || d.type === 'Interface' || d.type === 'Struct' || d.type === 'Enum',
+              )) {
+                baseType = extracted.baseReceiverName;
+              }
+            }
             receiverTypeName = resolveChainedReceiver(extracted.chain, baseType, file.path, ctx);
           }
         }

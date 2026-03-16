@@ -1327,3 +1327,103 @@ describe('TypeScript overloaded-receiver resolution (receiverKey collision fix)'
     expect(repoCtor).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Typed parameter chain: svc.getUser().save() where svc is a parameter with
+// a type annotation (not a constructor binding). Tests that the worker path
+// consults typeEnv for chain base receivers (Phase 5 review Finding 1).
+// ---------------------------------------------------------------------------
+
+describe('TypeScript typed-parameter chain call resolution (Phase 5 review fix)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-typed-param-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User, Repo, and UserService classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('User');
+    expect(classes).toContain('Repo');
+    expect(classes).toContain('UserService');
+  });
+
+  it('detects getUser and save methods', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('getUser');
+    expect(methods).toContain('save');
+  });
+
+  it('resolves svc.getUser().save() to User#save via parameter type annotation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'processUser' &&
+      c.targetFilePath.includes('User'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('does NOT resolve svc.getUser().save() to Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'processUser' &&
+      c.targetFilePath.includes('Repo'),
+    );
+    expect(repoSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Static chain: UserService.findUser().save() where the chain base is a class
+// name (not a variable). Tests that the serial path applies class-as-receiver
+// to chain base resolution (Phase 5 review Finding 2).
+// ---------------------------------------------------------------------------
+
+describe('TypeScript static class-name chain call resolution (Phase 5 review fix)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-static-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User, Repo, and UserService classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('User');
+    expect(classes).toContain('Repo');
+    expect(classes).toContain('UserService');
+  });
+
+  it('detects static findUser and instance save methods', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('findUser');
+    expect(methods).toContain('save');
+  });
+
+  it('resolves UserService.findUser().save() to User#save via class-name chain base', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'processUser' &&
+      c.targetFilePath.includes('User'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('does NOT resolve UserService.findUser().save() to Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'processUser' &&
+      c.targetFilePath.includes('Repo'),
+    );
+    expect(repoSave).toBeUndefined();
+  });
+});
