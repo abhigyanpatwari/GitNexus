@@ -907,10 +907,13 @@ describe('Rust Option<User> receiver resolution via wrapper unwrapping', () => {
     expect(saveFns.length).toBe(2);
   });
 
-  // TypeEnv correctly stores User (not Option) — verified by unit tests.
-  // Full pipeline resolution requires call-processor to handle the Option→User
-  // chain through member access, which is separate infrastructure.
-  it.todo('resolves alias.save() to User#save via Option<User> → assignment chain (requires call-processor enhancement)');
+  it('resolves alias.save() to User#save via Option<User> → assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_entities' && c.targetFilePath?.includes('user.rs'),
+    );
+    expect(userSave).toBeDefined();
+  });
 
   it('resolves repo.save() to Repo#save alongside Option usage', () => {
     const calls = getRelationships(result, 'CALLS');

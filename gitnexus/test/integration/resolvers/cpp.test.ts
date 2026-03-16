@@ -625,9 +625,28 @@ describe('C++ assignment chain propagation (auto alias)', () => {
     expect(saveMethods.length).toBe(2);
   });
 
-  // TypeEnv correctly stores alias → User via C++ auto assignment chain (verified by unit tests).
-  // Full pipeline CALLS resolution for C++ auto chains requires call-processor enhancement.
-  it.todo('resolves alias.save() to User#save via auto assignment chain (requires call-processor C++ auto support)');
+  it('resolves alias.save() to User#save via auto assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath?.includes('User.h'),
+    );
+    expect(userSave).toBeDefined();
+  });
 
-  it.todo('each alias resolves to its own class, not the other (requires call-processor C++ auto support)');
+  it('resolves rAlias.save() to Repo#save via auto assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath?.includes('Repo.h'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('each alias resolves to its own class, not the other', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save' && c.source === 'processEntities');
+    const userTargeted = saveCalls.filter(c => c.targetFilePath?.includes('User.h'));
+    const repoTargeted = saveCalls.filter(c => c.targetFilePath?.includes('Repo.h'));
+    expect(userTargeted.length).toBe(1);
+    expect(repoTargeted.length).toBe(1);
+  });
 });
