@@ -63,6 +63,29 @@ export async function fetchRepos(baseUrl: string): Promise<RepoSummary[]> {
   return response.json();
 }
 
+export async function runServerQuery(
+  baseUrl: string,
+  cypher: string,
+  repoName?: string
+): Promise<any[]> {
+  const response = await fetch(`${normalizeServerUrl(baseUrl)}/query`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      cypher,
+      ...(repoName ? { repo: repoName } : {}),
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `Server returned ${response.status}: ${response.statusText}`);
+  }
+
+  const body = await response.json();
+  return body.result ?? body;
+}
+
 export async function fetchRepoInfo(baseUrl: string, repoName?: string): Promise<ServerRepoInfo> {
   const url = repoName ? `${baseUrl}/repo?repo=${encodeURIComponent(repoName)}` : `${baseUrl}/repo`;
   const response = await fetch(url);

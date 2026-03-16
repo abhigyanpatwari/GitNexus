@@ -158,19 +158,8 @@ const AppContent = () => {
     // Transition directly to exploring view
     setViewMode('exploring');
 
-    // Initialize agent if LLM is configured
-    if (getActiveProviderConfig()) {
-      initializeAgent(projectName);
-    }
-
-    // Auto-start embeddings
-    startEmbeddings().catch((err) => {
-      if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
-        startEmbeddings('wasm').catch(console.warn);
-      } else {
-        console.warn('Embeddings auto-start failed:', err);
-      }
-    });
+    // Do not auto-start local embeddings in backend mode.
+    // Query/chat features should use the backend connection instead.
   }, [setViewMode, setGraph, setFileContents, setProjectName, initializeAgent, startEmbeddings]);
 
   // Auto-connect when ?server query param is present (bookmarkable shortcut)

@@ -12,7 +12,7 @@ import { loadSettings, getActiveProviderConfig, saveSettings } from '../core/llm
 import type { AgentMessage } from '../core/llm/agent';
 import { DEFAULT_VISIBLE_EDGES, type EdgeType } from '../lib/constants';
 import type { RepoSummary, ConnectToServerResult } from '../services/server-connection';
-import { fetchRepos, connectToServer } from '../services/server-connection';
+import { fetchRepos, connectToServer, runServerQuery } from '../services/server-connection';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
@@ -467,12 +467,20 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const runQuery = useCallback(async (cypher: string): Promise<any[]> => {
+    if (serverBaseUrl && projectName) {
+      return runServerQuery(serverBaseUrl, cypher, projectName);
+    }
+
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
     return api.runQuery(cypher);
-  }, []);
+  }, [projectName, serverBaseUrl]);
 
   const isDatabaseReady = useCallback(async (): Promise<boolean> => {
+    if (serverBaseUrl) {
+      return graph !== null;
+    }
+
     const api = apiRef.current;
     if (!api) return false;
     try {
@@ -480,10 +488,19 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     } catch {
       return false;
     }
-  }, []);
+  }, [graph, serverBaseUrl]);
 
   // Embedding methods
   const startEmbeddings = useCallback(async (forceDevice?: 'webgpu' | 'wasm'): Promise<void> => {
+    if (serverBaseUrl) {
+      if (import.meta.env.DEV) {
+        console.log('⏭️ Skipping local embeddings in backend mode', { projectName, serverBaseUrl });
+      }
+      setEmbeddingStatus('idle');
+      setEmbeddingProgress(null);
+      return;
+    }
+
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
 
@@ -525,7 +542,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       }
       throw error;
     }
-  }, []);
+  }, [projectName, serverBaseUrl]);
 
   const semanticSearch = useCallback(async (
     query: string,
@@ -584,7 +601,15 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     try {
       // Use override if provided (for fresh loads), fallback to state (for re-init)
       const effectiveProjectName = overrideProjectName || projectName || 'project';
-      const result = await api.initializeAgent(config, effectiveProjectName);
+      const result = serverBaseUrl
+        ? await api.initializeBackendAgent(
+            config,
+            serverBaseUrl.replace(/\/api\/?$/, ''),
+            effectiveProjectName,
+            Array.from(fileContents.entries()),
+            effectiveProjectName
+          )
+        : await api.initializeAgent(config, effectiveProjectName);
       if (result.success) {
         setIsAgentReady(true);
         setAgentError(null);
@@ -602,7 +627,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     } finally {
       setIsAgentInitializing(false);
     }
-  }, [projectName]);
+  }, [fileContents, projectName, serverBaseUrl]);
 
   const sendChatMessage = useCallback(async (message: string): Promise<void> => {
     const api = apiRef.current;
@@ -1021,13 +1046,6 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
       if (getActiveProviderConfig()) initializeAgent(pName);
 
-      startEmbeddings().catch((err) => {
-        if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
-          startEmbeddings('wasm').catch(console.warn);
-        } else {
-          console.warn('Embeddings auto-start failed:', err);
-        }
-      });
     } catch (err) {
       console.error('Repo switch failed:', err);
       setProgress({
@@ -1194,4 +1212,3 @@ export const useAppState = (): AppState => {
   }
   return context;
 };
-
