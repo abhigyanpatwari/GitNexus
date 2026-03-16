@@ -9,9 +9,6 @@ on:
         default: true
         type: boolean
 
-permissions:
-  workflows: write
-
 jobs:
   # ── Integration test matrix ─────────────────────────────────────────
   # Each test-group runs on a SEPARATE runner per OS, giving full process
