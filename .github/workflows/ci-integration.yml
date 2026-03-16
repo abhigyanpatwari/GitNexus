@@ -10,7 +10,7 @@ on:
         type: boolean
 
 permissions:
-  workflows: read
+  workflows: write
 
 jobs:
   # ── Integration test matrix ─────────────────────────────────────────
