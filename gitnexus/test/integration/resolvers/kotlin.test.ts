@@ -819,3 +819,53 @@ describe('Kotlin assignment chain inside class method', () => {
     expect(wrongCall).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Chained method calls: svc.getUser().save()
+// Tests that Kotlin's navigation_expression → navigation_suffix AST structure
+// is correctly handled by extractCallChain (Phase 5 review Finding 1, Round 3).
+// ---------------------------------------------------------------------------
+
+describe('Kotlin chained method call resolution (Phase 5 review fix)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-chain-call'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User, Repo, and UserService classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('User');
+    expect(classes).toContain('Repo');
+    expect(classes).toContain('UserService');
+  });
+
+  it('detects getUser and save functions', () => {
+    const fns = getNodesByLabel(result, 'Function');
+    expect(fns).toContain('getUser');
+    expect(fns).toContain('save');
+  });
+
+  it('resolves svc.getUser().save() to User#save via chain resolution', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'processUser' &&
+      c.targetFilePath?.includes('User.kt'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('does NOT resolve svc.getUser().save() to Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'processUser' &&
+      c.targetFilePath?.includes('Repo.kt'),
+    );
+    expect(repoSave).toBeUndefined();
+  });
+});

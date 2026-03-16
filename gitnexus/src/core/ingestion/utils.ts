@@ -1035,16 +1035,35 @@ export function extractCallChain(
       ?? current.childForFieldName?.('name')
       ?? current.childForFieldName?.('method');  // Ruby `call` node
     let methodName: string | undefined;
+    let innerReceiver: SyntaxNode | null = null;
     if (funcNode) {
       // member_expression / attribute: last named child is the method identifier
       methodName = funcNode.lastNamedChild?.text ?? funcNode.text;
+    }
+    // Kotlin/Swift: call_expression exposes callee as firstNamedChild, not a field.
+    // navigation_expression: method name is in navigation_suffix → simple_identifier.
+    if (!funcNode && current.type === 'call_expression') {
+      const callee = current.firstNamedChild;
+      if (callee?.type === 'navigation_expression') {
+        const suffix = callee.lastNamedChild;
+        if (suffix?.type === 'navigation_suffix') {
+          methodName = suffix.lastNamedChild?.text;
+          // The receiver is the part of navigation_expression before the suffix
+          for (let i = 0; i < callee.namedChildCount; i++) {
+            const child = callee.namedChild(i);
+            if (child && child.type !== 'navigation_suffix') {
+              innerReceiver = child;
+              break;
+            }
+          }
+        }
+      }
     }
     if (!methodName) break;
     chain.unshift(methodName); // build chain outermost-last
 
     // Walk into the receiver of this call to continue the chain
-    let innerReceiver: SyntaxNode | null = null;
-    if (funcNode) {
+    if (!innerReceiver && funcNode) {
       innerReceiver = funcNode.childForFieldName?.('object')
         ?? funcNode.childForFieldName?.('value')
         ?? funcNode.childForFieldName?.('operand')

@@ -265,7 +265,9 @@ const createClassNameLookup = (
       if (localNames.has(name)) return true;
       const cached = memo.get(name);
       if (cached !== undefined) return cached;
-      const result = symbolTable.lookupFuzzy(name).some(def => def.type === 'Class');
+      const result = symbolTable.lookupFuzzy(name).some(def =>
+        def.type === 'Class' || def.type === 'Enum' || def.type === 'Struct',
+      );
       memo.set(name, result);
       return result;
     },
