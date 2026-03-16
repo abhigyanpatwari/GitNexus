@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, PendingAssignmentExtractor } from './types.js';
 import { extractSimpleTypeName, extractVarName } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
@@ -15,7 +15,12 @@ const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
   const typeNode = node.childForFieldName('type');
   if (!left || !typeNode) return;
   const varName = extractVarName(left);
-  const typeName = extractSimpleTypeName(typeNode);
+  // extractSimpleTypeName handles identifiers and qualified names.
+  // Python 3.10+ union syntax `User | None` is parsed as binary_operator,
+  // which extractSimpleTypeName doesn't handle. Fall back to raw text so
+  // stripNullable can process it at lookup time (e.g., "User | None" → "User").
+  const inner = typeNode.type === 'type' ? (typeNode.firstNamedChild ?? typeNode) : typeNode;
+  const typeName = extractSimpleTypeName(inner) ?? inner.text;
   if (varName && typeName) env.set(varName, typeName);
 };
 
@@ -102,10 +107,23 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   return { varName: left.text, calleeName };
 };
 
+/** Python: alias = u → assignment with left/right fields */
+const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
+  if (node.type !== 'assignment') return undefined;
+  const left = node.childForFieldName('left');
+  const right = node.childForFieldName('right');
+  if (!left || !right) return undefined;
+  const lhs = left.type === 'identifier' ? left.text : undefined;
+  if (!lhs || scopeEnv.has(lhs)) return undefined;
+  if (right.type === 'identifier') return { lhs, rhs: right.text };
+  return undefined;
+};
+
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
   extractDeclaration,
   extractParameter,
   extractInitializer,
   scanConstructorBinding,
+  extractPendingAssignment,
 };

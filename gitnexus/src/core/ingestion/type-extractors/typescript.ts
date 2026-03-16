@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, ReturnTypeExtractor } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, ReturnTypeExtractor, PendingAssignmentExtractor } from './types.js';
 import { extractSimpleTypeName, extractVarName, hasTypeAnnotation, unwrapAwait, extractCalleeName } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
@@ -191,6 +191,21 @@ const extractReturnType: ReturnTypeExtractor = (node) => {
   return undefined;
 };
 
+/** TS/JS: const alias = u → variable_declarator with name/value fields */
+const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (!child || child.type !== 'variable_declarator') continue;
+    const nameNode = child.childForFieldName('name');
+    const valueNode = child.childForFieldName('value');
+    if (!nameNode || !valueNode) continue;
+    const lhs = nameNode.text;
+    if (scopeEnv.has(lhs)) continue;
+    if (valueNode.type === 'identifier') return { lhs, rhs: valueNode.text };
+  }
+  return undefined;
+};
+
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
   extractDeclaration,
@@ -198,4 +213,5 @@ export const typeConfig: LanguageTypeConfig = {
   extractInitializer,
   scanConstructorBinding,
   extractReturnType,
+  extractPendingAssignment,
 };

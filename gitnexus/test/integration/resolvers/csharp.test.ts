@@ -388,6 +388,49 @@ describe('C# local definition shadows import', () => {
 });
 
 // ---------------------------------------------------------------------------
+// For-each loop element typing: foreach (User user in users) user.Save()
+// C#: explicit type in foreach_statement binds loop variable
+// ---------------------------------------------------------------------------
+
+describe('C# foreach loop element type resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-foreach'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, both with Save methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'Save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves user.Save() in foreach to User#Save (not Repo#Save)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'Save' && c.targetFilePath === 'Models/User.cs');
+    expect(userSave).toBeDefined();
+    expect(userSave!.source).toBe('ProcessEntities');
+  });
+
+  it('resolves repo.Save() in foreach to Repo#Save (not User#Save)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'Save' && c.targetFilePath === 'Models/Repo.cs');
+    expect(repoSave).toBeDefined();
+    expect(repoSave!.source).toBe('ProcessEntities');
+  });
+
+  it('emits exactly 2 Save() CALLS edges (one per receiver type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'Save');
+    expect(saveCalls.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // this.Save() resolves to enclosing class's own Save method
 // ---------------------------------------------------------------------------
 
@@ -717,5 +760,67 @@ describe('C# async await constructor binding resolution', () => {
       c.target === 'Save' && c.source === 'ProcessOrder' && c.targetFilePath.includes('User.cs'),
     );
     expect(wrongSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Assignment chain propagation (Phase 4.3)
+// ---------------------------------------------------------------------------
+
+describe('C# assignment chain propagation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-assignment-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes each with a Save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'Save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves alias.Save() to User#Save via assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // Positive: alias.Save() must resolve to User#Save
+    const userSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'ProcessEntities' && c.targetFilePath.includes('User.cs'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('alias.Save() does NOT resolve to Repo#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // Negative: alias comes from User, so only one edge to User.cs
+    const wrongCall = calls.filter(c =>
+      c.target === 'Save' && c.source === 'ProcessEntities' && c.targetFilePath.includes('User.cs'),
+    );
+    expect(wrongCall.length).toBe(1);
+  });
+
+  it('resolves rAlias.Save() to Repo#Save via assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // Positive: rAlias.Save() must resolve to Repo#Save
+    const repoSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'ProcessEntities' && c.targetFilePath.includes('Repo.cs'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('each alias resolves to its own class, not the other', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'ProcessEntities' && c.targetFilePath.includes('User.cs'),
+    );
+    const repoSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'ProcessEntities' && c.targetFilePath.includes('Repo.cs'),
+    );
+    expect(userSave).toBeDefined();
+    expect(repoSave).toBeDefined();
+    expect(userSave!.targetFilePath).not.toBe(repoSave!.targetFilePath);
   });
 });

@@ -668,6 +668,25 @@ export const extractMethodSignature = (node: SyntaxNode | null | undefined): Met
     }
   }
 
+  // Kotlin: fun getUser(): User — return type is a bare user_type child of
+  // function_declaration. The Kotlin grammar does NOT wrap it in type_annotation
+  // or return_type; it appears as a direct child after function_value_parameters.
+  // Note: Kotlin uses function_value_parameters (not a field), so we find it by type.
+  if (!returnType) {
+    let paramsEnd = -1;
+    for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i);
+      if (!child) continue;
+      if (child.type === 'function_value_parameters' || child.type === 'value_parameters') {
+        paramsEnd = child.endIndex;
+      }
+      if (paramsEnd >= 0 && child.type === 'user_type' && child.startIndex > paramsEnd) {
+        returnType = child.text;
+        break;
+      }
+    }
+  }
+
   if (isVariadic) parameterCount = undefined;
 
   return { parameterCount, returnType };

@@ -3,7 +3,7 @@ import { FUNCTION_NODE_TYPES, extractFunctionName, CLASS_CONTAINER_TYPES } from 
 import { SupportedLanguages } from '../../config/supported-languages.js';
 import { typeConfigs, TYPED_PARAMETER_TYPES } from './type-extractors/index.js';
 import type { ClassNameLookup } from './type-extractors/types.js';
-import { extractSimpleTypeName } from './type-extractors/shared.js';
+import { extractSimpleTypeName, stripNullable } from './type-extractors/shared.js';
 import type { SymbolTable } from './symbol-table.js';
 
 /**
@@ -12,7 +12,9 @@ import type { SymbolTable } from './symbol-table.js';
  * file-level variables use the '' (empty string) scope.
  *
  * Design constraints:
- * - Explicit-only: only type annotations, never inferred types
+ * - Explicit-only: Tier 0 uses type annotations; Tier 1 infers from constructors
+ * - Tier 2: single-pass assignment chain propagation (depth-1) — resolves
+ *   `const b = a` when `a` already has a type from Tier 0/1
  * - Scope-aware: function-local variables don't collide across functions
  * - Conservative: complex/generic types extract the base name only
  * - Per-file: built once, used for receiver resolution, then discarded
@@ -71,13 +73,14 @@ const lookupInEnv = (
     const scopeEnv = env.get(scopeKey);
     if (scopeEnv) {
       const result = scopeEnv.get(varName);
-      if (result) return result;
+      if (result) return stripNullable(result);
     }
   }
 
   // Fall back to file-level scope
   const fileEnv = env.get(FILE_SCOPE);
-  return fileEnv?.get(varName);
+  const raw = fileEnv?.get(varName);
+  return raw ? stripNullable(raw) : undefined;
 };
 
 
@@ -288,18 +291,25 @@ export const buildTypeEnv = (
   const classNames = createClassNameLookup(localClassNames, symbolTable);
   const config = typeConfigs[language];
   const bindings: ConstructorBinding[] = [];
+  const pendingAssignments: Array<{ scope: string; lhs: string; rhs: string }> = [];
 
   /**
    * Try to extract a (variableName → typeName) binding from a single AST node.
    *
    * Resolution tiers (first match wins):
-   * - Tier 0: explicit type annotations via extractDeclaration
+   * - Tier 0: explicit type annotations via extractDeclaration / extractForLoopBinding
    * - Tier 1: constructor-call inference via extractInitializer (fallback)
    */
   const extractTypeBinding = (node: SyntaxNode, scopeEnv: Map<string, string>): void => {
     // This guard eliminates 90%+ of calls before any language dispatch.
     if (TYPED_PARAMETER_TYPES.has(node.type)) {
       config.extractParameter(node, scopeEnv);
+      return;
+    }
+    // For-each loop variable bindings (Java/C#/Kotlin): explicit element types in the AST.
+    // Checked before declarationNodeTypes — loop variables are not declarations.
+    if (config.forLoopNodeTypes?.has(node.type)) {
+      config.extractForLoopBinding?.(node, scopeEnv);
       return;
     }
     if (config.declarationNodeTypes.has(node.type)) {
@@ -338,6 +348,17 @@ export const buildTypeEnv = (
 
     extractTypeBinding(node, scopeEnv);
 
+    // Tier 2: collect plain-identifier RHS assignments for post-walk propagation.
+    // Delegates to per-language extractPendingAssignment — AST shapes differ widely
+    // (JS uses variable_declarator/name/value, Rust uses let_declaration/pattern/value,
+    // Python uses assignment/left/right, Go uses short_var_declaration/expression_list).
+    if (config.extractPendingAssignment && config.declarationNodeTypes.has(node.type)) {
+      const pending = config.extractPendingAssignment(node, scopeEnv);
+      if (pending) {
+        pendingAssignments.push({ scope, ...pending });
+      }
+    }
+
     // Scan for constructor bindings that couldn't be resolved locally.
     // Only collect if TypeEnv didn't already resolve this binding.
     if (config.scanConstructorBinding) {
@@ -355,6 +376,19 @@ export const buildTypeEnv = (
   };
 
   walk(tree.rootNode, FILE_SCOPE);
+
+  // Tier 2: single-pass assignment chain propagation (depth-1 only).
+  // Resolves `const b = a` where `a` has a known type from Tier 0/1.
+  // No fixpoint iteration — depth-1 covers 95%+ of real-world patterns.
+  for (const { scope, lhs, rhs } of pendingAssignments) {
+    const scopeEnv = env.get(scope);
+    if (!scopeEnv || scopeEnv.has(lhs)) continue;
+    const rhsType = scopeEnv.get(rhs) ?? env.get(FILE_SCOPE)?.get(rhs);
+    if (rhsType) {
+      scopeEnv.set(lhs, rhsType);
+    }
+  }
+
   return {
     lookup: (varName, callNode) => lookupInEnv(env, varName, callNode),
     constructorBindings: bindings,

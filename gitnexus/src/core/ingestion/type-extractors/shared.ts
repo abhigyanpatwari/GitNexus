@@ -234,6 +234,42 @@ export const hasTypeAnnotation = (node: SyntaxNode): boolean => {
 };
 
 /**
+ * Strip nullable wrappers from a type name string.
+ * Used by both lookupInEnv (TypeEnv annotations) and extractReturnTypeName
+ * (return-type text) to normalize types before receiver lookup.
+ *
+ *   "User | null"           → "User"
+ *   "User | undefined"      → "User"
+ *   "User | null | undefined" → "User"
+ *   "User?"                 → "User"
+ *   "User | Repo"           → undefined  (genuine union — refuse)
+ *   "null"                  → undefined
+ */
+/** Bare nullable keywords that should not produce a receiver binding. */
+const NULLABLE_KEYWORDS = new Set(['null', 'undefined', 'void', 'None', 'nil']);
+
+export const stripNullable = (typeName: string): string | undefined => {
+  let text = typeName.trim();
+  if (!text) return undefined;
+
+  if (NULLABLE_KEYWORDS.has(text)) return undefined;
+
+  // Strip nullable suffix: User? → User
+  if (text.endsWith('?')) text = text.slice(0, -1).trim();
+
+  // Strip union with null/undefined/None/nil/void
+  if (text.includes('|')) {
+    const parts = text.split('|').map(p => p.trim()).filter(p =>
+      p !== 'null' && p !== 'undefined' && p !== 'void' && p !== 'None' && p !== 'nil'
+    );
+    if (parts.length === 1) return parts[0];
+    return undefined; // genuine union or all-nullable — refuse
+  }
+
+  return text || undefined;
+};
+
+/**
  * Unwrap an await_expression to get the inner value.
  * Returns the node itself if not an await_expression, or null if input is null.
  */

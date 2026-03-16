@@ -481,35 +481,28 @@ describe('Kotlin return type inference', () => {
     expect(saveFns.length).toBe(2);
   });
 
-  // Known gap: Kotlin return-type disambiguation does not yet resolve competing
-  // same-named methods. With two save() functions (User#save, Repo#save), the
-  // resolver correctly refuses to emit an ambiguous edge — but it also cannot
-  // narrow to the correct target via return type inference. This gap needs
-  // investigation into whether Kotlin import resolution + scanConstructorBinding
-  // produces verified receiver bindings end-to-end.
-  it('does not emit spurious save() edges when disambiguation fails', () => {
+  it('resolves user.save() to User#save via return type inference', () => {
     const calls = getRelationships(result, 'CALLS');
     const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processUser',
+      c.target === 'save' && c.source === 'processUser' && c.targetFilePath?.includes('User.kt'),
     );
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves repo.save() to Repo#save via return type inference', () => {
+    const calls = getRelationships(result, 'CALLS');
     const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processRepo',
+      c.target === 'save' && c.source === 'processRepo' && c.targetFilePath?.includes('Repo.kt'),
     );
-    // With two competing save() methods and no working disambiguation,
-    // the resolver should refuse to emit edges (no false positives).
-    // When Kotlin return-type inference is fixed, update these to expect
-    // the edges to be defined and point to the correct files.
-    if (!userSave) {
-      expect(userSave).toBeUndefined();
-    } else {
-      // If disambiguation starts working, verify it points to the right file
-      expect(userSave.targetFilePath).toContain('User.kt');
-    }
-    if (!repoSave) {
-      expect(repoSave).toBeUndefined();
-    } else {
-      expect(repoSave.targetFilePath).toContain('Repo.kt');
-    }
+    expect(repoSave).toBeDefined();
+  });
+
+  it('user.save() does NOT resolve to Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c =>
+      c.target === 'save' && c.source === 'processUser' && c.targetFilePath?.includes('Repo.kt'),
+    );
+    expect(wrongSave).toBeUndefined();
   });
 });
 
@@ -584,6 +577,58 @@ describe('Kotlin super resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// For-each loop variable type resolution: for (user: User in users) { user.save() }
+// ---------------------------------------------------------------------------
+
+describe('Kotlin for-each loop type resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-foreach'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, both with save functions', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveFns = getNodesByLabel(result, 'Function').filter(f => f === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  it('resolves user.save() inside for-each to models/User.kt', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'save' && c.source === 'processUsers' && c.targetFilePath === 'models/User.kt');
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves repo.save() inside for-each to models/Repo.kt', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'save' && c.source === 'processRepos' && c.targetFilePath === 'models/Repo.kt');
+    expect(repoSave).toBeDefined();
+  });
+
+  it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save');
+    expect(saveCalls.length).toBe(2);
+  });
+
+  it('user.save() does NOT resolve to Repo.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c => c.target === 'save' && c.source === 'processUsers' && c.targetFilePath === 'models/Repo.kt');
+    expect(wrongSave).toBeUndefined();
+  });
+
+  it('repo.save() does NOT resolve to User.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c => c.target === 'save' && c.source === 'processRepos' && c.targetFilePath === 'models/User.kt');
+    expect(wrongSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // super.save() resolves to generic parent class's save method
 // ---------------------------------------------------------------------------
 
@@ -608,5 +653,52 @@ describe('Kotlin generic parent super resolution', () => {
     expect(superSave).toBeDefined();
     const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/Repo.kt');
     expect(repoSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Nullable receiver unwrapping: user?.save() with User? type resolves through ?.
+// ---------------------------------------------------------------------------
+
+describe('Kotlin nullable receiver resolution (safe calls)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-nullable-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes with competing save methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Function').filter((m: string) => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves user?.save() to User#save via receiver typing', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath.includes('User.kt'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves repo?.save() to Repo#save via receiver typing', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath.includes('Repo.kt'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('does NOT cross-contaminate (exactly 1 save per receiver file)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save' && c.source === 'processEntities');
+    const userTargeted = saveCalls.filter(c => c.targetFilePath.includes('User.kt'));
+    const repoTargeted = saveCalls.filter(c => c.targetFilePath.includes('Repo.kt'));
+    expect(userTargeted.length).toBe(1);
+    expect(repoTargeted.length).toBe(1);
   });
 });

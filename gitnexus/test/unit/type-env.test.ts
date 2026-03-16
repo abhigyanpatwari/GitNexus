@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildTypeEnv, type TypeEnv, type TypeEnvironment } from '../../src/core/ingestion/type-env.js';
+import { stripNullable } from '../../src/core/ingestion/type-extractors/shared.js';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import Java from 'tree-sitter-java';
@@ -1903,6 +1904,127 @@ svc = App::Models::Service.new
       const binding = constructorBindings.find(b => b.varName === 'user');
       expect(binding).toBeDefined();
       expect(binding!.calleeName).toBe('GetUser');
+    });
+  });
+
+  describe('assignment chain propagation (Tier 2, depth-1)', () => {
+    it('propagates explicit annotation: const a: User = ...; const b = a → b is User', () => {
+      const tree = parse(`
+        const a: User = getUser();
+        const b = a;
+      `, TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(env, 'a')).toBe('User');
+      expect(flatGet(env, 'b')).toBe('User');
+    });
+
+    it('propagates constructor inference: const a = new User(); const b = a → b is User', () => {
+      const tree = parse(`
+        const a = new User();
+        const b = a;
+      `, TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(env, 'a')).toBe('User');
+      expect(flatGet(env, 'b')).toBe('User');
+    });
+
+    it('depth-2 in declaration order resolves because single pass iterates sequentially', () => {
+      // b = a → resolved (a has User), c = b → also resolved because the same
+      // pass sets b before processing c (declarations are always in order).
+      // The "depth-1" limit applies to out-of-order or cyclic references.
+      const tree = parse(`
+        const a: User = getUser();
+        const b = a;
+        const c = b;
+      `, TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(env, 'a')).toBe('User');
+      expect(flatGet(env, 'b')).toBe('User');
+      expect(flatGet(env, 'c')).toBe('User');
+    });
+
+    it('propagates typed function parameter to local alias', () => {
+      const tree = parse(`
+        function process(user: User) {
+          const alias = user;
+          alias.save();
+        }
+      `, TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript');
+      // 'alias' should get User from the parameter 'user'
+      const scopeKey = [...env.keys()].find(k => k.startsWith('process@'));
+      expect(scopeKey).toBeDefined();
+      expect(env.get(scopeKey!)?.get('user')).toBe('User');
+      expect(env.get(scopeKey!)?.get('alias')).toBe('User');
+    });
+
+    it('propagates file-level typed variable to local alias inside function', () => {
+      const tree = parse(`
+        const config: Config = getConfig();
+        function process() {
+          const cfg = config;
+        }
+      `, TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript');
+      // cfg in process scope picks up Config from the file-level config binding
+      const scopeKey = [...env.keys()].find(k => k.startsWith('process@'));
+      expect(scopeKey).toBeDefined();
+      expect(env.get(scopeKey!)?.get('cfg')).toBe('Config');
+    });
+
+    it('does not propagate when RHS is a call expression (not a plain identifier)', () => {
+      const tree = parse(`
+        const x = getUser();
+      `, TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript');
+      // getUser() is a call_expression — should not create a binding
+      expect(flatGet(env, 'x')).toBeUndefined();
+    });
+  });
+
+  describe('stripNullable', () => {
+    it('strips User | null → User', () => {
+      expect(stripNullable('User | null')).toBe('User');
+    });
+
+    it('strips User | undefined → User', () => {
+      expect(stripNullable('User | undefined')).toBe('User');
+    });
+
+    it('strips User | null | undefined → User', () => {
+      expect(stripNullable('User | null | undefined')).toBe('User');
+    });
+
+    it('strips User? → User', () => {
+      expect(stripNullable('User?')).toBe('User');
+    });
+
+    it('passes through User unchanged', () => {
+      expect(stripNullable('User')).toBe('User');
+    });
+
+    it('refuses genuine union User | Repo → undefined', () => {
+      expect(stripNullable('User | Repo')).toBeUndefined();
+    });
+
+    it('returns undefined for null alone', () => {
+      expect(stripNullable('null')).toBeUndefined();
+    });
+
+    it('returns undefined for empty string', () => {
+      expect(stripNullable('')).toBeUndefined();
+    });
+
+    it('strips User | void → User', () => {
+      expect(stripNullable('User | void')).toBe('User');
+    });
+
+    it('strips User | None → User (Python)', () => {
+      expect(stripNullable('User | None')).toBe('User');
+    });
+
+    it('strips User | nil → User (Ruby)', () => {
+      expect(stripNullable('User | nil')).toBe('User');
     });
   });
 });

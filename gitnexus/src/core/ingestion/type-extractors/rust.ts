@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, PendingAssignmentExtractor } from './types.js';
 import { extractSimpleTypeName, extractVarName, hasTypeAnnotation, unwrapAwait } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
@@ -181,10 +181,23 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   return { varName: patternNode.text, calleeName };
 };
 
+/** Rust: let alias = u; → let_declaration with pattern + value fields */
+const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
+  if (node.type !== 'let_declaration') return undefined;
+  const pattern = node.childForFieldName('pattern');
+  const value = node.childForFieldName('value');
+  if (!pattern || !value) return undefined;
+  const lhs = extractVarName(pattern);
+  if (!lhs || scopeEnv.has(lhs)) return undefined;
+  if (value.type === 'identifier') return { lhs, rhs: value.text };
+  return undefined;
+};
+
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
   extractDeclaration,
   extractInitializer,
   extractParameter,
   scanConstructorBinding,
+  extractPendingAssignment,
 };

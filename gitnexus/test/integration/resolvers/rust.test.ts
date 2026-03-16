@@ -809,3 +809,76 @@ describe('Rust async .await constructor binding resolution', () => {
     expect(wrongSave).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Nullable receiver: let user: Option<User> = find_user(); user.unwrap().save()
+// Rust Option<User> — stripNullable unwraps Option wrapper to inner type.
+// ---------------------------------------------------------------------------
+
+describe('Rust nullable receiver resolution (Option<T>)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-nullable-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs, both with save functions', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
+    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  // Known limitation: user.unwrap().save() chains two method calls. unwrap()
+  // returns User but TypeEnv doesn't track intermediate return values in chains.
+  // Disambiguating through .unwrap() requires chained return type inference (Phase 5).
+  it.todo('resolves user.unwrap().save() to User.save (requires chained call inference)');
+});
+
+// ---------------------------------------------------------------------------
+// Assignment chain propagation (Phase 4.3)
+// ---------------------------------------------------------------------------
+
+describe('Rust assignment chain propagation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-assignment-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs each with a save function', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
+    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  it('resolves alias.save() to User#save via assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_entities' && c.targetFilePath?.includes('user.rs'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves r_alias.save() to Repo#save via assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_entities' && c.targetFilePath?.includes('repo.rs'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('alias.save() does NOT resolve to Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save' && c.source === 'process_entities');
+    expect(saveCalls.filter(c => c.targetFilePath?.includes('user.rs')).length).toBe(1);
+    expect(saveCalls.filter(c => c.targetFilePath?.includes('repo.rs')).length).toBe(1);
+  });
+});

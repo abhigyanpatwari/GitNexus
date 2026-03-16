@@ -658,3 +658,115 @@ describe('Go multi-return factory type inference', () => {
     expect(wrongSave).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Nullable receiver: var user *models.User = findUser(); user.Save()
+// Go pointer types (*User) — extractSimpleTypeName strips pointer prefix.
+// ---------------------------------------------------------------------------
+
+describe('Go nullable receiver resolution (pointer types)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-nullable-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs, both with Save methods', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'Save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves user.Save() to User.Save via pointer receiver typing', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'Save' && c.targetFilePath === 'models/user.go');
+    expect(userSave).toBeDefined();
+    expect(userSave!.source).toBe('processEntities');
+  });
+
+  it('resolves repo.Save() to Repo.Save via pointer receiver typing', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'Save' && c.targetFilePath === 'models/repo.go');
+    expect(repoSave).toBeDefined();
+    expect(repoSave!.source).toBe('processEntities');
+  });
+
+  it('user.Save() does NOT resolve to Repo.Save (negative disambiguation)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'Save' && c.source === 'processEntities');
+    expect(saveCalls.filter(c => c.targetFilePath === 'models/user.go').length).toBe(1);
+    expect(saveCalls.filter(c => c.targetFilePath === 'models/repo.go').length).toBe(1);
+  });
+
+  it('emits exactly 2 Save() CALLS edges (one per receiver type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'Save');
+    expect(saveCalls.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Assignment chain propagation (Phase 4.3)
+// ---------------------------------------------------------------------------
+
+describe('Go assignment chain propagation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-assignment-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs each with a Save method', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'Save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves alias.Save() to User#Save via assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // Positive: alias.Save() must resolve to User#Save
+    const userSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processEntities' && c.targetFilePath.includes('user.go'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('alias.Save() does NOT resolve to Repo#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // Negative: alias comes from User, so only one edge to user.go
+    const wrongCall = calls.filter(c =>
+      c.target === 'Save' && c.source === 'processEntities' && c.targetFilePath.includes('user.go'),
+    );
+    expect(wrongCall.length).toBe(1);
+  });
+
+  it('resolves rAlias.Save() to Repo#Save via assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // Positive: rAlias.Save() must resolve to Repo#Save
+    const repoSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processEntities' && c.targetFilePath.includes('repo.go'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('each alias resolves to its own struct, not the other', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processEntities' && c.targetFilePath.includes('user.go'),
+    );
+    const repoSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processEntities' && c.targetFilePath.includes('repo.go'),
+    );
+    expect(userSave).toBeDefined();
+    expect(repoSave).toBeDefined();
+    expect(userSave!.targetFilePath).not.toBe(repoSave!.targetFilePath);
+  });
+});

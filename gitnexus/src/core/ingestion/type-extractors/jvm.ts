@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, ForLoopExtractor, PendingAssignmentExtractor } from './types.js';
 import { extractSimpleTypeName, extractVarName, findChildByType } from './shared.js';
 
 // ── Java ──────────────────────────────────────────────────────────────────
@@ -85,12 +85,44 @@ const scanJavaConstructorBinding: ConstructorBindingScanner = (node) => {
   return { varName: nameNode.text, calleeName: methodName.text };
 };
 
+const JAVA_FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set([
+  'enhanced_for_statement',
+]);
+
+/** Java: for (User user : users) — extract loop variable binding */
+const extractJavaForLoopBinding: ForLoopExtractor = (node: SyntaxNode, scopeEnv: Map<string, string>): void => {
+  const typeNode = node.childForFieldName('type');
+  const nameNode = node.childForFieldName('name');
+  if (!typeNode || !nameNode) return;
+  const typeName = extractSimpleTypeName(typeNode);
+  const varName = extractVarName(nameNode);
+  if (typeName && varName) scopeEnv.set(varName, typeName);
+};
+
+/** Java/Kotlin: var alias = u → variable_declarator with name/value fields */
+const extractJvmPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (!child || child.type !== 'variable_declarator') continue;
+    const nameNode = child.childForFieldName('name');
+    const valueNode = child.childForFieldName('value');
+    if (!nameNode || !valueNode) continue;
+    const lhs = nameNode.text;
+    if (scopeEnv.has(lhs)) continue;
+    if (valueNode.type === 'identifier' || valueNode.type === 'simple_identifier') return { lhs, rhs: valueNode.text };
+  }
+  return undefined;
+};
+
 export const javaTypeConfig: LanguageTypeConfig = {
   declarationNodeTypes: JAVA_DECLARATION_NODE_TYPES,
   extractDeclaration: extractJavaDeclaration,
   extractParameter: extractJavaParameter,
   extractInitializer: extractJavaInitializer,
   scanConstructorBinding: scanJavaConstructorBinding,
+  forLoopNodeTypes: JAVA_FOR_LOOP_NODE_TYPES,
+  extractForLoopBinding: extractJavaForLoopBinding,
+  extractPendingAssignment: extractJvmPendingAssignment,
 };
 
 // ── Kotlin ────────────────────────────────────────────────────────────────
@@ -215,10 +247,32 @@ const scanKotlinConstructorBinding: ConstructorBindingScanner = (node) => {
   return { varName: nameNode.text, calleeName };
 };
 
+const KOTLIN_FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set([
+  'for_statement',
+]);
+
+/** Kotlin: for (user: User in users) — extract loop variable binding when explicit type annotation exists */
+const extractKotlinForLoopBinding: ForLoopExtractor = (node: SyntaxNode, scopeEnv: Map<string, string>): void => {
+  // Kotlin loop variable: variable_declaration child with optional user_type annotation
+  const varDecl = findChildByType(node, 'variable_declaration');
+  if (!varDecl) return;
+  // Only extract when there is an explicit type annotation (user_type node)
+  const typeNode = findChildByType(varDecl, 'user_type');
+  if (!typeNode) return;
+  const nameNode = findChildByType(varDecl, 'simple_identifier');
+  if (!nameNode) return;
+  const typeName = extractSimpleTypeName(typeNode);
+  const varName = extractVarName(nameNode);
+  if (typeName && varName) scopeEnv.set(varName, typeName);
+};
+
 export const kotlinTypeConfig: LanguageTypeConfig = {
   declarationNodeTypes: KOTLIN_DECLARATION_NODE_TYPES,
+  forLoopNodeTypes: KOTLIN_FOR_LOOP_NODE_TYPES,
   extractDeclaration: extractKotlinDeclaration,
   extractParameter: extractKotlinParameter,
   extractInitializer: extractKotlinInitializer,
   scanConstructorBinding: scanKotlinConstructorBinding,
+  extractForLoopBinding: extractKotlinForLoopBinding,
+  extractPendingAssignment: extractJvmPendingAssignment,
 };

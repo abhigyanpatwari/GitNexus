@@ -24,10 +24,26 @@ export type ConstructorBindingScanner = (node: SyntaxNode) => { varName: string;
  *  rather than in AST fields. Returns undefined if no return type can be determined. */
 export type ReturnTypeExtractor = (node: SyntaxNode) => string | undefined;
 
+/** Extracts loop variable type binding from a for-each statement. */
+export type ForLoopExtractor = (
+  node: SyntaxNode,
+  scopeEnv: Map<string, string>,
+) => void;
+
+/** Extracts a plain-identifier assignment for Tier 2 propagation.
+ *  For `const b = a`, returns { lhs: 'b', rhs: 'a' } when the LHS has no resolved type.
+ *  Returns undefined if the node is not a plain identifier assignment. */
+export type PendingAssignmentExtractor = (
+  node: SyntaxNode,
+  scopeEnv: ReadonlyMap<string, string>,
+) => { lhs: string; rhs: string } | undefined;
+
 /** Per-language type extraction configuration */
 export interface LanguageTypeConfig {
   /** Node types that represent typed declarations for this language */
   declarationNodeTypes: ReadonlySet<string>;
+  /** AST node types for for-each/for-in statements with explicit element types. */
+  forLoopNodeTypes?: ReadonlySet<string>;
   /** Extract a (varName → typeName) binding from a declaration node */
   extractDeclaration: TypeBindingExtractor;
   /** Extract a (varName → typeName) binding from a parameter node */
@@ -44,4 +60,10 @@ export interface LanguageTypeConfig {
   /** Extract return type from comment-based annotations (e.g. YARD @return [Type]).
    *  Called as fallback when extractMethodSignature finds no AST-based return type. */
   extractReturnType?: ReturnTypeExtractor;
+  /** Extract loop variable → type binding from a for-each AST node. */
+  extractForLoopBinding?: ForLoopExtractor;
+  /** Extract plain-identifier assignment (e.g. `const b = a`) for Tier 2 chain propagation.
+   *  Called on declaration/assignment nodes; returns {lhs, rhs} when the RHS is a bare identifier
+   *  and the LHS has no resolved type yet. Language-specific because AST shapes differ widely. */
+  extractPendingAssignment?: PendingAssignmentExtractor;
 }

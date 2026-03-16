@@ -70,6 +70,52 @@ describe('JavaScript parent resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Nullable receiver: JSDoc @param {User | null} strips nullable via TypeEnv
+// ---------------------------------------------------------------------------
+
+describe('JavaScript nullable receiver resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'js-nullable-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, both with save methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves user.save() to src/user.js via nullable-stripped JSDoc type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'save' && c.source === 'processEntities' && c.targetFilePath === 'src/user.js');
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves repo.save() to src/repo.js via nullable-stripped JSDoc type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'save' && c.source === 'processEntities' && c.targetFilePath === 'src/repo.js');
+    expect(repoSave).toBeDefined();
+  });
+
+  it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save');
+    expect(saveCalls.length).toBe(2);
+  });
+
+  it('each save() call resolves to a distinct file (no duplicates)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save' && c.source === 'processEntities');
+    const files = saveCalls.map(c => c.targetFilePath).sort();
+    expect(files).toEqual(['src/repo.js', 'src/user.js']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // super.save() resolves to parent class's save method
 // ---------------------------------------------------------------------------
 

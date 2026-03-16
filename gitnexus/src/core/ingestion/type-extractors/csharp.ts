@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { ConstructorBindingScanner, LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor } from './types.js';
+import type { ConstructorBindingScanner, ForLoopExtractor, LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, PendingAssignmentExtractor } from './types.js';
 import { extractSimpleTypeName, extractVarName, findChildByType, unwrapAwait } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
@@ -143,9 +143,48 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   return { varName: nameNode.text, calleeName };
 };
 
+const FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set([
+  'foreach_statement',
+]);
+
+/** C#: foreach (User user in users) — extract loop variable binding */
+const extractForLoopBinding: ForLoopExtractor = (node: SyntaxNode, scopeEnv: Map<string, string>): void => {
+  const typeNode = node.childForFieldName('type');
+  // The loop variable name is in the 'left' field in tree-sitter-c-sharp
+  const nameNode = node.childForFieldName('left');
+  if (!typeNode || !nameNode) return;
+  // Skip 'var' — type would need to be inferred from the collection element type
+  if (typeNode.type === 'implicit_type' && typeNode.text === 'var') return;
+  const typeName = extractSimpleTypeName(typeNode);
+  const varName = extractVarName(nameNode);
+  if (typeName && varName) scopeEnv.set(varName, typeName);
+};
+
+/** C#: var alias = u → variable_declarator with name + equals_value_clause */
+const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (!child || child.type !== 'variable_declarator') continue;
+    const nameNode = child.childForFieldName('name');
+    if (!nameNode) continue;
+    const lhs = nameNode.text;
+    if (scopeEnv.has(lhs)) continue;
+    // C# wraps value in equals_value_clause; fall back to last named child
+    const evc = child.children.find(c => c.type === 'equals_value_clause');
+    const valueNode = evc?.firstNamedChild ?? child.namedChild(child.namedChildCount - 1);
+    if (valueNode && valueNode !== nameNode && (valueNode.type === 'identifier' || valueNode.type === 'simple_identifier')) {
+      return { lhs, rhs: valueNode.text };
+    }
+  }
+  return undefined;
+};
+
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
+  forLoopNodeTypes: FOR_LOOP_NODE_TYPES,
   extractDeclaration,
   extractParameter,
   scanConstructorBinding,
+  extractForLoopBinding,
+  extractPendingAssignment,
 };

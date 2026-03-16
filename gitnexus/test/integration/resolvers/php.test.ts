@@ -882,3 +882,50 @@ describe('PHP $this->method() receiver disambiguation', () => {
     expect(saveCall).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Nullable receiver unwrapping: ?User type hint stripped to User for resolution
+// ---------------------------------------------------------------------------
+
+describe('PHP nullable receiver resolution (?Type hint)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'php-nullable-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes with competing save methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m: string) => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves $user->save() to User#save via nullable param type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User.php'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves $repo->save() to Repo#save via nullable param type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('Repo.php'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('does NOT cross-contaminate (exactly 1 save per receiver file)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save' && c.source === 'process');
+    const userTargeted = saveCalls.filter(c => c.targetFilePath.includes('User.php'));
+    const repoTargeted = saveCalls.filter(c => c.targetFilePath.includes('Repo.php'));
+    expect(userTargeted.length).toBe(1);
+    expect(repoTargeted.length).toBe(1);
+  });
+});
