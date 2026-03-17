@@ -708,9 +708,13 @@ export const SCALA_QUERIES = `
 (val_definition
   pattern: (identifier) @name) @definition.property
 
+; ── Var definitions ───────────────────────────────────────────────────────
+(var_definition
+  pattern: (identifier) @name) @definition.property
+
 ; ── Imports ───────────────────────────────────────────────────────────────
 (import_declaration
-  (identifier) @import.source) @import
+  (_) @import.source) @import
 
 ; ── Function calls (direct) ──────────────────────────────────────────────
 (call_expression

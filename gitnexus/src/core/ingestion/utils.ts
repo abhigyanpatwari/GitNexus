@@ -768,6 +768,7 @@ const CONSTRUCTOR_CALL_NODE_TYPES = new Set([
   'new_expression',                      // TS/JS/C++: new Foo()
   'object_creation_expression',          // Java/C#/PHP: new Foo()
   'implicit_object_creation_expression', // C# 9: User u = new(...)
+  'instance_expression',                 // Scala: new Foo()
   'composite_literal',                   // Go: User{...}
   'struct_expression',                   // Rust: User { ... }
 ]);

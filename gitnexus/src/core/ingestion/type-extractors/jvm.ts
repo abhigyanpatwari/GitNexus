@@ -355,3 +355,175 @@ export const kotlinTypeConfig: LanguageTypeConfig = {
   extractForLoopBinding: extractKotlinForLoopBinding,
   extractPendingAssignment: extractKotlinPendingAssignment,
 };
+
+// ── Scala ─────────────────────────────────────────────────────────────────
+
+const SCALA_DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
+  'val_definition',
+  'var_definition',
+]);
+
+/** Scala: val x: Foo = ... / var x: Foo = ... */
+const extractScalaDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+  if (node.type === 'val_definition' || node.type === 'var_definition') {
+    // Scala val/var: pattern field is the name (identifier), type field is the type annotation
+    const nameNode = node.childForFieldName('pattern')
+      ?? findChildByType(node, 'identifier');
+    const typeNode = node.childForFieldName('type')
+      ?? findChildByType(node, 'type_identifier');
+    if (!nameNode || !typeNode) return;
+    const varName = extractVarName(nameNode);
+    const typeName = extractSimpleTypeName(typeNode);
+    if (varName && typeName) env.set(varName, typeName);
+  }
+};
+
+/** Scala: parameter (in function_definition) and class_parameter (in class constructors) */
+const extractScalaParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+  let nameNode: SyntaxNode | null = null;
+  let typeNode: SyntaxNode | null = null;
+
+  if (node.type === 'parameter' || node.type === 'class_parameter') {
+    nameNode = node.childForFieldName('name');
+    typeNode = node.childForFieldName('type');
+  } else {
+    nameNode = node.childForFieldName('name') ?? node.childForFieldName('pattern');
+    typeNode = node.childForFieldName('type');
+  }
+
+  if (!nameNode || !typeNode) return;
+  const varName = extractVarName(nameNode);
+  const typeName = extractSimpleTypeName(typeNode);
+  if (varName && typeName) env.set(varName, typeName);
+};
+
+/** Scala: val user = new User() or val user = User() — infer type from instance_expression or call_expression */
+const extractScalaInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ClassNameLookup): void => {
+  if (node.type !== 'val_definition' && node.type !== 'var_definition') return;
+  // Skip if there's an explicit type annotation
+  const typeNode = node.childForFieldName('type')
+    ?? findChildByType(node, 'type_identifier');
+  if (typeNode) return;
+
+  const nameNode = node.childForFieldName('pattern')
+    ?? findChildByType(node, 'identifier');
+  if (!nameNode) return;
+
+  // Check for `new Foo()` — instance_expression
+  const value = node.childForFieldName('value')
+    ?? node.lastNamedChild;
+  if (!value) return;
+
+  if (value.type === 'instance_expression') {
+    const ctorType = findChildByType(value, 'type_identifier');
+    if (ctorType) {
+      const typeName = extractSimpleTypeName(ctorType);
+      const varName = extractVarName(nameNode);
+      if (typeName && varName) env.set(varName, typeName);
+    }
+    return;
+  }
+
+  // Check for `Foo()` — call_expression where callee is a known class
+  if (value.type === 'call_expression') {
+    const callee = value.childForFieldName('function') ?? value.firstNamedChild;
+    if (!callee || callee.type !== 'identifier') return;
+    const calleeName = callee.text;
+    if (!calleeName || !classNames.has(calleeName)) return;
+    const varName = extractVarName(nameNode);
+    if (varName) env.set(varName, calleeName);
+  }
+};
+
+/** Scala: val x = User(...) — constructor binding for val/var with call_expression */
+const scanScalaConstructorBinding: ConstructorBindingScanner = (node) => {
+  if (node.type !== 'val_definition' && node.type !== 'var_definition') return undefined;
+  // Skip if there's a type annotation
+  const typeNode = node.childForFieldName('type')
+    ?? findChildByType(node, 'type_identifier');
+  if (typeNode) return undefined;
+
+  const nameNode = node.childForFieldName('pattern')
+    ?? findChildByType(node, 'identifier');
+  if (!nameNode) return undefined;
+
+  const value = node.childForFieldName('value')
+    ?? node.lastNamedChild;
+  if (!value) return undefined;
+
+  if (value.type === 'call_expression') {
+    const callee = value.childForFieldName('function') ?? value.firstNamedChild;
+    if (!callee) return undefined;
+
+    let calleeName: string | undefined;
+    if (callee.type === 'identifier') {
+      calleeName = callee.text;
+    } else if (callee.type === 'field_expression') {
+      // obj.method() → extract method name
+      const field = callee.childForFieldName('field');
+      if (field?.type === 'identifier') {
+        calleeName = field.text;
+      }
+    }
+    if (!calleeName) return undefined;
+    return { varName: nameNode.text, calleeName };
+  }
+
+  return undefined;
+};
+
+const SCALA_FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set([
+  'for_expression',
+]);
+
+/** Scala: for (user: User <- users) — extract loop variable binding when explicit type annotation exists */
+const extractScalaForLoopBinding: ForLoopExtractor = (node: SyntaxNode, scopeEnv: Map<string, string>): void => {
+  // Scala for comprehension enumerators contain typed patterns
+  // Look for enumerators → enumerator → pattern with type annotation
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (!child) continue;
+    // Look for identifier/pattern with a type annotation in the enumerator
+    const nameNode = child.childForFieldName('name') ?? child.childForFieldName('pattern')
+      ?? findChildByType(child, 'identifier');
+    const typeNode = child.childForFieldName('type')
+      ?? findChildByType(child, 'type_identifier');
+    if (nameNode && typeNode) {
+      const varName = extractVarName(nameNode);
+      const typeName = extractSimpleTypeName(typeNode);
+      if (varName && typeName) scopeEnv.set(varName, typeName);
+    }
+  }
+};
+
+/** Scala: val alias = u → val_definition/var_definition with identifier RHS */
+const extractScalaPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
+  if (node.type !== 'val_definition' && node.type !== 'var_definition') return undefined;
+
+  const nameNode = node.childForFieldName('pattern')
+    ?? findChildByType(node, 'identifier');
+  if (!nameNode) return undefined;
+  const lhs = nameNode.text;
+  if (scopeEnv.has(lhs)) return undefined;
+
+  // Get the RHS value
+  const value = node.childForFieldName('value')
+    ?? node.lastNamedChild;
+  if (!value) return undefined;
+  if (value.type === 'identifier') {
+    return { lhs, rhs: value.text };
+  }
+
+  return undefined;
+};
+
+export const scalaTypeConfig: LanguageTypeConfig = {
+  declarationNodeTypes: SCALA_DECLARATION_NODE_TYPES,
+  forLoopNodeTypes: SCALA_FOR_LOOP_NODE_TYPES,
+  extractDeclaration: extractScalaDeclaration,
+  extractParameter: extractScalaParameter,
+  extractInitializer: extractScalaInitializer,
+  scanConstructorBinding: scanScalaConstructorBinding,
+  extractForLoopBinding: extractScalaForLoopBinding,
+  extractPendingAssignment: extractScalaPendingAssignment,
+};

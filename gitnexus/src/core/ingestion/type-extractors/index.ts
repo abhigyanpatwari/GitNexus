@@ -7,7 +7,7 @@ import { SupportedLanguages } from '../../../config/supported-languages.js';
 import type { LanguageTypeConfig } from './types.js';
 
 import { typeConfig as typescriptConfig } from './typescript.js';
-import { javaTypeConfig, kotlinTypeConfig } from './jvm.js';
+import { javaTypeConfig, kotlinTypeConfig, scalaTypeConfig } from './jvm.js';
 import { typeConfig as csharpConfig } from './csharp.js';
 import { typeConfig as goConfig } from './go.js';
 import { typeConfig as rustConfig } from './rust.js';
@@ -31,7 +31,7 @@ export const typeConfigs = {
   [SupportedLanguages.CPlusPlus]: cCppConfig,
   [SupportedLanguages.PHP]: phpConfig,
   [SupportedLanguages.Ruby]: rubyConfig,
-  [SupportedLanguages.Scala]: kotlinTypeConfig,
+  [SupportedLanguages.Scala]: scalaTypeConfig,
 } satisfies Record<SupportedLanguages, LanguageTypeConfig>;
 
 export type {

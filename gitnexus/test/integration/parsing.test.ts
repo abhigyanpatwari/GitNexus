@@ -742,11 +742,11 @@ describe('parsing', () => {
 
     it('falls back gracefully for unsupported language', async () => {
       // getLanguageFromFilename returns null for extensions with no grammar mapping.
-      const scalaLang = getLanguageFromFilename('Main.scala');
-      expect(scalaLang).toBeNull();
-
       const luaLang = getLanguageFromFilename('module.lua');
       expect(luaLang).toBeNull();
+
+      const haskellLang = getLanguageFromFilename('Main.hs');
+      expect(haskellLang).toBeNull();
 
       // loadLanguage throws an explicit error for a language not in the grammar map.
       // Cast through unknown to simulate a caller passing an unrecognised language key.

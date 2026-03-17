@@ -6,7 +6,7 @@
 export { EXTENSIONS, tryResolveWithExtensions, buildSuffixIndex, suffixResolve } from './utils.js';
 export type { SuffixIndex } from './utils.js';
 
-export { KOTLIN_EXTENSIONS, appendKotlinWildcard, resolveJvmWildcard, resolveJvmMemberImport } from './jvm.js';
+export { KOTLIN_EXTENSIONS, SCALA_EXTENSIONS, appendKotlinWildcard, resolveJvmWildcard, resolveJvmMemberImport } from './jvm.js';
 
 export { resolveGoPackageDir, resolveGoPackage } from './go.js';
 export type { GoModuleConfig } from './go.js';

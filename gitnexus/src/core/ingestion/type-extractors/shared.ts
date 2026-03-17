@@ -140,7 +140,8 @@ export const TYPED_PARAMETER_TYPES = new Set([
   'required_parameter',      // TS: (x: Foo)
   'optional_parameter',      // TS: (x?: Foo)
   'formal_parameter',        // Java/Kotlin
-  'parameter',               // C#/Rust/Go/Python/Swift
+  'parameter',               // C#/Rust/Go/Python/Swift/Scala
+  'class_parameter',         // Scala class constructor parameters
   'parameter_declaration',   // C/C++ void f(Type name)
   'simple_parameter',        // PHP function(Foo $x)
   'property_promotion_parameter', // PHP 8.0+ constructor promotion: __construct(private Foo $x)

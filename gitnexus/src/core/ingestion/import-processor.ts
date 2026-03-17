@@ -22,6 +22,7 @@ import {
   resolveImportPath,
   appendKotlinWildcard,
   KOTLIN_EXTENSIONS,
+  SCALA_EXTENSIONS,
   resolveJvmWildcard,
   resolveJvmMemberImport,
   resolveGoPackageDir,
@@ -150,13 +151,20 @@ function resolveLanguageImport(
   const { allFilePaths, allFileList, normalizedFileList, index, resolveCache } = ctx;
   const { tsconfigPaths, goModule, composerConfig, swiftPackageConfig, csharpConfigs } = configs;
 
-  // JVM languages (Java + Kotlin): handle wildcards and member imports
-  if (language === SupportedLanguages.Java || language === SupportedLanguages.Kotlin) {
-    const exts = language === SupportedLanguages.Java ? ['.java'] : KOTLIN_EXTENSIONS;
+  // JVM languages (Java + Kotlin + Scala): handle wildcards and member imports
+  if (language === SupportedLanguages.Java || language === SupportedLanguages.Kotlin || language === SupportedLanguages.Scala) {
+    const exts = language === SupportedLanguages.Java ? ['.java']
+      : language === SupportedLanguages.Scala ? SCALA_EXTENSIONS
+      : KOTLIN_EXTENSIONS;
+
+    // Normalize Scala wildcard imports: `._` → `.*` for unified JVM resolution
+    if (language === SupportedLanguages.Scala && rawImportPath.endsWith('._')) {
+      rawImportPath = rawImportPath.slice(0, -2) + '.*';
+    }
 
     if (rawImportPath.endsWith('.*')) {
       const matchedFiles = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, exts, index);
-      if (matchedFiles.length === 0 && language === SupportedLanguages.Kotlin) {
+      if (matchedFiles.length === 0 && (language === SupportedLanguages.Kotlin || language === SupportedLanguages.Scala)) {
         const javaMatches = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
         if (javaMatches.length > 0) return { kind: 'files', files: javaMatches };
       }
@@ -164,7 +172,7 @@ function resolveLanguageImport(
       // Fall through to standard resolution
     } else {
       let memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, exts, index);
-      if (!memberResolved && language === SupportedLanguages.Kotlin) {
+      if (!memberResolved && (language === SupportedLanguages.Kotlin || language === SupportedLanguages.Scala)) {
         memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
       }
       if (memberResolved) return { kind: 'files', files: [memberResolved] };
