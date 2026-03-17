@@ -46,23 +46,26 @@ export const initLbug = async (dbPath: string) => {
 /**
  * Execute multiple queries against one repo DB atomically.
  * While the callback runs, no other request can switch the active DB.
+ *
+ * @param readOnly - Open in read-only mode (no schema creation, no write lock).
+ *                   Use for server/query endpoints that only read.
  */
-export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>): Promise<T> => {
+export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>, readOnly?: boolean): Promise<T> => {
   return runWithSessionLock(async () => {
-    await ensureLbugInitialized(dbPath);
+    await ensureLbugInitialized(dbPath, readOnly);
     return operation();
   });
 };
 
-const ensureLbugInitialized = async (dbPath: string) => {
+const ensureLbugInitialized = async (dbPath: string, readOnly?: boolean) => {
   if (conn && currentDbPath === dbPath) {
     return { db, conn };
   }
-  await doInitLbug(dbPath);
+  await doInitLbug(dbPath, readOnly);
   return { db, conn };
 };
 
-const doInitLbug = async (dbPath: string) => {
+const doInitLbug = async (dbPath: string, readOnly?: boolean) => {
   // Different database requested — close the old one first
   if (conn || db) {
     try { if (conn) await conn.close(); } catch {}
@@ -73,45 +76,52 @@ const doInitLbug = async (dbPath: string) => {
     ftsLoaded = false;
   }
 
-  // LadybugDB stores the database as a single file (not a directory).
-  // If the path already exists, it must be a valid LadybugDB database file.
-  // Remove stale empty directories or files from older versions.
-  try {
-    const stat = await fs.lstat(dbPath);
-    if (stat.isSymbolicLink()) {
-      // Never follow symlinks — just remove the link itself
-      await fs.unlink(dbPath);
-    } else if (stat.isDirectory()) {
-      // Verify path is within expected storage directory before deleting
-      const realPath = await fs.realpath(dbPath);
-      const parentDir = path.dirname(dbPath);
-      const realParent = await fs.realpath(parentDir);
-      if (!realPath.startsWith(realParent + path.sep) && realPath !== realParent) {
-        throw new Error(`Refusing to delete ${dbPath}: resolved path ${realPath} is outside storage directory`);
+  if (!readOnly) {
+    // LadybugDB stores the database as a single file (not a directory).
+    // If the path already exists, it must be a valid LadybugDB database file.
+    // Remove stale empty directories or files from older versions.
+    try {
+      const stat = await fs.lstat(dbPath);
+      if (stat.isSymbolicLink()) {
+        // Never follow symlinks — just remove the link itself
+        await fs.unlink(dbPath);
+      } else if (stat.isDirectory()) {
+        // Verify path is within expected storage directory before deleting
+        const realPath = await fs.realpath(dbPath);
+        const parentDir = path.dirname(dbPath);
+        const realParent = await fs.realpath(parentDir);
+        if (!realPath.startsWith(realParent + path.sep) && realPath !== realParent) {
+          throw new Error(`Refusing to delete ${dbPath}: resolved path ${realPath} is outside storage directory`);
+        }
+        // Old-style directory database or empty leftover - remove it
+        await fs.rm(dbPath, { recursive: true, force: true });
       }
-      // Old-style directory database or empty leftover - remove it
-      await fs.rm(dbPath, { recursive: true, force: true });
+      // If it's a file, assume it's an existing LadybugDB database - LadybugDB will open it
+    } catch {
+      // Path doesn't exist, which is what LadybugDB wants for a new database
     }
-    // If it's a file, assume it's an existing LadybugDB database - LadybugDB will open it
-  } catch {
-    // Path doesn't exist, which is what LadybugDB wants for a new database
+
+    // Ensure parent directory exists
+    const parentDir = path.dirname(dbPath);
+    await fs.mkdir(parentDir, { recursive: true });
   }
 
-  // Ensure parent directory exists
-  const parentDir = path.dirname(dbPath);
-  await fs.mkdir(parentDir, { recursive: true });
-
-  db = new lbug.Database(dbPath);
+  db = readOnly
+    ? new lbug.Database(dbPath, 0, false, true)  // readOnly = true → no write lock
+    : new lbug.Database(dbPath);
   conn = new lbug.Connection(db);
 
-  for (const schemaQuery of SCHEMA_QUERIES) {
-    try {
-      await conn.query(schemaQuery);
-    } catch (err) {
-      // Only ignore "already exists" errors - log everything else
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes('already exists')) {
-        console.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
+  // Skip schema creation in read-only mode — tables already exist from analyze
+  if (!readOnly) {
+    for (const schemaQuery of SCHEMA_QUERIES) {
+      try {
+        await conn.query(schemaQuery);
+      } catch (err) {
+        // Only ignore "already exists" errors - log everything else
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('already exists')) {
+          console.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
+        }
       }
     }
   }

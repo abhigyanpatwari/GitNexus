@@ -12,8 +12,8 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
-import { loadMeta, listRegisteredRepos } from '../storage/repo-manager.js';
-import { executeQuery, closeLbug, withLbugDb } from '../core/lbug/lbug-adapter.js';
+import { loadMeta, listRegisteredRepos, RegistryEntry } from '../storage/repo-manager.js';
+import { initLbug, executeQuery as mcpExecuteQuery, closeLbug } from '../mcp/core/lbug-adapter.js';
 import { NODE_TABLES } from '../core/lbug/schema.js';
 import { GraphNode, GraphRelationship } from '../core/graph/types.js';
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
@@ -23,7 +23,23 @@ import { hybridSearch } from '../core/search/hybrid-search.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { mountMCPEndpoints } from './mcp-http.js';
 
-const buildGraph = async (): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
+/**
+ * Derive a repoId for the MCP connection pool.
+ * Matches LocalBackend.repoId() — lowercase name by default.
+ */
+const repoIdFor = (entry: RegistryEntry): string => entry.name.toLowerCase();
+
+/**
+ * Ensure the MCP connection pool has this repo's DB open, then run a query.
+ */
+const queryRepo = async (entry: RegistryEntry, cypher: string): Promise<any[]> => {
+  const id = repoIdFor(entry);
+  const lbugPath = path.join(entry.storagePath, 'lbug');
+  await initLbug(id, lbugPath);
+  return mcpExecuteQuery(id, cypher);
+};
+
+const buildGraph = async (entry: RegistryEntry): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
   const nodes: GraphNode[] = [];
   for (const table of NODE_TABLES) {
     try {
@@ -40,7 +56,7 @@ const buildGraph = async (): Promise<{ nodes: GraphNode[]; relationships: GraphR
         query = `MATCH (n:${table}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`;
       }
 
-      const rows = await executeQuery(query);
+      const rows = await queryRepo(entry, query);
       for (const row of rows) {
         nodes.push({
           id: row.id ?? row[0],
@@ -68,7 +84,7 @@ const buildGraph = async (): Promise<{ nodes: GraphNode[]; relationships: GraphR
   }
 
   const relationships: GraphRelationship[] = [];
-  const relRows = await executeQuery(
+  const relRows = await queryRepo(entry,
     `MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`
   );
   for (const row of relRows) {
@@ -179,8 +195,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
-      const lbugPath = path.join(entry.storagePath, 'lbug');
-      const graph = await withLbugDb(lbugPath, async () => buildGraph());
+      const graph = await buildGraph(entry);
       res.json(graph);
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to build graph' });
@@ -201,8 +216,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
-      const lbugPath = path.join(entry.storagePath, 'lbug');
-      const result = await withLbugDb(lbugPath, () => executeQuery(cypher));
+      const result = await queryRepo(entry, cypher);
       res.json({ result });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Query failed' });
@@ -223,21 +237,25 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
+      const id = repoIdFor(entry);
       const lbugPath = path.join(entry.storagePath, 'lbug');
+      await initLbug(id, lbugPath);
+
       const parsedLimit = Number(req.body.limit ?? 10);
       const limit = Number.isFinite(parsedLimit)
         ? Math.max(1, Math.min(100, Math.trunc(parsedLimit)))
         : 10;
 
-      const results = await withLbugDb(lbugPath, async () => {
-        const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
-        if (isEmbedderReady()) {
-          const { semanticSearch } = await import('../core/embeddings/embedding-pipeline.js');
-          return hybridSearch(query, limit, executeQuery, semanticSearch);
-        }
+      const repoQuery = (cypher: string) => mcpExecuteQuery(id, cypher);
+      const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
+      let results;
+      if (isEmbedderReady()) {
+        const { semanticSearch } = await import('../core/embeddings/embedding-pipeline.js');
+        results = await hybridSearch(query, limit, repoQuery, semanticSearch);
+      } else {
         // FTS-only fallback when embeddings aren't loaded
-        return searchFTSFromLbug(query, limit);
-      });
+        results = await searchFTSFromLbug(query, limit, id);
+      }
       res.json({ results });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Search failed' });
