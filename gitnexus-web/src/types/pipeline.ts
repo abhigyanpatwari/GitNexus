@@ -1,8 +1,9 @@
 import { GraphNode, GraphRelationship, KnowledgeGraph } from '../core/graph/types';
 import { CommunityDetectionResult } from '../core/ingestion/community-processor';
 import { ProcessDetectionResult } from '../core/ingestion/process-processor';
+import { MetricsResult } from '../core/ingestion/metrics-processor';
 
-export type PipelinePhase = 'idle' | 'extracting' | 'structure' | 'parsing' | 'imports' | 'calls' | 'heritage' | 'communities' | 'processes' | 'enriching' | 'complete' | 'error';
+export type PipelinePhase = 'idle' | 'extracting' | 'structure' | 'parsing' | 'imports' | 'calls' | 'heritage' | 'communities' | 'processes' | 'metrics' | 'enriching' | 'complete' | 'error';
 
 export interface PipelineProgress {
   phase: PipelinePhase;
@@ -22,6 +23,7 @@ export interface PipelineResult {
   fileContents: Map<string, string>;
   communityResult?: CommunityDetectionResult;
   processResult?: ProcessDetectionResult;
+  metricsResult?: MetricsResult;
 }
 
 // Serializable version for Web Worker communication

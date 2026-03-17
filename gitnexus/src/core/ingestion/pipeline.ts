@@ -11,6 +11,7 @@ import { processHeritage, processHeritageFromExtracted } from './heritage-proces
 import { computeMRO } from './mro-processor.js';
 import { processCommunities } from './community-processor.js';
 import { processProcesses } from './process-processor.js';
+import { processMetricsFromGraph, MetricsResult } from './metrics-processor.js';
 import { createResolutionContext } from './resolution-context.js';
 import { createASTCache } from './ast-cache.js';
 import { PipelineProgress, PipelineResult } from '../../types/pipeline.js';
@@ -460,11 +461,33 @@ export const runPipelineFromRepo = async (
       });
     }
 
+    // ── Phase 7: Metrics ─────────────────────────────────────────────
+    onProgress({
+      phase: 'metrics',
+      percent: 98,
+      message: 'Calculating code metrics...',
+      stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
+    });
+
+    const metricsResult = processMetricsFromGraph(graph, (message, progress) => {
+      const metricsProgress = 98 + (progress * 0.02);
+      onProgress({
+        phase: 'metrics',
+        percent: Math.round(metricsProgress),
+        message,
+        stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
+      });
+    });
+
+    if (isDev) {
+      console.log(`📊 Metrics: ${metricsResult.stats.totalNodesProcessed} nodes analyzed (avg complexity: ${metricsResult.stats.avgComplexity}, critical: ${metricsResult.stats.criticalCount})`);
+    }
+
     onProgress({
       phase: 'complete',
       percent: 100,
       message: communityResult && processResult
-        ? `Graph complete! ${communityResult.stats.totalCommunities} communities, ${processResult.stats.totalProcesses} processes detected.`
+        ? `Graph complete! ${communityResult.stats.totalCommunities} communities, ${processResult.stats.totalProcesses} processes, ${metricsResult.stats.criticalCount} critical hotspots.`
         : 'Graph complete! (graph phases skipped)',
       stats: {
         filesProcessed: totalFiles,
@@ -475,7 +498,7 @@ export const runPipelineFromRepo = async (
 
     astCache.clear();
 
-    return { graph, repoPath, totalFileCount: totalFiles, communityResult, processResult };
+    return { graph, repoPath, totalFileCount: totalFiles, communityResult, processResult, metricsResult };
   } catch (error) {
     cleanup();
     throw error;

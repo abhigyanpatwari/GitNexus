@@ -1,6 +1,7 @@
 import { GraphNode, GraphRelationship, KnowledgeGraph } from '../core/graph/types.js';
 import { CommunityDetectionResult } from '../core/ingestion/community-processor.js';
 import { ProcessDetectionResult } from '../core/ingestion/process-processor.js';
+import { MetricsResult } from '../core/ingestion/metrics-processor.js';
 
 export type PipelinePhase = 'idle' | 'extracting' | 'structure' | 'parsing' | 'imports' | 'calls' | 'heritage' | 'communities' | 'processes' | 'metrics' | 'enriching' | 'complete' | 'error';
 
@@ -25,6 +26,7 @@ export interface PipelineResult {
   totalFileCount: number;
   communityResult?: CommunityDetectionResult;
   processResult?: ProcessDetectionResult;
+  metricsResult?: MetricsResult;
 }
 
 // Serializable version for Web Worker communication

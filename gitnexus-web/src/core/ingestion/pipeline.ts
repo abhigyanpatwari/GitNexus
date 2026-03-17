@@ -7,6 +7,7 @@ import { processCalls } from './call-processor';
 import { processHeritage } from './heritage-processor';
 import { processCommunities, CommunityDetectionResult } from './community-processor';
 import { processProcesses, ProcessDetectionResult } from './process-processor';
+import { processMetrics, MetricsResult } from './metrics-processor';
 import { createSymbolTable } from './symbol-table';
 import { createASTCache } from './ast-cache';
 import { PipelineProgress, PipelineResult } from '../../types/pipeline';
@@ -279,12 +280,34 @@ export const runPipelineFromFiles = async (
     });
   });
 
-  
-  // Phase 9: Complete (100%)
+  // Phase 9: Metrics Calculation (99-100%)
+  onProgress({
+    phase: 'metrics',
+    percent: 99,
+    message: 'Calculating code complexity metrics...',
+    stats: { filesProcessed: files.length, totalFiles: files.length, nodesCreated: graph.nodeCount },
+  });
+
+  const metricsResult = processMetrics(graph, (message, progress) => {
+    const metricsProgress = 99 + (progress * 0.01);
+    onProgress({
+      phase: 'metrics',
+      percent: Math.round(metricsProgress),
+      message,
+      stats: { filesProcessed: files.length, totalFiles: files.length, nodesCreated: graph.nodeCount },
+    });
+  });
+
+  // Log metrics results
+  if (import.meta.env.DEV) {
+    console.log(`📊 Metrics: ${metricsResult.stats.totalNodesProcessed} nodes analyzed (avg complexity: ${metricsResult.stats.avgComplexity}, critical: ${metricsResult.stats.criticalCount})`);
+  }
+
+  // Phase 10: Complete (100%)
   onProgress({
     phase: 'complete',
     percent: 100,
-    message: `Graph complete! ${communityResult.stats.totalCommunities} communities, ${processResult.stats.totalProcesses} processes detected.`,
+    message: `Graph complete! ${communityResult.stats.totalCommunities} communities, ${processResult.stats.totalProcesses} processes, ${metricsResult.stats.criticalCount} critical hotspots.`,
     stats: { 
       filesProcessed: files.length, 
       totalFiles: files.length, 
@@ -295,7 +318,7 @@ export const runPipelineFromFiles = async (
   // Cleanup WASM memory before returning
   astCache.clear();
   
-  return { graph, fileContents, communityResult, processResult };
+  return { graph, fileContents, communityResult, processResult, metricsResult };
 
   } catch (error) {
     cleanup();

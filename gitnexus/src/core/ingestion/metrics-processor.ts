@@ -10,12 +10,12 @@
  * - Complexity Rank: low/medium/high/critical
  */
 
-import { KnowledgeGraph, GraphNode } from '../graph/types';
-import { ASTCache } from './ast-cache';
-import { FileEntry } from '../../services/zip';
-import { loadParser, loadLanguage } from '../tree-sitter/parser-loader';
-import { getLanguageFromFilename } from './utils';
-import Parser from 'web-tree-sitter';
+import { KnowledgeGraph, GraphNode } from '../graph/types.js';
+import { ASTCache } from './ast-cache.js';
+import { FileEntry } from './filesystem-walker.js';
+import { loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
+import { getLanguageFromFilename } from './utils.js';
+import Parser from 'tree-sitter';
 
 // ============================================================================
 // TYPES
@@ -269,7 +269,95 @@ const calculateInstability = (fanIn: number, fanOut: number): number => {
 };
 
 // ============================================================================
-// MAIN PROCESSOR
+// LIGHTWEIGHT METRICS (Graph-only, no file re-parsing)
+// ============================================================================
+
+/**
+ * Process metrics using only graph data (no file re-parsing needed).
+ * Computes: fan-in, fan-out, LOC, instability, and estimates complexity rank.
+ * 
+ * This is the recommended function for the CLI pipeline since it doesn't
+ * require re-reading source files after parsing is complete.
+ */
+export const processMetricsFromGraph = (
+  graph: KnowledgeGraph,
+  onProgress?: (message: string, progress: number) => void
+): MetricsResult => {
+  onProgress?.('Calculating coupling metrics...', 0);
+  
+  // Step 1: Calculate fan-in/fan-out from CALLS relationships
+  const couplingMap = calculateCoupling(graph);
+  
+  // Step 2: Process all Function/Method nodes
+  let totalComplexity = 0;
+  let maxComplexity = 0;
+  let criticalCount = 0;
+  let highCount = 0;
+  let processedCount = 0;
+  
+  const callableNodes: { node: typeof graph.nodes[0]; loc: number }[] = [];
+  
+  graph.forEachNode(node => {
+    if (!['Function', 'Method'].includes(node.label)) return;
+    
+    const startLine = node.properties.startLine ?? 0;
+    const endLine = node.properties.endLine ?? startLine;
+    const loc = Math.max(1, endLine - startLine + 1);
+    
+    callableNodes.push({ node, loc });
+  });
+  
+  const totalNodes = callableNodes.length;
+  
+  for (const { node, loc } of callableNodes) {
+    // Get coupling metrics
+    const coupling = couplingMap.get(node.id) || { fanIn: 0, fanOut: 0 };
+    const instability = calculateInstability(coupling.fanIn, coupling.fanOut);
+    
+    // Estimate complexity from LOC + fan-out (heuristic when AST not available)
+    // This is a rough approximation: more lines + more calls = likely more complex
+    const estimatedComplexity = Math.max(1, Math.round(loc / 10) + coupling.fanOut);
+    const rank = getComplexityRank(estimatedComplexity);
+    
+    // Update node properties
+    node.properties.cyclomaticComplexity = estimatedComplexity;
+    node.properties.fanIn = coupling.fanIn;
+    node.properties.fanOut = coupling.fanOut;
+    node.properties.loc = loc;
+    node.properties.instability = instability;
+    node.properties.complexityRank = rank;
+    
+    // Track stats
+    totalComplexity += estimatedComplexity;
+    if (estimatedComplexity > maxComplexity) maxComplexity = estimatedComplexity;
+    if (rank === 'critical') criticalCount++;
+    if (rank === 'high') highCount++;
+    
+    processedCount++;
+    if (processedCount % 500 === 0) {
+      onProgress?.(`Processing metrics: ${processedCount}/${totalNodes} nodes`, (processedCount / totalNodes) * 100);
+    }
+  }
+  
+  onProgress?.('Metrics calculation complete!', 100);
+  
+  const avgComplexity = totalNodes > 0 
+    ? Math.round((totalComplexity / totalNodes) * 10) / 10 
+    : 0;
+  
+  return {
+    stats: {
+      totalNodesProcessed: totalNodes,
+      avgComplexity,
+      maxComplexity,
+      criticalCount,
+      highCount,
+    },
+  };
+};
+
+// ============================================================================
+// FULL METRICS (with AST re-parsing for accurate cyclomatic complexity)
 // ============================================================================
 
 /**
