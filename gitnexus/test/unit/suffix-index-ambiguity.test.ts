@@ -175,3 +175,61 @@ describe('resolveImportPath — no proximity for Java or TypeScript', () => {
     expect(result).toBe('src/services/user.ts');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Flag-based demo: same scenario, proximity ON vs OFF
+// Shows exactly what the fix changes and why it matters.
+// NOT meant for CI — purely for local understanding.
+// ---------------------------------------------------------------------------
+
+function resolveWithFlag(
+  currentFile: string,
+  importPath: string,
+  ctx: ReturnType<typeof makeCtx>,
+  useProximity: boolean,
+): string | null {
+  // Reproduce the exact tail of resolveImportPath after dot-to-slash normalisation.
+  // Intentionally a local reimplementation so we can toggle proximity on/off
+  // without touching production code.
+  const pathLike = importPath.replace(/\./g, '/');
+  const pathParts = pathLike.split('/').filter(Boolean);
+
+  if (useProximity && !pathLike.includes('/')) {
+    // O(1) exact lookup via allFiles Set — mirrors the production implementation.
+    const importerDir = currentFile.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+    if (importerDir) {
+      const candidate = `${importerDir}/${pathLike}.py`;
+      if (ctx.allFilesSet.has(candidate)) return candidate;
+    }
+  }
+
+  // Global suffix fallback — what happened before the fix
+  for (let i = 0; i < pathParts.length; i++) {
+    const suffix = pathParts.slice(i).join('/') + '.py';
+    const hit = ctx.index.get(suffix);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+describe('flag-based demo — proximity ON vs OFF (same scenario)', () => {
+  const ctx = makeCtx([
+    'app/models/user.py',   // indexed first — owns "user.py" in exactMap
+    'app/services/user.py',
+    'app/services/auth.py',
+  ]);
+
+  it('WITHOUT proximity (flag=false): returns models/user.py — wrong', () => {
+    const result = resolveWithFlag('app/services/auth.py', 'user', ctx, false);
+    process.stdout.write(`\n  [flag=false] import user from app/services/auth.py → resolved to: ${result}\n`);
+    process.stdout.write(`               expected: app/services/user.py  ← WRONG (models/ was indexed first)\n\n`);
+    expect(result).toBe('app/models/user.py');
+  });
+
+  it('WITH proximity (flag=true): returns services/user.py — correct', () => {
+    const result = resolveWithFlag('app/services/auth.py', 'user', ctx, true);
+    process.stdout.write(`\n  [flag=true]  import user from app/services/auth.py → resolved to: ${result}\n`);
+    process.stdout.write(`               allFiles.has("app/services/user.py") = true ← CORRECT (O(1) exact lookup)\n\n`);
+    expect(result).toBe('app/services/user.py');
+  });
+});

@@ -174,29 +174,21 @@ export const resolveImportPath = (
   const pathParts = pathLike.split('/').filter(Boolean);
 
   // ---- Proximity-based resolution: prefer same-directory match first (Python only) ----
-  // Python's runtime searches the script's own directory first in sys.path, so `import user`
-  // from app/services/auth.py resolves to app/services/user.py before any installed package.
-  // Ruby bare `require` does NOT include the current directory in $LOAD_PATH — local files
-  // always use `require_relative`, which arrives here with a ./ prefix and is caught above.
+  // Python's runtime searches the importing script's own directory first via sys.path, so
+  // `import user` from services/auth.py must resolve to services/user.py before any global
+  // suffix match — even if models/user.py was indexed first.
+  // Uses allFiles.has() for an exact O(1) lookup: importerDir + '/' + name + '.py'.
+  // This avoids the dirMap suffix ambiguity (dirMap stores all suffix levels, so
+  // getFilesInDir('services') would match files from every directory named 'services/'
+  // across the repo) and eliminates the O(n) siblings scan.
   // Only applies to single-segment bare names — multi-segment paths (e.g. "utils/helpers")
   // are specific enough to resolve unambiguously via suffixResolve.
-  if (
-    index &&
-    !pathLike.includes('/') &&
-    language === SupportedLanguages.Python
-  ) {
-    const importerDir = currentFile.split('/').slice(0, -1).join('/');
+  if (!pathLike.includes('/') && language === SupportedLanguages.Python) {
+    // Normalize to forward slashes so the lookup matches allFiles on all platforms.
+    const importerDir = currentFile.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
     if (importerDir) {
-      const ext = language === SupportedLanguages.Python ? '.py' : '.rb';
-      const siblings = index.getFilesInDir(importerDir, ext);
-      if (siblings.length > 0) {
-        const target = pathLike + ext; // e.g. "user.py"
-        const localMatch = siblings.find(f => {
-          const norm = f.replace(/\\/g, '/');
-          return norm.endsWith('/' + target) || norm === target;
-        });
-        if (localMatch) return cache(localMatch);
-      }
+      const candidate = `${importerDir}/${pathLike}.py`;
+      if (allFiles.has(candidate)) return cache(candidate);
     }
   }
 
