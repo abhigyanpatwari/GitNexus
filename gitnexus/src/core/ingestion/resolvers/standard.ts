@@ -27,6 +27,7 @@ export const RESOLVE_CACHE_CAP = 100_000;
  * Language-specific preprocessing is applied before the generic resolution:
  * - TypeScript/JavaScript: rewrites tsconfig path aliases
  * - Rust: converts crate::/super::/self:: to relative paths
+ * - Python: prefers same-directory file for bare unqualified imports (mirrors sys.path order)
  *
  * Java wildcards and Go package imports are handled separately in processImports
  * because they resolve to multiple files.
@@ -171,6 +172,33 @@ export const resolveImportPath = (
     ? importPath
     : importPath.replace(/\./g, '/');
   const pathParts = pathLike.split('/').filter(Boolean);
+
+  // ---- Proximity-based resolution: prefer same-directory match first (Python only) ----
+  // Python's runtime searches the script's own directory first in sys.path, so `import user`
+  // from app/services/auth.py resolves to app/services/user.py before any installed package.
+  // Ruby bare `require` does NOT include the current directory in $LOAD_PATH — local files
+  // always use `require_relative`, which arrives here with a ./ prefix and is caught above.
+  // Only applies to single-segment bare names — multi-segment paths (e.g. "utils/helpers")
+  // are specific enough to resolve unambiguously via suffixResolve.
+  if (
+    index &&
+    !pathLike.includes('/') &&
+    language === SupportedLanguages.Python
+  ) {
+    const importerDir = currentFile.split('/').slice(0, -1).join('/');
+    if (importerDir) {
+      const ext = language === SupportedLanguages.Python ? '.py' : '.rb';
+      const siblings = index.getFilesInDir(importerDir, ext);
+      if (siblings.length > 0) {
+        const target = pathLike + ext; // e.g. "user.py"
+        const localMatch = siblings.find(f => {
+          const norm = f.replace(/\\/g, '/');
+          return norm.endsWith('/' + target) || norm === target;
+        });
+        if (localMatch) return cache(localMatch);
+      }
+    }
+  }
 
   const resolved = suffixResolve(pathParts, normalizedFileList, allFileList, index);
   return cache(resolved);

@@ -339,8 +339,33 @@ describe('Python local definition shadows import', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Constructor-call resolution: User("alice") resolves to User class
+// Bare import: `import user` from services/auth.py resolves to services/user.py
+// not models/user.py, even though models/ is indexed first (proximity wins)
 // ---------------------------------------------------------------------------
+
+describe('Python bare import resolution (proximity over index order)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-bare-import'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User in models/ and UserService in services/', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('UserService');
+  });
+
+  it('resolves `import user` from services/auth.py to services/user.py, not models/user.py', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const imp = imports.find(e => e.sourceFilePath === 'services/auth.py');
+    expect(imp).toBeDefined();
+    expect(imp!.targetFilePath).toBe('services/user.py');
+    expect(imp!.targetFilePath).not.toBe('models/user.py');
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Constructor-inferred type resolution: user = User(); user.save() → User.save
