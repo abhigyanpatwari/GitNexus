@@ -40,6 +40,7 @@ If status is stale, click the status bar item to trigger analyze; the extension 
 ## Configuration
 
 - `gitnexus.mcp.autoRegister`: Automatically write `.vscode/mcp.json`
+- `gitnexus.mcp.autoStart`: Automatically start GitNexus MCP on extension activation
 - `gitnexus.defaultRepo`: Preferred repo when multiple indexes exist
 - `gitnexus.cli.command`: Command used to launch GitNexus (default `npx`)
 - `gitnexus.cli.baseArgs`: Base args before subcommands

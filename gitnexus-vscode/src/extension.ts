@@ -19,6 +19,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.setStatusBarMessage('GitNexus: registered MCP server in .vscode/mcp.json', 5000);
   }
 
+  const autoStartMcp = vscode.workspace.getConfiguration('gitnexus').get<boolean>('mcp.autoStart', true);
+  if (autoStartMcp) {
+    try {
+      await service.listRepos();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      output.appendLine(`[GitNexus] MCP auto-start failed: ${message}`);
+    }
+  }
+
   const repositoriesView = new RepositoriesViewProvider(service);
   const modulesView = new ModulesViewProvider(service);
   const processesView = new ProcessesViewProvider(service);

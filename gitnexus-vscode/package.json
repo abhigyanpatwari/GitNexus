@@ -171,6 +171,11 @@
           "default": true,
           "description": "Automatically configure .vscode/mcp.json to register the GitNexus MCP server."
         },
+        "gitnexus.mcp.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the GitNexus MCP server when the extension activates."
+        },
         "gitnexus.defaultRepo": {
           "type": "string",
           "default": "",
