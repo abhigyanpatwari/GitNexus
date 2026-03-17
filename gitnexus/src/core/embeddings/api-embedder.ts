@@ -7,6 +7,11 @@
 
 import type { EmbeddingConfig } from './types.js';
 
+interface OpenAIEmbeddingResponse {
+  data: Array<{ embedding: number[]; [key: string]: any }>;
+  [key: string]: any;
+}
+
 const isDev = process.env.NODE_ENV === 'development';
 
 /**
@@ -50,7 +55,7 @@ export const embedBatchViaAPI = async (
       throw new Error(`API request failed (${response.status}): ${errorText}`);
     }
 
-    const data = await response.json();
+    const data = (await response.json()) as OpenAIEmbeddingResponse;
 
     // OpenAI format: { data: [{ embedding: number[] }, ...] }
     if (!data.data || !Array.isArray(data.data)) {
@@ -58,7 +63,7 @@ export const embedBatchViaAPI = async (
     }
 
     // Convert to Float32Array format
-    const embeddings: Float32Array[] = data.data.map((item: any, index: number) => {
+    const embeddings: Float32Array[] = data.data.map((item, index) => {
       if (!item.embedding || !Array.isArray(item.embedding)) {
         throw new Error(`Invalid embedding format at index ${index}`);
       }
