@@ -162,6 +162,35 @@ describe('resolvePythonImport — proximity-based resolution for Python', () => 
 });
 
 // ---------------------------------------------------------------------------
+// Namespace packages (PEP 420) — directory with no __init__.py
+// ---------------------------------------------------------------------------
+
+describe('resolvePythonImport — namespace packages (no __init__.py)', () => {
+  // user/ exists as a namespace package: no __init__.py, only submodules.
+  const files = [
+    'app/services/auth.py',
+    'app/services/user/model.py',   // user/ has no __init__.py
+    'app/services/user/queries.py',
+  ];
+
+  it('bare import of namespace package returns null (no file to resolve to)', () => {
+    // `import user` — proximity finds neither user.py nor user/__init__.py.
+    // suffixResolve also finds nothing because no file is literally named "user".
+    // This is expected: CPython itself sets user.__file__ = None for namespace packages.
+    const ctx = makeCtx(files);
+    const result = resolvePython('app/services/auth.py', 'user', ctx);
+    expect(result).toBeNull();
+  });
+
+  it('submodule form resolves correctly via suffixResolve fallback', () => {
+    // `import user.model` — multi-segment, proximity skipped, suffixResolve finds user/model.py.
+    const ctx = makeCtx(files);
+    const result = resolvePython('app/services/auth.py', 'user.model', ctx);
+    expect(result).toBe('app/services/user/model.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Ruby: bare require does NOT use proximity
 // ---------------------------------------------------------------------------
 
