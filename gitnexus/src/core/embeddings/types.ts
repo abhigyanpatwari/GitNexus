@@ -53,7 +53,7 @@ export interface EmbeddingProgress {
  * Configuration for the embedding pipeline
  */
 export interface EmbeddingConfig {
-  /** Model identifier for transformers.js */
+  /** Model identifier for transformers.js (local) or API model name */
   modelId: string;
   /** Number of nodes to embed in each batch */
   batchSize: number;
@@ -63,6 +63,12 @@ export interface EmbeddingConfig {
   device: 'auto' | 'dml' | 'cuda' | 'cpu' | 'wasm';
   /** Maximum characters of code snippet to include */
   maxSnippetLength: number;
+  /** Use API instead of local embeddings */
+  useApi?: boolean;
+  /** API endpoint (OpenAI-compatible) */
+  apiEndpoint?: string;
+  /** API key for authentication */
+  apiKey?: string;
 }
 
 /**
@@ -76,6 +82,7 @@ export const DEFAULT_EMBEDDING_CONFIG: EmbeddingConfig = {
   dimensions: 384,
   device: 'auto',
   maxSnippetLength: 500,
+  useApi: false,
 };
 
 /**

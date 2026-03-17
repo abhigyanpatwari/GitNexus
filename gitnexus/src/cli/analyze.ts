@@ -4,6 +4,7 @@
  * Indexes a repository and stores the knowledge graph in .gitnexus/
  */
 
+import 'dotenv/config';
 import path from 'path';
 import { execFileSync } from 'child_process';
 import v8 from 'v8';
@@ -282,7 +283,14 @@ export const analyzeCommand = async (
         const label = progress.phase === 'loading-model' ? 'Loading embedding model...' : `Embedding ${progress.nodesProcessed || 0}/${progress.totalNodes || '?'}`;
         updateBar(scaled, label);
       },
-      {},
+      {
+        useApi: process.env.GITNEXUS_USE_API === 'true',
+        apiEndpoint: process.env.GITNEXUS_EMBEDDING_API || 'https://api.openai.com/v1/embeddings',
+        apiKey: process.env.GITNEXUS_EMBEDDING_API_KEY || '',
+        modelId: process.env.GITNEXUS_EMBEDDING_MODEL || 'text-embedding-3-small',
+        dimensions: parseInt(process.env.GITNEXUS_EMBEDDING_DIMENSIONS || '1536'),
+        batchSize: parseInt(process.env.GITNEXUS_EMBEDDING_BATCH_SIZE || '100'),
+      },
       cachedEmbeddingNodeIds.size > 0 ? cachedEmbeddingNodeIds : undefined,
     );
     embeddingTime = ((Date.now() - t0Emb) / 1000).toFixed(1);

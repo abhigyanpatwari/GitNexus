@@ -19,6 +19,9 @@ import { existsSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join } from 'path';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
+import { embedBatchViaAPI, embedTextViaAPI } from './api-embedder.js';
+
+const isDev = process.env.NODE_ENV === 'development';
 
 /**
  * Check whether CUDA libraries are actually available on this system.
@@ -58,6 +61,7 @@ let embedderInstance: FeatureExtractionPipeline | null = null;
 let isInitializing = false;
 let initPromise: Promise<FeatureExtractionPipeline> | null = null;
 let currentDevice: 'dml' | 'cuda' | 'cpu' | 'wasm' | null = null;
+let currentConfig: EmbeddingConfig | null = null;
 
 /**
  * Progress callback type for model loading
@@ -76,13 +80,13 @@ export const getCurrentDevice = (): 'dml' | 'cuda' | 'cpu' | 'wasm' | null => cu
  * @param onProgress - Optional callback for model download progress
  * @param config - Optional configuration override
  * @param forceDevice - Force a specific device
- * @returns Promise resolving to the embedder pipeline
+ * @returns Promise resolving to the embedder pipeline (null if using API)
  */
 export const initEmbedder = async (
   onProgress?: ModelProgressCallback,
   config: Partial<EmbeddingConfig> = {},
   forceDevice?: 'dml' | 'cuda' | 'cpu' | 'wasm'
-): Promise<FeatureExtractionPipeline> => {
+): Promise<FeatureExtractionPipeline | null> => {
   // Return existing instance if available
   if (embedderInstance) {
     return embedderInstance;
@@ -96,6 +100,34 @@ export const initEmbedder = async (
   isInitializing = true;
   
   const finalConfig = { ...DEFAULT_EMBEDDING_CONFIG, ...config };
+  currentConfig = finalConfig;
+  
+  // If using API, skip local model loading
+  if (finalConfig.useApi) {
+    if (isDev) {
+      console.log(`🌐 Using API embeddings: ${finalConfig.apiEndpoint}`);
+      console.log(`📊 Model: ${finalConfig.modelId}`);
+    }
+    
+    // Validate API configuration
+    if (!finalConfig.apiEndpoint) {
+      throw new Error('API endpoint is required when useApi is true');
+    }
+    if (!finalConfig.apiKey) {
+      throw new Error('API key is required when useApi is true');
+    }
+    
+    // Report progress as complete for API mode
+    if (onProgress) {
+      onProgress({
+        status: 'ready',
+        progress: 1,
+      });
+    }
+    
+    isInitializing = false;
+    return null;
+  }
   // On Windows, use DirectML for GPU acceleration (via DirectX12)
   // CUDA is only available on Linux x64 with onnxruntime-node
   // Probe for CUDA first — ONNX Runtime crashes (uncatchable native error)
@@ -195,13 +227,18 @@ export const initEmbedder = async (
  * Check if the embedder is initialized and ready
  */
 export const isEmbedderReady = (): boolean => {
-  return embedderInstance !== null;
+  // Ready if using API or if local embedder is loaded
+  return (currentConfig?.useApi === true) || (embedderInstance !== null);
 };
 
 /**
  * Get the embedder instance (throws if not initialized)
+ * Returns null if using API mode
  */
-export const getEmbedder = (): FeatureExtractionPipeline => {
+export const getEmbedder = (): FeatureExtractionPipeline | null => {
+  if (currentConfig?.useApi) {
+    return null;
+  }
   if (!embedderInstance) {
     throw new Error('Embedder not initialized. Call initEmbedder() first.');
   }
@@ -212,10 +249,23 @@ export const getEmbedder = (): FeatureExtractionPipeline => {
  * Embed a single text string
  * 
  * @param text - Text to embed
- * @returns Float32Array of embedding vector (384 dimensions)
+ * @returns Float32Array of embedding vector
  */
 export const embedText = async (text: string): Promise<Float32Array> => {
+  if (!currentConfig) {
+    throw new Error('Embedder not initialized. Call initEmbedder() first.');
+  }
+  
+  // Use API if configured
+  if (currentConfig.useApi) {
+    return embedTextViaAPI(text, currentConfig);
+  }
+  
+  // Use local embedder
   const embedder = getEmbedder();
+  if (!embedder) {
+    throw new Error('Local embedder not available');
+  }
   
   const result = await embedder(text, {
     pooling: 'mean',
@@ -237,8 +287,21 @@ export const embedBatch = async (texts: string[]): Promise<Float32Array[]> => {
   if (texts.length === 0) {
     return [];
   }
+  
+  if (!currentConfig) {
+    throw new Error('Embedder not initialized. Call initEmbedder() first.');
+  }
+  
+  // Use API if configured
+  if (currentConfig.useApi) {
+    return embedBatchViaAPI(texts, currentConfig);
+  }
 
+  // Use local embedder
   const embedder = getEmbedder();
+  if (!embedder) {
+    throw new Error('Local embedder not available');
+  }
   
   // Process batch
   const result = await embedder(texts, {
@@ -249,7 +312,7 @@ export const embedBatch = async (texts: string[]): Promise<Float32Array[]> => {
   // Result shape is [batch_size, dimensions]
   // Need to split into individual vectors
   const data = result.data as ArrayLike<number>;
-  const dimensions = DEFAULT_EMBEDDING_CONFIG.dimensions;
+  const dimensions = currentConfig.dimensions;
   const embeddings: Float32Array[] = [];
   
   for (let i = 0; i < texts.length; i++) {
@@ -285,5 +348,6 @@ export const disposeEmbedder = async (): Promise<void> => {
     embedderInstance = null;
     initPromise = null;
   }
+  currentConfig = null;
 };
 
