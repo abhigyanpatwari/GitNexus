@@ -2,6 +2,7 @@
 
 import Graph from 'graphology';
 import Sigma from 'sigma';
+import type { NodeHoverDrawingFunction, NodeLabelDrawingFunction } from 'sigma/rendering';
 import type { GraphPayload } from './graph-data';
 
 declare global {
@@ -9,6 +10,14 @@ declare global {
     __GITNEXUS_GRAPH__?: GraphPayload;
   }
 }
+
+interface VsCodeApi {
+  postMessage(message: unknown): void;
+}
+
+declare function acquireVsCodeApi(): VsCodeApi;
+
+const vscode = acquireVsCodeApi();
 
 const payload = window.__GITNEXUS_GRAPH__;
 const container = document.getElementById('graph-canvas');
@@ -22,6 +31,7 @@ if (!payload || !container || !details || !stats) {
 const detailsElement = details;
 const statsElement = stats;
 let activeNodeId: string | undefined;
+let activePalette = getThemePalette();
 
 const graph = new Graph();
 for (const node of payload.nodes) {
@@ -59,8 +69,10 @@ const renderer = new Sigma(graph, container, {
   labelGridCellSize: 90,
   labelRenderedSizeThreshold: 8,
   labelColor: {
-    color: getThemePalette().label,
+    color: activePalette.label,
   },
+  defaultDrawNodeLabel: drawNodeLabel,
+  defaultDrawNodeHover: drawNodeHover,
   zIndex: true,
   allowInvalidContainer: false,
 });
@@ -89,6 +101,18 @@ setDetails('Select a node to inspect its details. Scroll to zoom, drag to pan.')
 renderer.on('clickNode', ({ node }) => {
   const attributes = graph.getNodeAttributes(node);
   const neighbors = graph.neighbors(node);
+  const nodeKind = String(attributes.kind ?? '');
+  const nodeLabel = String(attributes.label ?? '');
+
+  if (nodeKind === 'symbol' || nodeKind === 'module' || nodeKind === 'process') {
+    vscode.postMessage({
+      command: 'gitnexus.openNodeSource',
+      payload: {
+        kind: nodeKind,
+        label: nodeLabel,
+      },
+    });
+  }
 
   const lines = [
     `Name: ${attributes.label as string}`,
@@ -147,6 +171,7 @@ function highlightNeighborhood(nodeId: string, refresh = true): void {
 function applyThemeColors(): void {
   const palette = getThemePalette();
   const isDark = isDarkTheme();
+  activePalette = palette;
 
   renderer.setSetting('labelColor', {
     color: palette.label,
@@ -234,6 +259,9 @@ function getThemePalette(): ThemePalette {
       edge: '#334155',
       dimmedNode: '#64748b',
       label: '#e2e8f0',
+      hoverBackground: 'rgba(15, 23, 42, 0.94)',
+      hoverLabel: '#f8fafc',
+      hoverShadow: 'rgba(2, 6, 23, 0.75)',
     };
   }
 
@@ -245,6 +273,9 @@ function getThemePalette(): ThemePalette {
     edge: '#94a3b8',
     dimmedNode: '#cbd5e1',
     label: '#0f172a',
+    hoverBackground: 'rgba(255, 255, 255, 0.96)',
+    hoverLabel: '#0f172a',
+    hoverShadow: 'rgba(15, 23, 42, 0.25)',
   };
 }
 
@@ -256,4 +287,77 @@ interface ThemePalette {
   edge: string;
   dimmedNode: string;
   label: string;
+  hoverBackground: string;
+  hoverLabel: string;
+  hoverShadow: string;
+}
+
+function drawNodeLabel(...args: Parameters<NodeLabelDrawingFunction>): void {
+  const [context, data, settings] = args;
+  drawNodeLabelWithColor(context, data, settings, activePalette.label);
+}
+
+function drawNodeHover(...args: Parameters<NodeHoverDrawingFunction>): void {
+  const [context, data, settings] = args;
+  const size = settings.labelSize;
+  const font = settings.labelFont;
+  const weight = settings.labelWeight;
+
+  context.font = `${weight} ${size}px ${font}`;
+
+  context.fillStyle = activePalette.hoverBackground;
+  context.shadowOffsetX = 0;
+  context.shadowOffsetY = 0;
+  context.shadowBlur = 8;
+  context.shadowColor = activePalette.hoverShadow;
+
+  const padding = 2;
+
+  if (typeof data.label === 'string') {
+    const textWidth = context.measureText(data.label).width;
+    const boxWidth = Math.round(textWidth + 5);
+    const boxHeight = Math.round(size + 2 * padding);
+    const radius = Math.max(data.size, size / 2) + padding;
+    const angleRadian = Math.asin(boxHeight / 2 / radius);
+    const xDeltaCoord = Math.sqrt(Math.abs(radius ** 2 - (boxHeight / 2) ** 2));
+
+    context.beginPath();
+    context.moveTo(data.x + xDeltaCoord, data.y + boxHeight / 2);
+    context.lineTo(data.x + radius + boxWidth, data.y + boxHeight / 2);
+    context.lineTo(data.x + radius + boxWidth, data.y - boxHeight / 2);
+    context.lineTo(data.x + xDeltaCoord, data.y - boxHeight / 2);
+    context.arc(data.x, data.y, radius, angleRadian, -angleRadian);
+    context.closePath();
+    context.fill();
+  } else {
+    context.beginPath();
+    context.arc(data.x, data.y, data.size + padding, 0, Math.PI * 2);
+    context.closePath();
+    context.fill();
+  }
+
+  context.shadowOffsetX = 0;
+  context.shadowOffsetY = 0;
+  context.shadowBlur = 0;
+
+  drawNodeLabelWithColor(context, data, settings, activePalette.hoverLabel);
+}
+
+function drawNodeLabelWithColor(
+  context: Parameters<NodeLabelDrawingFunction>[0],
+  data: Parameters<NodeLabelDrawingFunction>[1],
+  settings: Parameters<NodeLabelDrawingFunction>[2],
+  color: string,
+): void {
+  if (typeof data.label !== 'string' || data.label.length === 0) {
+    return;
+  }
+
+  const size = settings.labelSize;
+  const font = settings.labelFont;
+  const weight = settings.labelWeight;
+
+  context.fillStyle = color;
+  context.font = `${weight} ${size}px ${font}`;
+  context.fillText(data.label, data.x + data.size + 3, data.y + size / 3);
 }

@@ -24,6 +24,12 @@ npm install
 npm run build
 ```
 
+Build a clean VSIX package:
+
+```bash
+npm run vsix:clean
+```
+
 Press `F5` in VS Code to launch an Extension Development Host.
 
 ## Usage

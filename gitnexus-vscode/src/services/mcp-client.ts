@@ -58,6 +58,10 @@ export class GitNexusMcpClient implements vscode.Disposable {
     return text.slice(0, markerIndex).trim();
   }
 
+  isConnected(): boolean {
+    return Boolean(this.client && this.transport);
+  }
+
   private async ensureConnected(): Promise<Client> {
     if (this.client) {
       return this.client;
@@ -111,6 +115,7 @@ export class GitNexusMcpClient implements vscode.Disposable {
       await client.connect(transport);
       this.transport = transport;
       this.client = client;
+      this.options.output.appendLine('[GitNexus] MCP server started successfully.');
     } finally {
       this.connectPromise = undefined;
     }

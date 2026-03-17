@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { GitNexusService } from './services/gitnexus-service';
+import { GitNexusService, type GraphFocusSymbolHint } from './services/gitnexus-service';
 import { RepositoriesViewProvider } from './views/repositories-view';
 import { ModulesViewProvider } from './views/modules-view';
 import { ProcessesViewProvider } from './views/processes-view';
@@ -17,12 +17,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const wroteMcpConfig = await service.ensureMcpRegistration();
   if (wroteMcpConfig) {
     vscode.window.setStatusBarMessage('GitNexus: registered MCP server in .vscode/mcp.json', 5000);
+  } else if (!vscode.workspace.isTrusted) {
+    output.appendLine('[GitNexus] Workspace is untrusted; MCP auto-registration is deferred until trust is granted.');
   }
 
   const autoStartMcp = vscode.workspace.getConfiguration('gitnexus').get<boolean>('mcp.autoStart', true);
   if (autoStartMcp) {
     try {
       await service.listRepos();
+      if (service.isMcpServerRunning()) {
+        output.appendLine('[GitNexus] MCP auto-start completed successfully.');
+        vscode.window.setStatusBarMessage('GitNexus MCP server started successfully', 3000);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       output.appendLine(`[GitNexus] MCP auto-start failed: ${message}`);
@@ -119,8 +125,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await presentOutput(`GitNexus Impact: ${symbol}`, await service.impactSymbol(symbol));
     }),
     registerCommand(context, 'gitnexus.showInGraph', async () => {
-      const symbol = getSelectionOrWord(vscode.window.activeTextEditor);
-      await GraphPanel.show(context, service, symbol);
+      const editor = vscode.window.activeTextEditor;
+      const symbol = getSelectionOrWord(editor);
+      const focusHint = getGraphFocusSymbolHint(editor, symbol);
+      await GraphPanel.show(context, service, symbol, focusHint);
     }),
     registerCommand(context, 'gitnexus.openProcessDetails', async (processName?: string) => {
       if (!processName) {
@@ -162,6 +170,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.workspace.onDidSaveTextDocument(async () => {
       await statusBar.refresh();
+    }),
+    vscode.workspace.onDidGrantWorkspaceTrust(async () => {
+      try {
+        const wroteConfig = await service.ensureMcpRegistration();
+        if (wroteConfig) {
+          vscode.window.setStatusBarMessage('GitNexus: registered MCP server in .vscode/mcp.json', 5000);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        output.appendLine(`[GitNexus] Failed to register MCP config after trust grant: ${message}`);
+      }
     }),
   );
 
@@ -218,4 +237,30 @@ async function presentOutput(title: string, content: string, language = 'markdow
   });
 
   void vscode.window.setStatusBarMessage(title, 2500);
+}
+
+function getGraphFocusSymbolHint(
+  editor: vscode.TextEditor | undefined,
+  symbol: string | undefined,
+): GraphFocusSymbolHint | undefined {
+  if (!editor || !symbol) {
+    return undefined;
+  }
+
+  const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false);
+  if (!relativePath || relativePath.startsWith('..')) {
+    return undefined;
+  }
+
+  const position = editor.selection.active;
+  const wordRange = editor.document.getWordRangeAtPosition(position);
+  const startLine = editor.selection.isEmpty ? (wordRange?.start.line ?? position.line) : editor.selection.start.line;
+  const endLine = editor.selection.isEmpty ? (wordRange?.end.line ?? position.line) : editor.selection.end.line;
+
+  return {
+    name: symbol,
+    filePath: relativePath.replace(/\\/g, '/'),
+    startLine,
+    endLine,
+  };
 }

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
+import * as path from 'node:path';
 import { GitNexusMcpClient } from './mcp-client';
 import { ensureWorkspaceMcpConfig } from './mcp-config';
 import { findRepoForWorkspace, pickDefaultRepo, readRegistryRepos } from './registry';
@@ -10,10 +11,79 @@ import { buildGraphPayload, type GraphPayload } from '../webview/graph-data';
 
 const execFileAsync = promisify(execFile);
 
+export type GraphNodeKind = 'repo' | 'module' | 'process' | 'symbol';
+
+export interface GraphFocusSymbolHint {
+  name: string;
+  filePath: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+export interface GraphNodeLocation {
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  symbolName?: string;
+  symbolUid?: string;
+}
+
+export interface GraphNodeCandidate {
+  uid: string;
+  name: string;
+  filePath: string;
+  startLine: number;
+}
+
+export type GraphNodeResolution =
+  | {
+      status: 'resolved';
+      location: GraphNodeLocation;
+    }
+  | {
+      status: 'ambiguous';
+      message: string;
+      candidates: GraphNodeCandidate[];
+    }
+  | {
+      status: 'not-found';
+      message: string;
+    };
+
+interface ContextSymbolPayload {
+  uid?: string;
+  name?: string;
+  filePath?: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+interface ContextCandidatePayload {
+  uid?: string;
+  name?: string;
+  filePath?: string;
+  line?: number;
+}
+
+interface ContextToolResponse {
+  status?: string;
+  error?: string;
+  symbol?: ContextSymbolPayload;
+  candidates?: ContextCandidatePayload[];
+}
+
+interface ClusterMemberReference {
+  name: string;
+  type?: string;
+  filePath: string;
+}
+
 export class GitNexusService implements vscode.Disposable {
   private mcpClient: GitNexusMcpClient | undefined;
   private repos: RepoRegistryEntry[] = [];
   private activeRepoName: string | undefined;
+  private readonly graphNodeLocationCache = new Map<string, GraphNodeResolution>();
+  private focusSymbolHint: GraphFocusSymbolHint | undefined;
 
   constructor(private readonly output: vscode.OutputChannel) {}
 
@@ -25,6 +95,7 @@ export class GitNexusService implements vscode.Disposable {
     const registryRepos = await readRegistryRepos();
     this.repos = registryRepos;
     this.reconcileActiveRepo();
+    this.graphNodeLocationCache.clear();
     await this.updateIndexedContext();
   }
 
@@ -61,13 +132,23 @@ export class GitNexusService implements vscode.Disposable {
     return this.getWorkspaceRepo() ?? this.repos[0];
   }
 
+  isMcpServerRunning(): boolean {
+    return this.mcpClient?.isConnected() ?? false;
+  }
+
   setActiveRepo(name: string): void {
     this.activeRepoName = name;
+    this.graphNodeLocationCache.clear();
   }
 
   async ensureMcpRegistration(): Promise<boolean> {
     const config = this.getConfig();
     if (!config.autoRegisterMcp) {
+      return false;
+    }
+
+    if (!vscode.workspace.isTrusted) {
+      this.log('Skipping MCP registration because workspace is untrusted.');
       return false;
     }
 
@@ -132,8 +213,29 @@ export class GitNexusService implements vscode.Disposable {
     return this.getMcpClient().callToolText('rename', args);
   }
 
-  async getGraphPayload(focusSymbol?: string): Promise<GraphPayload> {
+  async getGraphPayload(focusSymbol?: string, focusHint?: GraphFocusSymbolHint): Promise<GraphPayload> {
     const repo = this.requireActiveRepo();
+    this.focusSymbolHint =
+      focusSymbol && focusHint && focusHint.name === focusSymbol
+        ? {
+            ...focusHint,
+            filePath: this.normalizeFilePath(focusHint.filePath),
+          }
+        : undefined;
+
+    if (focusSymbol && this.focusSymbolHint?.filePath) {
+      const cacheKey = this.getGraphNodeCacheKey('symbol', focusSymbol);
+      this.graphNodeLocationCache.set(cacheKey, {
+        status: 'resolved',
+        location: {
+          filePath: this.focusSymbolHint.filePath,
+          startLine: this.normalizeLine(this.focusSymbolHint.startLine),
+          endLine: this.normalizeLine(this.focusSymbolHint.endLine ?? this.focusSymbolHint.startLine),
+          symbolName: focusSymbol,
+        },
+      });
+    }
+
     const [modules, processes] = await Promise.all([this.getModules(), this.getProcesses()]);
 
     return buildGraphPayload(repo.name, modules, processes, focusSymbol);
@@ -160,6 +262,78 @@ export class GitNexusService implements vscode.Disposable {
       repo: workspaceRepo,
       currentCommit,
     };
+  }
+
+  async resolveGraphNodeLocation(kind: GraphNodeKind, label: string): Promise<GraphNodeResolution> {
+    const cacheKey = this.getGraphNodeCacheKey(kind, label);
+    const cached = this.graphNodeLocationCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    if (kind === 'repo') {
+      return {
+        status: 'not-found',
+        message: 'Repository nodes do not map to a single symbol location.',
+      };
+    }
+
+    if (kind === 'symbol' && this.focusSymbolHint?.name === label && this.focusSymbolHint.filePath) {
+      return {
+        status: 'resolved',
+        location: {
+          filePath: this.focusSymbolHint.filePath,
+          startLine: this.normalizeLine(this.focusSymbolHint.startLine),
+          endLine: this.normalizeLine(this.focusSymbolHint.endLine ?? this.focusSymbolHint.startLine),
+          symbolName: label,
+        },
+      };
+    }
+
+    let resolution: GraphNodeResolution;
+    if (kind === 'symbol') {
+      resolution = await this.resolveSymbolByName(label);
+    } else if (kind === 'module') {
+      resolution = await this.resolveModuleLocation(label);
+    } else {
+      resolution = await this.resolveProcessLocation(label);
+    }
+
+    if (resolution.status !== 'ambiguous') {
+      this.graphNodeLocationCache.set(cacheKey, resolution);
+    }
+
+    return resolution;
+  }
+
+  async resolveGraphNodeCandidate(uid: string): Promise<GraphNodeResolution> {
+    const resolution = await this.resolveSymbolByUid(uid);
+    if (resolution.status === 'resolved') {
+      const cacheKey = this.getGraphNodeCacheKey('symbol', resolution.location.symbolName ?? uid);
+      this.graphNodeLocationCache.set(cacheKey, resolution);
+    }
+    return resolution;
+  }
+
+  resolveAbsoluteRepoPath(filePath: string): string {
+    if (!filePath.trim()) {
+      throw new Error('Cannot resolve an empty file path.');
+    }
+
+    const normalizedInput = filePath.replace(/\\/g, path.sep);
+    if (path.isAbsolute(normalizedInput)) {
+      return path.normalize(normalizedInput);
+    }
+
+    const repo = this.requireActiveRepo();
+    const repoRoot = path.resolve(repo.path);
+    const resolved = path.resolve(repoRoot, normalizedInput);
+
+    if (!resolved.startsWith(repoRoot + path.sep) && resolved !== repoRoot) {
+      throw new Error(`Resolved path escapes repository root: ${filePath}`);
+    }
+
+    return resolved;
   }
 
   runAnalyzeWorkspace(targetUri?: vscode.Uri): boolean {
@@ -337,6 +511,299 @@ export class GitNexusService implements vscode.Disposable {
     }
 
     return results;
+  }
+
+  private async resolveSymbolByName(name: string, fileHint?: string): Promise<GraphNodeResolution> {
+    const args = this.withRepo({
+      name,
+      ...(fileHint ? { file_path: fileHint } : {}),
+    });
+
+    const response = await this.callToolJson<ContextToolResponse>('context', args);
+    return this.mapContextResponse(response, name, fileHint);
+  }
+
+  private async resolveSymbolByUid(uid: string): Promise<GraphNodeResolution> {
+    const args = this.withRepo({ uid });
+    const response = await this.callToolJson<ContextToolResponse>('context', args);
+    const mapped = await this.mapContextResponse(response, uid);
+
+    if (mapped.status === 'resolved' && !mapped.location.symbolUid) {
+      return {
+        status: 'resolved',
+        location: {
+          ...mapped.location,
+          symbolUid: uid,
+        },
+      };
+    }
+
+    return mapped;
+  }
+
+  private async resolveModuleLocation(moduleName: string): Promise<GraphNodeResolution> {
+    const repo = this.requireActiveRepo();
+    const resource = await this.readRepoResource(repo.name, `cluster/${encodeURIComponent(moduleName)}`);
+    const members = this.parseClusterMembers(resource);
+    const anchor = members.find((member) => member.type?.toLowerCase() !== 'file') ?? members[0];
+
+    if (!anchor) {
+      return {
+        status: 'not-found',
+        message: `No members found for module '${moduleName}'.`,
+      };
+    }
+
+    return this.resolveSymbolByName(anchor.name, anchor.filePath);
+  }
+
+  private async resolveProcessLocation(processName: string): Promise<GraphNodeResolution> {
+    const repo = this.requireActiveRepo();
+    const resource = await this.readRepoResource(repo.name, `process/${encodeURIComponent(processName)}`);
+    const step = this.parseProcessFirstStep(resource);
+
+    if (!step) {
+      return {
+        status: 'not-found',
+        message: `No steps found for process '${processName}'.`,
+      };
+    }
+
+    return this.resolveSymbolByName(step.name, step.filePath);
+  }
+
+  private async mapContextResponse(
+    response: ContextToolResponse | undefined,
+    requestedSymbol: string,
+    fileHint?: string,
+  ): Promise<GraphNodeResolution> {
+    if (!response) {
+      return {
+        status: 'not-found',
+        message: `Context lookup returned no payload for '${requestedSymbol}'.`,
+      };
+    }
+
+    if (response.status === 'found' && response.symbol) {
+      const location = this.toGraphLocation(response.symbol, requestedSymbol);
+      if (location) {
+        return {
+          status: 'resolved',
+          location,
+        };
+      }
+    }
+
+    if (response.status === 'ambiguous') {
+      const candidates = this.toCandidateArray(response.candidates);
+      if (fileHint) {
+        const matched = this.pickCandidateForFile(candidates, fileHint);
+        if (matched) {
+          return this.resolveSymbolByUid(matched.uid);
+        }
+      }
+
+      if (candidates.length > 0) {
+        return {
+          status: 'ambiguous',
+          message: `Multiple symbols matched '${requestedSymbol}'. Choose one to open.`,
+          candidates,
+        };
+      }
+    }
+
+    if (response.error) {
+      return {
+        status: 'not-found',
+        message: response.error,
+      };
+    }
+
+    return {
+      status: 'not-found',
+      message: `No source location found for '${requestedSymbol}'.`,
+    };
+  }
+
+  private toCandidateArray(candidates: ContextCandidatePayload[] | undefined): GraphNodeCandidate[] {
+    if (!Array.isArray(candidates)) {
+      return [];
+    }
+
+    const results: GraphNodeCandidate[] = [];
+    for (const candidate of candidates) {
+      if (!candidate.uid || !candidate.name || !candidate.filePath) {
+        continue;
+      }
+
+      results.push({
+        uid: candidate.uid,
+        name: candidate.name,
+        filePath: this.normalizeFilePath(candidate.filePath),
+        startLine: this.normalizeLine(candidate.line),
+      });
+    }
+
+    return results;
+  }
+
+  private toGraphLocation(
+    value: {
+      uid?: string;
+      name?: string;
+      filePath?: string;
+      startLine?: number;
+      endLine?: number;
+    },
+    fallbackName: string,
+  ): GraphNodeLocation | undefined {
+    if (!value.filePath) {
+      return undefined;
+    }
+
+    const startLine = this.normalizeLine(value.startLine);
+    const endLine = Math.max(startLine, this.normalizeLine(value.endLine ?? value.startLine));
+
+    return {
+      filePath: this.normalizeFilePath(value.filePath),
+      startLine,
+      endLine,
+      symbolName: value.name ?? fallbackName,
+      symbolUid: value.uid,
+    };
+  }
+
+  private pickCandidateForFile(candidates: GraphNodeCandidate[], fileHint: string): GraphNodeCandidate | undefined {
+    if (candidates.length === 0) {
+      return undefined;
+    }
+
+    const normalizedHint = this.normalizeFilePath(fileHint).toLowerCase();
+    const exactMatch = candidates.find((candidate) => {
+      const candidatePath = this.normalizeFilePath(candidate.filePath).toLowerCase();
+      return candidatePath === normalizedHint || candidatePath.endsWith(`/${normalizedHint}`);
+    });
+
+    if (exactMatch) {
+      return exactMatch;
+    }
+
+    return candidates.find((candidate) => {
+      const candidatePath = this.normalizeFilePath(candidate.filePath).toLowerCase();
+      return normalizedHint.endsWith(candidatePath);
+    });
+  }
+
+  private parseClusterMembers(text: string): ClusterMemberReference[] {
+    const lines = text.split(/\r?\n/);
+    const members: ClusterMemberReference[] = [];
+    let current: Partial<ClusterMemberReference> | undefined;
+
+    for (const line of lines) {
+      const nameMatch = line.match(/^\s*-\s+name:\s+(.+)\s*$/);
+      if (nameMatch) {
+        if (current?.name && current.filePath) {
+          members.push({
+            name: current.name,
+            type: current.type,
+            filePath: current.filePath,
+          });
+        }
+
+        current = {
+          name: this.parseQuotedValue(nameMatch[1]),
+        };
+        continue;
+      }
+
+      if (!current) {
+        continue;
+      }
+
+      const typeMatch = line.match(/^\s+type:\s+(.+)\s*$/);
+      if (typeMatch) {
+        current.type = this.parseQuotedValue(typeMatch[1]);
+        continue;
+      }
+
+      const fileMatch = line.match(/^\s+(?:file|filePath):\s+(.+)\s*$/);
+      if (fileMatch) {
+        current.filePath = this.normalizeFilePath(this.parseQuotedValue(fileMatch[1]));
+      }
+    }
+
+    if (current?.name && current.filePath) {
+      members.push({
+        name: current.name,
+        type: current.type,
+        filePath: current.filePath,
+      });
+    }
+
+    return members;
+  }
+
+  private parseProcessFirstStep(text: string): ClusterMemberReference | undefined {
+    const lines = text.split(/\r?\n/);
+    for (const line of lines) {
+      const match = line.match(/^\s*\d+:\s+(.+?)\s+\((.+)\)\s*$/);
+      if (!match) {
+        continue;
+      }
+
+      return {
+        name: this.parseQuotedValue(match[1]),
+        filePath: this.normalizeFilePath(this.parseQuotedValue(match[2])),
+      };
+    }
+
+    return undefined;
+  }
+
+  private parseQuotedValue(raw: string): string {
+    const trimmed = raw.trim();
+    if (
+      (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    ) {
+      return trimmed.slice(1, -1);
+    }
+
+    return trimmed;
+  }
+
+  private async callToolJson<T>(name: string, args: Record<string, unknown>): Promise<T | undefined> {
+    const raw = await this.getMcpClient().callToolText(name, args);
+    const payload = this.getMcpClient().stripNextStepHint(raw);
+
+    try {
+      return JSON.parse(payload) as T;
+    } catch {
+      this.log(`Unable to parse JSON response from tool '${name}'.`);
+      return undefined;
+    }
+  }
+
+  private normalizeLine(value: unknown): number {
+    const parsed =
+      typeof value === 'number'
+        ? value
+        : Number.parseInt(typeof value === 'string' ? value : String(value ?? ''), 10);
+
+    if (!Number.isFinite(parsed)) {
+      return 0;
+    }
+
+    return Math.max(0, Math.trunc(parsed));
+  }
+
+  private normalizeFilePath(value: string): string {
+    return value.replace(/\\/g, '/').trim();
+  }
+
+  private getGraphNodeCacheKey(kind: GraphNodeKind, label: string): string {
+    const repoName = this.getActiveRepo()?.name ?? 'default';
+    return `${repoName}:${kind}:${label}`;
   }
 
   private async getCurrentCommit(repoPath: string): Promise<string | undefined> {

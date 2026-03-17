@@ -13,6 +13,12 @@
   "engines": {
     "vscode": "^1.93.0"
   },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "GitNexus runs read-only in untrusted workspaces. MCP auto-registration is enabled after trust is granted."
+    }
+  },
   "categories": [
     "Programming Languages",
     "Other"
@@ -216,7 +222,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "package": "npm run build && npx --yes @vscode/vsce package"
+    "package": "npm run build && npx --yes @vscode/vsce package --skip-license",
+    "vsix:clean": "npm ci && rm -f *.vsix && npm run package"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -228,7 +235,7 @@
     "@types/node": "^20.11.30",
     "@types/vscode": "^1.93.0",
     "@vscode/vsce": "^3.2.1",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.27.4",
     "typescript": "^5.6.3",
     "vitest": "^4.0.5"
   }

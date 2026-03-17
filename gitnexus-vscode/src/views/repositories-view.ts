@@ -18,13 +18,20 @@ export class RepositoriesViewProvider implements vscode.TreeDataProvider<vscode.
     }
 
     const repos = await this.service.listRepos();
+    const serverStatusItem = this.createServerStatusItem();
     const activeRepo = this.service.getActiveRepo()?.name;
 
     if (repos.length === 0) {
-      return [this.createInfoItem('No indexed repositories', 'Run GitNexus: Analyze Workspace to build an index.')];
+      return [
+        serverStatusItem,
+        this.createInfoItem('No indexed repositories', 'Run GitNexus: Analyze Workspace to build an index.'),
+      ];
     }
 
-    return repos.map((repo) => this.createRepoItem(repo, repo.name === activeRepo));
+    return [
+      serverStatusItem,
+      ...repos.map((repo) => this.createRepoItem(repo, repo.name === activeRepo)),
+    ];
   }
 
   getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
@@ -67,6 +74,21 @@ export class RepositoriesViewProvider implements vscode.TreeDataProvider<vscode.
     const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
     item.tooltip = tooltip;
     item.iconPath = new vscode.ThemeIcon('info');
+    return item;
+  }
+
+  private createServerStatusItem(): vscode.TreeItem {
+    const running = this.service.isMcpServerRunning();
+    const item = new vscode.TreeItem(
+      running ? 'MCP Server: Running' : 'MCP Server: Stopped',
+      vscode.TreeItemCollapsibleState.None,
+    );
+
+    item.tooltip = running
+      ? 'GitNexus MCP server is connected and responding.'
+      : 'GitNexus MCP server is not connected yet. Trigger refresh or run a GitNexus command.';
+    item.iconPath = new vscode.ThemeIcon(running ? 'radio-tower' : 'debug-disconnect');
+    item.contextValue = 'gitnexusServerStatus';
     return item;
   }
 }
