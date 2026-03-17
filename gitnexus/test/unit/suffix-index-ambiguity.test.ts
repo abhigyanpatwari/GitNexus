@@ -146,6 +146,19 @@ describe('resolvePythonImport — proximity-based resolution for Python', () => 
     const result = resolvePython('app/services/auth.py', '.user', ctx);
     expect(result).toBe('app/services/user.py');
   });
+
+  it('returns null when relative import dots exceed directory depth (PEP 328 over-traversal)', () => {
+    // auth.py is at depth 1 (one directory: 'app').
+    // '...user' has 3 dots → 2 upward hops required, but only 1 directory level exists.
+    // CPython raises ImportError; we return null.
+    const ctx = makeCtx([
+      'app/auth.py',
+      'user.py',
+    ]);
+
+    const result = resolvePython('app/auth.py', '...user', ctx);
+    expect(result).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
