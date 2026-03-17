@@ -1,0 +1,53 @@
+name: gitnexus-vscode
+
+on:
+  pull_request:
+    paths:
+      - 'gitnexus-vscode/**'
+      - '.github/workflows/gitnexus-vscode.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'gitnexus-vscode/**'
+      - '.github/workflows/gitnexus-vscode.yml'
+
+jobs:
+  test-build-package:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: gitnexus-vscode
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: gitnexus-vscode/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+      - name: Package VSIX
+        run: npm run package
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitnexus-vscode-vsix
+          path: gitnexus-vscode/*.vsix

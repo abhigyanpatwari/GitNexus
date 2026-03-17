@@ -1,0 +1,230 @@
+{
+  "name": "gitnexus-vscode",
+  "displayName": "GitNexus",
+  "description": "Native VS Code integration for GitNexus knowledge graph and MCP tools.",
+  "version": "0.0.1",
+  "publisher": "abhigyanpatwari",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/abhigyanpatwari/GitNexus.git",
+    "directory": "gitnexus-vscode"
+  },
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "gitnexus",
+    "mcp",
+    "knowledge-graph",
+    "code-intelligence",
+    "copilot"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "gitnexus.refresh",
+        "title": "GitNexus: Refresh"
+      },
+      {
+        "command": "gitnexus.analyzeWorkspace",
+        "title": "GitNexus: Analyze Workspace"
+      },
+      {
+        "command": "gitnexus.exploreSymbol",
+        "title": "GitNexus: Explore Symbol"
+      },
+      {
+        "command": "gitnexus.showImpact",
+        "title": "GitNexus: Show Impact"
+      },
+      {
+        "command": "gitnexus.showInGraph",
+        "title": "GitNexus: Show In Graph"
+      },
+      {
+        "command": "gitnexus.openRepoContext",
+        "title": "GitNexus: Open Repository Context"
+      },
+      {
+        "command": "gitnexus.openProcessDetails",
+        "title": "GitNexus: Open Process Details"
+      },
+      {
+        "command": "gitnexus.setActiveRepository",
+        "title": "GitNexus: Set Active Repository"
+      },
+      {
+        "command": "gitnexus.copySymbolName",
+        "title": "GitNexus: Copy Symbol Name"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "gitnexus-explorer",
+          "title": "GitNexus",
+          "icon": "media/gitnexus.svg"
+        }
+      ]
+    },
+    "views": {
+      "gitnexus-explorer": [
+        {
+          "id": "gitnexus.repositoriesView",
+          "name": "Repositories",
+          "icon": "media/gitnexus.svg"
+        },
+        {
+          "id": "gitnexus.modulesView",
+          "name": "Modules",
+          "icon": "media/gitnexus.svg"
+        },
+        {
+          "id": "gitnexus.processesView",
+          "name": "Execution Flows",
+          "icon": "media/gitnexus.svg"
+        }
+      ]
+    },
+    "chatParticipants": [
+      {
+        "id": "gitnexus-vscode.gitnexus",
+        "name": "gitnexus",
+        "fullName": "GitNexus",
+        "description": "Explore code relationships, impact, refactors, and execution flows",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "explore",
+            "description": "Search the graph for related symbols and processes"
+          },
+          {
+            "name": "impact",
+            "description": "Analyze blast radius for a symbol"
+          },
+          {
+            "name": "debug",
+            "description": "Get debugging guidance with execution-flow context"
+          },
+          {
+            "name": "refactor",
+            "description": "Preview a safe rename before applying changes"
+          },
+          {
+            "name": "flow",
+            "description": "Inspect execution flow traces"
+          },
+          {
+            "name": "changes",
+            "description": "Review what your current edits impact"
+          }
+        ]
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "gitnexus.exploreSymbol",
+          "when": "gitnexus.isIndexed && editorTextFocus",
+          "group": "navigation@20"
+        },
+        {
+          "command": "gitnexus.showImpact",
+          "when": "gitnexus.isIndexed && editorTextFocus",
+          "group": "navigation@21"
+        },
+        {
+          "command": "gitnexus.showInGraph",
+          "when": "gitnexus.isIndexed && editorTextFocus",
+          "group": "navigation@22"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "gitnexus.analyzeWorkspace",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation@20"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "gitnexus.refresh",
+          "when": "view == gitnexus.repositoriesView || view == gitnexus.modulesView || view == gitnexus.processesView",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "GitNexus",
+      "properties": {
+        "gitnexus.mcp.autoRegister": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically configure .vscode/mcp.json to register the GitNexus MCP server."
+        },
+        "gitnexus.defaultRepo": {
+          "type": "string",
+          "default": "",
+          "description": "Preferred repository name when multiple indexed repositories are available."
+        },
+        "gitnexus.cli.command": {
+          "type": "string",
+          "default": "npx",
+          "description": "Command used to launch GitNexus."
+        },
+        "gitnexus.cli.baseArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "-y",
+            "gitnexus@latest"
+          ],
+          "description": "Base arguments passed before GitNexus subcommands."
+        },
+        "gitnexus.cli.mcpArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "mcp"
+          ],
+          "description": "Arguments passed to start the GitNexus MCP server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "package": "npm run build && npx --yes @vscode/vsce package"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "graphology": "^0.26.0",
+    "sigma": "^3.0.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "@types/vscode": "^1.93.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.3",
+    "vitest": "^4.0.5"
+  }
+}
