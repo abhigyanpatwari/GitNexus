@@ -58,6 +58,9 @@ const renderer = new Sigma(graph, container, {
   labelDensity: 0.1,
   labelGridCellSize: 90,
   labelRenderedSizeThreshold: 8,
+  labelColor: {
+    color: getThemePalette().label,
+  },
   zIndex: true,
   allowInvalidContainer: false,
 });
@@ -145,6 +148,10 @@ function applyThemeColors(): void {
   const palette = getThemePalette();
   const isDark = isDarkTheme();
 
+  renderer.setSetting('labelColor', {
+    color: palette.label,
+  });
+
   graph.forEachNode((node) => {
     const kind = graph.getNodeAttribute(node, 'kind');
     const fallbackColor = graph.getNodeAttribute(node, 'baseColor');
@@ -226,6 +233,7 @@ function getThemePalette(): ThemePalette {
       symbol: '#f43f5e',
       edge: '#334155',
       dimmedNode: '#64748b',
+      label: '#e2e8f0',
     };
   }
 
@@ -236,6 +244,7 @@ function getThemePalette(): ThemePalette {
     symbol: '#be123c',
     edge: '#94a3b8',
     dimmedNode: '#cbd5e1',
+    label: '#0f172a',
   };
 }
 
@@ -246,4 +255,5 @@ interface ThemePalette {
   symbol: string;
   edge: string;
   dimmedNode: string;
+  label: string;
 }
