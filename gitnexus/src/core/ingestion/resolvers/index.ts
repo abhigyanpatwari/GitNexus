@@ -21,5 +21,7 @@ export { resolveRustImport, tryRustModulePath } from './rust.js';
 
 export { resolveRubyImport } from './ruby.js';
 
+export { resolvePythonImport } from './python.js';
+
 export { resolveImportPath, RESOLVE_CACHE_CAP } from './standard.js';
 export type { TsconfigPaths } from './standard.js';

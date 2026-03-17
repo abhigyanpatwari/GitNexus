@@ -1,14 +1,15 @@
 /**
- * Unit tests for proximity-based import resolution.
+ * Unit tests for proximity-based Python import resolution.
  *
  * When two files share the same bare name (e.g. user.py in two different
  * directories), suffixResolve alone picks whichever was indexed first.
- * resolveImportPath addresses this for Python by checking the importer's
- * own directory first, mirroring Python's sys.path resolution order.
+ * resolvePythonImport addresses this by checking the importer's own directory
+ * first, mirroring Python's sys.path resolution order.
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildSuffixIndex } from '../../src/core/ingestion/resolvers/utils.js';
+import { buildSuffixIndex, suffixResolve } from '../../src/core/ingestion/resolvers/utils.js';
+import { resolvePythonImport } from '../../src/core/ingestion/resolvers/python.js';
 import { resolveImportPath } from '../../src/core/ingestion/resolvers/standard.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
@@ -24,6 +25,21 @@ function makeCtx(files: string[]) {
   return { files, normalized, allFilesSet, index, cache };
 }
 
+/** Simulate the full dispatch: resolvePythonImport first, then suffixResolve fallback. */
+function resolvePython(
+  currentFile: string,
+  importPath: string,
+  ctx: ReturnType<typeof makeCtx>,
+): string | null {
+  const proximity = resolvePythonImport(currentFile, importPath, ctx.allFilesSet);
+  if (proximity) return proximity;
+  if (importPath.startsWith('.')) return null;
+  const pathLike = importPath.replace(/\./g, '/');
+  const parts = pathLike.split('/').filter(Boolean);
+  return suffixResolve(parts, ctx.normalized, ctx.files, ctx.index);
+}
+
+/** For non-Python languages, delegate directly to standard resolveImportPath. */
 function resolve(
   currentFile: string,
   importPath: string,
@@ -47,7 +63,7 @@ function resolve(
 // Python proximity resolution
 // ---------------------------------------------------------------------------
 
-describe('resolveImportPath — proximity-based resolution for Python', () => {
+describe('resolvePythonImport — proximity-based resolution for Python', () => {
   it('resolves bare import to same-directory file when multiple files share the name', () => {
     const ctx = makeCtx([
       'app/models/user.py',   // indexed first — would win without proximity
@@ -55,18 +71,17 @@ describe('resolveImportPath — proximity-based resolution for Python', () => {
       'app/services/auth.py',
     ]);
 
-    // auth.py does `import user` — should get services/user.py (same directory)
-    const result = resolve('app/services/auth.py', 'user', SupportedLanguages.Python, ctx);
+    const result = resolvePython('app/services/auth.py', 'user', ctx);
     expect(result).toBe('app/services/user.py');
   });
 
   it('falls back to suffix index when no same-directory match exists', () => {
     const ctx = makeCtx([
       'app/models/user.py',
-      'app/services/auth.py', // no user.py in services/
+      'app/services/auth.py',
     ]);
 
-    const result = resolve('app/services/auth.py', 'user', SupportedLanguages.Python, ctx);
+    const result = resolvePython('app/services/auth.py', 'user', ctx);
     expect(result).toBe('app/models/user.py');
   });
 
@@ -76,20 +91,18 @@ describe('resolveImportPath — proximity-based resolution for Python', () => {
       'auth.py',
     ]);
 
-    // importerDir is '' — proximity is skipped, suffix fallback used
-    const result = resolve('auth.py', 'user', SupportedLanguages.Python, ctx);
+    // importerDir is '' — proximity skipped, suffix fallback used
+    const result = resolvePython('auth.py', 'user', ctx);
     expect(result).toBe('user.py');
   });
 
   it('does not apply proximity for multi-segment imports (dotted paths)', () => {
-    // "import utils.helpers" → pathLike = "utils/helpers" → contains '/'
-    // proximity skipped; suffix fallback resolves unambiguously
     const ctx = makeCtx([
       'app/models/utils/helpers.py',
       'app/services/auth.py',
     ]);
 
-    const result = resolve('app/services/auth.py', 'utils.helpers', SupportedLanguages.Python, ctx);
+    const result = resolvePython('app/services/auth.py', 'utils.helpers', ctx);
     expect(result).toBe('app/models/utils/helpers.py');
   });
 
@@ -100,8 +113,7 @@ describe('resolveImportPath — proximity-based resolution for Python', () => {
       'app/services/auth.py',
     ]);
 
-    // proximity checks services/user.py (miss) then services/user/__init__.py (hit)
-    const result = resolve('app/services/auth.py', 'user', SupportedLanguages.Python, ctx);
+    const result = resolvePython('app/services/auth.py', 'user', ctx);
     expect(result).toBe('app/services/user/__init__.py');
   });
 
@@ -111,8 +123,7 @@ describe('resolveImportPath — proximity-based resolution for Python', () => {
       'app/services/auth.py',
     ]);
 
-    // No models.py or models/__init__.py in services/ — falls through to suffixResolve
-    const result = resolve('app/services/auth.py', 'models', SupportedLanguages.Python, ctx);
+    const result = resolvePython('app/services/auth.py', 'models', ctx);
     expect(result).toBe('app/models/__init__.py');
   });
 
@@ -122,19 +133,17 @@ describe('resolveImportPath — proximity-based resolution for Python', () => {
       'app/services/auth.py',
     ]);
 
-    // currentFile with backslashes (Windows) — normalize before split
-    const result = resolve('app\\services\\auth.py', 'user', SupportedLanguages.Python, ctx);
+    const result = resolvePython('app\\services\\auth.py', 'user', ctx);
     expect(result).toBe('app/services/user.py');
   });
 
-  it('resolves PEP 328 relative import unchanged (dot prefix handled before proximity)', () => {
+  it('resolves PEP 328 relative import (.user) to same-directory file', () => {
     const ctx = makeCtx([
       'app/services/user.py',
       'app/services/auth.py',
     ]);
 
-    // ".user" is an explicit relative import — caught at Step 5, not proximity
-    const result = resolve('app/services/auth.py', '.user', SupportedLanguages.Python, ctx);
+    const result = resolvePython('app/services/auth.py', '.user', ctx);
     expect(result).toBe('app/services/user.py');
   });
 });

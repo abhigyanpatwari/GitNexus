@@ -27,7 +27,6 @@ export const RESOLVE_CACHE_CAP = 100_000;
  * Language-specific preprocessing is applied before the generic resolution:
  * - TypeScript/JavaScript: rewrites tsconfig path aliases
  * - Rust: converts crate::/super::/self:: to relative paths
- * - Python: prefers same-directory file for bare unqualified imports (mirrors sys.path order)
  *
  * Java wildcards and Go package imports are handled separately in processImports
  * because they resolve to multiple files.
@@ -114,32 +113,6 @@ export const resolveImportPath = (
     // Fall through to generic resolution if Rust-specific didn't match
   }
 
-  // ---- Python relative imports (PEP 328): .module, ..module, ... ----
-  if (language === SupportedLanguages.Python && importPath.startsWith('.')) {
-    const dotMatch = importPath.match(/^(\.+)(.*)/);
-    if (dotMatch) {
-      const dotCount = dotMatch[1].length;
-      const modulePart = dotMatch[2]; // e.g., "models" from ".models"
-      const dirParts = currentFile.split('/').slice(0, -1); // remove filename
-
-      // Navigate up: 1 dot = same package, 2 dots = parent package, etc.
-      // First dot means "current package", each additional dot goes up one level
-      for (let i = 1; i < dotCount; i++) {
-        dirParts.pop();
-      }
-
-      if (modulePart) {
-        // from .models import User → resolve "models" relative to current package
-        const modulePath = modulePart.replace(/\./g, '/');
-        dirParts.push(...modulePath.split('/'));
-      }
-
-      const basePath = dirParts.join('/');
-      const resolved = tryResolveWithExtensions(basePath, allFiles);
-      return cache(resolved);
-    }
-  }
-
   // ---- Generic relative import resolution (./ and ../) ----
   const currentDir = currentFile.split('/').slice(0, -1);
   const parts = importPath.split('/');
@@ -172,29 +145,6 @@ export const resolveImportPath = (
     ? importPath
     : importPath.replace(/\./g, '/');
   const pathParts = pathLike.split('/').filter(Boolean);
-
-  // ---- Proximity-based resolution: prefer same-directory match first (Python only) ----
-  // Python's runtime searches the importing script's own directory first via sys.path, so
-  // `import user` from services/auth.py must resolve to services/user.py before any global
-  // suffix match — even if models/user.py was indexed first.
-  // Uses allFiles.has() for an exact O(1) lookup: importerDir + '/' + name + '.py'.
-  // This avoids the dirMap suffix ambiguity (dirMap stores all suffix levels, so
-  // getFilesInDir('services') would match files from every directory named 'services/'
-  // across the repo) and eliminates the O(n) siblings scan.
-  // Only applies to single-segment bare names — multi-segment paths (e.g. "utils/helpers")
-  // are specific enough to resolve unambiguously via suffixResolve.
-  if (!pathLike.includes('/') && language === SupportedLanguages.Python) {
-    // Normalize to forward slashes so the lookup matches allFiles on all platforms.
-    const importerDir = currentFile.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
-    if (importerDir) {
-      // Try bare module file first (e.g. services/user.py), then package (services/user/__init__.py).
-      // Both are O(1) Set lookups — no false positives from suffix ambiguity.
-      const moduleCandidate = `${importerDir}/${pathLike}.py`;
-      if (allFiles.has(moduleCandidate)) return cache(moduleCandidate);
-      const packageCandidate = `${importerDir}/${pathLike}/__init__.py`;
-      if (allFiles.has(packageCandidate)) return cache(packageCandidate);
-    }
-  }
 
   const resolved = suffixResolve(pathParts, normalizedFileList, allFileList, index);
   return cache(resolved);
