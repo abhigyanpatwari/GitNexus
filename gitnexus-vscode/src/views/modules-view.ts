@@ -3,6 +3,7 @@ import { GitNexusService } from '../services/gitnexus-service';
 
 export class ModulesViewProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<vscode.TreeItem | undefined>();
+  private retryScheduled = false;
   readonly onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
 
   constructor(private readonly service: GitNexusService) {}
@@ -37,6 +38,7 @@ export class ModulesViewProvider implements vscode.TreeDataProvider<vscode.TreeI
         return item;
       });
     } catch (error) {
+      this.scheduleRetry();
       return [this.createInfoItem('Unable to load modules', error instanceof Error ? error.message : String(error))];
     }
   }
@@ -50,5 +52,17 @@ export class ModulesViewProvider implements vscode.TreeDataProvider<vscode.TreeI
     item.tooltip = tooltip;
     item.iconPath = new vscode.ThemeIcon('info');
     return item;
+  }
+
+  private scheduleRetry(): void {
+    if (this.retryScheduled) {
+      return;
+    }
+
+    this.retryScheduled = true;
+    setTimeout(() => {
+      this.retryScheduled = false;
+      this.refresh();
+    }, 2500);
   }
 }

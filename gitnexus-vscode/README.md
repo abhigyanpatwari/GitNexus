@@ -26,6 +26,17 @@ npm run build
 
 Press `F5` in VS Code to launch an Extension Development Host.
 
+## Usage
+
+1. Run `GitNexus: Analyze Workspace` once in your repository.
+2. GitNexus auto-refreshes repository/module/flow views on startup and after analyze runs.
+3. Use the status bar item to monitor index freshness:
+	- `GitNexus: Fresh`
+	- `GitNexus: Stale`
+	- `GitNexus: Not Indexed`
+
+If status is stale, click the status bar item to trigger analyze; the extension polls and updates to fresh automatically when indexing completes.
+
 ## Configuration
 
 - `gitnexus.mcp.autoRegister`: Automatically write `.vscode/mcp.json`
@@ -33,3 +44,15 @@ Press `F5` in VS Code to launch an Extension Development Host.
 - `gitnexus.cli.command`: Command used to launch GitNexus (default `npx`)
 - `gitnexus.cli.baseArgs`: Base args before subcommands
 - `gitnexus.cli.mcpArgs`: Args to start MCP server (default `["mcp"]`)
+
+## Troubleshooting
+
+- If `Analyze Workspace` fails with npm `ECOMPROMISED` or `ENOTEMPTY`, clear the npx temp cache and retry:
+
+```bash
+rm -rf ~/.npm/_npx
+mkdir -p ~/.npm/_npx
+npm cache verify
+```
+
+- If views look stale after updating the extension, run `Developer: Reload Window` once.

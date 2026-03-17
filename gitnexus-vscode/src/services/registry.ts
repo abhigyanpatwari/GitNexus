@@ -16,12 +16,15 @@ export async function readRegistryRepos(): Promise<RepoRegistryEntry[]> {
 
   try {
     const content = await fs.readFile(registryPath, 'utf8');
-    const parsed = JSON.parse(content) as RegistryPayload;
-    if (!Array.isArray(parsed.repos)) {
+    const parsed = JSON.parse(content) as RegistryPayload | RepoRegistryEntry[];
+
+    // Newer GitNexus versions write a bare array, while older versions used { repos: [...] }.
+    const repos = Array.isArray(parsed) ? parsed : parsed.repos;
+    if (!Array.isArray(repos)) {
       return [];
     }
 
-    return parsed.repos.filter((repo) => typeof repo?.name === 'string' && typeof repo?.path === 'string');
+    return repos.filter((repo) => typeof repo?.name === 'string' && typeof repo?.path === 'string');
   } catch {
     return [];
   }

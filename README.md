@@ -84,11 +84,33 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 | --------------------- | --- | ------ | -------------------- | -------------- |
 | **Claude Code** | Yes | Yes    | Yes (PreToolUse + PostToolUse) | **Full** |
 | **Cursor**      | Yes | Yes    | —                   | MCP + Skills   |
+| **VS Code**     | Yes | Yes    | —                   | MCP + Skills + Native Extension |
 | **Windsurf**    | Yes | —     | —                   | MCP            |
 | **OpenCode**    | Yes | Yes    | —                   | MCP + Skills   |
 | **Codex**       | Yes | —     | —                   | MCP            |
 
 > **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that enrich searches with graph context + PostToolUse hooks that auto-reindex after commits.
+
+### VS Code Extension
+
+GitNexus now ships a native VS Code extension in [`gitnexus-vscode/`](gitnexus-vscode/README.md) with:
+
+- Repo, module, and execution flow explorer views
+- Status bar freshness indicator (fresh/stale/not indexed)
+- Context menu actions for impact and symbol exploration
+- Interactive graph panel
+- Chat participant workflows: `/explore`, `/impact`, `/debug`, `/refactor`, `/flow`, `/changes`
+
+Build and install locally:
+
+```bash
+cd gitnexus-vscode
+npm install
+npm run package
+code --install-extension gitnexus-vscode-0.0.1.vsix
+```
+
+For extension development, open `gitnexus-vscode` in VS Code and press `F5`.
 
 ### Community Integrations
 

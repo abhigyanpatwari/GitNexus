@@ -27,6 +27,51 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await statusBar.refresh();
   statusBar.show();
 
+  const refreshAll = async () => {
+    await service.refreshRepos();
+    repositoriesView.refresh();
+    modulesView.refresh();
+    processesView.refresh();
+    await statusBar.refresh();
+  };
+
+  let analyzeRefreshTimer: NodeJS.Timeout | undefined;
+  const startAnalyzeRefreshLoop = () => {
+    if (analyzeRefreshTimer) {
+      clearInterval(analyzeRefreshTimer);
+      analyzeRefreshTimer = undefined;
+    }
+
+    let attempts = 0;
+    const maxAttempts = 40;
+    const intervalMs = 3000;
+
+    const runTick = async () => {
+      attempts += 1;
+
+      try {
+        await refreshAll();
+        const status = await service.getWorkspaceStatus();
+        if (status.state === 'fresh' || attempts >= maxAttempts) {
+          if (analyzeRefreshTimer) {
+            clearInterval(analyzeRefreshTimer);
+            analyzeRefreshTimer = undefined;
+          }
+        }
+      } catch {
+        if (attempts >= maxAttempts && analyzeRefreshTimer) {
+          clearInterval(analyzeRefreshTimer);
+          analyzeRefreshTimer = undefined;
+        }
+      }
+    };
+
+    void runTick();
+    analyzeRefreshTimer = setInterval(() => {
+      void runTick();
+    }, intervalMs);
+  };
+
   context.subscriptions.push(
     output,
     service,
@@ -35,15 +80,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.registerTreeDataProvider('gitnexus.repositoriesView', repositoriesView),
     vscode.window.registerTreeDataProvider('gitnexus.modulesView', modulesView),
     vscode.window.registerTreeDataProvider('gitnexus.processesView', processesView),
-    registerCommand(context, 'gitnexus.refresh', async () => {
-      await service.refreshRepos();
-      repositoriesView.refresh();
-      modulesView.refresh();
-      processesView.refresh();
-      await statusBar.refresh();
-    }),
+    registerCommand(context, 'gitnexus.refresh', refreshAll),
     registerCommand(context, 'gitnexus.analyzeWorkspace', async (resource?: vscode.Uri) => {
-      service.runAnalyzeWorkspace(resource);
+      const started = service.runAnalyzeWorkspace(resource);
+      if (started) {
+        startAnalyzeRefreshLoop();
+      }
     }),
     registerCommand(context, 'gitnexus.openRepoContext', async () => {
       await presentOutput('GitNexus Repository Context', await service.getRepoContext(), 'yaml');
@@ -106,16 +148,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       void vscode.window.setStatusBarMessage(`Copied symbol: ${symbol}`, 2000);
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(async () => {
-      await service.refreshRepos();
-      repositoriesView.refresh();
-      modulesView.refresh();
-      processesView.refresh();
-      await statusBar.refresh();
+      await refreshAll();
     }),
     vscode.workspace.onDidSaveTextDocument(async () => {
       await statusBar.refresh();
     }),
   );
+
+  // Kick off a startup refresh immediately and once more shortly after activation.
+  // This covers slower MCP startup without requiring a manual refresh click.
+  void refreshAll();
+
+  const startupRetry = setTimeout(() => {
+    void refreshAll();
+  }, 2500);
+
+  context.subscriptions.push({
+    dispose() {
+      clearTimeout(startupRetry);
+      if (analyzeRefreshTimer) {
+        clearInterval(analyzeRefreshTimer);
+      }
+    },
+  });
 }
 
 export function deactivate(): void {

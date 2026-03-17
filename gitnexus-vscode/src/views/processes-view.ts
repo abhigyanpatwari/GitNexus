@@ -3,6 +3,7 @@ import { GitNexusService } from '../services/gitnexus-service';
 
 export class ProcessesViewProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<vscode.TreeItem | undefined>();
+  private retryScheduled = false;
   readonly onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
 
   constructor(private readonly service: GitNexusService) {}
@@ -35,6 +36,7 @@ export class ProcessesViewProvider implements vscode.TreeDataProvider<vscode.Tre
         return item;
       });
     } catch (error) {
+      this.scheduleRetry();
       return [
         this.createInfoItem(
           'Unable to load execution flows',
@@ -53,5 +55,17 @@ export class ProcessesViewProvider implements vscode.TreeDataProvider<vscode.Tre
     item.tooltip = tooltip;
     item.iconPath = new vscode.ThemeIcon('info');
     return item;
+  }
+
+  private scheduleRetry(): void {
+    if (this.retryScheduled) {
+      return;
+    }
+
+    this.retryScheduled = true;
+    setTimeout(() => {
+      this.retryScheduled = false;
+      this.refresh();
+    }, 2500);
   }
 }

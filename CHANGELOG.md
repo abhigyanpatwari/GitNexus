@@ -4,6 +4,14 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Native VS Code extension support via `gitnexus-vscode/` with sidebar repository/module/flow views, interactive graph panel, chat participant workflows, and MCP auto-registration.
+
+### Fixed
+- VS Code extension now auto-refreshes repository/module/flow views on startup and after analyze runs, reducing manual refresh clicks.
+- VS Code status bar freshness detection now correctly handles current registry formats and transitions from stale to fresh automatically after re-indexing.
+- VS Code activity icon rendering now uses a theme-friendly monochrome SVG.
+
 ### Changed
 - Migrated from KuzuDB to LadybugDB v0.15 (`@ladybugdb/core`, `@ladybugdb/wasm-core`)
 - Renamed all internal paths from `kuzu` to `lbug` (storage: `.gitnexus/kuzu` → `.gitnexus/lbug`)

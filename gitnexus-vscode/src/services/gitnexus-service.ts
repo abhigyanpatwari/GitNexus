@@ -24,15 +24,8 @@ export class GitNexusService implements vscode.Disposable {
   async refreshRepos(): Promise<void> {
     const registryRepos = await readRegistryRepos();
     this.repos = registryRepos;
-
-    const configuredRepo = this.getConfig().defaultRepo;
-    const defaultRepo = pickDefaultRepo(registryRepos, configuredRepo, getWorkspaceRoot());
-
-    if (!this.activeRepoName || !registryRepos.some((repo) => repo.name === this.activeRepoName)) {
-      this.activeRepoName = defaultRepo?.name;
-    }
-
-    await vscode.commands.executeCommand('setContext', 'gitnexus.isIndexed', Boolean(this.getWorkspaceRepo()));
+    this.reconcileActiveRepo();
+    await this.updateIndexedContext();
   }
 
   async listRepos(): Promise<RepoRegistryEntry[]> {
@@ -50,6 +43,9 @@ export class GitNexusService implements vscode.Disposable {
     if (this.repos.length === 0) {
       this.repos = await readRegistryRepos();
     }
+
+    this.reconcileActiveRepo();
+    await this.updateIndexedContext();
 
     return this.repos;
   }
@@ -144,7 +140,7 @@ export class GitNexusService implements vscode.Disposable {
   }
 
   async getWorkspaceStatus(): Promise<WorkspaceIndexStatus> {
-    const workspaceRepo = this.getWorkspaceRepo();
+    const workspaceRepo = this.getWorkspaceRepo() ?? this.getActiveRepo();
     if (!workspaceRepo) {
       return { state: 'not-indexed' };
     }
@@ -166,13 +162,13 @@ export class GitNexusService implements vscode.Disposable {
     };
   }
 
-  runAnalyzeWorkspace(targetUri?: vscode.Uri): void {
+  runAnalyzeWorkspace(targetUri?: vscode.Uri): boolean {
     const config = this.getConfig();
     const workspaceRoot = targetUri?.fsPath ?? getWorkspaceRoot();
 
     if (!workspaceRoot) {
       void vscode.window.showWarningMessage('No workspace folder selected for GitNexus analyze.');
-      return;
+      return false;
     }
 
     const fullArgs = [...config.baseArgs, 'analyze', workspaceRoot];
@@ -185,6 +181,7 @@ export class GitNexusService implements vscode.Disposable {
 
     terminal.show(true);
     terminal.sendText(shellCommand, true);
+    return true;
   }
 
   private async readRepoResource(repoName: string, suffix: string): Promise<string> {
@@ -200,6 +197,20 @@ export class GitNexusService implements vscode.Disposable {
     }
 
     return findRepoForWorkspace(workspaceRoot, this.repos);
+  }
+
+  private reconcileActiveRepo(): void {
+    const configuredRepo = this.getConfig().defaultRepo;
+    const defaultRepo = pickDefaultRepo(this.repos, configuredRepo, getWorkspaceRoot());
+
+    if (!this.activeRepoName || !this.repos.some((repo) => repo.name === this.activeRepoName)) {
+      this.activeRepoName = defaultRepo?.name;
+    }
+  }
+
+  private async updateIndexedContext(): Promise<void> {
+    const hasIndexedRepo = Boolean(this.getWorkspaceRepo() ?? this.getActiveRepo());
+    await vscode.commands.executeCommand('setContext', 'gitnexus.isIndexed', hasIndexedRepo);
   }
 
   private requireActiveRepo(): RepoRegistryEntry {
