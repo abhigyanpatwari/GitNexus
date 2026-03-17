@@ -93,15 +93,38 @@ describe('resolveImportPath — proximity-based resolution for Python', () => {
     expect(result).toBe('app/models/utils/helpers.py');
   });
 
-  it('resolves package import via __init__.py when no bare .py in same directory', () => {
+  it('resolves same-directory package (user/__init__.py) via proximity', () => {
+    const ctx = makeCtx([
+      'app/models/user/__init__.py',  // indexed first — would win without proximity
+      'app/services/user/__init__.py',
+      'app/services/auth.py',
+    ]);
+
+    // proximity checks services/user.py (miss) then services/user/__init__.py (hit)
+    const result = resolve('app/services/auth.py', 'user', SupportedLanguages.Python, ctx);
+    expect(result).toBe('app/services/user/__init__.py');
+  });
+
+  it('falls back to suffixResolve for __init__.py when no same-directory package exists', () => {
     const ctx = makeCtx([
       'app/models/__init__.py',
       'app/services/auth.py',
     ]);
 
-    // No models.py in services/ — falls through to suffixResolve which tries models/__init__.py
+    // No models.py or models/__init__.py in services/ — falls through to suffixResolve
     const result = resolve('app/services/auth.py', 'models', SupportedLanguages.Python, ctx);
     expect(result).toBe('app/models/__init__.py');
+  });
+
+  it('handles Windows-style backslash paths in currentFile without crashing', () => {
+    const ctx = makeCtx([
+      'app/services/user.py',
+      'app/services/auth.py',
+    ]);
+
+    // currentFile with backslashes (Windows) — normalize before split
+    const result = resolve('app\\services\\auth.py', 'user', SupportedLanguages.Python, ctx);
+    expect(result).toBe('app/services/user.py');
   });
 
   it('resolves PEP 328 relative import unchanged (dot prefix handled before proximity)', () => {

@@ -365,6 +365,15 @@ describe('Python bare import resolution (proximity over index order)', () => {
     expect(imp!.targetFilePath).toBe('services/user.py');
     expect(imp!.targetFilePath).not.toBe('models/user.py');
   });
+
+  it('resolves svc.execute() CALLS edge to UserService#execute in services/user.py', () => {
+    // End-to-end: correct IMPORTS resolution must propagate through type inference
+    // so that user.UserService() binds svc → UserService, and svc.execute() resolves
+    const calls = getRelationships(result, 'CALLS');
+    const executeCall = calls.find(c => c.target === 'execute' && c.targetFilePath === 'services/user.py');
+    expect(executeCall).toBeDefined();
+    expect(executeCall!.source).toBe('authenticate');
+  });
 });
 
 // ---------------------------------------------------------------------------

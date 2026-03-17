@@ -187,8 +187,12 @@ export const resolveImportPath = (
     // Normalize to forward slashes so the lookup matches allFiles on all platforms.
     const importerDir = currentFile.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
     if (importerDir) {
-      const candidate = `${importerDir}/${pathLike}.py`;
-      if (allFiles.has(candidate)) return cache(candidate);
+      // Try bare module file first (e.g. services/user.py), then package (services/user/__init__.py).
+      // Both are O(1) Set lookups — no false positives from suffix ambiguity.
+      const moduleCandidate = `${importerDir}/${pathLike}.py`;
+      if (allFiles.has(moduleCandidate)) return cache(moduleCandidate);
+      const packageCandidate = `${importerDir}/${pathLike}/__init__.py`;
+      if (allFiles.has(packageCandidate)) return cache(packageCandidate);
     }
   }
 
