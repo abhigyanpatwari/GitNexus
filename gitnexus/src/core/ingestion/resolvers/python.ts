@@ -1,4 +1,7 @@
-/** Python import resolution — PEP 328 relative imports and proximity-based bare imports. */
+/**
+ * Python import resolution — PEP 328 relative imports and proximity-based bare imports.
+ * Import system spec: PEP 302 (original), PEP 451 (current).
+ */
 
 import { tryResolveWithExtensions } from './utils.js';
 
@@ -6,9 +9,11 @@ import { tryResolveWithExtensions } from './utils.js';
  * Resolve a Python import to a file path.
  *
  * 1. Relative (PEP 328): `.module`, `..module` — 1 dot = current package, each extra dot goes up one level.
- * 2. Proximity bare import: checks the importer's own directory first (mirrors sys.path index 0).
- *    Single-segment only — multi-segment falls through to suffixResolve.
- *    Checks .py before __init__.py; CPython does the opposite but coexistence is invalid in practice.
+ * 2. Proximity bare import: checks the importer's own directory first, mirroring the CPython
+ *    import system (PEP 302 / PEP 451) which prepends the script's directory to sys.path.
+ *    Single-segment only — multi-segment (e.g. `os.path`) falls through to suffixResolve.
+ *    Checks .py before package __init__.py; CPython prefers the package but coexistence is
+ *    invalid in practice (Python language reference §5.2).
  *
  * Returns null to let the caller fall through to suffixResolve.
  */
@@ -17,7 +22,7 @@ export function resolvePythonImport(
   importPath: string,
   allFiles: Set<string>,
 ): string | null {
-  // Relative import (PEP 328)
+  // Relative import — PEP 328 (https://peps.python.org/pep-0328/)
   if (importPath.startsWith('.')) {
     const dotMatch = importPath.match(/^(\.+)(.*)/);
     if (!dotMatch) return null;
@@ -35,7 +40,7 @@ export function resolvePythonImport(
     return tryResolveWithExtensions(dirParts.join('/'), allFiles);
   }
 
-  // Proximity bare import — single-segment only
+  // Proximity bare import — PEP 302/451 sys.path behaviour, single-segment only
   const pathLike = importPath.replace(/\./g, '/');
   if (pathLike.includes('/')) return null;
 
