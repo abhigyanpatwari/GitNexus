@@ -1488,6 +1488,147 @@ Additional output sections:
   );
 
   // ============================================================================
+  // TOOL 8: METRICS (Code complexity analysis)
+  // ============================================================================
+  
+  const metricsTool = tool(
+    async ({ filter, sortBy, limit }: { 
+      filter?: 'critical' | 'high' | 'medium' | 'low' | 'all';
+      sortBy?: 'complexity' | 'fanIn' | 'fanOut' | 'instability';
+      limit?: number;
+    }) => {
+      const rankFilter = filter ?? 'all';
+      const sort = sortBy ?? 'complexity';
+      const maxResults = Math.min(limit ?? 20, 100);
+      
+      // Build WHERE clause for rank filter
+      const rankCondition = rankFilter === 'all' 
+        ? '' 
+        : `AND n.complexityRank = '${rankFilter}'`;
+      
+      // Build ORDER BY clause
+      const orderByMap: Record<string, string> = {
+        complexity: 'n.cyclomaticComplexity DESC',
+        fanIn: 'n.fanIn DESC',
+        fanOut: 'n.fanOut DESC',
+        instability: 'n.instability DESC',
+      };
+      const orderBy = orderByMap[sort] || orderByMap.complexity;
+      
+      try {
+        // Query for functions/methods with metrics
+        const metricsQuery = `
+          MATCH (n)
+          WHERE (label(n) = 'Function' OR label(n) = 'Method')
+            AND n.cyclomaticComplexity IS NOT NULL
+            ${rankCondition}
+          RETURN 
+            n.name AS name,
+            label(n) AS type,
+            n.filePath AS file,
+            n.cyclomaticComplexity AS cc,
+            n.complexityRank AS rank,
+            n.fanIn AS fanIn,
+            n.fanOut AS fanOut,
+            n.instability AS instability,
+            n.loc AS loc
+          ORDER BY ${orderBy}
+          LIMIT ${maxResults}
+        `;
+        
+        const results = await executeQuery(metricsQuery);
+        
+        if (results.length === 0) {
+          return `No functions found${rankFilter !== 'all' ? ` with rank "${rankFilter}"` : ''}. Metrics may not be computed yet.`;
+        }
+        
+        // Summary stats query
+        const summaryQuery = `
+          MATCH (n)
+          WHERE (label(n) = 'Function' OR label(n) = 'Method')
+            AND n.cyclomaticComplexity IS NOT NULL
+          RETURN 
+            COUNT(*) AS total,
+            AVG(n.cyclomaticComplexity) AS avgCC,
+            MAX(n.cyclomaticComplexity) AS maxCC,
+            SUM(CASE WHEN n.complexityRank = 'critical' THEN 1 ELSE 0 END) AS critical,
+            SUM(CASE WHEN n.complexityRank = 'high' THEN 1 ELSE 0 END) AS high,
+            SUM(CASE WHEN n.complexityRank = 'medium' THEN 1 ELSE 0 END) AS medium,
+            SUM(CASE WHEN n.complexityRank = 'low' THEN 1 ELSE 0 END) AS low
+        `;
+        
+        let summaryLine = '';
+        try {
+          const summaryRes = await executeQuery(summaryQuery);
+          if (summaryRes.length > 0) {
+            const s = summaryRes[0];
+            const total = Array.isArray(s) ? s[0] : s.total;
+            const avgCC = Array.isArray(s) ? s[1] : s.avgCC;
+            const maxCC = Array.isArray(s) ? s[2] : s.maxCC;
+            const critical = Array.isArray(s) ? s[3] : s.critical;
+            const high = Array.isArray(s) ? s[4] : s.high;
+            summaryLine = `**Summary:** ${total} functions | Avg CC: ${Number(avgCC).toFixed(1)} | Max CC: ${maxCC} | 🔴 Critical: ${critical} | 🟠 High: ${high}\n\n`;
+          }
+        } catch {
+          // Skip summary if query fails
+        }
+        
+        // Format as table
+        const header = '| Name | Type | CC | Rank | Fan-In | Fan-Out | Instability | File |';
+        const separator = '|---|---|---|---|---|---|---|---|';
+        
+        const rows = results.map((row: any) => {
+          const name = Array.isArray(row) ? row[0] : row.name;
+          const type = Array.isArray(row) ? row[1] : row.type;
+          const file = Array.isArray(row) ? row[2] : row.file;
+          const cc = Array.isArray(row) ? row[3] : row.cc;
+          const rank = Array.isArray(row) ? row[4] : row.rank;
+          const fanIn = Array.isArray(row) ? row[5] : row.fanIn;
+          const fanOut = Array.isArray(row) ? row[6] : row.fanOut;
+          const instability = Array.isArray(row) ? row[7] : row.instability;
+          
+          const rankEmoji = rank === 'critical' ? '🔴' : rank === 'high' ? '🟠' : rank === 'medium' ? '🟡' : '🟢';
+          const shortFile = file ? file.split('/').slice(-2).join('/') : '';
+          const instStr = instability !== null && instability !== undefined ? Number(instability).toFixed(2) : '-';
+          
+          return `| ${name} | ${type} | ${cc} | ${rankEmoji} ${rank} | ${fanIn ?? 0} | ${fanOut ?? 0} | ${instStr} | ${shortFile} |`;
+        });
+        
+        return `${summaryLine}${header}\n${separator}\n${rows.join('\n')}`;
+      } catch (error) {
+        return `Metrics query error: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    },
+    {
+      name: 'metrics',
+      description: `Analyze code complexity metrics for functions and methods.
+
+Use when users ask:
+- "Show me the most complex functions"
+- "Which functions have high coupling?"
+- "Find hotspots in the codebase"
+- "What are the critical complexity areas?"
+
+Metrics explained:
+- **CC (Cyclomatic Complexity)**: Decision point count. 1-5=low, 6-10=medium, 11-20=high, 21+=critical
+- **Fan-In**: Number of callers (high = heavily used, risky to change)
+- **Fan-Out**: Number of callees (high = many dependencies)
+- **Instability**: fanOut/(fanIn+fanOut). 0=stable, 1=unstable
+
+Filter by rank: critical, high, medium, low, or all
+Sort by: complexity, fanIn, fanOut, instability`,
+      schema: z.object({
+        filter: z.enum(['critical', 'high', 'medium', 'low', 'all']).optional().nullable()
+          .describe('Filter by complexity rank (default: all)'),
+        sortBy: z.enum(['complexity', 'fanIn', 'fanOut', 'instability']).optional().nullable()
+          .describe('Sort results by metric (default: complexity)'),
+        limit: z.number().optional().nullable()
+          .describe('Max results to return (default: 20, max: 100)'),
+      }),
+    }
+  );
+
+  // ============================================================================
   // RETURN ALL TOOLS
   // ============================================================================
   
@@ -1499,5 +1640,6 @@ Additional output sections:
     overviewTool,
     exploreTool,
     impactTool,
+    metricsTool,
   ];
 };

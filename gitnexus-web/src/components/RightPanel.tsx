@@ -1,13 +1,14 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Send, Square, Sparkles, User,
-  PanelRightClose, Loader2, AlertTriangle, GitBranch
+  PanelRightClose, Loader2, AlertTriangle, Activity, GitBranch, Flame
 } from 'lucide-react';
 import { useAppState } from '../hooks/useAppState';
 import { ToolCallCard } from './ToolCallCard';
 import { isProviderConfigured } from '../core/llm/settings-service';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ProcessesPanel } from './ProcessesPanel';
+import { MetricsPanel } from './MetricsPanel';
 export const RightPanel = () => {
   const {
     isRightPanelOpen,
@@ -28,7 +29,7 @@ export const RightPanel = () => {
   } = useAppState();
 
   const [chatInput, setChatInput] = useState('');
-  const [activeTab, setActiveTab] = useState<'chat' | 'processes'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'activity' | 'processes' | 'metrics'>('chat');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -234,7 +235,19 @@ export const RightPanel = () => {
           >
             <GitBranch className="w-3.5 h-3.5" />
             <span>Processes</span>
-            <span className="text-[10px] px-1.5 py-0.5 bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white rounded-full font-semibold">
+          </button>
+
+          {/* Metrics Tab */}
+          <button
+            onClick={() => setActiveTab('metrics')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${activeTab === 'metrics'
+              ? 'bg-accent/15 text-accent'
+              : 'text-text-muted hover:text-text-primary hover:bg-hover'
+              }`}
+          >
+            <Flame className="w-3.5 h-3.5" />
+            <span>Metrics</span>
+            <span className="text-[10px] px-1.5 py-0.5 bg-gradient-to-r from-orange-500 to-red-500 text-white rounded-full font-semibold">
               NEW
             </span>
           </button>
@@ -254,6 +267,13 @@ export const RightPanel = () => {
       {activeTab === 'processes' && (
         <div className="flex-1 flex flex-col overflow-hidden">
           <ProcessesPanel />
+        </div>
+      )}
+
+      {/* Metrics Tab */}
+      {activeTab === 'metrics' && (
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <MetricsPanel />
         </div>
       )}
 

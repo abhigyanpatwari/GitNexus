@@ -63,6 +63,13 @@ export type NodeProperties = {
   // Entry point scoring (computed by process detection)
   entryPointScore?: number,
   entryPointReason?: string,
+  // Code complexity metrics
+  cyclomaticComplexity?: number,
+  fanIn?: number,
+  fanOut?: number,
+  loc?: number,
+  instability?: number,
+  complexityRank?: 'low' | 'medium' | 'high' | 'critical',
   // Method signature (for MRO disambiguation)
   parameterCount?: number,
   returnType?: string,

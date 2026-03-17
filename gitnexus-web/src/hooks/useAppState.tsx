@@ -94,6 +94,8 @@ interface AppState {
   blastRadiusNodeIds: Set<string>;
   isAIHighlightsEnabled: boolean;
   toggleAIHighlights: () => void;
+  isMetricsViewEnabled: boolean;
+  toggleMetricsView: () => void;
   clearAIToolHighlights: () => void;
   clearBlastRadius: () => void;
   queryResult: QueryResult | null;
@@ -216,6 +218,13 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const [aiToolHighlightedNodeIds, setAIToolHighlightedNodeIds] = useState<Set<string>>(new Set());
   const [blastRadiusNodeIds, setBlastRadiusNodeIds] = useState<Set<string>>(new Set());
   const [isAIHighlightsEnabled, setAIHighlightsEnabled] = useState(true);
+
+  // Metrics view mode (color nodes by complexity)
+  const [isMetricsViewEnabled, setMetricsViewEnabled] = useState(false);
+
+  const toggleMetricsView = useCallback(() => {
+    setMetricsViewEnabled(prev => !prev);
+  }, []);
 
   const toggleAIHighlights = useCallback(() => {
     setAIHighlightsEnabled(prev => !prev);
@@ -1119,6 +1128,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     blastRadiusNodeIds,
     isAIHighlightsEnabled,
     toggleAIHighlights,
+    isMetricsViewEnabled,
+    toggleMetricsView,
     clearAIToolHighlights,
     clearBlastRadius,
     queryResult,

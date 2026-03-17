@@ -68,3 +68,5 @@ gitnexus/test/fixtures/mini-repo/.gitignore
 gitnexus/test/fixtures/lang-resolution/**/obj
 gitnexus/test/fixtures/lang-resolution/**/bin
 GitNexus.sln
+
+local_docs/

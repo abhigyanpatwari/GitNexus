@@ -18,6 +18,11 @@ export interface SigmaNodeAttributes {
   mass?: number; // ForceAtlas2 mass - higher = more repulsion
   community?: number; // Community index from Leiden algorithm
   communityColor?: string; // Color assigned by community
+  // Complexity metrics
+  cyclomaticComplexity?: number;
+  complexityRank?: 'low' | 'medium' | 'high' | 'critical';
+  fanIn?: number;
+  fanOut?: number;
 }
 
 export interface SigmaEdgeAttributes {
@@ -245,6 +250,11 @@ export const knowledgeGraphToGraphology = (
       mass: getNodeMass(node.label, nodeCount),
       community: communityIndex,
       communityColor: hasCommunity ? getCommunityColor(communityIndex!) : undefined,
+      // Complexity metrics
+      cyclomaticComplexity: node.properties.cyclomaticComplexity,
+      complexityRank: node.properties.complexityRank,
+      fanIn: node.properties.fanIn,
+      fanOut: node.properties.fanOut,
     });
   };
   
@@ -356,6 +366,47 @@ export const getNodesWithinHops = (
   }
   
   return visited;
+};
+
+/**
+ * Complexity rank colors for metrics view
+ */
+const COMPLEXITY_COLORS: Record<string, string> = {
+  critical: '#ef4444', // Red
+  high: '#f97316',     // Orange
+  medium: '#eab308',   // Yellow
+  low: '#22c55e',      // Green
+};
+
+/**
+ * Apply complexity-based coloring to the graph
+ * When enabled, Function/Method nodes are colored by their complexity rank
+ */
+export const applyComplexityColoring = (
+  graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>,
+  enabled: boolean
+): void => {
+  graph.forEachNode((nodeId, attributes) => {
+    const isCallable = ['Function', 'Method'].includes(attributes.nodeType);
+    
+    if (enabled && isCallable && attributes.complexityRank) {
+      // Apply complexity color
+      const complexityColor = COMPLEXITY_COLORS[attributes.complexityRank] || COMPLEXITY_COLORS.low;
+      graph.setNodeAttribute(nodeId, 'color', complexityColor);
+      
+      // Optionally scale size by fan-in (more callers = bigger hotspot)
+      const baseFanIn = attributes.fanIn || 0;
+      if (baseFanIn > 0) {
+        const currentSize = attributes.size || 6;
+        const sizeBoost = Math.min(baseFanIn * 0.5, 4); // Max +4 size
+        graph.setNodeAttribute(nodeId, 'size', currentSize + sizeBoost);
+      }
+    } else if (!enabled && isCallable) {
+      // Restore community color or default
+      const restoreColor = attributes.communityColor || NODE_COLORS[attributes.nodeType] || '#9ca3af';
+      graph.setNodeAttribute(nodeId, 'color', restoreColor);
+    }
+  });
 };
 
 /**
