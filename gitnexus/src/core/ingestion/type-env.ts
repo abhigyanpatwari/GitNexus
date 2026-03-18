@@ -405,6 +405,9 @@ export const buildTypeEnv = (
   config.forLoopNodeTypes?.forEach(t => interestingNodeTypes.add(t));
   // Tier 2: copy-propagation (`const b = a`) and call-result propagation (`const b = foo()`)
   const pendingCopies: Array<{ scope: string; lhs: string; rhs: string }> = [];
+  // NOTE: Infrastructure-ready — no language extractor currently returns { kind: 'callResult' }
+  // from extractPendingAssignment. When one does, this array will bind variables to their
+  // function return types at TypeEnv build time. See PendingAssignment in types.ts.
   const pendingCallResults: Array<{ scope: string; lhs: string; callee: string }> = [];
   // Maps `scope\0varName` → the type annotation AST node from the original declaration.
   // Allows pattern extractors to navigate back to the declaration's generic type arguments
@@ -650,6 +653,9 @@ export const buildTypeEnv = (
   // Tier 2b: call-result propagation — `const b = foo()` where `foo` has a declared return type.
   // Uses ReturnTypeLookup which is backed by SymbolTable.lookupFuzzyCallable.
   // Conservative: only binds when exactly one callable matches (avoids overload ambiguity).
+  // NOTE: Currently dormant — no extractPendingAssignment implementation emits 'callResult' yet.
+  // The loop is structurally complete and will activate when any language extractor starts
+  // returning { kind: 'callResult', lhs, callee } from extractPendingAssignment.
   for (const { scope, lhs, callee } of pendingCallResults) {
     const scopeEnv = env.get(scope);
     if (!scopeEnv || scopeEnv.has(lhs)) continue;

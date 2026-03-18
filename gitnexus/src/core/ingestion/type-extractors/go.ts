@@ -356,6 +356,8 @@ const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTy
     } else {
       // Single-var in expression_list — yields INDEX for slices/maps, ELEMENT for channels.
       // For call-expression iterables (iterableName undefined), conservative: treat as non-channel.
+      // Channels are rarely returned from function calls, and even if they were, skipping here
+      // just means we miss a binding rather than create an incorrect one.
       if (iterableName && isChannelType(iterableName, scopeEnv, declarationTypeNodes, scope)) {
         loopVarNode = leftNode.namedChild(0);
       } else {
@@ -365,6 +367,8 @@ const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTy
   } else {
     // Plain identifier (single-var form without expression_list)
     // For call-expression iterables (iterableName undefined), conservative: treat as non-channel.
+    // Channels are rarely returned from function calls, and even if they were, skipping here
+    // just means we miss a binding rather than create an incorrect one.
     if (iterableName && isChannelType(iterableName, scopeEnv, declarationTypeNodes, scope)) {
       loopVarNode = leftNode;
     } else {

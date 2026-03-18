@@ -454,14 +454,14 @@ const extractForLoopBinding: ForLoopExtractor = (node,  { scopeEnv, declarationT
     const calleeName = extractCalleeName(iterableNode);
     if (calleeName) {
       const rawReturn = returnTypeLookup.lookupRawReturnType(calleeName);
-      if (rawReturn) callExprElementType = normalizePhpType(rawReturn);
+      if (rawReturn) callExprElementType = extractElementTypeFromString(rawReturn);
     }
   } else if (iterableNode?.type === 'member_call_expression') {
     // foreach ($this->getUsers() as $user) — resolve via return type lookup
     const methodName = iterableNode.childForFieldName('name');
     if (methodName) {
       const rawReturn = returnTypeLookup.lookupRawReturnType(methodName.text);
-      if (rawReturn) callExprElementType = normalizePhpType(rawReturn);
+      if (rawReturn) callExprElementType = extractElementTypeFromString(rawReturn);
     }
   }
   if (!iterableName && !callExprElementType) return;
