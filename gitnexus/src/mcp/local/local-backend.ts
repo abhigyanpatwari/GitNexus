@@ -1335,12 +1335,11 @@ export class LocalBackend {
     } catch (err: any) {
       // Return structured error instead of crashing (#321)
       return {
-        error: err?.message || 'Impact analysis failed',
-        target: params.target,
+        error: (err instanceof Error ? err.message : String(err)) || 'Impact analysis failed',
+        target: { name: params.target },
         direction: params.direction,
         impactedCount: 0,
         risk: 'UNKNOWN',
-        partial: true,
         suggestion: 'The graph query failed — try gitnexus context <symbol> as a fallback',
       };
     }

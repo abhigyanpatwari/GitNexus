@@ -92,21 +92,22 @@ export async function impactCommand(target: string, options?: {
     process.exit(1);
   }
 
-  const backend = await getBackend();
   try {
+    const backend = await getBackend();
     const result = await backend.callTool('impact', {
       target,
       direction: options?.direction || 'upstream',
-      maxDepth: options?.depth ? parseInt(options.depth) : undefined,
+      maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
       includeTests: options?.includeTests ?? false,
       repo: options?.repo,
     });
     output(result);
-  } catch (err: any) {
-    // Return structured error JSON instead of crashing (#321)
+  } catch (err: unknown) {
+    // Belt-and-suspenders: catch infrastructure failures (getBackend, callTool transport)
+    // The backend's impact() already returns structured errors for graph query failures
     output({
-      error: err?.message || 'Impact analysis failed unexpectedly',
-      target,
+      error: (err instanceof Error ? err.message : String(err)) || 'Impact analysis failed unexpectedly',
+      target: { name: target },
       direction: options?.direction || 'upstream',
       suggestion: 'Try reducing --depth or using gitnexus context <symbol> as a fallback',
     });
