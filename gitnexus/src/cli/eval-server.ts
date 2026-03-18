@@ -25,6 +25,7 @@
  */
 
 import http from 'http';
+import { writeSync } from 'node:fs';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 
 export interface EvalServerOptions {
@@ -142,7 +143,10 @@ export function formatContextResult(result: any): string {
 }
 
 export function formatImpactResult(result: any): string {
-  if (result.error) return `Error: ${result.error}`;
+  if (result.error) {
+    const suggestion = result.suggestion ? `\nSuggestion: ${result.suggestion}` : '';
+    return `Error: ${result.error}${suggestion}`;
+  }
 
   const target = result.target;
   const direction = result.direction;
@@ -155,7 +159,11 @@ export function formatImpactResult(result: any): string {
 
   const lines: string[] = [];
   const dirLabel = direction === 'upstream' ? 'depends on this (will break if changed)' : 'this depends on';
-  lines.push(`Blast radius for ${target?.kind || ''} ${target?.name} (${direction}): ${total} symbol(s) ${dirLabel}\n`);
+  lines.push(`Blast radius for ${target?.kind || ''} ${target?.name} (${direction}): ${total} symbol(s) ${dirLabel}`);
+  if (result.partial) {
+    lines.push('⚠️  Partial results — graph traversal was interrupted. Deeper impacts may exist.');
+  }
+  lines.push('');
 
   const depthLabels: Record<number, string> = {
     1: 'WILL BREAK (direct)',
@@ -401,9 +409,10 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
       console.error(`  Auto-shutdown after ${idleTimeoutSec}s idle`);
     }
     try {
-      process.stdout.write(`GITNEXUS_EVAL_SERVER_READY:${port}\n`);
+      // Use fd 1 directly — LadybugDB captures process.stdout (#324)
+      writeSync(1, `GITNEXUS_EVAL_SERVER_READY:${port}\n`);
     } catch {
-      // stdout may not be available
+      // stdout may not be available (e.g., broken pipe)
     }
   });
 

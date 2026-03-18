@@ -45,7 +45,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "prepare": "npm run build",
-    "postinstall": "node scripts/patch-tree-sitter-swift.cjs"
+    "postinstall": "node scripts/patch-tree-sitter-swift.cjs",
+    "prepack": "npm run build && chmod +x dist/cli/index.js"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.0.0",

@@ -106,6 +106,59 @@ withTestLbugDB('local-backend-calltool', (handle) => {
     });
   });
 
+  describe('impact tool relationTypes filtering', () => {
+    let backend: LocalBackend;
+
+    beforeAll(async () => {
+      const ext = handle as typeof handle & { _backend?: LocalBackend };
+      if (!ext._backend) {
+        throw new Error('LocalBackend not initialized — afterSetup did not attach _backend to handle');
+      }
+      backend = ext._backend;
+    });
+
+    it('filters by HAS_METHOD only', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'AuthService',
+        direction: 'downstream',
+        relationTypes: ['HAS_METHOD'],
+      });
+      expect(result).not.toHaveProperty('error');
+      expect(result.impactedCount).toBeGreaterThanOrEqual(1);
+      const d1 = result.byDepth[1] || result.byDepth['1'] || [];
+      const names = d1.map((d: any) => d.name);
+      expect(names).toContain('authenticate');
+      // Should NOT include CALLS-reachable symbols like validate/hash
+      expect(names).not.toContain('validate');
+      expect(names).not.toContain('hash');
+    });
+
+    it('filters by OVERRIDES only', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'authenticate',
+        direction: 'downstream',
+        relationTypes: ['OVERRIDES'],
+      });
+      expect(result).not.toHaveProperty('error');
+      // AuthService.authenticate overrides BaseService.authenticate
+      expect(result.impactedCount).toBeGreaterThanOrEqual(1);
+      const d1 = result.byDepth[1] || result.byDepth['1'] || [];
+      const names = d1.map((d: any) => d.name);
+      expect(names).toContain('authenticate');
+    });
+
+    it('does not return HAS_METHOD results when filtering by CALLS only', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'AuthService',
+        direction: 'downstream',
+        relationTypes: ['CALLS'],
+      });
+      expect(result).not.toHaveProperty('error');
+      // AuthService has no outgoing CALLS edges, only HAS_METHOD
+      expect(result.impactedCount).toBe(0);
+    });
+  });
+
   describe('tool parameter edge cases', () => {
     let backend: LocalBackend;
 
@@ -143,6 +196,54 @@ withTestLbugDB('local-backend-calltool', (handle) => {
       const result = await backend.callTool('context', {});
       expect(result).toHaveProperty('error');
       expect(result.error).toMatch(/required/i);
+    });
+
+    // ─── impact error handling tests (#321) ───────────────────────────
+    // Verify that impact() returns structured JSON instead of crashing
+
+    it('impact tool returns structured error for unknown symbol', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'nonexistent_symbol_xyz_999',
+        direction: 'upstream',
+      });
+      // Must return structured JSON, not throw
+      expect(result).toBeDefined();
+      // Should have either an error field (not found) or impactedCount 0
+      // Either outcome is valid — the key is it doesn't crash
+      if (result.error) {
+        expect(typeof result.error).toBe('string');
+      } else {
+        expect(result.impactedCount).toBe(0);
+      }
+    });
+
+    it('impact error response has consistent target shape', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'nonexistent_symbol_xyz_999',
+        direction: 'downstream',
+      });
+      // When an error is returned, target must be an object (not raw string)
+      // so downstream API consumers can safely access result.target.name
+      if (result.error && result.target !== undefined) {
+        expect(typeof result.target).toBe('object');
+        expect(result.target).not.toBeNull();
+      }
+    });
+
+    it('impact partial results: traversalComplete flag when depth fails', async () => {
+      // Even if traversal fails at some depth, partial results should be returned
+      // and partial:true should only be set when some results were collected
+      const result = await backend.callTool('impact', {
+        target: 'validate',
+        direction: 'upstream',
+        maxDepth: 10, // Large depth to trigger multi-level traversal
+      });
+      // Should succeed (validate exists in seed data)
+      expect(result).not.toHaveProperty('error');
+      if (result.partial) {
+        // If partial, must still have some results
+        expect(result.impactedCount).toBeGreaterThan(0);
+      }
     });
   });
 

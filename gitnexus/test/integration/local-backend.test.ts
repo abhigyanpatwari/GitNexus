@@ -76,7 +76,7 @@ withTestLbugDB('local-backend', (handle) => {
 
   describe('relation type filtering', () => {
     it('only allows valid relation types in queries', () => {
-      const validTypes = ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
+      const validTypes = ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'OVERRIDES'];
       const invalidTypes = ['CONTAINS', 'STEP_IN_PROCESS', 'MEMBER_OF', 'DROP_TABLE'];
 
       for (const t of validTypes) {
