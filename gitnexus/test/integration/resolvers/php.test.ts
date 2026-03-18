@@ -1246,3 +1246,43 @@ describe('Deep field chain resolution (PHP)', () => {
     expect(cityGetName).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// PHP 8.0+ constructor promotion as property declarations
+// ---------------------------------------------------------------------------
+
+describe('PHP constructor promotion property capture', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'php-constructor-promotion-fields'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, Service, User', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'Service', 'User']);
+  });
+
+  it('detects Property nodes for promoted constructor parameters', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('name');
+    expect(properties).toContain('address');
+  });
+
+  it('emits HAS_PROPERTY edges for promoted parameters', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(edgeSet(propEdges)).toContain('User → name');
+    expect(edgeSet(propEdges)).toContain('User → address');
+  });
+
+  it('resolves $user->address->save() → Address#save via promoted field type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'save');
+    const addressSave = saveCalls.find(
+      e => e.source === 'processUser' && e.targetFilePath.includes('Models'),
+    );
+    expect(addressSave).toBeDefined();
+  });
+});

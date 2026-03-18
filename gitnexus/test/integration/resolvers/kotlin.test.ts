@@ -1308,3 +1308,45 @@ describe('Deep field chain resolution (Kotlin)', () => {
     expect(cityGetName).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Kotlin data class primary constructor val/var properties
+// ---------------------------------------------------------------------------
+
+describe('Kotlin data class primary constructor property capture', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-data-class-fields'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, User', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'User']);
+  });
+
+  it('detects Property nodes for data class val parameters', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('name');
+    expect(properties).toContain('address');
+    expect(properties).toContain('age');
+  });
+
+  it('emits HAS_PROPERTY edges for primary constructor properties', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(edgeSet(propEdges)).toContain('User → name');
+    expect(edgeSet(propEdges)).toContain('User → address');
+    expect(edgeSet(propEdges)).toContain('User → age');
+  });
+
+  it('resolves user.address.save() → Address#save via data class field type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'save');
+    const addressSave = saveCalls.find(
+      e => e.source === 'processUser' && e.targetFilePath.includes('Models'),
+    );
+    expect(addressSave).toBeDefined();
+  });
+});

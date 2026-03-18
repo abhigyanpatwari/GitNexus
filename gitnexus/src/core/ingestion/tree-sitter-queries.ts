@@ -339,6 +339,16 @@ export const CPP_QUERIES = `
 (field_declaration
   declarator: (field_identifier) @name) @definition.property
 
+; Pointer member fields (Address* address;)
+(field_declaration
+  declarator: (pointer_declarator
+    declarator: (field_identifier) @name)) @definition.property
+
+; Reference member fields (Address& address;)
+(field_declaration
+  declarator: (reference_declarator
+    (field_identifier) @name)) @definition.property
+
 ; Inline class method declarations (inside class body, no body: void Foo();)
 (field_declaration declarator: (function_declarator declarator: (identifier) @name)) @definition.method
 
@@ -502,6 +512,13 @@ export const PHP_QUERIES = `
     (variable_name
       (name) @name))) @definition.property
 
+; Constructor property promotion (PHP 8.0+: public Address $address in __construct)
+(method_declaration
+  parameters: (formal_parameters
+    (property_promotion_parameter
+      name: (variable_name
+        (name) @name)))) @definition.property
+
 ; ── Imports: use statements ──────────────────────────────────────────────────
 ; Simple: use App\\Models\\User;
 (namespace_use_declaration
@@ -626,6 +643,12 @@ export const KOTLIN_QUERIES = `
 (property_declaration
   (variable_declaration
     (simple_identifier) @name)) @definition.property
+
+; Primary constructor val/var parameters (data class, value class, regular class)
+; binding_pattern_kind contains "val" or "var" — without it, the param is not a property
+(class_parameter
+  (binding_pattern_kind)
+  (simple_identifier) @name) @definition.property
 
 ; ── Enum entries ─────────────────────────────────────────────────────────
 (enum_entry

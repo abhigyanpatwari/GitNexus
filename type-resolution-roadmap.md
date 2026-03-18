@@ -115,7 +115,7 @@ Model class / struct fields so chained member access can be resolved more accura
 
 ### Status
 
-**Delivered.** One-level, deep, and mixed field+method chain resolution is implemented across 10 languages. Pattern destructuring (8C) remains open.
+**Delivered.** One-level, deep, and mixed field+method chain resolution is implemented across 9 languages. Pattern destructuring (8C) remains open.
 
 #### What shipped
 
@@ -207,7 +207,7 @@ It materially improved:
 
 - chained property resolution (up to 3 levels deep)
 - mixed field+method chain resolution (e.g. `svc.getUser().address.save()`)
-- member-based call disambiguation across 10 languages
+- member-based call disambiguation across 9 languages
 - deeper context extraction for downstream tooling
 - C++ struct/class field visibility in the knowledge graph
 - C++ chained method call resolution (previously blocked by missing `argument` field support)
@@ -407,7 +407,7 @@ Delivered in Phase 7.
 
 Delivered in Phase 8 + 8A + 8B.
 
-- field/property maps exist for class-like types across 10 languages
+- field/property maps exist for class-like types across 9 languages
 - deep chains resolve up to 3 levels (`user.address.city.getName()`)
 - mixed field+method chains resolve interleaved patterns (`svc.getUser().address.save()`)
 - stdlib passthroughs (`unwrap`, `clone`, etc.) are type-preserving in chains

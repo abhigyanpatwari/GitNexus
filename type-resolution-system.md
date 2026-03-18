@@ -374,7 +374,7 @@ So return-type-aware receiver inference already exists in a constrained downstre
 | For-loop element types | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes |
 | Pattern binding | Yes | Yes | Yes | Yes | No | Yes | Yes | No | No | No | No | No | No |
 | Assignment chains | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes | Yes |
-| Field/property type resolution | Yes | No† | Yes | Yes | Yes | Yes | Yes | No* | Yes | YARD | No | Yes | No‡ |
+| Field/property type resolution | Yes | No† | Yes | Yes | Yes | Yes | Yes | Yes* | Yes | YARD | No | Yes | No‡ |
 | Comment-based types | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No |
 | Return type extraction | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No |
 
@@ -397,7 +397,7 @@ The current system provides strong value for call resolution because it combines
 - scope-aware lookups
 - comment-based fallbacks for dynamic ecosystems (JSDoc, PHPDoc, YARD)
 - constrained return-type-aware receiver inference in call processing
-- deep field/property chains up to 3 levels across 10 languages
+- deep field/property chains up to 3 levels across 9 languages
 - mixed field+method chain resolution (e.g. `svc.getUser().address.save()`)
 - type-preserving stdlib passthrough for `unwrap()`, `clone()`, `expect()`, etc.
 

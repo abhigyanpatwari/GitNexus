@@ -901,3 +901,37 @@ describe('Deep field chain resolution (C++)', () => {
     expect(cityGetName).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Pointer and reference member fields (Address* address; Address& ref_address;)
+// ---------------------------------------------------------------------------
+
+describe('C++ pointer/reference member field capture', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-pointer-ref-fields'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, User', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'User']);
+  });
+
+  it('detects Property nodes for pointer and reference member fields', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('address');
+    expect(properties).toContain('ref_address');
+    expect(properties).toContain('name');
+    expect(properties).toContain('city');
+  });
+
+  it('emits HAS_PROPERTY edges for pointer/reference fields', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(edgeSet(propEdges)).toContain('User → address');
+    expect(edgeSet(propEdges)).toContain('User → ref_address');
+    expect(edgeSet(propEdges)).toContain('User → name');
+  });
+});
