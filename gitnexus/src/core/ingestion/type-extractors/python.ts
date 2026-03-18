@@ -220,6 +220,37 @@ const findPyParamElementType = (iterableName: string, startNode: SyntaxNode, pos
 };
 
 /**
+ * Extracts iterableName and methodName from a call expression like `data.items()`.
+ * Returns undefined if the call doesn't match the expected pattern.
+ */
+const extractMethodCall = (callNode: SyntaxNode): { iterableName: string; methodName?: string } | undefined => {
+  const fn = callNode.childForFieldName('function');
+  if (fn?.type !== 'attribute') return undefined;
+  const obj = fn.firstNamedChild;
+  if (obj?.type !== 'identifier') return undefined;
+  const method = fn.lastNamedChild;
+  const methodName = (method?.type === 'identifier' && method !== obj) ? method.text : undefined;
+  return { iterableName: obj.text, methodName };
+};
+
+/**
+ * Collects all identifier nodes from a pattern, descending into nested tuple_patterns.
+ * For `i, (k, v)` returns [i, k, v]. For `key, value` returns [key, value].
+ */
+const collectPatternIdentifiers = (pattern: SyntaxNode): SyntaxNode[] => {
+  const vars: SyntaxNode[] = [];
+  for (let i = 0; i < pattern.namedChildCount; i++) {
+    const child = pattern.namedChild(i);
+    if (child?.type === 'identifier') {
+      vars.push(child);
+    } else if (child?.type === 'tuple_pattern') {
+      vars.push(...collectPatternIdentifiers(child));
+    }
+  }
+  return vars;
+};
+
+/**
  * Python: for user in users: where users has a known container type annotation.
  *
  * AST node: `for_statement` with `left` (loop variable) and `right` (iterable).
@@ -228,32 +259,43 @@ const findPyParamElementType = (iterableName: string, startNode: SyntaxNode, pos
  *   1. declarationTypeNodes — raw type annotation AST node (covers stored container types)
  *   2. scopeEnv string — extractElementTypeFromString on the stored type
  *   3. AST walk — walks up to the enclosing function's parameters to read List[User] directly
+ *
+ * Also handles `enumerate(iterable)` — unwraps the outer call and skips the integer
+ * index variable so the value variable still resolves to the element type.
  */
 const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTypeNodes, scope, returnTypeLookup }): void => {
   if (node.type !== 'for_statement') return;
 
-  // The iterable is the `right` field — may be identifier, attribute, or call.
   const rightNode = node.childForFieldName('right');
   let iterableName: string | undefined;
   let methodName: string | undefined;
   let callExprElementType: string | undefined;
+  let isEnumerate = false;
+
+  // Extract iterable info from the `right` field — may be identifier, attribute, or call.
   if (rightNode?.type === 'identifier') {
     iterableName = rightNode.text;
   } else if (rightNode?.type === 'attribute') {
     const prop = rightNode.lastNamedChild;
     if (prop) iterableName = prop.text;
   } else if (rightNode?.type === 'call') {
-    // data.items() → call > function: attribute > identifier('data') + identifier('items')
-    // get_users() → call > function: identifier (Phase 7.3 — return-type path)
     const fn = rightNode.childForFieldName('function');
-    if (fn?.type === 'attribute') {
-      const obj = fn.firstNamedChild;
-      if (obj?.type === 'identifier') iterableName = obj.text;
-      // Extract method name: items, keys, values
-      const method = fn.lastNamedChild;
-      if (method?.type === 'identifier' && method !== obj) methodName = method.text;
+    if (fn?.type === 'identifier' && fn.text === 'enumerate') {
+      // enumerate(iterable) or enumerate(d.items()) — unwrap to inner iterable.
+      isEnumerate = true;
+      const innerArg = rightNode.childForFieldName('arguments')?.firstNamedChild;
+      if (innerArg?.type === 'identifier') {
+        iterableName = innerArg.text;
+      } else if (innerArg?.type === 'call') {
+        const extracted = extractMethodCall(innerArg);
+        if (extracted) ({ iterableName, methodName } = extracted);
+      }
+    } else if (fn?.type === 'attribute') {
+      // data.items() → call > function: attribute > identifier('data') + identifier('items')
+      const extracted = extractMethodCall(rightNode);
+      if (extracted) ({ iterableName, methodName } = extracted);
     } else if (fn?.type === 'identifier') {
-      // Direct function call: for user in get_users()
+      // Direct function call: for user in get_users() (Phase 7.3 — return-type path)
       const rawReturn = returnTypeLookup.lookupRawReturnType(fn.text);
       if (rawReturn) callExprElementType = extractElementTypeFromString(rawReturn);
     }
@@ -278,11 +320,12 @@ const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTy
   const leftNode = node.childForFieldName('left');
   if (!leftNode) return;
 
-  // Handle tuple unpacking: for key, value in data.items()
-  if (leftNode.type === 'pattern_list') {
-    const lastChild = leftNode.lastNamedChild;
-    if (lastChild?.type === 'identifier') {
-      scopeEnv.set(lastChild.text, elementType);
+  if (leftNode.type === 'pattern_list' || leftNode.type === 'tuple_pattern') {
+    // Tuple unpacking: `key, value` or `i, (k, v)` or `(k, v)` — bind the last identifier to element type.
+    // With enumerate, skip binding if there's only one var (just the index, no value to bind).
+    const vars = collectPatternIdentifiers(leftNode);
+    if (vars.length > 0 && (!isEnumerate || vars.length > 1)) {
+      scopeEnv.set(vars[vars.length - 1].text, elementType);
     }
     return;
   }

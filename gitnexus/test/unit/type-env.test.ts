@@ -2956,6 +2956,50 @@ def process(data: dict[str, User]):
       expect(flatGet(env, 'user')).toBe('User');
     });
 
+    it('Python enumerate(dict.items()): for i, k, v — skips int index, binds value var to User', () => {
+      // enumerate() wraps the iterable: right node is call with fn='enumerate', not fn.attribute.
+      // Without enumerate() support, iterableName is never set → v stays unbound.
+      // With the fix: unwrap enumerate → inner call → data.items() → v binds to User.
+      const tree = parse(`
+def process(data: dict[str, User]):
+    for i, k, v in enumerate(data.items()):
+        v.save()
+      `, Python);
+      const { env } = buildTypeEnv(tree, 'python');
+      expect(flatGet(env, 'v')).toBe('User');
+      // i is the int index from enumerate — must NOT be bound to User
+      expect(flatGet(env, 'i')).toBeUndefined();
+    });
+
+    it('Python enumerate(dict.items()) with nested tuple: for i, (k, v) — binds v to User', () => {
+      // Nested tuple pattern: `(k, v)` is a tuple_pattern inside the pattern_list.
+      // AST: pattern_list > [identifier('i'), tuple_pattern > [identifier('k'), identifier('v')]]
+      // Must descend into tuple_pattern to extract v, not just collect top-level identifiers.
+      const tree = parse(`
+def process(data: dict[str, User]):
+    for i, (k, v) in enumerate(data.items()):
+        v.save()
+      `, Python);
+      const { env } = buildTypeEnv(tree, 'python');
+      expect(flatGet(env, 'v')).toBe('User');
+      expect(flatGet(env, 'i')).toBeUndefined();
+    });
+
+    it('Python enumerate with parenthesized tuple: for (k, v) in enumerate(users) — binds v to User', () => {
+      // Parenthesized tuple pattern: `(k, v)` is a tuple_pattern, not pattern_list.
+      // AST: for_statement > left: tuple_pattern > [identifier('k'), identifier('v')]
+      // Must handle tuple_pattern as top-level left node, not just nested inside pattern_list.
+      const tree = parse(`
+def process(users: List[User]):
+    for (k, v) in enumerate(users):
+        v.save()
+      `, Python);
+      const { env } = buildTypeEnv(tree, 'python');
+      // enumerate yields (index, element) — k is int (unbound), v is User
+      expect(flatGet(env, 'v')).toBe('User');
+      expect(flatGet(env, 'k')).toBeUndefined();
+    });
+
     it('TS instanceof narrowing: if (x instanceof User) — first-writer-wins, not block-scoped', () => {
       // Binds x to User via extractPatternBinding on binary_expression.
       // Only works when x has no prior type binding in scopeEnv.

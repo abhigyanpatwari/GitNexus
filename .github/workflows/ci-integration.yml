@@ -16,7 +16,7 @@ jobs:
   # 3 OS x 4 groups = 12 parallel jobs.
   #
   # Groups:
-  #   lbug-db    — 7 files using withTestLbugDB / lbug-adapter (native addon)
+  #   lbug-db    — 8 files using withTestLbugDB / lbug-adapter (native addon)
   #                Each file runs as its own `vitest run` invocation for full
   #                process isolation. LadybugDB's native N-API addon registers
   #                persistent handles that prevent fork workers from exiting
@@ -85,6 +85,7 @@ jobs:
           files=(
             test/integration/lbug-core-adapter.test.ts
             test/integration/lbug-pool.test.ts
+            test/integration/lbug-pool-stability.test.ts
             test/integration/local-backend.test.ts
             test/integration/local-backend-calltool.test.ts
             test/integration/search-core.test.ts
