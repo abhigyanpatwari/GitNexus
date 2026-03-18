@@ -25,6 +25,7 @@
  */
 
 import http from 'http';
+import { writeSync } from 'node:fs';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 
 export interface EvalServerOptions {
@@ -408,9 +409,10 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
       console.error(`  Auto-shutdown after ${idleTimeoutSec}s idle`);
     }
     try {
-      process.stdout.write(`GITNEXUS_EVAL_SERVER_READY:${port}\n`);
+      // Use fd 1 directly — LadybugDB captures process.stdout (#324)
+      writeSync(1, `GITNEXUS_EVAL_SERVER_READY:${port}\n`);
     } catch {
-      // stdout may not be available
+      // stdout may not be available (e.g., broken pipe)
     }
   });
 

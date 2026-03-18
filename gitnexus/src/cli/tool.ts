@@ -10,8 +10,9 @@
  *   gitnexus impact --target "AuthService" --direction upstream
  *   gitnexus cypher "MATCH (n:Function) RETURN n.name LIMIT 10"
  * 
- * Note: Output goes to stderr because LadybugDB's native module captures stdout
- * at the OS level during init. This is consistent with augment.ts.
+ * Note: Output goes to stdout via fs.writeSync(fd 1), bypassing LadybugDB's
+ * native module which captures the Node.js process.stdout stream during init.
+ * See the output() function for details (#324).
  */
 
 import { writeSync } from 'node:fs';
@@ -44,7 +45,12 @@ function output(data: any): void {
   const text = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
   try {
     writeSync(1, text + '\n');
-  } catch {
+  } catch (err: any) {
+    if (err?.code === 'EPIPE') {
+      // Consumer closed the pipe (e.g., `gitnexus cypher ... | head -1`)
+      // Exit cleanly per Unix convention
+      process.exit(0);
+    }
     // Fallback: stderr (previous behavior, works on all platforms)
     process.stderr.write(text + '\n');
   }
