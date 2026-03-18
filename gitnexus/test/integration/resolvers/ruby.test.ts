@@ -920,3 +920,46 @@ describe('Field type disambiguation (Ruby)', () => {
     expect(saveCalls[0].targetFilePath).not.toContain('user');
   });
 });
+
+// ---------------------------------------------------------------------------
+// ACCESSES write edges from assignment expressions
+// ---------------------------------------------------------------------------
+
+describe('Write access tracking (Ruby)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-write-access'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits ACCESSES write edges for setter assignments', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writes = accesses.filter(e => e.rel.reason === 'write');
+    expect(writes.length).toBeGreaterThanOrEqual(2);
+    const nameWrite = writes.find(e => e.target === 'name');
+    const addressWrite = writes.find(e => e.target === 'address');
+    expect(nameWrite).toBeDefined();
+    expect(nameWrite!.source).toBe('update_user');
+    expect(addressWrite).toBeDefined();
+    expect(addressWrite!.source).toBe('update_user');
+  });
+
+  it('emits ACCESSES write edge for compound assignment (operator_assignment)', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writes = accesses.filter(e => e.rel.reason === 'write');
+    const scoreWrite = writes.find(e => e.target === 'score');
+    expect(scoreWrite).toBeDefined();
+    expect(scoreWrite!.source).toBe('update_user');
+  });
+
+  it('write ACCESSES edges have confidence 1.0', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writes = accesses.filter(e => e.rel.reason === 'write');
+    for (const edge of writes) {
+      expect(edge.rel.confidence).toBe(1.0);
+    }
+  });
+});

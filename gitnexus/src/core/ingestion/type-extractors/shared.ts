@@ -263,8 +263,14 @@ export const extractSimpleTypeName = (typeNode: SyntaxNode, depth = 0): string |
 
   // Pointer/reference types (C++, Rust): User*, &User, &mut User
   if (typeNode.type === 'pointer_type' || typeNode.type === 'reference_type') {
-    const inner = typeNode.firstNamedChild;
-    if (inner) return extractSimpleTypeName(inner, depth + 1);
+    // Skip mutable_specifier for Rust &mut references — firstNamedChild would be
+    // `mutable_specifier` not the actual type. Walk named children to find the type.
+    for (let i = 0; i < typeNode.namedChildCount; i++) {
+      const child = typeNode.namedChild(i);
+      if (child && child.type !== 'mutable_specifier') {
+        return extractSimpleTypeName(child, depth + 1);
+      }
+    }
   }
 
   // Primitive/predefined types: string, int, float, bool, number, unknown, any
@@ -803,16 +809,27 @@ export const extractPropertyDeclaredType = (definitionNode: SyntaxNode | null): 
   }
 
   // Strategy 4: Kotlin property_declaration — type is nested inside variable_declaration child
-  // AST: (property_declaration (variable_declaration name: ... type: (user_type ...)))
+  // AST: (property_declaration (variable_declaration (simple_identifier) ":" (user_type (type_identifier))))
+  // Kotlin's variable_declaration has NO named 'type' field — children are all positional.
   for (let i = 0; i < definitionNode.childCount; i++) {
     const child = definitionNode.child(i);
     if (child?.type === 'variable_declaration') {
+      // Try named field first (works for other languages sharing this strategy)
       const varType = child.childForFieldName?.('type');
       if (varType) {
         const typeName = extractSimpleTypeName(varType);
         if (typeName) return typeName;
         const text = varType.text?.trim();
         if (text && text.length < 100) return text;
+      }
+      // Fallback: walk unnamed children for user_type / type_identifier (Kotlin)
+      for (let j = 0; j < child.namedChildCount; j++) {
+        const varChild = child.namedChild(j);
+        if (varChild && (varChild.type === 'user_type' || varChild.type === 'type_identifier'
+          || varChild.type === 'nullable_type' || varChild.type === 'generic_type')) {
+          const typeName = extractSimpleTypeName(varChild);
+          if (typeName) return typeName;
+        }
       }
     }
   }

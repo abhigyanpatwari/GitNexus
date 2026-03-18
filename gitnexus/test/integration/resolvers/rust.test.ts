@@ -1379,3 +1379,44 @@ describe('Deep field chain resolution (Rust)', () => {
     expect(cityGetName).toBeDefined();
   });
 });
+
+// ACCESSES write edges from assignment expressions
+// ---------------------------------------------------------------------------
+
+describe('Write access tracking (Rust)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-write-access'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits ACCESSES write edges for field assignments', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writes = accesses.filter(e => e.rel.reason === 'write');
+    expect(writes.length).toBeGreaterThanOrEqual(2);
+    const fieldNames = writes.map(e => e.target);
+    expect(fieldNames).toContain('name');
+    expect(fieldNames).toContain('address');
+    const sources = writes.map(e => e.source);
+    expect(sources).toContain('update_user');
+  });
+
+  it('write ACCESSES edges have confidence 1.0', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writes = accesses.filter(e => e.rel.reason === 'write');
+    for (const edge of writes) {
+      expect(edge.rel.confidence).toBe(1.0);
+    }
+  });
+
+  it('emits ACCESSES write edge for compound assignment', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writes = accesses.filter(e => e.rel.reason === 'write');
+    const scoreWrite = writes.find(e => e.target === 'score');
+    expect(scoreWrite).toBeDefined();
+    expect(scoreWrite!.source).toBe('update_user');
+  });
+});

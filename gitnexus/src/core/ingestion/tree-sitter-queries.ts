@@ -443,6 +443,7 @@ export const CPP_QUERIES = `
     argument: (_) @assignment.receiver
     field: (field_identifier) @assignment.property)
   right: (_)) @assignment
+
 `;
 
 // C# queries - works with tree-sitter-c-sharp
@@ -655,6 +656,13 @@ export const PHP_QUERIES = `
     object: (_) @assignment.receiver
     name: (name) @assignment.property)
   right: (_)) @assignment
+
+; Write access: ClassName::$field = value (static property)
+(assignment_expression
+  left: (scoped_property_access_expression
+    scope: (_) @assignment.receiver
+    name: (variable_name (name) @assignment.property))
+  right: (_)) @assignment
 `;
 
 // Ruby queries - works with tree-sitter-ruby
@@ -703,6 +711,13 @@ export const RUBY_QUERIES = `
 
 ; Write access: obj.field = value (Ruby setter — syntactically a method call to field=)
 (assignment
+  left: (call
+    receiver: (_) @assignment.receiver
+    method: (identifier) @assignment.property)
+  right: (_)) @assignment
+
+; Write access: obj.field += value (compound assignment — operator_assignment node, not assignment)
+(operator_assignment
   left: (call
     receiver: (_) @assignment.receiver
     method: (identifier) @assignment.property)
@@ -801,6 +816,7 @@ export const KOTLIN_QUERIES = `
     (navigation_suffix
       (simple_identifier) @assignment.property))
   (_)) @assignment
+
 `;
 
 // Swift queries - works with tree-sitter-swift
@@ -867,6 +883,7 @@ export const SWIFT_QUERIES = `
     (navigation_suffix
       (simple_identifier) @assignment.property))
   (_)) @assignment
+
 `;
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {

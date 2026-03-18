@@ -377,12 +377,15 @@ So return-type-aware receiver inference already exists in a constrained downstre
 | Field/property type resolution | Yes | No† | Yes | Yes | Yes | Yes | Yes | Yes* | Yes | YARD | No | Yes | No‡ |
 | Comment-based types | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No |
 | Return type extraction | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No |
+| Write access (ACCESSES write) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes§ | Yes | Yes | Yes | No |
 
 \* Python class-level annotated attributes (`address: Address`) now resolve `declaredType` correctly. The `self.x` instance attribute pattern is not yet supported.
 
 † JS field topology is captured (`field_definition` → `HAS_PROPERTY` edges) but `declaredType` is never set — JS has no AST type annotations. Disambiguation via `lookupFieldByOwner` requires `declaredType`. JSDoc `@type` support is a Phase 9 candidate.
 
 ‡ C has no `@definition.property` query pattern. Struct member fields are not captured. C++ captures class/struct member fields via `field_declaration`.
+
+§ PHP write access covers instance property writes (`$obj->field = value`) and static property writes (`ClassName::$field = value`). Nullsafe writes (`$obj?->field`) are not tracked.
 
 ---
 
@@ -398,6 +401,7 @@ The current system provides strong value for call resolution because it combines
 - comment-based fallbacks for dynamic ecosystems (JSDoc, PHPDoc, YARD)
 - constrained return-type-aware receiver inference in call processing
 - deep field/property chains up to 3 levels across 9 languages
+- ACCESSES edge emission for field read access (via chain walking) and field write access (via assignment capture) across 12 languages
 - mixed field+method chain resolution (e.g. `svc.getUser().address.save()`)
 - type-preserving stdlib passthrough for `unwrap()`, `clone()`, `expect()`, etc.
 

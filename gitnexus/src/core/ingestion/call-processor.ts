@@ -138,6 +138,7 @@ export const processCalls = async (
 ): Promise<ExtractedHeritage[]> => {
   const parser = await loadParser();
   const collectedHeritage: ExtractedHeritage[] = [];
+  const pendingWrites: { receiverTypeName: string; propertyName: string; filePath: string; srcId: string }[] = [];
   const logSkipped = isVerboseIngestionEnabled();
   const skippedByLang = logSkipped ? new Map<string, number>() : null;
 
@@ -195,7 +196,6 @@ export const processCalls = async (
     matches.forEach(match => {
       const captureMap: Record<string, any> = {};
       match.captures.forEach(c => captureMap[c.name] = c.node);
-
       // ── Write access: emit ACCESSES {reason: 'write'} for assignments to member fields ──
       if (captureMap['assignment'] && captureMap['assignment.receiver'] && captureMap['assignment.property']) {
         const receiverNode = captureMap['assignment.receiver'];
@@ -216,19 +216,12 @@ export const processCalls = async (
           }
         }
         if (receiverTypeName) {
-          const fieldResolved = resolveFieldAccessType(receiverTypeName, propertyName, file.path, ctx);
-          if (fieldResolved) {
-            const enclosing = findEnclosingFunction(captureMap['assignment'], file.path, ctx);
-            const srcId = enclosing || generateId('File', file.path);
-            graph.addRelationship({
-              id: generateId('ACCESSES', `${srcId}:${fieldResolved.fieldNodeId}:write`),
-              sourceId: srcId,
-              targetId: fieldResolved.fieldNodeId,
-              type: 'ACCESSES',
-              confidence: 1.0,
-              reason: 'write',
-            });
-          }
+          const enclosing = findEnclosingFunction(captureMap['assignment'], file.path, ctx);
+          const srcId = enclosing || generateId('File', file.path);
+          // Defer resolution: Ruby attr_accessor properties are registered during
+          // this same loop, so cross-file lookups fail if the declaring file hasn't
+          // been processed yet. Collect now, resolve after all files are done.
+          pendingWrites.push({ receiverTypeName, propertyName, filePath: file.path, srcId });
         }
         if (!captureMap['call']) return;
       }
@@ -379,6 +372,22 @@ export const processCalls = async (
     });
 
     ctx.clearCache();
+  }
+
+  // ── Resolve deferred write-access edges ──
+  // All properties (including Ruby attr_accessor) are now registered.
+  for (const pw of pendingWrites) {
+    const fieldOwner = resolveFieldOwnership(pw.receiverTypeName, pw.propertyName, pw.filePath, ctx);
+    if (fieldOwner) {
+      graph.addRelationship({
+        id: generateId('ACCESSES', `${pw.srcId}:${fieldOwner.nodeId}:write`),
+        sourceId: pw.srcId,
+        targetId: fieldOwner.nodeId,
+        type: 'ACCESSES',
+        confidence: 1.0,
+        reason: 'write',
+      });
+    }
   }
 
   if (skippedByLang && skippedByLang.size > 0) {
@@ -615,22 +624,17 @@ interface FieldResolution {
   fieldNodeId: string;   // nodeId of the Property symbol (for ACCESSES edge target)
 }
 
+/**
+ * Resolve the type that results from accessing `receiverName.fieldName`.
+ * Requires declaredType on the Property node (needed for chain walking continuation).
+ */
 const resolveFieldAccessType = (
   receiverName: string,
   fieldName: string,
   filePath: string,
   ctx: ResolutionContext,
 ): FieldResolution | undefined => {
-  // Resolve the receiver's type to a class/struct nodeId
-  const typeResolved = ctx.resolve(receiverName, filePath);
-  if (!typeResolved) return undefined;
-  const classDef = typeResolved.candidates.find(
-    d => d.type === 'Class' || d.type === 'Struct' || d.type === 'Interface'
-      || d.type === 'Enum' || d.type === 'Record' || d.type === 'Impl',
-  );
-  if (!classDef) return undefined;
-
-  const fieldDef = ctx.symbols.lookupFieldByOwner(classDef.nodeId, fieldName);
+  const fieldDef = resolveFieldOwnership(receiverName, fieldName, filePath, ctx);
   if (!fieldDef?.declaredType) return undefined;
 
   // Use stripNullable (not extractReturnTypeName) — field types like List<User>
@@ -639,6 +643,28 @@ const resolveFieldAccessType = (
     typeName: stripNullable(fieldDef.declaredType),
     fieldNodeId: fieldDef.nodeId,
   };
+};
+
+/**
+ * Resolve a field's Property node given a receiver type name and field name.
+ * Does NOT require declaredType — used by write-access tracking where only the
+ * fieldNodeId is needed (no chain continuation).
+ */
+const resolveFieldOwnership = (
+  receiverName: string,
+  fieldName: string,
+  filePath: string,
+  ctx: ResolutionContext,
+): { nodeId: string; declaredType?: string } | undefined => {
+  const typeResolved = ctx.resolve(receiverName, filePath);
+  if (!typeResolved) return undefined;
+  const classDef = typeResolved.candidates.find(
+    d => d.type === 'Class' || d.type === 'Struct' || d.type === 'Interface'
+      || d.type === 'Enum' || d.type === 'Record' || d.type === 'Impl',
+  );
+  if (!classDef) return undefined;
+
+  return ctx.symbols.lookupFieldByOwner(classDef.nodeId, fieldName) ?? undefined;
 };
 
 /**
@@ -855,12 +881,12 @@ export const processAssignmentsFromExtracted = (
       }
     }
     if (!receiverTypeName) continue;
-    const fieldResolved = resolveFieldAccessType(receiverTypeName, asn.propertyName, asn.filePath, ctx);
-    if (!fieldResolved) continue;
+    const fieldOwner = resolveFieldOwnership(receiverTypeName, asn.propertyName, asn.filePath, ctx);
+    if (!fieldOwner) continue;
     graph.addRelationship({
-      id: generateId('ACCESSES', `${asn.sourceId}:${fieldResolved.fieldNodeId}:write`),
+      id: generateId('ACCESSES', `${asn.sourceId}:${fieldOwner.nodeId}:write`),
       sourceId: asn.sourceId,
-      targetId: fieldResolved.fieldNodeId,
+      targetId: fieldOwner.nodeId,
       type: 'ACCESSES',
       confidence: 1.0,
       reason: 'write',

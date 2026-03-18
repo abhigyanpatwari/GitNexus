@@ -1283,3 +1283,36 @@ describe('Deep field chain resolution (C#)', () => {
     expect(cityGetName).toBeDefined();
   });
 });
+
+// ACCESSES write edges from assignment expressions
+// ---------------------------------------------------------------------------
+
+describe('Write access tracking (C#)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-write-access'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits ACCESSES write edges for field assignments', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writes = accesses.filter(e => e.rel.reason === 'write');
+    expect(writes.length).toBeGreaterThanOrEqual(2);
+    const fieldNames = writes.map(e => e.target);
+    expect(fieldNames).toContain('Name');
+    expect(fieldNames).toContain('Address');
+    const sources = writes.map(e => e.source);
+    expect(sources).toContain('UpdateUser');
+  });
+
+  it('write ACCESSES edges have confidence 1.0', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writes = accesses.filter(e => e.rel.reason === 'write');
+    for (const edge of writes) {
+      expect(edge.rel.confidence).toBe(1.0);
+    }
+  });
+});

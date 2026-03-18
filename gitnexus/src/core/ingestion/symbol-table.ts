@@ -113,10 +113,10 @@ export const createSymbolTable = (): SymbolTable => {
 
     // B. Properties go to fieldByOwner index only — skip globalIndex to prevent
     // namespace pollution for common names like 'id', 'name', 'type'.
+    // Index ALL properties (even without declaredType) so write-access tracking
+    // can resolve field ownership for dynamically-typed languages (Ruby, JS).
     if (type === 'Property' && metadata?.ownerId) {
-      if (metadata?.declaredType) {
-        fieldByOwner.set(`${metadata.ownerId}\0${name}`, def);
-      }
+      fieldByOwner.set(`${metadata.ownerId}\0${name}`, def);
       // Still add to fileIndex above (for lookupExact), but skip globalIndex
       return;
     }
