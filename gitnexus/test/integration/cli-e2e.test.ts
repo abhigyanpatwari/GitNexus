@@ -236,9 +236,11 @@ describe('CLI end-to-end', () => {
   // These tests verify that tool output goes to stdout (fd 1), not stderr.
   // Requires analyze to have run first (the analyze test above populates .gitnexus/).
 
+  // All tool commands pass --repo to disambiguate when the global registry
+  // has multiple indexed repos (e.g. the parent project is also indexed).
   describe('tool output goes to stdout via fd 1 (#324)', () => {
     it('cypher: JSON appears on stdout, not stderr', () => {
-      const result = runCliRaw(['cypher', 'MATCH (n) RETURN n.name LIMIT 3'], MINI_REPO);
+      const result = runCliRaw(['cypher', 'MATCH (n) RETURN n.name LIMIT 3', '--repo', 'mini-repo'], MINI_REPO);
       if (result.status === null) return; // CI timeout tolerance
 
       expect(result.status).toBe(0);
@@ -255,7 +257,7 @@ describe('CLI end-to-end', () => {
 
     it('query: JSON appears on stdout, not stderr', () => {
       // "handler" is a generic term likely to match something in mini-repo
-      const result = runCliRaw(['query', 'handler'], MINI_REPO);
+      const result = runCliRaw(['query', 'handler', '--repo', 'mini-repo'], MINI_REPO);
       if (result.status === null) return;
 
       expect(result.status).toBe(0);
@@ -264,7 +266,7 @@ describe('CLI end-to-end', () => {
 
     it('impact: JSON appears on stdout, not stderr', () => {
       const result = runCliRaw(
-        ['impact', 'handleRequest', '--direction', 'upstream'],
+        ['impact', 'handleRequest', '--direction', 'upstream', '--repo', 'mini-repo'],
         MINI_REPO,
       );
       if (result.status === null) return;
@@ -277,7 +279,7 @@ describe('CLI end-to-end', () => {
 
     it('stdout is pipeable: cypher output parses as valid JSON', () => {
       const result = runCliRaw(
-        ['cypher', 'MATCH (n:Function) RETURN n.name LIMIT 5'],
+        ['cypher', 'MATCH (n:Function) RETURN n.name LIMIT 5', '--repo', 'mini-repo'],
         MINI_REPO,
       );
       if (result.status === null) return;
@@ -297,7 +299,7 @@ describe('CLI end-to-end', () => {
       return new Promise<void>((resolve, reject) => {
         const child = spawn(
           process.execPath,
-          ['--import', 'tsx', cliEntry, 'cypher', 'MATCH (n) RETURN n LIMIT 500'],
+          ['--import', 'tsx', cliEntry, 'cypher', 'MATCH (n) RETURN n LIMIT 500', '--repo', 'mini-repo'],
           {
             cwd: MINI_REPO,
             stdio: ['ignore', 'pipe', 'pipe'],
