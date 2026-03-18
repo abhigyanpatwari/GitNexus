@@ -1224,3 +1224,60 @@ describe('Python for-loop call_expression iterable resolution (Phase 7.3)', () =
     expect(saveCalls.length).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// enumerate() for-loop: for i, k, v in enumerate(d.items())
+// ---------------------------------------------------------------------------
+
+describe('Python enumerate() for-loop resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-enumerate-loop'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User class with save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+  });
+
+  it('resolves v.save() in enumerate(users.items()) loop to User#save', () => {
+    // for i, k, v in enumerate(users.items()): v.save()
+    // v must bind to User (value type of dict[str, User]).
+    // Without enumerate() support, v is unbound → resolver emits 0 CALLS.
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_users' && c.targetFilePath?.includes('user.py'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('does NOT resolve v.save() to a non-User target', () => {
+    // i is the int index from enumerate — must not produce a spurious CALLS edge
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_users' && !c.targetFilePath?.includes('user.py'),
+    );
+    expect(wrongSave).toBeUndefined();
+  });
+
+  it('resolves nested tuple pattern: for i, (k, v) in enumerate(d.items())', () => {
+    // Nested tuple_pattern inside pattern_list — must descend to find v
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_nested_tuple' && c.targetFilePath?.includes('user.py'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves parenthesized tuple: for (i, u) in enumerate(users)', () => {
+    // tuple_pattern as top-level left node (not pattern_list)
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_parenthesized_tuple' && c.targetFilePath?.includes('user.py'),
+    );
+    expect(userSave).toBeDefined();
+  });
+});
