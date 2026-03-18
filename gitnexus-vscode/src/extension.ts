@@ -103,10 +103,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     registerCommand(context, 'gitnexus.refresh', refreshAll),
     registerCommand(context, 'gitnexus.analyzeWorkspace', async (resource?: vscode.Uri) => {
       const selectedLayout = getConfiguredAnalyzeSkillLayout();
+      const includeCopilotInstructions = selectedLayout === 'github' || selectedLayout === 'dual';
 
       const started = service.runAnalyzeWorkspace(resource, {
         skillLayout: selectedLayout,
-        includeCopilotInstructions: true,
+        includeCopilotInstructions,
       });
       if (started) {
         startAnalyzeRefreshLoop();

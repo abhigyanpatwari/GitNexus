@@ -323,7 +323,10 @@ export async function generateAIContextFiles(
   const claudeResult = await upsertGitNexusSection(claudePath, content);
   createdFiles.push(`CLAUDE.md (${claudeResult})`);
 
-  if (includeCopilotInstructions) {
+  const shouldGenerateCopilotInstructions =
+    includeCopilotInstructions && (resolvedSkillLayout === 'github' || resolvedSkillLayout === 'dual');
+
+  if (shouldGenerateCopilotInstructions) {
     const copilotPath = path.join(repoPath, '.github', 'copilot-instructions.md');
     await fs.mkdir(path.dirname(copilotPath), { recursive: true });
     const copilotResult = await upsertGitNexusSection(copilotPath, content);

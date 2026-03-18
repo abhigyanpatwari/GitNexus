@@ -59,7 +59,7 @@ export class GitNexusMcpClient implements vscode.Disposable {
   }
 
   isConnected(): boolean {
-    return Boolean(this.client && this.transport);
+    return Boolean(this.client && this.transport && this.transport.pid !== null);
   }
 
   private async ensureConnected(): Promise<Client> {

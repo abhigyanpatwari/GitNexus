@@ -166,7 +166,7 @@ args = ["-y", "gitnexus@latest", "mcp"]
 gitnexus setup                    # Configure MCP for your editors (one-time)
 gitnexus analyze [path]           # Index a repository (or update stale index)
 gitnexus analyze --force          # Force full re-index
-gitnexus analyze --copilot-instructions  # Create or update .github/copilot-instructions.md
+gitnexus analyze --copilot-instructions --skill-layout <github/dual>  # Create or update .github/copilot-instructions.md
 gitnexus analyze --skills --skill-layout <claude/github/dual>  # Generate repo-specific skill files from detected communities; and place repo skills into {.claude (default),.github}/skills
 gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
 gitnexus analyze --embeddings     # Enable embedding generation (slower, better search)

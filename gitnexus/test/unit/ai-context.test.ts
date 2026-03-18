@@ -76,6 +76,28 @@ describe('generateAIContextFiles', () => {
     expect(content).toContain('TestProject');
   });
 
+  it('does not create .github/copilot-instructions.md for claude layout', async () => {
+    const stats = { nodes: 7, edges: 14, processes: 1 };
+    const copilotPath = path.join(tmpDir, '.github', 'copilot-instructions.md');
+
+    await fs.rm(copilotPath, { force: true });
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats, [], 'claude', true);
+
+    await expect(fs.access(copilotPath)).rejects.toThrow();
+  });
+
+  it('creates .github/copilot-instructions.md for dual layout', async () => {
+    const stats = { nodes: 19, edges: 38, processes: 2 };
+    const copilotPath = path.join(tmpDir, '.github', 'copilot-instructions.md');
+
+    await fs.rm(copilotPath, { force: true });
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats, [], 'dual', true);
+
+    const content = await fs.readFile(copilotPath, 'utf-8');
+    expect(content).toContain('gitnexus:start');
+    expect(content).toContain('gitnexus:end');
+  });
+
   it('appends and then updates marker-scoped section in existing copilot file', async () => {
     const stats = { nodes: 11, edges: 22, processes: 2 };
     const copilotPath = path.join(tmpDir, '.github', 'copilot-instructions.md');

@@ -139,7 +139,7 @@ Your AI agent gets these tools automatically:
 gitnexus setup                    # Configure MCP for your editors (one-time)
 gitnexus analyze [path]           # Index a repository (or update stale index)
 gitnexus analyze --force          # Force full re-index
-gitnexus analyze --copilot-instructions  # Create or update .github/copilot-instructions.md
+gitnexus analyze --copilot-instructions --skill-layout <github/dual>  # Create or update .github/copilot-instructions.md
 gitnexus analyze --skills --skill-layout <claude/github/dual>  # Generate repo-specific skill files from detected communities; and place repo skills into {.claude (default),.github}/skills
 gitnexus analyze --embeddings     # Enable embedding generation (slower, better search)
 gitnexus analyze --verbose        # Log skipped files when parsers are unavailable
@@ -194,7 +194,7 @@ Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setu
 
 Per-repo skills are written to `.claude/skills/` by default. Use `--skill-layout github` for `.github/skills/`, or `--skill-layout dual` to write both locations.
 
-Use `--copilot-instructions` to also create or update `.github/copilot-instructions.md` with a marker-scoped GitNexus section.
+Use `--copilot-instructions` with `--skill-layout github` or `--skill-layout dual` to create or update `.github/copilot-instructions.md` with a marker-scoped GitNexus section.
 
 ## Requirements
 

@@ -35,7 +35,8 @@ Press `F5` in VS Code to launch an Extension Development Host.
 ## Usage
 
 1. Run `GitNexus: Analyze Workspace` once in your repository.
-	The extension runs `gitnexus analyze <workspaceRoot> --skill-layout <configured-layout> --copilot-instructions`, so `.github/copilot-instructions.md` is created or updated on each analyze run.
+	The extension runs `gitnexus analyze <workspaceRoot> --skill-layout <configured-layout>`.
+	When the configured layout is `github` or `dual`, it also passes `--copilot-instructions`, so `.github/copilot-instructions.md` is created or updated.
 	Configure the layout in settings via `gitnexus.analyze.skillLayout` (`github` default, `claude`, or `dual`).
 2. GitNexus auto-refreshes repository/module/flow views on startup and after analyze runs.
 3. Use the status bar item to monitor index freshness:
@@ -54,8 +55,6 @@ If status is stale, click the status bar item to trigger analyze; the extension 
 - `gitnexus.cli.command`: Command used to launch GitNexus (default `npx`)
 - `gitnexus.cli.baseArgs`: Base args before subcommands
 - `gitnexus.cli.mcpArgs`: Args to start MCP server (default `["mcp"]`)
-
-Regardless of layout, extension analyze also creates or updates `.github/copilot-instructions.md`.
 
 ## Troubleshooting
 
