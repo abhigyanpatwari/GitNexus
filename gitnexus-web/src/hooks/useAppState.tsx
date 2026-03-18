@@ -467,12 +467,29 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const runQuery = useCallback(async (cypher: string): Promise<any[]> => {
+    // In server mode, route Cypher queries to the backend HTTP API
+    // (the local WASM LadybugDB is not initialized when connected to a server)
+    if (serverBaseUrl) {
+      const response = await fetch(`${serverBaseUrl}/query`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cypher, repo: projectName }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || `Server query failed: ${response.status}`);
+      }
+      const body = await response.json();
+      return (body.result ?? body) as any[];
+    }
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
     return api.runQuery(cypher);
-  }, []);
+  }, [serverBaseUrl, projectName]);
 
   const isDatabaseReady = useCallback(async (): Promise<boolean> => {
+    // In server mode, the database is always "ready" (queries go to the backend)
+    if (serverBaseUrl) return true;
     const api = apiRef.current;
     if (!api) return false;
     try {
@@ -480,7 +497,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     } catch {
       return false;
     }
-  }, []);
+  }, [serverBaseUrl]);
 
   // Embedding methods
   const startEmbeddings = useCallback(async (forceDevice?: 'webgpu' | 'wasm'): Promise<void> => {
