@@ -1163,3 +1163,58 @@ describe('Kotlin when/is complex pattern binding', () => {
     expect(wrongAdmin).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Kotlin for-loop with call_expression iterable: for (user in getUsers())
+// Phase 7.3: call_expression iterable resolution via ReturnTypeLookup
+// ---------------------------------------------------------------------------
+
+describe('Kotlin for-loop call_expression iterable resolution (Phase 7.3)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-foreach-call-expr'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes with competing save methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+    const saveFns = getNodesByLabel(result, 'Function').filter(f => f === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  it('resolves user.save() in for-loop over getUsers() to User#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('User.kt'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves repo.save() in for-loop over getRepos() to Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('Repo.kt'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('does NOT resolve user.save() to Repo#save (negative)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c =>
+      c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('Repo.kt'),
+    );
+    expect(wrongSave).toBeUndefined();
+  });
+
+  it('does NOT resolve repo.save() to User#save (negative)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c =>
+      c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('User.kt'),
+    );
+    expect(wrongSave).toBeUndefined();
+  });
+});

@@ -884,3 +884,59 @@ describe('Go map range type resolution (Tier 1c)', () => {
     expect(wrongSave).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Go for-loop with call_expression iterable: for _, user := range GetUsers()
+// Phase 7.3: call_expression iterable resolution via ReturnTypeLookup
+// ---------------------------------------------------------------------------
+
+describe('Go for-loop call_expression iterable resolution (Phase 7.3)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-for-call-expr'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs with competing Save methods', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    expect(structs).toContain('User');
+    expect(structs).toContain('Repo');
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods.filter(m => m === 'Save').length).toBe(2);
+  });
+
+  it('resolves user.Save() in range GetUsers() to User#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processUsers' && c.targetFilePath?.includes('user.go'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves repo.Save() in range GetRepos() to Repo#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processRepos' && c.targetFilePath?.includes('repo.go'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('does NOT resolve user.Save() to Repo#Save (negative disambiguation)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processUsers' && c.targetFilePath?.includes('repo.go'),
+    );
+    expect(wrongSave).toBeUndefined();
+  });
+
+  it('does NOT resolve repo.Save() to User#Save (negative disambiguation)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processRepos' && c.targetFilePath?.includes('user.go'),
+    );
+    expect(wrongSave).toBeUndefined();
+  });
+});

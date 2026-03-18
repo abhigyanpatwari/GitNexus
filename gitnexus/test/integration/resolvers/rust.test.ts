@@ -1223,3 +1223,59 @@ describe('Rust .iter() for-loop call_expression resolution', () => {
     expect(wrongSave).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// for user in get_users() — direct call_expression iterable resolution
+// Phase 7.3: unlike rust-iter-for-loop (typed variable .iter()), this tests
+// iterating over a function call's return value directly.
+// ---------------------------------------------------------------------------
+
+describe('Rust for-loop direct call_expression iterable resolution (Phase 7.3)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-for-call-expr'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs with competing save functions', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
+    const saveFns = getNodesByLabel(result, 'Function').filter(f => f === 'save');
+    expect(saveFns.length).toBe(2);
+  });
+
+  it('resolves user.save() in for-loop over get_users() to User#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_users' && c.targetFilePath?.includes('user.rs'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves repo.save() in for-loop over get_repos() to Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_repos' && c.targetFilePath?.includes('repo.rs'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('does NOT resolve user.save() to Repo#save (negative)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_users' && c.targetFilePath?.includes('repo.rs'),
+    );
+    expect(wrongSave).toBeUndefined();
+  });
+
+  it('does NOT resolve repo.save() to User#save (negative)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_repos' && c.targetFilePath?.includes('user.rs'),
+    );
+    expect(wrongSave).toBeUndefined();
+  });
+});

@@ -302,15 +302,40 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
 const PHPDOC_RETURN_RE = /@return\s+(\S+)/;
 
 /**
+ * Normalize a PHPDoc return type for storage in the SymbolTable.
+ * Unlike normalizePhpType (which strips User[] → User for scopeEnv), this preserves
+ * array notation so lookupRawReturnType can extract element types for for-loop resolution.
+ *   \App\Models\User[] → User[]
+ *   ?User → User
+ *   Collection<User> → Collection<User>  (preserved for extractElementTypeFromString)
+ */
+const normalizePhpReturnType = (raw: string): string | undefined => {
+  // Strip nullable prefix: ?User[] → User[]
+  let type = raw.startsWith('?') ? raw.slice(1) : raw;
+  // Strip union with null/false/void: User[]|null → User[]
+  const parts = type.split('|').filter(p => p !== 'null' && p !== 'false' && p !== 'void' && p !== 'mixed');
+  if (parts.length !== 1) return undefined;
+  type = parts[0];
+  // Strip namespace: \App\Models\User[] → User[]
+  const segments = type.split('\\');
+  type = segments[segments.length - 1];
+  // Skip uninformative types
+  if (type === 'mixed' || type === 'void' || type === 'self' || type === 'static' || type === 'object' || type === 'array') return undefined;
+  if (/^\w+(\[\])?$/.test(type) || /^\w+\s*</.test(type)) return type;
+  return undefined;
+};
+
+/**
  * Extract return type from PHPDoc `@return Type` annotation preceding a method.
  * Walks backwards through preceding siblings looking for comment nodes.
+ * Preserves array notation (e.g., User[]) for for-loop element type extraction.
  */
 const extractReturnType: ReturnTypeExtractor = (node) => {
   let sibling = node.previousSibling;
   while (sibling) {
     if (sibling.type === 'comment') {
       const match = PHPDOC_RETURN_RE.exec(sibling.text);
-      if (match) return normalizePhpType(match[1]);
+      if (match) return normalizePhpReturnType(match[1]);
     } else if (sibling.isNamed && !SKIP_NODE_TYPES.has(sibling.type)) break;
     sibling = sibling.previousSibling;
   }
@@ -382,7 +407,7 @@ const findPhpParamElementType = (iterableName: string, startNode: SyntaxNode): s
  * constructor-binding cases that retain container types), then fall back to direct
  * scopeEnv lookup (for PHPDoc-normalized types).
  */
-const extractForLoopBinding: ForLoopExtractor = (node,  { scopeEnv, declarationTypeNodes, scope }): void => {
+const extractForLoopBinding: ForLoopExtractor = (node,  { scopeEnv, declarationTypeNodes, scope, returnTypeLookup }): void => {
   if (node.type !== 'foreach_statement') return;
 
   // Collect non-body named children: first is the iterable, second is value or pair
@@ -416,6 +441,7 @@ const extractForLoopBinding: ForLoopExtractor = (node,  { scopeEnv, declarationT
 
   // Get iterable variable name (PHP vars include $ prefix)
   let iterableName: string | undefined;
+  let callExprElementType: string | undefined;
   if (iterableNode.type === 'variable_name') {
     iterableName = iterableNode.text;
   } else if (iterableNode?.type === 'member_access_expression') {
@@ -423,8 +449,28 @@ const extractForLoopBinding: ForLoopExtractor = (node,  { scopeEnv, declarationT
     // PHP properties are stored in scopeEnv with $ prefix ($users), but
     // member_access_expression.name returns without $ (users). Add $ to match.
     if (name) iterableName = '$' + name.text;
+  } else if (iterableNode?.type === 'function_call_expression') {
+    // foreach (getUsers() as $user) — resolve via return type lookup
+    const calleeName = extractCalleeName(iterableNode);
+    if (calleeName) {
+      const rawReturn = returnTypeLookup.lookupRawReturnType(calleeName);
+      if (rawReturn) callExprElementType = normalizePhpType(rawReturn);
+    }
+  } else if (iterableNode?.type === 'member_call_expression') {
+    // foreach ($this->getUsers() as $user) — resolve via return type lookup
+    const methodName = iterableNode.childForFieldName('name');
+    if (methodName) {
+      const rawReturn = returnTypeLookup.lookupRawReturnType(methodName.text);
+      if (rawReturn) callExprElementType = normalizePhpType(rawReturn);
+    }
   }
-  if (!iterableName) return;
+  if (!iterableName && !callExprElementType) return;
+
+  // If we resolved the element type from a call expression, bind and return early
+  if (callExprElementType) {
+    scopeEnv.set(varName, callExprElementType);
+    return;
+  }
 
   // Strategy A: try resolveIterableElementType (handles constructor-binding container types)
   const elementType = resolveIterableElementType(

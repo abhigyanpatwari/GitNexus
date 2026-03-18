@@ -1115,10 +1115,12 @@ const processFileGroup = (
         returnType = sig.returnType;
 
         // Language-specific return type fallback (e.g. Ruby YARD @return [Type])
-        if (!returnType && definitionNode) {
+        // Also upgrades uninformative AST types like PHP `array` with PHPDoc `@return User[]`
+        if ((!returnType || returnType === 'array' || returnType === 'iterable') && definitionNode) {
           const tc = typeConfigs[language as keyof typeof typeConfigs];
           if (tc?.extractReturnType) {
-            returnType = tc.extractReturnType(definitionNode);
+            const docReturn = tc.extractReturnType(definitionNode);
+            if (docReturn) returnType = docReturn;
           }
         }
       }

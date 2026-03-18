@@ -238,10 +238,12 @@ const processParsingSequential = async (
         : undefined;
 
       // Language-specific return type fallback (e.g. Ruby YARD @return [Type])
-      if (methodSig && !methodSig.returnType && definitionNode) {
+      // Also upgrades uninformative AST types like PHP `array` with PHPDoc `@return User[]`
+      if (methodSig && (!methodSig.returnType || methodSig.returnType === 'array' || methodSig.returnType === 'iterable') && definitionNode) {
         const tc = typeConfigs[language as keyof typeof typeConfigs];
         if (tc?.extractReturnType) {
-          methodSig.returnType = tc.extractReturnType(definitionNode);
+          const docReturn = tc.extractReturnType(definitionNode);
+          if (docReturn) methodSig.returnType = docReturn;
         }
       }
 

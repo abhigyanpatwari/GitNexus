@@ -1171,3 +1171,56 @@ describe('Python member access iterable for-loop', () => {
     expect(repoSave).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Python for-loop with call_expression iterable: for user in get_users()
+// Phase 7.3: call_expression iterable resolution via ReturnTypeLookup
+// ---------------------------------------------------------------------------
+
+describe('Python for-loop call_expression iterable resolution (Phase 7.3)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-for-call-expr'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes with competing save methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+  });
+
+  it('resolves user.save() in for-loop over get_users() to User#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_users' && c.targetFilePath?.includes('models.py'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves repo.save() in for-loop over get_repos() to Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' && c.source === 'process_repos' && c.targetFilePath?.includes('models.py'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('process_users resolves exactly one save call (no cross-binding)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c =>
+      c.target === 'save' && c.source === 'process_users',
+    );
+    expect(saveCalls.length).toBe(1);
+  });
+
+  it('process_repos resolves exactly one save call (no cross-binding)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c =>
+      c.target === 'save' && c.source === 'process_repos',
+    );
+    expect(saveCalls.length).toBe(1);
+  });
+});
