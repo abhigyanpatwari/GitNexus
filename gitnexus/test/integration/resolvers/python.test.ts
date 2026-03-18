@@ -1324,3 +1324,34 @@ describe('Field type resolution (Python)', () => {
     expect(addressSave).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 8: Field type disambiguation — both User and Address have save()
+// ---------------------------------------------------------------------------
+
+describe('Field type disambiguation (Python)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-field-type-disambig'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects both User#save and Address#save', () => {
+    const methods = getNodesByLabel(result, 'Function');
+    const saveMethods = methods.filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves user.address.save() → Address#save (not User#save)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(
+      e => e.target === 'save' && e.source === 'process_user',
+    );
+    expect(saveCalls.length).toBe(1);
+    expect(saveCalls[0].targetFilePath).toContain('address');
+    expect(saveCalls[0].targetFilePath).not.toContain('user');
+  });
+});

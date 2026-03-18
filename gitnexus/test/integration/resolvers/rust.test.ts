@@ -1324,4 +1324,13 @@ describe('Field type resolution (Rust)', () => {
     const propEdges = getRelationships(result, 'HAS_PROPERTY');
     expect(propEdges.length).toBeGreaterThanOrEqual(2);
   });
+
+  it('resolves user.address.save() → Address#save via field type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(
+      e => e.target === 'save' && e.source === 'process_user',
+    );
+    expect(saveCalls.length).toBe(1);
+    expect(saveCalls[0].targetFilePath).toContain('models');
+  });
 });

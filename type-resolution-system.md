@@ -365,20 +365,24 @@ So return-type-aware receiver inference already exists in a constrained downstre
 
 ## Language Feature Matrix
 
-| Feature | TS/JS | Java | Kotlin | C# | Go | Rust | Python | PHP | Ruby | Swift | C/C++ |
-|---------|:-----:|:----:|:------:|:--:|:--:|:----:|:------:|:---:|:----:|:-----:|:-----:|
-| Declarations | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Parameters | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Initializer / constructor inference | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Constructor binding scan | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| For-loop element types | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes |
-| Pattern binding | Yes | Yes | Yes | Yes | No | Yes | Yes | No | No | No | No |
-| Assignment chains | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes |
-| Field/property type resolution | Yes | Yes | Yes | Yes | Yes | Yes | No* | Yes | YARD | No | Yes |
-| Comment-based types | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No |
-| Return type extraction | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No |
+| Feature | TS | JS | Java | Kotlin | C# | Go | Rust | Python | PHP | Ruby | Swift | C++ | C |
+|---------|:--:|:--:|:----:|:------:|:--:|:--:|:----:|:------:|:---:|:----:|:-----:|:---:|:-:|
+| Declarations | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Parameters | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Initializer / constructor inference | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Constructor binding scan | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| For-loop element types | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes |
+| Pattern binding | Yes | Yes | Yes | Yes | No | Yes | Yes | No | No | No | No | No | No |
+| Assignment chains | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes | Yes |
+| Field/property type resolution | Yes | No† | Yes | Yes | Yes | Yes | Yes | No* | Yes | YARD | No | Yes | No‡ |
+| Comment-based types | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No |
+| Return type extraction | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No |
 
 \* Python class-level annotated attributes (`address: Address`) now resolve `declaredType` correctly. The `self.x` instance attribute pattern is not yet supported.
+
+† JS field topology is captured (`field_definition` → `HAS_PROPERTY` edges) but `declaredType` is never set — JS has no AST type annotations. Disambiguation via `lookupFieldByOwner` requires `declaredType`. JSDoc `@type` support is a Phase 9 candidate.
+
+‡ C has no `@definition.property` query pattern. Struct member fields are not captured. C++ captures class/struct member fields via `field_declaration`.
 
 ---
 

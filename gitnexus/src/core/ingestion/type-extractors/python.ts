@@ -62,6 +62,10 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
   } else {
     nameNode = node.childForFieldName('name') ?? node.childForFieldName('pattern');
     typeNode = node.childForFieldName('type');
+    // Python typed_parameter: name is a positional child (identifier), not a named field
+    if (!nameNode && node.type === 'typed_parameter') {
+      nameNode = node.firstNamedChild?.type === 'identifier' ? node.firstNamedChild : null;
+    }
   }
 
   if (!nameNode || !typeNode) return;

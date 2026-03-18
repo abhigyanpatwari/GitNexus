@@ -312,6 +312,14 @@ export const processCalls = async (
                 if (step.kind === 'field') {
                   currentType = resolveFieldAccessType(currentType, step.name, file.path, ctx);
                 } else {
+                  // Ruby/Python: property access is syntactically identical to method calls.
+                  // Try field resolution first — if the name is a known property with declaredType,
+                  // use that type directly. Otherwise fall back to method call resolution.
+                  const fieldType = resolveFieldAccessType(currentType, step.name, file.path, ctx);
+                  if (fieldType) {
+                    currentType = fieldType;
+                    continue;
+                  }
                   const resolved = resolveCallTarget(
                     { calledName: step.name, callForm: 'member', receiverTypeName: currentType },
                     file.path,
@@ -740,6 +748,14 @@ export const processCallsFromExtracted = async (
             if (step.kind === 'field') {
               currentType = resolveFieldAccessType(currentType, step.name, effectiveCall.filePath, ctx);
             } else {
+              // Ruby/Python: property access is syntactically identical to method calls.
+              // Try field resolution first — if the name is a known property with declaredType,
+              // use that type directly. Otherwise fall back to method call resolution.
+              const fieldType = resolveFieldAccessType(currentType, step.name, effectiveCall.filePath, ctx);
+              if (fieldType) {
+                currentType = fieldType;
+                continue;
+              }
               // step.kind === 'call': resolve the method and get its return type
               const resolved = resolveCallTarget(
                 { calledName: step.name, callForm: 'member', receiverTypeName: currentType },

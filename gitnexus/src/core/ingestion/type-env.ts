@@ -439,7 +439,9 @@ export const buildTypeEnv = (
       let typeNode = node.childForFieldName('type');
       if (typeNode) {
         const nameNode = node.childForFieldName('name')
-          ?? node.childForFieldName('pattern');
+          ?? node.childForFieldName('pattern')
+          // Python typed_parameter: name is a positional child (identifier), not a named field
+          ?? (node.firstNamedChild?.type === 'identifier' ? node.firstNamedChild : null);
         if (nameNode) {
           const varName = extractVarName(nameNode);
           if (varName && !declarationTypeNodes.has(`${scope}\0${varName}`)) {
