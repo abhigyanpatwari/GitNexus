@@ -96,8 +96,8 @@ describe('isWriteQuery', () => {
 // ─── Relation type allowlist ──────────────────────────────────────────
 
 describe('VALID_RELATION_TYPES', () => {
-  it('contains exactly the expected 7 types', () => {
-    expect(VALID_RELATION_TYPES.size).toBe(7);
+  it('contains exactly the expected 8 types', () => {
+    expect(VALID_RELATION_TYPES.size).toBe(8);
     expect(VALID_RELATION_TYPES.has('CALLS')).toBe(true);
     expect(VALID_RELATION_TYPES.has('IMPORTS')).toBe(true);
     expect(VALID_RELATION_TYPES.has('EXTENDS')).toBe(true);
@@ -105,6 +105,7 @@ describe('VALID_RELATION_TYPES', () => {
     expect(VALID_RELATION_TYPES.has('HAS_METHOD')).toBe(true);
     expect(VALID_RELATION_TYPES.has('HAS_PROPERTY')).toBe(true);
     expect(VALID_RELATION_TYPES.has('OVERRIDES')).toBe(true);
+    expect(VALID_RELATION_TYPES.has('ACCESSES')).toBe(true);
   });
 
   it('rejects invalid relation types', () => {

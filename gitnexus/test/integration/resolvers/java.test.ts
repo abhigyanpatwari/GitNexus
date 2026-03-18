@@ -1110,6 +1110,14 @@ describe('Field type resolution (Java)', () => {
     );
     expect(addressSave).toBeDefined();
   });
+
+  it('emits ACCESSES read edge for user.address field access in chain', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const addressReads = accesses.filter(e => e.target === 'address' && e.rel.reason === 'read');
+    expect(addressReads.length).toBeGreaterThanOrEqual(1);
+    expect(addressReads[0].source).toBe('processUser');
+    expect(addressReads[0].targetLabel).toBe('Property');
+  });
 });
 
 // ---------------------------------------------------------------------------

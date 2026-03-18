@@ -284,6 +284,10 @@ export const processCalls = async (
           receiverTypeName = receiverName;
         }
       }
+      // Hoist sourceId so it's available for ACCESSES edge emission during chain walk.
+      const enclosingFuncId = findEnclosingFunction(callNode, file.path, ctx);
+      const sourceId = enclosingFuncId || generateId('File', file.path);
+
       // Fall back to mixed chain resolution when the receiver is a complex expression
       // (field chain, call chain, or interleaved — e.g. user.address.city.save() or
       // svc.getUser().address.save()). Handles all cases with a single unified walk.
@@ -296,8 +300,7 @@ export const processCalls = async (
               ? typeEnv.lookup(extracted.baseReceiverName, callNode)
               : undefined;
             if (!currentType && extracted.baseReceiverName && receiverIndex.size > 0) {
-              const enclosingFunc = findEnclosingFunction(callNode, file.path, ctx);
-              const funcName = enclosingFunc ? extractFuncNameFromSourceId(enclosingFunc) : '';
+              const funcName = enclosingFuncId ? extractFuncNameFromSourceId(enclosingFuncId) : '';
               currentType = lookupReceiverType(receiverIndex, funcName, extracted.baseReceiverName);
             }
             if (!currentType && extracted.baseReceiverName) {
@@ -309,7 +312,10 @@ export const processCalls = async (
               }
             }
             if (currentType) {
-              receiverTypeName = walkMixedChain(extracted.chain, currentType, file.path, ctx);
+              receiverTypeName = walkMixedChain(
+                extracted.chain, currentType, file.path, ctx,
+                makeAccessEmitter(graph, sourceId),
+              );
             }
           }
         }
@@ -323,9 +329,6 @@ export const processCalls = async (
       }, file.path, ctx);
 
       if (!resolved) return;
-
-      const enclosingFuncId = findEnclosingFunction(callNode, file.path, ctx);
-      const sourceId = enclosingFuncId || generateId('File', file.path);
       const relId = generateId('CALLS', `${sourceId}:${calledName}->${resolved.nodeId}`);
 
       graph.addRelationship({
@@ -570,12 +573,17 @@ const lookupReceiverType = (
   return undefined;
 };
 
+interface FieldResolution {
+  typeName: string;      // resolved declared type (continues chain threading)
+  fieldNodeId: string;   // nodeId of the Property symbol (for ACCESSES edge target)
+}
+
 const resolveFieldAccessType = (
   receiverName: string,
   fieldName: string,
   filePath: string,
   ctx: ResolutionContext,
-): string | undefined => {
+): FieldResolution | undefined => {
   // Resolve the receiver's type to a class/struct nodeId
   const typeResolved = ctx.resolve(receiverName, filePath);
   if (!typeResolved) return undefined;
@@ -590,7 +598,35 @@ const resolveFieldAccessType = (
 
   // Use stripNullable (not extractReturnTypeName) — field types like List<User>
   // should be preserved as-is, not unwrapped to User. Only strip nullable wrappers.
-  return stripNullable(fieldDef.declaredType);
+  return {
+    typeName: stripNullable(fieldDef.declaredType),
+    fieldNodeId: fieldDef.nodeId,
+  };
+};
+
+/**
+ * Create a deduplicated ACCESSES edge emitter for a single source node.
+ * Each (sourceId, fieldNodeId) pair is emitted at most once per source.
+ */
+const makeAccessEmitter = (
+  graph: KnowledgeGraph,
+  sourceId: string,
+): OnFieldResolved => {
+  const emitted = new Set<string>();
+  return (fieldNodeId: string): void => {
+    const key = `${sourceId}\0${fieldNodeId}`;
+    if (emitted.has(key)) return;
+    emitted.add(key);
+
+    graph.addRelationship({
+      id: generateId('ACCESSES', `${sourceId}:${fieldNodeId}:read`),
+      sourceId,
+      targetId: fieldNodeId,
+      type: 'ACCESSES',
+      confidence: 1.0,
+      reason: 'read',
+    });
+  };
 };
 
 /**
@@ -601,24 +637,31 @@ const resolveFieldAccessType = (
  * The caller is responsible for seeding `startType` from its own context
  * (TypeEnv, constructor bindings, or static-class fallback).
  */
+type OnFieldResolved = (fieldNodeId: string) => void;
+
 const walkMixedChain = (
   chain: MixedChainStep[],
   startType: string,
   filePath: string,
   ctx: ResolutionContext,
+  onFieldResolved?: OnFieldResolved,
 ): string | undefined => {
   let currentType: string | undefined = startType;
   for (const step of chain) {
     if (!currentType) break;
     if (step.kind === 'field') {
-      currentType = resolveFieldAccessType(currentType, step.name, filePath, ctx);
+      const resolved = resolveFieldAccessType(currentType, step.name, filePath, ctx);
+      if (!resolved) { currentType = undefined; break; }
+      onFieldResolved?.(resolved.fieldNodeId);
+      currentType = resolved.typeName;
     } else {
       // Ruby/Python: property access is syntactically identical to method calls.
       // Try field resolution first — if the name is a known property with declaredType,
       // use that type directly. Otherwise fall back to method call resolution.
-      const fieldType = resolveFieldAccessType(currentType, step.name, filePath, ctx);
-      if (fieldType) {
-        currentType = fieldType;
+      const fieldResolved = resolveFieldAccessType(currentType, step.name, filePath, ctx);
+      if (fieldResolved) {
+        onFieldResolved?.(fieldResolved.fieldNodeId);
+        currentType = fieldResolved.typeName;
         continue;
       }
       const resolved = resolveCallTarget(
@@ -726,6 +769,7 @@ export const processCallsFromExtracted = async (
         if (currentType) {
           const walkedType = walkMixedChain(
             effectiveCall.receiverMixedChain, currentType, effectiveCall.filePath, ctx,
+            makeAccessEmitter(graph, effectiveCall.sourceId),
           );
           if (walkedType) {
             effectiveCall = { ...effectiveCall, receiverTypeName: walkedType };

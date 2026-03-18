@@ -1739,6 +1739,29 @@ describe('Field type resolution (TypeScript)', () => {
     expect(addressSave).toBeDefined();
     expect(addressSave!.source).toBe('processUser');
   });
+
+  it('emits ACCESSES read edge for user.address field access in chain', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const addressReads = accesses.filter(e => e.target === 'address' && e.rel.reason === 'read');
+    expect(addressReads.length).toBeGreaterThanOrEqual(1);
+    expect(addressReads[0].source).toBe('processUser');
+    expect(addressReads[0].targetLabel).toBe('Property');
+  });
+
+  it('emits ACCESSES read edge for Config.DEFAULT field access in chain', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const defaultReads = accesses.filter(e => e.target === 'DEFAULT' && e.rel.reason === 'read');
+    expect(defaultReads.length).toBeGreaterThanOrEqual(1);
+    expect(defaultReads[0].source).toBe('validateConfig');
+  });
+
+  it('all ACCESSES edges have confidence 1.0 and reason read', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    for (const edge of accesses) {
+      expect(edge.rel.confidence).toBe(1.0);
+      expect(edge.rel.reason).toBe('read');
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

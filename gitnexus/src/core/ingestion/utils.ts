@@ -1179,6 +1179,7 @@ const FIELD_ACCESS_NODE_TYPES = new Set([
   'member_access_expression',    // C#
   'selector_expression',         // Go
   'field_expression',            // Rust/C++
+  'field_access',                // Java
   'attribute',                   // Python
   'navigation_expression',       // Kotlin/Swift
   'member_binding_expression',   // C# null-conditional (user?.Address)
