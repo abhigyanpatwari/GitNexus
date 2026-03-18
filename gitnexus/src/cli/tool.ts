@@ -14,6 +14,7 @@
  * at the OS level during init. This is consistent with augment.ts.
  */
 
+import { writeSync } from 'node:fs';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 
 let _backend: LocalBackend | null = null;
@@ -29,10 +30,24 @@ async function getBackend(): Promise<LocalBackend> {
   return _backend;
 }
 
+/**
+ * Write tool output to stdout using low-level fd write.
+ *
+ * LadybugDB's native module captures Node.js process.stdout during init,
+ * but the underlying OS file descriptor 1 (stdout) remains intact.
+ * By using fs.writeSync(1, ...) we bypass the Node.js stream layer
+ * and write directly to the real stdout fd (#324).
+ *
+ * Falls back to stderr if the fd write fails (e.g., broken pipe).
+ */
 function output(data: any): void {
   const text = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
-  // stderr because LadybugDB captures stdout at OS level
-  process.stderr.write(text + '\n');
+  try {
+    writeSync(1, text + '\n');
+  } catch {
+    // Fallback: stderr (previous behavior, works on all platforms)
+    process.stderr.write(text + '\n');
+  }
 }
 
 export async function queryCommand(queryText: string, options?: {
