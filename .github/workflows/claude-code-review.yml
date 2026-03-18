@@ -85,14 +85,17 @@ jobs:
       # for fork PRs. Create a temporary branch ref via the API so the action
       # can find it. Using the API (not git push) avoids the GITHUB_TOKEN
       # restriction that blocks pushing commits containing workflow file changes.
+      # Use a prefixed temporary branch name to avoid overwriting real branches
+      # (e.g. a fork branch named "main" would overwrite origin/main).
       - name: Create fork branch ref on origin
         id: push-fork
         if: steps.pr.outputs.is_fork == 'true'
         env:
-          FORK_BRANCH: ${{ steps.pr.outputs.branch }}
+          FORK_BRANCH: claude-tmp/fork-pr-${{ steps.pr.outputs.number }}
           FORK_SHA: ${{ steps.pr.outputs.sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          echo "FORK_BRANCH=$FORK_BRANCH" >> "$GITHUB_ENV"
           gh api "repos/${{ github.repository }}/git/refs" \
             --method POST \
             -f ref="refs/heads/$FORK_BRANCH" \
@@ -116,6 +119,5 @@ jobs:
       - name: Delete fork branch ref from origin
         if: always() && steps.push-fork.outcome == 'success'
         env:
-          FORK_BRANCH: ${{ steps.pr.outputs.branch }}
           GH_TOKEN: ${{ github.token }}
         run: gh api "repos/${{ github.repository }}/git/refs/heads/$FORK_BRANCH" --method DELETE || true
