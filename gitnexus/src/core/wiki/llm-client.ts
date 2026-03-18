@@ -13,6 +13,10 @@ export interface LLMConfig {
   model: string;
   maxTokens: number;
   temperature: number;
+  /** Force the API parameter name for max output tokens.
+   *  'auto' (default) picks based on model name.
+   *  Set explicitly when auto-detection picks the wrong one. */
+  tokenParamStyle?: 'max_tokens' | 'max_completion_tokens' | 'auto';
 }
 
 export interface LLMResponse {
@@ -64,6 +68,16 @@ export interface CallLLMOptions {
 }
 
 /**
+ * Models that require `max_completion_tokens` instead of `max_tokens`.
+ * OpenAI reasoning models (o-series) reject `max_tokens` with a 400 error.
+ */
+const MAX_COMPLETION_TOKENS_MODELS = /\b(o1|o3|o4)(-mini|-preview|-pro)?\b/i;
+
+function useMaxCompletionTokens(model: string): boolean {
+  return MAX_COMPLETION_TOKENS_MODELS.test(model);
+}
+
+/**
  * Call an OpenAI-compatible LLM API.
  * Uses streaming when onChunk callback is provided for real-time progress.
  * Retries up to 3 times on transient failures (429, 5xx, network errors).
@@ -83,10 +97,15 @@ export async function callLLM(
   const url = `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`;
   const useStream = !!options?.onChunk;
 
+  const style = config.tokenParamStyle ?? 'auto';
+  const tokensKey = style === 'auto'
+    ? (useMaxCompletionTokens(config.model) ? 'max_completion_tokens' : 'max_tokens')
+    : style;
+
   const body: Record<string, unknown> = {
     model: config.model,
     messages,
-    max_tokens: config.maxTokens,
+    [tokensKey]: config.maxTokens,
     temperature: config.temperature,
   };
   if (useStream) body.stream = true;
@@ -107,6 +126,18 @@ export async function callLLM(
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => 'unknown error');
+
+        // Parameter mismatch — swap max_tokens <-> max_completion_tokens and retry once
+        if (response.status === 400 && errorText.includes('max_completion_tokens') && !body.max_completion_tokens) {
+          delete body.max_tokens;
+          body.max_completion_tokens = config.maxTokens;
+          continue;
+        }
+        if (response.status === 400 && errorText.includes("'max_completion_tokens' is not supported") && !body.max_tokens) {
+          delete body.max_completion_tokens;
+          body.max_tokens = config.maxTokens;
+          continue;
+        }
 
         // Rate limit — wait with exponential backoff and retry
         if (response.status === 429 && attempt < MAX_RETRIES - 1) {
