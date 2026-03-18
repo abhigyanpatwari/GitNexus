@@ -146,8 +146,8 @@ Model class / struct fields so chained member access can be resolved more accura
 | Go | ✅ `field_declaration` | ✅ Strategy 1 (type field) | ✅ | |
 | Kotlin | ✅ `property_declaration` | ✅ Strategy 4 (variable_declaration) | ✅ | New strategy added |
 | PHP | ✅ `property_declaration` | ✅ Strategy 1 + PHPDoc @var fallback | ✅ | Strategy 5 for pre-7.4 |
-| Rust | ✅ `field_declaration` | ✅ Strategy 1 (type field) | — | Capture only (no field-access call resolution) |
-| Python | ✅ `assignment` with `type` | ⚠️ Class-level only | — | `self.x` pattern needs work |
+| Rust | ✅ `field_declaration` | ✅ Strategy 1 (type field) | ✅ | `extractMemberAccessParts` handles `field_expression` via `value`/`field` |
+| Python | ✅ `assignment` with `type` | ✅ Class-level annotations | ✅ | `self.x` instance pattern not yet supported |
 | Ruby | ✅ `attr_*` via call routing | ✅ YARD `@return [Type]` | — | YARD fallback for dynamically typed properties |
 | C++ | ✅ `field_declaration` via `field_identifier` | ✅ Strategy 1 (type field) | ✅ | |
 | Swift | ✅ `property_declaration` | ⚠️ Untested | — | |

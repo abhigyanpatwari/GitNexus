@@ -234,8 +234,10 @@ export const processCalls = async (
                   description: item.accessorType,
                 },
               });
-              ctx.symbols.add(file.path, item.propName, nodeId, 'Property',
-                propEnclosingClassId ? { ownerId: propEnclosingClassId } : undefined);
+              ctx.symbols.add(file.path, item.propName, nodeId, 'Property', {
+                ...(propEnclosingClassId ? { ownerId: propEnclosingClassId } : {}),
+                ...(item.declaredType ? { declaredType: item.declaredType } : {}),
+              });
               const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
               graph.addRelationship({
                 id: relId, sourceId: fileId, targetId: nodeId,

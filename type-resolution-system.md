@@ -378,7 +378,7 @@ So return-type-aware receiver inference already exists in a constrained downstre
 | Comment-based types | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No |
 | Return type extraction | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No |
 
-\* Python has a type annotation query for fields but no `declaredType` extraction for the `self.x` pattern yet.
+\* Python class-level annotated attributes (`address: Address`) now resolve `declaredType` correctly. The `self.x` instance attribute pattern is not yet supported.
 
 ---
 

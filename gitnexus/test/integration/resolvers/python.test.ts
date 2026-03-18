@@ -1314,4 +1314,13 @@ describe('Field type resolution (Python)', () => {
     expect(edgeSet(propEdges)).toContain('User → name');
     expect(edgeSet(propEdges)).toContain('Address → city');
   });
+
+  it('resolves user.address.save() → Address#save via field type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'save');
+    const addressSave = saveCalls.find(
+      e => e.source === 'process_user' && e.targetFilePath.includes('models'),
+    );
+    expect(addressSave).toBeDefined();
+  });
 });

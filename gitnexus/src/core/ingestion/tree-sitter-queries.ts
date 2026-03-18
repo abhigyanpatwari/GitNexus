@@ -183,7 +183,7 @@ export const PYTHON_QUERIES = `
 (expression_statement
   (assignment
     left: (identifier) @name
-    type: (type))) @definition.property
+    type: (type)) @definition.property)
 
 ; Heritage queries - Python class inheritance
 (class_definition
