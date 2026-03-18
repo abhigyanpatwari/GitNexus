@@ -32,7 +32,7 @@ describe('generateAIContextFiles', () => {
     expect(result.files.length).toBeGreaterThan(0);
   });
 
-  it('creates or updates CLAUDE.md with GitNexus section', async () => {
+  it('creates stable loader files and a generated context file', async () => {
     const stats = { nodes: 50, edges: 100, processes: 5 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
@@ -40,7 +40,15 @@ describe('generateAIContextFiles', () => {
     const content = await fs.readFile(claudeMdPath, 'utf-8');
     expect(content).toContain('gitnexus:start');
     expect(content).toContain('gitnexus:end');
-    expect(content).toContain('TestProject');
+    expect(content).toContain('.gitnexus/ai-context.md');
+
+    const agentsMdPath = path.join(tmpDir, 'AGENTS.md');
+    const agentsContent = await fs.readFile(agentsMdPath, 'utf-8');
+    expect(agentsContent).toContain('.gitnexus/ai-context.md');
+
+    const contextPath = path.join(tmpDir, '.gitnexus', 'ai-context.md');
+    const contextContent = await fs.readFile(contextPath, 'utf-8');
+    expect(contextContent).toContain('TestProject');
   });
 
   it('handles empty stats', async () => {
@@ -49,7 +57,7 @@ describe('generateAIContextFiles', () => {
     expect(result.files).toBeDefined();
   });
 
-  it('updates existing CLAUDE.md without duplicating', async () => {
+  it('updates existing loader files without duplicating', async () => {
     const stats = { nodes: 10 };
 
     // Run twice

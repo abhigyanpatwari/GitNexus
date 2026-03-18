@@ -1,7 +1,8 @@
 /**
  * AI Context Generator
- * 
- * Creates AGENTS.md and CLAUDE.md with full inline GitNexus context.
+ *
+ * Creates a stable loader in AGENTS.md and CLAUDE.md plus a generated
+ * context file under .gitnexus/ so root-level pointer files do not churn.
  * AGENTS.md is the standard read by Cursor, Windsurf, OpenCode, Cline, etc.
  * CLAUDE.md is for Claude Code which only reads that file.
  */
@@ -150,6 +151,23 @@ ${skillsTable}
 ${GITNEXUS_END_MARKER}`;
 }
 
+function generateLoaderContent(contextFilePath: string): string {
+  return `${GITNEXUS_START_MARKER}
+# GitNexus — Code Intelligence
+
+GitNexus context is stored in \`${contextFilePath}\`.
+Read that file for the current repository guidance, generated skills references, and safety rules.
+
+> If any GitNexus tool warns the index is stale, run \`npx gitnexus analyze\` in terminal first.
+
+## Loader Contract
+
+- Keep this file as a stable pointer.
+- Update \`${contextFilePath}\` for generated GitNexus content.
+
+${GITNEXUS_END_MARKER}`;
+}
+
 
 /**
  * Check if a file exists
@@ -287,17 +305,26 @@ export async function generateAIContextFiles(
   stats: RepoStats,
   generatedSkills?: GeneratedSkillInfo[]
 ): Promise<{ files: string[] }> {
-  const content = generateGitNexusContent(projectName, stats, generatedSkills);
+  const contextContent = generateGitNexusContent(projectName, stats, generatedSkills);
+  const loaderContent = generateLoaderContent('.gitnexus/ai-context.md');
   const createdFiles: string[] = [];
+
+  // Write the generated GitNexus content into .gitnexus so root files stay stable.
+  const gitnexusDir = path.join(repoPath, '.gitnexus');
+  await fs.mkdir(gitnexusDir, { recursive: true });
+
+  const contextPath = path.join(gitnexusDir, 'ai-context.md');
+  await fs.writeFile(contextPath, contextContent.trim() + '\n', 'utf-8');
+  createdFiles.push('.gitnexus/ai-context.md');
 
   // Create AGENTS.md (standard for Cursor, Windsurf, OpenCode, Cline, etc.)
   const agentsPath = path.join(repoPath, 'AGENTS.md');
-  const agentsResult = await upsertGitNexusSection(agentsPath, content);
+  const agentsResult = await upsertGitNexusSection(agentsPath, loaderContent);
   createdFiles.push(`AGENTS.md (${agentsResult})`);
 
   // Create CLAUDE.md (for Claude Code)
   const claudePath = path.join(repoPath, 'CLAUDE.md');
-  const claudeResult = await upsertGitNexusSection(claudePath, content);
+  const claudeResult = await upsertGitNexusSection(claudePath, loaderContent);
   createdFiles.push(`CLAUDE.md (${claudeResult})`);
 
   // Install skills to .claude/skills/gitnexus/
@@ -308,4 +335,3 @@ export async function generateAIContextFiles(
 
   return { files: createdFiles };
 }
-

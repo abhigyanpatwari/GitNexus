@@ -22,7 +22,7 @@ AI coding tools don't understand your codebase structure. They edit a function w
 npx gitnexus analyze
 ```
 
-That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
+That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates stable `AGENTS.md` / `CLAUDE.md` loader files plus `.gitnexus/ai-context.md` — all in one command.
 
 To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
 
@@ -200,6 +200,7 @@ Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setu
 - All processing happens locally on your machine
 - No code is sent to any server
 - Index stored in `.gitnexus/` inside your repo (gitignored)
+- Generated GitNexus context stored in `.gitnexus/ai-context.md`
 - Global registry at `~/.gitnexus/` stores only paths and metadata
 
 ## Web UI
