@@ -328,6 +328,9 @@ relationships:
   - IMPORTS: Module imports
   - EXTENDS: Class inheritance
   - IMPLEMENTS: Interface implementation
+  - HAS_METHOD: Class/Struct/Interface owns a Method
+  - HAS_PROPERTY: Class/Struct/Interface owns a Property (field)
+  - OVERRIDES: Method overrides another Method (MRO)
   - MEMBER_OF: Symbol belongs to community
   - STEP_IN_PROCESS: Symbol is step N in process
 

@@ -760,7 +760,7 @@ export const extractReturnTypeName = (raw: string, depth = 0): string | undefine
  *
  * Returns the normalized type name, or undefined if no type can be extracted.
  */
-export const extractPropertyDeclaredType = (definitionNode: any): string | undefined => {
+export const extractPropertyDeclaredType = (definitionNode: SyntaxNode | null): string | undefined => {
   if (!definitionNode) return undefined;
 
   // Strategy 1: Look for a `type` or `type_annotation` named field

@@ -1158,3 +1158,42 @@ describe('Deep field chain resolution (Java)', () => {
     expect(cityGetName).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Mixed field+call chain resolution (Java)
+// ---------------------------------------------------------------------------
+
+describe('Mixed field+call chain resolution (Java)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-mixed-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, App, City, User, UserService', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'App', 'City', 'User', 'UserService']);
+  });
+
+  it('detects Property nodes for mixed-chain fields', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('city');
+    expect(properties).toContain('address');
+  });
+
+  it('resolves call→field chain: svc.getUser().address.save() → Address#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'save' && e.source === 'processWithService');
+    expect(saveCalls.length).toBe(1);
+    expect(saveCalls[0].targetFilePath).toContain('Address');
+  });
+
+  it('resolves field→call chain: user.getAddress().city.getName() → City#getName', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCalls = calls.filter(e => e.target === 'getName' && e.source === 'processWithUser');
+    expect(getNameCalls.length).toBe(1);
+    expect(getNameCalls[0].targetFilePath).toContain('City');
+  });
+});

@@ -1025,3 +1025,42 @@ describe('Deep field chain resolution (Go)', () => {
     expect(cityGetName).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Mixed field+call chain resolution (Go)
+// ---------------------------------------------------------------------------
+
+describe('Mixed field+call chain resolution (Go)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-mixed-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects structs: Address, City, User, UserService', () => {
+    expect(getNodesByLabel(result, 'Struct')).toEqual(['Address', 'City', 'User', 'UserService']);
+  });
+
+  it('detects Property nodes for mixed-chain fields', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('City');
+    expect(properties).toContain('Address');
+  });
+
+  it('resolves call→field chain: svc.GetUser().Address.Save() → Address#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'Save' && e.source === 'processWithService');
+    expect(saveCalls.length).toBe(1);
+    expect(saveCalls[0].targetFilePath).toContain('models');
+  });
+
+  it('resolves field→call chain: user.GetAddress().City.GetName() → City#GetName', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCalls = calls.filter(e => e.target === 'GetName' && e.source === 'processWithUser');
+    expect(getNameCalls.length).toBe(1);
+    expect(getNameCalls[0].targetFilePath).toContain('models');
+  });
+});

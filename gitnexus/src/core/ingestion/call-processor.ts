@@ -21,6 +21,7 @@ import {
   findEnclosingClassId,
   CALL_EXPRESSION_TYPES,
   extractMixedChain,
+  type MixedChainStep,
 } from './utils.js';
 import { buildTypeEnv } from './type-env.js';
 import type { ConstructorBinding } from './type-env.js';
@@ -307,38 +308,7 @@ export const processCalls = async (
               }
             }
             if (currentType) {
-              for (const step of extracted.chain) {
-                if (!currentType) break;
-                if (step.kind === 'field') {
-                  currentType = resolveFieldAccessType(currentType, step.name, file.path, ctx);
-                } else {
-                  // Ruby/Python: property access is syntactically identical to method calls.
-                  // Try field resolution first — if the name is a known property with declaredType,
-                  // use that type directly. Otherwise fall back to method call resolution.
-                  const fieldType = resolveFieldAccessType(currentType, step.name, file.path, ctx);
-                  if (fieldType) {
-                    currentType = fieldType;
-                    continue;
-                  }
-                  const resolved = resolveCallTarget(
-                    { calledName: step.name, callForm: 'member', receiverTypeName: currentType },
-                    file.path,
-                    ctx,
-                  );
-                  if (!resolved) {
-                    // Stdlib passthrough: unwrap(), clone(), etc. preserve the receiver type
-                    if (TYPE_PRESERVING_METHODS.has(step.name)) continue;
-                    currentType = undefined; break;
-                  }
-                  const candidates = ctx.symbols.lookupFuzzy(step.name);
-                  const symDef = candidates.find(c => c.nodeId === resolved.nodeId);
-                  if (!symDef?.returnType) { currentType = undefined; break; }
-                  const retType = extractReturnTypeName(symDef.returnType);
-                  if (!retType) { currentType = undefined; break; }
-                  currentType = retType;
-                }
-              }
-              receiverTypeName = currentType;
+              receiverTypeName = walkMixedChain(extracted.chain, currentType, file.path, ctx);
             }
           }
         }
@@ -388,6 +358,7 @@ interface ResolveResult {
   nodeId: string;
   confidence: number;
   reason: string;
+  returnType?: string;
 }
 
 const CALLABLE_SYMBOL_TYPES = new Set([
@@ -437,6 +408,7 @@ const toResolveResult = (
   nodeId: definition.nodeId,
   confidence: TIER_CONFIDENCE[tier],
   reason: tier === 'same-file' ? 'same-file' : tier === 'import-scoped' ? 'import-resolved' : 'global',
+  returnType: definition.returnType,
 });
 
 
@@ -576,66 +548,6 @@ const lookupReceiverType = (
   return map.get(fileLevelKey);
 };
 
-/**
- * Extract object and property names from a member-access AST node.
- * Handles cross-language AST variations:
- * - TS/JS: member_expression with `object`/`property` fields
- * - C#: member_access_expression with `expression`/`name` fields
- * - Go: selector_expression with `operand`/`field` fields
- * - Rust/C++: field_expression with `value`/`field` fields
- * - Kotlin: navigation_expression with first child as object and navigation_suffix child containing property
- * - Python: attribute with `object`/`attribute` fields
- */
-const extractMemberAccessParts = (
-  node: any,
-): { objectName: string; propertyName: string } | undefined => {
-  // Kotlin/Swift: navigation_expression — object is first child, property is inside navigation_suffix
-  if (node.type === 'navigation_expression') {
-    let objectNode: any = null;
-    let propertyNode: any = null;
-    for (const child of node.children ?? []) {
-      if (child.type === 'navigation_suffix') {
-        // The property identifier is inside the suffix
-        for (const sc of child.children ?? []) {
-          if (sc.isNamed && sc.type !== '.') {
-            propertyNode = sc;
-            break;
-          }
-        }
-      } else if (child.isNamed && !objectNode) {
-        objectNode = child;
-      }
-    }
-    if (objectNode && propertyNode) {
-      return { objectName: objectNode.text, propertyName: propertyNode.text };
-    }
-    return undefined;
-  }
-
-  // Python: attribute node — `object` and `attribute` fields
-  if (node.type === 'attribute') {
-    const objectNode = node.childForFieldName?.('object');
-    const attrNode = node.childForFieldName?.('attribute');
-    if (objectNode && attrNode) {
-      return { objectName: objectNode.text, propertyName: attrNode.text };
-    }
-    return undefined;
-  }
-
-  // General: try standard field names used across grammars
-  const objectNode = node.childForFieldName?.('object')
-    ?? node.childForFieldName?.('value')
-    ?? node.childForFieldName?.('operand')
-    ?? node.childForFieldName?.('expression');
-  const propertyNode = node.childForFieldName?.('property')
-    ?? node.childForFieldName?.('field')
-    ?? node.childForFieldName?.('name');
-  if (objectNode && propertyNode) {
-    return { objectName: objectNode.text, propertyName: propertyNode.text };
-  }
-  return undefined;
-};
-
 const resolveFieldAccessType = (
   receiverName: string,
   fieldName: string,
@@ -657,6 +569,53 @@ const resolveFieldAccessType = (
   // Use stripNullable (not extractReturnTypeName) — field types like List<User>
   // should be preserved as-is, not unwrapped to User. Only strip nullable wrappers.
   return stripNullable(fieldDef.declaredType);
+};
+
+/**
+ * Walk a pre-built mixed chain of field/call steps, threading the current type
+ * through each step and returning the final resolved type.
+ *
+ * Returns `undefined` if any step cannot be resolved (chain is broken).
+ * The caller is responsible for seeding `startType` from its own context
+ * (TypeEnv, constructor bindings, or static-class fallback).
+ */
+const walkMixedChain = (
+  chain: MixedChainStep[],
+  startType: string,
+  filePath: string,
+  ctx: ResolutionContext,
+): string | undefined => {
+  let currentType: string | undefined = startType;
+  for (const step of chain) {
+    if (!currentType) break;
+    if (step.kind === 'field') {
+      currentType = resolveFieldAccessType(currentType, step.name, filePath, ctx);
+    } else {
+      // Ruby/Python: property access is syntactically identical to method calls.
+      // Try field resolution first — if the name is a known property with declaredType,
+      // use that type directly. Otherwise fall back to method call resolution.
+      const fieldType = resolveFieldAccessType(currentType, step.name, filePath, ctx);
+      if (fieldType) {
+        currentType = fieldType;
+        continue;
+      }
+      const resolved = resolveCallTarget(
+        { calledName: step.name, callForm: 'member', receiverTypeName: currentType },
+        filePath,
+        ctx,
+      );
+      if (!resolved) {
+        // Stdlib passthrough: unwrap(), clone(), etc. preserve the receiver type
+        if (TYPE_PRESERVING_METHODS.has(step.name)) continue;
+        currentType = undefined; break;
+      }
+      if (!resolved.returnType) { currentType = undefined; break; }
+      const retType = extractReturnTypeName(resolved.returnType);
+      if (!retType) { currentType = undefined; break; }
+      currentType = retType;
+    }
+  }
+  return currentType;
 };
 
 /**
@@ -743,40 +702,11 @@ export const processCallsFromExtracted = async (
           }
         }
         if (currentType) {
-          for (const step of effectiveCall.receiverMixedChain) {
-            if (!currentType) break;
-            if (step.kind === 'field') {
-              currentType = resolveFieldAccessType(currentType, step.name, effectiveCall.filePath, ctx);
-            } else {
-              // Ruby/Python: property access is syntactically identical to method calls.
-              // Try field resolution first — if the name is a known property with declaredType,
-              // use that type directly. Otherwise fall back to method call resolution.
-              const fieldType = resolveFieldAccessType(currentType, step.name, effectiveCall.filePath, ctx);
-              if (fieldType) {
-                currentType = fieldType;
-                continue;
-              }
-              // step.kind === 'call': resolve the method and get its return type
-              const resolved = resolveCallTarget(
-                { calledName: step.name, callForm: 'member', receiverTypeName: currentType },
-                effectiveCall.filePath,
-                ctx,
-              );
-              if (!resolved) {
-                // Stdlib passthrough: unwrap(), clone(), etc. preserve the receiver type
-                if (TYPE_PRESERVING_METHODS.has(step.name)) continue;
-                currentType = undefined; break;
-              }
-              const candidates = ctx.symbols.lookupFuzzy(step.name);
-              const symDef = candidates.find(c => c.nodeId === resolved.nodeId);
-              if (!symDef?.returnType) { currentType = undefined; break; }
-              const returnTypeName = extractReturnTypeName(symDef.returnType);
-              if (!returnTypeName) { currentType = undefined; break; }
-              currentType = returnTypeName;
-            }
-          }
-          if (currentType) {
-            effectiveCall = { ...effectiveCall, receiverTypeName: currentType };
+          const walkedType = walkMixedChain(
+            effectiveCall.receiverMixedChain, currentType, effectiveCall.filePath, ctx,
+          );
+          if (walkedType) {
+            effectiveCall = { ...effectiveCall, receiverTypeName: walkedType };
           }
         }
       }
