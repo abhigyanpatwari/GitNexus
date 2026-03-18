@@ -106,6 +106,59 @@ withTestLbugDB('local-backend-calltool', (handle) => {
     });
   });
 
+  describe('impact tool relationTypes filtering', () => {
+    let backend: LocalBackend;
+
+    beforeAll(async () => {
+      const ext = handle as typeof handle & { _backend?: LocalBackend };
+      if (!ext._backend) {
+        throw new Error('LocalBackend not initialized — afterSetup did not attach _backend to handle');
+      }
+      backend = ext._backend;
+    });
+
+    it('filters by HAS_METHOD only', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'AuthService',
+        direction: 'downstream',
+        relationTypes: ['HAS_METHOD'],
+      });
+      expect(result).not.toHaveProperty('error');
+      expect(result.impactedCount).toBeGreaterThanOrEqual(1);
+      const d1 = result.byDepth[1] || result.byDepth['1'] || [];
+      const names = d1.map((d: any) => d.name);
+      expect(names).toContain('authenticate');
+      // Should NOT include CALLS-reachable symbols like validate/hash
+      expect(names).not.toContain('validate');
+      expect(names).not.toContain('hash');
+    });
+
+    it('filters by OVERRIDES only', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'authenticate',
+        direction: 'downstream',
+        relationTypes: ['OVERRIDES'],
+      });
+      expect(result).not.toHaveProperty('error');
+      // AuthService.authenticate overrides BaseService.authenticate
+      expect(result.impactedCount).toBeGreaterThanOrEqual(1);
+      const d1 = result.byDepth[1] || result.byDepth['1'] || [];
+      const names = d1.map((d: any) => d.name);
+      expect(names).toContain('authenticate');
+    });
+
+    it('does not return HAS_METHOD results when filtering by CALLS only', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'AuthService',
+        direction: 'downstream',
+        relationTypes: ['CALLS'],
+      });
+      expect(result).not.toHaveProperty('error');
+      // AuthService has no outgoing CALLS edges, only HAS_METHOD
+      expect(result.impactedCount).toBe(0);
+    });
+  });
+
   describe('tool parameter edge cases', () => {
     let backend: LocalBackend;
 

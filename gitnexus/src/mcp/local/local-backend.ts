@@ -47,7 +47,7 @@ export const VALID_NODE_LABELS = new Set([
 ]);
 
 /** Valid relation types for impact analysis filtering */
-export const VALID_RELATION_TYPES = new Set(['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS']);
+export const VALID_RELATION_TYPES = new Set(['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'OVERRIDES']);
 
 /** Regex to detect write operations in user-supplied Cypher queries */
 export const CYPHER_WRITE_RE = /\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH)\b/i;
