@@ -1412,27 +1412,29 @@ export class LocalBackend {
       const d1Ids = (grouped[1] || []).map((i: any) => `'${i.id.replace(/'/g, "''")}'`).join(', ');
 
       // Affected processes: which execution flows are broken and at which step
-      const [processRows, moduleRows, directModuleRows] = await Promise.all([
-        executeQuery(repo.id, `
-          MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-          WHERE s.id IN [${allIds}]
-          RETURN p.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits, MIN(r.step) AS minStep, p.stepCount AS stepCount
-          ORDER BY hits DESC
-          LIMIT 20
-        `).catch(() => []),
-        executeQuery(repo.id, `
-          MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-          WHERE s.id IN [${allIds}]
-          RETURN c.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits
-          ORDER BY hits DESC
-          LIMIT 20
-        `).catch(() => []),
-        d1Ids ? executeQuery(repo.id, `
-          MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-          WHERE s.id IN [${d1Ids}]
-          RETURN DISTINCT c.heuristicLabel AS name
-        `).catch(() => []) : Promise.resolve([]),
-      ]);
+      // Run enrichment queries sequentially to avoid concurrent query crashes (#316)
+      // that can cause SIGSEGV when the connection pool is under pressure.
+      const processRows = await executeQuery(repo.id, `
+        MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+        WHERE s.id IN [${allIds}]
+        RETURN p.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits, MIN(r.step) AS minStep, p.stepCount AS stepCount
+        ORDER BY hits DESC
+        LIMIT 20
+      `).catch(() => []);
+
+      const moduleRows = await executeQuery(repo.id, `
+        MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+        WHERE s.id IN [${allIds}]
+        RETURN c.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits
+        ORDER BY hits DESC
+        LIMIT 20
+      `).catch(() => []);
+
+      const directModuleRows = d1Ids ? await executeQuery(repo.id, `
+        MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+        WHERE s.id IN [${d1Ids}]
+        RETURN DISTINCT c.heuristicLabel AS name
+      `).catch(() => []) : [];
 
       affectedProcesses = processRows.map((r: any) => ({
         name: r.name || r[0],
