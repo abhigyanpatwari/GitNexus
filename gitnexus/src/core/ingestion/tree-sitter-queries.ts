@@ -66,6 +66,15 @@ export const TYPESCRIPT_QUERIES = `
 (public_field_definition
   name: (property_identifier) @name) @definition.property
 
+; Private class fields: #address: Address
+(public_field_definition
+  name: (private_property_identifier) @name) @definition.property
+
+; Constructor parameter properties: constructor(public address: Address)
+(required_parameter
+  (accessibility_modifier)
+  pattern: (identifier) @name) @definition.property
+
 ; Heritage queries - class extends
 (class_declaration
   name: (type_identifier) @heritage.class
@@ -132,6 +141,10 @@ export const JAVASCRIPT_QUERIES = `
 (new_expression
   constructor: (identifier) @call.name) @call
 
+; Class fields — field_definition captures JS class fields (class User { address = ... })
+(field_definition
+  property: (property_identifier) @name) @definition.property
+
 ; Heritage queries - class extends (JavaScript uses different AST than TypeScript)
 ; In tree-sitter-javascript, class_heritage directly contains the parent identifier
 (class_declaration
@@ -163,6 +176,14 @@ export const PYTHON_QUERIES = `
 (call
   function: (attribute
     attribute: (identifier) @call.name)) @call
+
+; Class attribute type annotations — PEP 526: address: Address or address: Address = Address()
+; Both bare annotations (address: Address) and annotated assignments (name: str = "test")
+; are parsed as (assignment left: ... type: ...) in tree-sitter-python.
+(expression_statement
+  (assignment
+    left: (identifier) @name
+    type: (type))) @definition.property
 
 ; Heritage queries - Python class inheritance
 (class_definition
@@ -313,6 +334,11 @@ export const CPP_QUERIES = `
 (declaration declarator: (function_declarator declarator: (identifier) @name)) @definition.function
 (declaration declarator: (pointer_declarator declarator: (function_declarator declarator: (identifier) @name))) @definition.function
 
+; Class/struct data member fields (Address address; int count;)
+; Uses field_identifier to exclude method declarations (which use function_declarator)
+(field_declaration
+  declarator: (field_identifier) @name) @definition.property
+
 ; Inline class method declarations (inside class body, no body: void Foo();)
 (field_declaration declarator: (function_declarator declarator: (identifier) @name)) @definition.method
 
@@ -427,6 +453,11 @@ export const RUST_QUERIES = `
 
 ; Struct literal construction: User { name: value }
 (struct_expression name: (type_identifier) @call.name) @call
+
+; Struct fields — named field declarations inside struct bodies
+(field_declaration_list
+  (field_declaration
+    name: (field_identifier) @name) @definition.property)
 
 ; Heritage (trait implementation) — all combinations of concrete/generic trait × concrete/generic type
 (impl_item trait: (type_identifier) @heritage.trait type: (type_identifier) @heritage.class) @heritage

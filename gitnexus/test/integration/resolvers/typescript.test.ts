@@ -1698,3 +1698,205 @@ describe('TypeScript for-of call_expression iterable resolution (Phase 7.3)', ()
     expect(wrongSave).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 8: Field/property type resolution (1-level)
+// ---------------------------------------------------------------------------
+
+describe('Field type resolution (TypeScript)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'field-types'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, Config, User', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'Config', 'User']);
+  });
+
+  it('detects Property nodes for typed fields', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('address');
+    expect(properties).toContain('name');
+    expect(properties).toContain('city');
+  });
+
+  it('emits HAS_PROPERTY edges linking properties to classes', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(propEdges.length).toBeGreaterThanOrEqual(3);
+    expect(edgeSet(propEdges)).toContain('User → address');
+    expect(edgeSet(propEdges)).toContain('User → name');
+    expect(edgeSet(propEdges)).toContain('Address → city');
+  });
+
+  it('resolves user.address.save() → Address#save via field type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'save');
+    const addressSave = saveCalls.find(e => e.targetFilePath.includes('models'));
+    expect(addressSave).toBeDefined();
+    expect(addressSave!.source).toBe('processUser');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8: Field type disambiguation — both User and Address have save()
+// ---------------------------------------------------------------------------
+
+describe('Field type disambiguation (TypeScript)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ts-field-type-disambig'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects both User#save and Address#save', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    const saveMethods = methods.filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves user.address.save() → Address#save (not User#save)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(
+      e => e.target === 'save' && e.source === 'processUser',
+    );
+    expect(saveCalls.length).toBe(1);
+    expect(saveCalls[0].targetFilePath).toContain('address');
+    expect(saveCalls[0].targetFilePath).not.toContain('user');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8: Parameter properties and #private fields
+// ---------------------------------------------------------------------------
+
+describe('Field type resolution (TS parameter properties)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ts-param-property-fields'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, User', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'User']);
+  });
+
+  it('captures constructor parameter properties as Property nodes', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('name');
+    expect(properties).toContain('address');
+  });
+
+  it('captures #private fields as Property nodes', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('#secret');
+  });
+
+  it('emits HAS_PROPERTY edges for parameter properties', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(edgeSet(propEdges)).toContain('User → name');
+    expect(edgeSet(propEdges)).toContain('User → address');
+  });
+
+  it('resolves user.address.save() via parameter property type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'save' && e.source === 'processUser');
+    expect(saveCalls.length).toBe(1);
+    expect(saveCalls[0].targetFilePath).toContain('models');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8A: Deep field chain resolution (3-level: user.address.city.getName())
+// ---------------------------------------------------------------------------
+
+describe('Deep field chain resolution (TypeScript)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ts-deep-field-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, City, User', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'City', 'User']);
+  });
+
+  it('detects Property nodes for all typed fields', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('address');
+    expect(properties).toContain('city');
+    expect(properties).toContain('zipCode');
+  });
+
+  it('emits HAS_PROPERTY edges for nested type chain', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(edgeSet(propEdges)).toContain('User → address');
+    expect(edgeSet(propEdges)).toContain('Address → city');
+    expect(edgeSet(propEdges)).toContain('City → zipCode');
+  });
+
+  it('resolves 2-level chain: user.address.save() → Address#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'save' && e.source === 'processUser');
+    expect(saveCalls.length).toBe(1);
+    expect(saveCalls[0].targetFilePath).toContain('models');
+  });
+
+  it('resolves 3-level chain: user.address.city.getName() → City#getName', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCalls = calls.filter(e => e.target === 'getName' && e.source === 'processUser');
+    expect(getNameCalls.length).toBe(1);
+    expect(getNameCalls[0].targetFilePath).toContain('models');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mixed chain resolution (field ↔ call interleaved)
+// ---------------------------------------------------------------------------
+
+describe('Mixed field+call chain resolution (TypeScript)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ts-mixed-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, City, User, UserService', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'City', 'User', 'UserService']);
+  });
+
+  it('detects Property node for Address.city field', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('city');
+    expect(properties).toContain('address');
+  });
+
+  it('resolves call→field chain: svc.getUser().address.save() → Address#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'save' && e.source === 'processWithService');
+    expect(saveCalls.length).toBe(1);
+    expect(saveCalls[0].targetFilePath).toContain('models');
+  });
+
+  it('resolves field→call chain: user.getAddress().city.getName() → City#getName', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCalls = calls.filter(e => e.target === 'getName' && e.source === 'processWithUser');
+    expect(getNameCalls.length).toBe(1);
+    expect(getNameCalls[0].targetFilePath).toContain('models');
+  });
+});

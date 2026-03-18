@@ -846,3 +846,46 @@ describe('Ruby for-in loop resolution', () => {
     expect(wrongSave).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 8: Field/property type resolution via YARD @return annotations
+// ---------------------------------------------------------------------------
+
+describe('Field type resolution (Ruby)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-field-types'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, User', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'User']);
+  });
+
+  it('detects Property nodes for attr_accessor fields', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('address');
+    expect(properties).toContain('name');
+    expect(properties).toContain('city');
+  });
+
+  it('emits HAS_PROPERTY edges linking properties to classes', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(propEdges.length).toBeGreaterThanOrEqual(3);
+    expect(edgeSet(propEdges)).toContain('User → address');
+    expect(edgeSet(propEdges)).toContain('User → name');
+    expect(edgeSet(propEdges)).toContain('Address → city');
+  });
+
+  it('resolves user.address.save → Address#save via YARD @return [Address]', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'save');
+    const addressSave = saveCalls.find(
+      e => e.source === 'process_user' && e.targetFilePath.includes('models'),
+    );
+    expect(addressSave).toBeDefined();
+  });
+});

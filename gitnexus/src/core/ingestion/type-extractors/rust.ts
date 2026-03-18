@@ -95,7 +95,7 @@ const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
 };
 
 /** Rust: let x = User::new(), let x = User::default(), or let x = User { ... } */
-const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, _classNames: ClassNameLookup): void => {
+const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ClassNameLookup): void => {
   // Skip if there's an explicit type annotation — Tier 0 already handled it
   if (node.childForFieldName('type') !== null) return;
   const pattern = node.childForFieldName('pattern');
@@ -113,6 +113,13 @@ const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<str
     const typeName = rawType === 'Self' ? findEnclosingImplType(node) : rawType;
     const varName = extractVarName(pattern);
     if (varName && typeName) env.set(varName, typeName);
+    return;
+  }
+
+  // Unit struct instantiation: let svc = UserService; (bare identifier, no braces or call)
+  if (value.type === 'identifier' && classNames.has(value.text)) {
+    const varName = extractVarName(pattern);
+    if (varName) env.set(varName, value.text);
     return;
   }
 

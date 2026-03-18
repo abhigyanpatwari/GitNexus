@@ -1068,3 +1068,93 @@ describe('Java foreach call_expression iterable resolution (Phase 7.3)', () => {
     expect(wrongSave).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 8: Field/property type resolution (1-level)
+// ---------------------------------------------------------------------------
+
+describe('Field type resolution (Java)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-field-types'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, App, User', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'App', 'User']);
+  });
+
+  it('detects Property nodes for Java fields', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('address');
+    expect(properties).toContain('name');
+    expect(properties).toContain('city');
+  });
+
+  it('emits HAS_PROPERTY edges linking properties to classes', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(propEdges.length).toBeGreaterThanOrEqual(3);
+    expect(edgeSet(propEdges)).toContain('User → address');
+    expect(edgeSet(propEdges)).toContain('User → name');
+    expect(edgeSet(propEdges)).toContain('Address → city');
+  });
+
+  it('resolves user.address.save() → Address#save via field type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'save');
+    const addressSave = saveCalls.find(
+      e => e.source === 'processUser' && e.targetFilePath.includes('Address'),
+    );
+    expect(addressSave).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8A: Deep field chain resolution (3-level)
+// ---------------------------------------------------------------------------
+
+describe('Deep field chain resolution (Java)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-deep-field-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, App, City, User', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'App', 'City', 'User']);
+  });
+
+  it('detects Property nodes for Java fields', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('address');
+    expect(properties).toContain('city');
+    expect(properties).toContain('zipCode');
+  });
+
+  it('emits HAS_PROPERTY edges for nested type chain', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(edgeSet(propEdges)).toContain('User → address');
+    expect(edgeSet(propEdges)).toContain('Address → city');
+    expect(edgeSet(propEdges)).toContain('City → zipCode');
+  });
+
+  it('resolves 2-level chain: user.address.save() → Address#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'save' && e.source === 'processUser');
+    const addressSave = saveCalls.find(e => e.targetFilePath.includes('Address'));
+    expect(addressSave).toBeDefined();
+  });
+
+  it('resolves 3-level chain: user.address.city.getName() → City#getName', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCalls = calls.filter(e => e.target === 'getName' && e.source === 'processUser');
+    const cityGetName = getNameCalls.find(e => e.targetFilePath.includes('City'));
+    expect(cityGetName).toBeDefined();
+  });
+});

@@ -832,10 +832,25 @@ describe('Rust nullable receiver resolution (Option<T>)', () => {
     expect(saveFns.length).toBe(2);
   });
 
-  // Known limitation: user.unwrap().save() chains two method calls. unwrap()
-  // returns User but TypeEnv doesn't track intermediate return values in chains.
-  // Disambiguating through .unwrap() requires chained return type inference (Phase 5).
-  it.todo('resolves user.unwrap().save() to User.save (requires chained call inference)');
+  it('resolves user.unwrap().save() to User#save via Option<User> unwrapping', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'process_entities' &&
+      c.targetFilePath?.includes('user'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves repo.unwrap().save() to Repo#save via Option<Repo> unwrapping', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'process_entities' &&
+      c.targetFilePath?.includes('repo'),
+    );
+    expect(repoSave).toBeDefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1277,5 +1292,36 @@ describe('Rust for-loop direct call_expression iterable resolution (Phase 7.3)',
       c.target === 'save' && c.source === 'process_repos' && c.targetFilePath?.includes('user.rs'),
     );
     expect(wrongSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8: Field/property type resolution — struct field capture
+// ---------------------------------------------------------------------------
+
+describe('Field type resolution (Rust)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-field-types'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects structs: Address, User', () => {
+    expect(getNodesByLabel(result, 'Struct')).toEqual(['Address', 'User']);
+  });
+
+  it('detects Property nodes for Rust struct fields', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('address');
+    expect(properties).toContain('name');
+    expect(properties).toContain('city');
+  });
+
+  it('emits HAS_PROPERTY edges linking fields to structs', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(propEdges.length).toBeGreaterThanOrEqual(2);
   });
 });

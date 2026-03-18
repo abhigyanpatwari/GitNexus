@@ -122,7 +122,6 @@ It does not:
 - perform full semantic type checking
 - run fixpoint inference
 - propagate inferred bindings across files as ordinary environment entries
-- model deep field/property chains such as `user.address.city`
 - guarantee resolution for every ambiguous construct
 
 ---
@@ -375,22 +374,28 @@ So return-type-aware receiver inference already exists in a constrained downstre
 | For-loop element types | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes |
 | Pattern binding | Yes | Yes | Yes | Yes | No | Yes | Yes | No | No | No | No |
 | Assignment chains | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes |
+| Field/property type resolution | Yes | Yes | Yes | Yes | Yes | Yes | No* | Yes | YARD | No | Yes |
 | Comment-based types | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No |
 | Return type extraction | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No |
+
+\* Python has a type annotation query for fields but no `declaredType` extraction for the `self.x` pattern yet.
 
 ---
 
 ## Current Strengths
 
-The current system already provides strong value for call resolution because it combines:
+The current system provides strong value for call resolution because it combines:
 
-- explicit annotation extraction
-- generic-aware loop element typing
-- initializer-based inference
+- explicit annotation extraction across 13 languages
+- generic-aware loop element typing (including call-expression iterables)
+- initializer-based inference with SymbolTable validation
 - selected pattern-based narrowing
 - scope-aware lookups
-- comment-based fallbacks for dynamic ecosystems
+- comment-based fallbacks for dynamic ecosystems (JSDoc, PHPDoc, YARD)
 - constrained return-type-aware receiver inference in call processing
+- deep field/property chains up to 3 levels across 10 languages
+- mixed field+method chain resolution (e.g. `svc.getUser().address.save()`)
+- type-preserving stdlib passthrough for `unwrap()`, `clone()`, `expect()`, etc.
 
 This is enough to materially improve call-edge precision even without implementing a full static type system.
 
@@ -400,7 +405,6 @@ This is enough to materially improve call-edge precision even without implementi
 
 Important gaps still remain:
 
-- no field / property type map for deep chains such as `user.address.city`
 - no general cross-file propagation of inferred bindings
 - no fixpoint inference
 - limited branch-sensitive narrowing outside selected pattern constructs

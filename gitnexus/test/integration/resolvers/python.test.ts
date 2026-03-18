@@ -1224,3 +1224,37 @@ describe('Python for-loop call_expression iterable resolution (Phase 7.3)', () =
     expect(saveCalls.length).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 8: Field/property type resolution — annotated attribute capture
+// ---------------------------------------------------------------------------
+
+describe('Field type resolution (Python)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-field-types'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, User', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'User']);
+  });
+
+  it('detects Property nodes for Python annotated attributes', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('address');
+    expect(properties).toContain('name');
+    expect(properties).toContain('city');
+  });
+
+  it('emits HAS_PROPERTY edges linking attributes to classes', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(propEdges.length).toBeGreaterThanOrEqual(3);
+    expect(edgeSet(propEdges)).toContain('User → address');
+    expect(edgeSet(propEdges)).toContain('User → name');
+    expect(edgeSet(propEdges)).toContain('Address → city');
+  });
+});

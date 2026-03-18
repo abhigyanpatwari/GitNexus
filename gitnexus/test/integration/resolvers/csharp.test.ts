@@ -1193,3 +1193,93 @@ describe('C# nested member access foreach (this.data.Values)', () => {
     expect(wrongSave).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 8: Field/property type resolution (1-level)
+// ---------------------------------------------------------------------------
+
+describe('Field type resolution (C#)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-field-types'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, Service, User', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'Service', 'User']);
+  });
+
+  it('detects Property nodes for C# properties', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('Address');
+    expect(properties).toContain('Name');
+    expect(properties).toContain('City');
+  });
+
+  it('emits HAS_PROPERTY edges linking properties to classes', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(propEdges.length).toBeGreaterThanOrEqual(3);
+    expect(edgeSet(propEdges)).toContain('User → Address');
+    expect(edgeSet(propEdges)).toContain('User → Name');
+    expect(edgeSet(propEdges)).toContain('Address → City');
+  });
+
+  it('resolves user.Address.Save() → Address#Save via field type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'Save');
+    const addressSave = saveCalls.find(
+      e => e.source === 'ProcessUser' && e.targetFilePath.includes('Models'),
+    );
+    expect(addressSave).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8A: Deep field chain resolution (3-level)
+// ---------------------------------------------------------------------------
+
+describe('Deep field chain resolution (C#)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-deep-field-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, City, Service, User', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'City', 'Service', 'User']);
+  });
+
+  it('detects Property nodes for C# properties', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('Address');
+    expect(properties).toContain('City');
+    expect(properties).toContain('ZipCode');
+  });
+
+  it('emits HAS_PROPERTY edges for nested type chain', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(edgeSet(propEdges)).toContain('User → Address');
+    expect(edgeSet(propEdges)).toContain('Address → City');
+    expect(edgeSet(propEdges)).toContain('City → ZipCode');
+  });
+
+  it('resolves 2-level chain: user.Address.Save() → Address#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'Save' && e.source === 'ProcessUser');
+    const addressSave = saveCalls.find(e => e.targetFilePath.includes('Models'));
+    expect(addressSave).toBeDefined();
+  });
+
+  it('resolves 3-level chain: user.Address.City.GetName() → City#GetName', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCalls = calls.filter(e => e.target === 'GetName' && e.source === 'ProcessUser');
+    const cityGetName = getNameCalls.find(e => e.targetFilePath.includes('Models'));
+    expect(cityGetName).toBeDefined();
+  });
+});

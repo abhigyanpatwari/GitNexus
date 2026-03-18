@@ -20,15 +20,24 @@ import {
   extractReceiverNode,
   findEnclosingClassId,
   CALL_EXPRESSION_TYPES,
-  MAX_CHAIN_DEPTH,
-  extractCallChain,
+  extractMixedChain,
 } from './utils.js';
 import { buildTypeEnv } from './type-env.js';
 import type { ConstructorBinding } from './type-env.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type { ExtractedCall, ExtractedHeritage, ExtractedRoute, FileConstructorBindings } from './workers/parse-worker.js';
 import { callRouters } from './call-routing.js';
-import { extractReturnTypeName } from './type-extractors/shared.js';
+import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
+
+// Stdlib methods that preserve the receiver's type identity. When TypeEnv already
+// strips nullable wrappers (Option<User> → User), these chain steps are no-ops
+// for type resolution — the current type passes through unchanged.
+const TYPE_PRESERVING_METHODS = new Set([
+  'unwrap', 'expect', 'unwrap_or', 'unwrap_or_default', 'unwrap_or_else',  // Rust Option/Result
+  'clone', 'to_owned', 'as_ref', 'as_mut', 'borrow', 'borrow_mut',        // Rust clone/borrow
+  'get',                                                                     // Kotlin/Java Optional.get()
+  'orElseThrow',                                                             // Java Optional
+]);
 
 /**
  * Walk up the AST from a node to find the enclosing function/method.
@@ -271,52 +280,56 @@ export const processCalls = async (
           receiverTypeName = receiverName;
         }
       }
-      // Fall back to field-access resolution when the receiver is a member_expression
-      // (e.g. user.address.save() — the receiver of save() is user.address, a field access).
+      // Fall back to mixed chain resolution when the receiver is a complex expression
+      // (field chain, call chain, or interleaved — e.g. user.address.city.save() or
+      // svc.getUser().address.save()). Handles all cases with a single unified walk.
       if (callForm === 'member' && !receiverTypeName && !receiverName) {
         const receiverNode = extractReceiverNode(nameNode);
-        if (receiverNode && !CALL_EXPRESSION_TYPES.has(receiverNode.type)) {
-          const parts = extractMemberAccessParts(receiverNode);
-          if (parts) {
-            // Resolve the object's type from TypeEnv
-            let objectType = typeEnv ? typeEnv.lookup(parts.objectName, callNode) : undefined;
-            if (!objectType && verifiedReceivers.size > 0) {
-              const enclosingFunc = findEnclosingFunction(callNode, file.path, ctx);
-              const funcName = enclosingFunc ? extractFuncNameFromSourceId(enclosingFunc) : '';
-              objectType = lookupReceiverType(verifiedReceivers, funcName, parts.objectName);
-            }
-            if (objectType) {
-              receiverTypeName = resolveFieldAccessType(objectType, parts.propertyName, file.path, ctx);
-            }
-          }
-        }
-      }
-      // Fall back to chained call resolution when the receiver is a call expression
-      // (e.g. svc.getUser().save() — receiver of save() is getUser(), not a simple identifier).
-      if (callForm === 'member' && !receiverTypeName && !receiverName) {
-        const receiverNode = extractReceiverNode(nameNode);
-        if (receiverNode && CALL_EXPRESSION_TYPES.has(receiverNode.type)) {
-          const extracted = extractCallChain(receiverNode);
-          if (extracted) {
-            // Resolve the base receiver type if possible
-            let baseType = extracted.baseReceiverName && typeEnv
+        if (receiverNode) {
+          const extracted = extractMixedChain(receiverNode);
+          if (extracted && extracted.chain.length > 0) {
+            let currentType = extracted.baseReceiverName && typeEnv
               ? typeEnv.lookup(extracted.baseReceiverName, callNode)
               : undefined;
-            if (!baseType && extracted.baseReceiverName && verifiedReceivers.size > 0) {
+            if (!currentType && extracted.baseReceiverName && verifiedReceivers.size > 0) {
               const enclosingFunc = findEnclosingFunction(callNode, file.path, ctx);
               const funcName = enclosingFunc ? extractFuncNameFromSourceId(enclosingFunc) : '';
-              baseType = lookupReceiverType(verifiedReceivers, funcName, extracted.baseReceiverName);
+              currentType = lookupReceiverType(verifiedReceivers, funcName, extracted.baseReceiverName);
             }
-            // Class-as-receiver for chain base (e.g. UserService.find_user().save())
-            if (!baseType && extracted.baseReceiverName) {
+            if (!currentType && extracted.baseReceiverName) {
               const cr = ctx.resolve(extracted.baseReceiverName, file.path);
               if (cr?.candidates.some(d =>
                 d.type === 'Class' || d.type === 'Interface' || d.type === 'Struct' || d.type === 'Enum',
               )) {
-                baseType = extracted.baseReceiverName;
+                currentType = extracted.baseReceiverName;
               }
             }
-            receiverTypeName = resolveChainedReceiver(extracted.chain, baseType, file.path, ctx);
+            if (currentType) {
+              for (const step of extracted.chain) {
+                if (!currentType) break;
+                if (step.kind === 'field') {
+                  currentType = resolveFieldAccessType(currentType, step.name, file.path, ctx);
+                } else {
+                  const resolved = resolveCallTarget(
+                    { calledName: step.name, callForm: 'member', receiverTypeName: currentType },
+                    file.path,
+                    ctx,
+                  );
+                  if (!resolved) {
+                    // Stdlib passthrough: unwrap(), clone(), etc. preserve the receiver type
+                    if (TYPE_PRESERVING_METHODS.has(step.name)) continue;
+                    currentType = undefined; break;
+                  }
+                  const candidates = ctx.symbols.lookupFuzzy(step.name);
+                  const symDef = candidates.find(c => c.nodeId === resolved.nodeId);
+                  if (!symDef?.returnType) { currentType = undefined; break; }
+                  const retType = extractReturnTypeName(symDef.returnType);
+                  if (!retType) { currentType = undefined; break; }
+                  currentType = retType;
+                }
+              }
+              receiverTypeName = currentType;
+            }
           }
         }
       }
@@ -416,46 +429,6 @@ const toResolveResult = (
   reason: tier === 'same-file' ? 'same-file' : tier === 'import-scoped' ? 'import-resolved' : 'global',
 });
 
-/**
- * Resolve a chain of intermediate method calls to find the receiver type for a
- * final member call.  Called when the receiver of a call is itself a call
- * expression (e.g. `svc.getUser().save()`).
- *
- * @param chainNames  Ordered list of method names from outermost to innermost
- *                    intermediate call (e.g. ['getUser'] for `svc.getUser().save()`).
- * @param baseReceiverTypeName  The already-resolved type of the base receiver
- *                              (e.g. 'UserService' for `svc`), or undefined.
- * @param currentFile  The file path for resolution context.
- * @param ctx  The resolution context for symbol lookup.
- * @returns The type name of the final intermediate call's return type, or undefined
- *          if resolution fails at any step.
- */
-function resolveChainedReceiver(
-  chainNames: string[],
-  baseReceiverTypeName: string | undefined,
-  currentFile: string,
-  ctx: ResolutionContext,
-): string | undefined {
-  let currentType = baseReceiverTypeName;
-  for (const name of chainNames) {
-    const resolved = resolveCallTarget(
-      { calledName: name, callForm: 'member', receiverTypeName: currentType },
-      currentFile,
-      ctx,
-    );
-    if (!resolved) return undefined;
-
-    const candidates = ctx.symbols.lookupFuzzy(name);
-    const symDef = candidates.find(c => c.nodeId === resolved.nodeId);
-    if (!symDef?.returnType) return undefined;
-
-    const returnTypeName = extractReturnTypeName(symDef.returnType);
-    if (!returnTypeName) return undefined;
-
-    currentType = returnTypeName;
-  }
-  return currentType;
-}
 
 /**
  * Resolve a function call to its target node ID using priority strategy:
@@ -594,16 +567,6 @@ const lookupReceiverType = (
 };
 
 /**
- * Resolve a property/field access on a typed receiver to determine the field's declared type.
- * Used when a call's receiver is a member_expression (e.g. `user.address.save()` — the receiver
- * of `save()` is `user.address` which is a field access, not a method call).
- *
- * Walks up to MAX_CHAIN_DEPTH levels of nested member_expression nodes to handle chains
- * like `user.address.city.getName()`.
- *
- * @returns The resolved type of the deepest field access, or undefined if resolution fails.
- */
-/**
  * Extract object and property names from a member-access AST node.
  * Handles cross-language AST variations:
  * - TS/JS: member_expression with `object`/`property` fields
@@ -673,14 +636,17 @@ const resolveFieldAccessType = (
   const typeResolved = ctx.resolve(receiverName, filePath);
   if (!typeResolved) return undefined;
   const classDef = typeResolved.candidates.find(
-    d => d.type === 'Class' || d.type === 'Struct' || d.type === 'Interface',
+    d => d.type === 'Class' || d.type === 'Struct' || d.type === 'Interface'
+      || d.type === 'Enum' || d.type === 'Record' || d.type === 'Impl',
   );
   if (!classDef) return undefined;
 
   const fieldDef = ctx.symbols.lookupFieldByOwner(classDef.nodeId, fieldName);
   if (!fieldDef?.declaredType) return undefined;
 
-  return extractReturnTypeName(fieldDef.declaredType);
+  // Use stripNullable (not extractReturnTypeName) — field types like List<User>
+  // should be preserved as-is, not unwrapped to User. Only strip nullable wrappers.
+  return stripNullable(fieldDef.declaredType);
 };
 
 /**
@@ -748,55 +714,52 @@ export const processCallsFromExtracted = async (
         }
       }
 
-      // Step 1c: field-access resolution (e.g. user.address.save())
-      // When the parse-worker captured a receiverFieldAccess, resolve the field's declared type.
-      if (!effectiveCall.receiverTypeName && effectiveCall.receiverFieldAccess) {
-        const { objectName, fieldName } = effectiveCall.receiverFieldAccess;
-        // Resolve the object's type from constructor bindings or class-as-receiver
-        let objectType: string | undefined;
-        if (receiverMap) {
+      // Step 1c: mixed chain resolution (field, call, or interleaved — e.g. svc.getUser().address.save()).
+      // Runs whenever receiverMixedChain is present. Steps 1/1b may have resolved the base receiver
+      // type already; that type is used as the chain's starting point.
+      if (effectiveCall.receiverMixedChain?.length) {
+        // Use the already-resolved base type (from Steps 1/1b) or look it up now.
+        let currentType: string | undefined = effectiveCall.receiverTypeName;
+        if (!currentType && effectiveCall.receiverName && receiverMap) {
           const callFuncName = extractFuncNameFromSourceId(effectiveCall.sourceId);
-          objectType = lookupReceiverType(receiverMap, callFuncName, objectName);
+          currentType = lookupReceiverType(receiverMap, callFuncName, effectiveCall.receiverName);
         }
-        if (!objectType) {
-          const typeResolved = ctx.resolve(objectName, effectiveCall.filePath);
+        if (!currentType && effectiveCall.receiverName) {
+          const typeResolved = ctx.resolve(effectiveCall.receiverName, effectiveCall.filePath);
           if (typeResolved?.candidates.some(d =>
             d.type === 'Class' || d.type === 'Interface' || d.type === 'Struct' || d.type === 'Enum',
           )) {
-            objectType = objectName;
+            currentType = effectiveCall.receiverName;
           }
         }
-        if (objectType) {
-          const fieldType = resolveFieldAccessType(objectType, fieldName, effectiveCall.filePath, ctx);
-          if (fieldType) {
-            effectiveCall = { ...effectiveCall, receiverTypeName: fieldType };
+        if (currentType) {
+          for (const step of effectiveCall.receiverMixedChain) {
+            if (!currentType) break;
+            if (step.kind === 'field') {
+              currentType = resolveFieldAccessType(currentType, step.name, effectiveCall.filePath, ctx);
+            } else {
+              // step.kind === 'call': resolve the method and get its return type
+              const resolved = resolveCallTarget(
+                { calledName: step.name, callForm: 'member', receiverTypeName: currentType },
+                effectiveCall.filePath,
+                ctx,
+              );
+              if (!resolved) {
+                // Stdlib passthrough: unwrap(), clone(), etc. preserve the receiver type
+                if (TYPE_PRESERVING_METHODS.has(step.name)) continue;
+                currentType = undefined; break;
+              }
+              const candidates = ctx.symbols.lookupFuzzy(step.name);
+              const symDef = candidates.find(c => c.nodeId === resolved.nodeId);
+              if (!symDef?.returnType) { currentType = undefined; break; }
+              const returnTypeName = extractReturnTypeName(symDef.returnType);
+              if (!returnTypeName) { currentType = undefined; break; }
+              currentType = returnTypeName;
+            }
           }
-        }
-      }
-
-      // Step 2: if the call has a receiver call chain (e.g. svc.getUser().save()),
-      // resolve the chain to determine the final receiver type.
-      // This runs whenever receiverCallChain is present — even when Step 1 set a
-      // receiverTypeName, that type is the BASE receiver (e.g. UserService for svc),
-      // and the chain must be walked to produce the FINAL receiver (e.g. User from
-      // getUser() : User).
-      if (effectiveCall.receiverCallChain?.length) {
-        // Step 1 may have resolved the base receiver type (e.g. svc → UserService).
-        // Use it as the starting point for chain resolution.
-        let baseType = effectiveCall.receiverTypeName;
-        // If Step 1 didn't resolve it, try the receiver map directly.
-        if (!baseType && effectiveCall.receiverName && receiverMap) {
-          const callFuncName = extractFuncNameFromSourceId(effectiveCall.sourceId);
-          baseType = lookupReceiverType(receiverMap, callFuncName, effectiveCall.receiverName);
-        }
-        const chainedType = resolveChainedReceiver(
-          effectiveCall.receiverCallChain,
-          baseType,
-          effectiveCall.filePath,
-          ctx,
-        );
-        if (chainedType) {
-          effectiveCall = { ...effectiveCall, receiverTypeName: chainedType };
+          if (currentType) {
+            effectiveCall = { ...effectiveCall, receiverTypeName: currentType };
+          }
         }
       }
 

@@ -264,7 +264,7 @@ export const CLASS_CONTAINER_TYPES = new Set([
   'class_declaration', 'abstract_class_declaration',
   'interface_declaration', 'struct_declaration', 'record_declaration',
   'class_specifier', 'struct_specifier',
-  'impl_item', 'trait_item',
+  'impl_item', 'trait_item', 'struct_item', 'enum_item',
   'class_definition',
   'trait_declaration',
   'protocol_declaration',
@@ -286,6 +286,8 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   class_definition: 'Class',
   impl_item: 'Impl',
   trait_item: 'Trait',
+  struct_item: 'Struct',
+  enum_item: 'Enum',
   trait_declaration: 'Trait',
   record_declaration: 'Record',
   protocol_declaration: 'Interface',
@@ -1171,6 +1173,142 @@ export function extractCallChain(
   return chain.length > 0 ? { chain, baseReceiverName: undefined } : undefined;
 }
 
+/** Node types representing member/field access across languages. */
+const FIELD_ACCESS_NODE_TYPES = new Set([
+  'member_expression',           // TS/JS
+  'member_access_expression',    // C#
+  'selector_expression',         // Go
+  'field_expression',            // Rust/C++
+  'attribute',                   // Python
+  'navigation_expression',       // Kotlin/Swift
+  'member_binding_expression',   // C# null-conditional (user?.Address)
+]);
 
+/** One step in a mixed receiver chain. */
+export type MixedChainStep = { kind: 'field' | 'call'; name: string };
 
+/**
+ * Walk a receiver AST node that may interleave field accesses and method calls,
+ * building a unified chain of steps up to MAX_CHAIN_DEPTH.
+ *
+ * For `svc.getUser().address.save()`, called with the receiver of `save`
+ * (`svc.getUser().address`, a field access node):
+ *   returns { chain: [{ kind:'call', name:'getUser' }, { kind:'field', name:'address' }],
+ *             baseReceiverName: 'svc' }
+ *
+ * For `user.getAddress().city.getName()`, called with receiver of `getName`
+ * (`user.getAddress().city`):
+ *   returns { chain: [{ kind:'call', name:'getAddress' }, { kind:'field', name:'city' }],
+ *             baseReceiverName: 'user' }
+ *
+ * Pure field chains and pure call chains are special cases (all steps same kind).
+ */
+export function extractMixedChain(
+  receiverNode: SyntaxNode,
+): { chain: MixedChainStep[]; baseReceiverName: string | undefined } | undefined {
+  const chain: MixedChainStep[] = [];
+  let current: SyntaxNode = receiverNode;
 
+  while (chain.length < MAX_CHAIN_DEPTH) {
+    if (CALL_EXPRESSION_TYPES.has(current.type)) {
+      // ── Call expression: extract method name + inner receiver ────────────
+      const funcNode = current.childForFieldName?.('function')
+        ?? current.childForFieldName?.('name')
+        ?? current.childForFieldName?.('method');
+      let methodName: string | undefined;
+      let innerReceiver: SyntaxNode | null = null;
+
+      if (funcNode) {
+        methodName = funcNode.lastNamedChild?.text ?? funcNode.text;
+      }
+      // Kotlin/Swift: call_expression → navigation_expression
+      if (!funcNode && current.type === 'call_expression') {
+        const callee = current.firstNamedChild;
+        if (callee?.type === 'navigation_expression') {
+          const suffix = callee.lastNamedChild;
+          if (suffix?.type === 'navigation_suffix') {
+            methodName = suffix.lastNamedChild?.text;
+            for (let i = 0; i < callee.namedChildCount; i++) {
+              const child = callee.namedChild(i);
+              if (child && child.type !== 'navigation_suffix') { innerReceiver = child; break; }
+            }
+          }
+        }
+      }
+      if (!methodName) break;
+      chain.unshift({ kind: 'call', name: methodName });
+
+      if (!innerReceiver && funcNode) {
+        innerReceiver = funcNode.childForFieldName?.('object')
+          ?? funcNode.childForFieldName?.('value')
+          ?? funcNode.childForFieldName?.('operand')
+          ?? funcNode.childForFieldName?.('argument')    // C/C++ field_expression
+          ?? funcNode.childForFieldName?.('expression')
+          ?? null;
+      }
+      if (!innerReceiver && current.type === 'method_invocation') {
+        innerReceiver = current.childForFieldName?.('object') ?? null;
+      }
+      if (!innerReceiver && (current.type === 'member_call_expression' || current.type === 'nullsafe_member_call_expression')) {
+        innerReceiver = current.childForFieldName?.('object') ?? null;
+      }
+      if (!innerReceiver && current.type === 'call') {
+        innerReceiver = current.childForFieldName?.('receiver') ?? null;
+      }
+      if (!innerReceiver) break;
+
+      if (CALL_EXPRESSION_TYPES.has(innerReceiver.type) || FIELD_ACCESS_NODE_TYPES.has(innerReceiver.type)) {
+        current = innerReceiver;
+      } else {
+        return { chain, baseReceiverName: innerReceiver.text || undefined };
+      }
+    } else if (FIELD_ACCESS_NODE_TYPES.has(current.type)) {
+      // ── Field/member access: extract property name + inner object ─────────
+      let propertyName: string | undefined;
+      let innerObject: SyntaxNode | null = null;
+
+      if (current.type === 'navigation_expression') {
+        for (const child of current.children ?? []) {
+          if (child.type === 'navigation_suffix') {
+            for (const sc of child.children ?? []) {
+              if (sc.isNamed && sc.type !== '.') { propertyName = sc.text; break; }
+            }
+          } else if (child.isNamed && !innerObject) {
+            innerObject = child;
+          }
+        }
+      } else if (current.type === 'attribute') {
+        innerObject = current.childForFieldName?.('object') ?? null;
+        propertyName = current.childForFieldName?.('attribute')?.text;
+      } else {
+        innerObject = current.childForFieldName?.('object')
+          ?? current.childForFieldName?.('value')
+          ?? current.childForFieldName?.('operand')
+          ?? current.childForFieldName?.('argument')    // C/C++ field_expression
+          ?? current.childForFieldName?.('expression')
+          ?? null;
+        propertyName = (current.childForFieldName?.('property')
+          ?? current.childForFieldName?.('field')
+          ?? current.childForFieldName?.('name'))?.text;
+      }
+
+      if (!propertyName) break;
+      chain.unshift({ kind: 'field', name: propertyName });
+
+      if (!innerObject) break;
+
+      if (CALL_EXPRESSION_TYPES.has(innerObject.type) || FIELD_ACCESS_NODE_TYPES.has(innerObject.type)) {
+        current = innerObject;
+      } else {
+        return { chain, baseReceiverName: innerObject.text || undefined };
+      }
+    } else {
+      // Simple identifier — this is the base receiver
+      return chain.length > 0
+        ? { chain, baseReceiverName: current.text || undefined }
+        : undefined;
+    }
+  }
+
+  return chain.length > 0 ? { chain, baseReceiverName: undefined } : undefined;
+}

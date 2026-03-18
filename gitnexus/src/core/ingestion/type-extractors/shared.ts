@@ -745,3 +745,91 @@ export const extractReturnTypeName = (raw: string, depth = 0): string | undefine
 
   return text;
 };
+
+// ── Property declared-type extraction ────────────────────────────────────
+// Shared between parse-worker (worker path) and parsing-processor (sequential path).
+
+/**
+ * Extract the declared type of a property/field from its AST definition node.
+ * Handles cross-language patterns:
+ * - TypeScript: `name: Type` → type_annotation child
+ * - Java: `Type name` → type child on field_declaration
+ * - C#: `Type Name { get; set; }` → type child on property_declaration
+ * - Go: `Name Type` → type child on field_declaration
+ * - Kotlin: `var name: Type` → variable_declaration child with type field
+ *
+ * Returns the normalized type name, or undefined if no type can be extracted.
+ */
+export const extractPropertyDeclaredType = (definitionNode: any): string | undefined => {
+  if (!definitionNode) return undefined;
+
+  // Strategy 1: Look for a `type` or `type_annotation` named field
+  const typeNode = definitionNode.childForFieldName?.('type');
+  if (typeNode) {
+    const typeName = extractSimpleTypeName(typeNode);
+    if (typeName) return typeName;
+    // Fallback: use the raw text (for complex types like User[] or List<User>)
+    const text = typeNode.text?.trim();
+    if (text && text.length < 100) return text;
+  }
+
+  // Strategy 2: Walk children looking for type_annotation (TypeScript pattern)
+  for (let i = 0; i < definitionNode.childCount; i++) {
+    const child = definitionNode.child(i);
+    if (!child) continue;
+    if (child.type === 'type_annotation') {
+      // Type annotation has the actual type as a child
+      for (let j = 0; j < child.childCount; j++) {
+        const typeChild = child.child(j);
+        if (typeChild && typeChild.type !== ':') {
+          const typeName = extractSimpleTypeName(typeChild);
+          if (typeName) return typeName;
+          const text = typeChild.text?.trim();
+          if (text && text.length < 100) return text;
+        }
+      }
+    }
+  }
+
+  // Strategy 3: For Java field_declaration, the type is a sibling of variable_declarator
+  // AST: (field_declaration type: (type_identifier) declarator: (variable_declarator ...))
+  const parentDecl = definitionNode.parent;
+  if (parentDecl) {
+    const parentType = parentDecl.childForFieldName?.('type');
+    if (parentType) {
+      const typeName = extractSimpleTypeName(parentType);
+      if (typeName) return typeName;
+    }
+  }
+
+  // Strategy 4: Kotlin property_declaration — type is nested inside variable_declaration child
+  // AST: (property_declaration (variable_declaration name: ... type: (user_type ...)))
+  for (let i = 0; i < definitionNode.childCount; i++) {
+    const child = definitionNode.child(i);
+    if (child?.type === 'variable_declaration') {
+      const varType = child.childForFieldName?.('type');
+      if (varType) {
+        const typeName = extractSimpleTypeName(varType);
+        if (typeName) return typeName;
+        const text = varType.text?.trim();
+        if (text && text.length < 100) return text;
+      }
+    }
+  }
+
+  // Strategy 5: PHP @var PHPDoc — look for preceding comment with @var Type
+  // Handles pre-PHP-7.4 code: /** @var Address */ public $address;
+  const prevSibling = definitionNode.previousNamedSibling ?? definitionNode.parent?.previousNamedSibling;
+  if (prevSibling?.type === 'comment') {
+    const commentText = prevSibling.text;
+    const varMatch = commentText?.match(/@var\s+([A-Z][\w\\]*)/);
+    if (varMatch) {
+      // Strip namespace prefix: \App\Models\User → User
+      const raw = varMatch[1];
+      const base = raw.includes('\\') ? raw.split('\\').pop()! : raw;
+      if (base && /^[A-Z]\w*$/.test(base)) return base;
+    }
+  }
+
+  return undefined;
+};

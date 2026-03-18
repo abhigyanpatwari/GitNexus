@@ -940,3 +940,88 @@ describe('Go for-loop call_expression iterable resolution (Phase 7.3)', () => {
     expect(wrongSave).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 8: Field/property type resolution (1-level)
+// ---------------------------------------------------------------------------
+
+describe('Field type resolution (Go)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-field-types'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects structs: Address, User', () => {
+    expect(getNodesByLabel(result, 'Struct')).toEqual(['Address', 'User']);
+  });
+
+  it('detects Property nodes for Go struct fields', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('Address');
+    expect(properties).toContain('Name');
+    expect(properties).toContain('City');
+  });
+
+  it('emits HAS_PROPERTY edges linking struct fields to structs', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(propEdges.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('resolves user.Address.Save() → Address#Save via field type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'Save');
+    const addressSave = saveCalls.find(
+      e => e.source === 'processUser' && e.targetFilePath.includes('models'),
+    );
+    expect(addressSave).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8A: Deep field chain resolution (3-level)
+// ---------------------------------------------------------------------------
+
+describe('Deep field chain resolution (Go)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-deep-field-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects structs: Address, City, User', () => {
+    expect(getNodesByLabel(result, 'Struct')).toEqual(['Address', 'City', 'User']);
+  });
+
+  it('detects Property nodes for Go struct fields', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('Address');
+    expect(properties).toContain('City');
+    expect(properties).toContain('ZipCode');
+  });
+
+  it('emits HAS_PROPERTY edges for nested type chain', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(propEdges.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('resolves 2-level chain: user.Address.Save() → Address#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'Save' && e.source === 'processUser');
+    const addressSave = saveCalls.find(e => e.targetFilePath.includes('models'));
+    expect(addressSave).toBeDefined();
+  });
+
+  it('resolves 3-level chain: user.Address.City.GetName() → City#GetName', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCalls = calls.filter(e => e.target === 'GetName' && e.source === 'processUser');
+    const cityGetName = getNameCalls.find(e => e.targetFilePath.includes('models'));
+    expect(cityGetName).toBeDefined();
+  });
+});

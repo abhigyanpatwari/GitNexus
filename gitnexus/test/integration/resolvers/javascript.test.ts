@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, getRelationships, getNodesByLabel,
+  FIXTURES, getRelationships, getNodesByLabel, edgeSet,
   runPipelineFromRepo, type PipelineResult,
 } from './helpers.js';
 
@@ -232,5 +232,39 @@ describe('JavaScript chained method call resolution', () => {
       c.targetFilePath?.includes('repo.js'),
     );
     expect(repoSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8: Field/property type resolution — class field_definition capture
+// ---------------------------------------------------------------------------
+
+describe('Field type resolution (JavaScript)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'js-field-types'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, Config, User', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'Config', 'User']);
+  });
+
+  it('detects Property nodes for JS class fields', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('address');
+    expect(properties).toContain('name');
+    expect(properties).toContain('city');
+  });
+
+  it('emits HAS_PROPERTY edges linking fields to classes', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(propEdges.length).toBeGreaterThanOrEqual(3);
+    expect(edgeSet(propEdges)).toContain('User → address');
+    expect(edgeSet(propEdges)).toContain('User → name');
+    expect(edgeSet(propEdges)).toContain('Address → city');
   });
 });
