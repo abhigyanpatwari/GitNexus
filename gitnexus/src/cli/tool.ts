@@ -93,14 +93,25 @@ export async function impactCommand(target: string, options?: {
   }
 
   const backend = await getBackend();
-  const result = await backend.callTool('impact', {
-    target,
-    direction: options?.direction || 'upstream',
-    maxDepth: options?.depth ? parseInt(options.depth) : undefined,
-    includeTests: options?.includeTests ?? false,
-    repo: options?.repo,
-  });
-  output(result);
+  try {
+    const result = await backend.callTool('impact', {
+      target,
+      direction: options?.direction || 'upstream',
+      maxDepth: options?.depth ? parseInt(options.depth) : undefined,
+      includeTests: options?.includeTests ?? false,
+      repo: options?.repo,
+    });
+    output(result);
+  } catch (err: any) {
+    // Return structured error JSON instead of crashing (#321)
+    output({
+      error: err?.message || 'Impact analysis failed unexpectedly',
+      target,
+      direction: options?.direction || 'upstream',
+      suggestion: 'Try reducing --depth or using gitnexus context <symbol> as a fallback',
+    });
+    process.exit(1);
+  }
 }
 
 export async function cypherCommand(query: string, options?: {

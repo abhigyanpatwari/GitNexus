@@ -147,7 +147,34 @@ describe('formatContextResult', () => {
 
 describe('formatImpactResult', () => {
   it('returns error message for error input', () => {
-    expect(formatImpactResult({ error: 'bad request' })).toBe('Error: bad request');
+    expect(formatImpactResult({ error: 'bad request' })).toContain('Error: bad request');
+  });
+
+  it('returns error with suggestion when provided', () => {
+    const result = formatImpactResult({
+      error: 'Impact analysis failed',
+      suggestion: 'Try gitnexus context <symbol> as a fallback',
+    });
+    expect(result).toContain('Error: Impact analysis failed');
+    expect(result).toContain('Suggestion: Try gitnexus context');
+  });
+
+  it('shows partial warning when traversal was interrupted', () => {
+    const result = formatImpactResult({
+      target: { kind: 'Function', name: 'foo' },
+      direction: 'upstream',
+      impactedCount: 2,
+      partial: true,
+      byDepth: {
+        1: [
+          { type: 'Function', name: 'caller1', filePath: 'src/a.ts', relationType: 'CALLS', confidence: 1 },
+          { type: 'Function', name: 'caller2', filePath: 'src/b.ts', relationType: 'CALLS', confidence: 1 },
+        ],
+      },
+    });
+    expect(result).toContain('Partial results');
+    expect(result).toContain('caller1');
+    expect(result).toContain('caller2');
   });
 
   it('handles zero impact', () => {

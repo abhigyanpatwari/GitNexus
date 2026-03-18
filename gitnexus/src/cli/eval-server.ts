@@ -142,7 +142,10 @@ export function formatContextResult(result: any): string {
 }
 
 export function formatImpactResult(result: any): string {
-  if (result.error) return `Error: ${result.error}`;
+  if (result.error) {
+    const suggestion = result.suggestion ? `\nSuggestion: ${result.suggestion}` : '';
+    return `Error: ${result.error}${suggestion}`;
+  }
 
   const target = result.target;
   const direction = result.direction;
@@ -155,7 +158,11 @@ export function formatImpactResult(result: any): string {
 
   const lines: string[] = [];
   const dirLabel = direction === 'upstream' ? 'depends on this (will break if changed)' : 'this depends on';
-  lines.push(`Blast radius for ${target?.kind || ''} ${target?.name} (${direction}): ${total} symbol(s) ${dirLabel}\n`);
+  lines.push(`Blast radius for ${target?.kind || ''} ${target?.name} (${direction}): ${total} symbol(s) ${dirLabel}`);
+  if (result.partial) {
+    lines.push('⚠️  Partial results — graph traversal was interrupted. Deeper impacts may exist.');
+  }
+  lines.push('');
 
   const depthLabels: Record<number, string> = {
     1: 'WILL BREAK (direct)',
