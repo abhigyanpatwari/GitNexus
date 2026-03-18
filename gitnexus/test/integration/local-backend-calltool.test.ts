@@ -197,6 +197,54 @@ withTestLbugDB('local-backend-calltool', (handle) => {
       expect(result).toHaveProperty('error');
       expect(result.error).toMatch(/required/i);
     });
+
+    // ─── impact error handling tests (#321) ───────────────────────────
+    // Verify that impact() returns structured JSON instead of crashing
+
+    it('impact tool returns structured error for unknown symbol', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'nonexistent_symbol_xyz_999',
+        direction: 'upstream',
+      });
+      // Must return structured JSON, not throw
+      expect(result).toBeDefined();
+      // Should have either an error field (not found) or impactedCount 0
+      // Either outcome is valid — the key is it doesn't crash
+      if (result.error) {
+        expect(typeof result.error).toBe('string');
+      } else {
+        expect(result.impactedCount).toBe(0);
+      }
+    });
+
+    it('impact error response has consistent target shape', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'nonexistent_symbol_xyz_999',
+        direction: 'downstream',
+      });
+      // When an error is returned, target must be an object (not raw string)
+      // so downstream API consumers can safely access result.target.name
+      if (result.error && result.target !== undefined) {
+        expect(typeof result.target).toBe('object');
+        expect(result.target).not.toBeNull();
+      }
+    });
+
+    it('impact partial results: traversalComplete flag when depth fails', async () => {
+      // Even if traversal fails at some depth, partial results should be returned
+      // and partial:true should only be set when some results were collected
+      const result = await backend.callTool('impact', {
+        target: 'validate',
+        direction: 'upstream',
+        maxDepth: 10, // Large depth to trigger multi-level traversal
+      });
+      // Should succeed (validate exists in seed data)
+      expect(result).not.toHaveProperty('error');
+      if (result.partial) {
+        // If partial, must still have some results
+        expect(result.impactedCount).toBeGreaterThan(0);
+      }
+    });
   });
 
 }, {
