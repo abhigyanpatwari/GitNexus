@@ -875,7 +875,7 @@ const processFileGroup = (
     // Build per-file type environment + constructor bindings in a single AST walk.
     // Constructor bindings are verified against the SymbolTable in processCallsFromExtracted.
     const typeEnv = buildTypeEnv(tree, language);
-    const callRouter = callRouters[language] || (() => null);
+    const callRouter = callRouters[language];
 
     if (typeEnv.constructorBindings.length > 0) {
       result.constructorBindings.push({ filePath: file.path, bindings: [...typeEnv.constructorBindings] });

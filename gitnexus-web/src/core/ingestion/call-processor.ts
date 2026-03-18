@@ -228,7 +228,7 @@ export const processCalls = async (
       continue;
     }
 
-    const callRouter = callRouters[language] || (() => null);
+    const callRouter = callRouters[language];
 
     // 3. Process each call match
     matches.forEach(match => {
