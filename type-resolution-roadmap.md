@@ -308,9 +308,10 @@ Missing or weak areas include:
 
 ### Go
 
-Key remaining gap:
+Key remaining gaps:
 
 - ~~iterable call expressions in range loops~~ ✓ shipped in Phase 7.3
+- `obj.field++` / `obj.field--` produce `inc_statement`/`dec_statement` nodes (not `assignment_statement`), so write ACCESSES edges are not emitted for increment/decrement on struct fields
 
 **Priority:** Medium (chained property access remains for Phase 8)
 

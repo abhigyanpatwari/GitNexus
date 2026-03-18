@@ -385,7 +385,7 @@ So return-type-aware receiver inference already exists in a constrained downstre
 
 ‡ C has no `@definition.property` query pattern. Struct member fields are not captured. C++ captures class/struct member fields via `field_declaration`.
 
-§ PHP write access covers instance property writes (`$obj->field = value`) and static property writes (`ClassName::$field = value`). Nullsafe writes (`$obj?->field`) are not tracked.
+§ PHP write access covers instance property writes (`$obj->field = value`) and static property writes (`ClassName::$field = value`). Nullsafe writes (`$obj?->field = value`) are not tracked because this is invalid PHP syntax — null-safe member access on the left-hand side of assignment is a parse error.
 
 ---
 

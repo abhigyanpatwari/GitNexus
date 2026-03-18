@@ -292,7 +292,7 @@ export const runPipelineFromRepo = async (
           ]);
           // Process field write assignments (synchronous, runs after calls resolve)
           if (chunkWorkerData.assignments?.length) {
-            processAssignmentsFromExtracted(graph, chunkWorkerData.assignments, ctx);
+            processAssignmentsFromExtracted(graph, chunkWorkerData.assignments, ctx, chunkWorkerData.constructorBindings);
           }
         } else {
           await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);

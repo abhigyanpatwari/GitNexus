@@ -175,9 +175,15 @@ describe('SymbolTable', () => {
 
     it('Property without declaredType is still added to fieldByOwner index only (not globalIndex)', () => {
       table.add('src/models.ts', 'name', 'prop:name', 'Property', { ownerId: 'class:User' });
-      // No declaredType → not in fieldByOwner, but still excluded from globalIndex
+      // No declaredType → still indexed in fieldByOwner (for write-access tracking
+      // in dynamically-typed languages like Ruby/JS), but excluded from globalIndex
       expect(table.lookupFuzzy('name')).toEqual([]);
-      expect(table.lookupFieldByOwner('class:User', 'name')).toBeUndefined();
+      expect(table.lookupFieldByOwner('class:User', 'name')).toEqual({
+        nodeId: 'prop:name',
+        filePath: 'src/models.ts',
+        type: 'Property',
+        ownerId: 'class:User',
+      });
     });
 
     it('non-Property types are always added to globalIndex', () => {
@@ -249,9 +255,14 @@ describe('SymbolTable', () => {
       expect(table.lookupFieldByOwner('class:User', 'name')).toBeUndefined();
     });
 
-    it('does not index Property without declaredType', () => {
+    it('indexes Property without declaredType (for dynamic language write-access)', () => {
       table.add('src/models.ts', 'name', 'prop:name', 'Property', { ownerId: 'class:User' });
-      expect(table.lookupFieldByOwner('class:User', 'name')).toBeUndefined();
+      expect(table.lookupFieldByOwner('class:User', 'name')).toEqual({
+        nodeId: 'prop:name',
+        filePath: 'src/models.ts',
+        type: 'Property',
+        ownerId: 'class:User',
+      });
     });
 
     it('distinguishes fields by owner', () => {

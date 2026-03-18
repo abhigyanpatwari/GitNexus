@@ -206,6 +206,12 @@ export const processCalls = async (
         if (receiverText && typeEnv) {
           receiverTypeName = typeEnv.lookup(receiverText, captureMap['assignment']);
         }
+        // Fall back to verified constructor bindings (mirrors CALLS resolution tier 2)
+        if (!receiverTypeName && receiverText && receiverIndex.size > 0) {
+          const enclosing = findEnclosingFunction(captureMap['assignment'], file.path, ctx);
+          const funcName = enclosing ? extractFuncNameFromSourceId(enclosing) : '';
+          receiverTypeName = lookupReceiverType(receiverIndex, funcName, receiverText);
+        }
         if (!receiverTypeName && receiverText) {
           const resolved = ctx.resolve(receiverText, file.path);
           if (resolved?.candidates.some(d =>
@@ -223,6 +229,8 @@ export const processCalls = async (
           // been processed yet. Collect now, resolve after all files are done.
           pendingWrites.push({ receiverTypeName, propertyName, filePath: file.path, srcId });
         }
+        // Assignment-only capture (no @call sibling): skip the rest of this
+        // forEach iteration — this acts as a `continue` in the match loop.
         if (!captureMap['call']) return;
       }
 
@@ -862,15 +870,38 @@ export const processCallsFromExtracted = async (
 
 /**
  * Resolve pre-extracted field write assignments to ACCESSES {reason: 'write'} edges.
+ * Accepts optional constructorBindings for return-type-aware receiver inference,
+ * mirroring processCallsFromExtracted's verified binding lookup.
  */
 export const processAssignmentsFromExtracted = (
   graph: KnowledgeGraph,
   assignments: ExtractedAssignment[],
   ctx: ResolutionContext,
+  constructorBindings?: FileConstructorBindings[],
 ): void => {
+  // Build per-file receiver type indexes from verified constructor bindings
+  const fileReceiverTypes = new Map<string, ReceiverTypeIndex>();
+  if (constructorBindings) {
+    for (const { filePath, bindings } of constructorBindings) {
+      const verified = verifyConstructorBindings(bindings, filePath, ctx, graph);
+      if (verified.size > 0) {
+        fileReceiverTypes.set(filePath, buildReceiverTypeIndex(verified));
+      }
+    }
+  }
+
   for (const asn of assignments) {
     // Resolve the receiver type
     let receiverTypeName = asn.receiverTypeName;
+    // Tier 2: verified constructor bindings (return-type inference)
+    if (!receiverTypeName && fileReceiverTypes.size > 0) {
+      const receiverMap = fileReceiverTypes.get(asn.filePath);
+      if (receiverMap) {
+        const funcName = extractFuncNameFromSourceId(asn.sourceId);
+        receiverTypeName = lookupReceiverType(receiverMap, funcName, asn.receiverText);
+      }
+    }
+    // Tier 3: static class-as-receiver fallback
     if (!receiverTypeName) {
       const resolved = ctx.resolve(asn.receiverText, asn.filePath);
       if (resolved?.candidates.some(d =>
