@@ -6,7 +6,7 @@ import {
   processImportsFromExtracted,
   buildImportResolutionContext
 } from './import-processor.js';
-import { processCalls, processCallsFromExtracted, processRoutesFromExtracted } from './call-processor.js';
+import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracted, processRoutesFromExtracted } from './call-processor.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
 import { computeMRO } from './mro-processor.js';
 import { processCommunities } from './community-processor.js';
@@ -290,6 +290,10 @@ export const runPipelineFromRepo = async (
               },
             ),
           ]);
+          // Process field write assignments (synchronous, runs after calls resolve)
+          if (chunkWorkerData.assignments?.length) {
+            processAssignmentsFromExtracted(graph, chunkWorkerData.assignments, ctx);
+          }
         } else {
           await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
           sequentialChunkPaths.push(chunkPaths);

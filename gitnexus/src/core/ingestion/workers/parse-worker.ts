@@ -124,6 +124,18 @@ export interface ExtractedCall {
   receiverMixedChain?: MixedChainStep[];
 }
 
+export interface ExtractedAssignment {
+  filePath: string;
+  /** generateId of enclosing function, or generateId('File', filePath) for top-level */
+  sourceId: string;
+  /** Receiver text (e.g., 'user' from user.address = value) */
+  receiverText: string;
+  /** Property name being written (e.g., 'address') */
+  propertyName: string;
+  /** Resolved type name of the receiver if available from TypeEnv */
+  receiverTypeName?: string;
+}
+
 export interface ExtractedHeritage {
   filePath: string;
   className: string;
@@ -155,6 +167,7 @@ export interface ParseWorkerResult {
   symbols: ParsedSymbol[];
   imports: ExtractedImport[];
   calls: ExtractedCall[];
+  assignments: ExtractedAssignment[];
   heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
   constructorBindings: FileConstructorBindings[];
@@ -281,6 +294,7 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
     symbols: [],
     imports: [],
     calls: [],
+    assignments: [],
     heritage: [],
     routes: [],
     constructorBindings: [],
@@ -914,6 +928,28 @@ const processFileGroup = (
         continue;
       }
 
+      // Extract assignment sites (field write access)
+      if (captureMap['assignment'] && captureMap['assignment.receiver'] && captureMap['assignment.property']) {
+        const receiverText = captureMap['assignment.receiver'].text;
+        const propertyName = captureMap['assignment.property'].text;
+        if (receiverText && propertyName) {
+          const srcId = findEnclosingFunctionId(captureMap['assignment'], file.path)
+            || generateId('File', file.path);
+          let receiverTypeName: string | undefined;
+          if (typeEnv) {
+            receiverTypeName = typeEnv.lookup(receiverText, captureMap['assignment']) ?? undefined;
+          }
+          result.assignments.push({
+            filePath: file.path,
+            sourceId: srcId,
+            receiverText,
+            propertyName,
+            ...(receiverTypeName ? { receiverTypeName } : {}),
+          });
+        }
+        if (!captureMap['call']) continue;
+      }
+
       // Extract call sites
       if (captureMap['call']) {
         const callNameNode = captureMap['call.name'];
@@ -1221,7 +1257,7 @@ const processFileGroup = (
 /** Accumulated result across sub-batches */
 let accumulated: ParseWorkerResult = {
   nodes: [], relationships: [], symbols: [],
-  imports: [], calls: [], heritage: [], routes: [], constructorBindings: [], skippedLanguages: {}, fileCount: 0,
+  imports: [], calls: [], assignments: [], heritage: [], routes: [], constructorBindings: [], skippedLanguages: {}, fileCount: 0,
 };
 let cumulativeProcessed = 0;
 
@@ -1231,6 +1267,7 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   target.symbols.push(...src.symbols);
   target.imports.push(...src.imports);
   target.calls.push(...src.calls);
+  target.assignments.push(...src.assignments);
   target.heritage.push(...src.heritage);
   target.routes.push(...src.routes);
   target.constructorBindings.push(...src.constructorBindings);
@@ -1258,7 +1295,7 @@ parentPort!.on('message', (msg: any) => {
     if (msg && msg.type === 'flush') {
       parentPort!.postMessage({ type: 'result', data: accumulated });
       // Reset for potential reuse
-      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], heritage: [], routes: [], constructorBindings: [], skippedLanguages: {}, fileCount: 0 };
+      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], assignments: [], heritage: [], routes: [], constructorBindings: [], skippedLanguages: {}, fileCount: 0 };
       cumulativeProcessed = 0;
       return;
     }

@@ -1064,3 +1064,30 @@ describe('Mixed field+call chain resolution (Go)', () => {
     expect(getNameCalls[0].targetFilePath).toContain('models');
   });
 });
+
+// ---------------------------------------------------------------------------
+// ACCESSES write edges from assignment statements
+// ---------------------------------------------------------------------------
+
+describe('Write access tracking (Go)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-write-access'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits ACCESSES write edges for field assignments', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writes = accesses.filter(e => e.rel.reason === 'write');
+    expect(writes.length).toBe(2);
+    const nameWrite = writes.find(e => e.target === 'Name');
+    const addressWrite = writes.find(e => e.target === 'Address');
+    expect(nameWrite).toBeDefined();
+    expect(nameWrite!.source).toBe('updateUser');
+    expect(addressWrite).toBeDefined();
+    expect(addressWrite!.source).toBe('updateUser');
+  });
+});

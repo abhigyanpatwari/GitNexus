@@ -12,7 +12,7 @@ import { detectFrameworkFromAST } from './framework-detection.js';
 import { typeConfigs } from './type-extractors/index.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
 import { WorkerPool } from './workers/worker-pool.js';
-import type { ParseWorkerResult, ParseWorkerInput, ExtractedImport, ExtractedCall, ExtractedHeritage, ExtractedRoute, FileConstructorBindings } from './workers/parse-worker.js';
+import type { ParseWorkerResult, ParseWorkerInput, ExtractedImport, ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, FileConstructorBindings } from './workers/parse-worker.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
@@ -20,6 +20,7 @@ export type FileProgressCallback = (current: number, total: number, filePath: st
 export interface WorkerExtractedData {
   imports: ExtractedImport[];
   calls: ExtractedCall[];
+  assignments: ExtractedAssignment[];
   heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
   constructorBindings: FileConstructorBindings[];
@@ -48,7 +49,7 @@ const processParsingWithWorkers = async (
     if (lang) parseableFiles.push({ path: file.path, content: file.content });
   }
 
-  if (parseableFiles.length === 0) return { imports: [], calls: [], heritage: [], routes: [], constructorBindings: [] };
+  if (parseableFiles.length === 0) return { imports: [], calls: [], assignments: [], heritage: [], routes: [], constructorBindings: [] };
 
   const total = files.length;
 
@@ -63,6 +64,7 @@ const processParsingWithWorkers = async (
   // Merge results from all workers into graph and symbol table
   const allImports: ExtractedImport[] = [];
   const allCalls: ExtractedCall[] = [];
+  const allAssignments: ExtractedAssignment[] = [];
   const allHeritage: ExtractedHeritage[] = [];
   const allRoutes: ExtractedRoute[] = [];
   const allConstructorBindings: FileConstructorBindings[] = [];
@@ -90,6 +92,7 @@ const processParsingWithWorkers = async (
 
     allImports.push(...result.imports);
     allCalls.push(...result.calls);
+    allAssignments.push(...result.assignments);
     allHeritage.push(...result.heritage);
     allRoutes.push(...result.routes);
     allConstructorBindings.push(...result.constructorBindings);
@@ -111,7 +114,7 @@ const processParsingWithWorkers = async (
 
   // Final progress
   onFileProgress?.(total, total, 'done');
-  return { imports: allImports, calls: allCalls, heritage: allHeritage, routes: allRoutes, constructorBindings: allConstructorBindings };
+  return { imports: allImports, calls: allCalls, assignments: allAssignments, heritage: allHeritage, routes: allRoutes, constructorBindings: allConstructorBindings };
 };
 
 // ============================================================================

@@ -26,7 +26,7 @@ import {
 import { buildTypeEnv } from './type-env.js';
 import type { ConstructorBinding } from './type-env.js';
 import { getTreeSitterBufferSize } from './constants.js';
-import type { ExtractedCall, ExtractedHeritage, ExtractedRoute, FileConstructorBindings } from './workers/parse-worker.js';
+import type { ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, FileConstructorBindings } from './workers/parse-worker.js';
 import { callRouters } from './call-routing.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
 
@@ -195,6 +195,43 @@ export const processCalls = async (
     matches.forEach(match => {
       const captureMap: Record<string, any> = {};
       match.captures.forEach(c => captureMap[c.name] = c.node);
+
+      // ── Write access: emit ACCESSES {reason: 'write'} for assignments to member fields ──
+      if (captureMap['assignment'] && captureMap['assignment.receiver'] && captureMap['assignment.property']) {
+        const receiverNode = captureMap['assignment.receiver'];
+        const propertyName: string = captureMap['assignment.property'].text;
+        // Resolve receiver type: simple identifier → TypeEnv lookup or class resolution
+        let receiverTypeName: string | undefined;
+        const receiverText = receiverNode.text;
+        if (receiverText && typeEnv) {
+          receiverTypeName = typeEnv.lookup(receiverText, captureMap['assignment']);
+        }
+        if (!receiverTypeName && receiverText) {
+          const resolved = ctx.resolve(receiverText, file.path);
+          if (resolved?.candidates.some(d =>
+            d.type === 'Class' || d.type === 'Struct' || d.type === 'Interface'
+              || d.type === 'Enum' || d.type === 'Record' || d.type === 'Impl',
+          )) {
+            receiverTypeName = receiverText;
+          }
+        }
+        if (receiverTypeName) {
+          const fieldResolved = resolveFieldAccessType(receiverTypeName, propertyName, file.path, ctx);
+          if (fieldResolved) {
+            const enclosing = findEnclosingFunction(captureMap['assignment'], file.path, ctx);
+            const srcId = enclosing || generateId('File', file.path);
+            graph.addRelationship({
+              id: generateId('ACCESSES', `${srcId}:${fieldResolved.fieldNodeId}:write`),
+              sourceId: srcId,
+              targetId: fieldResolved.fieldNodeId,
+              type: 'ACCESSES',
+              confidence: 1.0,
+              reason: 'write',
+            });
+          }
+        }
+        if (!captureMap['call']) return;
+      }
 
       if (!captureMap['call']) return;
 
@@ -795,6 +832,40 @@ export const processCallsFromExtracted = async (
   }
 
   onProgress?.(totalFiles, totalFiles);
+};
+
+/**
+ * Resolve pre-extracted field write assignments to ACCESSES {reason: 'write'} edges.
+ */
+export const processAssignmentsFromExtracted = (
+  graph: KnowledgeGraph,
+  assignments: ExtractedAssignment[],
+  ctx: ResolutionContext,
+): void => {
+  for (const asn of assignments) {
+    // Resolve the receiver type
+    let receiverTypeName = asn.receiverTypeName;
+    if (!receiverTypeName) {
+      const resolved = ctx.resolve(asn.receiverText, asn.filePath);
+      if (resolved?.candidates.some(d =>
+        d.type === 'Class' || d.type === 'Struct' || d.type === 'Interface'
+          || d.type === 'Enum' || d.type === 'Record' || d.type === 'Impl',
+      )) {
+        receiverTypeName = asn.receiverText;
+      }
+    }
+    if (!receiverTypeName) continue;
+    const fieldResolved = resolveFieldAccessType(receiverTypeName, asn.propertyName, asn.filePath, ctx);
+    if (!fieldResolved) continue;
+    graph.addRelationship({
+      id: generateId('ACCESSES', `${asn.sourceId}:${fieldResolved.fieldNodeId}:write`),
+      sourceId: asn.sourceId,
+      targetId: fieldResolved.fieldNodeId,
+      type: 'ACCESSES',
+      confidence: 1.0,
+      reason: 'write',
+    });
+  }
 };
 
 /**

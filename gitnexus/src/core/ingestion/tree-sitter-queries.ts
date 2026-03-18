@@ -88,6 +88,20 @@ export const TYPESCRIPT_QUERIES = `
   (class_heritage
     (implements_clause
       (type_identifier) @heritage.implements))) @heritage.impl
+
+; Write access: obj.field = value
+(assignment_expression
+  left: (member_expression
+    object: (_) @assignment.receiver
+    property: (property_identifier) @assignment.property)
+  right: (_)) @assignment
+
+; Write access: obj.field += value (compound assignment)
+(augmented_assignment_expression
+  left: (member_expression
+    object: (_) @assignment.receiver
+    property: (property_identifier) @assignment.property)
+  right: (_)) @assignment
 `;
 
 // JavaScript queries - works with tree-sitter-javascript
@@ -151,6 +165,20 @@ export const JAVASCRIPT_QUERIES = `
   name: (identifier) @heritage.class
   (class_heritage
     (identifier) @heritage.extends)) @heritage
+
+; Write access: obj.field = value
+(assignment_expression
+  left: (member_expression
+    object: (_) @assignment.receiver
+    property: (property_identifier) @assignment.property)
+  right: (_)) @assignment
+
+; Write access: obj.field += value (compound assignment)
+(augmented_assignment_expression
+  left: (member_expression
+    object: (_) @assignment.receiver
+    property: (property_identifier) @assignment.property)
+  right: (_)) @assignment
 `;
 
 // Python queries - works with tree-sitter-python
@@ -190,6 +218,20 @@ export const PYTHON_QUERIES = `
   name: (identifier) @heritage.class
   superclasses: (argument_list
     (identifier) @heritage.extends)) @heritage
+
+; Write access: obj.field = value
+(assignment
+  left: (attribute
+    object: (_) @assignment.receiver
+    attribute: (identifier) @assignment.property)
+  right: (_)) @assignment
+
+; Write access: obj.field += value (compound assignment)
+(augmented_assignment
+  left: (attribute
+    object: (_) @assignment.receiver
+    attribute: (identifier) @assignment.property)
+  right: (_)) @assignment
 `;
 
 // Java queries - works with tree-sitter-java
@@ -226,6 +268,13 @@ export const JAVA_QUERIES = `
 ; Heritage - implements interfaces
 (class_declaration name: (identifier) @heritage.class
   (super_interfaces (type_list (type_identifier) @heritage.implements))) @heritage.impl
+
+; Write access: obj.field = value
+(assignment_expression
+  left: (field_access
+    object: (_) @assignment.receiver
+    field: (identifier) @assignment.property)
+  right: (_)) @assignment
 `;
 
 // C queries - works with tree-sitter-c
@@ -293,6 +342,14 @@ export const GO_QUERIES = `
 
 ; Struct literal construction: User{Name: "Alice"}
 (composite_literal type: (type_identifier) @call.name) @call
+
+; Write access: obj.field = value
+(assignment_statement
+  left: (expression_list
+    (selector_expression
+      operand: (_) @assignment.receiver
+      field: (field_identifier) @assignment.property))
+  right: (_)) @assignment
 `;
 
 // C++ queries - works with tree-sitter-cpp
@@ -379,6 +436,13 @@ export const CPP_QUERIES = `
   (base_class_clause (type_identifier) @heritage.extends)) @heritage
 (class_specifier name: (type_identifier) @heritage.class
   (base_class_clause (access_specifier) (type_identifier) @heritage.extends)) @heritage
+
+; Write access: obj.field = value
+(assignment_expression
+  left: (field_expression
+    argument: (_) @assignment.receiver
+    field: (field_identifier) @assignment.property)
+  right: (_)) @assignment
 `;
 
 // C# queries - works with tree-sitter-c-sharp
@@ -433,6 +497,13 @@ export const CSHARP_QUERIES = `
   (base_list (identifier) @heritage.extends)) @heritage
 (class_declaration name: (identifier) @heritage.class
   (base_list (generic_name (identifier) @heritage.extends))) @heritage
+
+; Write access: obj.field = value
+(assignment_expression
+  left: (member_access_expression
+    expression: (_) @assignment.receiver
+    name: (identifier) @assignment.property)
+  right: (_)) @assignment
 `;
 
 // Rust queries - works with tree-sitter-rust
@@ -474,6 +545,20 @@ export const RUST_QUERIES = `
 (impl_item trait: (generic_type type: (type_identifier) @heritage.trait) type: (type_identifier) @heritage.class) @heritage
 (impl_item trait: (type_identifier) @heritage.trait type: (generic_type type: (type_identifier) @heritage.class)) @heritage
 (impl_item trait: (generic_type type: (type_identifier) @heritage.trait) type: (generic_type type: (type_identifier) @heritage.class)) @heritage
+
+; Write access: obj.field = value
+(assignment_expression
+  left: (field_expression
+    value: (_) @assignment.receiver
+    field: (field_identifier) @assignment.property)
+  right: (_)) @assignment
+
+; Write access: obj.field += value (compound assignment)
+(compound_assignment_expr
+  left: (field_expression
+    value: (_) @assignment.receiver
+    field: (field_identifier) @assignment.property)
+  right: (_)) @assignment
 `;
 
 // PHP queries - works with tree-sitter-php (php_only grammar)
@@ -563,6 +648,13 @@ export const PHP_QUERIES = `
   body: (declaration_list
     (use_declaration
       [(name) (qualified_name)] @heritage.trait))) @heritage
+
+; Write access: $obj->field = value
+(assignment_expression
+  left: (member_access_expression
+    object: (_) @assignment.receiver
+    name: (name) @assignment.property)
+  right: (_)) @assignment
 `;
 
 // Ruby queries - works with tree-sitter-ruby
@@ -608,6 +700,13 @@ export const RUBY_QUERIES = `
   name: (constant) @heritage.class
   superclass: (superclass
     (constant) @heritage.extends)) @heritage
+
+; Write access: obj.field = value (Ruby setter — syntactically a method call to field=)
+(assignment
+  left: (call
+    receiver: (_) @assignment.receiver
+    method: (identifier) @assignment.property)
+  right: (_)) @assignment
 `;
 
 // Kotlin queries - works with tree-sitter-kotlin (fwcd/tree-sitter-kotlin)
@@ -694,6 +793,14 @@ export const KOTLIN_QUERIES = `
   (delegation_specifier
     (constructor_invocation
       (user_type (type_identifier) @heritage.extends)))) @heritage
+
+; Write access: obj.field = value
+(assignment
+  (directly_assignable_expression
+    (_) @assignment.receiver
+    (navigation_suffix
+      (simple_identifier) @assignment.property))
+  (_)) @assignment
 `;
 
 // Swift queries - works with tree-sitter-swift
@@ -752,6 +859,14 @@ export const SWIFT_QUERIES = `
 ; Extensions wrap the name in user_type unlike class/struct/enum declarations
 (class_declaration "extension" name: (user_type (type_identifier) @heritage.class)
   (inheritance_specifier inherits_from: (user_type (type_identifier) @heritage.extends))) @heritage
+
+; Write access: obj.field = value
+(assignment
+  (directly_assignable_expression
+    (_) @assignment.receiver
+    (navigation_suffix
+      (simple_identifier) @assignment.property))
+  (_)) @assignment
 `;
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
