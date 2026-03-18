@@ -6,6 +6,7 @@
 import { Command } from 'commander';
 import { createRequire } from 'node:module';
 import { createLazyAction } from './lazy-action.js';
+import { DEFAULT_SKILL_LAYOUT, parseSkillLayout } from './skill-layout.js';
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
@@ -27,6 +28,13 @@ program
   .option('-f, --force', 'Force full re-index even if up to date')
   .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
   .option('--skills', 'Generate repo-specific skill files from detected communities')
+  .option('--copilot-instructions', 'Create or update .github/copilot-instructions.md with GitNexus guidance')
+  .option(
+    '--skill-layout <layout>',
+    'Repository skill location: claude (default), github, or dual',
+    parseSkillLayout,
+    DEFAULT_SKILL_LAYOUT,
+  )
    .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')
    .addHelpText('after', '\nEnvironment variables:\n  GITNEXUS_NO_GITIGNORE=1  Skip .gitignore parsing (still reads .gitnexusignore)')
    .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));

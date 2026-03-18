@@ -64,6 +64,34 @@ describe('generateAIContextFiles', () => {
     expect(starts).toBe(1);
   });
 
+  it('creates .github/copilot-instructions.md when enabled', async () => {
+    const stats = { nodes: 42, edges: 84, processes: 3 };
+
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats, [], 'github', true);
+
+    const copilotPath = path.join(tmpDir, '.github', 'copilot-instructions.md');
+    const content = await fs.readFile(copilotPath, 'utf-8');
+    expect(content).toContain('gitnexus:start');
+    expect(content).toContain('gitnexus:end');
+    expect(content).toContain('TestProject');
+  });
+
+  it('appends and then updates marker-scoped section in existing copilot file', async () => {
+    const stats = { nodes: 11, edges: 22, processes: 2 };
+    const copilotPath = path.join(tmpDir, '.github', 'copilot-instructions.md');
+    await fs.mkdir(path.dirname(copilotPath), { recursive: true });
+    await fs.writeFile(copilotPath, '# Team Copilot Instructions\n\nKeep this section.\n', 'utf-8');
+
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats, [], 'github', true);
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats, [], 'github', true);
+
+    const content = await fs.readFile(copilotPath, 'utf-8');
+    const starts = (content.match(/gitnexus:start/g) || []).length;
+    expect(starts).toBe(1);
+    expect(content).toContain('Team Copilot Instructions');
+    expect(content).toContain('Keep this section.');
+  });
+
   it('installs skills files', async () => {
     const stats = { nodes: 10 };
     const result = await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);

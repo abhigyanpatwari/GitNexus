@@ -1,5 +1,9 @@
 import * as vscode from 'vscode';
-import { GitNexusService, type GraphFocusSymbolHint } from './services/gitnexus-service';
+import {
+  GitNexusService,
+  type AnalyzeSkillLayout,
+  type GraphFocusSymbolHint,
+} from './services/gitnexus-service';
 import { RepositoriesViewProvider } from './views/repositories-view';
 import { ModulesViewProvider } from './views/modules-view';
 import { ProcessesViewProvider } from './views/processes-view';
@@ -98,7 +102,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.registerTreeDataProvider('gitnexus.processesView', processesView),
     registerCommand(context, 'gitnexus.refresh', refreshAll),
     registerCommand(context, 'gitnexus.analyzeWorkspace', async (resource?: vscode.Uri) => {
-      const started = service.runAnalyzeWorkspace(resource);
+      const selectedLayout = getConfiguredAnalyzeSkillLayout();
+
+      const started = service.runAnalyzeWorkspace(resource, {
+        skillLayout: selectedLayout,
+        includeCopilotInstructions: true,
+      });
       if (started) {
         startAnalyzeRefreshLoop();
       }
@@ -263,4 +272,18 @@ function getGraphFocusSymbolHint(
     startLine,
     endLine,
   };
+}
+
+function getConfiguredAnalyzeSkillLayout(): AnalyzeSkillLayout {
+  const configured = vscode.workspace
+    .getConfiguration('gitnexus')
+    .get<string>('analyze.skillLayout', 'github')
+    .trim()
+    .toLowerCase();
+
+  if (configured === 'github' || configured === 'claude' || configured === 'dual') {
+    return configured;
+  }
+
+  return 'github';
 }

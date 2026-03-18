@@ -78,6 +78,15 @@ interface ClusterMemberReference {
   filePath: string;
 }
 
+export type AnalyzeSkillLayout = 'github' | 'claude' | 'dual';
+
+export interface AnalyzeWorkspaceOptions {
+  skillLayout?: AnalyzeSkillLayout;
+  includeCopilotInstructions?: boolean;
+}
+
+const DEFAULT_ANALYZE_SKILL_LAYOUT: AnalyzeSkillLayout = 'github';
+
 export class GitNexusService implements vscode.Disposable {
   private mcpClient: GitNexusMcpClient | undefined;
   private repos: RepoRegistryEntry[] = [];
@@ -336,7 +345,7 @@ export class GitNexusService implements vscode.Disposable {
     return resolved;
   }
 
-  runAnalyzeWorkspace(targetUri?: vscode.Uri): boolean {
+  runAnalyzeWorkspace(targetUri?: vscode.Uri, options?: AnalyzeWorkspaceOptions): boolean {
     const config = this.getConfig();
     const workspaceRoot = targetUri?.fsPath ?? getWorkspaceRoot();
 
@@ -345,7 +354,14 @@ export class GitNexusService implements vscode.Disposable {
       return false;
     }
 
-    const fullArgs = [...config.baseArgs, 'analyze', workspaceRoot];
+    const skillLayout = options?.skillLayout ?? DEFAULT_ANALYZE_SKILL_LAYOUT;
+    const includeCopilotInstructions = options?.includeCopilotInstructions ?? true;
+
+    const fullArgs = [...config.baseArgs, 'analyze', workspaceRoot, '--skill-layout', skillLayout];
+    if (includeCopilotInstructions) {
+      fullArgs.push('--copilot-instructions');
+    }
+
     const shellCommand = [config.cliCommand, ...fullArgs.map(toShellArg)].join(' ');
 
     const terminal = vscode.window.createTerminal({

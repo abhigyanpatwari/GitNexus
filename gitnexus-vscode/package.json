@@ -187,6 +187,21 @@
           "default": "",
           "description": "Preferred repository name when multiple indexed repositories are available."
         },
+        "gitnexus.analyze.skillLayout": {
+          "type": "string",
+          "enum": [
+            "github",
+            "claude",
+            "dual"
+          ],
+          "enumDescriptions": [
+            "Generate repository skills in .github/skills (default).",
+            "Generate repository skills in .claude/skills.",
+            "Generate repository skills in both .github/skills and .claude/skills."
+          ],
+          "default": "github",
+          "description": "Preferred repository skill layout used by GitNexus: Analyze Workspace."
+        },
         "gitnexus.cli.command": {
           "type": "string",
           "default": "npx",

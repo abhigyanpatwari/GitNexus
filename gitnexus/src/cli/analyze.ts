@@ -18,6 +18,7 @@ import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getG
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
 import { generateSkillFiles, type GeneratedSkillInfo } from './skill-gen.js';
+import { normalizeSkillLayout, type SkillLayout } from './skill-layout.js';
 import fs from 'fs/promises';
 
 
@@ -47,6 +48,8 @@ export interface AnalyzeOptions {
   force?: boolean;
   embeddings?: boolean;
   skills?: boolean;
+  skillLayout?: SkillLayout;
+  copilotInstructions?: boolean;
   verbose?: boolean;
 }
 
@@ -101,6 +104,7 @@ export const analyzeCommand = async (
   }
 
   const { storagePath, lbugPath } = getStoragePaths(repoPath);
+  const skillLayout = normalizeSkillLayout(options?.skillLayout);
 
   // Clean up stale KuzuDB files from before the LadybugDB migration.
   // If kuzu existed but lbug doesn't, we're doing a migration re-index — say so.
@@ -113,6 +117,24 @@ export const analyzeCommand = async (
   const existingMeta = await loadMeta(storagePath);
 
   if (existingMeta && !options?.force && !options?.skills && existingMeta.lastCommit === currentCommit) {
+    if (options?.copilotInstructions) {
+      const projectName = path.basename(repoPath);
+      const aiContext = await generateAIContextFiles(repoPath, storagePath, projectName, {
+        files: existingMeta.stats?.files,
+        nodes: existingMeta.stats?.nodes,
+        edges: existingMeta.stats?.edges,
+        communities: existingMeta.stats?.communities,
+        clusters: existingMeta.stats?.communities,
+        processes: existingMeta.stats?.processes,
+      }, undefined, skillLayout, true);
+
+      console.log('  Already up to date (refreshed context files)\n');
+      if (aiContext.files.length > 0) {
+        console.log(`  Context: ${aiContext.files.join(', ')}`);
+      }
+      return;
+    }
+
     console.log('  Already up to date\n');
     return;
   }
@@ -333,7 +355,7 @@ export const analyzeCommand = async (
   let generatedSkills: GeneratedSkillInfo[] = [];
   if (options?.skills && pipelineResult.communityResult) {
     updateBar(99, 'Generating skill files...');
-    const skillResult = await generateSkillFiles(repoPath, projectName, pipelineResult);
+    const skillResult = await generateSkillFiles(repoPath, projectName, pipelineResult, skillLayout);
     generatedSkills = skillResult.skills;
   }
 
@@ -344,7 +366,7 @@ export const analyzeCommand = async (
     communities: pipelineResult.communityResult?.stats.totalCommunities,
     clusters: aggregatedClusterCount,
     processes: pipelineResult.processResult?.stats.totalProcesses,
-  }, generatedSkills);
+  }, generatedSkills, skillLayout, options?.copilotInstructions ?? false);
 
   await closeLbug();
   // Note: we intentionally do NOT call disposeEmbedder() here.

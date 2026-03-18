@@ -10,6 +10,13 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { type GeneratedSkillInfo } from './skill-gen.js';
+import {
+  getAbsoluteCoreSkillDirs,
+  getRelativeCoreSkillDirs,
+  getRelativeGeneratedSkillDirs,
+  normalizeSkillLayout,
+  type SkillLayout,
+} from './skill-layout.js';
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -38,21 +45,35 @@ const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
  * - Exact tool commands with parameters — vague directives get ignored
  * - Self-review checklist — forces model to verify its own work
  */
-function generateGitNexusContent(projectName: string, stats: RepoStats, generatedSkills?: GeneratedSkillInfo[]): string {
+function generateGitNexusContent(
+  projectName: string,
+  stats: RepoStats,
+  generatedSkills?: GeneratedSkillInfo[],
+  skillLayout?: SkillLayout,
+): string {
+  const generatedDirs = getRelativeGeneratedSkillDirs(skillLayout);
+  const coreDirs = getRelativeCoreSkillDirs(skillLayout);
+
+  const generatedPathCell = (skillName: string): string =>
+    generatedDirs.map((dir) => `\`${dir}/${skillName}/SKILL.md\``).join(' + ');
+
+  const corePathCell = (skillName: string): string =>
+    coreDirs.map((dir) => `\`${dir}/${skillName}/SKILL.md\``).join(' + ');
+
   const generatedRows = (generatedSkills && generatedSkills.length > 0)
     ? generatedSkills.map(s =>
-        `| Work in the ${s.label} area (${s.symbolCount} symbols) | \`.claude/skills/generated/${s.name}/SKILL.md\` |`
+        `| Work in the ${s.label} area (${s.symbolCount} symbols) | ${generatedPathCell(s.name)} |`
       ).join('\n')
     : '';
 
   const skillsTable = `| Task | Read this skill file |
 |------|---------------------|
-| Understand architecture / "How does X work?" | \`.claude/skills/gitnexus/gitnexus-exploring/SKILL.md\` |
-| Blast radius / "What breaks if I change X?" | \`.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md\` |
-| Trace bugs / "Why is X failing?" | \`.claude/skills/gitnexus/gitnexus-debugging/SKILL.md\` |
-| Rename / extract / split / refactor | \`.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md\` |
-| Tools, resources, schema reference | \`.claude/skills/gitnexus/gitnexus-guide/SKILL.md\` |
-| Index, status, clean, wiki CLI commands | \`.claude/skills/gitnexus/gitnexus-cli/SKILL.md\` |${generatedRows ? '\n' + generatedRows : ''}`;
+| Understand architecture / "How does X work?" | ${corePathCell('gitnexus-exploring')} |
+| Blast radius / "What breaks if I change X?" | ${corePathCell('gitnexus-impact-analysis')} |
+| Trace bugs / "Why is X failing?" | ${corePathCell('gitnexus-debugging')} |
+| Rename / extract / split / refactor | ${corePathCell('gitnexus-refactoring')} |
+| Tools, resources, schema reference | ${corePathCell('gitnexus-guide')} |
+| Index, status, clean, wiki CLI commands | ${corePathCell('gitnexus-cli')} |${generatedRows ? '\n' + generatedRows : ''}`;
 
   return `${GITNEXUS_START_MARKER}
 # GitNexus — Code Intelligence
@@ -202,11 +223,10 @@ async function upsertGitNexusSection(
 }
 
 /**
- * Install GitNexus skills to .claude/skills/gitnexus/
- * Works natively with Claude Code, Cursor, and GitHub Copilot
+ * Install GitNexus skills to repository skill directories.
  */
-async function installSkills(repoPath: string): Promise<string[]> {
-  const skillsDir = path.join(repoPath, '.claude', 'skills', 'gitnexus');
+async function installSkills(repoPath: string, skillLayout: SkillLayout): Promise<string[]> {
+  const skillDirs = getAbsoluteCoreSkillDirs(repoPath, skillLayout);
   const installedSkills: string[] = [];
 
   // Skill definitions bundled with the package
@@ -238,13 +258,7 @@ async function installSkills(repoPath: string): Promise<string[]> {
   ];
 
   for (const skill of skills) {
-    const skillDir = path.join(skillsDir, skill.name);
-    const skillPath = path.join(skillDir, 'SKILL.md');
-
     try {
-      // Create skill directory
-      await fs.mkdir(skillDir, { recursive: true });
-
       // Try to read from package skills directory
       const packageSkillPath = path.join(__dirname, '..', '..', 'skills', `${skill.name}.md`);
       let skillContent: string;
@@ -266,7 +280,13 @@ Use GitNexus tools to accomplish this task.
 `;
       }
 
-      await fs.writeFile(skillPath, skillContent, 'utf-8');
+      for (const dir of skillDirs) {
+        const skillDir = path.join(dir, skill.name);
+        const skillPath = path.join(skillDir, 'SKILL.md');
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(skillPath, skillContent, 'utf-8');
+      }
+
       installedSkills.push(skill.name);
     } catch (err) {
       // Skip on error, don't fail the whole process
@@ -285,9 +305,12 @@ export async function generateAIContextFiles(
   _storagePath: string,
   projectName: string,
   stats: RepoStats,
-  generatedSkills?: GeneratedSkillInfo[]
+  generatedSkills?: GeneratedSkillInfo[],
+  skillLayout?: SkillLayout,
+  includeCopilotInstructions = false,
 ): Promise<{ files: string[] }> {
-  const content = generateGitNexusContent(projectName, stats, generatedSkills);
+  const resolvedSkillLayout = normalizeSkillLayout(skillLayout);
+  const content = generateGitNexusContent(projectName, stats, generatedSkills, resolvedSkillLayout);
   const createdFiles: string[] = [];
 
   // Create AGENTS.md (standard for Cursor, Windsurf, OpenCode, Cline, etc.)
@@ -300,10 +323,19 @@ export async function generateAIContextFiles(
   const claudeResult = await upsertGitNexusSection(claudePath, content);
   createdFiles.push(`CLAUDE.md (${claudeResult})`);
 
-  // Install skills to .claude/skills/gitnexus/
-  const installedSkills = await installSkills(repoPath);
+  if (includeCopilotInstructions) {
+    const copilotPath = path.join(repoPath, '.github', 'copilot-instructions.md');
+    await fs.mkdir(path.dirname(copilotPath), { recursive: true });
+    const copilotResult = await upsertGitNexusSection(copilotPath, content);
+    createdFiles.push(`.github/copilot-instructions.md (${copilotResult})`);
+  }
+
+  // Install skills to configured repository skill directories.
+  const installedSkills = await installSkills(repoPath, resolvedSkillLayout);
   if (installedSkills.length > 0) {
-    createdFiles.push(`.claude/skills/gitnexus/ (${installedSkills.length} skills)`);
+    for (const dir of getRelativeCoreSkillDirs(resolvedSkillLayout)) {
+      createdFiles.push(`${dir}/ (${installedSkills.length} skills)`);
+    }
   }
 
   return { files: createdFiles };

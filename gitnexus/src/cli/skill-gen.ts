@@ -13,6 +13,12 @@ import { PipelineResult } from '../types/pipeline.js';
 import { CommunityNode, CommunityMembership } from '../core/ingestion/community-processor.js';
 import { ProcessNode } from '../core/ingestion/process-processor.js';
 import { GraphNode, KnowledgeGraph } from '../core/graph/types.js';
+import {
+  getAbsoluteGeneratedSkillDirs,
+  getRelativeGeneratedSkillDirs,
+  normalizeSkillLayout,
+  type SkillLayout,
+} from './skill-layout.js';
 
 // ============================================================================
 // TYPES
@@ -65,10 +71,13 @@ interface CrossConnection {
 export const generateSkillFiles = async (
   repoPath: string,
   projectName: string,
-  pipelineResult: PipelineResult
+  pipelineResult: PipelineResult,
+  skillLayout?: SkillLayout,
 ): Promise<{ skills: GeneratedSkillInfo[]; outputPath: string }> => {
+  const resolvedLayout = normalizeSkillLayout(skillLayout);
   const { communityResult, processResult, graph } = pipelineResult;
-  const outputDir = path.join(repoPath, '.claude', 'skills', 'generated');
+  const outputDirs = getAbsoluteGeneratedSkillDirs(repoPath, resolvedLayout);
+  const outputDir = outputDirs[0];
 
   if (!communityResult || !communityResult.memberships.length) {
     console.log('\n  Skills: no communities detected, skipping skill generation');
@@ -107,10 +116,12 @@ export const generateSkillFiles = async (
   );
 
   // Step 4: Clear and recreate output directory
-  try {
-    await fs.rm(outputDir, { recursive: true, force: true });
-  } catch { /* may not exist */ }
-  await fs.mkdir(outputDir, { recursive: true });
+  for (const dir of outputDirs) {
+    try {
+      await fs.rm(dir, { recursive: true, force: true });
+    } catch { /* may not exist */ }
+    await fs.mkdir(dir, { recursive: true });
+  }
 
   // Step 5: Generate skill files
   const skills: GeneratedSkillInfo[] = [];
@@ -156,9 +167,11 @@ export const generateSkillFiles = async (
     );
 
     // Write file
-    const skillDir = path.join(outputDir, kebabName);
-    await fs.mkdir(skillDir, { recursive: true });
-    await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
+    for (const dir of outputDirs) {
+      const skillDir = path.join(dir, kebabName);
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
+    }
 
     const info: GeneratedSkillInfo = {
       name: kebabName,
@@ -171,7 +184,10 @@ export const generateSkillFiles = async (
     console.log(`    \u2713 ${community.label} (${community.symbolCount} symbols, ${files.length} files)`);
   }
 
-  console.log(`\n  ${skills.length} skills generated \u2192 .claude/skills/generated/`);
+  const outputSummary = getRelativeGeneratedSkillDirs(resolvedLayout)
+    .map((dir) => `${dir}/`)
+    .join(', ');
+  console.log(`\n  ${skills.length} skills generated \u2192 ${outputSummary}`);
 
   return { skills, outputPath: outputDir };
 };
