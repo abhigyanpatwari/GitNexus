@@ -188,6 +188,7 @@ export const processCalls = async (
     const verifiedReceivers = typeEnv && typeEnv.constructorBindings.length > 0
       ? verifyConstructorBindings(typeEnv.constructorBindings, file.path, ctx)
       : new Map<string, string>();
+    const receiverIndex = buildReceiverTypeIndex(verifiedReceivers);
 
     ctx.enableCache(file.path);
 
@@ -267,10 +268,10 @@ export const processCalls = async (
       const receiverName = callForm === 'member' ? extractReceiverName(nameNode) : undefined;
       let receiverTypeName = receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
       // Fall back to verified constructor bindings for return type inference
-      if (!receiverTypeName && receiverName && verifiedReceivers.size > 0) {
+      if (!receiverTypeName && receiverName && receiverIndex.size > 0) {
         const enclosingFunc = findEnclosingFunction(callNode, file.path, ctx);
         const funcName = enclosingFunc ? extractFuncNameFromSourceId(enclosingFunc) : '';
-        receiverTypeName = lookupReceiverType(verifiedReceivers, funcName, receiverName);
+        receiverTypeName = lookupReceiverType(receiverIndex, funcName, receiverName);
       }
       // Fall back to class-as-receiver for static method calls (e.g. UserService.find_user()).
       // When the receiver name is not a variable in TypeEnv but resolves to a Class/Struct/Interface
@@ -294,10 +295,10 @@ export const processCalls = async (
             let currentType = extracted.baseReceiverName && typeEnv
               ? typeEnv.lookup(extracted.baseReceiverName, callNode)
               : undefined;
-            if (!currentType && extracted.baseReceiverName && verifiedReceivers.size > 0) {
+            if (!currentType && extracted.baseReceiverName && receiverIndex.size > 0) {
               const enclosingFunc = findEnclosingFunction(callNode, file.path, ctx);
               const funcName = enclosingFunc ? extractFuncNameFromSourceId(enclosingFunc) : '';
-              currentType = lookupReceiverType(verifiedReceivers, funcName, extracted.baseReceiverName);
+              currentType = lookupReceiverType(receiverIndex, funcName, extracted.baseReceiverName);
             }
             if (!currentType && extracted.baseReceiverName) {
               const cr = ctx.resolve(extracted.baseReceiverName, file.path);
@@ -504,48 +505,69 @@ const receiverKey = (scope: string, varName: string): string =>
   `${scope}\0${varName}`;
 
 /**
- * Look up a receiver type from a verified receiver map.
- * The map is keyed by `scope\0varName` (full scope with @startIndex).
- * Since the lookup side only has `funcName` (no startIndex), we scan for
- * all entries whose key starts with `funcName@` and has the matching varName.
- * If exactly one unique type is found, return it. If multiple distinct types
- * exist (true overload collision), return undefined (refuse to guess).
- * Falls back to the file-level scope key `\0varName` (empty funcName).
+ * Pre-built secondary index for O(1) receiver type lookups.
+ * Built once per file from the verified receiver map, keyed by funcName → varName.
+ */
+type ReceiverTypeEntry =
+  | { readonly kind: 'resolved'; readonly value: string }
+  | { readonly kind: 'ambiguous' };
+type ReceiverTypeIndex = Map<string, Map<string, ReceiverTypeEntry>>;
+
+/**
+ * Build a two-level secondary index from the verified receiver map.
+ * The verified map is keyed by `scope\0varName` where scope is either
+ * "funcName@startIndex" (inside a function) or "" (file level).
+ * Index structure: Map<funcName, Map<varName, ReceiverTypeEntry>>
+ */
+const buildReceiverTypeIndex = (map: Map<string, string>): ReceiverTypeIndex => {
+  const index: ReceiverTypeIndex = new Map();
+  for (const [key, typeName] of map) {
+    const nul = key.indexOf('\0');
+    if (nul < 0) continue;
+    const scope = key.slice(0, nul);
+    const varName = key.slice(nul + 1);
+    if (!varName) continue;
+    if (scope !== '' && !scope.includes('@')) continue;
+    const funcName = scope === '' ? '' : scope.slice(0, scope.indexOf('@'));
+
+    let varMap = index.get(funcName);
+    if (!varMap) { varMap = new Map(); index.set(funcName, varMap); }
+
+    const existing = varMap.get(varName);
+    if (existing === undefined) {
+      varMap.set(varName, { kind: 'resolved', value: typeName });
+    } else if (existing.kind === 'resolved' && existing.value !== typeName) {
+      varMap.set(varName, { kind: 'ambiguous' });
+    }
+  }
+  return index;
+};
+
+/**
+ * O(1) receiver type lookup using the pre-built secondary index.
+ * Returns the unique type name if unambiguous. Falls back to file-level scope.
  */
 const lookupReceiverType = (
-  map: Map<string, string>,
+  index: ReceiverTypeIndex,
   funcName: string,
   varName: string,
 ): string | undefined => {
-  // Fast path: file-level scope (empty funcName — used as fallback)
-  const fileLevelKey = receiverKey('', varName);
-
-  const prefix = `${funcName}@`;
-  const suffix = `\0${varName}`;
-  let found: string | undefined;
-  let ambiguous = false;
-
-  for (const [key, value] of map) {
-    if (key === fileLevelKey) continue; // handled separately below
-    if (key.startsWith(prefix) && key.endsWith(suffix)) {
-      // Verify the key is exactly "funcName@<digits>\0varName" with no extra chars.
-      // The part between prefix and suffix should be the startIndex (digits only),
-      // but we accept any non-empty segment to be forward-compatible.
-      const middle = key.slice(prefix.length, key.length - suffix.length);
-      if (middle.length === 0) continue; // malformed key — skip
-      if (found === undefined) {
-        found = value;
-      } else if (found !== value) {
-        ambiguous = true;
-        break;
-      }
+  const funcBucket = index.get(funcName);
+  if (funcBucket) {
+    const entry = funcBucket.get(varName);
+    if (entry?.kind === 'resolved') return entry.value;
+    if (entry?.kind === 'ambiguous') {
+      // Ambiguous in this function scope — try file-level fallback
+      const fileEntry = index.get('')?.get(varName);
+      return fileEntry?.kind === 'resolved' ? fileEntry.value : undefined;
     }
   }
-
-  if (!ambiguous && found !== undefined) return found;
-
-  // Fallback: file-level scope (bindings outside any function)
-  return map.get(fileLevelKey);
+  // Fallback: file-level scope (funcName "")
+  if (funcName !== '') {
+    const fileEntry = index.get('')?.get(varName);
+    if (fileEntry?.kind === 'resolved') return fileEntry.value;
+  }
+  return undefined;
 };
 
 const resolveFieldAccessType = (
@@ -632,12 +654,12 @@ export const processCallsFromExtracted = async (
   // Scope-aware receiver types: keyed by filePath → "funcName\0varName" → typeName.
   // The scope dimension prevents collisions when two functions in the same file
   // have same-named locals pointing to different constructor types.
-  const fileReceiverTypes = new Map<string, Map<string, string>>();
+  const fileReceiverTypes = new Map<string, ReceiverTypeIndex>();
   if (constructorBindings) {
     for (const { filePath, bindings } of constructorBindings) {
       const verified = verifyConstructorBindings(bindings, filePath, ctx, graph);
       if (verified.size > 0) {
-        fileReceiverTypes.set(filePath, verified);
+        fileReceiverTypes.set(filePath, buildReceiverTypeIndex(verified));
       }
     }
   }

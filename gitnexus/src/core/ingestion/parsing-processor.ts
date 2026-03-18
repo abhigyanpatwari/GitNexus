@@ -1,4 +1,4 @@
-import { KnowledgeGraph, GraphNode, GraphRelationship } from '../graph/types.js';
+import { KnowledgeGraph, GraphNode, GraphRelationship, type NodeLabel } from '../graph/types.js';
 import Parser from 'tree-sitter';
 import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/parser-loader.js';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
@@ -201,7 +201,7 @@ const processParsingSequential = async (
       if (!nameNode && !captureMap['definition.constructor']) return;
       const nodeName = nameNode ? nameNode.text : 'init';
 
-      let nodeLabel = 'CodeElement';
+      let nodeLabel: NodeLabel = 'CodeElement';
 
       if (captureMap['definition.function']) {
         // C/C++: @definition.function is broad and also matches inline class methods (inside

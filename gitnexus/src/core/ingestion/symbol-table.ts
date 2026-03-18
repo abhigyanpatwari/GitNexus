@@ -1,7 +1,9 @@
+import type { NodeLabel } from '../graph/types.js';
+
 export interface SymbolDefinition {
   nodeId: string;
   filePath: string;
-  type: string; // 'Function', 'Class', etc.
+  type: NodeLabel;
   parameterCount?: number;
   /** Raw return type text extracted from AST (e.g. 'User', 'Promise<User>') */
   returnType?: string;
@@ -19,7 +21,7 @@ export interface SymbolTable {
     filePath: string,
     name: string,
     nodeId: string,
-    type: string,
+    type: NodeLabel,
     metadata?: { parameterCount?: number; returnType?: string; declaredType?: string; ownerId?: string }
   ) => void;
   
@@ -90,7 +92,7 @@ export const createSymbolTable = (): SymbolTable => {
     filePath: string,
     name: string,
     nodeId: string,
-    type: string,
+    type: NodeLabel,
     metadata?: { parameterCount?: number; returnType?: string; declaredType?: string; ownerId?: string }
   ) => {
     const def: SymbolDefinition = {

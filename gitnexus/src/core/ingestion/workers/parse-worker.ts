@@ -49,6 +49,7 @@ import { extractNamedBindings } from '../named-binding-extraction.js';
 import { appendKotlinWildcard } from '../resolvers/index.js';
 import { callRouters } from '../call-routing.js';
 import { extractPropertyDeclaredType } from '../type-extractors/shared.js';
+import type { NodeLabel } from '../../graph/types.js';
 
 // ============================================================================
 // Types for serializable results
@@ -85,7 +86,7 @@ interface ParsedSymbol {
   filePath: string;
   name: string;
   nodeId: string;
-  type: string;
+  type: NodeLabel;
   parameterCount?: number;
   returnType?: string;
   declaredType?: string;
@@ -236,7 +237,7 @@ const findEnclosingFunctionId = (node: any, filePath: string): string | null => 
 // Label detection from capture map
 // ============================================================================
 
-const getLabelFromCaptures = (captureMap: Record<string, any>): string | null => {
+const getLabelFromCaptures = (captureMap: Record<string, any>): NodeLabel | null => {
   // Skip imports (handled separately) and calls
   if (captureMap['import'] || captureMap['call']) return null;
   if (!captureMap['name']) return null;
