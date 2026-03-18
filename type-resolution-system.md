@@ -360,7 +360,7 @@ A key detail is that some initializer bindings are not fully resolved inside `Ty
 - validated class / struct constructor candidates
 - uniquely resolved function or method calls that expose a usable return type
 
-So return-type-aware receiver inference already exists in a constrained downstream form today. What does **not** yet exist is feeding that information back into `TypeEnv` broadly enough to power loop inference, general assignment propagation, and wider expression typing.
+So return-type-aware receiver inference already exists in a constrained downstream form today. Phase 7.3 extended this by threading `ReturnTypeLookup` into `TypeEnv` via `ForLoopExtractorContext`, enabling for-loop call-expression iterables (e.g., `for (const u of getUsers())`) to resolve element types in 7 languages (TS/JS, Java, Kotlin, C#, Go, Rust, Python, PHP). General assignment propagation (`var x = f()` binding the return type of `f` into the scope env) remains pending — the `pendingCallResults` infrastructure exists but is dormant until Phase 9.
 
 ---
 
@@ -406,7 +406,7 @@ Important gaps still remain:
 - limited branch-sensitive narrowing outside selected pattern constructs
 - limited Swift support compared with other languages
 - no complete destructuring-based field typing
-- no broad expression-level return-type propagation inside `TypeEnv`
+- no broad expression-level return-type propagation inside `TypeEnv` (for-loop call-expression iterables are resolved in 7 languages via `ReturnTypeLookup`, but general `var x = f()` assignment propagation is pending)
 
 ---
 

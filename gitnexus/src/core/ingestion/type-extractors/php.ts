@@ -124,7 +124,9 @@ const extractClassPropertyElementType = (propDecl: SyntaxNode): string | undefin
  */
 const findClassPropertyElementType = (propName: string, classNode: SyntaxNode): string | undefined => {
   const declList = classNode.childForFieldName('body')
-    ?? classNode.namedChild(classNode.namedChildCount - 1); // fallback: last named child
+    ?? (classNode.namedChild(classNode.namedChildCount - 1)?.type === 'declaration_list'
+        ? classNode.namedChild(classNode.namedChildCount - 1)
+        : null); // fallback: last named child, only if it's a declaration_list
   if (!declList) return undefined;
   for (let i = 0; i < declList.namedChildCount; i++) {
     const child = declList.namedChild(i);

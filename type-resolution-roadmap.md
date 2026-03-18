@@ -83,7 +83,7 @@ Resolved: Strategy C in the PHP `extractForLoopBinding` walks up the AST to the 
 
 The system can already infer receiver types from uniquely resolved call results in `call-processor.ts`. That needs to be generalised so `TypeEnv` can benefit from it too.
 
-Resolved: `ReturnTypeLookup` (Phase 7.1) encapsulates `lookupReturnType` / `lookupRawReturnType` and is threaded through `ForLoopExtractorContext` (Phase 7.2) to all for-loop extractors. Phase 7.2 also added `pendingCallResults` propagation: `var x = f()` assignments now propagate the inferred return type of `f` into the local scope env.
+Resolved: `ReturnTypeLookup` (Phase 7.1) encapsulates `lookupReturnType` / `lookupRawReturnType` and is threaded through `ForLoopExtractorContext` (Phase 7.2) to all for-loop extractors. Phase 7.2 also added the `pendingCallResults` infrastructure (the `PendingAssignment` discriminated union in `types.ts` and the Tier 2b processing loop in `type-env.ts`), but no extractor populates it yet — `var x = f()` propagation is Phase 9 work.
 
 ### Engineering direction (as implemented)
 
@@ -97,7 +97,7 @@ Resolved: `ReturnTypeLookup` (Phase 7.1) encapsulates `lookupReturnType` / `look
 
 - loop inference now works for direct function call iterables in all 7 typed-iteration languages
 - PHP `$this->property` foreach is resolved from class-level `@var` without requiring `@param` workarounds
-- `var x = f()` assignments propagate the element / receiver type for subsequent use in the same scope
+- `pendingCallResults` infrastructure is in place (Tier 2b loop + `PendingAssignment` union) — dormant until an extractor emits `{ kind: 'callResult' }` (Phase 9)
 
 ### Risk level
 
