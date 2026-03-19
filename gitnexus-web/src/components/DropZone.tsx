@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, DragEvent } from 'react';
-import { Upload, FileArchive, Github, Loader2, ArrowRight, Key, Eye, EyeOff, Globe, X } from 'lucide-react';
-import { cloneRepository, parseGitHubUrl } from '../services/git-clone';
+import { Upload, FileArchive, GitBranch, Loader2, ArrowRight, Key, Eye, EyeOff, Globe, X } from 'lucide-react';
+import { cloneRepository, parseRepositoryUrl, type GitAuthMode } from '../services/git-clone';
 import { connectToServer, type ConnectToServerResult } from '../services/server-connection';
 import { FileEntry } from '../services/zip';
 
@@ -18,9 +18,11 @@ function formatBytes(bytes: number): string {
 
 export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZoneProps) => {
   const [isDragging, setIsDragging] = useState(false);
-  const [activeTab, setActiveTab] = useState<'zip' | 'github' | 'server'>('zip');
-  const [githubUrl, setGithubUrl] = useState('');
-  const [githubToken, setGithubToken] = useState('');
+  const [activeTab, setActiveTab] = useState<'zip' | 'repo' | 'server'>('zip');
+  const [repoUrl, setRepoUrl] = useState('');
+  const [accessToken, setAccessToken] = useState('');
+  const [authUsername, setAuthUsername] = useState('');
+  const [gitAuthMode, setGitAuthMode] = useState<GitAuthMode>('auto');
   const [showToken, setShowToken] = useState(false);
   const [isCloning, setIsCloning] = useState(false);
   const [cloneProgress, setCloneProgress] = useState({ phase: '', percent: 0 });
@@ -79,14 +81,14 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
   }, [onFileSelect]);
 
   const handleGitClone = async () => {
-    if (!githubUrl.trim()) {
-      setError('Please enter a GitHub URL');
+    if (!repoUrl.trim()) {
+      setError('Please enter a repository URL');
       return;
     }
 
-    const parsed = parseGitHubUrl(githubUrl);
+    const parsed = parseRepositoryUrl(repoUrl);
     if (!parsed) {
-      setError('Invalid GitHub URL. Use format: https://github.com/owner/repo');
+      setError('Invalid repository URL. Use an HTTPS GitHub, GitLab, or self-hosted GitLab URL.');
       return;
     }
 
@@ -96,12 +98,15 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
 
     try {
       const files = await cloneRepository(
-        githubUrl,
+        repoUrl,
         (phase, percent) => setCloneProgress({ phase, percent }),
-        githubToken || undefined
+        accessToken || undefined,
+        gitAuthMode,
+        authUsername || undefined
       );
 
-      setGithubToken('');
+      setAccessToken('');
+      setAuthUsername('');
 
       if (onGitClone) {
         onGitClone(files);
@@ -109,14 +114,21 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
     } catch (err) {
       console.error('Clone failed:', err);
       const message = err instanceof Error ? err.message : 'Failed to clone repository';
-      if (message.includes('401') || message.includes('403') || message.includes('Authentication')) {
-        if (!githubToken) {
-          setError('This looks like a private repo. Add a GitHub PAT (Personal Access Token) to access it.');
-        } else {
-          setError('Authentication failed. Check your token permissions (needs repo access).');
-        }
+      if (
+        message.includes('Select GitHub, GitLab, or custom username + token auth') ||
+        message.includes('Username is required for custom username + token auth')
+      ) {
+        setError(message);
+      } else if (message.includes('not allowed') || message.includes('GITNEXUS_ALLOWED_GIT_HOSTS')) {
+        setError(message);
+        } else if (message.includes('401') || message.includes('403') || message.includes('Authentication')) {
+          if (!accessToken) {
+          setError('This looks like a private repository. Add an access token or password to access it.');
+          } else {
+          setError('Authentication failed. Check your token or password, selected auth mode, and username if your GitLab host requires one.');
+          }
       } else if (message.includes('404') || message.includes('not found')) {
-        setError('Repository not found. Check the URL or it might be private (needs PAT).');
+        setError('Repository not found. Check the URL, host allowlist, or access token.');
       } else {
         setError(message);
       }
@@ -207,18 +219,18 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
             ZIP Upload
           </button>
           <button
-            onClick={() => { setActiveTab('github'); setError(null); }}
+            onClick={() => { setActiveTab('repo'); setError(null); }}
             className={`
               flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg
               text-sm font-medium transition-all duration-200
-              ${activeTab === 'github'
+              ${activeTab === 'repo'
                 ? 'bg-accent text-white shadow-md'
                 : 'text-text-secondary hover:text-text-primary hover:bg-elevated'
               }
             `}
           >
-            <Github className="w-4 h-4" />
-            GitHub URL
+            <GitBranch className="w-4 h-4" />
+            Repo URL
           </button>
           <button
             onClick={() => { setActiveTab('server'); setError(null); }}
@@ -304,31 +316,31 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
           </>
         )}
 
-        {/* GitHub URL Tab */}
-        {activeTab === 'github' && (
+        {/* Repository URL Tab */}
+        {activeTab === 'repo' && (
           <div className="p-8 bg-surface border border-border-default rounded-3xl">
             {/* Icon */}
-            <div className="mx-auto w-20 h-20 mb-6 flex items-center justify-center bg-gradient-to-br from-[#333] to-[#24292e] rounded-2xl shadow-lg">
-              <Github className="w-10 h-10 text-white" />
+            <div className="mx-auto w-20 h-20 mb-6 flex items-center justify-center bg-gradient-to-br from-accent to-node-interface rounded-2xl shadow-lg">
+              <GitBranch className="w-10 h-10 text-white" />
             </div>
 
             {/* Text */}
             <h2 className="text-xl font-semibold text-text-primary text-center mb-2">
-              Clone from GitHub
+              Clone from Git URL
             </h2>
             <p className="text-sm text-text-secondary text-center mb-6">
-              Enter a repository URL to clone directly
+              Works with GitHub, GitLab, and self-hosted GitLab over HTTPS
             </p>
 
             {/* Inputs - wrapped in div to prevent form autofill */}
             <div className="space-y-3" data-form-type="other">
               <input
                 type="url"
-                name="github-repo-url-input"
-                value={githubUrl}
-                onChange={(e) => setGithubUrl(e.target.value)}
+                name="repo-url-input"
+                value={repoUrl}
+                onChange={(e) => setRepoUrl(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && !isCloning && handleGitClone()}
-                placeholder="https://github.com/owner/repo"
+                placeholder="https://gitlab.company.com/group/project"
                 disabled={isCloning}
                 autoComplete="off"
                 data-lpignore="true"
@@ -344,17 +356,81 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
                 "
               />
 
-              {/* Token input for private repos */}
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-text-secondary">
+                  Auth mode
+                </label>
+                <select
+                  value={gitAuthMode}
+                  onChange={(e) => setGitAuthMode(e.target.value as GitAuthMode)}
+                  disabled={isCloning}
+                  className="
+                    w-full px-4 py-3
+                    bg-elevated border border-border-default rounded-xl
+                    text-text-primary
+                    focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent
+                    disabled:opacity-50 disabled:cursor-not-allowed
+                    transition-all duration-200
+                  "
+                >
+                  <option value="auto">Auto detect</option>
+                  <option value="github">GitHub token</option>
+                  <option value="gitlab">GitLab token</option>
+                  <option value="basic">Username + password or token</option>
+                </select>
+                <p className="text-xs text-text-muted">
+                  Choose GitLab for self-hosted GitLab instances that do not use a gitlab hostname. Use username + password or token when your company Git server expects regular HTTP Basic auth.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-text-secondary">
+                  Username <span className="text-text-muted font-normal">(optional)</span>
+                </label>
+                <input
+                  type="text"
+                  name="git-auth-username-input"
+                  value={authUsername}
+                  onChange={(e) => setAuthUsername(e.target.value)}
+                  placeholder={
+                    gitAuthMode === 'basic'
+                      ? 'Required for username + password/token auth'
+                      : 'Leave empty to use oauth2 for GitLab PATs'
+                  }
+                  disabled={isCloning}
+                  autoComplete="off"
+                  data-lpignore="true"
+                  data-1p-ignore="true"
+                  data-form-type="other"
+                  className="
+                    w-full px-4 py-3
+                    bg-elevated border border-border-default rounded-xl
+                    text-text-primary placeholder-text-muted
+                    focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent
+                    disabled:opacity-50 disabled:cursor-not-allowed
+                    transition-all duration-200
+                  "
+                />
+                <p className="text-xs text-text-muted">
+                  For GitLab PATs, empty usually means `oauth2`. For passwords, deploy tokens, or some corporate GitLab setups, enter the actual username.
+                </p>
+              </div>
+
+              {/* Secret input for private repos */}
               <div className="relative">
                 <div className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted">
                   <Key className="w-4 h-4" />
                 </div>
                 <input
                   type={showToken ? 'text' : 'password'}
-                  name="github-pat-token-input"
-                  value={githubToken}
-                  onChange={(e) => setGithubToken(e.target.value)}
-                  placeholder="GitHub PAT (optional, for private repos)"
+                  name="git-access-token-input"
+                  value={accessToken}
+                  onChange={(e) => setAccessToken(e.target.value)}
+                  placeholder={
+                    gitAuthMode === 'basic'
+                      ? 'Password or token'
+                      : 'Access token (optional, for private repos)'
+                  }
                   disabled={isCloning}
                   autoComplete="new-password"
                   data-lpignore="true"
@@ -380,7 +456,7 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
 
               <button
                 onClick={handleGitClone}
-                disabled={isCloning || !githubUrl.trim()}
+                disabled={isCloning || !repoUrl.trim()}
                 className="
                   w-full flex items-center justify-center gap-2
                   px-4 py-3
@@ -422,19 +498,22 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
             )}
 
             {/* Security note */}
-            {githubToken && (
+            {accessToken && (
               <p className="mt-3 text-xs text-text-muted text-center">
-                Token stays in your browser only, never sent to any server
+                Credential is used only for clone authentication and is not stored.
               </p>
             )}
 
             {/* Hints */}
             <div className="mt-4 flex items-center justify-center gap-3 text-xs text-text-muted">
               <span className="px-3 py-1.5 bg-elevated border border-border-subtle rounded-md">
-                {githubToken ? 'Private + Public' : 'Public repos'}
+                {accessToken ? 'Private + Public' : 'Public repos'}
               </span>
               <span className="px-3 py-1.5 bg-elevated border border-border-subtle rounded-md">
                 Shallow clone
+              </span>
+              <span className="px-3 py-1.5 bg-elevated border border-border-subtle rounded-md">
+                Custom GitLab
               </span>
             </div>
           </div>

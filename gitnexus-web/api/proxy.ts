@@ -1,9 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { getConfiguredGitHostPatterns, isGitHostAllowed } from './proxy-utils';
 
 /**
  * CORS Proxy for isomorphic-git
  * 
- * isomorphic-git calls: /api/proxy?url=https://github.com/...
+ * isomorphic-git calls: /api/proxy?url=https://host/group/repo.git
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Handle CORS preflight
@@ -23,8 +24,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  // Only allow GitHub URLs for security
-  const allowedHosts = ['github.com', 'raw.githubusercontent.com'];
+  // Allow the built-in public hosts plus any self-hosted GitLab domains configured by env.
+  const allowedHosts = getConfiguredGitHostPatterns();
   let parsedUrl: URL;
   
   try {
@@ -34,8 +35,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
   
-  if (!allowedHosts.some(host => parsedUrl.hostname.endsWith(host))) {
-    res.status(403).json({ error: 'Only GitHub URLs are allowed' });
+  if (!isGitHostAllowed(parsedUrl.hostname, allowedHosts)) {
+    res.status(403).json({
+      error: `Git host "${parsedUrl.hostname}" is not allowed. Set GITNEXUS_ALLOWED_GIT_HOSTS to add custom GitLab hosts.`,
+    });
     return;
   }
 

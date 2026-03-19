@@ -1,6 +1,7 @@
 import git from 'isomorphic-git';
 import http from 'isomorphic-git/http/web';
 import LightningFS from '@isomorphic-git/lightning-fs';
+import { canUseHostedGitProxy } from '../../api/proxy-utils';
 import { shouldIgnorePath } from '../config/ignore-service';
 import { FileEntry } from './zip';
 
@@ -20,18 +21,48 @@ const initFS = () => {
 // Hosted proxy URL - use this for localhost to avoid local proxy issues
 const HOSTED_PROXY_URL = 'https://gitnexus.vercel.app/api/proxy';
 
+export type GitAuthMode = 'auto' | 'github' | 'gitlab' | 'basic';
+
+interface ParsedRepositoryUrl {
+  cloneUrl: string;
+  repoName: string;
+  host: string;
+  inferredAuthMode: Exclude<GitAuthMode, 'auto'> | null;
+}
+
+const inferGitAuthMode = (host: string): Exclude<GitAuthMode, 'auto'> | null => {
+  const normalizedHost = host.toLowerCase();
+
+  if (normalizedHost === 'github.com' || normalizedHost.endsWith('.github.com')) {
+    return 'github';
+  }
+
+  if (
+    normalizedHost === 'gitlab.com' ||
+    normalizedHost.endsWith('.gitlab.com') ||
+    normalizedHost.includes('gitlab')
+  ) {
+    return 'gitlab';
+  }
+
+  return null;
+};
+
+const selectProxyBase = (targetUrl: string): string => {
+  const isDev = typeof window !== 'undefined' && window.location.hostname === 'localhost';
+  if (!isDev) return '/api/proxy';
+  return canUseHostedGitProxy(targetUrl) ? HOSTED_PROXY_URL : '/api/proxy';
+};
+
 /**
  * Custom HTTP client that uses a query-param based proxy
  * - In development (localhost): uses the hosted Vercel proxy for reliability
  * - In production: uses the local /api/proxy endpoint
  */
 const createProxiedHttp = (): typeof http => {
-  const isDev = typeof window !== 'undefined' && window.location.hostname === 'localhost';
-  
   return {
     request: async (config) => {
-      // Use hosted proxy for localhost, local proxy for production
-      const proxyBase = isDev ? HOSTED_PROXY_URL : '/api/proxy';
+      const proxyBase = selectProxyBase(config.url);
       const proxyUrl = `${proxyBase}?url=${encodeURIComponent(config.url)}`;
       
       // Call the original http.request with the proxied URL
@@ -44,47 +75,116 @@ const createProxiedHttp = (): typeof http => {
 };
 
 /**
- * Parse GitHub URL to extract owner and repo
+ * Parse a Git repository URL to extract the clone URL and repo name.
  * Supports: 
  *   - https://github.com/owner/repo
- *   - https://github.com/owner/repo.git
- *   - github.com/owner/repo
+ *   - https://gitlab.com/group/subgroup/repo
+ *   - https://gitlab.company.com/group/repo.git
+ *   - host/group/repo
  */
-export const parseGitHubUrl = (url: string): { owner: string; repo: string } | null => {
-  const cleaned = url.trim().replace(/\.git$/, '');
-  const match = cleaned.match(/github\.com\/([^\/]+)\/([^\/]+)/);
-  
-  if (!match) return null;
-  
+export const parseRepositoryUrl = (url: string): ParsedRepositoryUrl | null => {
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+
+  const candidate = /^[a-z][a-z\d+\-.]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(candidate);
+  } catch {
+    return null;
+  }
+
+  if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+    return null;
+  }
+
+  const segments = parsedUrl.pathname.split('/').filter(Boolean);
+  if (segments.length < 2) {
+    return null;
+  }
+
+  const repoSegment = segments[segments.length - 1];
+  const repoName = repoSegment.replace(/\.git$/, '');
+  if (!repoName) {
+    return null;
+  }
+
+  const normalizedPath = `/${segments.join('/')}${repoSegment.endsWith('.git') ? '' : '.git'}`;
+
   return {
-    owner: match[1],
-    repo: match[2],
+    cloneUrl: `${parsedUrl.origin}${normalizedPath}`,
+    repoName,
+    host: parsedUrl.hostname.toLowerCase(),
+    inferredAuthMode: inferGitAuthMode(parsedUrl.hostname),
   };
 };
 
+// Backwards-compatible alias for older callers.
+export const parseGitHubUrl = parseRepositoryUrl;
+
+const createAuthCallback = (
+  token: string | undefined,
+  authMode: GitAuthMode,
+  parsedRepoUrl: ParsedRepositoryUrl,
+  username?: string
+) => {
+  if (!token) return undefined;
+
+  const normalizedUsername = username?.trim();
+
+  if (authMode === 'basic') {
+    if (!normalizedUsername) {
+      throw new Error('Username is required for custom username + token auth.');
+    }
+
+    return () => ({ username: normalizedUsername, password: token });
+  }
+
+  const resolvedAuthMode =
+    authMode === 'auto' ? parsedRepoUrl.inferredAuthMode : authMode;
+
+  if (!resolvedAuthMode) {
+    throw new Error('Select GitHub, GitLab, or custom username + token auth for private repositories on custom hosts.');
+  }
+
+  if (resolvedAuthMode === 'gitlab') {
+    return () => ({ username: normalizedUsername || 'oauth2', password: token });
+  }
+
+  if (normalizedUsername) {
+    return () => ({ username: normalizedUsername, password: token });
+  }
+
+  return () => ({ username: token, password: 'x-oauth-basic' });
+};
+
 /**
- * Clone a GitHub repository using isomorphic-git
+ * Clone a Git repository using isomorphic-git
  * Returns files in the same format as extractZip for compatibility
  * 
- * @param url - GitHub repository URL
+ * @param url - Git repository URL
  * @param onProgress - Progress callback
- * @param token - Optional GitHub PAT for private repos (stays client-side only)
+ * @param token - Optional access token for private repos
+ * @param authMode - Auth strategy for token-based clones
  */
 export const cloneRepository = async (
   url: string,
   onProgress?: (phase: string, progress: number) => void,
-  token?: string
+  token?: string,
+  authMode: GitAuthMode = 'auto',
+  username?: string
 ): Promise<FileEntry[]> => {
-  const parsed = parseGitHubUrl(url);
+  const parsed = parseRepositoryUrl(url);
   if (!parsed) {
-    throw new Error('Invalid GitHub URL. Use format: https://github.com/owner/repo');
+    throw new Error('Invalid repository URL. Use an HTTPS GitHub, GitLab, or self-hosted GitLab URL.');
   }
 
   // Initialize fresh filesystem to avoid stale IndexedDB data
   const fsName = initFS();
   
-  const dir = `/${parsed.repo}`;
-  const repoUrl = `https://github.com/${parsed.owner}/${parsed.repo}.git`;
+  const dir = `/${parsed.repoName}`;
+  const authCallback = createAuthCallback(token, authMode, parsed, username);
 
   try {
     onProgress?.('cloning', 0);
@@ -96,10 +196,9 @@ export const cloneRepository = async (
       fs,
       http: httpClient,
       dir,
-      url: repoUrl,
+      url: parsed.cloneUrl,
       depth: 1,
-      // Auth callback for private repos (PAT stays client-side)
-      onAuth: token ? () => ({ username: token, password: 'x-oauth-basic' }) : undefined,
+      onAuth: authCallback,
       onProgress: (event) => {
         if (event.total) {
           const percent = Math.round((event.loaded / event.total) * 100);
