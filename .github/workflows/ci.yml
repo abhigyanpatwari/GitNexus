@@ -18,7 +18,8 @@ concurrency:
 #   ci-quality.yml       — typecheck (tsc --noEmit)
 #   ci-tests.yml         — all tests with coverage (ubuntu) + cross-platform
 #
-# Shared setup is DRY via .github/actions/setup-gitnexus composite action.
+# The PR report runs inline (not via workflow_run) so it uses the
+# PR branch's code instead of main's — avoids stale report templates.
 
 jobs:
   quality:
@@ -30,37 +31,6 @@ jobs:
     uses: ./.github/workflows/ci-tests.yml
     permissions:
       contents: read
-
-  # ── Save PR metadata for the reporting workflow ─────────────────
-  # The ci-report.yml workflow (triggered by workflow_run) needs the
-  # PR number and job results to post a comment.  We save them as an
-  # artifact because workflow_run context doesn't reliably carry PR
-  # info for fork PRs.
-  save-pr-meta:
-    name: Save PR Metadata
-    if: always() && github.event_name == 'pull_request'
-    needs: [quality, tests]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Write metadata
-        shell: bash
-        env:
-          PR_NUMBER: ${{ github.event.number }}
-          QUALITY: ${{ needs.quality.result }}
-          TESTS: ${{ needs.tests.result }}
-        run: |
-          mkdir -p pr-meta
-          echo "$PR_NUMBER"  > pr-meta/pr_number
-          echo "$QUALITY"    > pr-meta/quality_result
-          echo "$TESTS"      > pr-meta/tests_result
-
-      - name: Upload PR metadata
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: pr-meta
-          path: pr-meta/
-          retention-days: 1
 
   # ── Unified CI gate ──────────────────────────────────────────────
   # Single required check for branch protection.
@@ -84,3 +54,261 @@ jobs:
             echo "::error::One or more CI jobs failed"
             exit 1
           fi
+
+  # ── PR Report ────────────────────────────────────────────────────
+  # Posts a sticky comment with test results, coverage, and
+  # per-platform status.  Runs inline so it uses the PR branch's
+  # report template (not main's stale version via workflow_run).
+  pr-report:
+    name: PR Report
+    if: always() && github.event_name == 'pull_request'
+    needs: [quality, tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+    timeout-minutes: 5
+    steps:
+      - name: Download test reports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: test-reports
+          path: ${{ runner.temp }}/test-reports
+        continue-on-error: true
+
+      - name: Fetch cross-platform job results
+        id: jobs
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const jobs = await github.rest.actions.listJobsForWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+              per_page: 50,
+            });
+
+            const results = {};
+            for (const job of jobs.data.jobs) {
+              if (job.name.includes('ubuntu')) results.ubuntu = job.conclusion || 'pending';
+              else if (job.name.includes('windows')) results.windows = job.conclusion || 'pending';
+              else if (job.name.includes('macos')) results.macos = job.conclusion || 'pending';
+            }
+            core.setOutput('ubuntu', results.ubuntu || 'unknown');
+            core.setOutput('windows', results.windows || 'unknown');
+            core.setOutput('macos', results.macos || 'unknown');
+
+      - name: Fetch base branch coverage
+        id: base-coverage
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'ci.yml',
+              branch: 'main',
+              status: 'success',
+              per_page: 1,
+            });
+
+            if (runs.data.workflow_runs.length === 0) {
+              core.setOutput('found', 'false');
+              return;
+            }
+
+            const mainRunId = runs.data.workflow_runs[0].id;
+            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: mainRunId,
+            });
+
+            const testReports = artifacts.data.artifacts.find(a => a.name === 'test-reports');
+            if (!testReports) {
+              core.setOutput('found', 'false');
+              return;
+            }
+
+            const zip = await github.rest.actions.downloadArtifact({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              artifact_id: testReports.id,
+              archive_format: 'zip',
+            });
+
+            const dest = path.join(process.env.RUNNER_TEMP, 'base-coverage');
+            fs.mkdirSync(dest, { recursive: true });
+            fs.writeFileSync(path.join(dest, 'base.zip'), Buffer.from(zip.data));
+            core.setOutput('found', 'true');
+            core.setOutput('dir', dest);
+
+      - name: Extract base coverage
+        if: steps.base-coverage.outputs.found == 'true'
+        shell: bash
+        run: |
+          cd "${{ steps.base-coverage.outputs.dir }}"
+          unzip -o base.zip -d base
+
+      - name: Build and post report
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        env:
+          QUALITY: ${{ needs.quality.result }}
+          TESTS: ${{ needs.tests.result }}
+          UBUNTU: ${{ steps.jobs.outputs.ubuntu }}
+          WINDOWS: ${{ steps.jobs.outputs.windows }}
+          MACOS: ${{ steps.jobs.outputs.macos }}
+          BASE_FOUND: ${{ steps.base-coverage.outputs.found }}
+          BASE_DIR: ${{ steps.base-coverage.outputs.dir }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const icon = (s) => ({ success: '✅', failure: '❌', cancelled: '⏭️' }[s] || '❓');
+            const temp = process.env.RUNNER_TEMP;
+
+            // ── Read coverage ──
+            function readCov(dir) {
+              const out = { stmts: 'N/A', branch: 'N/A', funcs: 'N/A', lines: 'N/A',
+                            stmtsCov: '', branchCov: '', funcsCov: '', linesCov: '' };
+              try {
+                const files = require('child_process')
+                  .execSync(`find "${dir}" -name coverage-summary.json -type f`, { encoding: 'utf8' })
+                  .trim().split('\n').filter(Boolean);
+                if (!files.length) return out;
+                const d = JSON.parse(fs.readFileSync(files[0], 'utf8')).total;
+                out.stmts = d.statements.pct; out.branch = d.branches.pct;
+                out.funcs = d.functions.pct;  out.lines = d.lines.pct;
+                out.stmtsCov = `${d.statements.covered}/${d.statements.total}`;
+                out.branchCov = `${d.branches.covered}/${d.branches.total}`;
+                out.funcsCov = `${d.functions.covered}/${d.functions.total}`;
+                out.linesCov = `${d.lines.covered}/${d.lines.total}`;
+              } catch {}
+              return out;
+            }
+
+            const cov = readCov(path.join(temp, 'test-reports'));
+            const base = process.env.BASE_FOUND === 'true'
+              ? readCov(path.join(process.env.BASE_DIR, 'base'))
+              : { stmts: 'N/A', branch: 'N/A', funcs: 'N/A', lines: 'N/A' };
+
+            // ── Read test results ──
+            let total = 0, passed = 0, failed = 0, skipped = 0, suites = 0, duration = '0s';
+            let skippedTests = [];
+            try {
+              const files = require('child_process')
+                .execSync(`find "${path.join(temp, 'test-reports')}" -name test-results.json -type f`, { encoding: 'utf8' })
+                .trim().split('\n').filter(Boolean);
+              if (files.length) {
+                const r = JSON.parse(fs.readFileSync(files[0], 'utf8'));
+                total = r.numTotalTests || 0;
+                passed = r.numPassedTests || 0;
+                failed = r.numFailedTests || 0;
+                skipped = r.numPendingTests || 0;
+                suites = r.numTotalTestSuites || 0;
+                const durS = Math.floor((Math.max(...r.testResults.map(t => t.endTime)) - r.startTime) / 1000);
+                duration = durS >= 60 ? `${Math.floor(durS / 60)}m ${durS % 60}s` : `${durS}s`;
+                // Collect skipped test names
+                for (const suite of r.testResults) {
+                  for (const t of (suite.assertionResults || [])) {
+                    if (t.status === 'pending' || t.status === 'skipped') {
+                      skippedTests.push(`- ${t.ancestorTitles.join(' > ')} > ${t.title}`);
+                    }
+                  }
+                }
+              }
+            } catch {}
+
+            // ── Coverage delta ──
+            function delta(pct, basePct) {
+              if (pct === 'N/A' || basePct === 'N/A') return '—';
+              const d = (pct - basePct).toFixed(1);
+              if (d > 0) return `📈 +${d}%`;
+              if (d < 0) return `📉 ${d}%`;
+              return '＝';
+            }
+
+            // ── Build markdown ──
+            const { QUALITY, TESTS, UBUNTU, WINDOWS, MACOS } = process.env;
+            const overall = (QUALITY === 'success' && TESTS === 'success')
+              ? '✅ **All checks passed**' : '❌ **Some checks failed**';
+            const sha = context.sha.slice(0, 7);
+
+            let body = `## CI Report\n\n${overall} &ensp; \`${sha}\`\n\n`;
+
+            body += `### Pipeline\n\n`;
+            body += `| Stage | Status | Ubuntu | Windows | macOS |\n`;
+            body += `|-------|--------|--------|---------|-------|\n`;
+            body += `| Typecheck | ${icon(QUALITY)} \`${QUALITY}\` | — | — | — |\n`;
+            body += `| Tests | ${icon(TESTS)} \`${TESTS}\` | ${icon(UBUNTU)} | ${icon(WINDOWS)} | ${icon(MACOS)} |\n\n`;
+
+            if (total > 0) {
+              body += `### Tests\n\n`;
+              body += `| Metric | Value |\n|--------|-------|\n`;
+              body += `| Total | **${total}** |\n`;
+              body += `| Passed | **${passed}** |\n`;
+              if (failed > 0) body += `| Failed | **${failed}** |\n`;
+              if (skipped > 0) body += `| Skipped | ${skipped} |\n`;
+              body += `| Files | ${suites} |\n`;
+              body += `| Duration | ${duration} |\n\n`;
+
+              if (failed === 0) {
+                body += `✅ All **${passed}** tests passed across **${suites}** files\n`;
+              } else {
+                body += `❌ **${failed}** failed / **${passed}** passed\n`;
+              }
+
+              if (skippedTests.length > 0) {
+                body += `\n<details>\n<summary>${skipped} test(s) skipped</summary>\n\n`;
+                body += skippedTests.join('\n') + '\n\n</details>\n';
+              }
+              body += '\n';
+            }
+
+            if (cov.stmts !== 'N/A') {
+              body += `### Coverage\n\n`;
+              body += `| Metric | Coverage | Covered | Base (main) | Delta |\n`;
+              body += `|--------|----------|---------|-------------|-------|\n`;
+              body += `| Statements | **${cov.stmts}%** | ${cov.stmtsCov} | ${base.stmts}% | ${delta(cov.stmts, base.stmts)} |\n`;
+              body += `| Branches | **${cov.branch}%** | ${cov.branchCov} | ${base.branch}% | ${delta(cov.branch, base.branch)} |\n`;
+              body += `| Functions | **${cov.funcs}%** | ${cov.funcsCov} | ${base.funcs}% | ${delta(cov.funcs, base.funcs)} |\n`;
+              body += `| Lines | **${cov.lines}%** | ${cov.linesCov} | ${base.lines}% | ${delta(cov.lines, base.lines)} |\n\n`;
+            } else {
+              body += `### Coverage\n\n⚠️ Coverage data unavailable — check the [test job](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for details.\n\n`;
+            }
+
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            body += `---\n<sub>📋 [Full run](${runUrl}) · Coverage from Ubuntu · Generated by CI</sub>`;
+
+            // ── Post sticky comment ──
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+
+            const marker = '<!-- ci-report -->';
+            const existing = comments.find(c => c.body?.includes(marker));
+            const fullBody = marker + '\n' + body;
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: fullBody,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: fullBody,
+              });
+            }
