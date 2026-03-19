@@ -16,7 +16,7 @@ concurrency:
 # ── Reusable workflow orchestration ─────────────────────────────────
 # Each concern lives in its own workflow file for maintainability:
 #   ci-quality.yml       — typecheck (tsc --noEmit)
-#   ci-unit-tests.yml    — all tests with coverage (ubuntu) + cross-platform
+#   ci-tests.yml         — all tests with coverage (ubuntu) + cross-platform
 #
 # Shared setup is DRY via .github/actions/setup-gitnexus composite action.
 
@@ -27,7 +27,7 @@ jobs:
       contents: read
 
   tests:
-    uses: ./.github/workflows/ci-unit-tests.yml
+    uses: ./.github/workflows/ci-tests.yml
     permissions:
       contents: read
 

@@ -5,7 +5,7 @@ on:
 
 jobs:
   tests:
-    name: tests (ubuntu / coverage)
+    name: ubuntu / coverage
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -40,7 +40,7 @@ jobs:
           retention-days: 5
 
   cross-platform:
-    name: tests (${{ matrix.os }})
+    name: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:

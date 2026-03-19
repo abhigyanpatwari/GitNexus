@@ -64,7 +64,6 @@ jobs:
         shell: bash
         run: |
           cd "$RUNNER_TEMP/dl"
-          # Extract each artifact into its own directory to avoid filename collisions
           for z in *.zip; do
             [ -f "$z" ] || continue
             name="${z%.zip}"
@@ -83,8 +82,6 @@ jobs:
             exit 0
           fi
 
-          # Validate PR number is a positive integer (artifact comes from
-          # untrusted fork code, so treat contents defensively).
           PR_NUM=$(cat "$DIR/pr_number" | tr -d '[:space:]')
           if ! [[ "$PR_NUM" =~ ^[0-9]+$ ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -94,10 +91,7 @@ jobs:
 
           echo "skip=false"              >> "$GITHUB_OUTPUT"
           echo "pr_number=$PR_NUM"       >> "$GITHUB_OUTPUT"
-          # Validate job-result strings against known GitHub Actions values.
-          # Artifact contents come from the PR workflow (potentially untrusted
-          # fork code), so we whitelist to prevent newline injection into
-          # GITHUB_OUTPUT.
+
           validate_result() {
             local val
             val=$(cat "$1" | tr -d '[:space:]')
@@ -109,6 +103,34 @@ jobs:
 
           echo "quality=$(validate_result "$DIR/quality_result")"  >> "$GITHUB_OUTPUT"
           echo "tests=$(validate_result "$DIR/tests_result")"      >> "$GITHUB_OUTPUT"
+
+      # ── Fetch cross-platform job results ─────────────────────────
+      - name: Fetch job results
+        if: steps.meta.outputs.skip != 'true'
+        id: jobs
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const runId = context.payload.workflow_run.id;
+            const jobs = await github.rest.actions.listJobsForWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: runId,
+              per_page: 50,
+            });
+
+            const results = {};
+            for (const job of jobs.data.jobs) {
+              // Match job names like "tests / tests (ubuntu / coverage)" or "tests / tests (macos-latest)"
+              const m = job.name.match(/tests.*\((.+?)\)/);
+              if (m) {
+                const platform = m[1].replace(' / coverage', '');
+                results[platform] = job.conclusion || 'pending';
+              }
+            }
+            core.setOutput('ubuntu', results['ubuntu'] || 'unknown');
+            core.setOutput('windows', results['windows-latest'] || 'unknown');
+            core.setOutput('macos', results['macos-latest'] || 'unknown');
 
       - name: Checkout (for vitest config)
         if: steps.meta.outputs.skip != 'true'
@@ -127,7 +149,6 @@ jobs:
             const fs = require('fs');
             const path = require('path');
 
-            // Find the latest successful CI run on main
             const runs = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -184,9 +205,13 @@ jobs:
         env:
           QUALITY: ${{ steps.meta.outputs.quality }}
           TESTS: ${{ steps.meta.outputs.tests }}
+          UBUNTU: ${{ steps.jobs.outputs.ubuntu }}
+          WINDOWS: ${{ steps.jobs.outputs.windows }}
+          MACOS: ${{ steps.jobs.outputs.macos }}
           BASE_FOUND: ${{ steps.base-coverage.outputs.found }}
           BASE_DIR: ${{ steps.base-coverage.outputs.dir }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           DIR="$RUNNER_TEMP/artifacts"
 
@@ -245,9 +270,15 @@ jobs:
             FAILED=$(jq -r '.numFailedTests' "$RESULTS_FILE" 2>/dev/null || echo 0)
             SKIPPED=$(jq -r '.numPendingTests' "$RESULTS_FILE" 2>/dev/null || echo 0)
             SUITES=$(jq -r '.numTotalTestSuites' "$RESULTS_FILE" 2>/dev/null || echo 0)
-            DURATION=$(jq -r '((.testResults | map(.endTime) | max) - (.startTime)) / 1000 | floor' "$RESULTS_FILE" 2>/dev/null || echo 0)
+            DURATION_S=$(jq -r '((.testResults | map(.endTime) | max) - (.startTime)) / 1000 | floor' "$RESULTS_FILE" 2>/dev/null || echo 0)
+            # Format as m:ss for readability
+            if [ "$DURATION_S" -ge 60 ] 2>/dev/null; then
+              DURATION="$((DURATION_S / 60))m $((DURATION_S % 60))s"
+            else
+              DURATION="${DURATION_S}s"
+            fi
           else
-            TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0; SUITES=0; DURATION=0
+            TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0; SUITES=0; DURATION="0s"
           fi
 
           # ── Status helpers ──
@@ -266,11 +297,11 @@ jobs:
             local diff
             diff=$(awk "BEGIN { printf \"%.1f\", $pct - $base }")
             if [ "$(awk "BEGIN { print ($pct > $base) ? 1 : 0 }")" = "1" ]; then
-              echo "📈 +${diff}"
+              echo "📈 +${diff}%"
             elif [ "$(awk "BEGIN { print ($pct < $base) ? 1 : 0 }")" = "1" ]; then
-              echo "📉 ${diff}"
+              echo "📉 ${diff}%"
             else
-              echo "＝ ${diff}"
+              echo "＝"
             fi
           }
 
@@ -285,7 +316,6 @@ jobs:
             local bar=""
             for ((i=0; i<filled; i++)); do bar+="█"; done
             for ((i=0; i<empty; i++)); do bar+="░"; done
-            # Green if >= base (or base unavailable), red if dropped
             if [ "$base" = "N/A" ] || [ "$(awk "BEGIN { print ($pct >= $base) ? 1 : 0 }")" = "1" ]; then
               echo "🟢 ${bar}"
             else
@@ -300,38 +330,49 @@ jobs:
             OVERALL="❌ **Some checks failed**"
           fi
 
+          SHORT_SHA="${HEAD_SHA:0:7}"
+
           # ── Build markdown ──
           {
             echo "body<<GITNEXUS_CI_REPORT_EOF_7f3a"
             echo "## CI Report"
             echo ""
-            echo "${OVERALL}"
+            echo "${OVERALL} &ensp; \`${SHORT_SHA}\`"
             echo ""
-            echo "### Pipeline Status"
+            echo "### Pipeline"
             echo ""
-            echo "| Stage | Status | Details |"
-            echo "|-------|--------|---------|"
-            echo "| $(status_icon "$QUALITY") Typecheck | \`${QUALITY}\` | tsc --noEmit |"
-            echo "| $(status_icon "$TESTS") Tests | \`${TESTS}\` | 3 platforms |"
+            echo "| Stage | Status | Ubuntu | Windows | macOS |"
+            echo "|-------|--------|--------|---------|-------|"
+            echo "| Typecheck | $(status_icon "$QUALITY") \`${QUALITY}\` | — | — | — |"
+            echo "| Tests | $(status_icon "$TESTS") \`${TESTS}\` | $(status_icon "$UBUNTU") | $(status_icon "$WINDOWS") | $(status_icon "$MACOS") |"
             echo ""
 
             if [ "$TOTAL" -gt 0 ] 2>/dev/null; then
-              echo "### Test Results"
+              echo "### Tests"
               echo ""
-              echo "| Tests | Passed | Failed | Skipped | Suites | Duration |"
-              echo "|-------|--------|--------|---------|--------|----------|"
-              echo "| **${TOTAL}** | **${PASSED}** | **${FAILED}** | **${SKIPPED}** | ${SUITES} | ${DURATION}s |"
+              echo "| Metric | Count |"
+              echo "|--------|-------|"
+              echo "| Total | **${TOTAL}** |"
+              echo "| Passed | **${PASSED}** |"
+              if [ "$FAILED" != "0" ]; then
+                echo "| Failed | **${FAILED}** |"
+              fi
+              if [ "$SKIPPED" != "0" ]; then
+                echo "| Skipped | ${SKIPPED} |"
+              fi
+              echo "| Files | ${SUITES} |"
+              echo "| Duration | ${DURATION} |"
               echo ""
 
               if [ "$FAILED" = "0" ]; then
-                echo "✅ All **${PASSED}** tests passed"
+                echo "✅ All **${PASSED}** tests passed across **${SUITES}** files"
               else
                 echo "❌ **${FAILED}** failed / **${PASSED}** passed"
               fi
               if [ "$SKIPPED" != "0" ]; then
                 echo ""
                 echo "<details>"
-                echo "<summary>${SKIPPED} test(s) skipped — expand for details</summary>"
+                echo "<summary>${SKIPPED} test(s) skipped</summary>"
                 echo ""
                 if [ -n "$RESULTS_FILE" ]; then
                   jq -r '
@@ -348,24 +389,26 @@ jobs:
             fi
 
             if [ "$C_STMTS" != "N/A" ]; then
-              echo "### Code Coverage"
+              echo "### Coverage"
               echo ""
-              echo "| Metric | Coverage | Covered | Base | Delta | Status |"
-              echo "|--------|----------|---------|------|-------|--------|"
-              echo "| Statements | **${C_STMTS}%** | ${C_STMTS_COV} | ${B_STMTS}% | $(cov_delta "$C_STMTS" "$B_STMTS") | $(cov_bar "$C_STMTS" "$B_STMTS") |"
-              echo "| Branches | **${C_BRANCH}%** | ${C_BRANCH_COV} | ${B_BRANCH}% | $(cov_delta "$C_BRANCH" "$B_BRANCH") | $(cov_bar "$C_BRANCH" "$B_BRANCH") |"
-              echo "| Functions | **${C_FUNCS}%** | ${C_FUNCS_COV} | ${B_FUNCS}% | $(cov_delta "$C_FUNCS" "$B_FUNCS") | $(cov_bar "$C_FUNCS" "$B_FUNCS") |"
-              echo "| Lines | **${C_LINES}%** | ${C_LINES_COV} | ${B_LINES}% | $(cov_delta "$C_LINES" "$B_LINES") | $(cov_bar "$C_LINES" "$B_LINES") |"
+              echo "| Metric | Coverage | Covered | Base (main) | Delta |"
+              echo "|--------|----------|---------|-------------|-------|"
+              echo "| Statements | **${C_STMTS}%** | ${C_STMTS_COV} | ${B_STMTS}% | $(cov_delta "$C_STMTS" "$B_STMTS") |"
+              echo "| Branches | **${C_BRANCH}%** | ${C_BRANCH_COV} | ${B_BRANCH}% | $(cov_delta "$C_BRANCH" "$B_BRANCH") |"
+              echo "| Functions | **${C_FUNCS}%** | ${C_FUNCS_COV} | ${B_FUNCS}% | $(cov_delta "$C_FUNCS" "$B_FUNCS") |"
+              echo "| Lines | **${C_LINES}%** | ${C_LINES_COV} | ${B_LINES}% | $(cov_delta "$C_LINES" "$B_LINES") |"
+              echo ""
+              echo "$(cov_bar "$C_STMTS" "$B_STMTS") **${C_STMTS}%** statements"
               echo ""
             else
-              echo "### Code Coverage"
+              echo "### Coverage"
               echo ""
-              echo "⚠️ Coverage data unavailable - check the [test job](${RUN_URL}) for details."
+              echo "⚠️ Coverage data unavailable — check the [test job](${RUN_URL}) for details."
               echo ""
             fi
 
             echo "---"
-            echo "<sub>📋 [View full run](${RUN_URL}) · Generated by CI</sub>"
+            echo "<sub>📋 [Full run](${RUN_URL}) · Coverage from Ubuntu · Generated by CI</sub>"
             echo "GITNEXUS_CI_REPORT_EOF_7f3a"
           } >> "$GITHUB_OUTPUT"
 
