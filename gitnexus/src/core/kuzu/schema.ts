@@ -203,6 +203,7 @@ CREATE NODE TABLE Section (
   filePath STRING,
   startLine INT64,
   endLine INT64,
+  level INT64,
   content STRING,
   description STRING,
   PRIMARY KEY (id)
@@ -307,8 +308,6 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM \`Module\` TO \`Module\`,
   FROM Section TO Section,
   FROM Section TO File,
-  FROM Section TO Community,
-  FROM Section TO Process,
   FROM CodeElement TO Community,
   FROM Interface TO Community,
   FROM Interface TO Function,

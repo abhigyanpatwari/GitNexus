@@ -64,6 +64,8 @@ export type NodeProperties = {
   // Entry point scoring (computed by process detection)
   entryPointScore?: number,
   entryPointReason?: string,
+  // Section-specific (markdown heading level, 1-6)
+  level?: number,
   // Method signature (for MRO disambiguation)
   parameterCount?: number,
   returnType?: string,

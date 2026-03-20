@@ -10,8 +10,9 @@ import path from 'node:path';
 import { generateId } from '../../lib/utils.js';
 import { KnowledgeGraph, GraphNode, GraphRelationship } from '../graph/types.js';
 
-const HEADING_RE = /^(#{1,6})\s+(.+)$/gm;
+const HEADING_RE = /^(#{1,6})\s+(.+)$/;
 const LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g;
+const MD_EXTENSIONS = new Set(['.md', '.mdx']);
 
 interface MdFile {
   path: string;
@@ -27,7 +28,8 @@ export const processMarkdown = (
   let totalLinks = 0;
 
   for (const file of files) {
-    if (!file.path.endsWith('.md')) continue;
+    const ext = path.extname(file.path).toLowerCase();
+    if (!MD_EXTENSIONS.has(ext)) continue;
 
     const fileNodeId = generateId('File', file.path);
     // Skip if file node doesn't exist (shouldn't happen, structure-processor creates it)
@@ -36,17 +38,34 @@ export const processMarkdown = (
     const lines = file.content.split('\n');
 
     // --- Extract headings and build hierarchy ---
-    const sectionStack: { level: number; id: string }[] = [];
-    let prevSectionLine = 0;
+    // First pass: collect all heading positions so we can compute endLine spans
+    const headings: { level: number; heading: string; lineNum: number }[] = [];
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const match = line.match(/^(#{1,6})\s+(.+)$/);
+      const match = lines[i].match(HEADING_RE);
       if (!match) continue;
 
-      const level = match[1].length;
-      const heading = match[2].trim();
-      const lineNum = i + 1; // 1-indexed
+      headings.push({
+        level: match[1].length,
+        heading: match[2].trim(),
+        lineNum: i + 1, // 1-indexed
+      });
+    }
+
+    // Second pass: create nodes with proper endLine spans
+    const sectionStack: { level: number; id: string }[] = [];
+
+    for (let h = 0; h < headings.length; h++) {
+      const { level, heading, lineNum } = headings[h];
+
+      // endLine = line before next heading at same or higher level, or EOF
+      let endLine = lines.length;
+      for (let j = h + 1; j < headings.length; j++) {
+        if (headings[j].level <= level) {
+          endLine = headings[j].lineNum - 1;
+          break;
+        }
+      }
 
       const sectionId = generateId('Section', `${file.path}:L${lineNum}:${heading}`);
 
@@ -57,7 +76,8 @@ export const processMarkdown = (
           name: heading,
           filePath: file.path,
           startLine: lineNum,
-          endLine: lineNum,
+          endLine,
+          level,
           description: `h${level}`,
         },
       };
@@ -87,6 +107,7 @@ export const processMarkdown = (
 
     // --- Extract links to other files in the repo ---
     const fileDir = path.dirname(file.path);
+    const seenLinks = new Set<string>();
     let linkMatch: RegExpExecArray | null;
     LINK_RE.lastIndex = 0;
 
@@ -108,10 +129,16 @@ export const processMarkdown = (
 
       if (allPathSet.has(resolved)) {
         const targetFileId = generateId('File', resolved);
-        const relId = generateId('IMPORTS', `${fileNodeId}->${targetFileId}`);
 
-        // Only add if not already present (multiple links to same file)
+        // Skip if target file node doesn't exist
         if (!graph.getNode(targetFileId)) continue;
+
+        // Dedup: skip if we've already linked this file pair
+        const linkKey = `${fileNodeId}->${targetFileId}`;
+        if (seenLinks.has(linkKey)) continue;
+        seenLinks.add(linkKey);
+
+        const relId = generateId('IMPORTS', linkKey);
 
         graph.addRelationship({
           id: relId,
