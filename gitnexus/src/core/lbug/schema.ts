@@ -14,6 +14,8 @@
 // ============================================================================
 export const NODE_TABLES = [
   'File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement', 'Community', 'Process',
+  // Markdown support
+  'Section',
   // Multi-language support
   'Struct', 'Enum', 'Macro', 'Typedef', 'Union', 'Namespace', 'Trait', 'Impl',
   'TypeAlias', 'Const', 'Static', 'Property', 'Record', 'Delegate', 'Annotation', 'Constructor', 'Template', 'Module'
@@ -443,6 +445,8 @@ export const NODE_SCHEMA_QUERIES = [
   CODE_ELEMENT_SCHEMA,
   COMMUNITY_SCHEMA,
   PROCESS_SCHEMA,
+  // Markdown support
+  SECTION_SCHEMA,
   // Multi-language support
   STRUCT_SCHEMA,
   ENUM_SCHEMA,
