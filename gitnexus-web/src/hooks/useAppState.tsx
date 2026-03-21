@@ -125,6 +125,7 @@ interface AppState {
   runPipelineFromFiles: (files: FileEntry[], onProgress: (p: PipelineProgress) => void, clusteringConfig?: ProviderConfig) => Promise<PipelineResult>;
   runQuery: (cypher: string) => Promise<any[]>;
   isDatabaseReady: () => Promise<boolean>;
+  hydrateWorkerFromServer: (nodes: any[], relationships: any[], fileContents: Record<string, string>) => Promise<void>;
 
   // Embedding state
   embeddingStatus: EmbeddingStatus;
@@ -480,6 +481,16 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     } catch {
       return false;
     }
+  }, []);
+
+  const hydrateWorkerFromServer = useCallback(async (
+    nodes: any[],
+    relationships: any[],
+    fileContents: Record<string, string>
+  ): Promise<void> => {
+    const api = apiRef.current;
+    if (!api) throw new Error('Worker not initialized');
+    await api.hydrateFromServerData(nodes, relationships, fileContents);
   }, []);
 
   // Embedding methods
@@ -1018,15 +1029,23 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       setFileContents(fileMap);
 
       setViewMode('exploring');
+      setProgress(null);
 
-      if (getActiveProviderConfig()) initializeAgent(pName);
+      // Hydrate the worker-side DB (LadybugDB + BM25) so Query/Processes/embeddings work
+      hydrateWorkerFromServer(result.nodes, result.relationships, result.fileContents).then(() => {
+        if (getActiveProviderConfig()) initializeAgent(pName);
 
-      startEmbeddings().catch((err) => {
-        if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
-          startEmbeddings('wasm').catch(console.warn);
-        } else {
-          console.warn('Embeddings auto-start failed:', err);
-        }
+        startEmbeddings().catch((err) => {
+          if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
+            startEmbeddings('wasm').catch(console.warn);
+          } else {
+            console.warn('Embeddings auto-start failed:', err);
+          }
+        });
+      }).catch((err) => {
+        console.warn('Worker hydration failed (non-fatal):', err);
+        // Still initialize agent even if hydration fails
+        if (getActiveProviderConfig()) initializeAgent(pName);
       });
     } catch (err) {
       console.error('Repo switch failed:', err);
@@ -1037,7 +1056,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       });
       setTimeout(() => { setViewMode('exploring'); setProgress(null); }, 3000);
     }
-  }, [serverBaseUrl, setProgress, setViewMode, setProjectName, setGraph, setFileContents, initializeAgent, startEmbeddings, setHighlightedNodeIds, clearAIToolHighlights, clearBlastRadius, setSelectedNode, setQueryResult, setCodeReferences, setCodePanelOpen, setCodeReferenceFocus]);
+  }, [serverBaseUrl, setProgress, setViewMode, setProjectName, setGraph, setFileContents, initializeAgent, startEmbeddings, hydrateWorkerFromServer, setHighlightedNodeIds, clearAIToolHighlights, clearBlastRadius, setSelectedNode, setQueryResult, setCodeReferences, setCodePanelOpen, setCodeReferenceFocus]);
 
   const removeCodeReference = useCallback((id: string) => {
     setCodeReferences(prev => {
@@ -1142,6 +1161,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     runPipelineFromFiles,
     runQuery,
     isDatabaseReady,
+    hydrateWorkerFromServer,
     // Embedding state and methods
     embeddingStatus,
     embeddingProgress,

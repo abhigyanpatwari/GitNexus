@@ -1,5 +1,7 @@
 import * as Comlink from 'comlink';
 import { runIngestionPipeline, runPipelineFromFiles } from '../core/ingestion/pipeline';
+import { createKnowledgeGraph } from '../core/graph/graph';
+import type { GraphNode, GraphRelationship } from '../core/graph/types';
 import { PipelineProgress, SerializablePipelineResult, serializePipelineResult } from '../types/pipeline';
 import { FileEntry } from '../services/zip';
 import {
@@ -205,6 +207,50 @@ const workerApi = {
 
     // Convert to serializable format for transfer back to main thread
     return serializePipelineResult(result);
+  },
+
+  /**
+   * Hydrate the worker-side database and indexes from server-loaded data.
+   * This is the missing step when using server/bridge mode — the main thread
+   * builds the React graph, but the worker's LadybugDB + BM25 stay empty.
+   */
+  async hydrateFromServerData(
+    nodes: GraphNode[],
+    relationships: GraphRelationship[],
+    fileContents: Record<string, string>
+  ): Promise<void> {
+    // 1. Build a KnowledgeGraph the same way the pipeline does
+    const graph = createKnowledgeGraph();
+    for (const node of nodes) graph.addNode(node);
+    for (const rel of relationships) graph.addRelationship(rel);
+
+    // 2. Store file contents for grep/read tools
+    storedFileContents = new Map(Object.entries(fileContents));
+
+    // 3. Build BM25 keyword index
+    const bm25DocCount = buildBM25Index(storedFileContents);
+    if (import.meta.env.DEV) {
+      console.log(`🔍 BM25 index built (server mode): ${bm25DocCount} documents`);
+    }
+
+    // 4. Set currentGraphResult so the agent context builder works
+    currentGraphResult = { graph, fileContents: storedFileContents };
+
+    // 5. Load graph into LadybugDB for Cypher queries (optional — gracefully degrades)
+    try {
+      const lbug = await getLbugAdapter();
+      await lbug.loadGraphToLbug(graph, storedFileContents);
+
+      if (import.meta.env.DEV) {
+        const stats = await lbug.getLbugStats();
+        console.log('✅ LadybugDB hydrated (server mode):', stats);
+      }
+    } catch (err) {
+      // LadybugDB is optional — silently continue without it
+      if (import.meta.env.DEV) {
+        console.warn('⚠️ LadybugDB hydration failed (non-fatal):', err);
+      }
+    }
   },
 
   /**

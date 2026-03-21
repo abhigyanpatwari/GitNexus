@@ -40,6 +40,7 @@ const AppContent = () => {
     availableRepos,
     setAvailableRepos,
     switchRepo,
+    hydrateWorkerFromServer,
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
@@ -157,21 +158,31 @@ const AppContent = () => {
 
     // Transition directly to exploring view
     setViewMode('exploring');
+    setProgress(null);
 
-    // Initialize agent if LLM is configured
-    if (getActiveProviderConfig()) {
-      initializeAgent(projectName);
-    }
+    // Hydrate the worker-side DB (LadybugDB + BM25) so Query/Processes/embeddings work
+    hydrateWorkerFromServer(result.nodes, result.relationships, result.fileContents).then(() => {
+      // Initialize agent if LLM is configured
+      if (getActiveProviderConfig()) {
+        initializeAgent(projectName);
+      }
 
-    // Auto-start embeddings
-    startEmbeddings().catch((err) => {
-      if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
-        startEmbeddings('wasm').catch(console.warn);
-      } else {
-        console.warn('Embeddings auto-start failed:', err);
+      // Auto-start embeddings (now that LadybugDB is ready)
+      startEmbeddings().catch((err) => {
+        if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
+          startEmbeddings('wasm').catch(console.warn);
+        } else {
+          console.warn('Embeddings auto-start failed:', err);
+        }
+      });
+    }).catch((err) => {
+      console.warn('Worker hydration failed (non-fatal):', err);
+      // Still initialize agent even if hydration fails
+      if (getActiveProviderConfig()) {
+        initializeAgent(projectName);
       }
     });
-  }, [setViewMode, setGraph, setFileContents, setProjectName, initializeAgent, startEmbeddings]);
+  }, [setViewMode, setGraph, setFileContents, setProjectName, setProgress, initializeAgent, startEmbeddings, hydrateWorkerFromServer]);
 
   // Auto-connect when ?server query param is present (bookmarkable shortcut)
   const autoConnectRan = useRef(false);
