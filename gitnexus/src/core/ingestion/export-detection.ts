@@ -205,7 +205,7 @@ const swiftExportChecker: ExportChecker = (node, _name) => {
   while (current) {
     if (current.type === 'modifiers' || current.type === 'visibility_modifier') {
       const text = current.text || '';
-      if (text.includes('private') || text.includes('fileprivate')) return false;
+      if (/\bprivate\b|\bfileprivate\b/.test(text)) return false;
     }
     current = current.parent;
   }
