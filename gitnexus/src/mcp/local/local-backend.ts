@@ -1190,21 +1190,25 @@ export class LocalBackend {
     // Map changed files to indexed symbols with accurate change_type
     const changedSymbols: any[] = [];
 
+    // Extract type from node ID (format: "Type:path/file.ext:name" or "File:path/file.ext")
+    const typeFromId = (id: string): string => id.split(':')[0] || 'Unknown';
+
     // Added files: all symbols are new (no callers can exist yet)
     for (const file of addedFiles) {
       const normalizedFile = file.replace(/\\/g, '/');
       try {
         const symbols = await executeParameterized(repo.id, `
           MATCH (n) WHERE n.filePath CONTAINS $filePath
-          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+          RETURN n.id AS id, n.name AS name, n.filePath AS filePath
           LIMIT 50
         `, { filePath: normalizedFile });
         for (const sym of symbols) {
+          const id = sym.id || sym[0];
           changedSymbols.push({
-            id: sym.id || sym[0],
+            id,
             name: sym.name || sym[1],
-            type: sym.type || sym[2],
-            filePath: sym.filePath || sym[3],
+            type: typeFromId(id),
+            filePath: sym.filePath || sym[2],
             change_type: 'Added',
           });
         }
@@ -1212,6 +1216,11 @@ export class LocalBackend {
     }
 
     // Modified files: diff old vs new symbol sets to classify each symbol
+    const baseRef = scope === 'compare' ? params.base_ref
+      : scope === 'staged' ? 'HEAD'
+      : scope === 'all' ? 'HEAD'
+      : undefined; // unstaged: compare against index (staged version)
+
     for (const file of modifiedFiles) {
       const normalizedFile = file.replace(/\\/g, '/');
 
@@ -1220,18 +1229,13 @@ export class LocalBackend {
       try {
         currentSymbols = await executeParameterized(repo.id, `
           MATCH (n) WHERE n.filePath CONTAINS $filePath
-          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+          RETURN n.id AS id, n.name AS name, n.filePath AS filePath
           LIMIT 50
         `, { filePath: normalizedFile });
       } catch (e) { logQueryError('detect-changes:modified-file-symbols', e); }
 
       // Try to get old symbol names by parsing the file at the base ref
       let oldSymbolNames = new Set<string>();
-      const baseRef = scope === 'compare' ? params.base_ref
-        : scope === 'staged' ? 'HEAD'
-        : scope === 'all' ? 'HEAD'
-        : undefined; // unstaged: compare against index (staged version)
-
       if (baseRef) {
         try {
           const oldContent = execFileSync('git', ['show', `${baseRef}:${file}`], { cwd: repo.repoPath, encoding: 'utf-8' });
@@ -1242,18 +1246,19 @@ export class LocalBackend {
       }
 
       for (const sym of currentSymbols) {
+        const id = sym.id || sym[0];
         const name = sym.name || sym[1];
-        const type = sym.type || sym[2];
+        const type = typeFromId(id);
         const symbolKey = `${type}:${name}`;
         const changeType = oldSymbolNames.size === 0
           ? 'Modified' // Fallback if we couldn't parse old version
           : oldSymbolNames.has(symbolKey) ? 'Modified' : 'Added';
 
         changedSymbols.push({
-          id: sym.id || sym[0],
+          id,
           name,
           type,
-          filePath: sym.filePath || sym[3],
+          filePath: sym.filePath || sym[2],
           change_type: changeType,
         });
       }
@@ -1261,7 +1266,7 @@ export class LocalBackend {
       // Symbols in old but not in current index → Deleted from this file
       if (oldSymbolNames.size > 0) {
         const currentSymbolKeys = new Set(
-          currentSymbols.map(s => `${s.type || s[2]}:${s.name || s[1]}`),
+          currentSymbols.map(s => `${typeFromId(s.id || s[0])}:${s.name || s[1]}`),
         );
         for (const oldKey of oldSymbolNames) {
           if (!currentSymbolKeys.has(oldKey)) {
@@ -1280,10 +1285,10 @@ export class LocalBackend {
 
     // Deleted files: parse old content to find what symbols were lost
     for (const file of deletedFiles) {
-      const baseRef = scope === 'compare' ? params.base_ref : 'HEAD';
-      if (baseRef) {
+      const deleteRef = baseRef || 'HEAD';
+      if (deleteRef) {
         try {
-          const oldContent = execFileSync('git', ['show', `${baseRef}:${file}`], { cwd: repo.repoPath, encoding: 'utf-8' });
+          const oldContent = execFileSync('git', ['show', `${deleteRef}:${file}`], { cwd: repo.repoPath, encoding: 'utf-8' });
           const oldSymbols = await this.extractSymbolNamesFromContent(file, oldContent);
           for (const key of oldSymbols) {
             const [type, name] = key.split(':');
