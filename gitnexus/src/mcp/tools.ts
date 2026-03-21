@@ -147,13 +147,15 @@ NOTE: ACCESSES edges (field read/write tracking) are included in context results
   },
   {
     name: 'detect_changes',
-    description: `Analyze uncommitted git changes and find affected execution flows.
-Maps git diff hunks to indexed symbols, then traces which processes are impacted.
+    description: `Analyze git changes and find affected execution flows with accurate risk scoring.
+Classifies each symbol as Added/Modified/Deleted using tree-sitter diffing, then traces impacted processes.
 
 WHEN TO USE: Before committing — to understand what your changes affect. Pre-commit review, PR preparation.
 AFTER THIS: Review affected processes. Use context() on high-risk symbols. READ gitnexus://repo/{name}/process/{name} for full traces.
 
-Returns: changed symbols, affected processes, and a risk summary.`,
+Change types: Added (new symbol, low risk), Modified (existing symbol changed, medium risk), Deleted (symbol removed, high risk).
+Risk formula: weighted score based on (modified_with_callers × 3) + (deleted × 5) + (added × 0.1).
+Returns: changed symbols with change_type, affected processes, risk summary with breakdown.`,
     inputSchema: {
       type: 'object',
       properties: {

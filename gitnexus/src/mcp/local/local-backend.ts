@@ -1089,59 +1089,115 @@ export class LocalBackend {
    * Detect changes — git-diff based impact analysis.
    * Maps changed lines to indexed symbols, then finds affected processes.
    */
+  /**
+   * Extract symbol names from file content using tree-sitter queries.
+   * Returns a Set of "Type:name" strings for diffing old vs new symbols.
+   */
+  private async extractSymbolNamesFromContent(
+    filePath: string,
+    content: string,
+  ): Promise<Set<string>> {
+    const symbols = new Set<string>();
+    try {
+      const { getLanguageFromFilename } = await import('../../core/ingestion/utils.js');
+      const { loadParser, loadLanguage, isLanguageAvailable } = await import('../../core/tree-sitter/parser-loader.js');
+      const { LANGUAGE_QUERIES } = await import('../../core/ingestion/tree-sitter-queries.js');
+      const { getLabelFromCaptures } = await import('../../core/ingestion/utils.js');
+      const Parser = (await import('tree-sitter')).default;
+
+      const language = getLanguageFromFilename(filePath);
+      if (!language || !isLanguageAvailable(language)) return symbols;
+
+      const queryString = LANGUAGE_QUERIES[language];
+      if (!queryString) return symbols;
+
+      const parser = await loadParser();
+      await loadLanguage(language, filePath);
+      const tree = parser.parse(content);
+      const lang = parser.getLanguage();
+      const query = new Parser.Query(lang, queryString);
+      const matches = query.matches(tree.rootNode);
+
+      for (const match of matches) {
+        const captureMap: Record<string, any> = {};
+        for (const c of match.captures) captureMap[c.name] = c.node;
+        const label = getLabelFromCaptures(captureMap, language);
+        if (!label) continue;
+        const nameNode = captureMap['name'];
+        if (!nameNode && label !== 'Constructor') continue;
+        const name = nameNode ? nameNode.text : 'init';
+        symbols.add(`${label}:${name}`);
+      }
+    } catch {
+      // Parsing failure — return empty set (symbols treated as unknown)
+    }
+    return symbols;
+  }
+
   private async detectChanges(repo: RepoHandle, params: {
     scope?: string;
     base_ref?: string;
   }): Promise<any> {
     await this.ensureInitialized(repo.id);
-    
+
     const scope = params.scope || 'unstaged';
     const { execFileSync } = await import('child_process');
 
     // Build git diff args based on scope (using execFileSync to avoid shell injection)
-    let diffArgs: string[];
+    let diffBase: string[];
     switch (scope) {
       case 'staged':
-        diffArgs = ['diff', '--staged', '--name-only'];
+        diffBase = ['diff', '--staged'];
         break;
       case 'all':
-        diffArgs = ['diff', 'HEAD', '--name-only'];
+        diffBase = ['diff', 'HEAD'];
         break;
       case 'compare':
         if (!params.base_ref) return { error: 'base_ref is required for "compare" scope' };
-        diffArgs = ['diff', params.base_ref, '--name-only'];
+        diffBase = ['diff', params.base_ref];
         break;
       case 'unstaged':
       default:
-        diffArgs = ['diff', '--name-only'];
+        diffBase = ['diff'];
         break;
     }
 
-    let changedFiles: string[];
+    // Get file-level change status using --diff-filter + --name-only
+    let addedFiles: string[] = [];
+    let modifiedFiles: string[] = [];
+    let deletedFiles: string[] = [];
     try {
-      const output = execFileSync('git', diffArgs, { cwd: repo.repoPath, encoding: 'utf-8' });
-      changedFiles = output.trim().split('\n').filter(f => f.length > 0);
+      const runDiff = (filter: string) => {
+        const output = execFileSync('git', [...diffBase, '--name-only', `--diff-filter=${filter}`], { cwd: repo.repoPath, encoding: 'utf-8' });
+        return output.trim().split('\n').filter(f => f.length > 0);
+      };
+      addedFiles = runDiff('A');
+      modifiedFiles = runDiff('M');
+      deletedFiles = runDiff('D');
     } catch (err: any) {
       return { error: `Git diff failed: ${err.message}` };
     }
-    
-    if (changedFiles.length === 0) {
+
+    const totalChangedFiles = addedFiles.length + modifiedFiles.length + deletedFiles.length;
+    if (totalChangedFiles === 0) {
       return {
         summary: { changed_count: 0, affected_count: 0, risk_level: 'none', message: 'No changes detected.' },
         changed_symbols: [],
         affected_processes: [],
       };
     }
-    
-    // Map changed files to indexed symbols
+
+    // Map changed files to indexed symbols with accurate change_type
     const changedSymbols: any[] = [];
-    for (const file of changedFiles) {
+
+    // Added files: all symbols are new (no callers can exist yet)
+    for (const file of addedFiles) {
       const normalizedFile = file.replace(/\\/g, '/');
       try {
         const symbols = await executeParameterized(repo.id, `
           MATCH (n) WHERE n.filePath CONTAINS $filePath
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
-          LIMIT 20
+          LIMIT 50
         `, { filePath: normalizedFile });
         for (const sym of symbols) {
           changedSymbols.push({
@@ -1149,15 +1205,114 @@ export class LocalBackend {
             name: sym.name || sym[1],
             type: sym.type || sym[2],
             filePath: sym.filePath || sym[3],
-            change_type: 'Modified',
+            change_type: 'Added',
           });
         }
-      } catch (e) { logQueryError('detect-changes:file-symbols', e); }
+      } catch (e) { logQueryError('detect-changes:added-file-symbols', e); }
     }
 
-    // Find affected processes
+    // Modified files: diff old vs new symbol sets to classify each symbol
+    for (const file of modifiedFiles) {
+      const normalizedFile = file.replace(/\\/g, '/');
+
+      // Get current symbols from the index
+      let currentSymbols: any[] = [];
+      try {
+        currentSymbols = await executeParameterized(repo.id, `
+          MATCH (n) WHERE n.filePath CONTAINS $filePath
+          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+          LIMIT 50
+        `, { filePath: normalizedFile });
+      } catch (e) { logQueryError('detect-changes:modified-file-symbols', e); }
+
+      // Try to get old symbol names by parsing the file at the base ref
+      let oldSymbolNames = new Set<string>();
+      const baseRef = scope === 'compare' ? params.base_ref
+        : scope === 'staged' ? 'HEAD'
+        : scope === 'all' ? 'HEAD'
+        : undefined; // unstaged: compare against index (staged version)
+
+      if (baseRef) {
+        try {
+          const oldContent = execFileSync('git', ['show', `${baseRef}:${file}`], { cwd: repo.repoPath, encoding: 'utf-8' });
+          oldSymbolNames = await this.extractSymbolNamesFromContent(file, oldContent);
+        } catch {
+          // File might not exist at base ref (renamed) — treat all as Added
+        }
+      }
+
+      for (const sym of currentSymbols) {
+        const name = sym.name || sym[1];
+        const type = sym.type || sym[2];
+        const symbolKey = `${type}:${name}`;
+        const changeType = oldSymbolNames.size === 0
+          ? 'Modified' // Fallback if we couldn't parse old version
+          : oldSymbolNames.has(symbolKey) ? 'Modified' : 'Added';
+
+        changedSymbols.push({
+          id: sym.id || sym[0],
+          name,
+          type,
+          filePath: sym.filePath || sym[3],
+          change_type: changeType,
+        });
+      }
+
+      // Symbols in old but not in current index → Deleted from this file
+      if (oldSymbolNames.size > 0) {
+        const currentSymbolKeys = new Set(
+          currentSymbols.map(s => `${s.type || s[2]}:${s.name || s[1]}`),
+        );
+        for (const oldKey of oldSymbolNames) {
+          if (!currentSymbolKeys.has(oldKey)) {
+            const [type, name] = oldKey.split(':');
+            changedSymbols.push({
+              id: `deleted:${file}:${name}`,
+              name,
+              type,
+              filePath: file,
+              change_type: 'Deleted',
+            });
+          }
+        }
+      }
+    }
+
+    // Deleted files: parse old content to find what symbols were lost
+    for (const file of deletedFiles) {
+      const baseRef = scope === 'compare' ? params.base_ref : 'HEAD';
+      if (baseRef) {
+        try {
+          const oldContent = execFileSync('git', ['show', `${baseRef}:${file}`], { cwd: repo.repoPath, encoding: 'utf-8' });
+          const oldSymbols = await this.extractSymbolNamesFromContent(file, oldContent);
+          for (const key of oldSymbols) {
+            const [type, name] = key.split(':');
+            changedSymbols.push({
+              id: `deleted:${file}:${name}`,
+              name,
+              type,
+              filePath: file,
+              change_type: 'Deleted',
+            });
+          }
+        } catch {
+          // Can't read old content — report file-level deletion
+          changedSymbols.push({
+            id: `deleted:${file}`,
+            name: file.split('/').pop() || file,
+            type: 'File',
+            filePath: file,
+            change_type: 'Deleted',
+          });
+        }
+      }
+    }
+
+    // Find affected processes (only for Modified and Deleted symbols — Added have no callers)
     const affectedProcesses = new Map<string, any>();
     for (const sym of changedSymbols) {
+      if (sym.change_type === 'Added') continue; // New symbols can't break existing flows
+      if (sym.id.startsWith('deleted:')) continue; // Deleted symbols won't be in the graph
       try {
         const procs = await executeParameterized(repo.id, `
           MATCH (n {id: $nodeId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
@@ -1182,15 +1337,28 @@ export class LocalBackend {
       } catch (e) { logQueryError('detect-changes:process-lookup', e); }
     }
 
-    const processCount = affectedProcesses.size;
-    const risk = processCount === 0 ? 'low' : processCount <= 5 ? 'medium' : processCount <= 15 ? 'high' : 'critical';
-    
+    // Weighted risk calculation
+    const addedCount = changedSymbols.filter(s => s.change_type === 'Added').length;
+    const deletedCount = changedSymbols.filter(s => s.change_type === 'Deleted').length;
+    const modifiedWithCallers = changedSymbols.filter(
+      s => s.change_type === 'Modified' && affectedProcesses.size > 0,
+    ).length;
+    const riskScore = (modifiedWithCallers * 3) + (deletedCount * 5) + (addedCount * 0.1);
+    const risk = riskScore === 0 ? 'low'
+      : riskScore <= 20 ? 'medium'
+      : riskScore <= 60 ? 'high'
+      : 'critical';
+
     return {
       summary: {
         changed_count: changedSymbols.length,
-        affected_count: processCount,
-        changed_files: changedFiles.length,
+        added_count: addedCount,
+        modified_count: changedSymbols.filter(s => s.change_type === 'Modified').length,
+        deleted_count: deletedCount,
+        affected_count: affectedProcesses.size,
+        changed_files: totalChangedFiles,
         risk_level: risk,
+        risk_score: Math.round(riskScore * 10) / 10,
       },
       changed_symbols: changedSymbols,
       affected_processes: Array.from(affectedProcesses.values()),
