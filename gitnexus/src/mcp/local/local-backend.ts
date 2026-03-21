@@ -1315,6 +1315,7 @@ export class LocalBackend {
 
     // Find affected processes (only for Modified and Deleted symbols — Added have no callers)
     const affectedProcesses = new Map<string, any>();
+    const symbolsWithProcesses = new Set<string>(); // Track which symbols actually participate in flows
     for (const sym of changedSymbols) {
       if (sym.change_type === 'Added') continue; // New symbols can't break existing flows
       if (sym.id.startsWith('deleted:')) continue; // Deleted symbols won't be in the graph
@@ -1323,6 +1324,7 @@ export class LocalBackend {
           MATCH (n {id: $nodeId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
           RETURN p.id AS pid, p.heuristicLabel AS label, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
         `, { nodeId: sym.id });
+        if (procs.length > 0) symbolsWithProcesses.add(sym.id);
         for (const proc of procs) {
           const pid = proc.pid || proc[0];
           if (!affectedProcesses.has(pid)) {
@@ -1344,26 +1346,50 @@ export class LocalBackend {
 
     // Weighted risk calculation
     const addedCount = changedSymbols.filter(s => s.change_type === 'Added').length;
+    const modifiedCount = changedSymbols.filter(s => s.change_type === 'Modified').length;
     const deletedCount = changedSymbols.filter(s => s.change_type === 'Deleted').length;
+    // Only count modified symbols that actually participate in execution flows
     const modifiedWithCallers = changedSymbols.filter(
-      s => s.change_type === 'Modified' && affectedProcesses.size > 0,
+      s => s.change_type === 'Modified' && symbolsWithProcesses.has(s.id),
     ).length;
-    const riskScore = (modifiedWithCallers * 3) + (deletedCount * 5) + (addedCount * 0.1);
+    // Added symbols cannot break existing code — only modified (with callers) and deleted contribute to risk
+    const riskScore = (modifiedWithCallers * 3) + (deletedCount * 5);
     const risk = riskScore === 0 ? 'low'
       : riskScore <= 20 ? 'medium'
       : riskScore <= 60 ? 'high'
       : 'critical';
 
+    // Build human-readable explanation
+    const explanationParts: string[] = [];
+    if (addedCount > 0) {
+      explanationParts.push(`${addedCount} new symbol${addedCount === 1 ? '' : 's'} added (low risk — no existing code depends on ${addedCount === 1 ? 'it' : 'them'} yet)`);
+    }
+    if (modifiedCount > 0) {
+      if (affectedProcesses.size > 0) {
+        explanationParts.push(`${modifiedCount} symbol${modifiedCount === 1 ? '' : 's'} modified, affecting ${affectedProcesses.size} execution flow${affectedProcesses.size === 1 ? '' : 's'}`);
+      } else {
+        explanationParts.push(`${modifiedCount} symbol${modifiedCount === 1 ? '' : 's'} modified (no execution flows affected)`);
+      }
+    }
+    if (deletedCount > 0) {
+      explanationParts.push(`${deletedCount} symbol${deletedCount === 1 ? '' : 's'} removed — any code that calls ${deletedCount === 1 ? 'it' : 'them'} will break`);
+    }
+    if (explanationParts.length === 0) {
+      explanationParts.push('No symbol-level changes detected.');
+    }
+    const explanation = explanationParts.join('. ') + '.';
+
     return {
       summary: {
         changed_count: changedSymbols.length,
         added_count: addedCount,
-        modified_count: changedSymbols.filter(s => s.change_type === 'Modified').length,
+        modified_count: modifiedCount,
         deleted_count: deletedCount,
         affected_count: affectedProcesses.size,
         changed_files: totalChangedFiles,
         risk_level: risk,
         risk_score: Math.round(riskScore * 10) / 10,
+        explanation,
       },
       changed_symbols: changedSymbols,
       affected_processes: Array.from(affectedProcesses.values()),
