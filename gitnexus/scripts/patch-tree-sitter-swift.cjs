@@ -41,8 +41,10 @@ try {
   let needsRebuild = false;
 
   if (content.includes('"actions"')) {
-    // Strip Python-style comments (#) before JSON parsing
-    const cleaned = content.replace(/#[^\n]*/g, '');
+    // Strip Python-style comments (#) and trailing commas before JSON parsing
+    const cleaned = content
+      .replace(/#[^\n]*/g, '')           // Remove # comments
+      .replace(/,(\s*[\]}])/g, '$1');    // Remove trailing commas before ] or }
     const gyp = JSON.parse(cleaned);
 
     if (gyp.targets && gyp.targets[0] && gyp.targets[0].actions) {
