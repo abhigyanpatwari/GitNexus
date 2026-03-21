@@ -198,7 +198,24 @@ async function upsertGitNexusSection(
   const endIdx = existingContent.indexOf(GITNEXUS_END_MARKER);
 
   if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-    // Replace existing section
+    const existingSection = existingContent.substring(startIdx, endIdx + GITNEXUS_END_MARKER.length);
+
+    // If the existing section contains <!-- gitnexus:keep -->, only update the stats line
+    // This lets users customize the section without it being overwritten on every analyze
+    if (existingSection.includes('<!-- gitnexus:keep -->')) {
+      // Update just the "Indexed as **Name** (N nodes, M edges, P flows)" line
+      const statsPattern = /Indexed as \*\*[^*]+\*\* \([^)]+\)/;
+      const statsLine = `Indexed as **${(content.match(/\*\*([^*]+)\*\*/)?.[1]) || 'unknown'}** (${(content.match(/\(([^)]+)\)/)?.[1]) || '0 nodes'})`;
+      if (statsPattern.test(existingSection)) {
+        const updatedSection = existingSection.replace(statsPattern, statsLine);
+        const before = existingContent.substring(0, startIdx);
+        const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
+        await fs.writeFile(filePath, (before + updatedSection + after).trim() + '\n', 'utf-8');
+        return 'updated';
+      }
+    }
+
+    // No keep marker — replace existing section with full verbose content
     const before = existingContent.substring(0, startIdx);
     const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
     const newContent = before + content + after;
