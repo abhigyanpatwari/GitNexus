@@ -911,13 +911,14 @@ export const SWIFT_QUERIES = `
 (class_declaration "extension" name: (user_type (type_identifier) @heritage.class)
   (inheritance_specifier inherits_from: (user_type (type_identifier) @heritage.extends))) @heritage
 
-; Write access: obj.field = value
+; Write access: obj.field = value (tree-sitter-swift 0.7.1 uses named fields)
 (assignment
-  (directly_assignable_expression
-    (_) @assignment.receiver
-    (navigation_suffix
-      (simple_identifier) @assignment.property))
-  (_)) @assignment
+  target: (directly_assignable_expression
+    (navigation_expression
+      target: (_) @assignment.receiver
+      suffix: (navigation_suffix
+        suffix: (simple_identifier) @assignment.property)))
+  result: (_)) @assignment
 
 `;
 
