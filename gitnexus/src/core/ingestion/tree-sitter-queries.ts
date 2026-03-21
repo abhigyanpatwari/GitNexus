@@ -919,6 +919,20 @@ export const SWIFT_QUERIES = `
       (simple_identifier) @assignment.property))
   (_)) @assignment
 
+; Implicit dependency: @Environment(TypeName.self) — SwiftUI dependency injection
+; Captured as a call so the resolver creates a CALLS edge to the injected type.
+(attribute
+  (user_type (type_identifier) @_attr)
+  (navigation_expression
+    (simple_identifier) @call.name
+    (navigation_suffix (simple_identifier)))) @call
+
+; Implicit dependency: @Query(sort: \TypeName.field) — SwiftData model dependency
+(attribute
+  (user_type (type_identifier) @_attr)
+  (navigation_expression
+    (key_path_expression (type_identifier) @call.name))) @call
+
 `;
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
