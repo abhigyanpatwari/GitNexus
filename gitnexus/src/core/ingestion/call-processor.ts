@@ -893,7 +893,20 @@ const resolveCallTarget = (
     if (disambiguated) return toResolveResult(disambiguated, tiered.tier);
   }
 
-  if (filteredCandidates.length !== 1) return null;
+  if (filteredCandidates.length !== 1) {
+    // Deduplicate: Swift extensions create multiple Class nodes with the same name.
+    // When all candidates share the same type and differ only by file (extension vs
+    // primary definition), they represent the same symbol. Prefer the primary
+    // definition (shortest file path: Product.swift over ProductExtension.swift).
+    if (filteredCandidates.length > 1) {
+      const allSameType = filteredCandidates.every(c => c.type === filteredCandidates[0].type);
+      if (allSameType && (filteredCandidates[0].type === 'Class' || filteredCandidates[0].type === 'Struct')) {
+        const sorted = [...filteredCandidates].sort((a, b) => a.filePath.length - b.filePath.length);
+        return toResolveResult(sorted[0], tiered.tier);
+      }
+    }
+    return null;
+  }
 
   return toResolveResult(filteredCandidates[0], tiered.tier);
 };
