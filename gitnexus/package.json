@@ -51,6 +51,7 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^3.0.0",
+    "@ladybugdb/core": "^0.15.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "cli-progress": "^3.12.0",
     "commander": "^12.0.0",
@@ -65,7 +66,7 @@
     "lru-cache": "^11.0.0",
     "mnemonist": "^0.39.0",
     "pandemonium": "^2.4.0",
-    "tree-sitter": "^0.21.0",
+    "tree-sitter": "^0.22.4",
     "tree-sitter-c": "^0.21.0",
     "tree-sitter-c-sharp": "^0.21.0",
     "tree-sitter-cpp": "^0.22.0",
@@ -81,7 +82,7 @@
   },
   "optionalDependencies": {
     "tree-sitter-kotlin": "^0.3.8",
-    "tree-sitter-swift": "^0.6.0"
+    "tree-sitter-swift": "^0.7.1"
   },
   "devDependencies": {
     "@types/cli-progress": "^3.11.6",
