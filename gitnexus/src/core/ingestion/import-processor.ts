@@ -306,6 +306,35 @@ export const processImports = async (
     // Tree is now owned by the LRU cache — no manual delete needed
   }
 
+  // ---- Swift: implicit module-level visibility ----
+  // In Swift, all files in the same module/target see each other without explicit imports.
+  // Add implicit import edges between all Swift files so the call resolver can find
+  // cross-file symbols at Tier 2a (import-scoped) instead of falling to Tier 3 (global).
+  const swiftFiles = files
+    .filter(f => getLanguageFromFilename(f.path) === SupportedLanguages.Swift)
+    .map(f => f.path);
+
+  if (swiftFiles.length > 1) {
+    // Group Swift files by target directory (SPM target or common root)
+    const targetGroups = groupSwiftFilesByTarget(swiftFiles, configs.swiftPackageConfig);
+
+    for (const group of targetGroups.values()) {
+      for (const srcFile of group) {
+        for (const otherFile of group) {
+          if (srcFile === otherFile) continue;
+          // Only add if not already imported (from explicit `import TargetName`)
+          if (importMap.has(srcFile) && importMap.get(srcFile)!.has(otherFile)) continue;
+          addImportEdge(srcFile, otherFile);
+        }
+      }
+    }
+
+    if (isDev) {
+      const totalGroups = targetGroups.size;
+      console.log(`📊 Swift: ${swiftFiles.length} files in ${totalGroups} target group(s), implicit imports added`);
+    }
+  }
+
   if (skippedByLang && skippedByLang.size > 0) {
     for (const [lang, count] of skippedByLang.entries()) {
       console.warn(
@@ -374,6 +403,29 @@ export const processImportsFromExtracted = async (
   }
 
   onProgress?.(totalFiles, totalFiles);
+
+  // ---- Swift: implicit module-level visibility (fast path) ----
+  const swiftFilePaths = files
+    .filter(f => getLanguageFromFilename(f.path) === SupportedLanguages.Swift)
+    .map(f => f.path);
+
+  if (swiftFilePaths.length > 1) {
+    const targetGroups = groupSwiftFilesByTarget(swiftFilePaths, configs.swiftPackageConfig);
+
+    for (const group of targetGroups.values()) {
+      for (const srcFile of group) {
+        for (const otherFile of group) {
+          if (srcFile === otherFile) continue;
+          if (importMap.has(srcFile) && importMap.get(srcFile)!.has(otherFile)) continue;
+          addImportEdge(srcFile, otherFile);
+        }
+      }
+    }
+
+    if (isDev) {
+      console.log(`📊 Swift: ${swiftFilePaths.length} files in ${targetGroups.size} target group(s), implicit imports added (fast path)`);
+    }
+  }
 
   if (isDev) {
     console.log(`📊 Import processing (fast path): ${getResolvedCount()}/${totalImportsFound} imports resolved to graph edges`);

@@ -827,7 +827,19 @@ const resolveCallTarget = (
   const tiered = ctx.resolve(call.calledName, currentFile);
   if (!tiered) return null;
 
-  const filteredCandidates = filterCallableCandidates(tiered.candidates, call.argCount, call.callForm);
+  let filteredCandidates = filterCallableCandidates(tiered.candidates, call.argCount, call.callForm);
+
+  // Swift/Kotlin: constructor calls look like free function calls (no `new` keyword).
+  // If free-form filtering found no callable candidates but the symbol resolves to a
+  // Class/Struct, retry with constructor form so CONSTRUCTOR_TARGET_TYPES applies.
+  if (filteredCandidates.length === 0 && call.callForm === 'free') {
+    const hasTypeTarget = tiered.candidates.some(c =>
+      c.type === 'Class' || c.type === 'Struct' || c.type === 'Enum',
+    );
+    if (hasTypeTarget) {
+      filteredCandidates = filterCallableCandidates(tiered.candidates, call.argCount, 'constructor');
+    }
+  }
 
   // D. Receiver-type filtering: for member calls with a known receiver type,
   // resolve the type through the same tiered import infrastructure, then
