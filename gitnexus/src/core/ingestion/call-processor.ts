@@ -1366,3 +1366,60 @@ export const processNextjsFetchRoutes = (
     }
   }
 };
+
+/**
+ * Extract fetch() calls from source files (sequential path).
+ * Workers handle this via tree-sitter captures in parse-worker; this function
+ * provides the same extraction for the sequential fallback path.
+ */
+export const extractFetchCallsFromFiles = async (
+  files: { path: string; content: string }[],
+  astCache: ASTCache,
+): Promise<ExtractedFetchCall[]> => {
+  const parser = await loadParser();
+  const result: ExtractedFetchCall[] = [];
+
+  for (const file of files) {
+    const language = getLanguageFromFilename(file.path);
+    if (!language) continue;
+    if (!isLanguageAvailable(language)) continue;
+
+    const queryStr = LANGUAGE_QUERIES[language];
+    if (!queryStr) continue;
+
+    await loadLanguage(language, file.path);
+
+    let tree = astCache.get(file.path);
+    if (!tree) {
+      try {
+        tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
+      } catch { continue; }
+      astCache.set(file.path, tree);
+    }
+
+    let matches;
+    try {
+      const lang = parser.getLanguage();
+      const query = new Parser.Query(lang, queryStr);
+      matches = query.matches(tree.rootNode);
+    } catch { continue; }
+
+    for (const match of matches) {
+      const captureMap: Record<string, any> = {};
+      match.captures.forEach(c => captureMap[c.name] = c.node);
+
+      if (captureMap['route.fetch']) {
+        const urlNode = captureMap['route.url'] ?? captureMap['route.template_url'];
+        if (urlNode) {
+          result.push({
+            filePath: file.path,
+            fetchURL: urlNode.text,
+            lineNumber: captureMap['route.fetch'].startPosition.row,
+          });
+        }
+      }
+    }
+  }
+
+  return result;
+};

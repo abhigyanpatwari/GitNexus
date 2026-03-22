@@ -8,7 +8,7 @@ import {
   buildImportResolutionContext
 } from './import-processor.js';
 import { EMPTY_INDEX } from './resolvers/index.js';
-import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracted, processRoutesFromExtracted, processNextjsFetchRoutes, seedCrossFileReceiverTypes, buildImportedReturnTypes, buildImportedRawReturnTypes, type ExportedTypeMap, buildExportedTypeMapFromGraph } from './call-processor.js';
+import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracted, processRoutesFromExtracted, processNextjsFetchRoutes, extractFetchCallsFromFiles, seedCrossFileReceiverTypes, buildImportedReturnTypes, buildImportedRawReturnTypes, type ExportedTypeMap, buildExportedTypeMapFromGraph } from './call-processor.js';
 import { nextjsFileToRouteURL } from './route-extractors/nextjs.js';
 import { generateId } from '../../lib/utils.js';
 import type { ExtractedFetchCall } from './workers/parse-worker.js';
@@ -680,6 +680,11 @@ export const runPipelineFromRepo = async (
       await processHeritage(graph, chunkFiles, astCache, ctx);
       if (rubyHeritage.length > 0) {
         await processHeritageFromExtracted(graph, rubyHeritage, ctx);
+      }
+      // Extract fetch() calls for Next.js route matching (sequential path)
+      const chunkFetchCalls = await extractFetchCallsFromFiles(chunkFiles, astCache);
+      if (chunkFetchCalls.length > 0) {
+        allFetchCalls.push(...chunkFetchCalls);
       }
       astCache.clear();
     }
