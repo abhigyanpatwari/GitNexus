@@ -10,7 +10,7 @@ import path from 'node:path';
 import { generateId } from '../../lib/utils.js';
 import { KnowledgeGraph, GraphNode, GraphRelationship } from '../graph/types.js';
 
-const HEADING_RE = /^(#{1,6})\s+(.+)$/;
+const HEADING_RE = /^(#{1,6})\s+(.+?)[\r\t ]*$/;
 const LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g;
 const MD_EXTENSIONS = new Set(['.md', '.mdx']);
 
