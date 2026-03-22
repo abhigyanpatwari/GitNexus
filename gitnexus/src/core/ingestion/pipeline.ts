@@ -817,6 +817,61 @@ export const runPipelineFromRepo = async (
       }
     }
 
+    // ── Phase 3.6: Tool Detection (MCP/RPC) ──────────────────────────
+    const toolDefs: { name: string; filePath: string; description: string }[] = [];
+
+    // Python @mcp.tool() decorators (accumulated from parse worker)
+    for (const td of allToolDefs) {
+      toolDefs.push({ name: td.toolName, filePath: td.filePath, description: td.description });
+    }
+
+    // TypeScript tool definition arrays (pattern: name: 'tool_name', description: `...`)
+    // Only scan files with 'tool' in their path to avoid scanning entire codebase
+    const toolCandidatePaths = allPaths.filter(p =>
+      (p.endsWith('.ts') || p.endsWith('.js')) && p.toLowerCase().includes('tool')
+    );
+    if (toolCandidatePaths.length > 0) {
+      const toolContents = await readFileContents(repoPath, toolCandidatePaths);
+      for (const [filePath, content] of toolContents) {
+        const toolPattern = /name:\s*['"](\w+)['"]\s*,\s*\n?\s*description:\s*[`'"]([\s\S]*?)[`'"]/g;
+        let match;
+        while ((match = toolPattern.exec(content)) !== null) {
+          const name = match[1];
+          const desc = match[2].slice(0, 200).replace(/\n/g, ' ').trim();
+          // Avoid duplicates from Python detection
+          if (!toolDefs.some(t => t.name === name)) {
+            toolDefs.push({ name, filePath, description: desc });
+          }
+        }
+      }
+    }
+
+    // Create Tool nodes and HANDLES_TOOL edges
+    if (toolDefs.length > 0) {
+      for (const td of toolDefs) {
+        const toolNodeId = generateId('Tool', td.name);
+        graph.addNode({
+          id: toolNodeId,
+          label: 'Tool',
+          properties: { name: td.name, filePath: td.filePath, description: td.description },
+        });
+
+        const handlerFileId = generateId('File', td.filePath);
+        graph.addRelationship({
+          id: generateId('HANDLES_TOOL', `${handlerFileId}->${toolNodeId}`),
+          sourceId: handlerFileId,
+          targetId: toolNodeId,
+          type: 'HANDLES_TOOL',
+          confidence: 1.0,
+          reason: 'tool-definition',
+        });
+      }
+
+      if (isDev) {
+        console.log(`🔧 Tool registry: ${toolDefs.length} tools detected`);
+      }
+    }
+
     // Log resolution cache stats
     if (isDev) {
       const rcStats = ctx.getStats();
