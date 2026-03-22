@@ -13,6 +13,7 @@ import { FileEntry } from './services/zip';
 import { getActiveProviderConfig } from './core/llm/settings-service';
 import { createKnowledgeGraph } from './core/graph/graph';
 import { connectToServer, fetchRepos, normalizeServerUrl, type ConnectToServerResult } from './services/server-connection';
+import {HelpPanel} from "@/components/HelpPanel.tsx";
 
 const AppContent = () => {
   const {
@@ -28,6 +29,8 @@ const AppContent = () => {
     runPipelineFromFiles,
     isSettingsPanelOpen,
     setSettingsPanelOpen,
+    isHelpDialogBoxOpen,
+    setHelpDialogBoxOpen,
     refreshLLMSettings,
     initializeAgent,
     startEmbeddings,
@@ -309,6 +312,11 @@ const AppContent = () => {
         isOpen={isSettingsPanelOpen}
         onClose={() => setSettingsPanelOpen(false)}
         onSettingsSaved={handleSettingsSaved}
+      />
+
+      <HelpPanel
+          isOpen={isHelpDialogBoxOpen}
+          onClose={() => setHelpDialogBoxOpen(false)}
       />
 
     </div>
