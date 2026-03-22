@@ -35,18 +35,23 @@ from sweep import (
     MIN_SAMPLES_FOR_OUTLIER_DETECTION,
     PCA_MAX_COMPONENTS,
     MAX_EMBED_CHARS,
+    IQR_MULTIPLIER,
+    MAX_OUTLIER_PCT,
+    _item_age,
+    _suggested_action,
 )
 
 
 def _make_api_issue(number: int, title: str = "Test issue", is_pr: bool = False,
-                    body: str = "Issue body", labels: list[str] | None = None) -> dict:
+                    body: str = "Issue body", labels: list[str] | None = None,
+                    created_at: str = "2026-03-21T00:00:00Z") -> dict:
     """Helper to build a mock GitHub API issue response object."""
     result: dict = {
         "number": number,
         "title": title,
         "html_url": f"https://github.com/owner/repo/issues/{number}",
         "body": body,
-        "created_at": "2026-03-21T00:00:00Z",
+        "created_at": created_at,
         "labels": [{"name": lbl} for lbl in (labels or [])],
     }
     if is_pr:
@@ -93,6 +98,15 @@ class TestConstants:
 
     def test_min_samples_is_100(self):
         assert MIN_SAMPLES_FOR_OUTLIER_DETECTION == 100
+
+    def test_pca_max_components_is_20(self):
+        assert PCA_MAX_COMPONENTS == 20
+
+    def test_iqr_multiplier_default(self):
+        assert IQR_MULTIPLIER == 3.0
+
+    def test_max_outlier_pct_default(self):
+        assert MAX_OUTLIER_PCT == 0.05
 
 
 class TestFetchAllOpenItems:
@@ -179,6 +193,71 @@ class TestFetchAllOpenItems:
         assert mock_get.call_count == 2
 
 
+class TestItemAge:
+    """Tests for _item_age helper."""
+
+    def test_recent_item(self):
+        from datetime import datetime, timezone, timedelta
+        recent = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
+        assert _item_age(recent) == "<1d"
+
+    def test_days_old(self):
+        from datetime import datetime, timezone, timedelta
+        old = (datetime.now(timezone.utc) - timedelta(days=15)).isoformat()
+        assert _item_age(old) == "15d"
+
+    def test_months_old(self):
+        from datetime import datetime, timezone, timedelta
+        old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+        assert _item_age(old) == "3mo"
+
+    def test_years_old(self):
+        from datetime import datetime, timezone, timedelta
+        old = (datetime.now(timezone.utc) - timedelta(days=400)).isoformat()
+        assert _item_age(old) == "1y"
+
+    def test_invalid_date(self):
+        assert _item_age("not-a-date") == "?"
+
+
+class TestSuggestedAction:
+    """Tests for _suggested_action helper."""
+
+    def test_both_issues_close_newer(self):
+        a = TriageItem(
+            number=1, title="A", html_url="u", is_pr=False, labels=[],
+            created_at="2026-01-01T00:00:00Z", text="t",
+        )
+        b = TriageItem(
+            number=2, title="B", html_url="u", is_pr=False, labels=[],
+            created_at="2026-02-01T00:00:00Z", text="t",
+        )
+        result = _suggested_action(a, b)
+        assert "Close #2 as duplicate" in result
+
+    def test_both_prs_review(self):
+        a = TriageItem(
+            number=1, title="A", html_url="u", is_pr=True, labels=[],
+            created_at="2026-01-01T00:00:00Z", text="t",
+        )
+        b = TriageItem(
+            number=2, title="B", html_url="u", is_pr=True, labels=[],
+            created_at="2026-01-01T00:00:00Z", text="t",
+        )
+        assert _suggested_action(a, b) == "Review for overlap"
+
+    def test_issue_pr_link(self):
+        a = TriageItem(
+            number=1, title="A", html_url="u", is_pr=False, labels=[],
+            created_at="2026-01-01T00:00:00Z", text="t",
+        )
+        b = TriageItem(
+            number=2, title="B", html_url="u", is_pr=True, labels=[],
+            created_at="2026-01-01T00:00:00Z", text="t",
+        )
+        assert _suggested_action(a, b) == "Link PR to issue"
+
+
 class TestGenerateReport:
     """Tests for the markdown report generator."""
 
@@ -186,7 +265,7 @@ class TestGenerateReport:
         items = [
             TriageItem(
                 number=1, title="Test", html_url="https://example.com/1",
-                is_pr=False, labels=[], created_at="2026-01-01", text="Test",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="Test",
             ),
         ]
         report = generate_report(items, [], [])
@@ -196,15 +275,39 @@ class TestGenerateReport:
         assert "0 outliers flagged" in report
         assert "0 duplicate pairs found" in report
 
-    def test_with_outliers_shows_distance(self):
+    def test_health_summary_table(self):
+        items = [
+            TriageItem(
+                number=1, title="Test", html_url="https://example.com/1",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="Test",
+            ),
+        ]
+        report = generate_report(items, [], [])
+        assert "### Health Summary" in report
+        assert "| Metric | Value |" in report
+        assert "| Items analyzed | 1 |" in report
+
+    def test_iqr_multiplier_in_thresholds(self):
+        """Report should show IQR multiplier, not percentile."""
+        items = [
+            TriageItem(
+                number=1, title="Test", html_url="https://example.com/1",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="Test",
+            ),
+        ]
+        report = generate_report(items, [], [])
+        assert "IQR multiplier" in report
+        assert "percentile" not in report.lower().split("thresholds")[0]  # not in thresholds line
+
+    def test_with_outliers_shows_distance_and_age(self):
         items = [
             TriageItem(
                 number=10, title="Spam Issue", html_url="https://example.com/10",
-                is_pr=False, labels=[], created_at="2026-01-01", text="spam",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="spam",
             ),
             TriageItem(
                 number=20, title="Good Issue", html_url="https://example.com/20",
-                is_pr=False, labels=[], created_at="2026-01-01", text="good",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="good",
             ),
         ]
         report = generate_report(items, [(0, 12.34)], [])
@@ -212,16 +315,48 @@ class TestGenerateReport:
         assert "Spam Issue" in report
         assert "12.34" in report
         assert "1 outliers flagged" in report
+        # Age column should be present
+        assert "| Age |" in report
 
-    def test_with_duplicates(self):
+    def test_outlier_borderline_in_details(self):
+        """Borderline outliers should be in a <details> section."""
+        from embedding_utils import _OutlierResult
+        items = [
+            TriageItem(
+                number=10, title="Borderline", html_url="https://example.com/10",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="spam",
+            ),
+        ]
+        # Create outlier results with cutoff=10.0, distance=12.0 (< 2*cutoff=20)
+        outlier_results = _OutlierResult([(0, 12.0)])
+        outlier_results.cutoff = 10.0
+        report = generate_report(items, outlier_results, [])
+        assert "<details>" in report
+        assert "Borderline" in report
+
+    def test_outlier_high_confidence(self):
+        """Items with distance > 2x cutoff should be in high confidence section."""
+        from embedding_utils import _OutlierResult
+        items = [
+            TriageItem(
+                number=10, title="Definite Spam", html_url="https://example.com/10",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="spam",
+            ),
+        ]
+        outlier_results = _OutlierResult([(0, 25.0)])
+        outlier_results.cutoff = 10.0
+        report = generate_report(items, outlier_results, [])
+        assert "High Confidence" in report
+
+    def test_with_duplicates_suggested_action(self):
         items = [
             TriageItem(
                 number=1, title="First", html_url="https://example.com/1",
-                is_pr=False, labels=[], created_at="2026-01-01", text="a",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="a",
             ),
             TriageItem(
                 number=2, title="Second", html_url="https://example.com/2",
-                is_pr=True, labels=[], created_at="2026-01-01", text="b",
+                is_pr=True, labels=[], created_at="2026-02-01T00:00:00Z", text="b",
             ),
         ]
         report = generate_report(items, [], [(0, 1, 0.954)])
@@ -229,12 +364,42 @@ class TestGenerateReport:
         assert "#2" in report
         assert "0.954" in report
         assert "1 duplicate pairs found" in report
+        assert "Suggested Action" in report
+        assert "Link PR to issue" in report
+
+    def test_duplicate_both_issues_close_newer(self):
+        items = [
+            TriageItem(
+                number=1, title="First", html_url="https://example.com/1",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="a",
+            ),
+            TriageItem(
+                number=2, title="Second", html_url="https://example.com/2",
+                is_pr=False, labels=[], created_at="2026-02-01T00:00:00Z", text="b",
+            ),
+        ]
+        report = generate_report(items, [], [(0, 1, 0.95)])
+        assert "Close #2 as duplicate" in report
+
+    def test_duplicate_both_prs_review(self):
+        items = [
+            TriageItem(
+                number=1, title="PR A", html_url="https://example.com/1",
+                is_pr=True, labels=[], created_at="2026-01-01T00:00:00Z", text="a",
+            ),
+            TriageItem(
+                number=2, title="PR B", html_url="https://example.com/2",
+                is_pr=True, labels=[], created_at="2026-01-01T00:00:00Z", text="b",
+            ),
+        ]
+        report = generate_report(items, [], [(0, 1, 0.95)])
+        assert "Review for overlap" in report
 
     def test_pr_type_label(self):
         items = [
             TriageItem(
                 number=5, title="PR Title", html_url="https://example.com/5",
-                is_pr=True, labels=[], created_at="2026-01-01", text="pr",
+                is_pr=True, labels=[], created_at="2026-01-01T00:00:00Z", text="pr",
             ),
         ]
         report = generate_report(items, [(0, 8.5)], [])
@@ -244,7 +409,7 @@ class TestGenerateReport:
         items = [
             TriageItem(
                 number=1, title="T", html_url="u",
-                is_pr=False, labels=[], created_at="d", text="t",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="t",
             ),
         ]
         report = generate_report(items, [], [])
@@ -386,26 +551,39 @@ class TestApplyLabelsToItem:
 class TestGenerateReportWithLabels:
     """Tests for label suggestions in the report."""
 
-    def test_report_includes_label_section_with_top1_only(self):
+    def test_report_includes_label_section_high_confidence(self):
+        """High-confidence label (raw_sim >= 0.5) should appear in main table."""
         items = [
             TriageItem(
                 number=1, title="Fix crash", html_url="https://example.com/1",
-                is_pr=False, labels=[], created_at="2026-01-01", text="crash",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="crash",
             ),
         ]
-        suggestions = [[("bug", 0.85), ("enhancement", 0.42)]]
+        suggestions = [[("bug", 0.85)]]
         report = generate_report(items, [], [], label_suggestions=suggestions)
         assert "Suggested Labels" in report
-        # Only the top-1 label should appear in the report
         assert "`bug` (0.85)" in report
-        assert "`enhancement`" not in report
         assert "1 items suggested for labeling" in report
+
+    def test_report_low_confidence_in_details(self):
+        """Low-confidence label (raw_sim < 0.5) should be in <details> section."""
+        items = [
+            TriageItem(
+                number=1, title="Something", html_url="https://example.com/1",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="something",
+            ),
+        ]
+        suggestions = [[("maybe-bug", 0.35)]]
+        report = generate_report(items, [], [], label_suggestions=suggestions)
+        assert "Low-confidence suggestions" in report
+        assert "<details>" in report
+        assert "`maybe-bug` (0.35)" in report
 
     def test_report_skips_already_labeled_items(self):
         items = [
             TriageItem(
                 number=1, title="Already labeled", html_url="https://example.com/1",
-                is_pr=False, labels=["bug"], created_at="2026-01-01", text="bug",
+                is_pr=False, labels=["bug"], created_at="2026-01-01T00:00:00Z", text="bug",
             ),
         ]
         suggestions = [[("bug", 0.95)]]
@@ -417,11 +595,11 @@ class TestGenerateReportWithLabels:
         items = [
             TriageItem(
                 number=1, title="Spam garbage", html_url="https://example.com/1",
-                is_pr=False, labels=[], created_at="2026-01-01", text="spam",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="spam",
             ),
             TriageItem(
                 number=2, title="Real bug", html_url="https://example.com/2",
-                is_pr=False, labels=[], created_at="2026-01-01", text="bug",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="bug",
             ),
         ]
         suggestions = [[("bug", 0.85)], [("bug", 0.90)]]
@@ -436,11 +614,32 @@ class TestGenerateReportWithLabels:
         items = [
             TriageItem(
                 number=1, title="T", html_url="u",
-                is_pr=False, labels=[], created_at="d", text="t",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="t",
             ),
         ]
         report = generate_report(items, [], [], label_suggestions=None)
         assert "Suggested Labels" not in report
+
+    def test_label_concentration_warning(self):
+        """When >50% of suggestions point to the same label, a warning should appear."""
+        items = [
+            TriageItem(
+                number=i, title=f"Item {i}", html_url=f"https://example.com/{i}",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text=f"text {i}",
+            )
+            for i in range(4)
+        ]
+        # 3 out of 4 items get "bug" label -> 75% concentration
+        suggestions = [
+            [("bug", 0.85)],
+            [("bug", 0.80)],
+            [("bug", 0.75)],
+            [("enhancement", 0.90)],
+        ]
+        report = generate_report(items, [], [], label_suggestions=suggestions)
+        assert "Warning" in report
+        assert "`bug`" in report
+        assert "3/4" in report
 
 
 class TestMain:
@@ -485,7 +684,7 @@ class TestMain:
         items = [
             TriageItem(
                 number=i, title=f"Item {i}", html_url=f"https://example.com/{i}",
-                is_pr=False, labels=[], created_at="2026-01-01", text=f"text {i}",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text=f"text {i}",
             )
             for i in range(n)
         ]
@@ -527,12 +726,12 @@ class TestMain:
         self, mock_fetch, mock_labels, mock_embed, mock_norm, mock_reduce,
         mock_outliers, mock_dupes, mock_suggest, mock_write, mock_create,
     ):
-        """With < MIN_SAMPLES (150) items, outlier detection should be skipped."""
-        n = MIN_SAMPLES_FOR_OUTLIER_DETECTION - 1  # 149
+        """With < MIN_SAMPLES items, outlier detection should be skipped."""
+        n = MIN_SAMPLES_FOR_OUTLIER_DETECTION - 1
         items = [
             TriageItem(
                 number=i, title=f"Item {i}", html_url=f"https://example.com/{i}",
-                is_pr=False, labels=[], created_at="2026-01-01", text=f"text {i}",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text=f"text {i}",
             )
             for i in range(n)
         ]
@@ -568,7 +767,7 @@ class TestMain:
         items = [
             TriageItem(
                 number=1, title="Item", html_url="https://example.com/1",
-                is_pr=False, labels=[], created_at="2026-01-01", text="text",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="text",
             )
         ]
         mock_fetch.return_value = items
@@ -594,19 +793,19 @@ class TestMain:
     @patch("sweep.embed_texts")
     @patch("sweep.fetch_repo_labels")
     @patch("sweep.fetch_all_open_items")
-    def test_applies_labels_to_unlabeled_items(
+    def test_labels_not_auto_applied(
         self, mock_fetch, mock_labels, mock_embed, mock_norm,
         mock_dupes, mock_suggest, mock_apply, mock_write, mock_create,
     ):
-        """When not dry run, top-1 label should be applied to unlabeled items."""
+        """Auto-labeling is disabled; labels should appear in report only."""
         items = [
             TriageItem(
                 number=1, title="Crash bug", html_url="https://example.com/1",
-                is_pr=False, labels=[], created_at="2026-01-01", text="crash",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text="crash",
             ),
             TriageItem(
                 number=2, title="Already labeled", html_url="https://example.com/2",
-                is_pr=False, labels=["enhancement"], created_at="2026-01-01", text="feat",
+                is_pr=False, labels=["enhancement"], created_at="2026-01-01T00:00:00Z", text="feat",
             ),
         ]
         mock_fetch.return_value = items
@@ -614,8 +813,8 @@ class TestMain:
             RepoLabel(name="bug", description="Broken", text="bug: Broken"),
         ]
         mock_suggest.return_value = [
-            [("bug", 0.90)],       # item 1: unlabeled, should get labeled
-            [("bug", 0.45)],       # item 2: already labeled, skip
+            [("bug", 0.90)],
+            [("bug", 0.45)],
         ]
 
         embeddings = np.random.randn(2, 384).astype(np.float32)
@@ -624,8 +823,8 @@ class TestMain:
 
         main()
 
-        # Only item 1 (unlabeled) should get a label applied
-        mock_apply.assert_called_once_with(1, ["bug"])
+        # Auto-labeling is disabled — apply_labels_to_item should never be called
+        mock_apply.assert_not_called()
 
     @patch("sweep.create_report_issue")
     @patch("sweep.write_report")
@@ -638,16 +837,16 @@ class TestMain:
     @patch("sweep.embed_texts")
     @patch("sweep.fetch_repo_labels")
     @patch("sweep.fetch_all_open_items")
-    def test_outliers_do_not_get_labeled(
+    def test_outliers_excluded_from_report_suggestions(
         self, mock_fetch, mock_labels, mock_embed, mock_norm, mock_reduce,
         mock_outliers, mock_dupes, mock_suggest, mock_apply, mock_write, mock_create,
     ):
-        """Items flagged as outliers should not receive label suggestions."""
+        """Items flagged as outliers should not appear in report label suggestions."""
         n = MIN_SAMPLES_FOR_OUTLIER_DETECTION
         items = [
             TriageItem(
                 number=i, title=f"Item {i}", html_url=f"https://example.com/{i}",
-                is_pr=False, labels=[], created_at="2026-01-01", text=f"text {i}",
+                is_pr=False, labels=[], created_at="2026-01-01T00:00:00Z", text=f"text {i}",
             )
             for i in range(n)
         ]
@@ -655,9 +854,7 @@ class TestMain:
         mock_labels.return_value = [
             RepoLabel(name="bug", description="Broken", text="bug: Broken"),
         ]
-        # Outlier detection flags items 0 and 5 (now returns tuples with distances)
         mock_outliers.return_value = [(0, 12.5), (5, 15.3)]
-        # Every item gets a suggestion
         mock_suggest.return_value = [[("bug", 0.85)] for _ in range(n)]
 
         embeddings = np.random.randn(n, 384).astype(np.float32)
@@ -667,9 +864,10 @@ class TestMain:
 
         main()
 
-        # Items 0 and 5 are outliers — should NOT be labeled
-        labeled_numbers = [call.args[0] for call in mock_apply.call_args_list]
-        assert 0 not in labeled_numbers
-        assert 5 not in labeled_numbers
-        # Other items should be labeled (n - 2 outliers)
-        assert mock_apply.call_count == n - 2
+        # Auto-labeling is disabled
+        mock_apply.assert_not_called()
+        # Report should still be generated (outliers excluded from suggestions in report)
+        mock_write.assert_called_once()
+        report = mock_write.call_args[0][0]
+        # Outlier items 0 and 5 should not appear in the label suggestions section
+        assert "Item 0" not in report.split("Suggested Labels")[1] if "Suggested Labels" in report else True

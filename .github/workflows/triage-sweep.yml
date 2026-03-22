@@ -3,13 +3,19 @@ name: Triage Sweep
 on:
   workflow_dispatch:
     inputs:
-      outlier_percentile:
+      iqr_multiplier:
         description: >-
-          Chi2 percentile for dimension-aware outlier cutoff (0-1).
-          0.997 is the multivariate equivalent of 3-sigma.
-          Lower = more aggressive flagging.
+          IQR multiplier for outlier cutoff.
+          cutoff = Q75 + multiplier * IQR.
+          Higher = fewer outliers flagged.
         type: number
-        default: 0.997
+        default: 3.0
+      max_outlier_pct:
+        description: >-
+          Maximum fraction of items that can be flagged as outliers (0-1).
+          Hard cap to prevent over-flagging.
+        type: number
+        default: 0.05
       contamination:
         description: >-
           Expected fraction of outliers in the data (0-0.5).
@@ -39,6 +45,7 @@ on:
 permissions:
   contents: read
   issues: write
+  pull-requests: write
 
 concurrency:
   group: triage-sweep
@@ -69,7 +76,7 @@ jobs:
       - name: Cache FastEmbed model weights
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
-          path: ~/.cache/fastembed_cache
+          path: ${{ github.workspace }}/.fastembed_cache
           key: fastembed-bge-small-en-v1.5
 
       - name: Run triage sweep
@@ -77,7 +84,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          INPUT_OUTLIER_PERCENTILE: ${{ inputs.outlier_percentile }}
+          FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.fastembed_cache
+          INPUT_IQR_MULTIPLIER: ${{ inputs.iqr_multiplier }}
+          INPUT_MAX_OUTLIER_PCT: ${{ inputs.max_outlier_pct }}
           INPUT_CONTAMINATION: ${{ inputs.contamination }}
           INPUT_COSINE_THRESHOLD: ${{ inputs.cosine_threshold }}
           INPUT_MAX_ITEMS: ${{ inputs.max_items }}

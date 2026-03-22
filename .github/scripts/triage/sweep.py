@@ -21,13 +21,20 @@ from embedding_utils import (
     detect_outliers,
     find_duplicate_pairs,
     suggest_labels,
+    LABEL_Z_THRESHOLD,
+    LABEL_Z_MARGIN,
+    LABEL_Z_STD_FLOOR,
+    MIN_RAW_SIMILARITY,
+    MAX_LABELS_PER_ITEM,
 )
 
 # ── Thresholds (overridable via workflow_dispatch inputs) ──────────────
 
-# Chi2 percentile for the dimension-aware outlier cutoff.
-# 0.997 is the multivariate equivalent of the 3-sigma rule.
-OUTLIER_PERCENTILE: float = float(os.environ.get("INPUT_OUTLIER_PERCENTILE", "0.997"))
+# IQR multiplier for outlier cutoff: cutoff = Q75 + IQR_MULTIPLIER * IQR.
+IQR_MULTIPLIER: float = float(os.environ.get("INPUT_IQR_MULTIPLIER", "3.0"))
+
+# Hard cap: at most this fraction of items can be flagged as outliers.
+MAX_OUTLIER_PCT: float = float(os.environ.get("INPUT_MAX_OUTLIER_PCT", "0.05"))
 
 # EllipticEnvelope contamination: expected fraction of outliers in the data.
 # Governs how aggressively the robust covariance downweights extreme points.
@@ -48,7 +55,7 @@ DRY_RUN: bool = os.environ.get("INPUT_DRY_RUN", "false").lower() == "true"
 # Minimum number of samples required for EllipticEnvelope to fit
 # a Gaussian reliably. Must be >= 3 * PCA_MAX_COMPONENTS so the
 # covariance matrix is estimated from enough data points.
-PCA_MAX_COMPONENTS: int = 33
+PCA_MAX_COMPONENTS: int = 20
 MIN_SAMPLES_FOR_OUTLIER_DETECTION: int = 100
 
 # Max character length for embedding input text. bge-small-en-v1.5 has a
@@ -211,6 +218,40 @@ def apply_labels_to_item(item_number: int, labels: list[str]) -> None:
         print(f"::warning::Failed to label #{item_number}: {e.code} {body}")
 
 
+def _item_age(created_at: str) -> str:
+    """Compute a human-readable age string from an ISO 8601 created_at timestamp."""
+    try:
+        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        delta = datetime.now(timezone.utc) - created
+        days = delta.days
+        if days < 1:
+            return "<1d"
+        if days < 30:
+            return f"{days}d"
+        if days < 365:
+            return f"{days // 30}mo"
+        return f"{days // 365}y"
+    except (ValueError, TypeError):
+        return "?"
+
+
+def _suggested_action(a: TriageItem, b: TriageItem) -> str:
+    """Determine a suggested action for a duplicate pair based on types and age."""
+    if a["is_pr"] and b["is_pr"]:
+        return "Review for overlap"
+    if not a["is_pr"] and not b["is_pr"]:
+        # Both issues — close the newer one
+        try:
+            a_dt = datetime.fromisoformat(a["created_at"].replace("Z", "+00:00"))
+            b_dt = datetime.fromisoformat(b["created_at"].replace("Z", "+00:00"))
+            newer = b if b_dt > a_dt else a
+        except (ValueError, TypeError):
+            newer = b
+        return f"Close #{newer['number']} as duplicate"
+    # One issue, one PR
+    return "Link PR to issue"
+
+
 def generate_report(
     items: list[TriageItem],
     outlier_results: list[tuple[int, float]],
@@ -221,33 +262,89 @@ def generate_report(
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     repo = os.environ.get("GITHUB_REPOSITORY", "unknown/repo")
 
+    # Compute label suggestion counts early for the health table
+    outlier_set = {idx for idx, _ in outlier_results}
+    suggested_count = 0
+    if label_suggestions is not None:
+        suggested_count = sum(
+            1 for i, s in enumerate(label_suggestions)
+            if s and not items[i]["labels"] and i not in outlier_set
+        )
+
+    # ── Health summary table at the top ──────────────────────────────
     lines: list[str] = [
         "## Triage Sweep Report",
         "",
         f"**Run:** {now} UTC",
         f"**Items analyzed:** {len(items)}",
-        f"**Thresholds:** Outlier percentile {OUTLIER_PERCENTILE}, Cosine > {COSINE_THRESHOLD}",
+        f"**Thresholds:** IQR multiplier {IQR_MULTIPLIER}, Cosine > {COSINE_THRESHOLD}",
         "",
+        "### Health Summary",
+        "",
+        "| Metric | Value |",
+        "|--------|-------|",
+        f"| Items analyzed | {len(items)} |",
+        f"| Outliers flagged | {len(outlier_results)} |",
+        f"| Duplicate pairs | {len(duplicate_pairs)} |",
+        f"| Label suggestions | {suggested_count} |",
+        "",
+    ]
+
+    # ── Outlier section ──────────────────────────────────────────────
+    # Determine cutoff for high-confidence split
+    cutoff = getattr(outlier_results, "cutoff", 0.0)
+    high_conf_cutoff = 2 * cutoff if cutoff > 0 else float("inf")
+
+    high_conf = [(idx, d) for idx, d in outlier_results if d > high_conf_cutoff]
+    borderline = [(idx, d) for idx, d in outlier_results if d <= high_conf_cutoff]
+
+    lines.extend([
         f"### Potential Outliers / Spam ({len(outlier_results)})",
         "",
         "Items with unusually high Mahalanobis distance from the distribution center.",
         "These may be spam, off-topic, or poorly described.",
         "",
-    ]
+    ])
 
-    if outlier_results:
-        lines.append("| # | Type | Title | Distance |")
-        lines.append("|---|------|-------|----------|")
-        for idx, distance in outlier_results:
+    if high_conf:
+        lines.append(f"**High Confidence** ({len(high_conf)} items, distance > 2x cutoff)")
+        lines.append("")
+        lines.append("| # | Type | Title | Distance | Age |")
+        lines.append("|---|------|-------|----------|-----|")
+        for idx, distance in high_conf:
             item = items[idx]
             kind = "PR" if item["is_pr"] else "Issue"
+            age = _item_age(item["created_at"])
+            title = item["title"][:80] + ("..." if len(item["title"]) > 80 else "")
             lines.append(
                 f"| [#{item['number']}]({item['html_url']}) "
-                f"| {kind} | {item['title']} | {distance:.2f} |"
+                f"| {kind} | {title} | {distance:.2f} | {age} |"
             )
-    else:
+        lines.append("")
+
+    if borderline:
+        lines.append("<details>")
+        lines.append(f"<summary>Borderline ({len(borderline)} items)</summary>")
+        lines.append("")
+        lines.append("| # | Type | Title | Distance | Age |")
+        lines.append("|---|------|-------|----------|-----|")
+        for idx, distance in borderline:
+            item = items[idx]
+            kind = "PR" if item["is_pr"] else "Issue"
+            age = _item_age(item["created_at"])
+            title = item["title"][:80] + ("..." if len(item["title"]) > 80 else "")
+            lines.append(
+                f"| [#{item['number']}]({item['html_url']}) "
+                f"| {kind} | {title} | {distance:.2f} | {age} |"
+            )
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
+
+    if not outlier_results:
         lines.append("None found.")
 
+    # ── Duplicate pairs section ──────────────────────────────────────
     lines.extend([
         "",
         f"### Potential Duplicates ({len(duplicate_pairs)} pairs)",
@@ -257,43 +354,66 @@ def generate_report(
     ])
 
     if duplicate_pairs:
-        lines.append("| Item A | Item B | Similarity |")
-        lines.append("|--------|--------|------------|")
+        lines.append("| Item A | Item B | Similarity | Suggested Action |")
+        lines.append("|--------|--------|------------|------------------|")
         for i, j, sim in duplicate_pairs:
             a = items[i]
             b = items[j]
             kind_a = "PR" if a["is_pr"] else "Issue"
             kind_b = "PR" if b["is_pr"] else "Issue"
+            action = _suggested_action(a, b)
             lines.append(
                 f"| [#{a['number']}]({a['html_url']}) {kind_a}: {a['title']} "
                 f"| [#{b['number']}]({b['html_url']}) {kind_b}: {b['title']} "
-                f"| {sim:.3f} |"
+                f"| {sim:.3f} | {action} |"
             )
     else:
         lines.append("None found.")
 
     # ── Label suggestions section ────────────────────────────────────
-    outlier_set = {idx for idx, _ in outlier_results}
     if label_suggestions is not None:
-        # Only unlabeled, non-outlier items — spam shouldn't get categorized
-        # Show only the top-1 label to match what actually gets applied
-        items_with_suggestions = [
-            (i, sugs[:1]) for i, sugs in enumerate(label_suggestions)
-            if sugs and not items[i]["labels"] and i not in outlier_set
-        ]
+        # High confidence: top-1 label with raw_sim >= 0.5
+        # Low confidence: top-1 label with raw_sim < 0.5
+        high_conf_labels: list[tuple[int, list[tuple[str, float]]]] = []
+        low_conf_labels: list[tuple[int, list[tuple[str, float]]]] = []
+        for i, sugs in enumerate(label_suggestions):
+            if sugs and not items[i]["labels"] and i not in outlier_set:
+                top1 = sugs[:1]
+                if top1[0][1] >= 0.5:
+                    high_conf_labels.append((i, top1))
+                else:
+                    low_conf_labels.append((i, top1))
+
+        total_suggestions = len(high_conf_labels) + len(low_conf_labels)
         lines.extend([
             "",
-            f"### Suggested Labels ({len(items_with_suggestions)} unlabeled items)",
+            f"### Suggested Labels ({total_suggestions} unlabeled items)",
             "",
-            "Labels suggested by embedding similarity against repo label descriptions.",
+            "Labels suggested by z-score normalized embedding similarity against repo label descriptions.",
             "Only shown for unlabeled items that were not flagged as outliers.",
             "",
         ])
 
-        if items_with_suggestions:
+        # Label concentration warning
+        if total_suggestions > 0:
+            label_counts: dict[str, int] = {}
+            for _, sugs in high_conf_labels + low_conf_labels:
+                for name, _ in sugs:
+                    label_counts[name] = label_counts.get(name, 0) + 1
+            for name, count in label_counts.items():
+                if count > total_suggestions * 0.5:
+                    lines.append(
+                        f"> **Warning:** Label `{name}` accounts for "
+                        f"{count}/{total_suggestions} suggestions "
+                        f"({count * 100 // total_suggestions}%). "
+                        f"Consider reviewing label descriptions for specificity."
+                    )
+                    lines.append("")
+
+        if high_conf_labels:
             lines.append("| # | Type | Title | Suggested Label |")
             lines.append("|---|------|-------|--------------------|")
-            for idx, sugs in items_with_suggestions:
+            for idx, sugs in high_conf_labels:
                 item = items[idx]
                 kind = "PR" if item["is_pr"] else "Issue"
                 label_strs = [f"`{name}` ({score:.2f})" for name, score in sugs]
@@ -301,7 +421,26 @@ def generate_report(
                     f"| [#{item['number']}]({item['html_url']}) "
                     f"| {kind} | {item['title']} | {', '.join(label_strs)} |"
                 )
-        else:
+
+        if low_conf_labels:
+            lines.append("")
+            lines.append("<details>")
+            lines.append(f"<summary>Low-confidence suggestions ({len(low_conf_labels)} items)</summary>")
+            lines.append("")
+            lines.append("| # | Type | Title | Suggested Label |")
+            lines.append("|---|------|-------|--------------------|")
+            for idx, sugs in low_conf_labels:
+                item = items[idx]
+                kind = "PR" if item["is_pr"] else "Issue"
+                label_strs = [f"`{name}` ({score:.2f})" for name, score in sugs]
+                lines.append(
+                    f"| [#{item['number']}]({item['html_url']}) "
+                    f"| {kind} | {item['title']} | {', '.join(label_strs)} |"
+                )
+            lines.append("")
+            lines.append("</details>")
+
+        if not high_conf_labels and not low_conf_labels:
             lines.append("No unlabeled items need suggestions.")
 
     lines.extend([
@@ -314,11 +453,7 @@ def generate_report(
     ])
 
     if label_suggestions is not None:
-        applied = sum(
-            1 for i, s in enumerate(label_suggestions)
-            if s and not items[i]["labels"] and i not in outlier_set
-        )
-        lines.append(f"- {applied} items suggested for labeling")
+        lines.append(f"- {suggested_count} items suggested for labeling")
 
     lines.extend([
         "",
@@ -404,7 +539,10 @@ def main() -> None:
     if len(items) >= MIN_SAMPLES_FOR_OUTLIER_DETECTION:
         reduced = reduce_dimensions(embeddings, PCA_MAX_COMPONENTS)
         outlier_results = detect_outliers(
-            reduced, percentile=OUTLIER_PERCENTILE, contamination=CONTAMINATION,
+            reduced,
+            contamination=CONTAMINATION,
+            iqr_multiplier=IQR_MULTIPLIER,
+            max_outlier_pct=MAX_OUTLIER_PCT,
         )
     else:
         print(
@@ -426,17 +564,20 @@ def main() -> None:
         label_suggestions = suggest_labels(embeddings, label_embeddings, label_names)
         print(f"Computed label suggestions against {len(repo_labels)} repo labels")
 
-        # Apply top label to unlabeled items (unless dry run)
-        # Skip outliers — flagged items shouldn't get categorized
-        outlier_set = {idx for idx, _ in outlier_results}
-        if not DRY_RUN:
-            applied_count = 0
-            for i, sugs in enumerate(label_suggestions):
-                if sugs and not items[i]["labels"] and i not in outlier_set:
-                    # Apply only the top-1 label (highest confidence)
-                    apply_labels_to_item(items[i]["number"], [sugs[0][0]])
-                    applied_count += 1
-            print(f"Applied labels to {applied_count} unlabeled items")
+        # NOTE: Auto-labeling is disabled. The report shows suggestions for
+        # human review. To re-enable, uncomment the block below.
+        #
+        # # Apply top label to unlabeled items (unless dry run)
+        # # Skip outliers — flagged items shouldn't get categorized
+        # outlier_set = {idx for idx, _ in outlier_results}
+        # if not DRY_RUN:
+        #     applied_count = 0
+        #     for i, sugs in enumerate(label_suggestions):
+        #         if sugs and not items[i]["labels"] and i not in outlier_set:
+        #             # Apply only the top-1 label (highest confidence)
+        #             apply_labels_to_item(items[i]["number"], [sugs[0][0]])
+        #             applied_count += 1
+        #     print(f"Applied labels to {applied_count} unlabeled items")
     else:
         print("No repo labels found — skipping label suggestions")
 
