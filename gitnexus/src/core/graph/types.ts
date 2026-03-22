@@ -70,6 +70,8 @@ export type NodeProperties = {
   // Section-specific (markdown heading level, 1-6)
   level?: number,
   returnType?: string,
+  // Response shape (top-level keys from NextResponse.json({...}) / res.json({...}))
+  responseKeys?: string[],
 }
 
 export type RelationshipType =

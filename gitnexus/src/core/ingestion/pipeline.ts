@@ -699,12 +699,38 @@ export const runPipelineFromRepo = async (
 
     // Create Route nodes and HANDLES_ROUTE edges
     if (routeRegistry.size > 0) {
+      // Read handler file contents for response shape extraction
+      const handlerPaths = [...routeRegistry.values()];
+      const handlerContents = await readFileContents(repoPath, handlerPaths);
+
       for (const [routeURL, handlerPath] of routeRegistry) {
+        const content = handlerContents.get(handlerPath);
+
+        // Extract response shape from .json({...}) calls
+        let responseKeys: string[] | undefined;
+        if (content) {
+          const keys: string[] = [];
+          const jsonCallPattern = /\.json\(\s*\{([^}]*)\}/g;
+          let match;
+          while ((match = jsonCallPattern.exec(content)) !== null) {
+            const inner = match[1];
+            // Match: shorthand props (data,), key-value pairs (data:), and last props before }
+            for (const propMatch of inner.matchAll(/(\w+)\s*(?:[:,}])/g)) {
+              keys.push(propMatch[1]);
+            }
+          }
+          if (keys.length > 0) responseKeys = [...new Set(keys)];
+        }
+
         const routeNodeId = generateId('Route', routeURL);
         graph.addNode({
           id: routeNodeId,
           label: 'Route',
-          properties: { name: routeURL, filePath: handlerPath },
+          properties: {
+            name: routeURL,
+            filePath: handlerPath,
+            ...(responseKeys ? { responseKeys } : {}),
+          },
         });
 
         const handlerFileId = generateId('File', handlerPath);
