@@ -33,7 +33,8 @@ export type NodeLabel =
   | 'Annotation'
   | 'Constructor'
   | 'Template'
-  | 'Section';
+  | 'Section'
+  | 'Route';       // API route endpoint (e.g., /api/grants)
 
 
 import { SupportedLanguages } from '../../config/supported-languages.js';
@@ -87,6 +88,8 @@ export type RelationshipType =
   | 'ACCESSES'
   | 'MEMBER_OF'
   | 'STEP_IN_PROCESS'
+  | 'HANDLES_ROUTE'  // Function/File → Route (handler serves this endpoint)
+  | 'FETCHES'        // Function/File → Route (consumer calls this endpoint)
 
 export interface GraphNode {
   id:  string,
