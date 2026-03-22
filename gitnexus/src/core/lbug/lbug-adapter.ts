@@ -388,6 +388,9 @@ const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   if (table === 'Section') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, level, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
+  if (table === 'Route') {
+    return `COPY ${t}(id, name, filePath, responseKeys) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
   if (table === 'Method') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }

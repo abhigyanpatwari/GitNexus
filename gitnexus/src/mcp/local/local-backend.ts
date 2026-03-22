@@ -1637,28 +1637,27 @@ export class LocalBackend {
     routeFilter: string,
     params: Record<string, string>,
   ): Promise<Array<{ id: string; name: string; filePath: string; responseKeys: string[] | null; consumers: Array<{ name: string; filePath: string }> }>> {
+    // LadybugDB throws on property access for non-existent columns, so we avoid
+    // n.responseKeys here and fetch it separately in shapeCheck where needed.
     const rows = await executeParameterized(repoId, `
       MATCH (n)
       WHERE n.id STARTS WITH 'Route:' ${routeFilter}
       OPTIONAL MATCH (consumer)-[r:CodeRelation]->(n)
       WHERE r.type = 'FETCHES'
       RETURN n.id AS routeId, n.name AS routeName, n.filePath AS handlerFile,
-             n.responseKeys AS responseKeys,
              consumer.name AS consumerName, consumer.filePath AS consumerFile
     `, params);
 
-    // Group rows by route (single query returns one row per route-consumer pair)
     const routeMap = new Map<string, { id: string; name: string; filePath: string; responseKeys: string[] | null; consumers: Array<{ name: string; filePath: string }> }>();
     for (const row of rows) {
       const id = row.routeId ?? row[0];
       const name = row.routeName ?? row[1];
       const filePath = row.handlerFile ?? row[2];
-      const responseKeys: string[] | null = row.responseKeys ?? row[3] ?? null;
-      const consumerName = row.consumerName ?? row[4];
-      const consumerFile = row.consumerFile ?? row[5];
+      const consumerName = row.consumerName ?? row[3];
+      const consumerFile = row.consumerFile ?? row[4];
 
       if (!routeMap.has(id)) {
-        routeMap.set(id, { id, name, filePath, responseKeys, consumers: [] });
+        routeMap.set(id, { id, name, filePath, responseKeys: null, consumers: [] });
       }
       if (consumerName && consumerFile) {
         routeMap.get(id)!.consumers.push({ name: consumerName, filePath: consumerFile });
@@ -1692,10 +1691,23 @@ export class LocalBackend {
     const queryParams = params.route ? { route: params.route } : {};
     const allRoutes = await this.fetchRoutesWithConsumers(repo.id, routeFilter, queryParams);
 
-    // Filter to routes that have both response shapes and consumers
-    const results = allRoutes
-      .filter(r => r.responseKeys && r.responseKeys.length > 0 && r.consumers.length > 0)
-      .map(r => ({ route: r.name, handler: r.filePath, responseKeys: r.responseKeys!, consumers: r.consumers }));
+    // Enrich with responseKeys (fetched per-route since LadybugDB can't access
+    // optional properties in bulk queries)
+    const results = [];
+    for (const r of allRoutes) {
+      if (r.consumers.length === 0) continue;
+      try {
+        const keyRows = await executeParameterized(repo.id, `
+          MATCH (n {id: $routeId}) RETURN n.responseKeys AS responseKeys
+        `, { routeId: r.id });
+        const responseKeys: string[] | null = keyRows[0]?.responseKeys ?? keyRows[0]?.[0] ?? null;
+        if (responseKeys && responseKeys.length > 0) {
+          results.push({ route: r.name, handler: r.filePath, responseKeys, consumers: r.consumers });
+        }
+      } catch {
+        // responseKeys property doesn't exist on this node — skip
+      }
+    }
 
     return {
       routes: results,
