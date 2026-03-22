@@ -1670,6 +1670,22 @@ export class LocalBackend {
     return [...routeMap.values()];
   }
 
+  /**
+   * Fetch execution flows linked to a Route or Tool node.
+   */
+  private async fetchLinkedFlows(repoId: string, nodeId: string): Promise<string[]> {
+    try {
+      const rows = await executeParameterized(repoId, `
+        MATCH (source)-[r:CodeRelation]->(proc:Process)
+        WHERE source.id = $nodeId AND r.type = 'ENTRY_POINT_OF'
+        RETURN proc.name AS name
+      `, { nodeId });
+      return rows.map((r: any) => r.name ?? r[0]).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
   private async routeMap(repo: RepoHandle, params: { route?: string }): Promise<any> {
     await this.ensureInitialized(repo.id);
 
@@ -1678,12 +1694,17 @@ export class LocalBackend {
     const routes = await this.fetchRoutesWithConsumers(repo.id, routeFilter, queryParams);
 
     if (routes.length === 0) {
-      return { routes: [], total: 0, message: params.route ? `No routes matching "${params.route}"` : 'No routes found. Is this a Next.js project?' };
+      return { routes: [], total: 0, message: params.route ? `No routes matching "${params.route}"` : 'No routes found in this project.' };
     }
 
+    const routesWithFlows = await Promise.all(routes.map(async r => {
+      const flows = await this.fetchLinkedFlows(repo.id, r.id);
+      return { route: r.name, handler: r.filePath, consumers: r.consumers, flows };
+    }));
+
     return {
-      routes: routes.map(r => ({ route: r.name, handler: r.filePath, consumers: r.consumers })),
-      total: routes.length,
+      routes: routesWithFlows,
+      total: routesWithFlows.length,
     };
   }
 
@@ -1724,13 +1745,21 @@ export class LocalBackend {
       return { tools: [], total: 0, message: params.tool ? `No tools matching "${params.tool}"` : 'No tool definitions found.' };
     }
 
-    return {
-      tools: rows.map((r: any) => ({
-        name: r.name ?? r[0],
+    const toolsWithFlows = await Promise.all(rows.map(async (r: any) => {
+      const name = r.name ?? r[0];
+      const toolId = `Tool:${name}`;
+      const flows = await this.fetchLinkedFlows(repo.id, toolId);
+      return {
+        name,
         filePath: r.filePath ?? r[1],
         description: (r.description ?? r[2] ?? '').slice(0, 200),
-      })),
-      total: rows.length,
+        flows,
+      };
+    }));
+
+    return {
+      tools: toolsWithFlows,
+      total: toolsWithFlows.length,
     };
   }
 
