@@ -10,6 +10,7 @@ import {
 import { EMPTY_INDEX } from './resolvers/index.js';
 import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracted, processRoutesFromExtracted, processNextjsFetchRoutes, extractFetchCallsFromFiles, seedCrossFileReceiverTypes, buildImportedReturnTypes, buildImportedRawReturnTypes, type ExportedTypeMap, buildExportedTypeMapFromGraph } from './call-processor.js';
 import { nextjsFileToRouteURL } from './route-extractors/nextjs.js';
+import { phpFileToRouteURL } from './route-extractors/php.js';
 import { generateId } from '../../lib/utils.js';
 import type { ExtractedFetchCall } from './workers/parse-worker.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
@@ -694,6 +695,15 @@ export const runPipelineFromRepo = async (
     for (const p of allPaths) {
       const routeURL = nextjsFileToRouteURL(p);
       if (routeURL) routeRegistry.set(routeURL, p);
+    }
+
+    // PHP file-based routes (api/*.php)
+    for (const p of allPaths) {
+      if (!p.endsWith('.php')) continue;
+      const routeURL = phpFileToRouteURL(p);
+      if (routeURL && !routeRegistry.has(routeURL)) {
+        routeRegistry.set(routeURL, p);
+      }
     }
 
     if (routeRegistry.size > 0) {
