@@ -15,6 +15,7 @@ import CPP from 'tree-sitter-cpp';
 import Kotlin from 'tree-sitter-kotlin';
 import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
+import Zig from '@tree-sitter-grammars/tree-sitter-zig';
 
 const parser = new Parser();
 
@@ -4310,6 +4311,44 @@ fn process(opt: Option<User>) {
       // user should be typed from the first arm (Some unwrap)
       // Known limitation: binding leaks across arms (first-writer-wins)
       expect(flatGet(typeEnv, 'user')).toBe('User');
+    });
+  });
+
+  describe('Zig', () => {
+    it('extracts explicit Zig variable declaration types', () => {
+      const tree = parse(`
+const Config = struct {};
+
+fn run() void {
+    var cfg: Config = .{};
+}
+      `, Zig);
+      const typeEnv = buildTypeEnv(tree, 'zig');
+      expect(flatGet(typeEnv, 'cfg')).toBe('Config');
+    });
+
+    it('extracts Zig parameter types including qualified names', () => {
+      const tree = parse(`
+const std = @import("std");
+
+fn run(allocator: std.mem.Allocator, cfg: Config) void {
+    _ = allocator;
+    _ = cfg;
+}
+      `, Zig);
+      const typeEnv = buildTypeEnv(tree, 'zig');
+      expect(flatGet(typeEnv, 'allocator')).toBe('Allocator');
+      expect(flatGet(typeEnv, 'cfg')).toBe('Config');
+    });
+
+    it('ignores Zig container bindings without explicit type annotations', () => {
+      const tree = parse(`
+pub const Config = struct {
+    value: i32,
+};
+      `, Zig);
+      const typeEnv = buildTypeEnv(tree, 'zig');
+      expect(flatGet(typeEnv, 'Config')).toBeUndefined();
     });
   });
 

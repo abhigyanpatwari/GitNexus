@@ -569,3 +569,66 @@ record Person {
     }
   });
 });
+
+describe('HAS_METHOD integration — Zig containers', () => {
+  beforeAll(async () => {
+    await loadLanguage(SupportedLanguages.Zig, 'shapes.zig');
+  });
+
+  it('links Zig methods to their enclosing container binding', () => {
+    const code = `
+pub const Config = struct {
+  pub fn init() Config {
+    return .{};
+  }
+};
+
+pub const Mode = enum {
+  fast,
+  slow,
+
+  pub fn default() Mode {
+    return .fast;
+  }
+};
+
+pub fn main() void {}
+`;
+    const results = parseAndExtractMethods(code, SupportedLanguages.Zig, 'src/shapes.zig');
+
+    const initMethod = results.find(r => r.name === 'init');
+    expect(initMethod).toBeDefined();
+    expect(initMethod!.enclosingClassId).toBe('Struct:src/shapes.zig:Config');
+
+    const defaultMethod = results.find(r => r.name === 'default');
+    expect(defaultMethod).toBeDefined();
+    expect(defaultMethod!.enclosingClassId).toBe('Enum:src/shapes.zig:Mode');
+
+    const main = results.find(r => r.name === 'main');
+    expect(main).toBeDefined();
+    expect(main!.enclosingClassId).toBeNull();
+  });
+
+  it('links Zig methods inside nested container bindings to the nested owner', () => {
+    const code = `
+pub const Http = struct {
+  pub fn route() void {}
+
+  pub const Request = struct {
+    pub fn init() Request {
+      return .{};
+    }
+  };
+};
+`;
+    const results = parseAndExtractMethods(code, SupportedLanguages.Zig, 'src/http.zig');
+
+    const route = results.find(r => r.name === 'route');
+    expect(route).toBeDefined();
+    expect(route!.enclosingClassId).toBe('Struct:src/http.zig:Http');
+
+    const initMethod = results.find(r => r.name === 'init');
+    expect(initMethod).toBeDefined();
+    expect(initMethod!.enclosingClassId).toBe('Struct:src/http.zig:Request');
+  });
+});

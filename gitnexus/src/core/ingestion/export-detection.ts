@@ -243,3 +243,25 @@ export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 
 /** Dart: public if no leading underscore (convention, same as Python). */
 export const dartExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
+
+/** Zig: `pub` and `export` declarations are externally visible. */
+const ZIG_DECL_TYPES = new Set(['function_declaration', 'variable_declaration']);
+
+const hasZigVisibilityModifier = (node: SyntaxNode): boolean => {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child?.text === 'pub' || child?.text === 'export') return true;
+  }
+  return false;
+};
+
+export const zigExportChecker: ExportChecker = (node, _name) => {
+  let current: SyntaxNode | null = node;
+  while (current) {
+    if (ZIG_DECL_TYPES.has(current.type)) {
+      return hasZigVisibilityModifier(current);
+    }
+    current = current.parent;
+  }
+  return false;
+};

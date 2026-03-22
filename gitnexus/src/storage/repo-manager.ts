@@ -212,6 +212,8 @@ export const addToGitignore = async (repoPath: string): Promise<void> => {
  * Get the path to the global GitNexus directory
  */
 export const getGlobalDir = (): string => {
+  const configuredHome = process.env.GITNEXUS_HOME?.trim();
+  if (configuredHome) return configuredHome;
   return path.join(os.homedir(), '.gitnexus');
 };
 

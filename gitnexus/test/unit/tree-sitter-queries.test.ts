@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  LANGUAGE_QUERIES,
   TYPESCRIPT_QUERIES,
   JAVASCRIPT_QUERIES,
   PYTHON_QUERIES,
@@ -11,7 +12,9 @@ import {
   RUST_QUERIES,
   PHP_QUERIES,
   SWIFT_QUERIES,
+  ZIG_QUERIES,
 } from '../../src/core/ingestion/tree-sitter-queries.js';
+import { SupportedLanguages } from 'gitnexus-shared';
 
 describe('tree-sitter queries', () => {
   describe('TypeScript queries', () => {
@@ -286,6 +289,26 @@ describe('tree-sitter queries', () => {
 
     it('captures actors as classes', () => {
       expect(SWIFT_QUERIES).toContain('"actor"');
+    });
+  });
+
+  describe('Zig queries', () => {
+    it('captures named containers and top-level functions', () => {
+      expect(ZIG_QUERIES).toContain('@definition.struct');
+      expect(ZIG_QUERIES).toContain('@definition.enum');
+      expect(ZIG_QUERIES).toContain('@definition.union');
+      expect(ZIG_QUERIES).toContain('@definition.function');
+    });
+
+    it('captures tests, imports, and member calls', () => {
+      expect(ZIG_QUERIES).toContain('test_declaration');
+      expect(ZIG_QUERIES).toContain('@import.source');
+      expect(ZIG_QUERIES).toContain('field_expression');
+      expect(ZIG_QUERIES).toContain('@call.name');
+    });
+
+    it('is registered in the language query table', () => {
+      expect(LANGUAGE_QUERIES[SupportedLanguages.Zig]).toBe(ZIG_QUERIES);
     });
   });
 });

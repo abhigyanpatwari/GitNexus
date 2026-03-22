@@ -140,6 +140,8 @@ describe('shouldIgnorePath', () => {
       'LICENSE',
       'LICENSE.md',
       'CHANGELOG.md',
+      'build.zig',
+      'build.zig.zon',
       '.env',
       '.env.local',
       '.env.production',
@@ -197,6 +199,7 @@ describe('shouldIgnorePath', () => {
       'src/main.c',
       'src/main.cpp',
       'src/Program.cs',
+      'src/main.zig',
     ])('does not ignore source file %s', (filePath) => {
       expect(shouldIgnorePath(filePath)).toBe(false);
     });

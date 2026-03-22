@@ -228,6 +228,7 @@ export const extractSimpleTypeName = (typeNode: SyntaxNode, depth = 0): string |
     typeNode.type === 'scoped_type_identifier' ||
     typeNode.type === 'qualified_name' ||
     typeNode.type === 'qualified_type' ||
+    typeNode.type === 'field_expression' ||
     typeNode.type === 'member_expression' ||
     typeNode.type === 'member_access_expression' ||
     typeNode.type === 'attribute' ||
@@ -332,7 +333,8 @@ export const extractSimpleTypeName = (typeNode: SyntaxNode, depth = 0): string |
     typeNode.type === 'integral_type' ||
     typeNode.type === 'floating_point_type' ||
     typeNode.type === 'boolean_type' ||
-    typeNode.type === 'void_type'
+    typeNode.type === 'void_type' ||
+    typeNode.type === 'builtin_type'
   ) {
     return typeNode.text;
   }

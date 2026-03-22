@@ -139,6 +139,15 @@ program
   .option('-r, --repo <name>', 'Target repository')
   .action(createLazyAction(() => import('./tool.js'), 'cypherCommand'));
 
+program
+  .command('detect-changes')
+  .alias('detect_changes')
+  .description('Inspect the current git diff and map changed files to affected symbols/processes')
+  .option('-r, --repo <name>', 'Target repository')
+  .option('-s, --scope <scope>', 'unstaged, staged, all, or compare', 'unstaged')
+  .option('-b, --base-ref <ref>', 'Base ref for compare scope')
+  .action(createLazyAction(() => import('./tool.js'), 'detectChangesCommand'));
+
 // ─── Eval Server (persistent daemon for SWE-bench) ─────────────────
 
 program

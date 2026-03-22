@@ -89,6 +89,8 @@ export const FUNCTION_NODE_TYPES = new Set([
   // Dart
   'function_signature',
   'method_signature',
+  // Zig
+  'test_declaration',
 ]);
 
 /**
@@ -109,6 +111,8 @@ export const CLASS_CONTAINER_TYPES = new Set([
   'abstract_class_declaration',
   'interface_declaration',
   'struct_declaration',
+  'enum_declaration',
+  'union_declaration',
   'record_declaration',
   'class_specifier',
   'struct_specifier',
@@ -132,6 +136,8 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   abstract_class_declaration: 'Class',
   interface_declaration: 'Interface',
   struct_declaration: 'Struct',
+  enum_declaration: 'Enum',
+  union_declaration: 'Union',
   struct_specifier: 'Struct',
   class_specifier: 'Class',
   class_definition: 'Class',
@@ -173,7 +179,7 @@ export function getLabelFromCaptures(
   provider: LanguageProvider,
 ): NodeLabel | null {
   if (captureMap['import'] || captureMap['call']) return null;
-  if (!captureMap['name'] && !captureMap['definition.constructor']) return null;
+  if (!getDefinitionNodeFromCaptures(captureMap)) return null;
 
   if (captureMap['definition.function']) {
     if (provider.labelOverride) {
@@ -247,6 +253,23 @@ export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string
       }
     }
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
+      if (
+        (current.type === 'struct_declaration' ||
+          current.type === 'enum_declaration' ||
+          current.type === 'union_declaration') &&
+        current.parent?.type === 'variable_declaration'
+      ) {
+        const bindingName = current.parent.children?.find(
+          (c: SyntaxNode) =>
+            c.type === 'identifier' ||
+            c.type === 'type_identifier' ||
+            c.type === 'constant',
+        );
+        if (bindingName) {
+          const label = CONTAINER_TYPE_TO_LABEL[current.type] || 'Class';
+          return generateId(label, `${filePath}:${bindingName.text}`);
+        }
+      }
       // Rust impl_item: for `impl Trait for Struct {}`, pick the type after `for`
       if (current.type === 'impl_item') {
         const children = current.children ?? [];
@@ -317,6 +340,15 @@ export const extractFunctionName = (
       funcName: node.type === 'init_declaration' ? 'init' : 'deinit',
       label: 'Constructor',
     };
+  }
+
+  if (node.type === 'test_declaration') {
+    const testName = findDescendant(node, 'string_content')?.text;
+    if (testName) {
+      return { funcName: testName, label: 'Function' };
+    }
+    const line = typeof node.startPosition?.row === 'number' ? node.startPosition.row + 1 : 1;
+    return { funcName: `test@${line}`, label: 'Function' };
   }
 
   if (FUNCTION_DECLARATION_TYPES.has(node.type)) {

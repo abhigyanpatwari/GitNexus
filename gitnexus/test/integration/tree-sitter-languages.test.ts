@@ -4,6 +4,7 @@ import path from 'path';
 import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
+import { extractFunctionName } from '../../src/core/ingestion/utils/ast-helpers.js';
 import Parser from 'tree-sitter';
 
 const fixturesDir = path.resolve(__dirname, '..', 'fixtures', 'sample-code');
@@ -23,14 +24,13 @@ function parseAndQuery(parser: Parser, content: string, queryStr: string) {
 function extractDefinitions(matches: any[]) {
   const defs: { type: string; name: string }[] = [];
   for (const match of matches) {
-    for (const capture of match.captures) {
-      if (
-        capture.name === 'name' &&
-        match.captures.some((c: any) => c.name.startsWith('definition.'))
-      ) {
-        const defType = match.captures.find((c: any) => c.name.startsWith('definition.'))!.name;
-        defs.push({ type: defType, name: capture.node.text });
-      }
+    const defCapture = match.captures.find((c: any) => c.name.startsWith('definition.'));
+    if (!defCapture) continue;
+
+    const nameCapture = match.captures.find((c: any) => c.name === 'name');
+    const name = nameCapture?.node.text ?? extractFunctionName(defCapture.node).funcName;
+    if (name) {
+      defs.push({ type: defCapture.name, name });
     }
   }
   return defs;
@@ -639,6 +639,85 @@ describe('Tree-sitter multi-language parsing', () => {
     });
   });
 
+  describe('Zig', () => {
+    it('parses Zig containers, functions, tests, imports, and calls', async () => {
+      await loadLanguage(SupportedLanguages.Zig, 'simple.zig');
+      const content = readFixture('simple.zig');
+      const provider = getProvider(SupportedLanguages.Zig);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+
+      const names = defs.map((d) => `${d.type}:${d.name}`);
+      expect(names).toContain('definition.struct:Config');
+      expect(names).toContain('definition.enum:Kind');
+      expect(names).toContain('definition.union:Payload');
+      expect(names).toContain('definition.type:FileHandle');
+      expect(names).toContain('definition.method:init');
+      expect(names).toContain('definition.function:main');
+      expect(names).toContain('definition.function:add');
+      expect(names).toContain('definition.function:config initializes');
+    });
+
+    it('captures Zig imports and member calls', async () => {
+      await loadLanguage(SupportedLanguages.Zig, 'simple.zig');
+      const content = readFixture('simple.zig');
+      const provider = getProvider(SupportedLanguages.Zig);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
+
+      const imports: string[] = [];
+      const calls: string[] = [];
+      for (const match of matches) {
+        for (const capture of match.captures) {
+          if (capture.name === 'import.source') imports.push(capture.node.text);
+          if (capture.name === 'call.name') calls.push(capture.node.text);
+        }
+      }
+
+      expect(imports).toContain('std');
+      expect(calls).toContain('print');
+      expect(calls).toContain('add');
+      expect(calls).toContain('expect');
+    });
+
+    it('captures nested Zig container bindings and C interop includes', async () => {
+      await loadLanguage(SupportedLanguages.Zig, 'nested.zig');
+      const code = `
+const c = @cImport({
+  @cInclude("stdio.h");
+  @cInclude("stdlib.h");
+});
+
+pub const Http = struct {
+  pub const Request = struct {
+    value: u32,
+
+    pub fn init() Request {
+      return .{ .value = 1 };
+    }
+  };
+};
+`;
+      const provider = getProvider(SupportedLanguages.Zig);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+
+      const names = defs.map((d) => `${d.type}:${d.name}`);
+      expect(names).toContain('definition.struct:Http');
+      expect(names).toContain('definition.struct:Request');
+      expect(names).toContain('definition.method:init');
+      expect(names).toContain('definition.property:value');
+
+      const imports: string[] = [];
+      for (const match of matches) {
+        for (const capture of match.captures) {
+          if (capture.name === 'import.source') imports.push(capture.node.text);
+        }
+      }
+
+      expect(imports.sort()).toEqual(['stdio.h', 'stdlib.h']);
+    });
+  });
+
   describe('cross-language assertions', () => {
     it('all supported languages produce at least one definition from fixtures', async () => {
       const langFixtures: [SupportedLanguages, string, string?][] = [
@@ -652,6 +731,7 @@ describe('Tree-sitter multi-language parsing', () => {
         [SupportedLanguages.CSharp, 'simple.cs'],
         [SupportedLanguages.Rust, 'simple.rs'],
         [SupportedLanguages.PHP, 'simple.php'],
+        [SupportedLanguages.Zig, 'simple.zig'],
         // Dart and Swift are excluded — they are optionalDependencies that may not be installed
       ];
 

@@ -11,34 +11,15 @@ import {
   MousePointerClick,
   Loader2,
 } from '@/lib/lucide-icons';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useAppState } from '../hooks/useAppState';
 import { type GraphNode, getSyntaxLanguageFromFilename } from 'gitnexus-shared';
 import { NODE_COLORS } from '../lib/constants';
+import { SyntaxHighlighter, codeTheme } from '../lib/code-highlighting';
 import { readFile, type ReadFileResult } from '../services/backend-client';
 
 const getSyntaxLanguage = (filePath: string | undefined): string => {
   if (!filePath) return 'text';
   return getSyntaxLanguageFromFilename(filePath);
-};
-
-// Match the code theme used elsewhere in the app
-const customTheme = {
-  ...vscDarkPlus,
-  'pre[class*="language-"]': {
-    ...vscDarkPlus['pre[class*="language-"]'],
-    background: '#0a0a10',
-    margin: 0,
-    padding: '12px 0',
-    fontSize: '13px',
-    lineHeight: '1.6',
-  },
-  'code[class*="language-"]': {
-    ...vscDarkPlus['code[class*="language-"]'],
-    background: 'transparent',
-    fontFamily: '"JetBrains Mono", "Fira Code", monospace',
-  },
 };
 
 export interface CodeReferencesPanelProps {
@@ -383,7 +364,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
               ) : selectedFileContent ? (
                 <SyntaxHighlighter
                   language={getSyntaxLanguage(selectedFilePath)}
-                  style={customTheme as any}
+                  style={codeTheme as any}
                   showLineNumbers
                   startingLineNumber={fileStartLine + 1}
                   lineNumberStyle={{
@@ -534,7 +515,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                         {content ? (
                           <SyntaxHighlighter
                             language={language}
-                            style={customTheme as any}
+                            style={codeTheme as any}
                             showLineNumbers
                             startingLineNumber={start + 1}
                             lineNumberStyle={{

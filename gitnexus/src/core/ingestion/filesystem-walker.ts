@@ -24,6 +24,39 @@ const READ_CONCURRENCY = 32;
 /** Skip files larger than 512KB — they're usually generated/vendored and crash tree-sitter */
 const MAX_FILE_SIZE = 512 * 1024;
 
+const normalizePath = (filePath: string): string => filePath.replace(/\\/g, '/').replace(/\/+$/, '');
+
+const isUnderNestedRepo = (filePath: string, nestedRepoRoots: Set<string>): boolean => {
+  const normalizedFilePath = normalizePath(filePath);
+  for (const root of nestedRepoRoots) {
+    if (normalizedFilePath === root || normalizedFilePath.startsWith(`${root}/`)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const findNestedGitRepoRoots = async (repoPath: string): Promise<Set<string>> => {
+  const nestedGitEntries = await glob('**/.git', {
+    cwd: repoPath,
+    dot: true,
+    nodir: false,
+    follow: false,
+  });
+
+  const nestedRepoRoots = new Set<string>();
+  for (const gitEntry of nestedGitEntries) {
+    const normalizedEntry = normalizePath(gitEntry);
+    if (normalizedEntry === '.git') continue;
+
+    const repoRoot = normalizePath(path.dirname(normalizedEntry));
+    if (!repoRoot || repoRoot === '.') continue;
+    nestedRepoRoots.add(repoRoot);
+  }
+
+  return nestedRepoRoots;
+};
+
 /**
  * Phase 1: Scan repository — stat files to get paths + sizes, no content loaded.
  * Memory: ~10MB for 100K files vs ~1GB+ with content.
@@ -33,13 +66,24 @@ export const walkRepositoryPaths = async (
   onProgress?: (current: number, total: number, filePath: string) => void,
 ): Promise<ScannedFile[]> => {
   const ignoreFilter = await createIgnoreFilter(repoPath);
-
-  const filtered = await glob('**/*', {
+  const nestedRepoRoots = await findNestedGitRepoRoots(repoPath);
+  const files = await glob('**/*', {
     cwd: repoPath,
     nodir: true,
     dot: false,
-    ignore: ignoreFilter,
+    ignore: {
+      ignored(p: any): boolean {
+        const rel = normalizePath(p.relative());
+        return ignoreFilter.ignored(p) || (!!rel && isUnderNestedRepo(rel, nestedRepoRoots));
+      },
+      childrenIgnored(p: any): boolean {
+        const rel = normalizePath(p.relative());
+        return ignoreFilter.childrenIgnored(p) || (!!rel && isUnderNestedRepo(rel, nestedRepoRoots));
+      },
+    },
   });
+
+  const filtered = files.filter(file => !isUnderNestedRepo(file, nestedRepoRoots));
   const entries: ScannedFile[] = [];
   let processed = 0;
   let skippedLarge = 0;

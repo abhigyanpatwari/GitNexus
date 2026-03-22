@@ -263,6 +263,8 @@ const IGNORED_FILES = new Set([
   '.env.production',
   '.env.test',
   '.env.example',
+  'build.zig',
+  'build.zig.zon',
 ]);
 
 export const shouldIgnorePath = (filePath: string): boolean => {

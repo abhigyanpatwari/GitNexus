@@ -268,6 +268,8 @@ const IGNORED_FILES = new Set([
   '.env.production',
   '.env.test',
   '.env.example',
+  'build.zig',
+  'build.zig.zon',
 ]);
 
 // NOTE: Negation patterns in .gitnexusignore (e.g. `!vendor/`) cannot override

@@ -12,6 +12,7 @@ import C from 'tree-sitter-c';
 import CPP from 'tree-sitter-cpp';
 import Python from 'tree-sitter-python';
 import TypeScript from 'tree-sitter-typescript';
+import Zig from '@tree-sitter-grammars/tree-sitter-zig';
 
 describe('getLanguageFromFilename', () => {
   describe('TypeScript', () => {
@@ -112,8 +113,14 @@ describe('getLanguageFromFilename', () => {
     });
   });
 
+  describe('Zig', () => {
+    it('detects .zig files', () => {
+      expect(getLanguageFromFilename('main.zig')).toBe(SupportedLanguages.Zig);
+    });
+  });
+
   describe('unsupported', () => {
-    it.each(['.scala', '.r', '.lua', '.zig', '.txt', '.md', '.json', '.yaml'])(
+    it.each(['.scala', '.r', '.lua', '.txt', '.md', '.json', '.yaml'])(
       'returns null for %s files',
       (ext) => {
         expect(getLanguageFromFilename(`file${ext}`)).toBeNull();
@@ -139,6 +146,7 @@ describe('isBuiltInOrNoise', () => {
   const swift = getProvider(SupportedLanguages.Swift);
   const rust = getProvider(SupportedLanguages.Rust);
   const cs = getProvider(SupportedLanguages.CSharp);
+  const zig = getProvider(SupportedLanguages.Zig);
 
   describe('JavaScript/TypeScript', () => {
     it('filters console methods', () => {
@@ -298,6 +306,22 @@ describe('isBuiltInOrNoise', () => {
       expect(rust.isBuiltInName('process_request')).toBe(false);
       expect(rust.isBuiltInName('handle_connection')).toBe(false);
       expect(rust.isBuiltInName('build_response')).toBe(false);
+    });
+  });
+
+  describe('Zig', () => {
+    it('filters common Zig testing and allocator helpers', () => {
+      expect(zig.isBuiltInName('expectEqual')).toBe(true);
+      expect(zig.isBuiltInName('expectError')).toBe(true);
+      expect(zig.isBuiltInName('alloc')).toBe(true);
+      expect(zig.isBuiltInName('dupeZ')).toBe(true);
+      expect(zig.isBuiltInName('parseInt')).toBe(true);
+    });
+
+    it('does not filter user-defined Zig methods by default', () => {
+      expect(zig.isBuiltInName('init')).toBe(false);
+      expect(zig.isBuiltInName('deinit')).toBe(false);
+      expect(zig.isBuiltInName('signalScore')).toBe(false);
     });
   });
 
@@ -615,6 +639,30 @@ describe('extractFunctionName', () => {
       const result = extractFunctionName(innerFunc);
 
       expect(result.funcName).toBe('inner');
+      expect(result.label).toBe('Function');
+    });
+  });
+
+  describe('Zig', () => {
+    it('extracts named Zig test names from string literals', () => {
+      parser.setLanguage(Zig);
+      const tree = parser.parse(`test "config initializes" {}`);
+      const testNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(testNode!);
+
+      expect(result.funcName).toBe('config initializes');
+      expect(result.label).toBe('Function');
+    });
+
+    it('synthesizes stable names for anonymous Zig tests', () => {
+      parser.setLanguage(Zig);
+      const tree = parser.parse(`test {\n  _ = 1;\n}`);
+      const testNode = tree.rootNode.child(0);
+
+      const result = extractFunctionName(testNode!);
+
+      expect(result.funcName).toBe('test@1');
       expect(result.label).toBe('Function');
     });
   });

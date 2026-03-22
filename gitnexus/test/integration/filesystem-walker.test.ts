@@ -31,10 +31,12 @@ describe('filesystem-walker', () => {
     );
     await fs.writeFile(path.join(tmpDir, '.git', 'HEAD'), 'ref: refs/heads/main');
     await fs.writeFile(path.join(tmpDir, 'package.json'), '{}');
+    await fs.writeFile(path.join(tmpDir, 'build.zig'), 'pub fn build() void {}');
     await fs.writeFile(
       path.join(tmpDir, 'src', 'image.png'),
       Buffer.from([0x89, 0x50, 0x4e, 0x47]),
     );
+    await fs.writeFile(path.join(tmpDir, 'src', 'main.zig'), 'pub fn main() void {}');
   });
 
   afterAll(async () => {
@@ -69,6 +71,13 @@ describe('filesystem-walker', () => {
       const files = await walkRepositoryPaths(tmpDir);
       const paths = files.map((f) => f.path.replace(/\\/g, '/'));
       expect(paths.every((p) => !p.includes('.git/'))).toBe(true);
+    });
+
+    it('skips build.zig but keeps regular Zig source files', async () => {
+      const files = await walkRepositoryPaths(tmpDir);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+      expect(paths).not.toContain('build.zig');
+      expect(paths).toContain('src/main.zig');
     });
 
     it('returns file sizes', async () => {

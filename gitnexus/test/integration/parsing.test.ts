@@ -853,6 +853,36 @@ describe('parsing', () => {
       });
     });
 
+    describe('zig', () => {
+      it('treats pub functions as exported', () => {
+        const fnDecl = mockNode('function_declaration', 'pub fn main() void {}', undefined, [
+          mockNode('keyword', 'pub'),
+        ]);
+        const nameNode = mockNode('identifier', 'main', fnDecl);
+        expect(isNodeExported(nameNode, 'main', 'zig')).toBe(true);
+      });
+
+      it('treats export functions as exported', () => {
+        const fnDecl = mockNode('function_declaration', 'export fn add() i32 {}', undefined, [
+          mockNode('keyword', 'export'),
+        ]);
+        const nameNode = mockNode('identifier', 'add', fnDecl);
+        expect(isNodeExported(nameNode, 'add', 'zig')).toBe(true);
+      });
+
+      it('treats private functions as non-exported', () => {
+        const fnDecl = mockNode('function_declaration', 'fn helper() void {}');
+        const nameNode = mockNode('identifier', 'helper', fnDecl);
+        expect(isNodeExported(nameNode, 'helper', 'zig')).toBe(false);
+      });
+
+      it('treats Zig tests as non-exported', () => {
+        const testDecl = mockNode('test_declaration', 'test "config initializes" {}');
+        const nameNode = mockNode('string_content', 'config initializes', testDecl);
+        expect(isNodeExported(nameNode, 'config initializes', 'zig')).toBe(false);
+      });
+    });
+
     // Unknown language
     describe('unknown language', () => {
       it('returns false for unknown language', () => {
@@ -876,6 +906,7 @@ describe('parsing', () => {
       'simple.c',
       'simple.cpp',
       'simple.cs',
+      'simple.zig',
     ];
 
     for (const fixture of fixtures) {

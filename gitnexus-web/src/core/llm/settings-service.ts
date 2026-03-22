@@ -23,6 +23,19 @@ import { DEFAULT_OPENROUTER_BASE_URL, DEFAULT_OLLAMA_BASE_URL } from '../../conf
 
 const STORAGE_KEY = 'gitnexus-llm-settings';
 
+const getStorage = (kind: 'localStorage' | 'sessionStorage'): Storage | undefined => {
+  const browserStorage =
+    typeof window !== 'undefined' && typeof window[kind]?.getItem === 'function'
+      ? window[kind]
+      : undefined;
+  if (browserStorage) return browserStorage;
+
+  const globalStorage = globalThis[kind as keyof typeof globalThis];
+  return globalStorage && typeof (globalStorage as Storage).getItem === 'function'
+    ? (globalStorage as Storage)
+    : undefined;
+};
+
 const mergeWithDefaults = (parsed?: Partial<LLMSettings> | null): LLMSettings => ({
   ...DEFAULT_LLM_SETTINGS,
   ...parsed,
@@ -80,20 +93,23 @@ const writeSettings = (storage: Storage, settings: LLMSettings): void => {
  */
 export const loadSettings = (): LLMSettings => {
   try {
-    const sessionData = typeof sessionStorage !== 'undefined' ? readSettings(sessionStorage) : null;
+    const sessionStorageRef = getStorage('sessionStorage');
+    const localStorageRef = getStorage('localStorage');
+
+    const sessionData = sessionStorageRef ? readSettings(sessionStorageRef) : null;
     if (sessionData) {
       return mergeWithDefaults(sessionData);
     }
 
-    const legacyData = typeof localStorage !== 'undefined' ? readSettings(localStorage) : null;
+    const legacyData = localStorageRef ? readSettings(localStorageRef) : null;
     if (legacyData) {
       const merged = mergeWithDefaults(legacyData);
       try {
-        if (typeof sessionStorage !== 'undefined') {
-          writeSettings(sessionStorage, merged);
+        if (sessionStorageRef) {
+          writeSettings(sessionStorageRef, merged);
         }
-        if (typeof localStorage !== 'undefined') {
-          localStorage.removeItem(STORAGE_KEY);
+        if (localStorageRef) {
+          localStorageRef.removeItem(STORAGE_KEY);
         }
       } catch (error) {
         console.warn('Failed to migrate legacy LLM settings to sessionStorage:', error);
@@ -113,8 +129,9 @@ export const loadSettings = (): LLMSettings => {
  */
 export const saveSettings = (settings: LLMSettings): void => {
   try {
-    if (typeof sessionStorage !== 'undefined') {
-      writeSettings(sessionStorage, settings);
+    const sessionStorageRef = getStorage('sessionStorage');
+    if (sessionStorageRef) {
+      writeSettings(sessionStorageRef, settings);
     }
   } catch (error) {
     console.error('Failed to save LLM settings:', error);
@@ -335,11 +352,14 @@ export const isProviderConfigured = (): boolean => {
  */
 export const clearSettings = (): void => {
   try {
-    if (typeof sessionStorage !== 'undefined') {
-      sessionStorage.removeItem(STORAGE_KEY);
+    const sessionStorageRef = getStorage('sessionStorage');
+    const localStorageRef = getStorage('localStorage');
+
+    if (sessionStorageRef) {
+      sessionStorageRef.removeItem(STORAGE_KEY);
     }
-    if (typeof localStorage !== 'undefined') {
-      localStorage.removeItem(STORAGE_KEY);
+    if (localStorageRef) {
+      localStorageRef.removeItem(STORAGE_KEY);
     }
   } catch (error) {
     console.warn('Failed to clear LLM settings:', error);

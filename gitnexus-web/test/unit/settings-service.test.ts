@@ -41,7 +41,7 @@ describe('loadSettings', () => {
   });
 
   it('migrates legacy localStorage to sessionStorage', () => {
-    localStorage.setItem(
+    window.localStorage.setItem(
       'gitnexus-llm-settings',
       JSON.stringify({
         activeProvider: 'ollama',
@@ -52,7 +52,7 @@ describe('loadSettings', () => {
     const settings = loadSettings();
     expect(settings.ollama.model).toBe('migrated-model');
     expect(sessionStorage.getItem('gitnexus-llm-settings')).not.toBeNull();
-    expect(localStorage.getItem('gitnexus-llm-settings')).toBeNull();
+    expect(window.localStorage.getItem('gitnexus-llm-settings')).toBeNull();
   });
 });
 
@@ -69,7 +69,7 @@ describe('saveSettings / clearSettings', () => {
     expect(sessionStorage.getItem('gitnexus-llm-settings')).not.toBeNull();
     clearSettings();
     expect(sessionStorage.getItem('gitnexus-llm-settings')).toBeNull();
-    expect(localStorage.getItem('gitnexus-llm-settings')).toBeNull();
+    expect(window.localStorage.getItem('gitnexus-llm-settings')).toBeNull();
   });
 });
 

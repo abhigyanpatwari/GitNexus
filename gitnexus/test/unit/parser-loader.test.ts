@@ -73,6 +73,10 @@ describe('parser-loader', () => {
       await expect(loadLanguage(SupportedLanguages.Ruby)).resolves.not.toThrow();
     });
 
+    it('loads Zig language', async () => {
+      await expect(loadLanguage(SupportedLanguages.Zig)).resolves.not.toThrow();
+    });
+
     it('throws for unsupported language', async () => {
       await expect(loadLanguage('erlang' as SupportedLanguages)).rejects.toThrow(
         'Unsupported language',

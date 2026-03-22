@@ -29,8 +29,10 @@ const MINI_REPO = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
 const _require = createRequire(import.meta.url);
 const tsxPkgDir = path.dirname(_require.resolve('tsx/package.json'));
 const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).href;
+let globalHome: string;
 
 beforeAll(() => {
+  globalHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-cli-home-'));
   // Initialize mini-repo as a git repo so the CLI analyze command
   // can run the full pipeline (it requires a .git directory).
   const gitDir = path.join(MINI_REPO, '.git');
@@ -59,6 +61,7 @@ afterAll(() => {
       fs.rmSync(fullPath, { recursive: true, force: true });
     }
   }
+  fs.rmSync(globalHome, { recursive: true, force: true });
 });
 
 function runCli(command: string, cwd: string, timeoutMs = 15000) {
@@ -69,6 +72,7 @@ function runCli(command: string, cwd: string, timeoutMs = 15000) {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
+      GITNEXUS_HOME: globalHome,
       // Pre-set --max-old-space-size so analyzeCommand's ensureHeap() sees it
       // and skips the re-exec. The re-exec drops the tsx loader (--import tsx
       // is not in process.argv), causing ERR_UNKNOWN_FILE_EXTENSION on .ts files.
@@ -89,6 +93,7 @@ function runCliRaw(extraArgs: string[], cwd: string, timeoutMs = 15000) {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
+      GITNEXUS_HOME: globalHome,
       NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
     },
   });
@@ -126,6 +131,7 @@ describe('CLI end-to-end', () => {
     const gitnexusDir = path.join(MINI_REPO, '.gitnexus');
     expect(fs.existsSync(gitnexusDir)).toBe(true);
     expect(fs.statSync(gitnexusDir).isDirectory()).toBe(true);
+    expect(fs.existsSync(path.join(globalHome, 'registry.json'))).toBe(true);
   });
 
   describe('unhappy path', () => {
@@ -182,6 +188,7 @@ describe('CLI end-to-end', () => {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: {
           ...process.env,
+          GITNEXUS_HOME: globalHome,
           NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
         },
       });
@@ -420,6 +427,7 @@ describe('CLI end-to-end', () => {
             stdio: ['ignore', 'pipe', 'pipe'],
             env: {
               ...process.env,
+              GITNEXUS_HOME: globalHome,
               NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
             },
           },
@@ -473,6 +481,7 @@ describe('CLI end-to-end', () => {
             stdio: ['ignore', 'pipe', 'pipe'],
             env: {
               ...process.env,
+              GITNEXUS_HOME: globalHome,
               NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
             },
           },

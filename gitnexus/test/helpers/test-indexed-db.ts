@@ -11,9 +11,10 @@
  * Seed data is NOT included — each test provides its own via options.seed.
  */
 /// <reference path="../vitest.d.ts" />
+import fs from 'node:fs/promises';
 import path from 'path';
 import { describe, beforeAll, afterAll, inject } from 'vitest';
-import type { TestDBHandle } from './test-db.js';
+import { createTempDir, type TestDBHandle } from './test-db.js';
 import { NODE_TABLES, EMBEDDING_TABLE_NAME } from '../../src/core/lbug/schema.js';
 
 export interface IndexedDBHandle {
@@ -75,9 +76,20 @@ export function withTestLbugDB(
   const timeout = options?.timeout ?? 30000;
 
   const setup = async () => {
-    // Get shared DB path from globalSetup (created once with full schema)
-    const dbPath = inject<'lbugDbPath'>('lbugDbPath');
+    // Get shared DB path from globalSetup (created once with full schema).
+    // Each suite copies that pre-initialized DB into its own temp directory so
+    // parallel files don't contend on the same native LadybugDB lock.
+    const sharedDbPath = inject<'lbugDbPath'>('lbugDbPath');
+    const tmpHandle = await createTempDir(`gitnexus-${prefix}-`);
+    const dbPath = path.join(tmpHandle.dbPath, 'lbug');
     const repoId = `test-${prefix}-${Date.now()}-${repoCounter++}`;
+
+    const sharedDbDir = path.dirname(sharedDbPath);
+    for (const entry of await fs.readdir(sharedDbDir)) {
+      await fs.cp(path.join(sharedDbDir, entry), path.join(tmpHandle.dbPath, entry), {
+        recursive: true,
+      });
+    }
 
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
 
@@ -138,12 +150,11 @@ export function withTestLbugDB(
         await poolAdapter.closeLbug(repoId);
       }
       await adapter.closeLbug();
+      await tmpHandle.cleanup();
     };
 
-    // tmpHandle.dbPath → parent temp dir (not the lbug file) so tests
+    // tmpHandle.dbPath is the parent temp dir (not the lbug file) so tests
     // that create sibling directories (e.g. 'storage') still work.
-    const tmpDir = path.dirname(dbPath);
-    const tmpHandle: TestDBHandle = { dbPath: tmpDir, cleanup: async () => {} };
     ref.handle = { dbPath, repoId, tmpHandle, cleanup };
 
     // 8. User's final setup (mocks, dynamic imports, etc.)

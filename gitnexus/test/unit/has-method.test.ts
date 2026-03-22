@@ -7,6 +7,7 @@ import CPP from 'tree-sitter-cpp';
 import Rust from 'tree-sitter-rust';
 import CSharp from 'tree-sitter-c-sharp';
 import Go from 'tree-sitter-go';
+import Zig from '@tree-sitter-grammars/tree-sitter-zig';
 import {
   findEnclosingClassId,
   CLASS_CONTAINER_TYPES,
@@ -56,6 +57,8 @@ describe('CONTAINER_TYPE_TO_LABEL', () => {
     expect(CONTAINER_TYPE_TO_LABEL['class_declaration']).toBe('Class');
     expect(CONTAINER_TYPE_TO_LABEL['interface_declaration']).toBe('Interface');
     expect(CONTAINER_TYPE_TO_LABEL['struct_declaration']).toBe('Struct');
+    expect(CONTAINER_TYPE_TO_LABEL['enum_declaration']).toBe('Enum');
+    expect(CONTAINER_TYPE_TO_LABEL['union_declaration']).toBe('Union');
     expect(CONTAINER_TYPE_TO_LABEL['impl_item']).toBe('Impl');
     expect(CONTAINER_TYPE_TO_LABEL['trait_item']).toBe('Trait');
     expect(CONTAINER_TYPE_TO_LABEL['record_declaration']).toBe('Record');
@@ -476,6 +479,49 @@ func (s *Server) Start() {}
         // Should generate a Struct ID for "Server"
         expect(result).toContain('Server');
       }
+    });
+  });
+
+  describe('Zig', () => {
+    it('finds enclosing struct for Zig methods declared on const bindings', () => {
+      const tree = parseCode(
+        Zig,
+        `
+pub const Config = struct {
+  pub fn init() Config {
+    return .{};
+  }
+};
+`,
+      );
+      const nameNode = findNode(
+        tree.rootNode,
+        (n) => n.type === 'identifier' && n.text === 'init',
+      );
+      expect(nameNode).not.toBeNull();
+      expect(findEnclosingClassId(nameNode!, 'test/config.zig')).toBe('Struct:test/config.zig:Config');
+    });
+
+    it('finds enclosing enum for Zig methods declared on const bindings', () => {
+      const tree = parseCode(
+        Zig,
+        `
+pub const Kind = enum {
+  fast,
+  slow,
+
+  pub fn default() Kind {
+    return .fast;
+  }
+};
+`,
+      );
+      const nameNode = findNode(
+        tree.rootNode,
+        (n) => n.type === 'identifier' && n.text === 'default',
+      );
+      expect(nameNode).not.toBeNull();
+      expect(findEnclosingClassId(nameNode!, 'test/kind.zig')).toBe('Enum:test/kind.zig:Kind');
     });
   });
 

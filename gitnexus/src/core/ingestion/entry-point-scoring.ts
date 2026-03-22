@@ -226,12 +226,18 @@ export const ENTRY_POINT_PATTERNS = {
     /^onEvent$/, // BLoC event handler
     /^mapEventToState$/, // Legacy BLoC pattern
   ],
+  [SupportedLanguages.Zig]: [
+    /^main$/,
+    /^run$/,
+    /^start$/,
+    /^execute$/,
+  ],
   [SupportedLanguages.Cobol]: [], // Standalone regex processor — no tree-sitter entry points
 } satisfies Record<SupportedLanguages, RegExp[]>;
 
 /** Pre-computed merged patterns (universal + language-specific) to avoid per-call array allocation. */
 const MERGED_ENTRY_POINT_PATTERNS = Object.fromEntries(
-  Object.values(SupportedLanguages).map((lang) => [
+  (Object.values(SupportedLanguages) as SupportedLanguages[]).map((lang) => [
     lang,
     [...UNIVERSAL_ENTRY_POINT_PATTERNS, ...(ENTRY_POINT_PATTERNS[lang] ?? [])],
   ]),

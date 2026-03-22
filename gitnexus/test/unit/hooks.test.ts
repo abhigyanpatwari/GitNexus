@@ -80,6 +80,13 @@ describe('Hook files exist', () => {
   it('Plugin hook exists', () => {
     expect(fs.existsSync(PLUGIN_HOOK)).toBe(true);
   });
+
+  it('Plugin hook has a local CommonJS package boundary', () => {
+    const pluginPackageJson = path.resolve(__dirname, '..', '..', '..', 'gitnexus-claude-plugin', 'package.json');
+    expect(fs.existsSync(pluginPackageJson)).toBe(true);
+    const pluginPackage = JSON.parse(fs.readFileSync(pluginPackageJson, 'utf-8'));
+    expect(pluginPackage.type).toBe('commonjs');
+  });
 });
 
 // ─── Source code regression: no shell: true ──────────────────────────

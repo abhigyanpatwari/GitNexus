@@ -1146,6 +1146,102 @@ export const DART_QUERIES = `
       (type_identifier) @heritage.trait))) @heritage
 `;
 
+// Zig queries - works with @tree-sitter-grammars/tree-sitter-zig
+export const ZIG_QUERIES = `
+; ── Top-level functions ─────────────────────────────────────────────────────
+(source_file
+  (function_declaration
+    name: (identifier) @name) @definition.function)
+
+; ── Zig tests ───────────────────────────────────────────────────────────────
+(source_file
+  (test_declaration) @definition.function)
+
+; ── Named containers declared through const bindings ───────────────────────
+; Also matches nested module-style bindings inside other containers.
+(variable_declaration
+  (identifier) @name
+  (struct_declaration)) @definition.struct
+
+(variable_declaration
+  (identifier) @name
+  (enum_declaration)) @definition.enum
+
+(variable_declaration
+  (identifier) @name
+  (union_declaration)) @definition.union
+
+(variable_declaration
+  (identifier) @name
+  (opaque_declaration)) @definition.type
+
+; ── Container fields/properties ────────────────────────────────────────────
+(struct_declaration
+  (container_field
+    name: (identifier) @name) @definition.property)
+
+(enum_declaration
+  (container_field
+    name: (identifier) @name) @definition.property)
+
+(union_declaration
+  (container_field
+    name: (identifier) @name) @definition.property)
+
+; ── Methods nested inside named containers ─────────────────────────────────
+(struct_declaration
+  (function_declaration
+    name: (identifier) @name) @definition.method)
+
+(enum_declaration
+  (function_declaration
+    name: (identifier) @name) @definition.method)
+
+(union_declaration
+  (function_declaration
+    name: (identifier) @name) @definition.method)
+
+; ── Imports via @import(...) ───────────────────────────────────────────────
+(variable_declaration
+  (builtin_function
+    (builtin_identifier) @_builtin
+    (arguments
+      (string
+        (string_content) @import.source))) @import
+  (#eq? @_builtin "@import"))
+
+(using_namespace_declaration
+  (builtin_function
+    (builtin_identifier) @_builtin
+    (arguments
+      (string
+        (string_content) @import.source))) @import
+  (#eq? @_builtin "@import"))
+
+; ── C interop imports via @cImport({ @cInclude("..."); }) ─────────────────
+(variable_declaration
+  (builtin_function
+    (builtin_identifier) @_builtin
+    (arguments
+      (block
+        (expression_statement
+          (builtin_function
+            (builtin_identifier) @_cinclude
+            (arguments
+              (string
+                (string_content) @import.source))))))) @import
+  (#eq? @_builtin "@cImport")
+  (#eq? @_cinclude "@cInclude"))
+
+; ── Calls ──────────────────────────────────────────────────────────────────
+(call_expression
+  function: (identifier) @call.name) @call
+
+(call_expression
+  function: (field_expression
+    member: (identifier) @call.name)) @call
+`;
+
 import { SupportedLanguages } from 'gitnexus-shared';
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
@@ -1163,5 +1259,6 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Ruby]: RUBY_QUERIES,
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
   [SupportedLanguages.Dart]: DART_QUERIES,
+  [SupportedLanguages.Zig]: ZIG_QUERIES,
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
 };

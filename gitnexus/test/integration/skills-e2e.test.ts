@@ -27,6 +27,15 @@ const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
 const _require = createRequire(import.meta.url);
 const tsxPkgDir = path.dirname(_require.resolve('tsx/package.json'));
 const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).href;
+let globalHome: string;
+
+beforeAll(() => {
+  globalHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-skills-home-'));
+});
+
+afterAll(() => {
+  fs.rmSync(globalHome, { recursive: true, force: true });
+});
 
 // ============================================================================
 // FILE-LOCAL HELPERS
@@ -44,6 +53,7 @@ function runSkillsCli(cwd: string, timeoutMs = 45000) {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
+      GITNEXUS_HOME: globalHome,
       NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
     },
   });
