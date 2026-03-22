@@ -27,6 +27,7 @@ const AppContent = () => {
     isRightPanelOpen,
     runPipeline,
     runPipelineFromFiles,
+    hydrateServerGraph,
     isSettingsPanelOpen,
     setSettingsPanelOpen,
     isHelpDialogBoxOpen,
@@ -137,7 +138,7 @@ const AppContent = () => {
     }
   }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles, startEmbeddings, initializeAgent]);
 
-  const handleServerConnect = useCallback((result: ConnectToServerResult) => {
+  const handleServerConnect = useCallback(async (result: ConnectToServerResult) => {
     // Extract project name from repoPath
     const repoPath = result.repoInfo.repoPath;
     const projectName = repoPath.split('/').pop() || 'server-project';
@@ -160,9 +161,14 @@ const AppContent = () => {
     }
     setFileContents(fileMap);
 
-    // Transition directly to exploring view
-    setViewMode('exploring');
-    setProgress(null);
+    try {
+      await hydrateServerGraph(result);
+
+      // Transition directly to exploring view
+      setViewMode('exploring');
+    } finally {
+      setProgress(null);
+    }
 
     // Hydrate the worker-side DB (LadybugDB + BM25) so Query/Processes/embeddings work
     hydrateWorkerFromServer(result.nodes, result.relationships, result.fileContents).then(() => {
@@ -186,7 +192,7 @@ const AppContent = () => {
         initializeAgent(projectName);
       }
     });
-  }, [setViewMode, setGraph, setFileContents, setProjectName, setProgress, initializeAgent, startEmbeddings, hydrateWorkerFromServer]);
+  }, [setViewMode, setGraph, setFileContents, setProjectName, setProgress, initializeAgent, startEmbeddings, hydrateServerGraph, hydrateWorkerFromServer]);
 
   // Auto-connect when ?server query param is present (bookmarkable shortcut)
   const autoConnectRan = useRef(false);
@@ -218,7 +224,7 @@ const AppContent = () => {
         setProgress({ phase: 'extracting', percent: 97, message: 'Processing...', detail: 'Extracting file contents' });
       }
     }).then(async (result) => {
-      handleServerConnect(result);
+      await handleServerConnect(result);
 
       // Store server URL and fetch available repos for the repo switcher
       setServerBaseUrl(baseUrl);
@@ -261,7 +267,7 @@ const AppContent = () => {
         onFileSelect={handleFileSelect}
         onGitClone={handleGitClone}
         onServerConnect={async (result, serverUrl) => {
-          handleServerConnect(result);
+          await handleServerConnect(result);
           if (serverUrl) {
             const baseUrl = normalizeServerUrl(serverUrl);
             setServerBaseUrl(baseUrl);

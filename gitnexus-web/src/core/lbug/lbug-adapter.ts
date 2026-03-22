@@ -16,6 +16,7 @@ import {
   NodeTableName,
 } from './schema';
 import { generateAllCSVs } from './csv-generator';
+import { getQueryRows } from './query-result';
 
 // Holds the reference to the dynamically loaded module
 let lbug: any = null;
@@ -190,7 +191,7 @@ export const loadGraphToLbug = async (
     for (const tableName of NODE_TABLES) {
       try {
         const countRes = await conn.query(`MATCH (n:${tableName}) RETURN count(n) AS cnt`);
-        const countRows = await (countRes.getAll?.() ?? countRes.getAllObjects?.() ?? countRes.getAllRows?.() ?? []);
+        const countRows = await getQueryRows(countRes);
         const countRow = countRows[0];
         const count = countRow ? (countRow.cnt ?? countRow[0] ?? 0) : 0;
         totalNodes += Number(count);
@@ -293,8 +294,8 @@ export const executeQuery = async (cypher: string): Promise<any[]> => {
       });
     }
 
-    // Collect all rows (handle API differences across LadybugDB versions)
-    const allRows = await (result.getAll?.() ?? result.getAllObjects?.() ?? result.getAllRows?.() ?? []);
+    // Collect all rows
+    const allRows = await getQueryRows(result);
     const rows: any[] = [];
     for (const row of allRows) {
       // Convert tuple to named object if we have column names and row is array
@@ -331,7 +332,7 @@ export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> 
     for (const tableName of NODE_TABLES) {
       try {
         const nodeResult = await conn.query(`MATCH (n:${tableName}) RETURN count(n) AS cnt`);
-        const nodeRows = await (nodeResult.getAll?.() ?? nodeResult.getAllObjects?.() ?? nodeResult.getAllRows?.() ?? []);
+        const nodeRows = await getQueryRows(nodeResult);
         const nodeRow = nodeRows[0];
         totalNodes += Number(nodeRow?.cnt ?? nodeRow?.[0] ?? 0);
       } catch {
@@ -343,7 +344,7 @@ export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> 
     let totalEdges = 0;
     try {
       const edgeResult = await conn.query(`MATCH ()-[r:${REL_TABLE_NAME}]->() RETURN count(r) AS cnt`);
-      const edgeRows = await (edgeResult.getAll?.() ?? edgeResult.getAllObjects?.() ?? edgeResult.getAllRows?.() ?? []);
+      const edgeRows = await getQueryRows(edgeResult);
       const edgeRow = edgeRows[0];
       totalEdges = Number(edgeRow?.cnt ?? edgeRow?.[0] ?? 0);
     } catch {
@@ -408,7 +409,7 @@ export const executePrepared = async (
 
     const result = await conn.execute(stmt, params);
 
-    const rows = await (result.getAll?.() ?? result.getAllObjects?.() ?? result.getAllRows?.() ?? []);
+    const rows = await getQueryRows(result);
 
     await stmt.close();
     return rows;
@@ -472,7 +473,7 @@ export const testArrayParams = async (): Promise<{ success: boolean; error?: str
     for (const tableName of NODE_TABLES) {
       try {
         const nodeResult = await conn.query(`MATCH (n:${tableName}) RETURN n.id AS id LIMIT 1`);
-        const nodeRows = await (nodeResult.getAll?.() ?? nodeResult.getAllObjects?.() ?? nodeResult.getAllRows?.() ?? []);
+        const nodeRows = await getQueryRows(nodeResult);
         const nodeRow = nodeRows[0];
         if (nodeRow) {
           testNodeId = nodeRow.id ?? nodeRow[0];
@@ -509,7 +510,7 @@ export const testArrayParams = async (): Promise<{ success: boolean; error?: str
     const verifyResult = await conn.query(
       `MATCH (e:${EMBEDDING_TABLE_NAME} {nodeId: '${testNodeId}'}) RETURN e.embedding AS emb`
     );
-    const verifyRows = await (verifyResult.getAll?.() ?? verifyResult.getAllObjects?.() ?? verifyResult.getAllRows?.() ?? []);
+    const verifyRows = await getQueryRows(verifyResult);
     const verifyRow = verifyRows[0];
     const storedEmb = verifyRow?.emb ?? verifyRow?.[0];
 
