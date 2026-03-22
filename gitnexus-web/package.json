@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.0.0",
@@ -65,6 +66,7 @@
     "tree-sitter-wasms": "^0.1.13",
     "typescript": "^5.4.5",
     "vite": "^5.2.0",
-    "vite-plugin-static-copy": "^3.1.4"
+    "vite-plugin-static-copy": "^3.1.4",
+    "vitest": "^4.0.18"
   }
 }
