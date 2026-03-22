@@ -507,6 +507,13 @@ const ROUTE_HTTP_METHODS = new Set([
 
 const ROUTE_RESOURCE_METHODS = new Set(['resource', 'apiResource']);
 
+// Decorator names that indicate HTTP route handlers (NestJS, Flask, FastAPI, Spring)
+const ROUTE_DECORATOR_NAMES = new Set([
+  'Get', 'Post', 'Put', 'Delete', 'Patch', 'Route',
+  'get', 'post', 'put', 'delete', 'patch', 'route',
+  'RequestMapping', 'GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping',
+]);
+
 const RESOURCE_ACTIONS = ['index', 'create', 'store', 'show', 'edit', 'update', 'destroy'];
 const API_RESOURCE_ACTIONS = ['index', 'store', 'show', 'update', 'destroy'];
 
@@ -1004,12 +1011,7 @@ const processFileGroup = (
         // Store by the decorator's end line — the definition follows immediately after
         fileDecorators.set(decoratorNode.endPosition.row, { name: decoratorName, arg: decoratorArg });
 
-        const ROUTE_DECORATORS = new Set([
-          'Get', 'Post', 'Put', 'Delete', 'Patch', 'Route',
-          'get', 'post', 'put', 'delete', 'patch', 'route',
-          'RequestMapping', 'GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping',
-        ]);
-        if (ROUTE_DECORATORS.has(decoratorName) && decoratorArg) {
+        if (ROUTE_DECORATOR_NAMES.has(decoratorName) && decoratorArg) {
           const method = decoratorName.replace('Mapping', '').toUpperCase();
           const httpMethod = ['GET','POST','PUT','DELETE','PATCH'].includes(method) ? method : 'GET';
           result.decoratorRoutes.push({

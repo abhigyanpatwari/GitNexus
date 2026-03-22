@@ -1671,19 +1671,29 @@ export class LocalBackend {
   }
 
   /**
-   * Fetch execution flows linked to a Route or Tool node.
+   * Batch-fetch execution flows linked to a set of Route or Tool nodes.
+   * Single query instead of N+1.
    */
-  private async fetchLinkedFlows(repoId: string, nodeId: string): Promise<string[]> {
+  private async fetchLinkedFlowsBatch(repoId: string, nodeIds: string[]): Promise<Map<string, string[]>> {
+    const result = new Map<string, string[]>();
+    if (nodeIds.length === 0) return result;
     try {
       const rows = await executeParameterized(repoId, `
         MATCH (source)-[r:CodeRelation]->(proc:Process)
-        WHERE source.id = $nodeId AND r.type = 'ENTRY_POINT_OF'
-        RETURN proc.name AS name
-      `, { nodeId });
-      return rows.map((r: any) => r.name ?? r[0]).filter(Boolean);
-    } catch {
-      return [];
-    }
+        WHERE r.type = 'ENTRY_POINT_OF'
+        RETURN source.id AS sourceId, proc.name AS name
+      `, {});
+      const idSet = new Set(nodeIds);
+      for (const row of rows) {
+        const sourceId = row.sourceId ?? row[0];
+        const name = row.name ?? row[1];
+        if (!idSet.has(sourceId) || !name) continue;
+        let list = result.get(sourceId);
+        if (!list) { list = []; result.set(sourceId, list); }
+        list.push(name);
+      }
+    } catch { /* no ENTRY_POINT_OF edges yet */ }
+    return result;
   }
 
   private async routeMap(repo: RepoHandle, params: { route?: string }): Promise<any> {
@@ -1697,14 +1707,14 @@ export class LocalBackend {
       return { routes: [], total: 0, message: params.route ? `No routes matching "${params.route}"` : 'No routes found in this project.' };
     }
 
-    const routesWithFlows = await Promise.all(routes.map(async r => {
-      const flows = await this.fetchLinkedFlows(repo.id, r.id);
-      return { route: r.name, handler: r.filePath, consumers: r.consumers, flows };
-    }));
+    const flowMap = await this.fetchLinkedFlowsBatch(repo.id, routes.map(r => r.id));
 
     return {
-      routes: routesWithFlows,
-      total: routesWithFlows.length,
+      routes: routes.map(r => ({
+        route: r.name, handler: r.filePath, consumers: r.consumers,
+        flows: flowMap.get(r.id) || [],
+      })),
+      total: routes.length,
     };
   }
 
@@ -1738,28 +1748,27 @@ export class LocalBackend {
     const rows = await executeParameterized(repo.id, `
       MATCH (n:Tool)
       WHERE n.id STARTS WITH 'Tool:' ${toolFilter}
-      RETURN n.name AS name, n.filePath AS filePath, n.description AS description
+      RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.description AS description
     `, queryParams);
 
     if (rows.length === 0) {
       return { tools: [], total: 0, message: params.tool ? `No tools matching "${params.tool}"` : 'No tool definitions found.' };
     }
 
-    const toolsWithFlows = await Promise.all(rows.map(async (r: any) => {
-      const name = r.name ?? r[0];
-      const toolId = `Tool:${name}`;
-      const flows = await this.fetchLinkedFlows(repo.id, toolId);
-      return {
-        name,
-        filePath: r.filePath ?? r[1],
-        description: (r.description ?? r[2] ?? '').slice(0, 200),
-        flows,
-      };
-    }));
+    const toolIds = rows.map((r: any) => r.id ?? r[0]);
+    const flowMap = await this.fetchLinkedFlowsBatch(repo.id, toolIds);
 
     return {
-      tools: toolsWithFlows,
-      total: toolsWithFlows.length,
+      tools: rows.map((r: any) => {
+        const id = r.id ?? r[0];
+        return {
+          name: r.name ?? r[1],
+          filePath: r.filePath ?? r[2],
+          description: (r.description ?? r[3] ?? '').slice(0, 200),
+          flows: flowMap.get(id) || [],
+        };
+      }),
+      total: rows.length,
     };
   }
 

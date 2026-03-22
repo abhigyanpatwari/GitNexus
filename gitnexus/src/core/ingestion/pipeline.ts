@@ -705,37 +705,23 @@ export const runPipelineFromRepo = async (
       astCache.clear();
     }
 
-    // ── Phase 3.5: Next.js Route Registry ────────────────────────────
+    // ── Phase 3.5: Route Registry (Next.js + PHP file-based, single pass) ──
     const routeRegistry = new Map<string, string>();
     for (const p of allPaths) {
-      const routeURL = nextjsFileToRouteURL(p);
-      if (routeURL) routeRegistry.set(routeURL, p);
-    }
-
-    // PHP file-based routes (api/*.php)
-    for (const p of allPaths) {
-      if (!p.endsWith('.php')) continue;
-      const routeURL = phpFileToRouteURL(p);
-      if (routeURL && !routeRegistry.has(routeURL)) {
-        routeRegistry.set(routeURL, p);
-      }
+      const routeURL = nextjsFileToRouteURL(p) ?? (p.endsWith('.php') ? phpFileToRouteURL(p) : null);
+      if (routeURL && !routeRegistry.has(routeURL)) routeRegistry.set(routeURL, p);
     }
 
     // Framework-extracted routes (Laravel Route::get(), etc.)
+    const ensureSlash = (path: string) => path.startsWith('/') ? path : '/' + path;
     for (const route of allExtractedRoutes) {
       if (!route.routePath) continue;
-      const routeURL = route.routePath.startsWith('/') ? route.routePath : '/' + route.routePath;
-      if (!routeRegistry.has(routeURL)) {
-        routeRegistry.set(routeURL, route.filePath);
-      }
+      const routeURL = ensureSlash(route.routePath);
+      if (!routeRegistry.has(routeURL)) routeRegistry.set(routeURL, route.filePath);
     }
-
-    // Decorator-based routes (@Get, @Post, @app.route, etc.)
     for (const dr of allDecoratorRoutes) {
-      const routeURL = dr.routePath.startsWith('/') ? dr.routePath : '/' + dr.routePath;
-      if (!routeRegistry.has(routeURL)) {
-        routeRegistry.set(routeURL, dr.filePath);
-      }
+      const routeURL = ensureSlash(dr.routePath);
+      if (!routeRegistry.has(routeURL)) routeRegistry.set(routeURL, dr.filePath);
     }
 
     if (routeRegistry.size > 0) {
@@ -819,14 +805,15 @@ export const runPipelineFromRepo = async (
 
     // ── Phase 3.6: Tool Detection (MCP/RPC) ──────────────────────────
     const toolDefs: { name: string; filePath: string; description: string }[] = [];
+    const seenToolNames = new Set<string>();
 
-    // Python @mcp.tool() decorators (accumulated from parse worker)
     for (const td of allToolDefs) {
+      if (seenToolNames.has(td.toolName)) continue;
+      seenToolNames.add(td.toolName);
       toolDefs.push({ name: td.toolName, filePath: td.filePath, description: td.description });
     }
 
-    // TypeScript tool definition arrays (pattern: name: 'tool_name', description: `...`)
-    // Only scan files with 'tool' in their path to avoid scanning entire codebase
+    // TS tool definition arrays (name: 'x', description: `...`) in files with 'tool' in path
     const toolCandidatePaths = allPaths.filter(p =>
       (p.endsWith('.ts') || p.endsWith('.js')) && p.toLowerCase().includes('tool')
     );
@@ -837,11 +824,9 @@ export const runPipelineFromRepo = async (
         let match;
         while ((match = toolPattern.exec(content)) !== null) {
           const name = match[1];
-          const desc = match[2].slice(0, 200).replace(/\n/g, ' ').trim();
-          // Avoid duplicates from Python detection
-          if (!toolDefs.some(t => t.name === name)) {
-            toolDefs.push({ name, filePath, description: desc });
-          }
+          if (seenToolNames.has(name)) continue;
+          seenToolNames.add(name);
+          toolDefs.push({ name, filePath, description: match[2].slice(0, 200).replace(/\n/g, ' ').trim() });
         }
       }
     }
@@ -1054,8 +1039,13 @@ export const runPipelineFromRepo = async (
         });
       });
 
-      // Link Route and Tool nodes to Processes whose entry point is in their handler file
+      // Link Route and Tool nodes to Processes via reverse index (file → node id)
       if (routeRegistry.size > 0 || toolDefs.length > 0) {
+        const routeByFile = new Map<string, string>();
+        for (const [url, path] of routeRegistry) routeByFile.set(path, url);
+        const toolByFile = new Map<string, string>();
+        for (const td of toolDefs) toolByFile.set(td.filePath, td.name);
+
         let linked = 0;
         for (const proc of processResult.processes) {
           if (!proc.entryPointId) continue;
@@ -1064,38 +1054,32 @@ export const runPipelineFromRepo = async (
           const entryFile = entryNode.properties.filePath;
           if (!entryFile) continue;
 
-          // Check route handlers
-          for (const [routeURL, handlerPath] of routeRegistry) {
-            if (handlerPath === entryFile) {
-              const routeNodeId = generateId('Route', routeURL);
-              graph.addRelationship({
-                id: generateId('ENTRY_POINT_OF', `${routeNodeId}->${proc.id}`),
-                sourceId: routeNodeId,
-                targetId: proc.id,
-                type: 'ENTRY_POINT_OF',
-                confidence: 0.85,
-                reason: 'route-handler-entry-point',
-              });
-              linked++;
-              break;
-            }
+          // O(1) lookup via reverse index instead of O(R+T) scan per process
+          const routeURL = routeByFile.get(entryFile);
+          if (routeURL) {
+            const routeNodeId = generateId('Route', routeURL);
+            graph.addRelationship({
+              id: generateId('ENTRY_POINT_OF', `${routeNodeId}->${proc.id}`),
+              sourceId: routeNodeId,
+              targetId: proc.id,
+              type: 'ENTRY_POINT_OF',
+              confidence: 0.85,
+              reason: 'route-handler-entry-point',
+            });
+            linked++;
           }
-
-          // Check tool handlers
-          for (const td of toolDefs) {
-            if (td.filePath === entryFile) {
-              const toolNodeId = generateId('Tool', td.name);
-              graph.addRelationship({
-                id: generateId('ENTRY_POINT_OF', `${toolNodeId}->${proc.id}`),
-                sourceId: toolNodeId,
-                targetId: proc.id,
-                type: 'ENTRY_POINT_OF',
-                confidence: 0.85,
-                reason: 'tool-handler-entry-point',
-              });
-              linked++;
-              break;
-            }
+          const toolName = toolByFile.get(entryFile);
+          if (toolName) {
+            const toolNodeId = generateId('Tool', toolName);
+            graph.addRelationship({
+              id: generateId('ENTRY_POINT_OF', `${toolNodeId}->${proc.id}`),
+              sourceId: toolNodeId,
+              targetId: proc.id,
+              type: 'ENTRY_POINT_OF',
+              confidence: 0.85,
+              reason: 'tool-handler-entry-point',
+            });
+            linked++;
           }
         }
         if (isDev && linked > 0) {
