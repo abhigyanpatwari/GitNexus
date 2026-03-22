@@ -12,7 +12,7 @@ import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracte
 import { nextjsFileToRouteURL } from './route-extractors/nextjs.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';
 import { generateId } from '../../lib/utils.js';
-import type { ExtractedFetchCall } from './workers/parse-worker.js';
+import type { ExtractedFetchCall, ExtractedRoute } from './workers/parse-worker.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
 import { computeMRO } from './mro-processor.js';
 import { processCommunities } from './community-processor.js';
@@ -541,6 +541,8 @@ export const runPipelineFromRepo = async (
     const workerTypeEnvBindings: { filePath: string; bindings: [string, string][] }[] = [];
     // Accumulate fetch() calls from workers for Next.js route matching
     const allFetchCalls: ExtractedFetchCall[] = [];
+    // Accumulate framework-extracted routes (Laravel, etc.) for Route node creation
+    const allExtractedRoutes: ExtractedRoute[] = [];
 
     try {
       for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
@@ -655,6 +657,9 @@ export const runPipelineFromRepo = async (
           if (chunkWorkerData.fetchCalls?.length) {
             allFetchCalls.push(...chunkWorkerData.fetchCalls);
           }
+          if (chunkWorkerData.routes?.length) {
+            allExtractedRoutes.push(...chunkWorkerData.routes);
+          }
         } else {
           await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
           sequentialChunkPaths.push(chunkPaths);
@@ -703,6 +708,15 @@ export const runPipelineFromRepo = async (
       const routeURL = phpFileToRouteURL(p);
       if (routeURL && !routeRegistry.has(routeURL)) {
         routeRegistry.set(routeURL, p);
+      }
+    }
+
+    // Framework-extracted routes (Laravel Route::get(), etc.)
+    for (const route of allExtractedRoutes) {
+      if (!route.routePath) continue;
+      const routeURL = route.routePath.startsWith('/') ? route.routePath : '/' + route.routePath;
+      if (!routeRegistry.has(routeURL)) {
+        routeRegistry.set(routeURL, route.filePath);
       }
     }
 
