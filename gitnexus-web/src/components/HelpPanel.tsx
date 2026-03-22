@@ -199,8 +199,7 @@ function TabContent({ active, nodeCount, edgeCount }: {
             <div style={{ borderTop: '0.5px solid rgba(255,255,255,0.08)', margin: '4px 0' }} />
 
             <p style={{ fontSize: 12, color: '#6b7280', margin: 0, lineHeight: 1.6 }}>
-                Open the prompt via the{' '}
-                <span style={{ color: '#e2e2e8' }}>Query</span> button (bottom-left) or the{' '}
+                Open the prompt via  the{' '}
                 <span style={{ color: '#e2e2e8' }}>Nexus AI</span> button (top-right).
             </p>
         </div>
