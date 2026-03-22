@@ -410,6 +410,8 @@ export class LocalBackend {
         return this.routeMap(repo, params);
       case 'shape_check':
         return this.shapeCheck(repo, params);
+      case 'tool_map':
+        return this.toolMap(repo, params);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -1703,6 +1705,32 @@ export class LocalBackend {
       message: results.length === 0
         ? 'No routes with both response shapes and consumers found.'
         : `Found ${results.length} route(s) with response shape data and consumers.`,
+    };
+  }
+
+  private async toolMap(repo: RepoHandle, params: { tool?: string }): Promise<any> {
+    await this.ensureInitialized(repo.id);
+
+    const toolFilter = params.tool ? `AND n.name CONTAINS $tool` : '';
+    const queryParams = params.tool ? { tool: params.tool } : {};
+
+    const rows = await executeParameterized(repo.id, `
+      MATCH (n:Tool)
+      WHERE n.id STARTS WITH 'Tool:' ${toolFilter}
+      RETURN n.name AS name, n.filePath AS filePath, n.description AS description
+    `, queryParams);
+
+    if (rows.length === 0) {
+      return { tools: [], total: 0, message: params.tool ? `No tools matching "${params.tool}"` : 'No tool definitions found.' };
+    }
+
+    return {
+      tools: rows.map((r: any) => ({
+        name: r.name ?? r[0],
+        filePath: r.filePath ?? r[1],
+        description: (r.description ?? r[2] ?? '').slice(0, 200),
+      })),
+      total: rows.length,
     };
   }
 

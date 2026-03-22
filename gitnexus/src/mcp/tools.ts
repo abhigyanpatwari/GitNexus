@@ -244,6 +244,22 @@ Returns: route nodes with their handlers and consumers.`,
     },
   },
   {
+    name: 'tool_map',
+    description: `Show MCP/RPC tool definitions: which tools are defined, where they're handled, and their descriptions.
+
+WHEN TO USE: Understanding tool APIs, finding tool implementations, impact analysis for tool changes.
+
+Returns: tool nodes with their handler files and descriptions.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tool: { type: 'string', description: 'Filter by tool name. Omit for all tools.' },
+        repo: { type: 'string', description: 'Repository name or path.' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'shape_check',
     description: `Check for response shape mismatches between API route handlers and their consumers.
 
