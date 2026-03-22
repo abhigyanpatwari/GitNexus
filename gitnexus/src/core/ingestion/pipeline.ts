@@ -8,7 +8,10 @@ import {
   buildImportResolutionContext
 } from './import-processor.js';
 import { EMPTY_INDEX } from './resolvers/index.js';
-import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracted, processRoutesFromExtracted, seedCrossFileReceiverTypes, buildImportedReturnTypes, buildImportedRawReturnTypes, type ExportedTypeMap, buildExportedTypeMapFromGraph } from './call-processor.js';
+import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracted, processRoutesFromExtracted, processNextjsFetchRoutes, seedCrossFileReceiverTypes, buildImportedReturnTypes, buildImportedRawReturnTypes, type ExportedTypeMap, buildExportedTypeMapFromGraph } from './call-processor.js';
+import { nextjsFileToRouteURL } from './route-extractors/nextjs.js';
+import { generateId } from '../../lib/utils.js';
+import type { ExtractedFetchCall } from './workers/parse-worker.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
 import { computeMRO } from './mro-processor.js';
 import { processCommunities } from './community-processor.js';
@@ -535,6 +538,8 @@ export const runPipelineFromRepo = async (
     const exportedTypeMap: ExportedTypeMap = new Map();
     // Accumulate file-scope TypeEnv bindings from workers (closes worker/sequential quality gap)
     const workerTypeEnvBindings: { filePath: string; bindings: [string, string][] }[] = [];
+    // Accumulate fetch() calls from workers for Next.js route matching
+    const allFetchCalls: ExtractedFetchCall[] = [];
 
     try {
       for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
@@ -645,6 +650,10 @@ export const runPipelineFromRepo = async (
           if (chunkWorkerData.typeEnvBindings?.length) {
             workerTypeEnvBindings.push(...chunkWorkerData.typeEnvBindings);
           }
+          // Collect fetch() calls for Next.js route matching
+          if (chunkWorkerData.fetchCalls?.length) {
+            allFetchCalls.push(...chunkWorkerData.fetchCalls);
+          }
         } else {
           await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
           sequentialChunkPaths.push(chunkPaths);
@@ -673,6 +682,48 @@ export const runPipelineFromRepo = async (
         await processHeritageFromExtracted(graph, rubyHeritage, ctx);
       }
       astCache.clear();
+    }
+
+    // ── Phase 3.5: Next.js Route Registry ────────────────────────────
+    // Build route registry: map route URLs to handler file paths
+    const routeRegistry = new Map<string, string>();
+    for (const p of allPaths) {
+      const routeURL = nextjsFileToRouteURL(p);
+      if (routeURL) routeRegistry.set(routeURL, p);
+    }
+
+    // Create Route nodes and HANDLES_ROUTE edges
+    if (routeRegistry.size > 0) {
+      for (const [routeURL, handlerPath] of routeRegistry) {
+        const routeNodeId = generateId('Route', routeURL);
+        graph.addNode({
+          id: routeNodeId,
+          label: 'Route',
+          properties: { name: routeURL, filePath: handlerPath },
+        });
+
+        const handlerFileId = generateId('File', handlerPath);
+        graph.addRelationship({
+          id: generateId('HANDLES_ROUTE', `${handlerFileId}->${routeNodeId}`),
+          sourceId: handlerFileId,
+          targetId: routeNodeId,
+          type: 'HANDLES_ROUTE',
+          confidence: 1.0,
+          reason: 'nextjs-filesystem-route',
+        });
+      }
+
+      if (isDev) {
+        console.log(`🗺️ Next.js route registry: ${routeRegistry.size} routes`);
+      }
+    }
+
+    // Process fetch() → Route matching
+    if (routeRegistry.size > 0 && allFetchCalls.length > 0) {
+      processNextjsFetchRoutes(graph, allFetchCalls, routeRegistry);
+      if (isDev) {
+        console.log(`🔗 Processed ${allFetchCalls.length} fetch() calls against ${routeRegistry.size} routes`);
+      }
     }
 
     // Log resolution cache stats

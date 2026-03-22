@@ -159,6 +159,12 @@ export interface ExtractedRoute {
   lineNumber: number;
 }
 
+export interface ExtractedFetchCall {
+  filePath: string;
+  fetchURL: string;
+  lineNumber: number;
+}
+
 /** Constructor bindings keyed by filePath for cross-file type resolution */
 export interface FileConstructorBindings {
   filePath: string;
@@ -181,6 +187,7 @@ export interface ParseWorkerResult {
   assignments: ExtractedAssignment[];
   heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
+  fetchCalls: ExtractedFetchCall[];
   constructorBindings: FileConstructorBindings[];
   /** File-scope type bindings from TypeEnv fixpoint for exported symbol collection. */
   typeEnvBindings: FileTypeEnvBindings[];
@@ -278,6 +285,7 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
     assignments: [],
     heritage: [],
     routes: [],
+    fetchCalls: [],
     constructorBindings: [],
     typeEnvBindings: [],
     skippedLanguages: {},
@@ -966,6 +974,26 @@ const processFileGroup = (
         if (!captureMap['call']) continue;
       }
 
+      // Extract fetch-to-route mappings (must be BEFORE 'call' block — same node matches both)
+      if (captureMap['route.fetch']) {
+        const urlNode = captureMap['route.url'] ?? captureMap['route.template_url'];
+        if (urlNode) {
+          let fetchURL: string;
+          if (captureMap['route.template_url']) {
+            // Template string: reconstruct URL, replace ${...} with [param]
+            fetchURL = urlNode.text;
+          } else {
+            fetchURL = urlNode.text;
+          }
+          result.fetchCalls.push({
+            filePath: file.path,
+            fetchURL,
+            lineNumber: captureMap['route.fetch'].startPosition.row,
+          });
+        }
+        continue;  // Don't let this match fall through to 'call' handler
+      }
+
       // Extract call sites
       if (captureMap['call']) {
         const callNameNode = captureMap['call.name'];
@@ -1264,7 +1292,7 @@ const processFileGroup = (
 /** Accumulated result across sub-batches */
 let accumulated: ParseWorkerResult = {
   nodes: [], relationships: [], symbols: [],
-  imports: [], calls: [], assignments: [], heritage: [], routes: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0,
+  imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0,
 };
 let cumulativeProcessed = 0;
 
@@ -1277,6 +1305,7 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   target.assignments.push(...src.assignments);
   target.heritage.push(...src.heritage);
   target.routes.push(...src.routes);
+  target.fetchCalls.push(...src.fetchCalls);
   target.constructorBindings.push(...src.constructorBindings);
   target.typeEnvBindings.push(...src.typeEnvBindings);
   for (const [lang, count] of Object.entries(src.skippedLanguages)) {
@@ -1303,7 +1332,7 @@ parentPort!.on('message', (msg: any) => {
     if (msg && msg.type === 'flush') {
       parentPort!.postMessage({ type: 'result', data: accumulated });
       // Reset for potential reuse
-      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], assignments: [], heritage: [], routes: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0 };
+      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0 };
       cumulativeProcessed = 0;
       return;
     }

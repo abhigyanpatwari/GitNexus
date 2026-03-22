@@ -26,7 +26,8 @@ import {
 import { buildTypeEnv, isSubclassOf } from './type-env.js';
 import type { ConstructorBinding } from './type-env.js';
 import { getTreeSitterBufferSize } from './constants.js';
-import type { ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, FileConstructorBindings } from './workers/parse-worker.js';
+import type { ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, ExtractedFetchCall, FileConstructorBindings } from './workers/parse-worker.js';
+import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
 import { callRouters } from './call-routing.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
 import { typeConfigs } from './type-extractors/index.js';
@@ -1334,4 +1335,34 @@ export const processRoutesFromExtracted = async (
   }
 
   onProgress?.(extractedRoutes.length, extractedRoutes.length);
+};
+
+/**
+ * Create FETCHES edges from extracted fetch() calls to matching Route nodes.
+ */
+export const processNextjsFetchRoutes = (
+  graph: KnowledgeGraph,
+  fetchCalls: ExtractedFetchCall[],
+  routeRegistry: Map<string, string>,  // routeURL → handlerFilePath
+) => {
+  for (const call of fetchCalls) {
+    const normalized = normalizeFetchURL(call.fetchURL);
+    if (!normalized) continue;
+
+    for (const [routeURL] of routeRegistry) {
+      if (routeMatches(normalized, routeURL)) {
+        const sourceId = generateId('File', call.filePath);
+        const routeNodeId = generateId('Route', routeURL);
+        graph.addRelationship({
+          id: generateId('FETCHES', `${sourceId}->${routeNodeId}`),
+          sourceId,
+          targetId: routeNodeId,
+          type: 'FETCHES',
+          confidence: 0.9,
+          reason: 'fetch-url-match',
+        });
+        break;
+      }
+    }
+  }
 };
