@@ -1681,7 +1681,7 @@ export class LocalBackend {
       const rows = await executeParameterized(repoId, `
         MATCH (source)-[r:CodeRelation]->(proc:Process)
         WHERE r.type = 'ENTRY_POINT_OF'
-        RETURN source.id AS sourceId, proc.name AS name
+        RETURN source.id AS sourceId, proc.label AS name
       `, {});
       const idSet = new Set(nodeIds);
       for (const row of rows) {

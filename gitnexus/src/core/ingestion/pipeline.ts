@@ -1054,7 +1054,6 @@ export const runPipelineFromRepo = async (
           const entryFile = entryNode.properties.filePath;
           if (!entryFile) continue;
 
-          // O(1) lookup via reverse index instead of O(R+T) scan per process
           const routeURL = routeByFile.get(entryFile);
           if (routeURL) {
             const routeNodeId = generateId('Route', routeURL);
