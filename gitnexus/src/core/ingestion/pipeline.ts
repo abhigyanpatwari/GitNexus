@@ -1053,6 +1053,55 @@ export const runPipelineFromRepo = async (
           step: step.step,
         });
       });
+
+      // Link Route and Tool nodes to Processes whose entry point is in their handler file
+      if (routeRegistry.size > 0 || toolDefs.length > 0) {
+        let linked = 0;
+        for (const proc of processResult.processes) {
+          if (!proc.entryPointId) continue;
+          const entryNode = graph.getNode(proc.entryPointId);
+          if (!entryNode) continue;
+          const entryFile = entryNode.properties.filePath;
+          if (!entryFile) continue;
+
+          // Check route handlers
+          for (const [routeURL, handlerPath] of routeRegistry) {
+            if (handlerPath === entryFile) {
+              const routeNodeId = generateId('Route', routeURL);
+              graph.addRelationship({
+                id: generateId('ENTRY_POINT_OF', `${routeNodeId}->${proc.id}`),
+                sourceId: routeNodeId,
+                targetId: proc.id,
+                type: 'ENTRY_POINT_OF',
+                confidence: 0.85,
+                reason: 'route-handler-entry-point',
+              });
+              linked++;
+              break;
+            }
+          }
+
+          // Check tool handlers
+          for (const td of toolDefs) {
+            if (td.filePath === entryFile) {
+              const toolNodeId = generateId('Tool', td.name);
+              graph.addRelationship({
+                id: generateId('ENTRY_POINT_OF', `${toolNodeId}->${proc.id}`),
+                sourceId: toolNodeId,
+                targetId: proc.id,
+                type: 'ENTRY_POINT_OF',
+                confidence: 0.85,
+                reason: 'tool-handler-entry-point',
+              });
+              linked++;
+              break;
+            }
+          }
+        }
+        if (isDev && linked > 0) {
+          console.log(`🔗 Linked ${linked} Route/Tool nodes to execution flows`);
+        }
+      }
     }
 
     onProgress({

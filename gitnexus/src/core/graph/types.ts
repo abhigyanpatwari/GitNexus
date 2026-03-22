@@ -94,6 +94,7 @@ export type RelationshipType =
   | 'HANDLES_ROUTE'  // Function/File → Route (handler serves this endpoint)
   | 'FETCHES'        // Function/File → Route (consumer calls this endpoint)
   | 'HANDLES_TOOL'   // Function/File → Tool (handler implements this tool)
+  | 'ENTRY_POINT_OF'  // Route/Tool → Process (this endpoint starts this execution flow)
 
 export interface GraphNode {
   id:  string,
