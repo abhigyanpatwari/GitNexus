@@ -173,6 +173,13 @@ export interface ExtractedDecoratorRoute {
   lineNumber: number;
 }
 
+export interface ExtractedToolDef {
+  filePath: string;
+  toolName: string;
+  description: string;
+  lineNumber: number;
+}
+
 /** Constructor bindings keyed by filePath for cross-file type resolution */
 export interface FileConstructorBindings {
   filePath: string;
@@ -197,6 +204,7 @@ export interface ParseWorkerResult {
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
   decoratorRoutes: ExtractedDecoratorRoute[];
+  toolDefs: ExtractedToolDef[];
   constructorBindings: FileConstructorBindings[];
   /** File-scope type bindings from TypeEnv fixpoint for exported symbol collection. */
   typeEnvBindings: FileTypeEnvBindings[];
@@ -296,6 +304,7 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
     routes: [],
     fetchCalls: [],
     decoratorRoutes: [],
+    toolDefs: [],
     constructorBindings: [],
     typeEnvBindings: [],
     skippedLanguages: {},
@@ -942,7 +951,7 @@ const processFileGroup = (
     }
 
     // Per-file map: decorator end-line → decorator info, for associating with definitions
-    const fileDecorators = new Map<number, { name: string; arg?: string }>();
+    const fileDecorators = new Map<number, { name: string; arg?: string; isTool?: boolean }>();
 
     for (const match of matches) {
       const captureMap: Record<string, any> = {};
@@ -1010,6 +1019,11 @@ const processFileGroup = (
             decoratorName,
             lineNumber: decoratorNode.startPosition.row,
           });
+        }
+        // MCP/RPC tool detection: @mcp.tool(), @app.tool(), @server.tool()
+        if (decoratorName === 'tool') {
+          // Re-store with isTool flag for the definition handler
+          fileDecorators.set(decoratorNode.endPosition.row, { name: decoratorName, arg: decoratorArg, isTool: true });
         }
         continue;
       }
@@ -1233,6 +1247,15 @@ const processFileGroup = (
               entryPointMultiplier: 1.2,
               reason: `@${dec.name}${dec.arg ? `("${dec.arg}")` : ''}`,
             };
+            // Emit tool definition if this is a @tool decorator
+            if (dec.isTool) {
+              result.toolDefs.push({
+                filePath: file.path,
+                toolName: nodeName,
+                description: dec.arg || '',
+                lineNumber: definitionNode.startPosition.row,
+              });
+            }
             fileDecorators.delete(checkLine);
             break;
           }
@@ -1346,7 +1369,7 @@ const processFileGroup = (
 /** Accumulated result across sub-batches */
 let accumulated: ParseWorkerResult = {
   nodes: [], relationships: [], symbols: [],
-  imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], decoratorRoutes: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0,
+  imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], decoratorRoutes: [], toolDefs: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0,
 };
 let cumulativeProcessed = 0;
 
@@ -1361,6 +1384,7 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   target.routes.push(...src.routes);
   target.fetchCalls.push(...src.fetchCalls);
   target.decoratorRoutes.push(...src.decoratorRoutes);
+  target.toolDefs.push(...src.toolDefs);
   target.constructorBindings.push(...src.constructorBindings);
   target.typeEnvBindings.push(...src.typeEnvBindings);
   for (const [lang, count] of Object.entries(src.skippedLanguages)) {
@@ -1387,7 +1411,7 @@ parentPort!.on('message', (msg: any) => {
     if (msg && msg.type === 'flush') {
       parentPort!.postMessage({ type: 'result', data: accumulated });
       // Reset for potential reuse
-      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], decoratorRoutes: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0 };
+      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], decoratorRoutes: [], toolDefs: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0 };
       cumulativeProcessed = 0;
       return;
     }
