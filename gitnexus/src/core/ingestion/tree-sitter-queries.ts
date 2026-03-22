@@ -113,6 +113,12 @@ export const TYPESCRIPT_QUERIES = `
   arguments: (arguments
     [(string (string_fragment) @route.url)
      (template_string) @route.template_url])) @route.fetch
+
+; Decorators: @Controller, @Get, @Post, etc.
+(decorator
+  (call_expression
+    function: (identifier) @decorator.name
+    arguments: (arguments (string (string_fragment) @decorator.arg)?))) @decorator
 `;
 
 // JavaScript queries - works with tree-sitter-javascript
@@ -250,6 +256,15 @@ export const PYTHON_QUERIES = `
     object: (_) @assignment.receiver
     attribute: (identifier) @assignment.property)
   right: (_)) @assignment
+
+; Python decorators: @app.route, @router.get, etc.
+(decorator
+  (call
+    function: (attribute
+      object: (identifier) @decorator.receiver
+      attribute: (identifier) @decorator.name)
+    arguments: (argument_list
+      (string (string_content) @decorator.arg)?))) @decorator
 `;
 
 // Java queries - works with tree-sitter-java
