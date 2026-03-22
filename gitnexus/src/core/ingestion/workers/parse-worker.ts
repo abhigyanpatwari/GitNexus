@@ -165,6 +165,14 @@ export interface ExtractedFetchCall {
   lineNumber: number;
 }
 
+export interface ExtractedDecoratorRoute {
+  filePath: string;
+  routePath: string;
+  httpMethod: string;
+  decoratorName: string;
+  lineNumber: number;
+}
+
 /** Constructor bindings keyed by filePath for cross-file type resolution */
 export interface FileConstructorBindings {
   filePath: string;
@@ -188,6 +196,7 @@ export interface ParseWorkerResult {
   heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
+  decoratorRoutes: ExtractedDecoratorRoute[];
   constructorBindings: FileConstructorBindings[];
   /** File-scope type bindings from TypeEnv fixpoint for exported symbol collection. */
   typeEnvBindings: FileTypeEnvBindings[];
@@ -286,6 +295,7 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
     heritage: [],
     routes: [],
     fetchCalls: [],
+    decoratorRoutes: [],
     constructorBindings: [],
     typeEnvBindings: [],
     skippedLanguages: {},
@@ -984,6 +994,23 @@ const processFileGroup = (
         const decoratorNode = captureMap['decorator'];
         // Store by the decorator's end line — the definition follows immediately after
         fileDecorators.set(decoratorNode.endPosition.row, { name: decoratorName, arg: decoratorArg });
+
+        const ROUTE_DECORATORS = new Set([
+          'Get', 'Post', 'Put', 'Delete', 'Patch', 'Route',
+          'get', 'post', 'put', 'delete', 'patch', 'route',
+          'RequestMapping', 'GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping',
+        ]);
+        if (ROUTE_DECORATORS.has(decoratorName) && decoratorArg) {
+          const method = decoratorName.replace('Mapping', '').toUpperCase();
+          const httpMethod = ['GET','POST','PUT','DELETE','PATCH'].includes(method) ? method : 'GET';
+          result.decoratorRoutes.push({
+            filePath: file.path,
+            routePath: decoratorArg,
+            httpMethod,
+            decoratorName,
+            lineNumber: decoratorNode.startPosition.row,
+          });
+        }
         continue;
       }
 
@@ -1319,7 +1346,7 @@ const processFileGroup = (
 /** Accumulated result across sub-batches */
 let accumulated: ParseWorkerResult = {
   nodes: [], relationships: [], symbols: [],
-  imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0,
+  imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], decoratorRoutes: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0,
 };
 let cumulativeProcessed = 0;
 
@@ -1333,6 +1360,7 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   target.heritage.push(...src.heritage);
   target.routes.push(...src.routes);
   target.fetchCalls.push(...src.fetchCalls);
+  target.decoratorRoutes.push(...src.decoratorRoutes);
   target.constructorBindings.push(...src.constructorBindings);
   target.typeEnvBindings.push(...src.typeEnvBindings);
   for (const [lang, count] of Object.entries(src.skippedLanguages)) {
@@ -1359,7 +1387,7 @@ parentPort!.on('message', (msg: any) => {
     if (msg && msg.type === 'flush') {
       parentPort!.postMessage({ type: 'result', data: accumulated });
       // Reset for potential reuse
-      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0 };
+      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], decoratorRoutes: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0 };
       cumulativeProcessed = 0;
       return;
     }

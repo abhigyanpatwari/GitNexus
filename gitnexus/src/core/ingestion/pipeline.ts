@@ -12,7 +12,7 @@ import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracte
 import { nextjsFileToRouteURL } from './route-extractors/nextjs.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';
 import { generateId } from '../../lib/utils.js';
-import type { ExtractedFetchCall, ExtractedRoute } from './workers/parse-worker.js';
+import type { ExtractedFetchCall, ExtractedRoute, ExtractedDecoratorRoute } from './workers/parse-worker.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
 import { computeMRO } from './mro-processor.js';
 import { processCommunities } from './community-processor.js';
@@ -543,6 +543,8 @@ export const runPipelineFromRepo = async (
     const allFetchCalls: ExtractedFetchCall[] = [];
     // Accumulate framework-extracted routes (Laravel, etc.) for Route node creation
     const allExtractedRoutes: ExtractedRoute[] = [];
+    // Accumulate decorator-based routes (@Get, @Post, @app.route, etc.)
+    const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
 
     try {
       for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
@@ -660,6 +662,9 @@ export const runPipelineFromRepo = async (
           if (chunkWorkerData.routes?.length) {
             allExtractedRoutes.push(...chunkWorkerData.routes);
           }
+          if (chunkWorkerData.decoratorRoutes?.length) {
+            allDecoratorRoutes.push(...chunkWorkerData.decoratorRoutes);
+          }
         } else {
           await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
           sequentialChunkPaths.push(chunkPaths);
@@ -717,6 +722,14 @@ export const runPipelineFromRepo = async (
       const routeURL = route.routePath.startsWith('/') ? route.routePath : '/' + route.routePath;
       if (!routeRegistry.has(routeURL)) {
         routeRegistry.set(routeURL, route.filePath);
+      }
+    }
+
+    // Decorator-based routes (@Get, @Post, @app.route, etc.)
+    for (const dr of allDecoratorRoutes) {
+      const routeURL = dr.routePath.startsWith('/') ? dr.routePath : '/' + dr.routePath;
+      if (!routeRegistry.has(routeURL)) {
+        routeRegistry.set(routeURL, dr.filePath);
       }
     }
 
