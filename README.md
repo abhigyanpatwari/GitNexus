@@ -279,7 +279,7 @@ Or run locally:
 
 ```bash
 git clone https://github.com/abhigyanpatwari/gitnexus.git
-cd gitnexus/gitnexus-web
+cd gitnexus-web
 npm install
 npm run dev
 ```
