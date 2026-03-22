@@ -75,10 +75,10 @@ WHEN TO USE: Complex structural queries that search/explore can't answer. READ g
 AFTER THIS: Use context() on result symbols for deeper context.
 
 SCHEMA:
-- Nodes: File, Folder, Function, Class, Interface, Method, CodeElement, Community, Process
+- Nodes: File, Folder, Function, Class, Interface, Method, CodeElement, Community, Process, Route, Tool
 - Multi-language nodes (use backticks): \`Struct\`, \`Enum\`, \`Trait\`, \`Impl\`, etc.
 - All edges via single CodeRelation table with 'type' property
-- Edge types: CONTAINS, DEFINES, CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, ACCESSES, OVERRIDES, MEMBER_OF, STEP_IN_PROCESS
+- Edge types: CONTAINS, DEFINES, CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, ACCESSES, OVERRIDES, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, FETCHES, HANDLES_TOOL, ENTRY_POINT_OF
 - Edge properties: type (STRING), confidence (DOUBLE), reason (STRING), step (INT32)
 
 EXAMPLES:
@@ -261,12 +261,12 @@ Returns: tool nodes with their handler files and descriptions.`,
   },
   {
     name: 'shape_check',
-    description: `Check for response shape mismatches between API route handlers and their consumers.
+    description: `List response shapes for API routes alongside their consumers.
 
-WHEN TO USE: After modifying API response objects, before merging API changes, debugging "undefined" property errors.
-REQUIRES: route_map data (Route nodes with responseKeys property and FETCHES edges).
+WHEN TO USE: Understanding what data API routes return, checking which routes have response shape data.
+REQUIRES: Route nodes with responseKeys (extracted from .json({...}) calls during indexing).
 
-Compares the top-level keys returned by route handlers (from NextResponse.json/res.json) against property accesses in consuming files. Reports keys that consumers access but handlers don't return.`,
+Returns routes that have both detected response keys AND consumers. Shows top-level keys each endpoint returns (e.g., data, pagination, error) and who consumes them. Does NOT yet compare consumer property accesses against response shapes — that is a future enhancement.`,
     inputSchema: {
       type: 'object',
       properties: {

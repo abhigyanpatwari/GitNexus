@@ -705,30 +705,40 @@ export const runPipelineFromRepo = async (
       astCache.clear();
     }
 
-    // ── Phase 3.5: Route Registry (Next.js + PHP file-based, single pass) ──
-    const routeRegistry = new Map<string, string>();
+    // ── Phase 3.5: Route Registry (Next.js + PHP + Laravel + decorators) ──
+    type RouteEntry = { filePath: string; source: string };
+    const routeRegistry = new Map<string, RouteEntry>();
     for (const p of allPaths) {
-      const routeURL = nextjsFileToRouteURL(p) ?? (p.endsWith('.php') ? phpFileToRouteURL(p) : null);
-      if (routeURL && !routeRegistry.has(routeURL)) routeRegistry.set(routeURL, p);
+      const nextjsURL = nextjsFileToRouteURL(p);
+      if (nextjsURL && !routeRegistry.has(nextjsURL)) {
+        routeRegistry.set(nextjsURL, { filePath: p, source: 'nextjs-filesystem-route' });
+        continue;
+      }
+      if (p.endsWith('.php')) {
+        const phpURL = phpFileToRouteURL(p);
+        if (phpURL && !routeRegistry.has(phpURL)) {
+          routeRegistry.set(phpURL, { filePath: p, source: 'php-file-route' });
+        }
+      }
     }
 
-    // Framework-extracted routes (Laravel Route::get(), etc.)
     const ensureSlash = (path: string) => path.startsWith('/') ? path : '/' + path;
     for (const route of allExtractedRoutes) {
       if (!route.routePath) continue;
       const routeURL = ensureSlash(route.routePath);
-      if (!routeRegistry.has(routeURL)) routeRegistry.set(routeURL, route.filePath);
+      if (!routeRegistry.has(routeURL)) routeRegistry.set(routeURL, { filePath: route.filePath, source: 'framework-route' });
     }
     for (const dr of allDecoratorRoutes) {
       const routeURL = ensureSlash(dr.routePath);
-      if (!routeRegistry.has(routeURL)) routeRegistry.set(routeURL, dr.filePath);
+      if (!routeRegistry.has(routeURL)) routeRegistry.set(routeURL, { filePath: dr.filePath, source: `decorator-${dr.decoratorName}` });
     }
 
     if (routeRegistry.size > 0) {
-      const handlerPaths = [...routeRegistry.values()];
+      const handlerPaths = [...routeRegistry.values()].map(e => e.filePath);
       const handlerContents = await readFileContents(repoPath, handlerPaths);
 
-      for (const [routeURL, handlerPath] of routeRegistry) {
+      for (const [routeURL, entry] of routeRegistry) {
+        const { filePath: handlerPath, source: routeSource } = entry;
         const content = handlerContents.get(handlerPath);
 
         // Extract top-level keys from .json({...}) calls using brace-depth counting
@@ -745,19 +755,26 @@ export const runPipelineFromRepo = async (
             let i = startIdx;
             while (i < content.length && content[i] !== '{' && content[i] !== ')') i++;
             if (i >= content.length || content[i] !== '{') continue;
-            // Extract top-level keys at brace depth 1
+            // Extract top-level keys at brace depth 1, skipping string literals
             let depth = 0;
             let keyStart = -1;
+            let inString: string | null = null; // tracks quote char we're inside
             for (let j = i; j < content.length; j++) {
-              if (content[j] === '{') { depth++; continue; }
-              if (content[j] === '}') { depth--; if (depth === 0) break; continue; }
+              const ch = content[j];
+              // Skip string literal contents (handles braces inside strings)
+              if (inString) {
+                if (ch === '\\') { j++; continue; } // skip escaped char
+                if (ch === inString) inString = null;
+                continue;
+              }
+              if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue; }
+              if (ch === '{') { depth++; continue; }
+              if (ch === '}') { depth--; if (depth === 0) break; continue; }
               if (depth !== 1) continue;
-              // At top level of the object literal — look for property names
-              if (keyStart === -1 && /[a-zA-Z_$]/.test(content[j])) {
+              if (keyStart === -1 && /[a-zA-Z_$]/.test(ch)) {
                 keyStart = j;
-              } else if (keyStart !== -1 && !/[a-zA-Z0-9_$]/.test(content[j])) {
+              } else if (keyStart !== -1 && !/[a-zA-Z0-9_$]/.test(ch)) {
                 const key = content.slice(keyStart, j);
-                // Only count as key if followed by : or , or } (key-value or shorthand)
                 const rest = content.slice(j).trimStart();
                 if (rest[0] === ':' || rest[0] === ',' || rest[0] === '}') {
                   keys.push(key);
@@ -787,17 +804,20 @@ export const runPipelineFromRepo = async (
           targetId: routeNodeId,
           type: 'HANDLES_ROUTE',
           confidence: 1.0,
-          reason: 'nextjs-filesystem-route',
+          reason: routeSource,
         });
       }
 
       if (isDev) {
-        console.log(`🗺️ Next.js route registry: ${routeRegistry.size} routes`);
+        console.log(`🗺️ Route registry: ${routeRegistry.size} routes`);
       }
     }
 
     if (routeRegistry.size > 0 && allFetchCalls.length > 0) {
-      processNextjsFetchRoutes(graph, allFetchCalls, routeRegistry);
+      // processNextjsFetchRoutes expects Map<string, string> (url → filePath)
+      const routeURLToFile = new Map<string, string>();
+      for (const [url, entry] of routeRegistry) routeURLToFile.set(url, entry.filePath);
+      processNextjsFetchRoutes(graph, allFetchCalls, routeURLToFile);
       if (isDev) {
         console.log(`🔗 Processed ${allFetchCalls.length} fetch() calls against ${routeRegistry.size} routes`);
       }
@@ -1041,10 +1061,19 @@ export const runPipelineFromRepo = async (
 
       // Link Route and Tool nodes to Processes via reverse index (file → node id)
       if (routeRegistry.size > 0 || toolDefs.length > 0) {
-        const routeByFile = new Map<string, string>();
-        for (const [url, path] of routeRegistry) routeByFile.set(path, url);
-        const toolByFile = new Map<string, string>();
-        for (const td of toolDefs) toolByFile.set(td.filePath, td.name);
+        // Reverse indexes: file → all route URLs / tool names (handles multi-route files)
+        const routesByFile = new Map<string, string[]>();
+        for (const [url, entry] of routeRegistry) {
+          let list = routesByFile.get(entry.filePath);
+          if (!list) { list = []; routesByFile.set(entry.filePath, list); }
+          list.push(url);
+        }
+        const toolsByFile = new Map<string, string[]>();
+        for (const td of toolDefs) {
+          let list = toolsByFile.get(td.filePath);
+          if (!list) { list = []; toolsByFile.set(td.filePath, list); }
+          list.push(td.name);
+        }
 
         let linked = 0;
         for (const proc of processResult.processes) {
@@ -1054,31 +1083,35 @@ export const runPipelineFromRepo = async (
           const entryFile = entryNode.properties.filePath;
           if (!entryFile) continue;
 
-          const routeURL = routeByFile.get(entryFile);
-          if (routeURL) {
-            const routeNodeId = generateId('Route', routeURL);
-            graph.addRelationship({
-              id: generateId('ENTRY_POINT_OF', `${routeNodeId}->${proc.id}`),
-              sourceId: routeNodeId,
-              targetId: proc.id,
-              type: 'ENTRY_POINT_OF',
-              confidence: 0.85,
-              reason: 'route-handler-entry-point',
-            });
-            linked++;
+          const routeURLs = routesByFile.get(entryFile);
+          if (routeURLs) {
+            for (const routeURL of routeURLs) {
+              const routeNodeId = generateId('Route', routeURL);
+              graph.addRelationship({
+                id: generateId('ENTRY_POINT_OF', `${routeNodeId}->${proc.id}`),
+                sourceId: routeNodeId,
+                targetId: proc.id,
+                type: 'ENTRY_POINT_OF',
+                confidence: 0.85,
+                reason: 'route-handler-entry-point',
+              });
+              linked++;
+            }
           }
-          const toolName = toolByFile.get(entryFile);
-          if (toolName) {
-            const toolNodeId = generateId('Tool', toolName);
-            graph.addRelationship({
-              id: generateId('ENTRY_POINT_OF', `${toolNodeId}->${proc.id}`),
-              sourceId: toolNodeId,
-              targetId: proc.id,
-              type: 'ENTRY_POINT_OF',
-              confidence: 0.85,
-              reason: 'tool-handler-entry-point',
-            });
-            linked++;
+          const toolNames = toolsByFile.get(entryFile);
+          if (toolNames) {
+            for (const toolName of toolNames) {
+              const toolNodeId = generateId('Tool', toolName);
+              graph.addRelationship({
+                id: generateId('ENTRY_POINT_OF', `${toolNodeId}->${proc.id}`),
+                sourceId: toolNodeId,
+                targetId: proc.id,
+                type: 'ENTRY_POINT_OF',
+                confidence: 0.85,
+                reason: 'tool-handler-entry-point',
+              });
+              linked++;
+            }
           }
         }
         if (isDev && linked > 0) {
