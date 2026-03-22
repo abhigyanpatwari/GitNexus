@@ -226,4 +226,21 @@ Confidence: 1.0 = certain, <0.8 = fuzzy match`,
       required: ['target', 'direction'],
     },
   },
+  {
+    name: 'route_map',
+    description: `Show API route mappings: which components/hooks fetch which API endpoints, and which handler files serve them.
+
+WHEN TO USE: Understanding API consumption patterns, finding orphaned routes, impact analysis for API changes.
+AFTER THIS: Use impact() on specific route handlers to see full blast radius.
+
+Returns: route nodes with their handlers and consumers.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        route: { type: 'string', description: 'Filter by route path (e.g., "/api/grants"). Omit for all routes.' },
+        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+      },
+      required: [],
+    },
+  },
 ];

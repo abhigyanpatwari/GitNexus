@@ -405,6 +405,8 @@ export class LocalBackend {
         return this.context(repo, { name: params?.name, ...params });
       case 'overview':
         return this.overview(repo, params);
+      case 'route_map':
+        return this.routeMap(repo, params);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -1621,6 +1623,56 @@ export class LocalBackend {
       affected_processes: affectedProcesses,
       affected_modules: affectedModules,
       byDepth: grouped,
+    };
+  }
+
+  /**
+   * Route Map tool — show API route mappings with handlers and consumers.
+   */
+  private async routeMap(repo: RepoHandle, params: { route?: string }): Promise<any> {
+    await this.ensureInitialized(repo.id);
+
+    // Find all Route nodes, optionally filtered
+    const routeFilter = params.route
+      ? `AND n.name CONTAINS $route`
+      : '';
+
+    const results = await executeParameterized(repo.id, `
+      MATCH (n)
+      WHERE n.id STARTS WITH 'Route:' ${routeFilter}
+      RETURN n.id AS id, n.name AS name, n.filePath AS filePath
+    `, params.route ? { route: params.route } : {});
+
+    if (results.length === 0) {
+      return { routes: [], total: 0, message: params.route ? `No routes matching "${params.route}"` : 'No routes found. Is this a Next.js project?' };
+    }
+
+    const routes = [];
+    for (const row of results) {
+      const routeId = row.id ?? row[0];
+      const routeName = row.name ?? row[1];
+      const handlerFile = row.filePath ?? row[2];
+
+      // Find consumers (FETCHES edges pointing to this route)
+      const consumers = await executeParameterized(repo.id, `
+        MATCH (consumer)-[r:CodeRelation]->(target)
+        WHERE target.id = $routeId AND r.type = 'FETCHES'
+        RETURN consumer.name AS name, consumer.filePath AS filePath
+      `, { routeId });
+
+      routes.push({
+        route: routeName,
+        handler: handlerFile,
+        consumers: consumers.map((c: any) => ({
+          name: c.name ?? c[0],
+          filePath: c.filePath ?? c[1],
+        })),
+      });
+    }
+
+    return {
+      routes,
+      total: routes.length,
     };
   }
 
