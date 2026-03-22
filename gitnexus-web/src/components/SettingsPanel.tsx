@@ -4,6 +4,7 @@ import {
   loadSettings,
   saveSettings,
   getProviderDisplayName,
+  getAvailableModels,
   fetchOpenRouterModels,
 } from '../core/llm/settings-service';
 import type { LLMSettings, LLMProvider } from '../core/llm/types';
@@ -296,7 +297,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
 
   if (!isOpen) return null;
 
-  const providers: LLMProvider[] = ['openai', 'gemini', 'anthropic', 'azure-openai', 'ollama', 'openrouter', 'minimax'];
+  const providers: LLMProvider[] = ['openai', 'gemini', 'anthropic', 'azure-openai', 'ollama', 'openrouter', 'minimax', 'glm'];
 
 
   return (
@@ -381,7 +382,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
                     w-8 h-8 rounded-lg flex items-center justify-center text-lg
                     ${settings.activeProvider === provider ? 'bg-accent/20' : 'bg-surface'}
                   `}>
-                    {provider === 'openai' ? '🤖' : provider === 'gemini' ? '💎' : provider === 'anthropic' ? '🧠' : provider === 'ollama' ? '🦙' : provider === 'openrouter' ? '🌐' : provider === 'minimax' ? '⚡' : '☁️'}
+                    {provider === 'openai' ? '🤖' : provider === 'gemini' ? '💎' : provider === 'anthropic' ? '🧠' : provider === 'ollama' ? '🦙' : provider === 'openrouter' ? '🌐' : provider === 'minimax' ? '⚡' : provider === 'glm' ? '🔮' : '☁️'}
                   </div>
                   <span className="font-medium">{getProviderDisplayName(provider)}</span>
                 </button>
@@ -754,6 +755,81 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
                 helperText: 'Available: MiniMax-M2.5 (default), MiniMax-M2.5-highspeed (faster)',
               }}
             />
+          )}
+
+          {/* GLM Settings */}
+          {settings.activeProvider === 'glm' && (
+            <div className="space-y-4 animate-fade-in">
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-text-secondary">
+                  <Key className="w-4 h-4" />
+                  API Key
+                </label>
+                <div className="relative">
+                  <input
+                    type={showApiKey['glm'] ? 'text' : 'password'}
+                    value={settings.glm?.apiKey ?? ''}
+                    onChange={e => setSettings(prev => ({
+                      ...prev,
+                      glm: { ...prev.glm!, apiKey: e.target.value }
+                    }))}
+                    placeholder="Enter your Z.AI API key"
+                    className="w-full px-4 py-3 pr-12 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleApiKeyVisibility('glm')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary transition-colors"
+                  >
+                    {showApiKey['glm'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <p className="text-xs text-text-muted">
+                  Get your API key from{' '}
+                  <a
+                    href="https://docs.z.ai"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-accent hover:underline"
+                  >
+                    Z.AI Platform
+                  </a>
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-secondary">Model</label>
+                <select
+                  value={settings.glm?.model ?? 'GLM-5'}
+                  onChange={e => setSettings(prev => ({
+                    ...prev,
+                    glm: { ...prev.glm!, model: e.target.value }
+                  }))}
+                  className="w-full px-4 py-3 bg-elevated border border-border-subtle rounded-xl text-text-primary focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all font-mono text-sm"
+                >
+                  {getAvailableModels('glm').map(model => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-secondary">Base URL</label>
+                <input
+                  type="text"
+                  value={settings.glm?.baseUrl ?? 'https://api.z.ai/api/coding/paas/v4'}
+                  onChange={e => setSettings(prev => ({
+                    ...prev,
+                    glm: { ...prev.glm!, baseUrl: e.target.value }
+                  }))}
+                  placeholder="https://api.z.ai/api/coding/paas/v4"
+                  className="w-full px-4 py-3 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all font-mono text-sm"
+                />
+                <p className="text-xs text-text-muted">
+                  Coding API (default). Use https://api.z.ai/api/paas/v4 for the general API.
+                </p>
+              </div>
+            </div>
           )}
 
           {/* Privacy Note */}
