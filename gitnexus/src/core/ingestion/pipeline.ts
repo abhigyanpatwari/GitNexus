@@ -703,15 +703,39 @@ export const runPipelineFromRepo = async (
       for (const [routeURL, handlerPath] of routeRegistry) {
         const content = handlerContents.get(handlerPath);
 
-        // Extract top-level keys from .json({...}) calls for response shape tracking
+        // Extract top-level keys from .json({...}) calls using brace-depth counting
+        // to correctly handle nested objects (regex [^}]* breaks on nested braces)
         let responseKeys: string[] | undefined;
         if (content) {
           const keys: string[] = [];
-          const jsonCallPattern = /\.json\(\s*\{([^}]*)\}/g;
-          let match;
-          while ((match = jsonCallPattern.exec(content)) !== null) {
-            for (const propMatch of match[1].matchAll(/(\w+)\s*(?:[:,}])/g)) {
-              keys.push(propMatch[1]);
+          // Find all .json( positions
+          const jsonPattern = /\.json\s*\(/g;
+          let jsonMatch;
+          while ((jsonMatch = jsonPattern.exec(content)) !== null) {
+            const startIdx = jsonMatch.index + jsonMatch[0].length;
+            // Find the opening { of the first argument
+            let i = startIdx;
+            while (i < content.length && content[i] !== '{' && content[i] !== ')') i++;
+            if (i >= content.length || content[i] !== '{') continue;
+            // Extract top-level keys at brace depth 1
+            let depth = 0;
+            let keyStart = -1;
+            for (let j = i; j < content.length; j++) {
+              if (content[j] === '{') { depth++; continue; }
+              if (content[j] === '}') { depth--; if (depth === 0) break; continue; }
+              if (depth !== 1) continue;
+              // At top level of the object literal — look for property names
+              if (keyStart === -1 && /[a-zA-Z_$]/.test(content[j])) {
+                keyStart = j;
+              } else if (keyStart !== -1 && !/[a-zA-Z0-9_$]/.test(content[j])) {
+                const key = content.slice(keyStart, j);
+                // Only count as key if followed by : or , or } (key-value or shorthand)
+                const rest = content.slice(j).trimStart();
+                if (rest[0] === ':' || rest[0] === ',' || rest[0] === '}') {
+                  keys.push(key);
+                }
+                keyStart = -1;
+              }
             }
           }
           if (keys.length > 0) responseKeys = [...new Set(keys)];

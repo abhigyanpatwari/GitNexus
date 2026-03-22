@@ -11,8 +11,9 @@
 export function nextjsFileToRouteURL(filePath: string): string | null {
   const normalized = filePath.replace(/\\/g, '/');
 
-  // App Router: app/**/route.ts
-  const appMatch = normalized.match(/app\/(.+?)\/route\.(ts|js|tsx|jsx)$/);
+  // App Router: app/api/**/route.ts (restrict to API routes to avoid noise from
+  // page-level route handlers that fetch() calls won't match anyway)
+  const appMatch = normalized.match(/app\/(api\/.+?)\/route\.(ts|js|tsx|jsx)$/);
   if (appMatch) {
     return '/' + appMatch[1];
   }
@@ -26,20 +27,6 @@ export function nextjsFileToRouteURL(filePath: string): string | null {
   }
 
   return null;
-}
-
-// Extract HTTP methods exported from an App Router route file.
-// Looks for named exports like "export async function GET(...)".
-// Falls back to ['GET'] when no explicit method exports are found.
-export function extractNextjsHttpMethods(fileContent: string): string[] {
-  const methods: string[] = [];
-  const pattern =
-    /export\s+(?:async\s+)?function\s+(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b/g;
-  let match;
-  while ((match = pattern.exec(fileContent)) !== null) {
-    methods.push(match[1]);
-  }
-  return methods.length > 0 ? methods : ['GET'];
 }
 
 // Normalise a fetch URL so it can be matched against route patterns.
