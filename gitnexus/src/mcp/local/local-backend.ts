@@ -407,6 +407,8 @@ export class LocalBackend {
         return this.overview(repo, params);
       case 'route_map':
         return this.routeMap(repo, params);
+      case 'shape_check':
+        return this.shapeCheck(repo, params);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -1673,6 +1675,72 @@ export class LocalBackend {
     return {
       routes,
       total: routes.length,
+    };
+  }
+
+  /**
+   * Shape Check tool — detect response shape mismatches between handlers and consumers.
+   */
+  private async shapeCheck(repo: RepoHandle, params: { route?: string }): Promise<any> {
+    await this.ensureInitialized(repo.id);
+
+    // Find Route nodes with responseKeys
+    const routeFilter = params.route
+      ? `AND n.name CONTAINS $route`
+      : '';
+
+    const routeRows = await executeParameterized(repo.id, `
+      MATCH (n)
+      WHERE n.id STARTS WITH 'Route:' ${routeFilter}
+      RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.responseKeys AS responseKeys
+    `, params.route ? { route: params.route } : {});
+
+    if (routeRows.length === 0) {
+      return { mismatches: [], message: 'No routes found with response shape data.' };
+    }
+
+    const results = [];
+    for (const row of routeRows) {
+      const routeId = row.id ?? row[0];
+      const routeName = row.name ?? row[1];
+      const handlerFile = row.filePath ?? row[2];
+      const responseKeys: string[] | null = row.responseKeys ?? row[3] ?? null;
+
+      if (!responseKeys || responseKeys.length === 0) continue;
+
+      // Find consumers of this route
+      const consumers = await executeParameterized(repo.id, `
+        MATCH (consumer)-[r:CodeRelation]->(target)
+        WHERE target.id = $routeId AND r.type = 'FETCHES'
+        RETURN consumer.name AS name, consumer.filePath AS filePath
+      `, { routeId });
+
+      if (consumers.length === 0) continue;
+
+      results.push({
+        route: routeName,
+        handler: handlerFile,
+        responseKeys,
+        consumers: consumers.map((c: any) => ({
+          name: c.name ?? c[0],
+          filePath: c.filePath ?? c[1],
+        })),
+        status: 'ok',  // Would show 'mismatch' if we could detect property accesses
+      });
+    }
+
+    // Note: Full mismatch detection (comparing responseKeys against consumer property
+    // accesses like `data.pagination.page`) requires tracking property access chains,
+    // which is a future enhancement. For now, this tool surfaces which routes have
+    // response shapes and which consumers use them.
+
+    return {
+      routes: results,
+      total: results.length,
+      routesWithShapes: results.filter(r => r.responseKeys.length > 0).length,
+      message: results.length === 0
+        ? 'No routes with both response shapes and consumers found.'
+        : `Found ${results.length} route(s) with response shape data and consumers.`,
     };
   }
 

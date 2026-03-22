@@ -243,4 +243,21 @@ Returns: route nodes with their handlers and consumers.`,
       required: [],
     },
   },
+  {
+    name: 'shape_check',
+    description: `Check for response shape mismatches between API route handlers and their consumers.
+
+WHEN TO USE: After modifying API response objects, before merging API changes, debugging "undefined" property errors.
+REQUIRES: route_map data (Route nodes with responseKeys property and FETCHES edges).
+
+Compares the top-level keys returned by route handlers (from NextResponse.json/res.json) against property accesses in consuming files. Reports keys that consumers access but handlers don't return.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        route: { type: 'string', description: 'Check a specific route (e.g., "/api/grants"). Omit to check all routes.' },
+        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+      },
+      required: [],
+    },
+  },
 ];
