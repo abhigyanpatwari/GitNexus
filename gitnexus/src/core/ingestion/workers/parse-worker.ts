@@ -978,16 +978,11 @@ const processFileGroup = (
       if (captureMap['route.fetch']) {
         const urlNode = captureMap['route.url'] ?? captureMap['route.template_url'];
         if (urlNode) {
-          let fetchURL: string;
-          if (captureMap['route.template_url']) {
-            // Template string: reconstruct URL, replace ${...} with [param]
-            fetchURL = urlNode.text;
-          } else {
-            fetchURL = urlNode.text;
-          }
+          // URL normalization (template ${...} → [param], query stripping) is handled
+          // by normalizeFetchURL() in call-processor — we store the raw text here.
           result.fetchCalls.push({
             filePath: file.path,
-            fetchURL,
+            fetchURL: urlNode.text,
             lineNumber: captureMap['route.fetch'].startPosition.row,
           });
         }
