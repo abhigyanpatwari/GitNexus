@@ -37,6 +37,12 @@ describe('Next.js route mapping', () => {
     expect(fetchEdge).toBeDefined();
   });
 
+  it('creates Route nodes for PHP API endpoints', () => {
+    const routes = getNodesByLabel(result, 'Route');
+    expect(routes).toContain('/api/upload');
+    expect(routes).toContain('/api/status');
+  });
+
   it('matches dynamic route segments', () => {
     const edges = getRelationships(result, 'FETCHES');
     const dynamicFetch = edges.find(e =>
