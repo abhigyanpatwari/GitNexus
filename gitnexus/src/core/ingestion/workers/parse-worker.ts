@@ -931,6 +931,9 @@ const processFileGroup = (
       result.typeEnvBindings.push({ filePath: file.path, bindings });
     }
 
+    // Per-file map: decorator end-line → decorator info, for associating with definitions
+    const fileDecorators = new Map<number, { name: string; arg?: string }>();
+
     for (const match of matches) {
       const captureMap: Record<string, any> = {};
       for (const c of match.captures) {
@@ -972,6 +975,16 @@ const processFileGroup = (
           });
         }
         if (!captureMap['call']) continue;
+      }
+
+      // Store decorator metadata for later association with definitions
+      if (captureMap['decorator'] && captureMap['decorator.name']) {
+        const decoratorName = captureMap['decorator.name'].text;
+        const decoratorArg = captureMap['decorator.arg']?.text;
+        const decoratorNode = captureMap['decorator'];
+        // Store by the decorator's end line — the definition follows immediately after
+        fileDecorators.set(decoratorNode.endPosition.row, { name: decoratorName, arg: decoratorArg });
+        continue;
       }
 
       // Extract fetch-to-route mappings (must be BEFORE 'call' block — same node matches both)
@@ -1176,9 +1189,26 @@ const processFileGroup = (
         }
       }
 
-      const frameworkHint = definitionNode
+      let frameworkHint = definitionNode
         ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
         : null;
+
+      // Apply decorator metadata from preceding decorator captures
+      if (definitionNode) {
+        const defStartLine = definitionNode.startPosition.row;
+        for (let checkLine = defStartLine - 1; checkLine >= Math.max(0, defStartLine - 5); checkLine--) {
+          const dec = fileDecorators.get(checkLine);
+          if (dec) {
+            frameworkHint = {
+              framework: 'decorator',
+              entryPointMultiplier: 1.2,
+              reason: `@${dec.name}${dec.arg ? `("${dec.arg}")` : ''}`,
+            };
+            fileDecorators.delete(checkLine);
+            break;
+          }
+        }
+      }
 
       let parameterCount: number | undefined;
       let requiredParameterCount: number | undefined;
