@@ -690,32 +690,27 @@ export const runPipelineFromRepo = async (
     }
 
     // ── Phase 3.5: Next.js Route Registry ────────────────────────────
-    // Build route registry: map route URLs to handler file paths
     const routeRegistry = new Map<string, string>();
     for (const p of allPaths) {
       const routeURL = nextjsFileToRouteURL(p);
       if (routeURL) routeRegistry.set(routeURL, p);
     }
 
-    // Create Route nodes and HANDLES_ROUTE edges
     if (routeRegistry.size > 0) {
-      // Read handler file contents for response shape extraction
       const handlerPaths = [...routeRegistry.values()];
       const handlerContents = await readFileContents(repoPath, handlerPaths);
 
       for (const [routeURL, handlerPath] of routeRegistry) {
         const content = handlerContents.get(handlerPath);
 
-        // Extract response shape from .json({...}) calls
+        // Extract top-level keys from .json({...}) calls for response shape tracking
         let responseKeys: string[] | undefined;
         if (content) {
           const keys: string[] = [];
           const jsonCallPattern = /\.json\(\s*\{([^}]*)\}/g;
           let match;
           while ((match = jsonCallPattern.exec(content)) !== null) {
-            const inner = match[1];
-            // Match: shorthand props (data,), key-value pairs (data:), and last props before }
-            for (const propMatch of inner.matchAll(/(\w+)\s*(?:[:,}])/g)) {
+            for (const propMatch of match[1].matchAll(/(\w+)\s*(?:[:,}])/g)) {
               keys.push(propMatch[1]);
             }
           }
@@ -749,7 +744,6 @@ export const runPipelineFromRepo = async (
       }
     }
 
-    // Process fetch() → Route matching
     if (routeRegistry.size > 0 && allFetchCalls.length > 0) {
       processNextjsFetchRoutes(graph, allFetchCalls, routeRegistry);
       if (isDev) {

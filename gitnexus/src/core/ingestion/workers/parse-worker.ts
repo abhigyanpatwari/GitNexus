@@ -1193,10 +1193,12 @@ const processFileGroup = (
         ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
         : null;
 
-      // Apply decorator metadata from preceding decorator captures
+      // Decorators appear on lines immediately before their definition; allow up to
+      // MAX_DECORATOR_SCAN_LINES gap for blank lines / multi-line decorator stacks.
+      const MAX_DECORATOR_SCAN_LINES = 5;
       if (definitionNode) {
         const defStartLine = definitionNode.startPosition.row;
-        for (let checkLine = defStartLine - 1; checkLine >= Math.max(0, defStartLine - 5); checkLine--) {
+        for (let checkLine = defStartLine - 1; checkLine >= Math.max(0, defStartLine - MAX_DECORATOR_SCAN_LINES); checkLine--) {
           const dec = fileDecorators.get(checkLine);
           if (dec) {
             frameworkHint = {

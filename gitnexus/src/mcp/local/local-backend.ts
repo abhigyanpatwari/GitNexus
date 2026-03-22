@@ -1629,115 +1629,78 @@ export class LocalBackend {
   }
 
   /**
-   * Route Map tool — show API route mappings with handlers and consumers.
+   * Fetch Route nodes with their consumers in a single query.
+   * Shared by routeMap and shapeCheck to avoid N+1 query patterns.
    */
+  private async fetchRoutesWithConsumers(
+    repoId: string,
+    routeFilter: string,
+    params: Record<string, string>,
+  ): Promise<Array<{ id: string; name: string; filePath: string; responseKeys: string[] | null; consumers: Array<{ name: string; filePath: string }> }>> {
+    const rows = await executeParameterized(repoId, `
+      MATCH (n)
+      WHERE n.id STARTS WITH 'Route:' ${routeFilter}
+      OPTIONAL MATCH (consumer)-[r:CodeRelation]->(n)
+      WHERE r.type = 'FETCHES'
+      RETURN n.id AS routeId, n.name AS routeName, n.filePath AS handlerFile,
+             n.responseKeys AS responseKeys,
+             consumer.name AS consumerName, consumer.filePath AS consumerFile
+    `, params);
+
+    // Group rows by route (single query returns one row per route-consumer pair)
+    const routeMap = new Map<string, { id: string; name: string; filePath: string; responseKeys: string[] | null; consumers: Array<{ name: string; filePath: string }> }>();
+    for (const row of rows) {
+      const id = row.routeId ?? row[0];
+      const name = row.routeName ?? row[1];
+      const filePath = row.handlerFile ?? row[2];
+      const responseKeys: string[] | null = row.responseKeys ?? row[3] ?? null;
+      const consumerName = row.consumerName ?? row[4];
+      const consumerFile = row.consumerFile ?? row[5];
+
+      if (!routeMap.has(id)) {
+        routeMap.set(id, { id, name, filePath, responseKeys, consumers: [] });
+      }
+      if (consumerName && consumerFile) {
+        routeMap.get(id)!.consumers.push({ name: consumerName, filePath: consumerFile });
+      }
+    }
+
+    return [...routeMap.values()];
+  }
+
   private async routeMap(repo: RepoHandle, params: { route?: string }): Promise<any> {
     await this.ensureInitialized(repo.id);
 
-    // Find all Route nodes, optionally filtered
-    const routeFilter = params.route
-      ? `AND n.name CONTAINS $route`
-      : '';
+    const routeFilter = params.route ? `AND n.name CONTAINS $route` : '';
+    const queryParams = params.route ? { route: params.route } : {};
+    const routes = await this.fetchRoutesWithConsumers(repo.id, routeFilter, queryParams);
 
-    const results = await executeParameterized(repo.id, `
-      MATCH (n)
-      WHERE n.id STARTS WITH 'Route:' ${routeFilter}
-      RETURN n.id AS id, n.name AS name, n.filePath AS filePath
-    `, params.route ? { route: params.route } : {});
-
-    if (results.length === 0) {
+    if (routes.length === 0) {
       return { routes: [], total: 0, message: params.route ? `No routes matching "${params.route}"` : 'No routes found. Is this a Next.js project?' };
     }
 
-    const routes = [];
-    for (const row of results) {
-      const routeId = row.id ?? row[0];
-      const routeName = row.name ?? row[1];
-      const handlerFile = row.filePath ?? row[2];
-
-      // Find consumers (FETCHES edges pointing to this route)
-      const consumers = await executeParameterized(repo.id, `
-        MATCH (consumer)-[r:CodeRelation]->(target)
-        WHERE target.id = $routeId AND r.type = 'FETCHES'
-        RETURN consumer.name AS name, consumer.filePath AS filePath
-      `, { routeId });
-
-      routes.push({
-        route: routeName,
-        handler: handlerFile,
-        consumers: consumers.map((c: any) => ({
-          name: c.name ?? c[0],
-          filePath: c.filePath ?? c[1],
-        })),
-      });
-    }
-
     return {
-      routes,
+      routes: routes.map(r => ({ route: r.name, handler: r.filePath, consumers: r.consumers })),
       total: routes.length,
     };
   }
 
-  /**
-   * Shape Check tool — detect response shape mismatches between handlers and consumers.
-   */
   private async shapeCheck(repo: RepoHandle, params: { route?: string }): Promise<any> {
     await this.ensureInitialized(repo.id);
 
-    // Find Route nodes with responseKeys
-    const routeFilter = params.route
-      ? `AND n.name CONTAINS $route`
-      : '';
+    const routeFilter = params.route ? `AND n.name CONTAINS $route` : '';
+    const queryParams = params.route ? { route: params.route } : {};
+    const allRoutes = await this.fetchRoutesWithConsumers(repo.id, routeFilter, queryParams);
 
-    const routeRows = await executeParameterized(repo.id, `
-      MATCH (n)
-      WHERE n.id STARTS WITH 'Route:' ${routeFilter}
-      RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.responseKeys AS responseKeys
-    `, params.route ? { route: params.route } : {});
-
-    if (routeRows.length === 0) {
-      return { mismatches: [], message: 'No routes found with response shape data.' };
-    }
-
-    const results = [];
-    for (const row of routeRows) {
-      const routeId = row.id ?? row[0];
-      const routeName = row.name ?? row[1];
-      const handlerFile = row.filePath ?? row[2];
-      const responseKeys: string[] | null = row.responseKeys ?? row[3] ?? null;
-
-      if (!responseKeys || responseKeys.length === 0) continue;
-
-      // Find consumers of this route
-      const consumers = await executeParameterized(repo.id, `
-        MATCH (consumer)-[r:CodeRelation]->(target)
-        WHERE target.id = $routeId AND r.type = 'FETCHES'
-        RETURN consumer.name AS name, consumer.filePath AS filePath
-      `, { routeId });
-
-      if (consumers.length === 0) continue;
-
-      results.push({
-        route: routeName,
-        handler: handlerFile,
-        responseKeys,
-        consumers: consumers.map((c: any) => ({
-          name: c.name ?? c[0],
-          filePath: c.filePath ?? c[1],
-        })),
-        status: 'ok',  // Would show 'mismatch' if we could detect property accesses
-      });
-    }
-
-    // Note: Full mismatch detection (comparing responseKeys against consumer property
-    // accesses like `data.pagination.page`) requires tracking property access chains,
-    // which is a future enhancement. For now, this tool surfaces which routes have
-    // response shapes and which consumers use them.
+    // Filter to routes that have both response shapes and consumers
+    const results = allRoutes
+      .filter(r => r.responseKeys && r.responseKeys.length > 0 && r.consumers.length > 0)
+      .map(r => ({ route: r.name, handler: r.filePath, responseKeys: r.responseKeys!, consumers: r.consumers }));
 
     return {
       routes: results,
       total: results.length,
-      routesWithShapes: results.filter(r => r.responseKeys.length > 0).length,
+      routesWithShapes: results.length,
       message: results.length === 0
         ? 'No routes with both response shapes and consumers found.'
         : `Found ${results.length} route(s) with response shape data and consumers.`,
