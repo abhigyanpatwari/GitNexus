@@ -13,7 +13,7 @@ import { FileEntry } from './services/zip';
 import { getActiveProviderConfig } from './core/llm/settings-service';
 import { createKnowledgeGraph } from './core/graph/graph';
 import { connectToServer, fetchRepos, normalizeServerUrl, type ConnectToServerResult } from './services/server-connection';
-import {HelpPanel} from "@/components/HelpPanel.tsx";
+import { HelpPanel } from './components/HelpPanel';
 
 const AppContent = () => {
   const {
@@ -44,6 +44,7 @@ const AppContent = () => {
     setAvailableRepos,
     switchRepo,
     hydrateWorkerFromServer,
+    graph
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
@@ -317,6 +318,8 @@ const AppContent = () => {
       <HelpPanel
           isOpen={isHelpDialogBoxOpen}
           onClose={() => setHelpDialogBoxOpen(false)}
+          nodeCount={graph!.nodes.length}
+          edgeCount={graph!.relationships.length}
       />
 
     </div>

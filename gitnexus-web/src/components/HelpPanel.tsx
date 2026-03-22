@@ -4,6 +4,8 @@ import { X, GitBranch, Search, Filter, Zap, Keyboard, BarChart2, HelpCircle } fr
 interface HelpPanelProps {
     isOpen: boolean;
     onClose: () => void;
+    nodeCount: number;
+    edgeCount: number;
 }
 
 type TabId = 'overview' | 'graph' | 'search' | 'ai' | 'shortcuts' | 'status';
@@ -24,29 +26,25 @@ const tabs: Tab[] = [
 ];
 
 const shortcuts = [
-    { label: 'Search nodes',        mac: '⌘ K',   win: 'Ctrl K'  },
-    { label: 'Zoom in / out',       mac: '+ / −', win: '+ / −'   },
-    { label: 'Fit graph to screen', mac: 'F',      win: 'F'       },
-    { label: 'Toggle sidebar',      mac: '⌘ B',   win: 'Ctrl B'  },
-    { label: 'Open AI query',       mac: '⌘ J',   win: 'Ctrl J'  },
-    { label: 'Deselect / close',    mac: 'Esc',    win: 'Esc'     },
-    { label: 'Open help',           mac: '?',      win: '?'       },
+    { label: 'Search nodes',      mac: '⌘ K',  win: 'Ctrl K' },
+    { label: 'Deselect / close',  mac: 'Esc',   win: 'Esc'    },
 ];
 
 const nodeColors = [
-    { color: '#f472b6', label: 'Pink',   desc: 'Components / React files' },
-    { color: '#818cf8', label: 'Purple', desc: 'Modules / TypeScript files' },
-    { color: '#34d399', label: 'Teal',   desc: 'Utility functions / helpers' },
-    { color: '#fbbf24', label: 'Amber',  desc: 'Config / data files' },
-    { color: '#60a5fa', label: 'Blue',   desc: 'External / node_modules' },
+    { color: '#10b981', label: 'Function',   desc: 'Function declarations' },
+    { color: '#3b82f6', label: 'File',        desc: 'Source files' },
+    { color: '#f59e0b', label: 'Class',       desc: 'Class declarations' },
+    { color: '#14b8a6', label: 'Method',      desc: 'Class methods' },
+    { color: '#ec4899', label: 'Interface',   desc: 'TypeScript interfaces' },
+    { color: '#6366f1', label: 'Folder',      desc: 'Directory nodes' },
 ];
 
-const statusItems = [
+const getStatusItems = (nodeCount: number, edgeCount: number) => [
     { badge: <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#34d399', display: 'inline-block', flexShrink: 0 }} />, title: 'Ready', desc: 'Graph is fully loaded and interactive' },
-    { badge: <span style={{ fontSize: 12, fontWeight: 500, color: '#a78bfa', flexShrink: 0 }}>2150</span>, title: 'Nodes count', desc: 'Total files and symbols in the graph' },
-    { badge: <span style={{ fontSize: 12, fontWeight: 500, color: '#60a5fa', flexShrink: 0 }}>6358</span>, title: 'Edges count', desc: 'Import / dependency connections' },
-    { badge: <span style={{ fontSize: 11, fontWeight: 500, color: '#a78bfa', flexShrink: 0, whiteSpace: 'nowrap' }}>Semantic Ready</span>, title: 'AI index status', desc: 'Repo is fully indexed for AI queries' },
-    { badge: <span style={{ fontSize: 11, fontWeight: 500, color: '#9ca3af', flexShrink: 0 }}>typescript</span>, title: 'Language', desc: 'Primary language detected in the repo' },
+    { badge: <span style={{ fontSize: 12, fontWeight: 500, color: '#a78bfa', flexShrink: 0 }}>{nodeCount}</span>, title: 'Nodes count', desc: 'Total files and symbols in the graph' },
+    { badge: <span style={{ fontSize: 12, fontWeight: 500, color: '#60a5fa', flexShrink: 0 }}>{edgeCount}</span>, title: 'Edges count', desc: 'Import / dependency connections' },
+    { badge: <span style={{ fontSize: 11, fontWeight: 500, color: '#34d399', flexShrink: 0, whiteSpace: 'nowrap' }}>Semantic Ready</span>, title: 'AI index status', desc: 'Repo is fully indexed for AI queries' },
+    // { badge: <span style={{ fontSize: 11, fontWeight: 500, color: '#9ca3af', flexShrink: 0 }}>typescript</span>, title: 'Language', desc: 'Primary language detected in the repo' },
 ];
 
 const kbdStyle: React.CSSProperties = {
@@ -65,7 +63,11 @@ const kbdWinStyle: React.CSSProperties = {
     color: '#93c5fd',
 };
 
-function TabContent({ active }: { active: TabId }) {
+function TabContent({ active, nodeCount, edgeCount }: {
+    active: TabId;
+    nodeCount: number;
+    edgeCount: number;
+}) {
     if (active === 'overview') return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <p style={{ fontSize: 11, color: '#6b7280', margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Getting started</p>
@@ -78,15 +80,17 @@ function TabContent({ active }: { active: TabId }) {
             <div style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 10, padding: '12px 14px', borderLeft: '2px solid #34d399' }}>
                 <p style={{ fontSize: 13, fontWeight: 500, color: '#e2e2e8', margin: '0 0 4px' }}>Your current repo</p>
                 <p style={{ fontSize: 12, color: '#9ca3af', margin: 0, lineHeight: 1.6 }}>
-                    Loaded: <span style={{ color: '#a78bfa', fontFamily: 'monospace' }}>.claude</span> — 2150 nodes · 6358 edges · TypeScript
+                    Loaded: <span style={{ color: '#a78bfa', fontFamily: 'monospace' }}></span>  {nodeCount} nodes · {edgeCount} edges
                 </p>
             </div>
 
             <div style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 10, padding: '12px 14px', borderLeft: '2px solid #60a5fa' }}>
                 <p style={{ fontSize: 13, fontWeight: 500, color: '#e2e2e8', margin: '0 0 4px' }}>Three ways to explore</p>
                 <p style={{ fontSize: 12, color: '#9ca3af', margin: 0, lineHeight: 1.6 }}>
-                    <strong style={{ color: '#e2e2e8', fontWeight: 500 }}>1.</strong> Click nodes to inspect &nbsp;·&nbsp;
-                    <strong style={{ color: '#e2e2e8', fontWeight: 500 }}>2.</strong> Search by name or type &nbsp;·&nbsp;
+                    <strong style={{ color: '#e2e2e8', fontWeight: 500 }}>1.</strong> Click nodes to inspect
+                    <br/>
+                    <strong style={{ color: '#e2e2e8', fontWeight: 500 }}>2.</strong> Search by name or type
+                    <br/>
                     <strong style={{ color: '#e2e2e8', fontWeight: 500 }}>3.</strong> Ask Nexus AI a natural language question
                 </p>
             </div>
@@ -94,7 +98,9 @@ function TabContent({ active }: { active: TabId }) {
             <div style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 10, padding: '12px 14px', borderLeft: '2px solid #fbbf24' }}>
                 <p style={{ fontSize: 13, fontWeight: 500, color: '#e2e2e8', margin: '0 0 4px' }}>Navigation</p>
                 <p style={{ fontSize: 12, color: '#9ca3af', margin: 0, lineHeight: 1.6 }}>
-                    Scroll to zoom · Click and drag to pan · Double-click a node to focus its subgraph
+                    · Scroll to zoom <br/>
+                    · Click and drag to pan <br/>
+                    · Double-click a node to focus its subgraph
                 </p>
             </div>
         </div>
@@ -243,7 +249,7 @@ function TabContent({ active }: { active: TabId }) {
     if (active === 'status') return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <p style={{ fontSize: 11, color: '#6b7280', margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Status bar explained</p>
-            {statusItems.map(({ badge, title, desc }) => (
+            {getStatusItems(nodeCount, edgeCount).map(({ badge, title, desc }) => (
                 <div key={title} style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 10, padding: '10px 14px', display: 'flex', gap: 12, alignItems: 'center' }}>
                     {badge}
                     <div>
@@ -258,7 +264,7 @@ function TabContent({ active }: { active: TabId }) {
     return null;
 }
 
-export const HelpPanel = ({ isOpen, onClose }: HelpPanelProps) => {
+export const HelpPanel = ({ isOpen, onClose, nodeCount, edgeCount }: HelpPanelProps) => {
     const [active, setActive] = useState<TabId>('overview');
 
     if (!isOpen) return null;
@@ -355,7 +361,7 @@ export const HelpPanel = ({ isOpen, onClose }: HelpPanelProps) => {
 
                     {/* Content pane */}
                     <div style={{ padding: '20px', overflowY: 'auto' }}>
-                        <TabContent active={active} />
+                        <TabContent active={active} nodeCount={nodeCount} edgeCount={edgeCount} />
                     </div>
                 </div>
 

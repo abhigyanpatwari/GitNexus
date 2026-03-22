@@ -270,6 +270,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
           <Settings className="w-4.5 h-4.5" />
         </button>
         <button
+          title="Help"
           onClick={() => setHelpDialogBoxOpen(true)}
           className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors">
           <HelpCircle className="w-4.5 h-4.5" />
