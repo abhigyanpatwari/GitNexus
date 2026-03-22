@@ -106,6 +106,13 @@ export const TYPESCRIPT_QUERIES = `
     object: (_) @assignment.receiver
     property: (property_identifier) @assignment.property)
   right: (_)) @assignment
+
+; fetch('/api/...') calls — capture URL argument for route mapping
+(call_expression
+  function: (identifier) @_fetch_fn (#eq? @_fetch_fn "fetch")
+  arguments: (arguments
+    [(string (string_fragment) @route.url)
+     (template_string) @route.template_url])) @route.fetch
 `;
 
 // JavaScript queries - works with tree-sitter-javascript
@@ -183,6 +190,13 @@ export const JAVASCRIPT_QUERIES = `
     object: (_) @assignment.receiver
     property: (property_identifier) @assignment.property)
   right: (_)) @assignment
+
+; fetch('/api/...') calls — capture URL argument for route mapping
+(call_expression
+  function: (identifier) @_fetch_fn (#eq? @_fetch_fn "fetch")
+  arguments: (arguments
+    [(string (string_fragment) @route.url)
+     (template_string) @route.template_url])) @route.fetch
 `;
 
 // Python queries - works with tree-sitter-python
