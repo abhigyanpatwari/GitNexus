@@ -462,7 +462,7 @@ const ProcessItem = ({ process, isLoading, isSelected, isFocused, onView, onTogg
             : '';
 
     return (
-        <div className={`flex items-center gap-2 px-4 py-2 mx-2 rounded-lg hover:bg-hover group transition-all ${rowClass}`}>
+        <div data-testid="process-row" className={`flex items-center gap-2 px-4 py-2 mx-2 rounded-lg hover:bg-hover group transition-all ${rowClass}`}>
             <GitBranch className="w-4 h-4 text-text-muted flex-shrink-0" />
             <div className="flex-1 min-w-0">
                 <div className="text-sm text-text-primary truncate">{process.label}</div>
