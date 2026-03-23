@@ -8,7 +8,11 @@ import {
   buildImportResolutionContext
 } from './import-processor.js';
 import { EMPTY_INDEX } from './resolvers/index.js';
-import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracted, processRoutesFromExtracted, seedCrossFileReceiverTypes, buildImportedReturnTypes, buildImportedRawReturnTypes, type ExportedTypeMap, buildExportedTypeMapFromGraph } from './call-processor.js';
+import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracted, processRoutesFromExtracted, processNextjsFetchRoutes, extractFetchCallsFromFiles, seedCrossFileReceiverTypes, buildImportedReturnTypes, buildImportedRawReturnTypes, type ExportedTypeMap, buildExportedTypeMapFromGraph } from './call-processor.js';
+import { nextjsFileToRouteURL, normalizeFetchURL } from './route-extractors/nextjs.js';
+import { phpFileToRouteURL } from './route-extractors/php.js';
+import { generateId } from '../../lib/utils.js';
+import type { ExtractedFetchCall, ExtractedRoute, ExtractedDecoratorRoute, ExtractedToolDef } from './workers/parse-worker.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
 import { computeMRO } from './mro-processor.js';
 import { processCommunities } from './community-processor.js';
@@ -91,6 +95,143 @@ const CHUNK_BYTE_BUDGET = 20 * 1024 * 1024; // 20MB
 
 /** Max AST trees to keep in LRU cache */
 const AST_CACHE_CAP = 50;
+
+/** Keywords that terminate middleware chain walking (not wrapper function names) */
+const MIDDLEWARE_STOP_KEYWORDS = new Set([
+  'async', 'await', 'function', 'new', 'return', 'if', 'for', 'while', 'switch',
+  'class', 'const', 'let', 'var', 'req', 'res', 'request', 'response',
+  'event', 'ctx', 'context', 'next',
+]);
+
+/**
+ * Extract middleware wrapper chain from a route handler file.
+ * Detects patterns like: export const POST = withA(withB(withC(handler)))
+ * Returns wrapper function names in outermost-first order, or undefined if no chain found.
+ */
+export function extractMiddlewareChain(content: string): string[] | undefined {
+  const mwPattern = /export\s+(?:const\s+(?:POST|GET|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*=|default)\s+(\w+)\s*\(/g;
+  let mwMatch;
+  while ((mwMatch = mwPattern.exec(content)) !== null) {
+    const chain: string[] = [mwMatch[1]];
+    let pos = mwMatch.index + mwMatch[0].length;
+    const nestedPattern = /^\s*(\w+)\s*\(/;
+    let remaining = content.slice(pos);
+    let nestedMatch;
+    while ((nestedMatch = nestedPattern.exec(remaining)) !== null) {
+      const name = nestedMatch[1];
+      if (MIDDLEWARE_STOP_KEYWORDS.has(name)) break;
+      chain.push(name);
+      pos += nestedMatch[0].length;
+      remaining = content.slice(pos);
+    }
+    if (chain.length >= 2 || (chain.length === 1 && /^with[A-Z]/.test(chain[0]))) {
+      return chain;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Detect an HTTP status code associated with a .json() call.
+ * Looks for three patterns:
+ * 1. `.status(N).json(` — Express style (look backwards from .json match)
+ * 2. `.json({...}, { status: N })` — NextResponse style (look after closing brace of first arg)
+ * 3. `new Response(JSON.stringify({...}), { status: N })` — raw Response constructor
+ *
+ * Returns the numeric status code, or undefined if none found.
+ */
+export function detectStatusCode(content: string, jsonMatchPos: number, closingBracePos: number): number | undefined {
+  // Pattern 1: .status(N).json( — look backwards from .json
+  // Check the ~200 chars before .json for .status(NNN) (generous window for chained calls)
+  const lookbackStart = Math.max(0, jsonMatchPos - 200);
+  const before = content.slice(lookbackStart, jsonMatchPos);
+  const statusChainMatch = before.match(/\.status\s*\(\s*(\d{3})\s*\)\s*$/);
+  if (statusChainMatch) {
+    return parseInt(statusChainMatch[1], 10);
+  }
+
+  // Pattern 2: .json({...}, { status: N }) — look after closing brace for second arg
+  if (closingBracePos > 0) {
+    // After the first arg's closing brace, look for ", { status: N" within ~100 chars
+    const afterFirstArg = content.slice(closingBracePos + 1, closingBracePos + 150);
+    const secondArgMatch = afterFirstArg.match(/^\s*,\s*\{[^}]*status\s*:\s*(\d{3})/);
+    if (secondArgMatch) {
+      return parseInt(secondArgMatch[1], 10);
+    }
+  }
+
+  // Pattern 3: new Response(JSON.stringify({...}), { status: N }) — look before .json for JSON.stringify
+  // This is a less common pattern; we check if the .json is actually part of JSON.stringify
+  // by looking for "new Response" further back
+  const extendedBefore = content.slice(Math.max(0, jsonMatchPos - 300), jsonMatchPos);
+  if (/new\s+Response\s*\(\s*JSON\s*\.stringify\s*$/.test(extendedBefore) && closingBracePos > 0) {
+    // Look for ), { status: N }) after the stringify's closing paren
+    const afterStringify = content.slice(closingBracePos + 1, closingBracePos + 200);
+    const respStatusMatch = afterStringify.match(/^\s*\)\s*,\s*\{[^}]*status\s*:\s*(\d{3})/);
+    if (respStatusMatch) {
+      return parseInt(respStatusMatch[1], 10);
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Extract response shapes from handler file content.
+ * Finds all .json({...}) calls, extracts top-level keys using brace-depth counting,
+ * and classifies into success (responseKeys) vs error (errorKeys) by HTTP status code.
+ */
+export function extractResponseShapes(content: string): { responseKeys?: string[]; errorKeys?: string[] } {
+  const successKeys: string[] = [];
+  const errKeys: string[] = [];
+  const jsonPattern = /\.json\s*\(/g;
+  let jsonMatch;
+  while ((jsonMatch = jsonPattern.exec(content)) !== null) {
+    const matchPos = jsonMatch.index;
+    const startIdx = matchPos + jsonMatch[0].length;
+    let i = startIdx;
+    while (i < content.length && content[i] !== '{' && content[i] !== ')') i++;
+    if (i >= content.length || content[i] !== '{') continue;
+    const callKeys: string[] = [];
+    let depth = 0;
+    let keyStart = -1;
+    let inString: string | null = null;
+    let closingBracePos = -1;
+    for (let j = i; j < content.length; j++) {
+      const ch = content[j];
+      if (inString) {
+        if (ch === '\\') { j++; continue; }
+        if (ch === inString) inString = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue; }
+      if (ch === '{') { depth++; continue; }
+      if (ch === '}') { depth--; if (depth === 0) { closingBracePos = j; break; } continue; }
+      if (depth !== 1) continue;
+      if (keyStart === -1 && /[a-zA-Z_$]/.test(ch)) {
+        keyStart = j;
+      } else if (keyStart !== -1 && !/[a-zA-Z0-9_$]/.test(ch)) {
+        const key = content.slice(keyStart, j);
+        const rest = content.slice(j).trimStart();
+        if (rest[0] === ':' || rest[0] === ',' || rest[0] === '}') {
+          callKeys.push(key);
+        }
+        keyStart = -1;
+      }
+    }
+    if (callKeys.length === 0) continue;
+    const status = detectStatusCode(content, matchPos, closingBracePos);
+    if (status !== undefined && status >= 400) {
+      errKeys.push(...callKeys);
+    } else {
+      successKeys.push(...callKeys);
+    }
+  }
+  return {
+    ...(successKeys.length > 0 ? { responseKeys: [...new Set(successKeys)] } : {}),
+    ...(errKeys.length > 0 ? { errorKeys: [...new Set(errKeys)] } : {}),
+  };
+}
 
 /** Minimum percentage of files that must benefit from cross-file seeding to justify the re-resolution pass. */
 const CROSS_FILE_SKIP_THRESHOLD = 0.03;
@@ -576,6 +717,14 @@ export const runPipelineFromRepo = async (
     const exportedTypeMap: ExportedTypeMap = new Map();
     // Accumulate file-scope TypeEnv bindings from workers (closes worker/sequential quality gap)
     const workerTypeEnvBindings: { filePath: string; bindings: [string, string][] }[] = [];
+    // Accumulate fetch() calls from workers for Next.js route matching
+    const allFetchCalls: ExtractedFetchCall[] = [];
+    // Accumulate framework-extracted routes (Laravel, etc.) for Route node creation
+    const allExtractedRoutes: ExtractedRoute[] = [];
+    // Accumulate decorator-based routes (@Get, @Post, @app.route, etc.)
+    const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
+    // Accumulate MCP/RPC tool definitions (@mcp.tool(), @app.tool(), etc.)
+    const allToolDefs: ExtractedToolDef[] = [];
 
     try {
       for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
@@ -691,6 +840,19 @@ export const runPipelineFromRepo = async (
           if (chunkWorkerData.typeEnvBindings?.length) {
             workerTypeEnvBindings.push(...chunkWorkerData.typeEnvBindings);
           }
+          // Collect fetch() calls for Next.js route matching
+          if (chunkWorkerData.fetchCalls?.length) {
+            allFetchCalls.push(...chunkWorkerData.fetchCalls);
+          }
+          if (chunkWorkerData.routes?.length) {
+            allExtractedRoutes.push(...chunkWorkerData.routes);
+          }
+          if (chunkWorkerData.decoratorRoutes?.length) {
+            allDecoratorRoutes.push(...chunkWorkerData.decoratorRoutes);
+          }
+          if (chunkWorkerData.toolDefs?.length) {
+            allToolDefs.push(...chunkWorkerData.toolDefs);
+          }
         } else {
           await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
           sequentialChunkPaths.push(chunkPaths);
@@ -721,7 +883,181 @@ export const runPipelineFromRepo = async (
       if (rubyHeritage.length > 0) {
         await processHeritageFromExtracted(graph, rubyHeritage, ctx);
       }
+      // Extract fetch() calls for Next.js route matching (sequential path)
+      const chunkFetchCalls = await extractFetchCallsFromFiles(chunkFiles, astCache);
+      if (chunkFetchCalls.length > 0) {
+        allFetchCalls.push(...chunkFetchCalls);
+      }
       astCache.clear();
+    }
+
+    // ── Phase 3.5: Route Registry (Next.js + PHP + Laravel + decorators) ──
+    type RouteEntry = { filePath: string; source: string };
+    const routeRegistry = new Map<string, RouteEntry>();
+    for (const p of allPaths) {
+      const nextjsURL = nextjsFileToRouteURL(p);
+      if (nextjsURL && !routeRegistry.has(nextjsURL)) {
+        routeRegistry.set(nextjsURL, { filePath: p, source: 'nextjs-filesystem-route' });
+        continue;
+      }
+      if (p.endsWith('.php')) {
+        const phpURL = phpFileToRouteURL(p);
+        if (phpURL && !routeRegistry.has(phpURL)) {
+          routeRegistry.set(phpURL, { filePath: p, source: 'php-file-route' });
+        }
+      }
+    }
+
+    const ensureSlash = (path: string) => path.startsWith('/') ? path : '/' + path;
+    let duplicateRoutes = 0;
+    const addRoute = (url: string, entry: RouteEntry) => {
+      if (routeRegistry.has(url)) { duplicateRoutes++; return; }
+      routeRegistry.set(url, entry);
+    };
+    for (const route of allExtractedRoutes) {
+      if (!route.routePath) continue;
+      addRoute(ensureSlash(route.routePath), { filePath: route.filePath, source: 'framework-route' });
+    }
+    for (const dr of allDecoratorRoutes) {
+      addRoute(ensureSlash(dr.routePath), { filePath: dr.filePath, source: `decorator-${dr.decoratorName}` });
+    }
+
+    if (routeRegistry.size > 0) {
+      const handlerPaths = [...routeRegistry.values()].map(e => e.filePath);
+      const handlerContents = await readFileContents(repoPath, handlerPaths);
+
+      for (const [routeURL, entry] of routeRegistry) {
+        const { filePath: handlerPath, source: routeSource } = entry;
+        const content = handlerContents.get(handlerPath);
+
+        const { responseKeys, errorKeys } = content
+          ? extractResponseShapes(content)
+          : { responseKeys: undefined, errorKeys: undefined };
+
+        const middleware = content ? extractMiddlewareChain(content) : undefined;
+
+        const routeNodeId = generateId('Route', routeURL);
+        graph.addNode({
+          id: routeNodeId,
+          label: 'Route',
+          properties: {
+            name: routeURL,
+            filePath: handlerPath,
+            ...(responseKeys ? { responseKeys } : {}),
+            ...(errorKeys ? { errorKeys } : {}),
+            ...(middleware && middleware.length > 0 ? { middleware } : {}),
+          },
+        });
+
+        const handlerFileId = generateId('File', handlerPath);
+        graph.addRelationship({
+          id: generateId('HANDLES_ROUTE', `${handlerFileId}->${routeNodeId}`),
+          sourceId: handlerFileId,
+          targetId: routeNodeId,
+          type: 'HANDLES_ROUTE',
+          confidence: 1.0,
+          reason: routeSource,
+        });
+      }
+
+      if (isDev) {
+        console.log(`🗺️ Route registry: ${routeRegistry.size} routes${duplicateRoutes > 0 ? ` (${duplicateRoutes} duplicate URLs skipped)` : ''}`);
+      }
+    }
+
+    // Scan HTML/PHP/template files for <form action="/path"> and AJAX url patterns
+    // Scan HTML/template files for <form action="/path"> and AJAX url patterns
+    // Skip .php — already parsed by tree-sitter with http_client/fetch queries
+    const htmlCandidates = allPaths.filter(p =>
+      p.endsWith('.html') || p.endsWith('.htm') ||
+      p.endsWith('.ejs') || p.endsWith('.hbs') || p.endsWith('.blade.php')
+    );
+    if (htmlCandidates.length > 0 && routeRegistry.size > 0) {
+      const htmlContents = await readFileContents(repoPath, htmlCandidates);
+      const htmlPatterns = [/action=["']([^"']+)["']/g, /url:\s*["']([^"']+)["']/g];
+      for (const [filePath, content] of htmlContents) {
+        for (const pattern of htmlPatterns) {
+          pattern.lastIndex = 0;
+          let match;
+          while ((match = pattern.exec(content)) !== null) {
+            const normalized = normalizeFetchURL(match[1]);
+            if (normalized) {
+              allFetchCalls.push({ filePath, fetchURL: normalized, lineNumber: 0 });
+            }
+          }
+        }
+      }
+    }
+
+    if (routeRegistry.size > 0 && allFetchCalls.length > 0) {
+      const routeURLToFile = new Map<string, string>();
+      for (const [url, entry] of routeRegistry) routeURLToFile.set(url, entry.filePath);
+
+      // Read consumer file contents so we can extract property access patterns
+      const consumerPaths = [...new Set(allFetchCalls.map(c => c.filePath))];
+      const consumerContents = await readFileContents(repoPath, consumerPaths);
+
+      processNextjsFetchRoutes(graph, allFetchCalls, routeURLToFile, consumerContents);
+      if (isDev) {
+        console.log(`🔗 Processed ${allFetchCalls.length} fetch() calls against ${routeRegistry.size} routes`);
+      }
+    }
+
+    // ── Phase 3.6: Tool Detection (MCP/RPC) ──────────────────────────
+    const toolDefs: { name: string; filePath: string; description: string }[] = [];
+    const seenToolNames = new Set<string>();
+
+    for (const td of allToolDefs) {
+      if (seenToolNames.has(td.toolName)) continue;
+      seenToolNames.add(td.toolName);
+      toolDefs.push({ name: td.toolName, filePath: td.filePath, description: td.description });
+    }
+
+    // TS tool definition arrays — require inputSchema nearby to distinguish from config objects
+    const toolCandidatePaths = allPaths.filter(p =>
+      (p.endsWith('.ts') || p.endsWith('.js')) && p.toLowerCase().includes('tool')
+      && !p.includes('node_modules') && !p.includes('test') && !p.includes('__')
+    );
+    if (toolCandidatePaths.length > 0) {
+      const toolContents = await readFileContents(repoPath, toolCandidatePaths);
+      for (const [filePath, content] of toolContents) {
+        // Only scan files that contain 'inputSchema' — this is the MCP tool signature
+        if (!content.includes('inputSchema')) continue;
+        const toolPattern = /name:\s*['"](\w+)['"]\s*,\s*\n?\s*description:\s*[`'"]([\s\S]*?)[`'"]/g;
+        let match;
+        while ((match = toolPattern.exec(content)) !== null) {
+          const name = match[1];
+          if (seenToolNames.has(name)) continue;
+          seenToolNames.add(name);
+          toolDefs.push({ name, filePath, description: match[2].slice(0, 200).replace(/\n/g, ' ').trim() });
+        }
+      }
+    }
+
+    // Create Tool nodes and HANDLES_TOOL edges
+    if (toolDefs.length > 0) {
+      for (const td of toolDefs) {
+        const toolNodeId = generateId('Tool', td.name);
+        graph.addNode({
+          id: toolNodeId,
+          label: 'Tool',
+          properties: { name: td.name, filePath: td.filePath, description: td.description },
+        });
+
+        const handlerFileId = generateId('File', td.filePath);
+        graph.addRelationship({
+          id: generateId('HANDLES_TOOL', `${handlerFileId}->${toolNodeId}`),
+          sourceId: handlerFileId,
+          targetId: toolNodeId,
+          type: 'HANDLES_TOOL',
+          confidence: 1.0,
+          reason: 'tool-definition',
+        });
+      }
+
+      if (isDev) {
+        console.log(`🔧 Tool registry: ${toolDefs.length} tools detected`);
+      }
     }
 
     // Log resolution cache stats
@@ -905,6 +1241,66 @@ export const runPipelineFromRepo = async (
           step: step.step,
         });
       });
+
+      // Link Route and Tool nodes to Processes via reverse index (file → node id)
+      if (routeRegistry.size > 0 || toolDefs.length > 0) {
+        // Reverse indexes: file → all route URLs / tool names (handles multi-route files)
+        const routesByFile = new Map<string, string[]>();
+        for (const [url, entry] of routeRegistry) {
+          let list = routesByFile.get(entry.filePath);
+          if (!list) { list = []; routesByFile.set(entry.filePath, list); }
+          list.push(url);
+        }
+        const toolsByFile = new Map<string, string[]>();
+        for (const td of toolDefs) {
+          let list = toolsByFile.get(td.filePath);
+          if (!list) { list = []; toolsByFile.set(td.filePath, list); }
+          list.push(td.name);
+        }
+
+        let linked = 0;
+        for (const proc of processResult.processes) {
+          if (!proc.entryPointId) continue;
+          const entryNode = graph.getNode(proc.entryPointId);
+          if (!entryNode) continue;
+          const entryFile = entryNode.properties.filePath;
+          if (!entryFile) continue;
+
+          const routeURLs = routesByFile.get(entryFile);
+          if (routeURLs) {
+            for (const routeURL of routeURLs) {
+              const routeNodeId = generateId('Route', routeURL);
+              graph.addRelationship({
+                id: generateId('ENTRY_POINT_OF', `${routeNodeId}->${proc.id}`),
+                sourceId: routeNodeId,
+                targetId: proc.id,
+                type: 'ENTRY_POINT_OF',
+                confidence: 0.85,
+                reason: 'route-handler-entry-point',
+              });
+              linked++;
+            }
+          }
+          const toolNames = toolsByFile.get(entryFile);
+          if (toolNames) {
+            for (const toolName of toolNames) {
+              const toolNodeId = generateId('Tool', toolName);
+              graph.addRelationship({
+                id: generateId('ENTRY_POINT_OF', `${toolNodeId}->${proc.id}`),
+                sourceId: toolNodeId,
+                targetId: proc.id,
+                type: 'ENTRY_POINT_OF',
+                confidence: 0.85,
+                reason: 'tool-handler-entry-point',
+              });
+              linked++;
+            }
+          }
+        }
+        if (isDev && linked > 0) {
+          console.log(`🔗 Linked ${linked} Route/Tool nodes to execution flows`);
+        }
+      }
     }
 
     onProgress({

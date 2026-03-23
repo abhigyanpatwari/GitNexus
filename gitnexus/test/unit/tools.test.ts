@@ -11,8 +11,8 @@ import { describe, it, expect } from 'vitest';
 import { GITNEXUS_TOOLS, type ToolDefinition } from '../../src/mcp/tools.js';
 
 describe('GITNEXUS_TOOLS', () => {
-  it('exports exactly 7 tools', () => {
-    expect(GITNEXUS_TOOLS).toHaveLength(7);
+  it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact)', () => {
+    expect(GITNEXUS_TOOLS).toHaveLength(11);
   });
 
   it('contains all expected tool names', () => {
@@ -20,7 +20,7 @@ describe('GITNEXUS_TOOLS', () => {
     expect(names).toEqual(
       expect.arrayContaining([
         'list_repos', 'query', 'cypher', 'context',
-        'detect_changes', 'rename', 'impact',
+        'detect_changes', 'rename', 'impact', 'api_impact',
       ])
     );
   });
@@ -91,6 +91,15 @@ describe('GITNEXUS_TOOLS', () => {
     const detectTool = GITNEXUS_TOOLS.find(t => t.name === 'detect_changes')!;
     const scopeProp = detectTool.inputSchema.properties.scope;
     expect(scopeProp.enum).toEqual(['unstaged', 'staged', 'all', 'compare']);
+  });
+
+  it('api_impact tool has no required parameters', () => {
+    const apiImpactTool = GITNEXUS_TOOLS.find(t => t.name === 'api_impact')!;
+    expect(apiImpactTool).toBeDefined();
+    expect(apiImpactTool.inputSchema.required).toEqual([]);
+    expect(apiImpactTool.inputSchema.properties.route).toBeDefined();
+    expect(apiImpactTool.inputSchema.properties.file).toBeDefined();
+    expect(apiImpactTool.inputSchema.properties.repo).toBeDefined();
   });
 
   it('impact relationTypes is array of strings', () => {
