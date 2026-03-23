@@ -30,7 +30,7 @@ def sanitize_exception(exc: BaseException, *, include_debug: bool | None = None)
     }
 
     if debug:
-        tb = traceback.format_exc()
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
         if tb:
             data["error_detail_debug"] = tb
 
