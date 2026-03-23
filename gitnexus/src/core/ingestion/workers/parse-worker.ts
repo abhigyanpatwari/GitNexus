@@ -510,6 +510,9 @@ const ROUTE_RESOURCE_METHODS = new Set(['resource', 'apiResource']);
 // Express/Hono method names that register routes
 const EXPRESS_ROUTE_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'all', 'use', 'route']);
 
+// HTTP client methods that indicate URL consumption (axios, jQuery, requests, httpx, etc.)
+const HTTP_CLIENT_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'head', 'options', 'request', 'ajax']);
+
 // Decorator names that indicate HTTP route handlers (NestJS, Flask, FastAPI, Spring)
 const ROUTE_DECORATOR_NAMES = new Set([
   'Get', 'Post', 'Put', 'Delete', 'Patch', 'Route',
@@ -1034,19 +1037,32 @@ const processFileGroup = (
         continue;
       }
 
-      // Extract fetch-to-route mappings (must be BEFORE 'call' block — same node matches both)
+      // Extract HTTP consumer URLs: fetch(), axios.get(), $.get(), requests.get(), etc.
       if (captureMap['route.fetch']) {
         const urlNode = captureMap['route.url'] ?? captureMap['route.template_url'];
         if (urlNode) {
-          // URL normalization (template ${...} → [param], query stripping) is handled
-          // by normalizeFetchURL() in call-processor — we store the raw text here.
           result.fetchCalls.push({
             filePath: file.path,
             fetchURL: urlNode.text,
             lineNumber: captureMap['route.fetch'].startPosition.row,
           });
         }
-        continue;  // Don't let this match fall through to 'call' handler
+        continue;
+      }
+
+      // HTTP client calls: axios.get('/path'), $.post('/path'), requests.get('/path')
+      if (captureMap['http_client'] && captureMap['http_client.url']) {
+        const method = captureMap['http_client.method']?.text;
+        const url = captureMap['http_client.url'].text;
+        // Filter to actual HTTP methods to avoid false positives from Map.get(), etc.
+        if (method && HTTP_CLIENT_METHODS.has(method) && url.startsWith('/')) {
+          result.fetchCalls.push({
+            filePath: file.path,
+            fetchURL: url,
+            lineNumber: captureMap['http_client'].startPosition.row,
+          });
+        }
+        continue;
       }
 
       // Express/Hono route registration: app.get('/path', handler)

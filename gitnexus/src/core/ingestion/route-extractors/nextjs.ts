@@ -43,6 +43,8 @@ export function normalizeFetchURL(rawURL: string): string | null {
   let url = rawURL.split('?')[0];
   url = url.replace(/\$\{[^}]+\}/g, '[param]');
   url = url.replace(/^`|`$/g, '');
+  // Strip file extensions from URLs (PHP projects use /api/upload.php but routes are /api/upload)
+  url = url.replace(/\.(php|asp|aspx|jsp|cgi)$/, '');
 
   if (url.includes('+') || url.includes('(')) return null;
   // Must be an absolute path

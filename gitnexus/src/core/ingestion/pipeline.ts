@@ -816,8 +816,29 @@ export const runPipelineFromRepo = async (
       }
     }
 
+    // Scan HTML/PHP/template files for <form action="/path"> and AJAX url patterns
+    const htmlCandidates = allPaths.filter(p =>
+      p.endsWith('.html') || p.endsWith('.htm') || p.endsWith('.php') ||
+      p.endsWith('.ejs') || p.endsWith('.hbs') || p.endsWith('.blade.php')
+    );
+    if (htmlCandidates.length > 0 && routeRegistry.size > 0) {
+      const htmlContents = await readFileContents(repoPath, htmlCandidates);
+      const formActionPattern = /action=["']([^"']+)["']/g;
+      const ajaxUrlPattern = /url:\s*["']([^"']+)["']/g;
+      for (const [filePath, content] of htmlContents) {
+        for (const pattern of [formActionPattern, ajaxUrlPattern]) {
+          pattern.lastIndex = 0;
+          let match;
+          while ((match = pattern.exec(content)) !== null) {
+            if (match[1].startsWith('/')) {
+              allFetchCalls.push({ filePath, fetchURL: match[1], lineNumber: 0 });
+            }
+          }
+        }
+      }
+    }
+
     if (routeRegistry.size > 0 && allFetchCalls.length > 0) {
-      // processNextjsFetchRoutes expects Map<string, string> (url → filePath)
       const routeURLToFile = new Map<string, string>();
       for (const [url, entry] of routeRegistry) routeURLToFile.set(url, entry.filePath);
       processNextjsFetchRoutes(graph, allFetchCalls, routeURLToFile);
