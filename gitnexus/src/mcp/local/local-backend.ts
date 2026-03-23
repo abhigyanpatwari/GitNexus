@@ -412,6 +412,8 @@ export class LocalBackend {
         return this.shapeCheck(repo, params);
       case 'tool_map':
         return this.toolMap(repo, params);
+      case 'api_impact':
+        return this.apiImpact(repo, params);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -1822,6 +1824,112 @@ export class LocalBackend {
       }),
       total: rows.length,
     };
+  }
+
+  private async apiImpact(repo: RepoHandle, params: { route?: string; file?: string }): Promise<any> {
+    await this.ensureInitialized(repo.id);
+
+    if (!params.route && !params.file) {
+      return { error: 'Either "route" or "file" parameter is required.' };
+    }
+
+    // If file is provided but route is not, look up the route by file path
+    let routeFilter = '';
+    const queryParams: Record<string, string> = {};
+
+    if (params.route) {
+      routeFilter = `AND n.name CONTAINS $route`;
+      queryParams.route = params.route;
+    } else if (params.file) {
+      routeFilter = `AND n.filePath CONTAINS $file`;
+      queryParams.file = params.file;
+    }
+
+    const routes = await this.fetchRoutesWithConsumers(repo.id, routeFilter, queryParams);
+
+    if (routes.length === 0) {
+      const target = params.route || params.file;
+      return { error: `No routes found matching "${target}".` };
+    }
+
+    const flowMap = await this.fetchLinkedFlowsBatch(repo.id, routes.map(r => r.id));
+
+    const results = routes.map(r => {
+      const responseKeys = r.responseKeys ?? [];
+      const errorKeys = r.errorKeys ?? [];
+      const allKnownKeys = new Set([...responseKeys, ...errorKeys]);
+
+      // Build consumer list with mismatch detection
+      const consumers = r.consumers.map(c => ({
+        file: c.filePath,
+        accesses: c.accessedKeys ?? [],
+      }));
+
+      // Detect mismatches: consumer accesses keys not in response shape
+      const mismatches: Array<{ consumer: string; field: string; reason: string }> = [];
+      if (allKnownKeys.size > 0) {
+        for (const c of r.consumers) {
+          if (!c.accessedKeys) continue;
+          for (const key of c.accessedKeys) {
+            if (!allKnownKeys.has(key)) {
+              mismatches.push({
+                consumer: c.filePath,
+                field: key,
+                reason: 'accessed but not in response shape',
+              });
+            }
+          }
+        }
+      }
+
+      const flows = flowMap.get(r.id) || [];
+      const consumerCount = r.consumers.length;
+
+      // Risk level heuristic
+      let riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+      if (consumerCount >= 10) {
+        riskLevel = 'HIGH';
+      } else if (consumerCount >= 4) {
+        riskLevel = 'MEDIUM';
+      } else {
+        riskLevel = 'LOW';
+      }
+      // Bump up one level if mismatches exist
+      if (mismatches.length > 0) {
+        if (riskLevel === 'LOW') riskLevel = 'MEDIUM';
+        else if (riskLevel === 'MEDIUM') riskLevel = 'HIGH';
+      }
+
+      const warning = consumerCount > 0
+        ? `Changing response shape will affect ${consumerCount} component${consumerCount === 1 ? '' : 's'}`
+        : undefined;
+
+      return {
+        route: r.name,
+        handler: r.filePath,
+        responseShape: {
+          success: responseKeys,
+          error: errorKeys,
+        },
+        middleware: r.middleware || [],
+        consumers,
+        ...(mismatches.length > 0 ? { mismatches } : {}),
+        executionFlows: flows,
+        impactSummary: {
+          directConsumers: consumerCount,
+          affectedFlows: flows.length,
+          riskLevel,
+          ...(warning ? { warning } : {}),
+        },
+      };
+    });
+
+    // If a single route was targeted, return it directly (not wrapped in array)
+    if (results.length === 1) {
+      return results[0];
+    }
+
+    return { routes: results, total: results.length };
   }
 
   // ─── Direct Graph Queries (for resources.ts) ────────────────────

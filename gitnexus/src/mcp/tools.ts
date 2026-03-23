@@ -78,7 +78,7 @@ SCHEMA:
 - Nodes: File, Folder, Function, Class, Interface, Method, CodeElement, Community, Process, Route, Tool
 - Multi-language nodes (use backticks): \`Struct\`, \`Enum\`, \`Trait\`, \`Impl\`, etc.
 - All edges via single CodeRelation table with 'type' property
-- Edge types: CONTAINS, DEFINES, CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, ACCESSES, OVERRIDES, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, FETCHES, HANDLES_TOOL, ENTRY_POINT_OF, WRAPS
+- Edge types: CONTAINS, DEFINES, CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, ACCESSES, OVERRIDES, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, FETCHES, HANDLES_TOOL, ENTRY_POINT_OF
 - Edge properties: type (STRING), confidence (DOUBLE), reason (STRING), step (INT32)
 
 EXAMPLES:
@@ -272,6 +272,23 @@ Returns routes that have both detected response keys AND consumers. Shows top-le
       properties: {
         route: { type: 'string', description: 'Check a specific route (e.g., "/api/grants"). Omit to check all routes.' },
         repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'api_impact',
+    description: `Pre-change impact report for an API route handler.
+
+WHEN TO USE: BEFORE modifying any API route handler. Shows what consumers depend on, what response fields they access, what middleware protects the route, and what execution flows it triggers.
+
+Returns: comprehensive impact report combining route_map, shape_check, and impact data.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        route: { type: 'string', description: 'Route path (e.g., "/api/grants")' },
+        file: { type: 'string', description: 'Handler file path (alternative to route)' },
+        repo: { type: 'string', description: 'Repository name or path.' },
       },
       required: [],
     },
