@@ -42,12 +42,13 @@ async function connectAndWaitForGraph(page: import('@playwright/test').Page, tes
   await page.screenshot({ path: testInfo.outputPath('step-1-landing.png') });
 
   // Click "Server" tab in onboarding
-  await page.getByText('Server').click();
+  await page.getByRole('button', { name: 'Server' }).click();
   await expect(page.getByText('Connect to Server')).toBeVisible({ timeout: 5_000 });
   await page.screenshot({ path: testInfo.outputPath('step-2-server-tab.png') });
 
   // Enter server URL and connect
   const serverInput = page.locator('input[name="server-url-input"]');
+  await expect(serverInput).toBeVisible({ timeout: 5_000 });
   await serverInput.fill(BACKEND_URL);
   await page.screenshot({ path: testInfo.outputPath('step-3-url-filled.png') });
 
@@ -144,7 +145,7 @@ test.describe('Turn Off All Highlights', () => {
     await page.screenshot({ path: testInfo.outputPath('before-select.png'), fullPage: true });
 
     // Click a file in the file tree to select a node
-    const fileItem = page.getByText('package.json');
+    const fileItem = page.getByText('package.json').first();
     if (await fileItem.isVisible()) {
       await fileItem.click();
       // Wait for node selection to take effect
