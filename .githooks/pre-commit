@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Pre-commit hook: typecheck both packages, run web unit tests.
+# Installed automatically via: git config core.hooksPath .githooks
+# Skip with: git commit --no-verify (use sparingly)
+
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+
+# Only run checks if relevant files are staged
+WEB_CHANGED=$(git diff --cached --name-only -- 'gitnexus-web/' | head -1)
+CLI_CHANGED=$(git diff --cached --name-only -- 'gitnexus/' | head -1)
+
+if [ -n "$WEB_CHANGED" ]; then
+  echo "pre-commit: typechecking gitnexus-web..."
+  cd "$ROOT/gitnexus-web" && npx tsc --noEmit
+
+  echo "pre-commit: running gitnexus-web unit tests..."
+  npx vitest run --reporter=dot
+fi
+
+if [ -n "$CLI_CHANGED" ]; then
+  echo "pre-commit: typechecking gitnexus..."
+  cd "$ROOT/gitnexus" && npx tsc --noEmit
+fi
+
+echo "pre-commit: all checks passed"
