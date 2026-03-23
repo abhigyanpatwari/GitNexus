@@ -96,6 +96,86 @@ const CHUNK_BYTE_BUDGET = 20 * 1024 * 1024; // 20MB
 /** Max AST trees to keep in LRU cache */
 const AST_CACHE_CAP = 50;
 
+/** Keywords that terminate middleware chain walking (not wrapper function names) */
+const MIDDLEWARE_STOP_KEYWORDS = new Set([
+  'async', 'await', 'function', 'new', 'return', 'if', 'for', 'while', 'switch',
+  'class', 'const', 'let', 'var', 'req', 'res', 'request', 'response',
+  'event', 'ctx', 'context', 'next',
+]);
+
+/**
+ * Extract middleware wrapper chain from a route handler file.
+ * Detects patterns like: export const POST = withA(withB(withC(handler)))
+ * Returns wrapper function names in outermost-first order, or undefined if no chain found.
+ */
+export function extractMiddlewareChain(content: string): string[] | undefined {
+  const mwPattern = /export\s+(?:const\s+(?:POST|GET|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*=|default)\s+(\w+)\s*\(/g;
+  let mwMatch;
+  while ((mwMatch = mwPattern.exec(content)) !== null) {
+    const chain: string[] = [mwMatch[1]];
+    let pos = mwMatch.index + mwMatch[0].length;
+    const nestedPattern = /^\s*(\w+)\s*\(/;
+    let remaining = content.slice(pos);
+    let nestedMatch;
+    while ((nestedMatch = nestedPattern.exec(remaining)) !== null) {
+      const name = nestedMatch[1];
+      if (MIDDLEWARE_STOP_KEYWORDS.has(name)) break;
+      chain.push(name);
+      pos += nestedMatch[0].length;
+      remaining = content.slice(pos);
+    }
+    if (chain.length >= 2 || (chain.length === 1 && /^with[A-Z]/.test(chain[0]))) {
+      return chain;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Detect an HTTP status code associated with a .json() call.
+ * Looks for three patterns:
+ * 1. `.status(N).json(` — Express style (look backwards from .json match)
+ * 2. `.json({...}, { status: N })` — NextResponse style (look after closing brace of first arg)
+ * 3. `new Response(JSON.stringify({...}), { status: N })` — raw Response constructor
+ *
+ * Returns the numeric status code, or undefined if none found.
+ */
+export function detectStatusCode(content: string, jsonMatchPos: number, closingBracePos: number): number | undefined {
+  // Pattern 1: .status(N).json( — look backwards from .json
+  // Check the ~100 chars before .json for .status(NNN)
+  const lookbackStart = Math.max(0, jsonMatchPos - 100);
+  const before = content.slice(lookbackStart, jsonMatchPos);
+  const statusChainMatch = before.match(/\.status\s*\(\s*(\d{3})\s*\)\s*$/);
+  if (statusChainMatch) {
+    return parseInt(statusChainMatch[1], 10);
+  }
+
+  // Pattern 2: .json({...}, { status: N }) — look after closing brace for second arg
+  if (closingBracePos > 0) {
+    // After the first arg's closing brace, look for ", { status: N" within ~100 chars
+    const afterFirstArg = content.slice(closingBracePos + 1, closingBracePos + 150);
+    const secondArgMatch = afterFirstArg.match(/^\s*,\s*\{[^}]*status\s*:\s*(\d{3})/);
+    if (secondArgMatch) {
+      return parseInt(secondArgMatch[1], 10);
+    }
+  }
+
+  // Pattern 3: new Response(JSON.stringify({...}), { status: N }) — look before .json for JSON.stringify
+  // This is a less common pattern; we check if the .json is actually part of JSON.stringify
+  // by looking for "new Response" further back
+  const extendedBefore = content.slice(Math.max(0, jsonMatchPos - 300), jsonMatchPos);
+  if (/new\s+Response\s*\(\s*JSON\s*\.stringify\s*$/.test(extendedBefore) && closingBracePos > 0) {
+    // Look for ), { status: N }) after the stringify's closing paren
+    const afterStringify = content.slice(closingBracePos + 1, closingBracePos + 200);
+    const respStatusMatch = afterStringify.match(/^\s*\)\s*,\s*\{[^}]*status\s*:\s*(\d{3})/);
+    if (respStatusMatch) {
+      return parseInt(respStatusMatch[1], 10);
+    }
+  }
+
+  return undefined;
+}
+
 /** Minimum percentage of files that must benefit from cross-file seeding to justify the re-resolution pass. */
 const CROSS_FILE_SKIP_THRESHOLD = 0.03;
 /** Hard cap on files re-processed during cross-file propagation. */
@@ -745,23 +825,29 @@ export const runPipelineFromRepo = async (
         const content = handlerContents.get(handlerPath);
 
         // Extract top-level keys from .json({...}) calls using brace-depth counting
-        // to correctly handle nested objects (regex [^}]* breaks on nested braces)
+        // to correctly handle nested objects (regex [^}]* breaks on nested braces).
+        // Separate into success (responseKeys) vs error (errorKeys) by status code.
         let responseKeys: string[] | undefined;
+        let errorKeys: string[] | undefined;
         if (content) {
-          const keys: string[] = [];
+          const successKeys: string[] = [];
+          const errKeys: string[] = [];
           // Find all .json( positions
           const jsonPattern = /\.json\s*\(/g;
           let jsonMatch;
           while ((jsonMatch = jsonPattern.exec(content)) !== null) {
-            const startIdx = jsonMatch.index + jsonMatch[0].length;
+            const matchPos = jsonMatch.index;
+            const startIdx = matchPos + jsonMatch[0].length;
             // Find the opening { of the first argument
             let i = startIdx;
             while (i < content.length && content[i] !== '{' && content[i] !== ')') i++;
             if (i >= content.length || content[i] !== '{') continue;
             // Extract top-level keys at brace depth 1, skipping string literals
+            const callKeys: string[] = [];
             let depth = 0;
             let keyStart = -1;
             let inString: string | null = null; // tracks quote char we're inside
+            let closingBracePos = -1;
             for (let j = i; j < content.length; j++) {
               const ch = content[j];
               // Skip string literal contents (handles braces inside strings)
@@ -772,7 +858,7 @@ export const runPipelineFromRepo = async (
               }
               if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue; }
               if (ch === '{') { depth++; continue; }
-              if (ch === '}') { depth--; if (depth === 0) break; continue; }
+              if (ch === '}') { depth--; if (depth === 0) { closingBracePos = j; break; } continue; }
               if (depth !== 1) continue;
               if (keyStart === -1 && /[a-zA-Z_$]/.test(ch)) {
                 keyStart = j;
@@ -780,49 +866,27 @@ export const runPipelineFromRepo = async (
                 const key = content.slice(keyStart, j);
                 const rest = content.slice(j).trimStart();
                 if (rest[0] === ':' || rest[0] === ',' || rest[0] === '}') {
-                  keys.push(key);
+                  callKeys.push(key);
                 }
                 keyStart = -1;
               }
             }
+            if (callKeys.length === 0) continue;
+
+            // Detect HTTP status code to classify this .json() call as success or error
+            const status = detectStatusCode(content, matchPos, closingBracePos);
+            if (status !== undefined && status >= 400) {
+              errKeys.push(...callKeys);
+            } else {
+              successKeys.push(...callKeys);
+            }
           }
-          if (keys.length > 0) responseKeys = [...new Set(keys)];
+          // If no status codes were detected at all, all keys go to responseKeys (backward compat)
+          if (successKeys.length > 0) responseKeys = [...new Set(successKeys)];
+          if (errKeys.length > 0) errorKeys = [...new Set(errKeys)];
         }
 
-        // Extract middleware wrapper chain: export const POST = withA(withB(withC(handler)))
-        // Walks nested call expressions to collect wrapper function names (outermost first)
-        let middleware: string[] | undefined;
-        if (content) {
-          const mwPattern = /export\s+(?:const\s+(?:POST|GET|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*=|default)\s+(\w+)\s*\(/g;
-          let mwMatch;
-          while ((mwMatch = mwPattern.exec(content)) !== null) {
-            const chain: string[] = [];
-            const firstName = mwMatch[1];
-            // Only collect if the first name looks like a wrapper (starts with 'with' or common middleware names)
-            // But actually collect any nested call pattern — the user may have custom wrappers
-            chain.push(firstName);
-            // Walk forward from the match to find nested calls: withA(withB(withC(
-            let pos = mwMatch.index + mwMatch[0].length; // position after the opening paren
-            // Look for more wrapper calls: identifier followed by (
-            const nestedPattern = /^\s*(\w+)\s*\(/;
-            let remaining = content.slice(pos);
-            let nestedMatch;
-            while ((nestedMatch = nestedPattern.exec(remaining)) !== null) {
-              const name = nestedMatch[1];
-              // Stop if this looks like a keyword or arrow function param, not a wrapper
-              if (['async', 'await', 'function', 'new', 'return', 'if', 'for', 'while', 'switch', 'class', 'const', 'let', 'var', 'req', 'res', 'request', 'response', 'event', 'ctx', 'context', 'next'].includes(name)) break;
-              chain.push(name);
-              pos += nestedMatch[0].length;
-              remaining = content.slice(pos);
-            }
-            // Store if: chain has 2+ wrappers (definitely nesting), or 1 wrapper whose name
-            // starts with common middleware prefixes (withAuth, withRateLimit, etc.)
-            if (chain.length >= 2 || (chain.length === 1 && /^with[A-Z]/.test(chain[0]))) {
-              middleware = chain;
-              break; // Use the first export match
-            }
-          }
-        }
+        const middleware = content ? extractMiddlewareChain(content) : undefined;
 
         const routeNodeId = generateId('Route', routeURL);
         graph.addNode({
@@ -832,6 +896,7 @@ export const runPipelineFromRepo = async (
             name: routeURL,
             filePath: handlerPath,
             ...(responseKeys ? { responseKeys } : {}),
+            ...(errorKeys ? { errorKeys } : {}),
             ...(middleware && middleware.length > 0 ? { middleware } : {}),
           },
         });

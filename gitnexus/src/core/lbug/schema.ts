@@ -201,6 +201,7 @@ CREATE NODE TABLE Route (
   name STRING,
   filePath STRING,
   responseKeys STRING[],
+  errorKeys STRING[],
   middleware STRING[],
   PRIMARY KEY (id)
 )`;

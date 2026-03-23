@@ -73,6 +73,8 @@ export type NodeProperties = {
   returnType?: string,
   // Response shape (top-level keys from NextResponse.json({...}) / res.json({...}))
   responseKeys?: string[],
+  // Error response shape (top-level keys from .json() calls with status >= 400)
+  errorKeys?: string[],
   // Middleware wrapper chain (outermost first): ['withRateLimit', 'withCSRF', 'withAuth']
   middleware?: string[],
 }

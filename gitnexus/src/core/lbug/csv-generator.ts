@@ -242,7 +242,7 @@ export const streamAllCSVsToDisk = async (
   const sectionWriter = new BufferedCSVWriter(path.join(csvDir, 'section.csv'), 'id,name,filePath,startLine,endLine,level,content,description');
 
   // Route nodes for API endpoint mapping
-  const routeWriter = new BufferedCSVWriter(path.join(csvDir, 'route.csv'), 'id,name,filePath,responseKeys,middleware');
+  const routeWriter = new BufferedCSVWriter(path.join(csvDir, 'route.csv'), 'id,name,filePath,responseKeys,errorKeys,middleware');
 
   // Tool nodes for MCP tool definitions
   const toolWriter = new BufferedCSVWriter(path.join(csvDir, 'tool.csv'), 'id,name,filePath,description');
@@ -352,6 +352,8 @@ export const streamAllCSVsToDisk = async (
         // LadybugDB array literal inside a quoted CSV field: escapeCSVField wraps in "..."
         // and the array uses single-quoted elements
         const keysStr = `[${responseKeys.map((k: string) => `'${k.replace(/'/g, "''")}'`).join(',')}]`;
+        const errorKeys = (node.properties as any).errorKeys || [];
+        const errorKeysStr = `[${errorKeys.map((k: string) => `'${k.replace(/'/g, "''")}'`).join(',')}]`;
         const middleware = (node.properties as any).middleware || [];
         const middlewareStr = `[${middleware.map((m: string) => `'${m.replace(/'/g, "''")}'`).join(',')}]`;
         await routeWriter.addRow([
@@ -359,6 +361,7 @@ export const streamAllCSVsToDisk = async (
           escapeCSVField(node.properties.name || ''),
           escapeCSVField(node.properties.filePath || ''),
           escapeCSVField(keysStr),
+          escapeCSVField(errorKeysStr),
           escapeCSVField(middlewareStr),
         ].join(','));
         break;

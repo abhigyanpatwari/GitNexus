@@ -1639,31 +1639,32 @@ export class LocalBackend {
     repoId: string,
     routeFilter: string,
     params: Record<string, string>,
-  ): Promise<Array<{ id: string; name: string; filePath: string; responseKeys: string[] | null; middleware: string[] | null; consumers: Array<{ name: string; filePath: string; accessedKeys?: string[] }> }>> {
+  ): Promise<Array<{ id: string; name: string; filePath: string; responseKeys: string[] | null; errorKeys: string[] | null; middleware: string[] | null; consumers: Array<{ name: string; filePath: string; accessedKeys?: string[] }> }>> {
     const rows = await executeParameterized(repoId, `
       MATCH (n:Route)
       WHERE n.id STARTS WITH 'Route:' ${routeFilter}
       OPTIONAL MATCH (consumer)-[r:CodeRelation]->(n)
       WHERE r.type = 'FETCHES'
       RETURN n.id AS routeId, n.name AS routeName, n.filePath AS handlerFile,
-             n.responseKeys AS responseKeys, n.middleware AS middleware,
+             n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware,
              consumer.name AS consumerName, consumer.filePath AS consumerFile,
              r.reason AS fetchReason
     `, params);
 
-    const routeMap = new Map<string, { id: string; name: string; filePath: string; responseKeys: string[] | null; middleware: string[] | null; consumers: Array<{ name: string; filePath: string; accessedKeys?: string[] }> }>();
+    const routeMap = new Map<string, { id: string; name: string; filePath: string; responseKeys: string[] | null; errorKeys: string[] | null; middleware: string[] | null; consumers: Array<{ name: string; filePath: string; accessedKeys?: string[] }> }>();
     for (const row of rows) {
       const id = row.routeId ?? row[0];
       const name = row.routeName ?? row[1];
       const filePath = row.handlerFile ?? row[2];
       const responseKeys: string[] | null = row.responseKeys ?? row[3] ?? null;
-      const middleware: string[] | null = row.middleware ?? row[4] ?? null;
-      const consumerName = row.consumerName ?? row[5];
-      const consumerFile = row.consumerFile ?? row[6];
-      const fetchReason: string | null = row.fetchReason ?? row[7] ?? null;
+      const errorKeys: string[] | null = row.errorKeys ?? row[4] ?? null;
+      const middleware: string[] | null = row.middleware ?? row[5] ?? null;
+      const consumerName = row.consumerName ?? row[6];
+      const consumerFile = row.consumerFile ?? row[7];
+      const fetchReason: string | null = row.fetchReason ?? row[8] ?? null;
 
       if (!routeMap.has(id)) {
-        routeMap.set(id, { id, name, filePath, responseKeys, middleware, consumers: [] });
+        routeMap.set(id, { id, name, filePath, responseKeys, errorKeys, middleware, consumers: [] });
       }
       if (consumerName && consumerFile) {
         // Parse accessed keys from reason field: "fetch-url-match|keys:data,pagination"
@@ -1742,17 +1743,19 @@ export class LocalBackend {
     const allRoutes = await this.fetchRoutesWithConsumers(repo.id, routeFilter, queryParams);
 
     const results = allRoutes
-      .filter(r => r.responseKeys && r.responseKeys.length > 0 && r.consumers.length > 0)
+      .filter(r => ((r.responseKeys && r.responseKeys.length > 0) || (r.errorKeys && r.errorKeys.length > 0)) && r.consumers.length > 0)
       .map(r => {
-        const responseKeys = r.responseKeys!;
-        const responseKeySet = new Set(responseKeys);
+        const responseKeys = r.responseKeys ?? [];
+        const errorKeys = r.errorKeys ?? [];
+        // Combined set: consumer accessing either success or error keys is valid
+        const allKnownKeys = new Set([...responseKeys, ...errorKeys]);
 
         // Check each consumer's accessed keys against the route's response shape
         const consumers = r.consumers.map(c => {
           if (!c.accessedKeys || c.accessedKeys.length === 0) {
             return { name: c.name, filePath: c.filePath };
           }
-          const mismatched = c.accessedKeys.filter(k => !responseKeySet.has(k));
+          const mismatched = c.accessedKeys.filter(k => !allKnownKeys.has(k));
           return {
             name: c.name,
             filePath: c.filePath,
@@ -1766,7 +1769,8 @@ export class LocalBackend {
         return {
           route: r.name,
           handler: r.filePath,
-          responseKeys,
+          ...(responseKeys.length > 0 ? { responseKeys } : {}),
+          ...(errorKeys.length > 0 ? { errorKeys } : {}),
           consumers,
           ...(hasMismatches ? { status: 'MISMATCH' as const } : {}),
         };

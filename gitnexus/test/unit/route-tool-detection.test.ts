@@ -4,6 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import { nextjsFileToRouteURL, normalizeFetchURL, routeMatches } from '../../src/core/ingestion/route-extractors/nextjs.js';
 import { phpFileToRouteURL } from '../../src/core/ingestion/route-extractors/php.js';
+import { extractMiddlewareChain, detectStatusCode } from '../../src/core/ingestion/pipeline.js';
 
 // ---------------------------------------------------------------------------
 // Next.js route extractor
@@ -283,32 +284,6 @@ describe('response shape extraction edge cases', () => {
 // ---------------------------------------------------------------------------
 
 describe('middleware chain extraction', () => {
-  // Helper that mirrors the pipeline's middleware extraction logic
-  function extractMiddlewareChain(content: string): string[] | undefined {
-    const STOP_KEYWORDS = ['async', 'await', 'function', 'new', 'return', 'if', 'for', 'while', 'switch', 'class', 'const', 'let', 'var', 'req', 'res', 'request', 'response', 'event', 'ctx', 'context', 'next'];
-    const mwPattern = /export\s+(?:const\s+(?:POST|GET|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*=|default)\s+(\w+)\s*\(/g;
-    let mwMatch;
-    while ((mwMatch = mwPattern.exec(content)) !== null) {
-      const chain: string[] = [];
-      chain.push(mwMatch[1]);
-      let pos = mwMatch.index + mwMatch[0].length;
-      const nestedPattern = /^\s*(\w+)\s*\(/;
-      let remaining = content.slice(pos);
-      let nestedMatch;
-      while ((nestedMatch = nestedPattern.exec(remaining)) !== null) {
-        const name = nestedMatch[1];
-        if (STOP_KEYWORDS.includes(name)) break;
-        chain.push(name);
-        pos += nestedMatch[0].length;
-        remaining = content.slice(pos);
-      }
-      if (chain.length >= 2 || (chain.length === 1 && /^with[A-Z]/.test(chain[0]))) {
-        return chain;
-      }
-    }
-    return undefined;
-  }
-
   it('extracts triple-nested middleware chain', () => {
     const content = `export const POST = withRateLimit(withCSRF(withAuth(async (req) => { return NextResponse.json({ ok: true }); })));`;
     expect(extractMiddlewareChain(content)).toEqual(['withRateLimit', 'withCSRF', 'withAuth']);
@@ -371,5 +346,177 @@ describe('middleware chain extraction', () => {
   it('returns undefined when no export pattern exists', () => {
     const content = `const handler = withAuth(doSomething);`;
     expect(extractMiddlewareChain(content)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error response shape detection (detectStatusCode + separation logic)
+// ---------------------------------------------------------------------------
+
+describe('detectStatusCode', () => {
+  it('detects Express .status(N).json() pattern', () => {
+    const content = 'return res.status(400).json({ error: "bad request" })';
+    const jsonPos = content.indexOf('.json');
+    expect(detectStatusCode(content, jsonPos, -1)).toBe(400);
+  });
+
+  it('detects NextResponse.json({...}, { status: 400 }) pattern', () => {
+    const content = 'return NextResponse.json({ error: "not found" }, { status: 404 })';
+    const jsonPos = content.indexOf('.json');
+    // Simulate closingBracePos at the end of first arg object
+    const firstArgClose = content.indexOf('}');
+    expect(detectStatusCode(content, jsonPos, firstArgClose)).toBe(404);
+  });
+
+  it('detects NextResponse.json({...}, { status: 200 }) as success', () => {
+    const content = 'return NextResponse.json({ data: results }, { status: 200 })';
+    const jsonPos = content.indexOf('.json');
+    const firstArgClose = content.indexOf('}');
+    expect(detectStatusCode(content, jsonPos, firstArgClose)).toBe(200);
+  });
+
+  it('returns undefined when no status code present', () => {
+    const content = 'return NextResponse.json({ data: results })';
+    const jsonPos = content.indexOf('.json');
+    const firstArgClose = content.indexOf('}');
+    expect(detectStatusCode(content, jsonPos, firstArgClose)).toBeUndefined();
+  });
+
+  it('detects .status(500).json() for server error', () => {
+    const content = 'res.status(500).json({ error: "Internal server error", code: "SERVER_ERROR" })';
+    const jsonPos = content.indexOf('.json');
+    expect(detectStatusCode(content, jsonPos, -1)).toBe(500);
+  });
+
+  it('detects status in second arg with extra properties', () => {
+    const content = 'return NextResponse.json({ error: "fail" }, { status: 422, headers: {} })';
+    const jsonPos = content.indexOf('.json');
+    const firstArgClose = content.indexOf('}');
+    expect(detectStatusCode(content, jsonPos, firstArgClose)).toBe(422);
+  });
+});
+
+describe('error response shape separation', () => {
+  // Helper that simulates the pipeline's brace-depth parser WITH status code detection
+  function extractShapes(content: string): { responseKeys?: string[]; errorKeys?: string[] } {
+    const successKeys: string[] = [];
+    const errKeys: string[] = [];
+    const jsonPattern = /\.json\s*\(/g;
+    let jsonMatch;
+    while ((jsonMatch = jsonPattern.exec(content)) !== null) {
+      const matchPos = jsonMatch.index;
+      const startIdx = matchPos + jsonMatch[0].length;
+      let i = startIdx;
+      while (i < content.length && content[i] !== '{' && content[i] !== ')') i++;
+      if (i >= content.length || content[i] !== '{') continue;
+      const callKeys: string[] = [];
+      let depth = 0;
+      let keyStart = -1;
+      let inString: string | null = null;
+      let closingBracePos = -1;
+      for (let j = i; j < content.length; j++) {
+        const ch = content[j];
+        if (inString) {
+          if (ch === '\\') { j++; continue; }
+          if (ch === inString) inString = null;
+          continue;
+        }
+        if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue; }
+        if (ch === '{') { depth++; continue; }
+        if (ch === '}') { depth--; if (depth === 0) { closingBracePos = j; break; } continue; }
+        if (depth !== 1) continue;
+        if (keyStart === -1 && /[a-zA-Z_$]/.test(ch)) {
+          keyStart = j;
+        } else if (keyStart !== -1 && !/[a-zA-Z0-9_$]/.test(ch)) {
+          const key = content.slice(keyStart, j);
+          const rest = content.slice(j).trimStart();
+          if (rest[0] === ':' || rest[0] === ',' || rest[0] === '}') {
+            callKeys.push(key);
+          }
+          keyStart = -1;
+        }
+      }
+      if (callKeys.length === 0) continue;
+      const status = detectStatusCode(content, matchPos, closingBracePos);
+      if (status !== undefined && status >= 400) {
+        errKeys.push(...callKeys);
+      } else {
+        successKeys.push(...callKeys);
+      }
+    }
+    const result: { responseKeys?: string[]; errorKeys?: string[] } = {};
+    if (successKeys.length > 0) result.responseKeys = [...new Set(successKeys)];
+    if (errKeys.length > 0) result.errorKeys = [...new Set(errKeys)];
+    return result;
+  }
+
+  it('separates success and error responses in NextResponse pattern', () => {
+    const content = `
+      export async function GET() {
+        try {
+          const data = await fetchData();
+          return NextResponse.json({ data, pagination: { page: 1 } });
+        } catch (e) {
+          return NextResponse.json({ error: "Failed", message: e.message }, { status: 500 });
+        }
+      }
+    `;
+    const shapes = extractShapes(content);
+    expect(shapes.responseKeys).toEqual(['data', 'pagination']);
+    expect(shapes.errorKeys).toEqual(['error', 'message']);
+  });
+
+  it('separates success and error responses in Express pattern', () => {
+    const content = `
+      app.get('/api/users', (req, res) => {
+        try {
+          const users = getUsers();
+          res.json({ users, total });
+        } catch (e) {
+          res.status(500).json({ error: "Server error", code: "INTERNAL" });
+        }
+      });
+    `;
+    const shapes = extractShapes(content);
+    expect(shapes.responseKeys).toEqual(['users', 'total']);
+    expect(shapes.errorKeys).toEqual(['error', 'code']);
+  });
+
+  it('handles multiple error status codes', () => {
+    const content = `
+      export async function POST(req) {
+        if (!req.body) return NextResponse.json({ error: "No body" }, { status: 400 });
+        if (!authorized) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        return NextResponse.json({ data, id });
+      }
+    `;
+    const shapes = extractShapes(content);
+    expect(shapes.responseKeys).toEqual(['data', 'id']);
+    expect(shapes.errorKeys).toEqual(['error']);
+  });
+
+  it('falls back to all keys as responseKeys when no status codes present', () => {
+    const content = `
+      export async function GET() {
+        return NextResponse.json({ data, count });
+      }
+    `;
+    const shapes = extractShapes(content);
+    expect(shapes.responseKeys).toEqual(['data', 'count']);
+    expect(shapes.errorKeys).toBeUndefined();
+  });
+
+  it('treats status 200 as success', () => {
+    const content = `return NextResponse.json({ ok }, { status: 200 })`;
+    const shapes = extractShapes(content);
+    expect(shapes.responseKeys).toEqual(['ok']);
+    expect(shapes.errorKeys).toBeUndefined();
+  });
+
+  it('treats status 201 as success', () => {
+    const content = `return NextResponse.json({ created, id }, { status: 201 })`;
+    const shapes = extractShapes(content);
+    expect(shapes.responseKeys).toEqual(['created', 'id']);
+    expect(shapes.errorKeys).toBeUndefined();
   });
 });
