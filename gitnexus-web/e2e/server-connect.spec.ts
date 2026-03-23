@@ -36,7 +36,7 @@ async function connectAndWaitForGraph(page: import('@playwright/test').Page, tes
     (window as unknown as { __PLAYWRIGHT_TEST__?: boolean }).__PLAYWRIGHT_TEST__ = true;
   });
 
-  await page.goto('/', { waitUntil: 'networkidle' });
+  await page.goto('/');
   await page.screenshot({ path: testInfo.outputPath('step-1-landing.png') });
 
   // Click "Server" tab in onboarding
