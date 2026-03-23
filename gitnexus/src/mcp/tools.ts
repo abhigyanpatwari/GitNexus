@@ -338,4 +338,80 @@ AFTER THIS: Copy skeletons to the suggested paths, fill in the TODO sections, ru
       required: ['query'],
     },
   },
+
+  // ─── T028: Impact-Lock tools ────────────────────────────────────────────────
+
+  {
+    name: 'gitnexus_lock_resource',
+    description: `Acquire swarm-lock on files within the impact blast radius before editing.
+
+Call this BEFORE modifying any file to prevent multi-agent write conflicts.
+Each file is locked atomically; if a file is already held by another agent it
+is added to \`failedFiles\` rather than throwing — the caller decides whether to
+proceed with partial locks or abort.
+
+Returns:
+  - lockedFiles: paths successfully locked
+  - failedFiles: paths already held by another agent
+  - agentId:     the agent that owns these locks`,
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        files: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'File paths to lock (repo-relative or absolute)',
+        },
+        agentId: {
+          type: 'string',
+          description: 'Unique identifier for the lock owner (e.g. "Agent-B")',
+        },
+        repoPath: {
+          type: 'string',
+          description: 'Absolute path to the repository root',
+        },
+      },
+      required: ['files', 'agentId', 'repoPath'],
+    },
+  },
+  {
+    name: 'gitnexus_unlock_resource',
+    description: `Release swarm-locks acquired by this agent.
+
+ALWAYS call after completing edits to unblock other agents.
+Uses best-effort semantics: individual unlock failures are silently ignored.`,
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        files: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'File paths to unlock (repo-relative or absolute)',
+        },
+        agentId: {
+          type: 'string',
+          description: 'Agent identifier that owns the locks',
+        },
+        repoPath: {
+          type: 'string',
+          description: 'Absolute path to the repository root',
+        },
+      },
+      required: ['files', 'agentId', 'repoPath'],
+    },
+  },
+  {
+    name: 'gitnexus_list_locks',
+    description: 'List all currently active swarm-locks in the repository.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        repoPath: {
+          type: 'string',
+          description: 'Absolute path to the repository root',
+        },
+      },
+      required: ['repoPath'],
+    },
+  },
 ];

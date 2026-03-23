@@ -408,6 +408,22 @@ export class LocalBackend {
         return this.memorySearch(repo.repoPath, params);
       case 'memory_list':
         return this.memoryList(repo.repoPath, params);
+      // T028: Impact-Lock tools
+      case 'gitnexus_lock_resource': {
+        const { lockBlastRadius } = await import('../middleware/impact-lock.js');
+        const result = await lockBlastRadius(params.files, params.agentId, params.repoPath);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
+      case 'gitnexus_unlock_resource': {
+        const { unlockBlastRadius } = await import('../middleware/impact-lock.js');
+        await unlockBlastRadius(params.files, params.agentId, params.repoPath);
+        return { content: [{ type: 'text', text: 'Unlocked successfully' }] };
+      }
+      case 'gitnexus_list_locks': {
+        const { listLocks } = await import('../middleware/impact-lock.js');
+        const locks = listLocks(params.repoPath);
+        return { content: [{ type: 'text', text: JSON.stringify(locks, null, 2) }] };
+      }
       // Legacy aliases for backwards compatibility
       case 'search':
         return this.query(repo, params);
