@@ -16,8 +16,7 @@ concurrency:
 # ── Reusable workflow orchestration ─────────────────────────────────
 # Each concern lives in its own workflow file for maintainability:
 #   ci-quality.yml       — typecheck (tsc --noEmit)
-#   ci-unit-tests.yml    — unit tests with coverage + cross-platform
-#   ci-integration.yml   — integration test matrix (3 OS x 4 groups)
+#   ci-tests.yml         — unit + integration tests with coverage + cross-platform
 #   ci-e2e.yml           — E2E tests (only when gitnexus-web/ changes)
 #
 # Shared setup is DRY via .github/actions/setup-gitnexus composite action.
@@ -28,15 +27,8 @@ jobs:
     permissions:
       contents: read
 
-  unit-tests:
-    uses: ./.github/workflows/ci-unit-tests.yml
-    permissions:
-      contents: read
-
-  integration:
-    uses: ./.github/workflows/ci-integration.yml
-    with:
-      collect-coverage: ${{ github.event_name == 'pull_request' }}
+  tests:
+    uses: ./.github/workflows/ci-tests.yml
     permissions:
       contents: read
 
@@ -53,7 +45,7 @@ jobs:
   save-pr-meta:
     name: Save PR Metadata
     if: always() && github.event_name == 'pull_request'
-    needs: [quality, unit-tests, integration, e2e]
+    needs: [quality, tests, e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -62,15 +54,13 @@ jobs:
         env:
           PR_NUMBER: ${{ github.event.number }}
           QUALITY: ${{ needs.quality.result }}
-          UNIT: ${{ needs.unit-tests.result }}
-          INTEG: ${{ needs.integration.result }}
+          TESTS: ${{ needs.tests.result }}
           E2E: ${{ needs.e2e.result }}
         run: |
           mkdir -p pr-meta
           echo "$PR_NUMBER"  > pr-meta/pr_number
           echo "$QUALITY"    > pr-meta/quality_result
-          echo "$UNIT"       > pr-meta/unit_result
-          echo "$INTEG"      > pr-meta/integration_result
+          echo "$TESTS"      > pr-meta/tests_result
           echo "$E2E"        > pr-meta/e2e_result
 
       - name: Upload PR metadata
@@ -84,7 +74,7 @@ jobs:
   # Single required check for branch protection.
   ci-status:
     name: CI Gate
-    needs: [quality, unit-tests, integration, e2e]
+    needs: [quality, tests, e2e]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -93,18 +83,18 @@ jobs:
         shell: bash
         env:
           QUALITY: ${{ needs.quality.result }}
-          UNIT: ${{ needs.unit-tests.result }}
-          INTEG: ${{ needs.integration.result }}
+          TESTS: ${{ needs.tests.result }}
           E2E: ${{ needs.e2e.result }}
         run: |
           echo "Quality:     $QUALITY"
-          echo "Unit Tests:  $UNIT"
-          echo "Integration: $INTEG"
+          echo "Tests:       $TESTS"
           echo "E2E:         $E2E"
           if [[ "$QUALITY" != "success" ]] ||
-             [[ "$UNIT" != "success" ]] ||
-             [[ "$INTEG" != "success" ]] ||
-             [[ "$E2E" != "success" ]]; then
-            echo "::error::One or more CI jobs failed"
+             [[ "$TESTS" != "success" ]]; then
+            echo "::error::Quality or test jobs failed"
+            exit 1
+          fi
+          if [[ "$E2E" != "success" && "$E2E" != "skipped" ]]; then
+            echo "::error::E2E job failed"
             exit 1
           fi

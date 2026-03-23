@@ -21,49 +21,57 @@ import { generateAllCSVs } from './csv-generator';
 let lbug: any = null;
 let db: any = null;
 let conn: any = null;
+let initPromise: Promise<{ db: any; conn: any; lbug: any }> | null = null;
 
 /**
  * Initialize LadybugDB WASM module and create in-memory database
  */
 export const initLbug = async () => {
-  if (conn) return { db, conn, lbug };
+  if (initPromise) return initPromise;
+  initPromise = (async () => {
+    try {
+      if (import.meta.env.DEV) console.log('🚀 Initializing LadybugDB...');
 
-  try {
-    if (import.meta.env.DEV) console.log('🚀 Initializing LadybugDB...');
+      // 1. Dynamic Import (Fixes the "not a function" bundler issue)
+      const lbugModule = await import('@ladybugdb/wasm-core');
 
-    // 1. Dynamic Import (Fixes the "not a function" bundler issue)
-    const lbugModule = await import('@ladybugdb/wasm-core');
+      // 2. Handle Vite/Webpack "default" wrapping
+      lbug = lbugModule.default || lbugModule;
 
-    // 2. Handle Vite/Webpack "default" wrapping
-    lbug = lbugModule.default || lbugModule;
+      // 3. Initialize WASM
+      await lbug.init();
 
-    // 3. Initialize WASM
-    await lbug.init();
+      // 4. Create Database with 512MB buffer manager
+      const BUFFER_POOL_SIZE = 512 * 1024 * 1024; // 512MB
+      db = new lbug.Database(':memory:', BUFFER_POOL_SIZE);
+      conn = new lbug.Connection(db);
 
-    // 4. Create Database with 512MB buffer manager
-    const BUFFER_POOL_SIZE = 512 * 1024 * 1024; // 512MB
-    db = new lbug.Database(':memory:', BUFFER_POOL_SIZE);
-    conn = new lbug.Connection(db);
+      if (import.meta.env.DEV) console.log('✅ LadybugDB WASM Initialized');
 
-    if (import.meta.env.DEV) console.log('✅ LadybugDB WASM Initialized');
-
-    // 5. Initialize Schema (all node tables, then rel tables, then embedding table)
-    for (const schemaQuery of SCHEMA_QUERIES) {
-      try {
-        await conn.query(schemaQuery);
-      } catch (e) {
-        // Schema might already exist, skip
-        if (import.meta.env.DEV) {
-          console.warn('Schema creation skipped (may already exist):', e);
+      // 5. Initialize Schema (all node tables, then rel tables, then embedding table)
+      for (let i = 0; i < SCHEMA_QUERIES.length; i++) {
+        try {
+          await conn.query(SCHEMA_QUERIES[i]);
+        } catch (e) {
+          // Schema might already exist, skip
+          if (import.meta.env.DEV) {
+            console.warn(`Schema query ${i + 1}/${SCHEMA_QUERIES.length} skipped (may already exist):`, e);
+          }
         }
       }
+
+      if (import.meta.env.DEV) console.log('✅ LadybugDB Multi-Table Schema Created');
+
+      return { db, conn, lbug };
+    } catch (error) {
+      if (import.meta.env.DEV) console.error('❌ LadybugDB Initialization Failed:', error);
+      throw error;
     }
-
-    if (import.meta.env.DEV) console.log('✅ LadybugDB Multi-Table Schema Created');
-
-    return { db, conn, lbug };
+  })();
+  try {
+    return await initPromise;
   } catch (error) {
-    if (import.meta.env.DEV) console.error('❌ LadybugDB Initialization Failed:', error);
+    initPromise = null; // Reset on failure so retry is possible
     throw error;
   }
 };
@@ -107,12 +115,12 @@ export const loadGraphToLbug = async (
   conn = new lbugModule.Connection(db);
 
   // Re-run schema creation
-  for (const schemaQuery of SCHEMA_QUERIES) {
+  for (let i = 0; i < SCHEMA_QUERIES.length; i++) {
     try {
-      await conn.query(schemaQuery);
+      await conn.query(SCHEMA_QUERIES[i]);
     } catch (e) {
       if (import.meta.env.DEV) {
-        console.warn('Schema creation skipped (may already exist):', e);
+        console.warn(`Schema query ${i + 1}/${SCHEMA_QUERIES.length} skipped (may already exist):`, e);
       }
     }
   }
@@ -169,56 +177,86 @@ export const loadGraphToLbug = async (
     let insertedRels = 0;
     let skippedRels = 0;
     const skippedRelStats = new Map<string, number>();
-    const insertStart = Date.now();
+
+    // Group relations by (fromLabel, toLabel) pair for prepared statement reuse
+    const relsByLabelPair = new Map<string, Array<{ fromId: string; toId: string; relType: string; confidence: number; reason: string; step: number }>>();
+    // RFC 4180 regex: handles doubled quotes ("") inside quoted fields
+    const csvRegex = /"((?:[^"]|"")*)","((?:[^"]|"")*)","((?:[^"]|"")*)",([0-9.]+),"((?:[^"]|"")*)",([0-9-]+)/;
+
     for (const line of relLines) {
-      if ((insertedRels + skippedRels) % 500 === 0 && (insertedRels + skippedRels) > 0) {
-        // Yield to the event loop to avoid long-blocking during Playwright runs
-        await new Promise((resolve) => setTimeout(resolve, 0));
+      const match = line.match(csvRegex);
+      if (!match) continue;
+
+      // Unescape RFC 4180 doubled quotes
+      const fromId = match[1].replace(/""/g, '"');
+      const toId = match[2].replace(/""/g, '"');
+      const relType = match[3].replace(/""/g, '"');
+      const reason = match[5].replace(/""/g, '"');
+
+      const fromLabel = getNodeLabel(fromId);
+      const toLabel = getNodeLabel(toId);
+
+      // Skip relationships where either node's label doesn't have a table in LadybugDB
+      // Querying a non-existent table causes a fatal native crash
+      if (!validTables.has(fromLabel) || !validTables.has(toLabel)) {
+        skippedRels++;
+        continue;
       }
-      // Safety timeout to avoid hanging the test runner
-      if (Date.now() - insertStart > 30000) {
-        throw new Error(`Relation insert timed out after ${insertedRels + skippedRels} processed`);
-      }
-      try {
-        // Format: "from","to","type",confidence,"reason",step
-        const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)",([0-9-]+)/);
-        if (!match) continue;
 
-        const [, fromId, toId, relType, confidenceStr, reason, stepStr] = match;
+      const key = `${fromLabel}:${toLabel}`;
+      if (!relsByLabelPair.has(key)) relsByLabelPair.set(key, []);
+      relsByLabelPair.get(key)!.push({
+        fromId,
+        toId,
+        relType,
+        confidence: parseFloat(match[4]) || 1.0,
+        reason,
+        step: parseInt(match[6]) || 0,
+      });
+    }
 
-        const fromLabel = getNodeLabel(fromId);
-        const toLabel = getNodeLabel(toId);
+    // Execute batched prepared statements per label pair
+    const SUB_BATCH_SIZE = 4;
+    for (const [key, rels] of relsByLabelPair) {
+      const [fromLabel, toLabel] = key.split(':');
+      const cypher = `
+        MATCH (a:${escapeLabel(fromLabel)} {id: $fromId}),
+              (b:${escapeLabel(toLabel)} {id: $toId})
+        CREATE (a)-[:${REL_TABLE_NAME} {type: $relType, confidence: $confidence, reason: $reason, step: $step}]->(b)
+      `;
 
-        // Skip relationships where either node's label doesn't have a table in LadybugDB
-        // Querying a non-existent table causes a fatal native crash
-        if (!validTables.has(fromLabel) || !validTables.has(toLabel)) {
-          skippedRels++;
+      for (let i = 0; i < rels.length; i += SUB_BATCH_SIZE) {
+        const subBatch = rels.slice(i, i + SUB_BATCH_SIZE);
+        const stmt = await conn.prepare(cypher);
+        if (!stmt.isSuccess()) {
+          const errMsg = await stmt.getErrorMessage();
+          if (import.meta.env.DEV) console.warn(`Prepare failed for ${key}: ${errMsg}`);
+          skippedRels += subBatch.length;
+          await stmt.close();
           continue;
         }
 
-        const confidence = parseFloat(confidenceStr) || 1.0;
-        const step = parseInt(stepStr) || 0;
-
-        const insertQuery = `
-          MATCH (a:${escapeLabel(fromLabel)} {id: '${fromId.replace(/'/g, "''")}'}),
-                (b:${escapeLabel(toLabel)} {id: '${toId.replace(/'/g, "''")}'})
-          CREATE (a)-[:${REL_TABLE_NAME} {type: '${relType.replace(/'/g, "''")}', confidence: ${confidence}, reason: '${reason.replace(/'/g, "''")}', step: ${step}}]->(b)
-        `;
-        await conn.query(insertQuery);
-        insertedRels++;
-      } catch (err) {
-        skippedRels++;
-        const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)"/);
-        if (match) {
-          const [, fromId, toId, relType] = match;
-          const fromLabel = getNodeLabel(fromId);
-          const toLabel = getNodeLabel(toId);
-          const key = `${relType}:${fromLabel}->` + toLabel;
-          skippedRelStats.set(key, (skippedRelStats.get(key) || 0) + 1);
-
-          if (import.meta.env.DEV) {
-            console.warn(`⚠️ Skipped: ${key} | "${fromId}" → "${toId}" | ${err instanceof Error ? err.message : String(err)}`);
+        try {
+          for (const r of subBatch) {
+            try {
+              await conn.execute(stmt, r);
+              insertedRels++;
+            } catch (err) {
+              skippedRels++;
+              const statKey = `${r.relType}:${fromLabel}->${toLabel}`;
+              skippedRelStats.set(statKey, (skippedRelStats.get(statKey) || 0) + 1);
+              if (import.meta.env.DEV) {
+                console.warn(`⚠️ Skipped: ${statKey} | "${r.fromId}" → "${r.toId}" | ${err instanceof Error ? err.message : String(err)}`);
+              }
+            }
           }
+        } finally {
+          await stmt.close();
+        }
+
+        // Yield to event loop between sub-batches
+        if (i + SUB_BATCH_SIZE < rels.length) {
+          await new Promise(r => setTimeout(r, 0));
         }
       }
     }
@@ -318,9 +356,16 @@ const getCopyQuery = (table: NodeTableName, path: string): string => {
  * Execute a Cypher query against the database
  * Returns results as named objects (not tuples) for better usability
  */
-export const executeQuery = async (cypher: string): Promise<any[]> => {
+export const executeQuery = async (cypher: string, readOnly = false): Promise<any[]> => {
   if (!conn) {
     await initLbug();
+  }
+
+  if (readOnly) {
+    const upper = cypher.toUpperCase();
+    if (/\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|DETACH)\b/.test(upper)) {
+      throw new Error('Read-only query attempted a write operation');
+    }
   }
 
   try {
@@ -439,6 +484,7 @@ export const closeLbug = async (): Promise<void> => {
     db = null;
   }
   lbug = null;
+  initPromise = null;
 };
 
 /**
@@ -457,17 +503,18 @@ export const executePrepared = async (
 
   try {
     const stmt = await conn.prepare(cypher);
-    if (!stmt.isSuccess()) {
-      const errMsg = await stmt.getErrorMessage();
-      throw new Error(`Prepare failed: ${errMsg}`);
+    try {
+      if (!stmt.isSuccess()) {
+        const errMsg = await stmt.getErrorMessage();
+        throw new Error(`Prepare failed: ${errMsg}`);
+      }
+
+      const result = await conn.execute(stmt, params);
+      const rows = await result.getAllRows();
+      return rows;
+    } finally {
+      await stmt.close();
     }
-
-    const result = await conn.execute(stmt, params);
-
-    const rows = await result.getAllRows();
-
-    await stmt.close();
-    return rows;
   } catch (error) {
     if (import.meta.env.DEV) console.error('Prepared query failed:', error);
     throw error;
@@ -561,11 +608,17 @@ export const testArrayParams = async (): Promise<{ success: boolean; error?: str
 
     await stmt.close();
 
-    // Verify it was stored
-    const verifyResult = await conn.query(
-      `MATCH (e:${EMBEDDING_TABLE_NAME} {nodeId: '${testNodeId}'}) RETURN e.embedding AS emb`
+    // Verify it was stored (using prepared statement to avoid injection)
+    const verifyStmt = await conn.prepare(
+      `MATCH (e:${EMBEDDING_TABLE_NAME} {nodeId: $nodeId}) RETURN e.embedding AS emb`
     );
+    if (!verifyStmt.isSuccess()) {
+      const errMsg = await verifyStmt.getErrorMessage();
+      return { success: false, error: `Verify prepare failed: ${errMsg}` };
+    }
+    const verifyResult = await conn.execute(verifyStmt, { nodeId: testNodeId });
     const verifyRows = await verifyResult.getAllRows();
+    await verifyStmt.close();
     const verifyRow = verifyRows[0];
     const storedEmb = verifyRow?.emb ?? verifyRow?.[0];
 

@@ -59,7 +59,6 @@ jobs:
             const temp = process.env.RUNNER_TEMP;
             await downloadArtifact('pr-meta', path.join(temp, 'dl'));
             await downloadArtifact('test-reports', path.join(temp, 'dl'));
-            await downloadArtifact('integration-reports', path.join(temp, 'dl'));
 
       - name: Extract artifacts
         shell: bash
@@ -109,8 +108,7 @@ jobs:
           }
 
           echo "quality=$(validate_result "$DIR/quality_result")"        >> "$GITHUB_OUTPUT"
-          echo "unit=$(validate_result "$DIR/unit_result")"              >> "$GITHUB_OUTPUT"
-          echo "integration=$(validate_result "$DIR/integration_result")" >> "$GITHUB_OUTPUT"
+          echo "tests=$(validate_result "$DIR/tests_result")"            >> "$GITHUB_OUTPUT"
           echo "e2e=$(validate_result "$DIR/e2e_result")"                >> "$GITHUB_OUTPUT"
 
       - name: Checkout (for vitest config)
@@ -180,77 +178,19 @@ jobs:
           cd "${{ steps.base-coverage.outputs.dir }}"
           unzip -o base.zip -d base
 
-      # ── Merge coverage from unit + integration ─────────────────────
-      - name: Setup Node.js
-        if: steps.meta.outputs.skip != 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 20
-
-      - name: Install coverage merge tools
-        if: steps.meta.outputs.skip != 'true'
-        run: npm install --no-save istanbul-lib-coverage istanbul-lib-report istanbul-reports
-
-      - name: Merge coverage reports
-        if: steps.meta.outputs.skip != 'true'
-        id: coverage
-        shell: bash
-        run: |
-          DIR="$RUNNER_TEMP/artifacts"
-          UNIT_COV=$(find "$DIR/test-reports" -name "coverage-final.json" -type f 2>/dev/null | head -1)
-          INTEG_COV=$(find "$DIR/integration-reports" -name "coverage-final.json" -type f 2>/dev/null | head -1)
-          MERGED_DIR="$RUNNER_TEMP/merged-coverage"
-          mkdir -p "$MERGED_DIR"
-
-          if [ -n "$UNIT_COV" ] && [ -n "$INTEG_COV" ]; then
-            echo "has_merged=true" >> "$GITHUB_OUTPUT"
-            # Merge using Node.js + istanbul-lib-coverage.
-            # Paths are passed via env vars to avoid shell interpolation
-            # inside the script string.
-            UNIT_COV_PATH="$UNIT_COV" \
-            INTEG_COV_PATH="$INTEG_COV" \
-            MERGED_OUT_DIR="$MERGED_DIR" \
-            node -e "
-              const libCoverage = require('istanbul-lib-coverage');
-              const libReport = require('istanbul-lib-report');
-              const reports = require('istanbul-reports');
-              const fs = require('fs');
-
-              const map = libCoverage.createCoverageMap({});
-              map.merge(JSON.parse(fs.readFileSync(process.env.UNIT_COV_PATH, 'utf8')));
-              map.merge(JSON.parse(fs.readFileSync(process.env.INTEG_COV_PATH, 'utf8')));
-
-              const context = libReport.createContext({
-                coverageMap: map,
-                dir: process.env.MERGED_OUT_DIR,
-              });
-              reports.create('json-summary').execute(context);
-              console.log('Merged coverage written to ' + process.env.MERGED_OUT_DIR + '/coverage-summary.json');
-            "
-          elif [ -n "$UNIT_COV" ]; then
-            echo "has_merged=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Integration coverage not found — using unit coverage only"
-          else
-            echo "has_merged=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::No coverage data found"
-          fi
-
       - name: Build report
         if: steps.meta.outputs.skip != 'true'
         id: report
         shell: bash
         env:
           QUALITY: ${{ steps.meta.outputs.quality }}
-          UNIT: ${{ steps.meta.outputs.unit }}
-          INTEG: ${{ steps.meta.outputs.integration }}
+          TESTS: ${{ steps.meta.outputs.tests }}
           E2E: ${{ steps.meta.outputs.e2e }}
-          HAS_MERGED: ${{ steps.coverage.outputs.has_merged }}
           BASE_FOUND: ${{ steps.base-coverage.outputs.found }}
           BASE_DIR: ${{ steps.base-coverage.outputs.dir }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           DIR="$RUNNER_TEMP/artifacts"
-          MERGED_DIR="$RUNNER_TEMP/merged-coverage"
 
           # ── Helper: read coverage summary into prefixed vars ──
           read_cov() {
@@ -287,16 +227,10 @@ jobs:
             fi
           }
 
-          # ── Read all coverage reports ──
+          # ── Read coverage reports ──
           UNIT_SUMMARY=$(find "$DIR/test-reports" -name "coverage-summary.json" -type f 2>/dev/null | head -1)
-          INTEG_SUMMARY=$(find "$DIR/integration-reports" -name "coverage-summary.json" -type f 2>/dev/null | head -1)
-          MERGED_SUMMARY="$MERGED_DIR/coverage-summary.json"
 
           read_cov "U" "$UNIT_SUMMARY"
-          HAS_UNIT=$?
-          read_cov "I" "$INTEG_SUMMARY"
-          HAS_INTEG=$?
-          read_cov "M" "$MERGED_SUMMARY"
 
           # ── Read base branch coverage (main) ──
           BASE_SUMMARY=""
@@ -307,36 +241,17 @@ jobs:
 
           # ── Locate test results ──
           RESULTS_FILE=$(find "$DIR/test-reports" -name "test-results.json" -type f 2>/dev/null | head -1)
-          INTEG_RESULTS=$(find "$DIR/integration-reports" -name "integration-results.json" -type f 2>/dev/null | head -1)
 
           if [ -n "$RESULTS_FILE" ]; then
-            U_TOTAL=$(jq -r '.numTotalTests' "$RESULTS_FILE" 2>/dev/null || echo 0)
-            U_PASSED=$(jq -r '.numPassedTests' "$RESULTS_FILE" 2>/dev/null || echo 0)
-            U_FAILED=$(jq -r '.numFailedTests' "$RESULTS_FILE" 2>/dev/null || echo 0)
-            U_SKIPPED=$(jq -r '.numPendingTests' "$RESULTS_FILE" 2>/dev/null || echo 0)
-            U_SUITES=$(jq -r '.numTotalTestSuites' "$RESULTS_FILE" 2>/dev/null || echo 0)
-            U_DURATION=$(jq -r '((.testResults | map(.endTime) | max) - (.startTime)) / 1000 | floor' "$RESULTS_FILE" 2>/dev/null || echo 0)
+            TOTAL=$(jq -r '.numTotalTests' "$RESULTS_FILE" 2>/dev/null || echo 0)
+            PASSED=$(jq -r '.numPassedTests' "$RESULTS_FILE" 2>/dev/null || echo 0)
+            FAILED=$(jq -r '.numFailedTests' "$RESULTS_FILE" 2>/dev/null || echo 0)
+            SKIPPED=$(jq -r '.numPendingTests' "$RESULTS_FILE" 2>/dev/null || echo 0)
+            SUITES=$(jq -r '.numTotalTestSuites' "$RESULTS_FILE" 2>/dev/null || echo 0)
+            DURATION=$(jq -r '((.testResults | map(.endTime) | max) - (.startTime)) / 1000 | floor' "$RESULTS_FILE" 2>/dev/null || echo 0)
           else
-            U_TOTAL=0; U_PASSED=0; U_FAILED=0; U_SKIPPED=0; U_SUITES=0; U_DURATION=0
+            TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0; SUITES=0; DURATION=0
           fi
-
-          if [ -n "$INTEG_RESULTS" ]; then
-            I_TOTAL=$(jq -r '.numTotalTests' "$INTEG_RESULTS" 2>/dev/null || echo 0)
-            I_PASSED=$(jq -r '.numPassedTests' "$INTEG_RESULTS" 2>/dev/null || echo 0)
-            I_FAILED=$(jq -r '.numFailedTests' "$INTEG_RESULTS" 2>/dev/null || echo 0)
-            I_SKIPPED=$(jq -r '.numPendingTests' "$INTEG_RESULTS" 2>/dev/null || echo 0)
-            I_SUITES=$(jq -r '.numTotalTestSuites' "$INTEG_RESULTS" 2>/dev/null || echo 0)
-            I_DURATION=$(jq -r '((.testResults | map(.endTime) | max) - (.startTime)) / 1000 | floor' "$INTEG_RESULTS" 2>/dev/null || echo 0)
-          else
-            I_TOTAL=0; I_PASSED=0; I_FAILED=0; I_SKIPPED=0; I_SUITES=0; I_DURATION=0
-          fi
-
-          # ── Sum test results ──
-          TOTAL=$((U_TOTAL + I_TOTAL))
-          PASSED=$((U_PASSED + I_PASSED))
-          FAILED=$((U_FAILED + I_FAILED))
-          SKIPPED=$((U_SKIPPED + I_SKIPPED))
-          SUITES=$((U_SUITES + I_SUITES))
 
           # ── Status helpers ──
           status_icon() {
@@ -382,7 +297,7 @@ jobs:
           }
 
           # ── Overall status ──
-          if [[ "$QUALITY" == "success" && "$UNIT" == "success" && "$INTEG" == "success" && "$E2E" == "success" ]]; then
+          if [[ "$QUALITY" == "success" && "$TESTS" == "success" && ("$E2E" == "success" || "$E2E" == "skipped") ]]; then
             OVERALL="✅ **All checks passed**"
           else
             OVERALL="❌ **Some checks failed**"
@@ -400,23 +315,16 @@ jobs:
             echo "| Stage | Status | Details |"
             echo "|-------|--------|---------|"
             echo "| $(status_icon "$QUALITY") Typecheck | \`${QUALITY}\` | tsc --noEmit |"
-            echo "| $(status_icon "$UNIT") Unit Tests | \`${UNIT}\` | 3 platforms |"
-            echo "| $(status_icon "$INTEG") Integration | \`${INTEG}\` | 3 OS x 4 groups = 12 jobs |"
+            echo "| $(status_icon "$TESTS") Tests | \`${TESTS}\` | unit tests, 3 platforms |"
             echo "| $(status_icon "$E2E") E2E | \`${E2E}\` | gitnexus-web changes only |"
             echo ""
 
             if [ "$TOTAL" -gt 0 ] 2>/dev/null; then
               echo "### Test Results"
               echo ""
-              echo "| Suite | Tests | Passed | Failed | Skipped | Duration |"
-              echo "|-------|-------|--------|--------|---------|----------|"
-              if [ "$U_TOTAL" -gt 0 ] 2>/dev/null; then
-                echo "| Unit | ${U_TOTAL} | ${U_PASSED} | ${U_FAILED} | ${U_SKIPPED} | ${U_DURATION}s |"
-              fi
-              if [ "$I_TOTAL" -gt 0 ] 2>/dev/null; then
-                echo "| Integration | ${I_TOTAL} | ${I_PASSED} | ${I_FAILED} | ${I_SKIPPED} | ${I_DURATION}s |"
-              fi
-              echo "| **Total** | **${TOTAL}** | **${PASSED}** | **${FAILED}** | **${SKIPPED}** | **$((U_DURATION + I_DURATION))s** |"
+              echo "| Tests | Passed | Failed | Skipped | Duration |"
+              echo "|-------|--------|--------|---------|----------|"
+              echo "| ${TOTAL} | ${PASSED} | ${FAILED} | ${SKIPPED} | ${DURATION}s |"
               echo ""
 
               if [ "$FAILED" = "0" ]; then
@@ -429,20 +337,7 @@ jobs:
                 echo "<details>"
                 echo "<summary>${SKIPPED} test(s) skipped — expand for details</summary>"
                 echo ""
-                # Extract skipped test names from integration results
-                if [ -n "$INTEG_RESULTS" ] && [ "$I_SKIPPED" -gt 0 ] 2>/dev/null; then
-                  echo "**Integration:**"
-                  jq -r '
-                    .testResults[]
-                    | .assertionResults[]?
-                    | select(.status == "pending" or .status == "skipped")
-                    | "- \(.ancestorTitles | join(" > ")) > \(.title)"
-                  ' "$INTEG_RESULTS" 2>/dev/null || echo "- _(unable to parse skipped test details)_"
-                fi
-                # Extract skipped test names from unit results
-                if [ -n "$RESULTS_FILE" ] && [ "$U_SKIPPED" -gt 0 ] 2>/dev/null; then
-                  echo ""
-                  echo "**Unit:**"
+                if [ -n "$RESULTS_FILE" ]; then
                   jq -r '
                     .testResults[]
                     | .assertionResults[]?
@@ -472,35 +367,10 @@ jobs:
               echo ""
             }
 
-            if [ "$M_STMTS" != "N/A" ]; then
+            if [ "$U_STMTS" != "N/A" ]; then
               echo "### Code Coverage"
               echo ""
-              cov_table "Combined (Unit + Integration)" \
-                "$M_STMTS" "$M_BRANCH" "$M_FUNCS" "$M_LINES" \
-                "$M_STMTS_COV" "$M_BRANCH_COV" "$M_FUNCS_COV" "$M_LINES_COV" \
-                "$B_STMTS" "$B_BRANCH" "$B_FUNCS" "$B_LINES"
-
-              echo "<details>"
-              echo "<summary>Coverage breakdown by test suite</summary>"
-              echo ""
-              if [ "$U_STMTS" != "N/A" ]; then
-                cov_table "Unit Tests" \
-                  "$U_STMTS" "$U_BRANCH" "$U_FUNCS" "$U_LINES" \
-                  "$U_STMTS_COV" "$U_BRANCH_COV" "$U_FUNCS_COV" "$U_LINES_COV" \
-                  "$B_STMTS" "$B_BRANCH" "$B_FUNCS" "$B_LINES"
-              fi
-              if [ "$I_STMTS" != "N/A" ]; then
-                cov_table "Integration Tests" \
-                  "$I_STMTS" "$I_BRANCH" "$I_FUNCS" "$I_LINES" \
-                  "$I_STMTS_COV" "$I_BRANCH_COV" "$I_FUNCS_COV" "$I_LINES_COV" \
-                  "$B_STMTS" "$B_BRANCH" "$B_FUNCS" "$B_LINES"
-              fi
-              echo "</details>"
-              echo ""
-            elif [ "$U_STMTS" != "N/A" ]; then
-              echo "### Code Coverage (Unit only)"
-              echo ""
-              cov_table "Unit Tests" \
+              cov_table "Tests" \
                 "$U_STMTS" "$U_BRANCH" "$U_FUNCS" "$U_LINES" \
                 "$U_STMTS_COV" "$U_BRANCH_COV" "$U_FUNCS_COV" "$U_LINES_COV" \
                 "$B_STMTS" "$B_BRANCH" "$B_FUNCS" "$B_LINES"

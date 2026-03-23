@@ -87,7 +87,10 @@ export function useBackend(): UseBackendResult {
           // Re-check: still the latest probe?
           if (id !== probeIdRef.current) return false;
           setRepos(repoList);
-        } catch {
+        } catch (err) {
+          if (import.meta.env.DEV) {
+            console.warn('Failed to fetch repos:', err);
+          }
           if (id === probeIdRef.current) {
             setRepos([]);
           }

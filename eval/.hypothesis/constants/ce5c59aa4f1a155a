@@ -1,4 +1,0 @@
-# file: /Users/johneakin/PyCharmProjects/GitNexus/eval/tool_registry.py
-# hypothesis_version: 6.151.9
-
-['/tool/context', '/tool/cypher', '/tool/impact', '/tool/list_repos', '/tool/query', 'augment', 'context', 'cypher', 'gitnexus-augment', 'gitnexus-context', 'gitnexus-cypher', 'gitnexus-impact', 'gitnexus-overview', 'gitnexus-query', 'impact', 'overview', 'payload="{}"', 'query']

@@ -41,6 +41,61 @@ const getLbugAdapter = async () => {
 let embeddingProgress: EmbeddingProgress | null = null;
 let isEmbeddingComplete = false;
 
+/**
+ * Shared post-pipeline logic: store results, build BM25 index, load LadybugDB,
+ * and queue enrichment config. Used by both runPipeline and runPipelineFromFiles.
+ */
+const finalizePipeline = async (
+  result: PipelineResult,
+  onProgress: (progress: PipelineProgress) => void,
+  clusteringConfig?: ProviderConfig
+): Promise<SerializablePipelineResult> => {
+  currentGraphResult = result;
+
+  // Store file contents for grep/read tools (full content, not truncated)
+  storedFileContents = result.fileContents;
+
+  // Build BM25 index for keyword search (instant, ~100ms)
+  const bm25DocCount = buildBM25Index(storedFileContents);
+  if (import.meta.env.DEV) {
+    console.log(`🔍 BM25 index built: ${bm25DocCount} documents`);
+  }
+
+  // Load graph into LadybugDB for querying (optional - gracefully degrades)
+  try {
+    onProgress({
+      phase: 'complete',
+      percent: 98,
+      message: 'Loading into LadybugDB...',
+      stats: {
+        filesProcessed: result.graph.nodeCount,
+        totalFiles: result.graph.nodeCount,
+        nodesCreated: result.graph.nodeCount,
+      },
+    });
+
+    const lbug = await getLbugAdapter();
+    await lbug.loadGraphToLbug(result.graph, result.fileContents);
+
+    if (import.meta.env.DEV) {
+      const stats = await lbug.getLbugStats();
+      console.log('LadybugDB loaded:', stats);
+      console.log('📁 Stored', storedFileContents.size, 'files for grep/read tools');
+    }
+  } catch {
+    // LadybugDB is optional - silently continue without it
+  }
+
+  // Store clustering config for background enrichment (runs after graph loads)
+  if (clusteringConfig) {
+    pendingEnrichmentConfig = clusteringConfig;
+    console.log('📋 Clustering config saved for background enrichment');
+  }
+
+  // Convert to serializable format for transfer back to main thread
+  return serializePipelineResult(result);
+};
+
 // File contents state - stores full file contents for grep/read tools
 let storedFileContents: Map<string, string> = new Map();
 
@@ -121,7 +176,7 @@ const createHttpHybridSearch = (backendUrl: string, repo: string) => {
         endLine: s.endLine,
         content: s.content ?? '',
         sources: ['bm25', 'semantic'],
-        score: 1 - (i * 0.02),
+        score: Math.max(0, 1 - (i * 0.02)),
       }));
 
       const defs: any[] = (data.definitions ?? []).map((d: any, i: number) => ({
@@ -131,7 +186,7 @@ const createHttpHybridSearch = (backendUrl: string, repo: string) => {
         filePath: d.filePath,
         content: '',
         sources: ['bm25'],
-        score: 0.5 - (i * 0.02),
+        score: Math.max(0, 0.5 - (i * 0.02)),
       }));
 
       return [...symbols, ...defs].slice(0, k);
@@ -159,54 +214,9 @@ const workerApi = {
     onProgress: (progress: PipelineProgress) => void,
     clusteringConfig?: ProviderConfig
   ): Promise<SerializablePipelineResult> {
-    // Debug logging
     console.log('🔧 runPipeline called with clusteringConfig:', !!clusteringConfig);
-    // Run the actual pipeline
     const result = await runIngestionPipeline(file, onProgress);
-    currentGraphResult = result;
-    
-    // Store file contents for grep/read tools (full content, not truncated)
-    storedFileContents = result.fileContents;
-    
-    // Build BM25 index for keyword search (instant, ~100ms)
-    const bm25DocCount = buildBM25Index(storedFileContents);
-    if (import.meta.env.DEV) {
-      console.log(`🔍 BM25 index built: ${bm25DocCount} documents`);
-    }
-    
-    // Load graph into LadybugDB for querying (optional - gracefully degrades)
-    try {
-      onProgress({
-        phase: 'complete',
-        percent: 98,
-        message: 'Loading into LadybugDB...',
-        stats: {
-          filesProcessed: result.graph.nodeCount,
-          totalFiles: result.graph.nodeCount,
-          nodesCreated: result.graph.nodeCount,
-        },
-      });
-
-      const lbug = await getLbugAdapter();
-      await lbug.loadGraphToLbug(result.graph, result.fileContents);
-
-      if (import.meta.env.DEV) {
-        const stats = await lbug.getLbugStats();
-        console.log('LadybugDB loaded:', stats);
-        console.log('📁 Stored', storedFileContents.size, 'files for grep/read tools');
-      }
-    } catch {
-      // LadybugDB is optional - silently continue without it
-    }
-
-    // Store clustering config for background enrichment (runs after graph loads)
-    if (clusteringConfig) {
-      pendingEnrichmentConfig = clusteringConfig;
-      console.log('📋 Clustering config saved for background enrichment');
-    }
-
-    // Convert to serializable format for transfer back to main thread
-    return serializePipelineResult(result);
+    return finalizePipeline(result, onProgress, clusteringConfig);
   },
 
   /**
@@ -235,16 +245,23 @@ const workerApi = {
     isEmbeddingComplete = false;
     embeddingProgress = null;
 
-    const lbug = await getLbugAdapter();
-    await lbug.loadGraphToLbug(graph, fileMap);
+    // Load graph into LadybugDB and build BM25 index (optional - gracefully degrades)
+    try {
+      const lbug = await getLbugAdapter();
+      await lbug.loadGraphToLbug(graph, fileMap);
 
-    // Build BM25 index for text search
-    buildBM25Index(fileMap);
+      // Build BM25 index for text search
+      buildBM25Index(fileMap);
 
-    if (import.meta.env.DEV) {
-      const stats = await lbug.getLbugStats();
-      console.log('LadybugDB loaded from server:', stats);
-      console.log('📁 Stored', storedFileContents.size, 'files for grep/read tools');
+      if (import.meta.env.DEV) {
+        const stats = await lbug.getLbugStats();
+        console.log('LadybugDB loaded from server:', stats);
+        console.log('📁 Stored', storedFileContents.size, 'files for grep/read tools');
+      }
+    } catch (err) {
+      console.warn('LadybugDB load failed (non-fatal, continuing without it):', err);
+      // Still build BM25 index even if LadybugDB fails
+      buildBM25Index(fileMap);
     }
   },
 
@@ -304,52 +321,8 @@ const workerApi = {
       stats: { filesProcessed: 0, totalFiles: files.length, nodesCreated: 0 },
     });
 
-    // Run the pipeline
     const result = await runPipelineFromFiles(files, onProgress);
-    currentGraphResult = result;
-    
-    // Store file contents for grep/read tools (full content, not truncated)
-    storedFileContents = result.fileContents;
-    
-    // Build BM25 index for keyword search (instant, ~100ms)
-    const bm25DocCount = buildBM25Index(storedFileContents);
-    if (import.meta.env.DEV) {
-      console.log(`🔍 BM25 index built: ${bm25DocCount} documents`);
-    }
-    
-    // Load graph into LadybugDB for querying (optional - gracefully degrades)
-    try {
-      onProgress({
-        phase: 'complete',
-        percent: 98,
-        message: 'Loading into LadybugDB...',
-        stats: {
-          filesProcessed: result.graph.nodeCount,
-          totalFiles: result.graph.nodeCount,
-          nodesCreated: result.graph.nodeCount,
-        },
-      });
-
-      const lbug = await getLbugAdapter();
-      await lbug.loadGraphToLbug(result.graph, result.fileContents);
-
-      if (import.meta.env.DEV) {
-        const stats = await lbug.getLbugStats();
-        console.log('LadybugDB loaded:', stats);
-        console.log('📁 Stored', storedFileContents.size, 'files for grep/read tools');
-      }
-    } catch {
-      // LadybugDB is optional - silently continue without it
-    }
-    
-    // Store clustering config for background enrichment (runs after graph loads)
-    if (clusteringConfig) {
-      pendingEnrichmentConfig = clusteringConfig;
-      console.log('📋 Clustering config saved for background enrichment');
-    }
-    
-    // Convert to serializable format for transfer back to main thread
-    return serializePipelineResult(result);
+    return finalizePipeline(result, onProgress, clusteringConfig);
   },
 
   // ============================================================
@@ -810,8 +783,10 @@ const workerApi = {
       throw new Error('No graph loaded. Please ingest a repository first.');
     }
 
+    enrichmentCancelled = false;
+
     const { graph } = currentGraphResult;
-    
+
     // Filter for community nodes
     const communityNodes = graph.nodes
       .filter(n => n.label === 'Community')
@@ -833,15 +808,22 @@ const workerApi = {
     // Initialize map
     communityNodes.forEach(c => memberMap.set(c.id, []));
     
+    // Build a Map for O(1) node lookups instead of O(N) find per relationship
+    const nodeById = new Map(graph.nodes.map(n => [n.id, n]));
+
     // Find all MEMBER_OF edges
-    graph.relationships.forEach(rel => {
+    for (const rel of graph.relationships) {
+      if (enrichmentCancelled) {
+        console.log('Enrichment cancelled, stopping');
+        break;
+      }
       if (rel.type === 'MEMBER_OF') {
         const communityId = rel.targetId;
         const memberId = rel.sourceId; // MEMBER_OF goes Member -> Community
-        
+
         if (memberMap.has(communityId)) {
           // Find member node details
-          const memberNode = graph.nodes.find(n => n.id === memberId);
+          const memberNode = nodeById.get(memberId);
           if (memberNode) {
             memberMap.get(communityId)?.push({
               name: memberNode.properties.name,
@@ -851,7 +833,7 @@ const workerApi = {
           }
         }
       }
-    });
+    }
 
     // Create LLM client adapter for LangChain model
     const chatModel = createChatModel(providerConfig);
@@ -889,32 +871,28 @@ const workerApi = {
       }
     });
 
-    // Update LadybugDB with new data
+    // Update LadybugDB with new data using prepared statements
     try {
       const lbug = await getLbugAdapter();
-        
+
       onProgress(enrichments.size, enrichments.size); // Done
-      
-      // Update one by one via Cypher (simplest for now)
-      for (const [id, enrichment] of enrichments.entries()) {
-         // Escape strings for Cypher - replace backslash first, then quotes
-         const escapeCypher = (str: string) => str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-         
-         const keywordsStr = JSON.stringify(enrichment.keywords);
-         const descStr = escapeCypher(enrichment.description);
-         const nameStr = escapeCypher(enrichment.name);
-         const escapedId = escapeCypher(id);
-         
-         const query = `
-           MATCH (c:Community {id: "${escapedId}"})
-           SET c.label = "${nameStr}", 
-               c.keywords = ${keywordsStr}, 
-               c.description = "${descStr}",
-               c.enrichedBy = "llm"
-         `;
-         
-         await lbug.executeQuery(query);
-      }
+
+      const paramsList = Array.from(enrichments.entries()).map(([id, enrichment]) => ({
+        id,
+        label: enrichment.name,
+        keywords: enrichment.keywords,
+        description: enrichment.description,
+      }));
+
+      const updateQuery = `
+        MATCH (c:Community {id: $id})
+        SET c.label = $label,
+            c.keywords = $keywords,
+            c.description = $description,
+            c.enrichedBy = "llm"
+      `;
+
+      await lbug.executeWithReusedStatement(updateQuery, paramsList);
 
     } catch (err) {
       console.error('Failed to update LadybugDB with enrichment:', err);

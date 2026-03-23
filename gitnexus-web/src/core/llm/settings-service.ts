@@ -104,7 +104,7 @@ export const loadSettings = (): LLMSettings => {
 };
 
 /**
- * Save settings to localStorage
+ * Save settings to sessionStorage
  */
 export const saveSettings = (settings: LLMSettings): void => {
   try {

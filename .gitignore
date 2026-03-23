@@ -63,6 +63,10 @@ repomix-output*
 gitnexus-web/playwright-report/
 gitnexus-web/test-results/
 
+# Python test artifacts
+eval/.coverage
+eval/.hypothesis/
+
 # Design docs (local only)
 docs/plans/
 

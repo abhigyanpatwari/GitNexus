@@ -27,9 +27,13 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
   const [error, setError] = useState<string | null>(null);
 
   // Server tab state
-  const [serverUrl, setServerUrl] = useState(() =>
-    localStorage.getItem('gitnexus-server-url') || ''
-  );
+  const [serverUrl, setServerUrl] = useState(() => {
+    try {
+      return localStorage.getItem('gitnexus-server-url') || '';
+    } catch {
+      return '';
+    }
+  });
   const [isConnecting, setIsConnecting] = useState(false);
   const [serverProgress, setServerProgress] = useState<{
     phase: string;
@@ -133,7 +137,11 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
     }
 
     // Persist URL to localStorage
-    localStorage.setItem('gitnexus-server-url', serverUrl);
+    try {
+      localStorage.setItem('gitnexus-server-url', serverUrl);
+    } catch {
+      // localStorage may be unavailable (e.g. private browsing, quota exceeded)
+    }
 
     setError(null);
     setIsConnecting(true);

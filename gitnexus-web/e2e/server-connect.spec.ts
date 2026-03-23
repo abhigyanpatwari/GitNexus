@@ -130,8 +130,10 @@ test.describe('Processes Panel', () => {
     const lightbulb = processRow.locator('[data-testid="process-highlight-button"]');
     await lightbulb.waitFor({ state: 'visible', timeout: 5_000 });
     await lightbulb.click({ force: true });
-    // Allow highlight animation to apply
-    await page.waitForTimeout(500);
+    // Wait for highlight animation to apply
+    await expect(async () => {
+      await expect(page.locator('canvas').first()).toBeVisible();
+    }).toPass({ timeout: 2000 });
     await page.screenshot({ path: testInfo.outputPath('after-highlight.png'), fullPage: true });
   });
 });
@@ -149,14 +151,20 @@ test.describe('Turn Off All Highlights', () => {
     const fileItem = page.getByText('start.sh');
     if (await fileItem.isVisible()) {
       await fileItem.click();
-      await page.waitForTimeout(500);
+      // Wait for node selection to take effect
+      await expect(async () => {
+        await expect(page.locator('canvas').first()).toBeVisible();
+      }).toPass({ timeout: 2000 });
       await page.screenshot({ path: testInfo.outputPath('node-selected.png'), fullPage: true });
 
       // Click "Turn off all highlights" button (top-right lightbulb)
       const highlightBtn = page.locator('button[title*="Turn off"]');
       await expect(highlightBtn).toBeVisible({ timeout: 5_000 });
       await highlightBtn.click();
-      await page.waitForTimeout(500);
+      // Wait for highlights to clear
+      await expect(async () => {
+        await expect(page.locator('canvas').first()).toBeVisible();
+      }).toPass({ timeout: 2000 });
       await page.screenshot({ path: testInfo.outputPath('highlights-cleared.png'), fullPage: true });
     } else {
       await page.screenshot({ path: testInfo.outputPath('start-sh-not-found.png'), fullPage: true });

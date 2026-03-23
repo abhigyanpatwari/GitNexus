@@ -218,12 +218,22 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
   const [settings, setSettings] = useState<LLMSettings>(loadSettings);
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle');
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // Ollama connection state
   const [ollamaError, setOllamaError] = useState<string | null>(null);
   const [isCheckingOllama, setIsCheckingOllama] = useState(false);
   // OpenRouter models state
   const [openRouterModels, setOpenRouterModels] = useState<Array<{ id: string; name: string }>>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
+
+  // Clean up save timer on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+      }
+    };
+  }, []);
 
   // Load settings when panel opens
   useEffect(() => {
@@ -271,7 +281,10 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
       saveSettings(settings);
       setSaveStatus('saved');
       onSettingsSaved?.();
-      setTimeout(() => setSaveStatus('idle'), 2000);
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+      }
+      saveTimerRef.current = setTimeout(() => setSaveStatus('idle'), 2000);
     } catch {
       setSaveStatus('error');
     }
