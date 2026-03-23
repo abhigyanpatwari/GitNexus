@@ -58,9 +58,9 @@ export function routeMatches(fetchURL: string, routeURL: string): boolean {
   const fetchParts = fetchURL.split('/').filter(Boolean);
   const routeParts = routeURL.split('/').filter(Boolean);
 
-  // Check for catch-all route: [...param] matches any remaining segments
+  // Check for catch-all route: [...param] or optional catch-all [[...param]]
   const lastRoutePart = routeParts[routeParts.length - 1];
-  if (lastRoutePart?.startsWith('[...')) {
+  if (lastRoutePart?.startsWith('[...') || lastRoutePart?.startsWith('[[...')) {
     // Catch-all: match if fetch has at least as many segments as route (minus catch-all)
     if (fetchParts.length < routeParts.length - 1) return false;
     return routeParts.slice(0, -1).every((part, i) => {

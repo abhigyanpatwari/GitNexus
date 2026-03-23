@@ -11,8 +11,8 @@ import { describe, it, expect } from 'vitest';
 import { GITNEXUS_TOOLS, type ToolDefinition } from '../../src/mcp/tools.js';
 
 describe('GITNEXUS_TOOLS', () => {
-  it('exports exactly 7 tools', () => {
-    expect(GITNEXUS_TOOLS).toHaveLength(7);
+  it('exports all tools (7 base + 3 route/tool/shape)', () => {
+    expect(GITNEXUS_TOOLS).toHaveLength(10);
   });
 
   it('contains all expected tool names', () => {

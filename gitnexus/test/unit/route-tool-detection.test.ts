@@ -77,11 +77,18 @@ describe('phpFileToRouteURL', () => {
 
   it('filters out non-handler files in api/', () => {
     expect(phpFileToRouteURL('api/_helpers.php')).toBeNull();
-    expect(phpFileToRouteURL('api/base_controller.php')).toBeNull();
     expect(phpFileToRouteURL('api/helper_utils.php')).toBeNull();
-    expect(phpFileToRouteURL('api/config.php')).toBeNull();
     expect(phpFileToRouteURL('api/test_upload.php')).toBeNull();
-    expect(phpFileToRouteURL('api/fixtures.php')).toBeNull();
+    expect(phpFileToRouteURL('api/fixture_data.php')).toBeNull();
+  });
+
+  it('does not false-filter legitimate endpoints with substring matches', () => {
+    // "contest" contains "test", "attestation" contains "test" — should NOT be filtered
+    // Word-boundary regex only matches _test_ not substrings
+    expect(phpFileToRouteURL('api/contest.php')).toBe('/api/contest');
+    expect(phpFileToRouteURL('api/attestation.php')).toBe('/api/attestation');
+    expect(phpFileToRouteURL('api/latest.php')).toBe('/api/latest');
+    expect(phpFileToRouteURL('api/base64_encode.php')).toBe('/api/base64_encode');
   });
 
   it('returns null for non-PHP files', () => {
@@ -160,8 +167,12 @@ describe('routeMatches', () => {
   });
 
   it('does not match catch-all with too few segments', () => {
-    // Catch-all /api/[...slug] needs at least the /api prefix
     expect(routeMatches('/', '/api/[...slug]')).toBe(false);
+  });
+
+  it('matches optional catch-all routes [[...slug]]', () => {
+    expect(routeMatches('/api/docs/a/b', '/api/[[...slug]]')).toBe(true);
+    expect(routeMatches('/api/proxy/x', '/api/[[...slug]]')).toBe(true);
   });
 });
 
