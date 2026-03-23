@@ -1,0 +1,74 @@
+name: Feature request
+description: Propose a new capability or improvement
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Goal:** describe the problem and desired outcome so maintainers can size and prioritize.
+        Prefer **small, shippable** requests; split large ideas into phases.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Primary part of the monorepo this relates to.
+      options:
+        - gitnexus (CLI / core / indexing / MCP server)
+        - gitnexus-web (browser UI / WASM / workers)
+        - CI / release / packaging
+        - Documentation / developer experience
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity
+      description: What pain point or gap exists today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should happen instead? User-visible behavior, APIs, or UX.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you considered and why this one is preferred.
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Testable conditions for “done” (bullets or checkboxes in prose).
+      placeholder: |
+        - When … then …
+        - Documentation / tests updated where appropriate
+    validations:
+      required: false
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+      description: Compatibility, performance, security, or “must not change” boundaries.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to open a PR for this (may need design discussion first).
+          required: false

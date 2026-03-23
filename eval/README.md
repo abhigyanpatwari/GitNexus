@@ -50,6 +50,10 @@ All models are routed through **OpenRouter** by default, so a single `OPENROUTER
 docker pull swebench/sweb.eval.x86_64.django_1776_django-16527:latest
 ```
 
+### Debug logging
+
+Set `GITNEXUS_EVAL_DEBUG=1` to include full Python tracebacks in run summaries and logs. By default, errors are sanitized to avoid leaking host paths or stack traces.
+
 ## Quick Start
 
 ### Debug a single instance

@@ -59,6 +59,14 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 
 ---
 
+## Development
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — packages, index → graph → MCP flow, where to change code
+- [RUNBOOK.md](RUNBOOK.md) — analyze, embeddings, stale index, MCP recovery, CI snippets
+- [GUARDRAILS.md](GUARDRAILS.md) — safety rules and operational “Signs” for contributors and agents
+- [CONTRIBUTING.md](CONTRIBUTING.md) — license, setup, commits, and pull requests
+- [TESTING.md](TESTING.md) — test commands for `gitnexus` and `gitnexus-web`
+
 ## CLI + MCP (recommended)
 
 The CLI indexes your repository and runs an MCP server that gives AI agents deep codebase awareness.

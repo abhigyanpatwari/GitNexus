@@ -22,8 +22,10 @@ import time
 from enum import Enum
 from pathlib import Path
 
+from constants import AUGMENT_TIMEOUT_SECONDS
 from minisweagent import Environment, Model
 from minisweagent.agents.default import AgentConfig, DefaultAgent
+from tool_registry import BINARIES_BY_KEY, TOOL_METRIC_KEYS
 
 logger = logging.getLogger("gitnexus_agent")
 
@@ -40,7 +42,7 @@ class GitNexusMode(str, Enum):
 class GitNexusAgentConfig(AgentConfig):
     """Extended config for GitNexus evaluation agent."""
     gitnexus_mode: GitNexusMode = GitNexusMode.BASELINE
-    augment_timeout: float = 5.0
+    augment_timeout: float = AUGMENT_TIMEOUT_SECONDS
     augment_min_pattern_length: int = 3
     track_gitnexus_usage: bool = True
 
@@ -152,16 +154,10 @@ class GitNexusAgent(DefaultAgent):
         """Track which GitNexus tools the agent uses."""
         for action in message.get("extra", {}).get("actions", []):
             command = action.get("command", "")
-            if "gitnexus-query" in command:
-                self.gitnexus_metrics.tool_calls["query"] += 1
-            elif "gitnexus-context" in command:
-                self.gitnexus_metrics.tool_calls["context"] += 1
-            elif "gitnexus-impact" in command:
-                self.gitnexus_metrics.tool_calls["impact"] += 1
-            elif "gitnexus-cypher" in command:
-                self.gitnexus_metrics.tool_calls["cypher"] += 1
-            elif "gitnexus-overview" in command:
-                self.gitnexus_metrics.tool_calls["overview"] += 1
+            for key, binary in BINARIES_BY_KEY.items():
+                if binary in command and key in self.gitnexus_metrics.tool_calls:
+                    self.gitnexus_metrics.tool_calls[key] += 1
+                    break
 
     def serialize(self, *extra_dicts) -> dict:
         """Serialize with GitNexus-specific metrics."""
@@ -180,13 +176,7 @@ class GitNexusMetrics:
     """Tracks GitNexus-specific metrics during evaluation."""
 
     def __init__(self):
-        self.tool_calls: dict[str, int] = {
-            "query": 0,
-            "context": 0,
-            "impact": 0,
-            "cypher": 0,
-            "overview": 0,
-        }
+        self.tool_calls: dict[str, int] = {key: 0 for key in TOOL_METRIC_KEYS}
         self.augmentation_calls: int = 0
         self.augmentation_hits: int = 0
         self.augmentation_errors: int = 0

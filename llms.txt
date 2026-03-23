@@ -1,0 +1,16 @@
+GitNexus monorepo (CLI + web UI)
+
+Core docs
+- README.md
+- AGENTS.md
+- ARCHITECTURE.md
+- CONTRIBUTING.md
+- GUARDRAILS.md
+- TESTING.md
+- RUNBOOK.md
+
+Key directories
+- gitnexus/ (CLI/core, MCP server)
+- gitnexus-web/ (web UI)
+- gitnexus-claude-plugin/ (Claude marketplace config)
+- gitnexus-cursor-integration/ (Cursor integration config)

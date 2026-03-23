@@ -27,6 +27,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from tool_registry import TOOL_METRIC_KEYS
+
 logger = logging.getLogger("analyze_results")
 console = Console()
 app = typer.Typer(rich_markup_mode="rich", add_completion=False)
@@ -77,13 +79,20 @@ def load_run_results(results_dir: Path) -> dict[str, dict]:
 
 
 def parse_run_id(run_id: str) -> tuple[str, str]:
-    """Parse 'model_mode' into (model, mode)."""
-    # Handle multi-word model names like 'minimax-2.5'
-    # Modes are: baseline, mcp, augment, full
-    known_modes = {"baseline", "mcp", "augment", "full"}
-    parts = run_id.rsplit("_", 1)
-    if len(parts) == 2 and parts[1] in known_modes:
-        return parts[0], parts[1]
+    """Parse 'model_mode' into (model, mode) using known suffixes."""
+    # Match the longest known suffix first to avoid hyphen collisions in model names.
+    known_modes = [
+        "native_augment",
+        "native",
+        "baseline",
+        "mcp",
+        "augment",
+        "full",
+    ]
+    for mode in known_modes:
+        suffix = f"_{mode}"
+        if run_id.endswith(suffix):
+            return run_id[: -len(suffix)], mode
     return run_id, "unknown"
 
 
@@ -266,12 +275,17 @@ def compare_modes(
         _, mode = parse_run_id(run_id)
         metrics[mode] = compute_metrics(run_data)
 
+    mode_order = [
+        mode
+        for mode in ["baseline", "native", "native_augment", "mcp", "augment", "full"]
+        if mode in metrics
+    ] or sorted(metrics.keys())
+
     # Print comparison table
     table = Table(title=f"Mode Comparison: {model}")
     table.add_column("Metric", style="bold")
-    for mode in ["baseline", "mcp", "augment", "full"]:
-        if mode in metrics:
-            table.add_column(mode, justify="right")
+    for mode in mode_order:
+        table.add_column(mode, justify="right")
 
     rows = [
         ("Instances", "n_instances", "d"),
@@ -288,7 +302,7 @@ def compare_modes(
 
     for label, key, fmt in rows:
         values = []
-        for mode in ["baseline", "mcp", "augment", "full"]:
+        for mode in mode_order:
             if mode in metrics:
                 v = metrics[mode].get(key, 0)
                 if fmt == ".1%":
@@ -307,8 +321,8 @@ def compare_modes(
         baseline_calls = metrics["baseline"]["avg_api_calls"]
 
         table.add_section()
-        for mode in ["mcp", "augment", "full"]:
-            if mode not in metrics:
+        for mode in mode_order:
+            if mode == "baseline":
                 continue
             mode_cost = metrics[mode]["avg_cost"]
             mode_calls = metrics[mode]["avg_api_calls"]
@@ -340,10 +354,8 @@ def gitnexus_usage(
 
     table = Table(title="Tool Usage by Run")
     table.add_column("Run", style="bold")
-    table.add_column("query", justify="right")
-    table.add_column("context", justify="right")
-    table.add_column("impact", justify="right")
-    table.add_column("cypher", justify="right")
+    for key in TOOL_METRIC_KEYS:
+        table.add_column(key, justify="right")
     table.add_column("Total", justify="right")
     table.add_column("Augment Hits", justify="right")
 
@@ -353,7 +365,7 @@ def gitnexus_usage(
             continue
 
         # Aggregate tool calls across trajectories
-        tool_totals: dict[str, int] = {"query": 0, "context": 0, "impact": 0, "cypher": 0, "overview": 0}
+        tool_totals: dict[str, int] = {key: 0 for key in TOOL_METRIC_KEYS}
         augment_hits = 0
 
         for traj in run_data.get("trajectories", {}).values():
@@ -373,10 +385,7 @@ def gitnexus_usage(
         if total > 0 or augment_hits > 0:
             table.add_row(
                 run_id,
-                str(tool_totals.get("query", 0)),
-                str(tool_totals.get("context", 0)),
-                str(tool_totals.get("impact", 0)),
-                str(tool_totals.get("cypher", 0)),
+                *[str(tool_totals.get(key, 0)) for key in TOOL_METRIC_KEYS],
                 str(total),
                 str(augment_hits),
             )
