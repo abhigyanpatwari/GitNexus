@@ -158,6 +158,20 @@ gitnexus wiki [path]             # Generate LLM-powered docs from knowledge grap
 gitnexus wiki --model <model>    # Wiki with custom LLM model (default: gpt-4o-mini)
 ```
 
+## Remote Embeddings
+
+Set these env vars to use a remote OpenAI-compatible `/v1/embeddings` endpoint instead of the local model:
+
+```bash
+export GITNEXUS_EMBEDDING_URL=http://your-server:8080/v1
+export GITNEXUS_EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
+export GITNEXUS_EMBEDDING_DIMS=1024          # optional, default 384
+export GITNEXUS_EMBEDDING_API_KEY=your-key   # optional, default: "unused"
+gitnexus analyze . --embeddings
+```
+
+Works with Infinity, vLLM, TEI, llama.cpp, Ollama, LM Studio, or OpenAI. When unset, local embeddings are used unchanged.
+
 ## Multi-Repo Support
 
 GitNexus supports indexing multiple repositories. Each `gitnexus analyze` registers the repo in a global registry (`~/.gitnexus/registry.json`). The MCP server serves all indexed repos automatically.

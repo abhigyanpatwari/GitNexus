@@ -20,6 +20,7 @@ import { execFileSync } from 'child_process';
 import { join, dirname } from 'path';
 import { createRequire } from 'module';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
+import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
 
 /**
  * Check whether the onnxruntime-node package that @huggingface/transformers
@@ -118,6 +119,13 @@ export const initEmbedder = async (
   config: Partial<EmbeddingConfig> = {},
   forceDevice?: 'dml' | 'cuda' | 'cpu' | 'wasm'
 ): Promise<FeatureExtractionPipeline> => {
+  if (isHttpMode()) {
+    throw new Error(
+      'initEmbedder() should not be called in HTTP mode. ' +
+      'Use embedText()/embedBatch() which handle HTTP transparently.'
+    );
+  }
+
   // Return existing instance if available
   if (embedderInstance) {
     return embedderInstance;
@@ -230,13 +238,27 @@ export const initEmbedder = async (
  * Check if the embedder is initialized and ready
  */
 export const isEmbedderReady = (): boolean => {
-  return embedderInstance !== null;
+  return isHttpMode() || embedderInstance !== null;
+};
+
+/**
+ * Get the effective embedding dimensions.
+ * In HTTP mode, uses GITNEXUS_EMBEDDING_DIMS if set, otherwise the default.
+ */
+export const getEmbeddingDimensions = (): number => {
+  if (isHttpMode()) {
+    return getHttpDimensions() ?? DEFAULT_EMBEDDING_CONFIG.dimensions;
+  }
+  return DEFAULT_EMBEDDING_CONFIG.dimensions;
 };
 
 /**
  * Get the embedder instance (throws if not initialized)
  */
 export const getEmbedder = (): FeatureExtractionPipeline => {
+  if (isHttpMode()) {
+    throw new Error('getEmbedder() is not available in HTTP embedding mode. Use embedText()/embedBatch() instead.');
+  }
   if (!embedderInstance) {
     throw new Error('Embedder not initialized. Call initEmbedder() first.');
   }
@@ -247,9 +269,14 @@ export const getEmbedder = (): FeatureExtractionPipeline => {
  * Embed a single text string
  * 
  * @param text - Text to embed
- * @returns Float32Array of embedding vector (384 dimensions)
+ * @returns Float32Array of embedding vector
  */
 export const embedText = async (text: string): Promise<Float32Array> => {
+  if (isHttpMode()) {
+    const [vec] = await httpEmbed([text]);
+    return vec;
+  }
+
   const embedder = getEmbedder();
   
   const result = await embedder(text, {
@@ -271,6 +298,10 @@ export const embedText = async (text: string): Promise<Float32Array> => {
 export const embedBatch = async (texts: string[]): Promise<Float32Array[]> => {
   if (texts.length === 0) {
     return [];
+  }
+
+  if (isHttpMode()) {
+    return httpEmbed(texts);
   }
 
   const embedder = getEmbedder();

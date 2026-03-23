@@ -260,17 +260,27 @@ export const analyzeCommand = async (
 
   // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
   if (cachedEmbeddings.length > 0) {
-    updateBar(88, `Restoring ${cachedEmbeddings.length} cached embeddings...`);
-    const EMBED_BATCH = 200;
-    for (let i = 0; i < cachedEmbeddings.length; i += EMBED_BATCH) {
-      const batch = cachedEmbeddings.slice(i, i + EMBED_BATCH);
-      const paramsList = batch.map(e => ({ nodeId: e.nodeId, embedding: e.embedding }));
-      try {
-        await executeWithReusedStatement(
-          `CREATE (e:CodeEmbedding {nodeId: $nodeId, embedding: $embedding})`,
-          paramsList,
-        );
-      } catch { /* some may fail if node was removed, that's fine */ }
+    // Check if cached embedding dimensions match current schema
+    const cachedDims = cachedEmbeddings[0].embedding.length;
+    const { EMBEDDING_DIMS } = await import('../core/lbug/schema.js');
+    if (cachedDims !== EMBEDDING_DIMS) {
+      // Dimensions changed (e.g. switched embedding model) — discard cache and re-embed all
+      console.error(`⚠️  Embedding dimensions changed (${cachedDims}d → ${EMBEDDING_DIMS}d), discarding cache`);
+      cachedEmbeddings = [];
+      cachedEmbeddingNodeIds = new Set();
+    } else {
+      updateBar(88, `Restoring ${cachedEmbeddings.length} cached embeddings...`);
+      const EMBED_BATCH = 200;
+      for (let i = 0; i < cachedEmbeddings.length; i += EMBED_BATCH) {
+        const batch = cachedEmbeddings.slice(i, i + EMBED_BATCH);
+        const paramsList = batch.map(e => ({ nodeId: e.nodeId, embedding: e.embedding }));
+        try {
+          await executeWithReusedStatement(
+            `CREATE (e:CodeEmbedding {nodeId: $nodeId, embedding: $embedding})`,
+            paramsList,
+          );
+        } catch { /* some may fail if node was removed, that's fine */ }
+      }
     }
   }
 
@@ -289,7 +299,9 @@ export const analyzeCommand = async (
   }
 
   if (!embeddingSkipped) {
-    updateBar(90, 'Loading embedding model...');
+    const { isHttpMode } = await import('../core/embeddings/http-client.js');
+    const httpMode = isHttpMode();
+    updateBar(90, httpMode ? 'Connecting to embedding endpoint...' : 'Loading embedding model...');
     const t0Emb = Date.now();
     const { runEmbeddingPipeline } = await import('../core/embeddings/embedding-pipeline.js');
     await runEmbeddingPipeline(
@@ -297,7 +309,9 @@ export const analyzeCommand = async (
       executeWithReusedStatement,
       (progress) => {
         const scaled = 90 + Math.round((progress.percent / 100) * 8);
-        const label = progress.phase === 'loading-model' ? 'Loading embedding model...' : `Embedding ${progress.nodesProcessed || 0}/${progress.totalNodes || '?'}`;
+        const label = progress.phase === 'loading-model'
+          ? (httpMode ? 'Connecting to embedding endpoint...' : 'Loading embedding model...')
+          : `Embedding ${progress.nodesProcessed || 0}/${progress.totalNodes || '?'}`;
         updateBar(scaled, label);
       },
       {},

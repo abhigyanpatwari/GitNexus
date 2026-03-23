@@ -161,14 +161,16 @@ export const runEmbeddingPipeline = async (
       modelDownloadPercent: 0,
     });
 
-    await initEmbedder((modelProgress: ModelProgress) => {
-      const downloadPercent = modelProgress.progress ?? 0;
-      onProgress({
-        phase: 'loading-model',
-        percent: Math.round(downloadPercent * 0.2),
-        modelDownloadPercent: downloadPercent,
-      });
-    }, finalConfig);
+    if (!isEmbedderReady()) {
+      await initEmbedder((modelProgress: ModelProgress) => {
+        const downloadPercent = modelProgress.progress ?? 0;
+        onProgress({
+          phase: 'loading-model',
+          percent: Math.round(downloadPercent * 0.2),
+          modelDownloadPercent: downloadPercent,
+        });
+      }, finalConfig);
+    }
 
     onProgress({
       phase: 'loading-model',
@@ -326,7 +328,7 @@ export const semanticSearch = async (
   // Query the vector index on CodeEmbedding to get nodeIds and distances
   const vectorQuery = `
     CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', 
-      CAST(${queryVecStr} AS FLOAT[384]), ${k})
+      CAST(${queryVecStr} AS FLOAT[${queryVec.length}]), ${k})
     YIELD node AS emb, distance
     WITH emb, distance
     WHERE distance < ${maxDistance}

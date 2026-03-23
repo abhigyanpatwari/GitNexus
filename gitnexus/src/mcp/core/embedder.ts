@@ -6,10 +6,10 @@
  */
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import { isHttpMode, getHttpDimensions, httpEmbedQuery } from '../../core/embeddings/http-client.js';
 
 // Model config
 const MODEL_ID = 'Snowflake/snowflake-arctic-embed-xs';
-const EMBEDDING_DIMS = 384;
 
 // Module-level state for singleton pattern
 let embedderInstance: FeatureExtractionPipeline | null = null;
@@ -20,6 +20,10 @@ let initPromise: Promise<FeatureExtractionPipeline> | null = null;
  * Initialize the embedding model (lazy, on first search)
  */
 export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
+  if (isHttpMode()) {
+    throw new Error('initEmbedder() should not be called in HTTP mode.');
+  }
+
   if (embedderInstance) {
     return embedderInstance;
   }
@@ -87,12 +91,16 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
 /**
  * Check if embedder is ready
  */
-export const isEmbedderReady = (): boolean => embedderInstance !== null;
+export const isEmbedderReady = (): boolean => isHttpMode() || embedderInstance !== null;
 
 /**
  * Embed a query text for semantic search
  */
 export const embedQuery = async (query: string): Promise<number[]> => {
+  if (isHttpMode()) {
+    return httpEmbedQuery(query);
+  }
+
   const embedder = await initEmbedder();
   
   const result = await embedder(query, {
@@ -106,7 +114,9 @@ export const embedQuery = async (query: string): Promise<number[]> => {
 /**
  * Get embedding dimensions
  */
-export const getEmbeddingDims = (): number => EMBEDDING_DIMS;
+export const getEmbeddingDims = (): number => {
+  return getHttpDimensions() ?? 384;
+};
 
 /**
  * Cleanup embedder
