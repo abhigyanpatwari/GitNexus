@@ -3,6 +3,7 @@ import { ZoomIn, ZoomOut, Maximize2, Focus, RotateCcw, Play, Pause, Lightbulb, L
 import { useSigma } from '../hooks/useSigma';
 import { useAppState } from '../hooks/useAppState';
 import { knowledgeGraphToGraphology, filterGraphByDepth, SigmaNodeAttributes, SigmaEdgeAttributes } from '../lib/graph-adapter';
+import type { GraphNode } from '../core/graph/types';
 import { QueryFAB } from './QueryFAB';
 import Graph from 'graphology';
 
@@ -55,7 +56,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
   }, [animatedNodes, isAIHighlightsEnabled]);
 
   const nodeById = useMemo(() => {
-    if (!graph) return new Map<string, typeof graph.nodes[0]>();
+    if (!graph) return new Map<string, GraphNode>();
     return new Map(graph.nodes.map(n => [n.id, n]));
   }, [graph]);
 
