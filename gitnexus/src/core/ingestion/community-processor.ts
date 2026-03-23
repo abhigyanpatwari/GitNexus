@@ -367,8 +367,7 @@ const generateHeuristicLabel = (
   // Try dominant node type (e.g., "Functions" or "Classes")
   const typeCounts = new Map<string, number>();
   memberIds.forEach(nodeId => {
-    const labels = graph.getNodeAttribute(nodeId, 'labels');
-    const nodeType = Array.isArray(labels) ? labels[0] : (typeof labels === 'string' ? labels : '');
+    const nodeType = graph.getNodeAttribute(nodeId, 'type') ?? '';
     if (nodeType && nodeType !== 'Node') {
       typeCounts.set(nodeType, (typeCounts.get(nodeType) || 0) + 1);
     }
@@ -381,7 +380,7 @@ const generateHeuristicLabel = (
       dominantType = type;
     }
   });
-  // Use dominant type + most-connected symbol name
+  // Use dominant type + shortest symbol name
   if (dominantType && names.length > 0) {
     const sortedNames = [...names].sort((a, b) => a.length - b.length);
     const shortestName = sortedNames[0];
