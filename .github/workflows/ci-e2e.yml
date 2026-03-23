@@ -51,7 +51,16 @@ jobs:
         working-directory: gitnexus
 
       - name: Analyze repository (index for backend)
-        run: node dist/cli/index.js analyze
+        run: node dist/cli/index.js analyze || echo "::warning::analyze exited non-zero (known LadybugDB native crash — see issue #273). Checking if index was created..."
+        working-directory: gitnexus
+
+      - name: Verify index exists
+        run: |
+          if [ ! -d ".gitnexus" ]; then
+            echo "::error::No .gitnexus index created — analyze failed before indexing"
+            exit 1
+          fi
+          echo "Index exists — proceeding despite analyze exit code"
         working-directory: gitnexus
 
       - name: Start backend server
