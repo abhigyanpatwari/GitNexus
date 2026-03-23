@@ -211,7 +211,7 @@ class MCPBridge:
             self.process.stdin.flush()
 
             # Read response
-        response = self._read_response(timeout=MCP_READ_TIMEOUT_SECONDS)
+            response = self._read_response(timeout=MCP_READ_TIMEOUT_SECONDS)
             if response and response.get("id") == request_id:
                 if "error" in response:
                     logger.error(f"MCP error: {response['error']}")
