@@ -1,7 +1,68 @@
+<!-- version: 1.1.0 -->
+<!--
+  Metadata: version, last reviewed, scope, model policy, reference docs, changelog.
+  Last updated: 2026-03-22
+-->
+
+Last reviewed: 2026-03-22
+
+**Project:** GitNexus · **Environment:** dev · **Maintainer:** repository maintainers (see GitHub)
+
+This file uses a standard agent header (version, scope, model policy, reference docs, changelog), adapted for this **TypeScript/JavaScript monorepo**.
+
+## Scope
+
+| | |
+|--|--|
+| **Reads** | Repository tree as needed for the task: `gitnexus/`, `gitnexus-web/`, `eval/`, plugin packages, `.github/`, `.gitnexus/` when present, and docs. |
+| **Writes** | Only paths required for the requested change; keep diffs minimal. Update lockfiles when dependencies change. |
+| **Executes** | `npm`, `npx`, `node` under `gitnexus/` and `gitnexus-web/`; `uv run` for Python under `eval/` when applicable; shell utilities for documented CI/dev workflows. |
+| **Off-limits** | User secrets (e.g. real `.env`), production deployment credentials, unrelated repositories, destructive git history operations without explicit human confirmation. |
+
+## Model Configuration
+
+- **Primary:** Pin in **Cursor** (Settings → model). Use a **named** model (e.g. GPT-5.2, Claude Sonnet 4.x). Avoid relying on **Auto** when reproducibility or audit trail matters.
+- **Fallback:** As configured in Cursor or your organization (do not encode `latest` or wildcards in automation configs).
+- **Notes:** The open-source GitNexus CLI indexer does not call an LLM. Optional Nexus AI in the web UI uses end-user provider keys and models.
+
+## Execution Sequence (complex tasks)
+
+Long sessions dilute instructions. For **multi-step** work, state up front:
+
+1. Which rules in this file and **[GUARDRAILS.md](GUARDRAILS.md)** apply (and any relevant Signs).
+2. Current **Scope** boundaries (Reads / Writes / Off-limits).
+3. Which **validation commands** you will run (e.g. `cd gitnexus && npm test`, `npx tsc --noEmit`).
+
+On very long threads, the human may add *“Remember: apply all AGENTS.md rules”* to re-weight rule tokens against context dilution.
+
+## Claude Code hooks
+
+Hooks enforce gates that prompts cannot. In **Claude Code**, **PreToolUse** hooks can block tools such as `git_commit` until checks pass. Adapt to this repo: e.g. `cd gitnexus && npm test` before commit.
+
+## Context budget (Cursor / standards)
+
+Generic “core standards” playbooks are often long and stack-specific. For this monorepo, commands and gotchas live under **Cursor Cloud specific instructions** below and in **[CONTRIBUTING.md](CONTRIBUTING.md)**. If always-on rules grow, split domain rules into **`.cursor/rules/*.mdc`** (globs). **Cursor:** project-wide rules live in **`.cursor/index.mdc`** (YAML frontmatter with `alwaysApply: true`). **Claude Code:** optionally load a **`STANDARDS.md`** only when needed (e.g. *“When writing new code, read STANDARDS.md”*) to save context.
+
+## Reference Documentation
+
+- **This repository:** **[ARCHITECTURE.md](ARCHITECTURE.md)**, **[CONTRIBUTING.md](CONTRIBUTING.md)**, **[GUARDRAILS.md](GUARDRAILS.md)**.
+- **Cursor:** `.cursor/index.mdc` (always-on rules); optional `.cursor/rules/*.mdc` (glob-scoped). Legacy `.cursorrules` is deprecated — see `.cursor/index.mdc`.
+- **Optional local files:** `NOTES.md` (short vendor-neutral project snapshot). For handoffs, keep notes local (e.g., a scratch file outside the repo) rather than committing `HANDOFF.md`.
+- **GitNexus:** skills under `.claude/skills/gitnexus/`; machine-oriented rules in the `<!-- gitnexus:start -->` … `<!-- gitnexus:end -->` section below.
+
+## Changelog
+
+| Date | Version | Change |
+|------|---------|--------|
+| 2026-03-23 | 1.1.0 | Updated agent instructions (sections, references, Cursor layout). |
+| 2026-03-22 | 1.0.0 | Added structured agent header and changelog. |
+
+---
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **GitNexus** (2273 symbols, 5419 relationships, 174 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **GitNexus**. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely. For current symbol stats, run `npx gitnexus analyze` and inspect `.gitnexus/meta.json`.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

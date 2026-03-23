@@ -1,0 +1,13 @@
+---
+alwaysApply: true
+---
+
+# GitNexus — Cursor project rules
+
+Last reviewed: 2026-03-22
+
+Canonical agent instructions: **[AGENTS.md](../AGENTS.md)** (GitNexus MCP rules, monorepo commands, Cursor Cloud notes). **[CLAUDE.md](../CLAUDE.md)** adds Claude Code–specific notes and points back to AGENTS.md for GitNexus.
+
+Follow the `<!-- gitnexus:start -->` … `<!-- gitnexus:end -->` block in **AGENTS.md** for GitNexus MCP tools, impact analysis, and index hygiene.
+
+**Rule architecture:** Prefer this file plus optional `.cursor/rules/*.mdc` globs (YAML `globs` in frontmatter). Legacy `.cursorrules` is deprecated; content lives here.

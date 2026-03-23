@@ -1,0 +1,12 @@
+---
+globs:
+  - "gitnexus/**"
+  - "gitnexus-web/**"
+---
+
+# GitNexus build/test quick refs
+
+- CLI (`gitnexus/`): `npm test`; `npm run test:integration`; `npx tsc --noEmit`.
+- Web (`gitnexus-web/`): `npm run dev`; `npx tsc -b --noEmit`.
+- `npm install` in `gitnexus/` runs `prepare` (tsc build) and `postinstall` (tree-sitter patches); needs `python3`, `make`, `g++`.
+- LadybugDB locking tests may fail in containerized environments because of `/tmp` file locks (known issue, not a code bug).

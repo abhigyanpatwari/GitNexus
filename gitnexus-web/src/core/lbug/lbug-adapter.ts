@@ -176,7 +176,7 @@ export const loadGraphToLbug = async (
         const insertQuery = `
           MATCH (a:${escapeLabel(fromLabel)} {id: '${fromId.replace(/'/g, "''")}'}),
                 (b:${escapeLabel(toLabel)} {id: '${toId.replace(/'/g, "''")}'})
-          CREATE (a)-[:${REL_TABLE_NAME} {type: '${relType}', confidence: ${confidence}, reason: '${reason.replace(/'/g, "''")}', step: ${step}}]->(b)
+          CREATE (a)-[:${REL_TABLE_NAME} {type: '${relType.replace(/'/g, "''")}', confidence: ${confidence}, reason: '${reason.replace(/'/g, "''")}', step: ${step}}]->(b)
         `;
         await conn.query(insertQuery);
         insertedRels++;

@@ -33,6 +33,8 @@ coverage/
 
 # Misc
 *.local
+HANDOFF.md
+HANDOFF*.md
 
 .vercel
 
