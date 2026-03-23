@@ -22,6 +22,9 @@ fi
 if [ -n "$CLI_CHANGED" ]; then
   echo "pre-commit: typechecking gitnexus..."
   cd "$ROOT/gitnexus" && npx tsc --noEmit
+
+  echo "pre-commit: running gitnexus unit tests..."
+  npx vitest run --project default --reporter=dot
 fi
 
 echo "pre-commit: all checks passed"
