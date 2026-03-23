@@ -326,7 +326,7 @@ export const ProcessesPanel = () => {
                         />
                     </div>
                 </div>
-                <div className="flex items-center gap-2 text-xs text-text-muted">
+                <div className="flex items-center gap-2 text-xs text-text-muted" data-testid="process-list-loaded">
                     <span>{totalCount} processes detected</span>
                 </div>
             </div>
