@@ -1338,12 +1338,69 @@ export const processRoutesFromExtracted = async (
 };
 
 /**
+ * Extract property access keys from a consumer file's source code near fetch calls.
+ *
+ * Looks for three patterns after a fetch/response variable assignment:
+ * 1. Destructuring: `const { data, pagination } = await res.json()`
+ * 2. Property access: `response.data`, `result.items`
+ * 3. Optional chaining: `data?.key1?.key2`
+ *
+ * Returns deduplicated top-level property names accessed on the response.
+ */
+export const extractConsumerAccessedKeys = (content: string): string[] => {
+  const keys = new Set<string>();
+
+  // Pattern 1: Destructuring from .json() — const { key1, key2 } = await res.json()
+  // Also matches: const { key1, key2 } = await (await fetch(...)).json()
+  const destructurePattern = /(?:const|let|var)\s+\{([^}]+)\}\s*=\s*(?:await\s+)?(?:\w+\.json\s*\(\)|(?:await\s+)?(?:fetch|axios|got)\s*\([^)]*\)(?:\.then\s*\([^)]*\))?(?:\.json\s*\(\))?)/g;
+  let match;
+  while ((match = destructurePattern.exec(content)) !== null) {
+    const destructuredBody = match[1];
+    // Extract identifiers from destructuring, handling renamed bindings (key: alias)
+    const keyPattern = /(\w+)\s*(?::\s*\w+)?/g;
+    let keyMatch;
+    while ((keyMatch = keyPattern.exec(destructuredBody)) !== null) {
+      keys.add(keyMatch[1]);
+    }
+  }
+
+  // Pattern 2: Destructuring from a data/result/response/json variable
+  // e.g., const { items, total } = data; or const { error } = result;
+  const dataVarDestructure = /(?:const|let|var)\s+\{([^}]+)\}\s*=\s*(?:data|result|response|json|body|res)\b/g;
+  while ((match = dataVarDestructure.exec(content)) !== null) {
+    const destructuredBody = match[1];
+    const keyPattern = /(\w+)\s*(?::\s*\w+)?/g;
+    let keyMatch;
+    while ((keyMatch = keyPattern.exec(destructuredBody)) !== null) {
+      keys.add(keyMatch[1]);
+    }
+  }
+
+  // Pattern 3: Property access on common response variable names
+  // Matches: data.key, response.key, result.key, json.key, body.key
+  // Also matches optional chaining: data?.key
+  const propAccessPattern = /\b(?:data|response|result|json|body|res)\s*(?:\?\.|\.)(\w+)/g;
+  while ((match = propAccessPattern.exec(content)) !== null) {
+    const key = match[1];
+    // Skip common method calls that aren't property accesses
+    if (!['json', 'text', 'blob', 'arrayBuffer', 'formData', 'ok', 'status', 'headers', 'then', 'catch', 'finally', 'clone', 'map', 'filter', 'forEach', 'reduce', 'find', 'some', 'every', 'length', 'toString', 'valueOf'].includes(key)) {
+      keys.add(key);
+    }
+  }
+
+  return [...keys];
+};
+
+/**
  * Create FETCHES edges from extracted fetch() calls to matching Route nodes.
+ * When consumerContents is provided, extracts property access patterns from
+ * consumer files and encodes them in the edge reason field.
  */
 export const processNextjsFetchRoutes = (
   graph: KnowledgeGraph,
   fetchCalls: ExtractedFetchCall[],
   routeRegistry: Map<string, string>,  // routeURL → handlerFilePath
+  consumerContents?: Map<string, string>,  // filePath → file content
 ) => {
   for (const call of fetchCalls) {
     const normalized = normalizeFetchURL(call.fetchURL);
@@ -1353,13 +1410,26 @@ export const processNextjsFetchRoutes = (
       if (routeMatches(normalized, routeURL)) {
         const sourceId = generateId('File', call.filePath);
         const routeNodeId = generateId('Route', routeURL);
+
+        // Extract consumer accessed keys if file content is available
+        let reason = 'fetch-url-match';
+        if (consumerContents) {
+          const content = consumerContents.get(call.filePath);
+          if (content) {
+            const accessedKeys = extractConsumerAccessedKeys(content);
+            if (accessedKeys.length > 0) {
+              reason = `fetch-url-match|keys:${accessedKeys.join(',')}`;
+            }
+          }
+        }
+
         graph.addRelationship({
           id: generateId('FETCHES', `${sourceId}->${routeNodeId}`),
           sourceId,
           targetId: routeNodeId,
           type: 'FETCHES',
           confidence: 0.9,
-          reason: 'fetch-url-match',
+          reason,
         });
         break;
       }

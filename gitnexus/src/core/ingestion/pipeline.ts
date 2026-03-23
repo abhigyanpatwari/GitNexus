@@ -843,7 +843,12 @@ export const runPipelineFromRepo = async (
     if (routeRegistry.size > 0 && allFetchCalls.length > 0) {
       const routeURLToFile = new Map<string, string>();
       for (const [url, entry] of routeRegistry) routeURLToFile.set(url, entry.filePath);
-      processNextjsFetchRoutes(graph, allFetchCalls, routeURLToFile);
+
+      // Read consumer file contents so we can extract property access patterns
+      const consumerPaths = [...new Set(allFetchCalls.map(c => c.filePath))];
+      const consumerContents = await readFileContents(repoPath, consumerPaths);
+
+      processNextjsFetchRoutes(graph, allFetchCalls, routeURLToFile, consumerContents);
       if (isDev) {
         console.log(`🔗 Processed ${allFetchCalls.length} fetch() calls against ${routeRegistry.size} routes`);
       }

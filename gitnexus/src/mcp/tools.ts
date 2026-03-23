@@ -261,12 +261,12 @@ Returns: tool nodes with their handler files and descriptions.`,
   },
   {
     name: 'shape_check',
-    description: `List response shapes for API routes alongside their consumers.
+    description: `Check response shapes for API routes against their consumers' property accesses.
 
-WHEN TO USE: Understanding what data API routes return, checking which routes have response shape data.
+WHEN TO USE: Detecting mismatches between what an API route returns and what consumers expect. Finding shape drift.
 REQUIRES: Route nodes with responseKeys (extracted from .json({...}) calls during indexing).
 
-Returns routes that have both detected response keys AND consumers. Shows top-level keys each endpoint returns (e.g., data, pagination, error) and who consumes them. Does NOT yet compare consumer property accesses against response shapes — that is a future enhancement.`,
+Returns routes that have both detected response keys AND consumers. Shows top-level keys each endpoint returns (e.g., data, pagination, error) and what keys each consumer accesses. Reports MISMATCH status when a consumer accesses keys not present in the route's response shape.`,
     inputSchema: {
       type: 'object',
       properties: {

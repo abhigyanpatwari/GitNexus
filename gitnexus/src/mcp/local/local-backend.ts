@@ -1639,7 +1639,7 @@ export class LocalBackend {
     repoId: string,
     routeFilter: string,
     params: Record<string, string>,
-  ): Promise<Array<{ id: string; name: string; filePath: string; responseKeys: string[] | null; consumers: Array<{ name: string; filePath: string }> }>> {
+  ): Promise<Array<{ id: string; name: string; filePath: string; responseKeys: string[] | null; consumers: Array<{ name: string; filePath: string; accessedKeys?: string[] }> }>> {
     const rows = await executeParameterized(repoId, `
       MATCH (n:Route)
       WHERE n.id STARTS WITH 'Route:' ${routeFilter}
@@ -1647,10 +1647,11 @@ export class LocalBackend {
       WHERE r.type = 'FETCHES'
       RETURN n.id AS routeId, n.name AS routeName, n.filePath AS handlerFile,
              n.responseKeys AS responseKeys,
-             consumer.name AS consumerName, consumer.filePath AS consumerFile
+             consumer.name AS consumerName, consumer.filePath AS consumerFile,
+             r.reason AS fetchReason
     `, params);
 
-    const routeMap = new Map<string, { id: string; name: string; filePath: string; responseKeys: string[] | null; consumers: Array<{ name: string; filePath: string }> }>();
+    const routeMap = new Map<string, { id: string; name: string; filePath: string; responseKeys: string[] | null; consumers: Array<{ name: string; filePath: string; accessedKeys?: string[] }> }>();
     for (const row of rows) {
       const id = row.routeId ?? row[0];
       const name = row.routeName ?? row[1];
@@ -1658,12 +1659,21 @@ export class LocalBackend {
       const responseKeys: string[] | null = row.responseKeys ?? row[3] ?? null;
       const consumerName = row.consumerName ?? row[4];
       const consumerFile = row.consumerFile ?? row[5];
+      const fetchReason: string | null = row.fetchReason ?? row[6] ?? null;
 
       if (!routeMap.has(id)) {
         routeMap.set(id, { id, name, filePath, responseKeys, consumers: [] });
       }
       if (consumerName && consumerFile) {
-        routeMap.get(id)!.consumers.push({ name: consumerName, filePath: consumerFile });
+        // Parse accessed keys from reason field: "fetch-url-match|keys:data,pagination"
+        let accessedKeys: string[] | undefined;
+        if (fetchReason) {
+          const keysMatch = fetchReason.match(/\|keys:(.+)$/);
+          if (keysMatch) {
+            accessedKeys = keysMatch[1].split(',').filter(k => k.length > 0);
+          }
+        }
+        routeMap.get(id)!.consumers.push({ name: consumerName, filePath: consumerFile, ...(accessedKeys ? { accessedKeys } : {}) });
       }
     }
 
@@ -1730,15 +1740,47 @@ export class LocalBackend {
 
     const results = allRoutes
       .filter(r => r.responseKeys && r.responseKeys.length > 0 && r.consumers.length > 0)
-      .map(r => ({ route: r.name, handler: r.filePath, responseKeys: r.responseKeys!, consumers: r.consumers }));
+      .map(r => {
+        const responseKeys = r.responseKeys!;
+        const responseKeySet = new Set(responseKeys);
+
+        // Check each consumer's accessed keys against the route's response shape
+        const consumers = r.consumers.map(c => {
+          if (!c.accessedKeys || c.accessedKeys.length === 0) {
+            return { name: c.name, filePath: c.filePath };
+          }
+          const mismatched = c.accessedKeys.filter(k => !responseKeySet.has(k));
+          return {
+            name: c.name,
+            filePath: c.filePath,
+            accessedKeys: c.accessedKeys,
+            ...(mismatched.length > 0 ? { mismatched } : {}),
+          };
+        });
+
+        const hasMismatches = consumers.some(c => 'mismatched' in c && (c as any).mismatched.length > 0);
+
+        return {
+          route: r.name,
+          handler: r.filePath,
+          responseKeys,
+          consumers,
+          ...(hasMismatches ? { status: 'MISMATCH' as const } : {}),
+        };
+      });
+
+    const mismatchCount = results.filter(r => r.status === 'MISMATCH').length;
 
     return {
       routes: results,
       total: results.length,
       routesWithShapes: results.length,
+      ...(mismatchCount > 0 ? { mismatches: mismatchCount } : {}),
       message: results.length === 0
         ? 'No routes with both response shapes and consumers found.'
-        : `Found ${results.length} route(s) with response shape data and consumers.`,
+        : mismatchCount > 0
+          ? `Found ${results.length} route(s) with response shape data. ${mismatchCount} route(s) have consumer/shape mismatches.`
+          : `Found ${results.length} route(s) with response shape data and consumers.`,
     };
   }
 
