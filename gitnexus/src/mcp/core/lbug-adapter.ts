@@ -56,11 +56,8 @@ const MAX_CONNS_PER_REPO = 8;
 
 let idleTimer: ReturnType<typeof setInterval> | null = null;
 
-/** Saved real stdout.write — used to silence LadybugDB native output without race conditions */
+/** Saved real stdout.write — used for persistent redirect to suppress LadybugDB native output */
 export const realStdoutWrite = process.stdout.write.bind(process.stdout);
-let stdoutSilenceCount = 0;
-/** True while pre-warming connections — prevents watchdog from prematurely restoring stdout */
-let preWarmActive = false;
 
 /**
  * Start the idle cleanup timer (runs every 60s)
@@ -146,41 +143,10 @@ function closeOne(repoId: string): void {
 
 /**
  * Create a new Connection from a repo's Database.
- * Silences stdout to prevent native module output from corrupting MCP stdio.
+ * stdout is permanently redirected at module load time — no per-call silencing needed.
  */
-let activeQueryCount = 0;
-
-function silenceStdout(): void {
-  if (stdoutSilenceCount++ === 0) {
-    process.stdout.write = (() => true) as any;
-  }
-}
-
-function restoreStdout(): void {
-  if (--stdoutSilenceCount <= 0) {
-    stdoutSilenceCount = 0;
-    process.stdout.write = realStdoutWrite;
-  }
-}
-
-// Safety watchdog: restore stdout if it gets stuck silenced (e.g. native crash
-// inside createConnection before restoreStdout runs).
-// Exempts active queries and pre-warm — these legitimately hold silence for
-// longer than 1 second (queries can take up to QUERY_TIMEOUT_MS = 30s).
-setInterval(() => {
-  if (stdoutSilenceCount > 0 && !preWarmActive && activeQueryCount === 0) {
-    stdoutSilenceCount = 0;
-    process.stdout.write = realStdoutWrite;
-  }
-}, 1000).unref();
-
 function createConnection(db: lbug.Database): lbug.Connection {
-  silenceStdout();
-  try {
-    return new lbug.Connection(db);
-  } finally {
-    restoreStdout();
-  }
+  return new lbug.Connection(db);
 }
 
 /** Query timeout in milliseconds */
@@ -247,7 +213,6 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     // avoids lock conflicts when `gitnexus analyze` is writing.
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
-      silenceStdout();
       try {
         const db = new lbug.Database(
           dbPath,
@@ -255,12 +220,10 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           false, // enableCompression (default)
           true,  // readOnly
         );
-        restoreStdout();
         shared = { db, refCount: 0, ftsLoaded: false };
         dbCache.set(dbPath, shared);
         break;
       } catch (err: any) {
-        restoreStdout();
         lastError = err instanceof Error ? err : new Error(String(err));
         const isLockError = lastError.message.includes('Could not set lock')
           || lastError.message.includes('lock');
@@ -280,17 +243,10 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   shared.refCount++;
   const db = shared.db;
 
-  // Pre-create the full pool upfront so createConnection() (which silences
-  // stdout) is never called lazily during active query execution.
-  // Mark preWarmActive so the watchdog timer doesn't interfere.
-  preWarmActive = true;
+  // Pre-create the full pool upfront so connections are ready before any query arrives.
   const available: lbug.Connection[] = [];
-  try {
-    for (let i = 0; i < MAX_CONNS_PER_REPO; i++) {
-      available.push(createConnection(db));
-    }
-  } finally {
-    preWarmActive = false;
+  for (let i = 0; i < MAX_CONNS_PER_REPO; i++) {
+    available.push(createConnection(db));
   }
 
   // Load FTS extension once per shared Database.
@@ -346,13 +302,8 @@ export async function initLbugWithDb(
   shared.refCount++;
 
   const available: lbug.Connection[] = [];
-  preWarmActive = true;
-  try {
-    for (let i = 0; i < MAX_CONNS_PER_REPO; i++) {
-      available.push(createConnection(existingDb));
-    }
-  } finally {
-    preWarmActive = false;
+  for (let i = 0; i < MAX_CONNS_PER_REPO; i++) {
+    available.push(createConnection(existingDb));
   }
 
   // Load FTS extension if not already loaded on this Database
@@ -462,16 +413,12 @@ export const executeQuery = async (repoId: string, cypher: string): Promise<any[
   entry.lastUsed = Date.now();
 
   const conn = await checkout(entry);
-  silenceStdout();
-  activeQueryCount++;
   try {
     const queryResult = await withTimeout(conn.query(cypher), QUERY_TIMEOUT_MS, 'Query');
     const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
     const rows = await result.getAll();
     return rows;
   } finally {
-    activeQueryCount--;
-    restoreStdout();
     checkin(entry, conn);
   }
 };
@@ -493,8 +440,6 @@ export const executeParameterized = async (
   entry.lastUsed = Date.now();
 
   const conn = await checkout(entry);
-  silenceStdout();
-  activeQueryCount++;
   try {
     const stmt = await withTimeout(conn.prepare(cypher), QUERY_TIMEOUT_MS, 'Prepare');
     if (!stmt.isSuccess()) {
@@ -506,8 +451,6 @@ export const executeParameterized = async (
     const rows = await result.getAll();
     return rows;
   } finally {
-    activeQueryCount--;
-    restoreStdout();
     checkin(entry, conn);
   }
 };
