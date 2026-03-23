@@ -1417,6 +1417,13 @@ export const extractFetchCallsFromFiles = async (
             lineNumber: captureMap['route.fetch'].startPosition.row,
           });
         }
+      } else if (captureMap['http_client'] && captureMap['http_client.url']) {
+        const method = captureMap['http_client.method']?.text;
+        const url = captureMap['http_client.url'].text;
+        const HTTP_CLIENT_ONLY = new Set(['head', 'options', 'request', 'ajax']);
+        if (method && HTTP_CLIENT_ONLY.has(method) && url.startsWith('/')) {
+          result.push({ filePath: file.path, fetchURL: url, lineNumber: captureMap['http_client'].startPosition.row });
+        }
       }
     }
   }

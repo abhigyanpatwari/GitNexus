@@ -9,7 +9,7 @@ import {
 } from './import-processor.js';
 import { EMPTY_INDEX } from './resolvers/index.js';
 import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracted, processRoutesFromExtracted, processNextjsFetchRoutes, extractFetchCallsFromFiles, seedCrossFileReceiverTypes, buildImportedReturnTypes, buildImportedRawReturnTypes, type ExportedTypeMap, buildExportedTypeMapFromGraph } from './call-processor.js';
-import { nextjsFileToRouteURL } from './route-extractors/nextjs.js';
+import { nextjsFileToRouteURL, normalizeFetchURL } from './route-extractors/nextjs.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';
 import { generateId } from '../../lib/utils.js';
 import type { ExtractedFetchCall, ExtractedRoute, ExtractedDecoratorRoute, ExtractedToolDef } from './workers/parse-worker.js';
@@ -817,21 +817,23 @@ export const runPipelineFromRepo = async (
     }
 
     // Scan HTML/PHP/template files for <form action="/path"> and AJAX url patterns
+    // Scan HTML/template files for <form action="/path"> and AJAX url patterns
+    // Skip .php — already parsed by tree-sitter with http_client/fetch queries
     const htmlCandidates = allPaths.filter(p =>
-      p.endsWith('.html') || p.endsWith('.htm') || p.endsWith('.php') ||
+      p.endsWith('.html') || p.endsWith('.htm') ||
       p.endsWith('.ejs') || p.endsWith('.hbs') || p.endsWith('.blade.php')
     );
     if (htmlCandidates.length > 0 && routeRegistry.size > 0) {
       const htmlContents = await readFileContents(repoPath, htmlCandidates);
-      const formActionPattern = /action=["']([^"']+)["']/g;
-      const ajaxUrlPattern = /url:\s*["']([^"']+)["']/g;
+      const htmlPatterns = [/action=["']([^"']+)["']/g, /url:\s*["']([^"']+)["']/g];
       for (const [filePath, content] of htmlContents) {
-        for (const pattern of [formActionPattern, ajaxUrlPattern]) {
+        for (const pattern of htmlPatterns) {
           pattern.lastIndex = 0;
           let match;
           while ((match = pattern.exec(content)) !== null) {
-            if (match[1].startsWith('/')) {
-              allFetchCalls.push({ filePath, fetchURL: match[1], lineNumber: 0 });
+            const normalized = normalizeFetchURL(match[1]);
+            if (normalized) {
+              allFetchCalls.push({ filePath, fetchURL: normalized, lineNumber: 0 });
             }
           }
         }

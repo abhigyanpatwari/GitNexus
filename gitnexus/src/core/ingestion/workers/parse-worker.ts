@@ -510,8 +510,11 @@ const ROUTE_RESOURCE_METHODS = new Set(['resource', 'apiResource']);
 // Express/Hono method names that register routes
 const EXPRESS_ROUTE_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'all', 'use', 'route']);
 
-// HTTP client methods that indicate URL consumption (axios, jQuery, requests, httpx, etc.)
-const HTTP_CLIENT_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'head', 'options', 'request', 'ajax']);
+// HTTP client methods that are ONLY used by clients, not Express route registration.
+// Methods like get/post/put/delete/patch overlap with Express — those are captured by
+// the express_route handler as route definitions, not consumers. The fetch() global
+// function is captured separately by the route.fetch query.
+const HTTP_CLIENT_ONLY_METHODS = new Set(['head', 'options', 'request', 'ajax']);
 
 // Decorator names that indicate HTTP route handlers (NestJS, Flask, FastAPI, Spring)
 const ROUTE_DECORATOR_NAMES = new Set([
@@ -1051,11 +1054,12 @@ const processFileGroup = (
       }
 
       // HTTP client calls: axios.get('/path'), $.post('/path'), requests.get('/path')
+      // Skip methods also in EXPRESS_ROUTE_METHODS to avoid double-registering Express
+      // routes as both route definitions AND consumers (both queries match same AST node)
       if (captureMap['http_client'] && captureMap['http_client.url']) {
         const method = captureMap['http_client.method']?.text;
         const url = captureMap['http_client.url'].text;
-        // Filter to actual HTTP methods to avoid false positives from Map.get(), etc.
-        if (method && HTTP_CLIENT_METHODS.has(method) && url.startsWith('/')) {
+        if (method && HTTP_CLIENT_ONLY_METHODS.has(method) && url.startsWith('/')) {
           result.fetchCalls.push({
             filePath: file.path,
             fetchURL: url,
