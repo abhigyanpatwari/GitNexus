@@ -1,0 +1,9 @@
+{
+  "name": "api-e2e-test",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "next": "14.0.0",
+    "react": "18.0.0"
+  }
+}
