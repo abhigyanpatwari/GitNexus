@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Code, PanelLeftClose, PanelLeft, Trash2, X, Target, FileCode, Sparkles, MousePointerClick } from 'lucide-react';
+import { Code, PanelLeftClose, PanelLeft, Trash2, X, Target, FileCode, Sparkles, MousePointerClick } from '@/lib/lucide-icons';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useAppState } from '../hooks/useAppState';
@@ -161,8 +161,9 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     if (!target) return;
 
     // Double rAF: wait for collapse state + list DOM to render.
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
+    const rafIds: number[] = [];
+    const outerRafId = requestAnimationFrame(() => {
+      const innerRafId = requestAnimationFrame(() => {
         const el = refCardEls.current.get(target.id);
         if (!el) return;
 
@@ -177,7 +178,13 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
           glowTimerRef.current = null;
         }, 1200);
       });
+      rafIds.push(innerRafId);
     });
+    rafIds.push(outerRafId);
+
+    return () => {
+      rafIds.forEach(id => cancelAnimationFrame(id));
+    };
   }, [codeReferenceFocus?.ts, aiReferences]);
 
   const refsWithSnippets = useMemo(() => {

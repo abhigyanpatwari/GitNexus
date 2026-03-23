@@ -1,4 +1,5 @@
-import { Heart } from 'lucide-react';
+import { useMemo } from 'react';
+import { Heart } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
 
 export const StatusBar = () => {
@@ -8,7 +9,7 @@ export const StatusBar = () => {
   const edgeCount = graph?.relationships.length ?? 0;
 
   // Detect primary language
-  const primaryLanguage = (() => {
+  const primaryLanguage = useMemo(() => {
     if (!graph) return null;
     const languages = graph.nodes
       .map(n => n.properties.language)
@@ -21,7 +22,7 @@ export const StatusBar = () => {
     }, {} as Record<string, number>);
 
     return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0];
-  })();
+  }, [graph]);
 
   return (
     <footer className="flex items-center justify-between px-5 py-2 bg-deep border-t border-dashed border-border-subtle text-[11px] text-text-muted">
@@ -38,7 +39,7 @@ export const StatusBar = () => {
             <span>{progress.message}</span>
           </>
         ) : (
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5" data-testid="status-ready">
             <span className="w-1.5 h-1.5 bg-node-function rounded-full" />
             <span>Ready</span>
           </div>

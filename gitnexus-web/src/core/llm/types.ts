@@ -8,6 +8,8 @@
 /**
  * Supported LLM providers
  */
+import { DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENROUTER_BASE_URL } from '../../config/ui-constants';
+
 export type LLMProvider = 'openai' | 'azure-openai' | 'gemini' | 'anthropic' | 'ollama' | 'openrouter' | 'minimax';
 
 /**
@@ -148,14 +150,14 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
     temperature: 0.1,
   },
   ollama: {
-    baseUrl: 'http://localhost:11434',
+    baseUrl: DEFAULT_OLLAMA_BASE_URL,
     model: 'llama3.2',
     temperature: 0.1,
   },
   openrouter: {
     apiKey: '',
     model: '',
-    baseUrl: 'https://openrouter.ai/api/v1',
+    baseUrl: DEFAULT_OPENROUTER_BASE_URL,
     temperature: 0.1,
   },
   minimax: {

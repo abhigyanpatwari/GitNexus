@@ -14,7 +14,7 @@ import {
   Variable,
   Hash,
   Target,
-} from 'lucide-react';
+} from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
 import { FILTERABLE_LABELS, NODE_COLORS, ALL_EDGE_TYPES, EDGE_INFO, type EdgeType } from '../lib/constants';
 import { GraphNode, NodeLabel } from '../core/graph/types';
@@ -98,13 +98,15 @@ const TreeItem = ({
   const isSelected = selectedPath === node.path;
   const hasChildren = node.children.length > 0;
 
-  // Filter children based on search
+  // Filter children based on search (recursive)
   const filteredChildren = useMemo(() => {
     if (!searchQuery) return node.children;
-    return node.children.filter(child =>
-      child.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      child.children.some(c => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
-    );
+    const searchLower = searchQuery.toLowerCase();
+    const matchesSearch = (node: TreeNode, query: string): boolean => {
+      if (node.name.toLowerCase().includes(query)) return true;
+      return node.children?.some(child => matchesSearch(child, query)) ?? false;
+    };
+    return node.children.filter(child => matchesSearch(child, searchLower));
   }, [node.children, searchQuery]);
 
   // Check if this node matches search

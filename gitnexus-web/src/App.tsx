@@ -13,7 +13,7 @@ import { FileEntry } from './services/zip';
 import { getActiveProviderConfig } from './core/llm/settings-service';
 import { createKnowledgeGraph } from './core/graph/graph';
 import { connectToServer, fetchRepos, normalizeServerUrl, type ConnectToServerResult } from './services/server-connection';
-import { HelpPanel } from './components/HelpPanel';
+import { ERROR_RESET_DELAY_MS } from './config/ui-constants';
 
 const AppContent = () => {
   const {
@@ -29,11 +29,9 @@ const AppContent = () => {
     runPipelineFromFiles,
     isSettingsPanelOpen,
     setSettingsPanelOpen,
-    isHelpDialogBoxOpen,
-    setHelpDialogBoxOpen,
     refreshLLMSettings,
     initializeAgent,
-    startEmbeddings,
+    startEmbeddingsWithFallback,
     embeddingStatus,
     codeReferences,
     selectedNode,
@@ -44,7 +42,6 @@ const AppContent = () => {
     setAvailableRepos,
     switchRepo,
     loadServerGraph,
-    graph
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
@@ -72,13 +69,7 @@ const AppContent = () => {
 
       // Auto-start embeddings pipeline in background
       // Uses WebGPU if available, falls back to WASM
-      startEmbeddings().catch((err) => {
-        if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
-          startEmbeddings('wasm').catch(console.warn);
-        } else {
-          console.warn('Embeddings auto-start failed:', err);
-        }
-      });
+      startEmbeddingsWithFallback();
     } catch (error) {
       console.error('Pipeline error:', error);
       setProgress({
@@ -90,9 +81,9 @@ const AppContent = () => {
       setTimeout(() => {
         setViewMode('onboarding');
         setProgress(null);
-      }, 3000);
+      }, ERROR_RESET_DELAY_MS);
     }
-  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipeline, startEmbeddings, initializeAgent]);
+  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipeline, startEmbeddingsWithFallback, initializeAgent]);
 
   const handleGitClone = useCallback(async (files: FileEntry[]) => {
     const firstPath = files[0]?.path || 'repository';
@@ -115,13 +106,7 @@ const AppContent = () => {
         initializeAgent(projectName);
       }
 
-      startEmbeddings().catch((err) => {
-        if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
-          startEmbeddings('wasm').catch(console.warn);
-        } else {
-          console.warn('Embeddings auto-start failed:', err);
-        }
-      });
+      startEmbeddingsWithFallback();
     } catch (error) {
       console.error('Pipeline error:', error);
       setProgress({
@@ -133,9 +118,9 @@ const AppContent = () => {
       setTimeout(() => {
         setViewMode('onboarding');
         setProgress(null);
-      }, 3000);
+      }, ERROR_RESET_DELAY_MS);
     }
-  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles, startEmbeddings, initializeAgent]);
+  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles, startEmbeddingsWithFallback, initializeAgent]);
 
   const handleServerConnect = useCallback((result: ConnectToServerResult): Promise<void> => {
     // Extract project name from repoPath
@@ -172,13 +157,7 @@ const AppContent = () => {
         }
       })
       .then(() => {
-        startEmbeddings().catch((err) => {
-          if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
-            startEmbeddings('wasm').catch(console.warn);
-          } else {
-            console.warn('Embeddings auto-start failed:', err);
-          }
-        });
+        startEmbeddingsWithFallback();
       })
       .catch((err) => {
         console.warn('Failed to load graph into LadybugDB:', err);
@@ -186,7 +165,7 @@ const AppContent = () => {
       });
 
     return loadGraphPromise;
-  }, [setViewMode, setGraph, setFileContents, setProjectName, loadServerGraph, initializeAgent, startEmbeddings]);
+  }, [setViewMode, setGraph, setFileContents, setProjectName, loadServerGraph, initializeAgent, startEmbeddingsWithFallback]);
 
   // Auto-connect when ?server query param is present (bookmarkable shortcut)
   const autoConnectRan = useRef(false);
@@ -235,7 +214,7 @@ const AppContent = () => {
       setTimeout(() => {
         setViewMode('onboarding');
         setProgress(null);
-      }, 3000);
+      }, ERROR_RESET_DELAY_MS);
     });
   }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos]);
 
@@ -307,13 +286,6 @@ const AppContent = () => {
         isOpen={isSettingsPanelOpen}
         onClose={() => setSettingsPanelOpen(false)}
         onSettingsSaved={handleSettingsSaved}
-      />
-
-      <HelpPanel
-          isOpen={isHelpDialogBoxOpen}
-          onClose={() => setHelpDialogBoxOpen(false)}
-          nodeCount={graph!.nodes.length}
-          edgeCount={graph!.relationships.length}
       />
 
     </div>

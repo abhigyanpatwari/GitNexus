@@ -1,18 +1,21 @@
-import { createContext, useContext, useState, useCallback, useRef, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useRef, useEffect, useMemo, ReactNode } from 'react';
 import * as Comlink from 'comlink';
 import { KnowledgeGraph, GraphNode, GraphRelationship, NodeLabel } from '../core/graph/types';
 import { PipelineProgress, PipelineResult, deserializePipelineResult } from '../types/pipeline';
 import { createKnowledgeGraph } from '../core/graph/graph';
-import { DEFAULT_VISIBLE_LABELS } from '../lib/constants';
 import type { IngestionWorkerApi } from '../workers/ingestion.worker';
 import type { FileEntry } from '../services/zip';
 import type { EmbeddingProgress, SemanticSearchResult } from '../core/embeddings/types';
 import type { LLMSettings, ProviderConfig, AgentStreamChunk, ChatMessage, ToolCallInfo, MessageStep } from '../core/llm/types';
 import { loadSettings, getActiveProviderConfig, saveSettings } from '../core/llm/settings-service';
 import type { AgentMessage } from '../core/llm/agent';
-import { DEFAULT_VISIBLE_EDGES, type EdgeType } from '../lib/constants';
+import { type EdgeType } from '../lib/constants';
 import type { RepoSummary, ConnectToServerResult } from '../services/server-connection';
 import { fetchRepos, connectToServer } from '../services/server-connection';
+import { ERROR_RESET_DELAY_MS } from '../config/ui-constants';
+import { normalizePath, resolveFilePath as resolvePathFromContents } from '../lib/path-resolution';
+import { FILE_REF_REGEX, NODE_REF_REGEX } from '../lib/grounding-patterns';
+import { GraphStateProvider, useGraphState } from './app-state/graph';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
@@ -74,6 +77,8 @@ interface AppState {
   setRightPanelTab: (tab: RightPanelTab) => void;
   openCodePanel: () => void;
   openChatPanel: () => void;
+  helpDialogBoxOpen: boolean;
+  setHelpDialogBoxOpen: (open: boolean) => void;
 
   // Filters
   visibleLabels: NodeLabel[];
@@ -134,6 +139,7 @@ interface AppState {
 
   // Embedding methods
   startEmbeddings: (forceDevice?: 'webgpu' | 'wasm') => Promise<void>;
+  startEmbeddingsWithFallback: () => void;
   semanticSearch: (query: string, k?: number) => Promise<SemanticSearchResult[]>;
   semanticSearchWithContext: (query: string, k?: number, hops?: number) => Promise<any[]>;
   isEmbeddingReady: boolean;
@@ -145,9 +151,7 @@ interface AppState {
   llmSettings: LLMSettings;
   updateLLMSettings: (updates: Partial<LLMSettings>) => void;
   isSettingsPanelOpen: boolean;
-  isHelpDialogBoxOpen: boolean;
   setSettingsPanelOpen: (open: boolean) => void;
-  setHelpDialogBoxOpen: (open: boolean) => void;
   isAgentReady: boolean;
   isAgentInitializing: boolean;
   agentError: string | null;
@@ -177,20 +181,37 @@ interface AppState {
 
 const AppStateContext = createContext<AppState | null>(null);
 
-export const AppStateProvider = ({ children }: { children: ReactNode }) => {
+export const AppStateProvider = ({ children }: { children: ReactNode }) => (
+  <GraphStateProvider>
+    <AppStateProviderInner>{children}</AppStateProviderInner>
+  </GraphStateProvider>
+);
+
+const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   // View state
   const [viewMode, setViewMode] = useState<ViewMode>('onboarding');
 
-  // Graph data
-  const [graph, setGraph] = useState<KnowledgeGraph | null>(null);
-  const [fileContents, setFileContents] = useState<Map<string, string>>(new Map());
-
-  // Selection
-  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+  const {
+    graph,
+    setGraph,
+    fileContents,
+    setFileContents,
+    selectedNode,
+    setSelectedNode,
+    visibleLabels,
+    toggleLabelVisibility,
+    visibleEdgeTypes,
+    toggleEdgeVisibility,
+    depthFilter,
+    setDepthFilter,
+    highlightedNodeIds,
+    setHighlightedNodeIds,
+  } = useGraphState();
 
   // Right Panel
   const [isRightPanelOpen, setRightPanelOpen] = useState(false);
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('code');
+  const [helpDialogBoxOpen, setHelpDialogBoxOpen] = useState(false);
 
   const openCodePanel = useCallback(() => {
     // Legacy API: used by graph/tree selection.
@@ -204,15 +225,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setRightPanelTab('chat');
   }, []);
 
-  // Filters
-  const [visibleLabels, setVisibleLabels] = useState<NodeLabel[]>(DEFAULT_VISIBLE_LABELS);
-  const [visibleEdgeTypes, setVisibleEdgeTypes] = useState<EdgeType[]>(DEFAULT_VISIBLE_EDGES);
-
-  // Depth filter
-  const [depthFilter, setDepthFilter] = useState<number | null>(null);
-
   // Query state
-  const [highlightedNodeIds, setHighlightedNodeIds] = useState<Set<string>>(new Set());
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
 
   // AI highlights (separate from user/query highlights)
@@ -298,7 +311,6 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   // LLM/Agent state
   const [llmSettings, setLLMSettings] = useState<LLMSettings>(loadSettings);
   const [isSettingsPanelOpen, setSettingsPanelOpen] = useState(false);
-  const [isHelpDialogBoxOpen, setHelpDialogBoxOpen] = useState(false);
   const [isAgentReady, setIsAgentReady] = useState(false);
   const [isAgentInitializing, setIsAgentInitializing] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
@@ -313,54 +325,24 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const [isCodePanelOpen, setCodePanelOpen] = useState(false);
   const [codeReferenceFocus, setCodeReferenceFocus] = useState<CodeReferenceFocus | null>(null);
 
-    const normalizePath = useCallback((p: string) => {
-    return p.replace(/\\/g, '/').replace(/^\.?\//, '');
-  }, []);
-
   const resolveFilePath = useCallback((requestedPath: string): string | null => {
-    const req = normalizePath(requestedPath).toLowerCase();
-    if (!req) return null;
+    return resolvePathFromContents(fileContents, requestedPath);
+  }, [fileContents]);
 
-    // Exact match first
-    for (const key of fileContents.keys()) {
-      if (normalizePath(key).toLowerCase() === req) return key;
-    }
-
-    // Ends-with match (best for partial paths like "src/foo.ts")
-    let best: { path: string; score: number } | null = null;
-    for (const key of fileContents.keys()) {
-      const norm = normalizePath(key).toLowerCase();
-      if (norm.endsWith(req)) {
-        const score = 1000 - norm.length; // shorter is better
-        if (!best || score > best.score) best = { path: key, score };
+  const fileNodeByPath = useMemo(() => {
+    if (!graph) return new Map<string, string>();
+    const map = new Map<string, string>();
+    for (const n of graph.nodes) {
+      if (n.label === 'File') {
+        map.set(normalizePath(n.properties.filePath), n.id);
       }
     }
-    if (best) return best.path;
-
-    // Segment match fallback
-    const segs = req.split('/').filter(Boolean);
-    for (const key of fileContents.keys()) {
-      const normSegs = normalizePath(key).toLowerCase().split('/').filter(Boolean);
-      let idx = 0;
-      for (const s of segs) {
-        const found = normSegs.findIndex((x, i) => i >= idx && x.includes(s));
-        if (found === -1) { idx = -1; break; }
-        idx = found + 1;
-      }
-      if (idx !== -1) return key;
-    }
-
-    return null;
-  }, [fileContents, normalizePath]);
+    return map;
+  }, [graph]);
 
   const findFileNodeId = useCallback((filePath: string): string | undefined => {
-    if (!graph) return undefined;
-    const target = normalizePath(filePath);
-    const fileNode = graph.nodes.find(
-      (n) => n.label === 'File' && normalizePath(n.properties.filePath) === target
-    );
-    return fileNode?.id;
-  }, [graph, normalizePath]);
+    return fileNodeByPath.get(normalizePath(filePath));
+  }, [fileNodeByPath]);
 
   // Code References methods
   const addCodeReference = useCallback((ref: Omit<CodeReference, 'id'>) => {
@@ -419,7 +401,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       }
       return kept;
     });
-  }, [queryResult, selectedNode]);
+  }, [selectedNode]);
 
   // Auto-add a code reference when the user selects a node in the graph/tree
   useEffect(() => {
@@ -545,6 +527,25 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       throw error;
     }
   }, []);
+
+  const startEmbeddingsWithFallback = useCallback(() => {
+    // Skip auto-start in automated/headless runs to avoid WebGPU errors and long downloads.
+    const isPlaywright =
+      (typeof navigator !== 'undefined' && navigator.webdriver) ||
+      (typeof import.meta !== 'undefined' && typeof import.meta.env !== 'undefined' && import.meta.env.VITE_PLAYWRIGHT_TEST) ||
+      (typeof process !== 'undefined' && process.env.PLAYWRIGHT_TEST);
+    if (isPlaywright) {
+      setEmbeddingStatus('idle');
+      return;
+    }
+    startEmbeddings().catch((err) => {
+      if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
+        startEmbeddings('wasm').catch(console.warn);
+      } else {
+        console.warn('Embeddings auto-start failed:', err);
+      }
+    });
+  }, [startEmbeddings]);
 
   const semanticSearch = useCallback(async (
     query: string,
@@ -709,6 +710,15 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
         }
       });
     };
+    let pendingUpdate = false;
+    const scheduleMessageUpdate = () => {
+      if (pendingUpdate) return;
+      pendingUpdate = true;
+      requestAnimationFrame(() => {
+        pendingUpdate = false;
+        updateMessage();
+      });
+    };
 
     try {
       const onChunk = Comlink.proxy((chunk: AgentStreamChunk) => {
@@ -731,7 +741,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                   content: chunk.reasoning,
                 });
               }
-              updateMessage();
+              scheduleMessageUpdate();
             }
             break;
 
@@ -754,7 +764,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                   content: chunk.content,
                 });
               }
-              updateMessage();
+              scheduleMessageUpdate();
 
               // Parse inline grounding references and add them to the Code References panel.
               // Supports: [[file.ts:10-25]] (file refs) and [[Class:View]] (node refs)
@@ -765,7 +775,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
               // Pattern 1: File refs - [[path/file.ext]] or [[path/file.ext:line]] or [[path/file.ext:line-line]]
               // Line numbers are optional
-              const fileRefRegex = /\[\[([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)(?::(\d+)(?:[-–](\d+))?)?\]\]/g;
+              const fileRefRegex = new RegExp(FILE_REF_REGEX.source, FILE_REF_REGEX.flags);
               let fileMatch: RegExpExecArray | null;
               while ((fileMatch = fileRefRegex.exec(fullText)) !== null) {
                 const rawPath = fileMatch[1].trim();
@@ -791,7 +801,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
               }
 
               // Pattern 2: Node refs - [[Type:Name]] or [[graph:Type:Name]]
-              const nodeRefRegex = /\[\[(?:graph:)?(Class|Function|Method|Interface|File|Folder|Variable|Enum|Type|CodeElement):([^\]]+)\]\]/g;
+              const nodeRefRegex = new RegExp(NODE_REF_REGEX.source, NODE_REF_REGEX.flags);
               let nodeMatch: RegExpExecArray | null;
               while ((nodeMatch = nodeRefRegex.exec(fullText)) !== null) {
                 const nodeType = nodeMatch[1];
@@ -832,7 +842,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                 toolCall: tc,
               });
               setCurrentToolCalls(prev => [...prev, tc]);
-              updateMessage();
+              scheduleMessageUpdate();
             }
             break;
 
@@ -891,7 +901,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                 return prev;
               });
 
-              updateMessage();
+              scheduleMessageUpdate();
 
               // Parse highlight marker from tool results
               if (tc.result) {
@@ -900,15 +910,15 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                   const rawIds = highlightMatch[1].split(',').map((id: string) => id.trim()).filter(Boolean);
                   if (rawIds.length > 0 && graph) {
                     const matchedIds = new Set<string>();
-                    const graphNodeIds = graph.nodes.map(n => n.id);
+                    const graphNodeIdSet = new Set(graph.nodes.map(n => n.id));
 
                     for (const rawId of rawIds) {
-                      if (graphNodeIds.includes(rawId)) {
+                      if (graphNodeIdSet.has(rawId)) {
                         matchedIds.add(rawId);
                       } else {
-                        const found = graphNodeIds.find(gid =>
-                          gid.endsWith(rawId) || gid.endsWith(':' + rawId)
-                        );
+                        const found = graph.nodes.find(n =>
+                          n.id.endsWith(rawId) || n.id.endsWith(':' + rawId)
+                        )?.id;
                         if (found) {
                           matchedIds.add(found);
                         }
@@ -929,15 +939,15 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                   const rawIds = impactMatch[1].split(',').map((id: string) => id.trim()).filter(Boolean);
                   if (rawIds.length > 0 && graph) {
                     const matchedIds = new Set<string>();
-                    const graphNodeIds = graph.nodes.map(n => n.id);
+                    const graphNodeIdSet = new Set(graph.nodes.map(n => n.id));
 
                     for (const rawId of rawIds) {
-                      if (graphNodeIds.includes(rawId)) {
+                      if (graphNodeIdSet.has(rawId)) {
                         matchedIds.add(rawId);
                       } else {
-                        const found = graphNodeIds.find(gid =>
-                          gid.endsWith(rawId) || gid.endsWith(':' + rawId)
-                        );
+                        const found = graph.nodes.find(n =>
+                          n.id.endsWith(rawId) || n.id.endsWith(':' + rawId)
+                        )?.id;
                         if (found) {
                           matchedIds.add(found);
                         }
@@ -961,7 +971,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
           case 'done':
             // Finalize the assistant message - just call updateMessage one more time
-            updateMessage();
+          scheduleMessageUpdate();
             break;
         }
       });
@@ -997,7 +1007,6 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
     setProgress({ phase: 'extracting', percent: 0, message: 'Switching repository...', detail: `Loading ${repoName}` });
     setViewMode('loading');
-
     setIsAgentReady(false);
 
     // Clear stale graph state from previous repo (highlights, selections, blast radius)
@@ -1046,13 +1055,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
           await initializeAgent(pName);
         }
         setViewMode('exploring');
-        startEmbeddings().catch((err) => {
-          if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
-            startEmbeddings('wasm').catch(console.warn);
-          } else {
-            console.warn('Embeddings auto-start failed:', err);
-          }
-        });
+        startEmbeddingsWithFallback();
         setProgress(null);
       } catch (err) {
         console.warn('Failed to load graph into LadybugDB:', err);
@@ -1071,9 +1074,9 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       });
       setIsAgentReady(false);
       await apiRef.current?.disposeAgent();
-      setTimeout(() => { setViewMode('exploring'); setProgress(null); }, 3000);
+      setTimeout(() => { setViewMode('exploring'); setProgress(null); }, ERROR_RESET_DELAY_MS);
     }
-  }, [serverBaseUrl, setProgress, setViewMode, setProjectName, setGraph, setFileContents, loadServerGraph, initializeAgent, startEmbeddings, setHighlightedNodeIds, clearAIToolHighlights, clearAICitationHighlights, clearBlastRadius, setSelectedNode, setQueryResult, setCodeReferences, setCodePanelOpen, setCodeReferenceFocus]);
+  }, [serverBaseUrl, setProgress, setViewMode, setProjectName, setGraph, setFileContents, loadServerGraph, initializeAgent, startEmbeddingsWithFallback, setHighlightedNodeIds, clearAIToolHighlights, clearAICitationHighlights, clearBlastRadius, setSelectedNode, setQueryResult, setCodeReferences, setCodePanelOpen, setCodeReferenceFocus]);
 
   const removeCodeReference = useCallback((id: string) => {
     setCodeReferences(prev => {
@@ -1107,26 +1110,6 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setCodeReferenceFocus(null);
   }, []);
 
-  const toggleLabelVisibility = useCallback((label: NodeLabel) => {
-    setVisibleLabels(prev => {
-      if (prev.includes(label)) {
-        return prev.filter(l => l !== label);
-      } else {
-        return [...prev, label];
-      }
-    });
-  }, []);
-
-  const toggleEdgeVisibility = useCallback((edgeType: EdgeType) => {
-    setVisibleEdgeTypes(prev => {
-      if (prev.includes(edgeType)) {
-        return prev.filter(t => t !== edgeType);
-      } else {
-        return [...prev, edgeType];
-      }
-    });
-  }, []);
-
   const value: AppState = {
     viewMode,
     setViewMode,
@@ -1142,6 +1125,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setRightPanelTab,
     openCodePanel,
     openChatPanel,
+    helpDialogBoxOpen,
+    setHelpDialogBoxOpen,
     visibleLabels,
     toggleLabelVisibility,
     visibleEdgeTypes,
@@ -1184,6 +1169,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     embeddingStatus,
     embeddingProgress,
     startEmbeddings,
+    startEmbeddingsWithFallback,
     semanticSearch,
     semanticSearchWithContext,
     isEmbeddingReady: embeddingStatus === 'ready',
@@ -1194,8 +1180,6 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     updateLLMSettings,
     isSettingsPanelOpen,
     setSettingsPanelOpen,
-    isHelpDialogBoxOpen,
-    setHelpDialogBoxOpen,
     isAgentReady,
     isAgentInitializing,
     agentError,
