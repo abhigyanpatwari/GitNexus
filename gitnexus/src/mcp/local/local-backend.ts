@@ -1702,19 +1702,17 @@ export class LocalBackend {
     const result = new Map<string, string[]>();
     if (nodeIds.length === 0) return result;
     try {
-      // Filter at DB level by Route/Tool prefix (all our node IDs are Route:* or Tool:*)
+      // Use list_contains to filter at DB level instead of fetching all and filtering in memory
       const rows = await executeParameterized(repoId, `
         MATCH (source)-[r:CodeRelation]->(proc:Process)
         WHERE r.type = 'ENTRY_POINT_OF'
-          AND (source.id STARTS WITH 'Route:' OR source.id STARTS WITH 'Tool:')
+          AND list_contains($nodeIds, source.id)
         RETURN source.id AS sourceId, proc.label AS name
-      `, {});
-      // Further filter to only requested IDs
-      const idSet = new Set(nodeIds);
+      `, { nodeIds });
       for (const row of rows) {
         const sourceId = row.sourceId ?? row[0];
         const name = row.name ?? row[1];
-        if (!idSet.has(sourceId) || !name) continue;
+        if (!name) continue;
         let list = result.get(sourceId);
         if (!list) { list = []; result.set(sourceId, list); }
         list.push(name);

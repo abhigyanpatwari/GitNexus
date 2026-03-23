@@ -280,9 +280,11 @@ Returns routes that have both detected response keys AND consumers. Shows top-le
     name: 'api_impact',
     description: `Pre-change impact report for an API route handler.
 
-WHEN TO USE: BEFORE modifying any API route handler. Shows what consumers depend on, what response fields they access, what middleware protects the route, and what execution flows it triggers.
+WHEN TO USE: BEFORE modifying any API route handler. Shows what consumers depend on, what response fields they access, what middleware protects the route, and what execution flows it triggers. Requires at least "route" or "file" parameter.
 
-Returns: comprehensive impact report combining route_map, shape_check, and impact data.`,
+Risk levels: LOW (0-3 consumers), MEDIUM (4-9 or any mismatches), HIGH (10+ consumers or mismatches with 4+ consumers). Mismatches with confidence "low" indicate the consumer file fetches multiple routes — property attribution is approximate.
+
+Returns: single route object when one match, or { routes: [...], total: N } for multiple matches. Combines route_map, shape_check, and impact data.`,
     inputSchema: {
       type: 'object',
       properties: {
