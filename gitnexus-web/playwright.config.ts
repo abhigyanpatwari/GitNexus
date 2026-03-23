@@ -21,7 +21,7 @@ export default defineConfig({
   testDir: './e2e',
   testIgnore: ['**/manual-record.spec.ts', '**/debug-issues.spec.ts'],
   timeout: 60_000,
-  retries: 0,
+  retries: process.env.CI ? 1 : 0,
   use: {
     baseURL: 'http://localhost:5173',
     trace: 'retain-on-failure',

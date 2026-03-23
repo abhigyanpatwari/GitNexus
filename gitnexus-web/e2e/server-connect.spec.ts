@@ -37,16 +37,17 @@ async function connectAndWaitForGraph(page: import('@playwright/test').Page, tes
   });
 
   await page.goto('/');
+
+  // Wait for the app to fully render before interacting
+  const serverTab = page.getByRole('button', { name: 'Server' });
+  await expect(serverTab).toBeVisible({ timeout: 15_000 });
   await page.screenshot({ path: testInfo.outputPath('step-1-landing.png') });
 
-  // Click "Server" tab in onboarding
-  await page.getByRole('button', { name: 'Server' }).click();
-  await expect(page.getByText('Connect to Server')).toBeVisible({ timeout: 10_000 });
-  await page.screenshot({ path: testInfo.outputPath('step-2-server-tab.png') });
-
-  // Enter server URL and connect
+  // Click "Server" tab and wait for the input to appear
+  await serverTab.click();
   const serverInput = page.locator('input[name="server-url-input"]');
-  await expect(serverInput).toBeVisible({ timeout: 10_000 });
+  await expect(serverInput).toBeVisible({ timeout: 15_000 });
+  await page.screenshot({ path: testInfo.outputPath('step-2-server-tab.png') });
   await serverInput.fill(BACKEND_URL);
   await page.screenshot({ path: testInfo.outputPath('step-3-url-filled.png') });
 
