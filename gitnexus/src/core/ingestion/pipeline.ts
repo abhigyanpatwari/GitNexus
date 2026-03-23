@@ -723,14 +723,17 @@ export const runPipelineFromRepo = async (
     }
 
     const ensureSlash = (path: string) => path.startsWith('/') ? path : '/' + path;
+    let duplicateRoutes = 0;
+    const addRoute = (url: string, entry: RouteEntry) => {
+      if (routeRegistry.has(url)) { duplicateRoutes++; return; }
+      routeRegistry.set(url, entry);
+    };
     for (const route of allExtractedRoutes) {
       if (!route.routePath) continue;
-      const routeURL = ensureSlash(route.routePath);
-      if (!routeRegistry.has(routeURL)) routeRegistry.set(routeURL, { filePath: route.filePath, source: 'framework-route' });
+      addRoute(ensureSlash(route.routePath), { filePath: route.filePath, source: 'framework-route' });
     }
     for (const dr of allDecoratorRoutes) {
-      const routeURL = ensureSlash(dr.routePath);
-      if (!routeRegistry.has(routeURL)) routeRegistry.set(routeURL, { filePath: dr.filePath, source: `decorator-${dr.decoratorName}` });
+      addRoute(ensureSlash(dr.routePath), { filePath: dr.filePath, source: `decorator-${dr.decoratorName}` });
     }
 
     if (routeRegistry.size > 0) {
@@ -809,7 +812,7 @@ export const runPipelineFromRepo = async (
       }
 
       if (isDev) {
-        console.log(`🗺️ Route registry: ${routeRegistry.size} routes`);
+        console.log(`🗺️ Route registry: ${routeRegistry.size} routes${duplicateRoutes > 0 ? ` (${duplicateRoutes} duplicate URLs skipped)` : ''}`);
       }
     }
 
@@ -833,13 +836,16 @@ export const runPipelineFromRepo = async (
       toolDefs.push({ name: td.toolName, filePath: td.filePath, description: td.description });
     }
 
-    // TS tool definition arrays (name: 'x', description: `...`) in files with 'tool' in path
+    // TS tool definition arrays — require inputSchema nearby to distinguish from config objects
     const toolCandidatePaths = allPaths.filter(p =>
       (p.endsWith('.ts') || p.endsWith('.js')) && p.toLowerCase().includes('tool')
+      && !p.includes('node_modules') && !p.includes('test') && !p.includes('__')
     );
     if (toolCandidatePaths.length > 0) {
       const toolContents = await readFileContents(repoPath, toolCandidatePaths);
       for (const [filePath, content] of toolContents) {
+        // Only scan files that contain 'inputSchema' — this is the MCP tool signature
+        if (!content.includes('inputSchema')) continue;
         const toolPattern = /name:\s*['"](\w+)['"]\s*,\s*\n?\s*description:\s*[`'"]([\s\S]*?)[`'"]/g;
         let match;
         while ((match = toolPattern.exec(content)) !== null) {

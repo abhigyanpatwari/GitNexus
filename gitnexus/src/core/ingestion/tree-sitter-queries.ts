@@ -119,6 +119,13 @@ export const TYPESCRIPT_QUERIES = `
   (call_expression
     function: (identifier) @decorator.name
     arguments: (arguments (string (string_fragment) @decorator.arg)?))) @decorator
+
+; Express/Hono route registration: app.get('/path', handler), router.post('/path', fn)
+(call_expression
+  function: (member_expression
+    property: (property_identifier) @express_route.method)
+  arguments: (arguments
+    (string (string_fragment) @express_route.path))) @express_route
 `;
 
 // JavaScript queries - works with tree-sitter-javascript
@@ -203,6 +210,13 @@ export const JAVASCRIPT_QUERIES = `
   arguments: (arguments
     [(string (string_fragment) @route.url)
      (template_string) @route.template_url])) @route.fetch
+
+; Express/Hono route registration: app.get('/path', handler), router.post('/path', fn)
+(call_expression
+  function: (member_expression
+    property: (property_identifier) @express_route.method)
+  arguments: (arguments
+    (string (string_fragment) @express_route.path))) @express_route
 `;
 
 // Python queries - works with tree-sitter-python

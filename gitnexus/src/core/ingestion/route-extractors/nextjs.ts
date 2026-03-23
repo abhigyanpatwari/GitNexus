@@ -11,11 +11,16 @@
 export function nextjsFileToRouteURL(filePath: string): string | null {
   const normalized = filePath.replace(/\\/g, '/');
 
-  // App Router: app/api/**/route.ts (restrict to API routes to avoid noise from
-  // page-level route handlers that fetch() calls won't match anyway)
-  const appMatch = normalized.match(/app\/(api\/.+?)\/route\.(ts|js|tsx|jsx)$/);
+  // App Router: app/**/api/**/route.ts (restrict to API routes to avoid noise
+  // from page-level route handlers that fetch() calls won't match anyway).
+  // Route groups like (admin) may appear before api/.
+  const appMatch = normalized.match(/app\/(.+?)\/route\.(ts|js|tsx|jsx)$/);
   if (appMatch) {
-    return '/' + appMatch[1];
+    // Strip route groups: (admin), (marketing) etc. are not URL segments
+    const stripped = appMatch[1].replace(/\([^)]+\)\/?/g, '');
+    // Only match if the path contains an api/ segment
+    if (!stripped.startsWith('api/') && stripped !== 'api') return null;
+    return '/' + stripped;
   }
 
   // Pages Router: pages/api/**/*.ts
@@ -35,13 +40,13 @@ export function nextjsFileToRouteURL(filePath: string): string | null {
 // - Returns null for URLs that cannot be statically resolved (string
 //   concatenation, function calls, non-API paths).
 export function normalizeFetchURL(rawURL: string): string | null {
-  if (!rawURL.includes('/api/') && !rawURL.startsWith('/api')) return null;
-
   let url = rawURL.split('?')[0];
   url = url.replace(/\$\{[^}]+\}/g, '[param]');
   url = url.replace(/^`|`$/g, '');
 
   if (url.includes('+') || url.includes('(')) return null;
+  // Must be an absolute path
+  if (!url.startsWith('/')) return null;
 
   return url;
 }
@@ -52,6 +57,17 @@ export function normalizeFetchURL(rawURL: string): string | null {
 export function routeMatches(fetchURL: string, routeURL: string): boolean {
   const fetchParts = fetchURL.split('/').filter(Boolean);
   const routeParts = routeURL.split('/').filter(Boolean);
+
+  // Check for catch-all route: [...param] matches any remaining segments
+  const lastRoutePart = routeParts[routeParts.length - 1];
+  if (lastRoutePart?.startsWith('[...')) {
+    // Catch-all: match if fetch has at least as many segments as route (minus catch-all)
+    if (fetchParts.length < routeParts.length - 1) return false;
+    return routeParts.slice(0, -1).every((part, i) => {
+      if (part.startsWith('[') || fetchParts[i].startsWith('[')) return true;
+      return part === fetchParts[i];
+    });
+  }
 
   if (fetchParts.length !== routeParts.length) return false;
 

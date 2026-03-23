@@ -507,6 +507,9 @@ const ROUTE_HTTP_METHODS = new Set([
 
 const ROUTE_RESOURCE_METHODS = new Set(['resource', 'apiResource']);
 
+// Express/Hono method names that register routes
+const EXPRESS_ROUTE_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'all', 'use', 'route']);
+
 // Decorator names that indicate HTTP route handlers (NestJS, Flask, FastAPI, Spring)
 const ROUTE_DECORATOR_NAMES = new Set([
   'Get', 'Post', 'Put', 'Delete', 'Patch', 'Route',
@@ -1011,12 +1014,13 @@ const processFileGroup = (
         // Store by the decorator's end line — the definition follows immediately after
         fileDecorators.set(decoratorNode.endPosition.row, { name: decoratorName, arg: decoratorArg });
 
-        if (ROUTE_DECORATOR_NAMES.has(decoratorName) && decoratorArg) {
+        if (ROUTE_DECORATOR_NAMES.has(decoratorName)) {
+          const routePath = decoratorArg || '';
           const method = decoratorName.replace('Mapping', '').toUpperCase();
           const httpMethod = ['GET','POST','PUT','DELETE','PATCH'].includes(method) ? method : 'GET';
           result.decoratorRoutes.push({
             filePath: file.path,
-            routePath: decoratorArg,
+            routePath,
             httpMethod,
             decoratorName,
             lineNumber: decoratorNode.startPosition.row,
@@ -1043,6 +1047,23 @@ const processFileGroup = (
           });
         }
         continue;  // Don't let this match fall through to 'call' handler
+      }
+
+      // Express/Hono route registration: app.get('/path', handler)
+      if (captureMap['express_route'] && captureMap['express_route.method'] && captureMap['express_route.path']) {
+        const method = captureMap['express_route.method'].text;
+        const routePath = captureMap['express_route.path'].text;
+        if (EXPRESS_ROUTE_METHODS.has(method) && routePath.startsWith('/')) {
+          const httpMethod = method === 'all' || method === 'use' || method === 'route' ? 'GET' : method.toUpperCase();
+          result.decoratorRoutes.push({
+            filePath: file.path,
+            routePath,
+            httpMethod,
+            decoratorName: `express.${method}`,
+            lineNumber: captureMap['express_route'].startPosition.row,
+          });
+        }
+        continue;
       }
 
       // Extract call sites
@@ -1244,11 +1265,14 @@ const processFileGroup = (
         for (let checkLine = defStartLine - 1; checkLine >= Math.max(0, defStartLine - MAX_DECORATOR_SCAN_LINES); checkLine--) {
           const dec = fileDecorators.get(checkLine);
           if (dec) {
-            frameworkHint = {
-              framework: 'decorator',
-              entryPointMultiplier: 1.2,
-              reason: `@${dec.name}${dec.arg ? `("${dec.arg}")` : ''}`,
-            };
+            // Use first (closest) decorator found for framework hint
+            if (!frameworkHint) {
+              frameworkHint = {
+                framework: 'decorator',
+                entryPointMultiplier: 1.2,
+                reason: `@${dec.name}${dec.arg ? `("${dec.arg}")` : ''}`,
+              };
+            }
             // Emit tool definition if this is a @tool decorator
             if (dec.isTool) {
               result.toolDefs.push({
@@ -1259,7 +1283,6 @@ const processFileGroup = (
               });
             }
             fileDecorators.delete(checkLine);
-            break;
           }
         }
       }

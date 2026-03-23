@@ -10,6 +10,13 @@ export function phpFileToRouteURL(filePath: string): string | null {
   // Only match files in api/ directory
   const apiMatch = normalized.match(/^(api\/.+?)\.php$/);
   if (apiMatch) {
+    const fileName = normalized.split('/').pop()!;
+    // Skip non-handler files (helpers, configs, base classes, tests)
+    if (fileName.startsWith('_') || fileName.startsWith('base') ||
+        fileName.includes('helper') || fileName.includes('config') ||
+        fileName.includes('test') || fileName.includes('fixture')) {
+      return null;
+    }
     return '/' + apiMatch[1];
   }
 

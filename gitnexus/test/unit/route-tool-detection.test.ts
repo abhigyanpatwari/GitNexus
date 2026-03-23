@@ -29,6 +29,11 @@ describe('nextjsFileToRouteURL', () => {
     expect(nextjsFileToRouteURL('app/(marketing)/about/route.ts')).toBeNull();
   });
 
+  it('strips route groups from App Router paths', () => {
+    expect(nextjsFileToRouteURL('app/(admin)/api/users/route.ts')).toBe('/api/users');
+    expect(nextjsFileToRouteURL('app/(marketing)/api/newsletter/route.ts')).toBe('/api/newsletter');
+  });
+
   it('extracts Pages Router API routes', () => {
     expect(nextjsFileToRouteURL('pages/api/auth/login.ts')).toBe('/api/auth/login');
     expect(nextjsFileToRouteURL('pages/api/users.ts')).toBe('/api/users');
@@ -70,6 +75,15 @@ describe('phpFileToRouteURL', () => {
     expect(phpFileToRouteURL('vendor/lib/api/config.php')).toBeNull();
   });
 
+  it('filters out non-handler files in api/', () => {
+    expect(phpFileToRouteURL('api/_helpers.php')).toBeNull();
+    expect(phpFileToRouteURL('api/base_controller.php')).toBeNull();
+    expect(phpFileToRouteURL('api/helper_utils.php')).toBeNull();
+    expect(phpFileToRouteURL('api/config.php')).toBeNull();
+    expect(phpFileToRouteURL('api/test_upload.php')).toBeNull();
+    expect(phpFileToRouteURL('api/fixtures.php')).toBeNull();
+  });
+
   it('returns null for non-PHP files', () => {
     expect(phpFileToRouteURL('api/readme.md')).toBeNull();
   });
@@ -98,9 +112,10 @@ describe('normalizeFetchURL', () => {
     expect(normalizeFetchURL('`/api/grants`')).toBe('/api/grants');
   });
 
-  it('returns null for non-API URLs', () => {
-    expect(normalizeFetchURL('/dashboard')).toBeNull();
-    expect(normalizeFetchURL('/users')).toBeNull();
+  it('accepts non-/api/ absolute paths', () => {
+    expect(normalizeFetchURL('/v1/users')).toBe('/v1/users');
+    expect(normalizeFetchURL('/graphql')).toBe('/graphql');
+    expect(normalizeFetchURL('/dashboard')).toBe('/dashboard');
   });
 
   it('returns null for unresolvable patterns', () => {
@@ -132,6 +147,21 @@ describe('routeMatches', () => {
     expect(routeMatches('/api/orgs/[param]', '/api/orgs/[slug]')).toBe(true);
     expect(routeMatches('/api/orgs/acme', '/api/orgs/[slug]')).toBe(true);
     expect(routeMatches('/api/orgs/[param]/grants', '/api/orgs/[slug]/grants')).toBe(true);
+  });
+
+  it('matches catch-all routes against longer paths', () => {
+    expect(routeMatches('/api/docs/a/b/c', '/api/[...slug]')).toBe(true);
+    expect(routeMatches('/api/proxy/x', '/api/[...slug]')).toBe(true);
+    expect(routeMatches('/api/proxy/x/y/z', '/api/[...slug]')).toBe(true);
+  });
+
+  it('does not match catch-all when prefix segments differ', () => {
+    expect(routeMatches('/v1/docs/a', '/api/[...slug]')).toBe(false);
+  });
+
+  it('does not match catch-all with too few segments', () => {
+    // Catch-all /api/[...slug] needs at least the /api prefix
+    expect(routeMatches('/', '/api/[...slug]')).toBe(false);
   });
 });
 
