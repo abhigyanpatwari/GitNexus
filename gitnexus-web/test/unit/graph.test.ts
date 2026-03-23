@@ -23,8 +23,9 @@ describe('createKnowledgeGraph', () => {
   it('deduplicates nodes by id', () => {
     const graph = createKnowledgeGraph();
     const node = createFileNode('index.ts', 'src/index.ts');
+    const duplicateNode = createFileNode('index.ts', 'src/index.ts');
     graph.addNode(node);
-    graph.addNode(node);
+    graph.addNode(duplicateNode);
 
     expect(graph.nodeCount).toBe(1);
   });
@@ -41,8 +42,9 @@ describe('createKnowledgeGraph', () => {
   it('deduplicates relationships by id', () => {
     const graph = createKnowledgeGraph();
     const rel = createCallsRelationship('fn:a', 'fn:b');
+    const duplicateRel = createCallsRelationship('fn:a', 'fn:b');
     graph.addRelationship(rel);
-    graph.addRelationship(rel);
+    graph.addRelationship(duplicateRel);
 
     expect(graph.relationshipCount).toBe(1);
   });

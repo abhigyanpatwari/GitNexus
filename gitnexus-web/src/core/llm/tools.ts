@@ -901,7 +901,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       const activeRelTypes = relationTypes && relationTypes.length > 0 
         ? relationTypes 
         : defaultRelTypes;
-      const relTypeFilter = activeRelTypes.map(t => `'${t}'`).join(', ');
+      const relTypeFilter = activeRelTypes.map(t => `'${t.replace(/'/g, "''")}'`).join(', ');
       
       const directionLabel = direction === 'upstream' 
         ? 'Files that DEPEND ON this (breakage risk)'

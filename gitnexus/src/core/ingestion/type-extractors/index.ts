@@ -33,12 +33,19 @@ export const typeConfigs = {
   [SupportedLanguages.Ruby]: rubyConfig,
 } satisfies Record<SupportedLanguages, LanguageTypeConfig>;
 
-export type { LanguageTypeConfig, TypeBindingExtractor, ParameterExtractor, ConstructorBindingScanner } from './types.js';
+export type {
+  LanguageTypeConfig,
+  TypeBindingExtractor,
+  ParameterExtractor,
+  ConstructorBindingScanner,
+  ForLoopExtractor,
+  PendingAssignmentExtractor,
+  PatternBindingExtractor,
+} from './types.js';
 export { 
   TYPED_PARAMETER_TYPES,
   extractSimpleTypeName,
   extractGenericTypeArgs,
   extractVarName,
-  findChildByType,
   extractRubyConstructorAssignment
 } from './shared.js';

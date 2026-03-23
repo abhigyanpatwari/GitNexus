@@ -31,7 +31,7 @@ describe('processHeritageFromExtracted', () => {
       expect(rels).toHaveLength(1);
       expect(rels[0].sourceId).toBe('Class:src/admin.ts:AdminUser');
       expect(rels[0].targetId).toBe('Class:src/user.ts:User');
-      expect(rels[0].confidence).toBe(1.0);
+      expect(rels[0].confidence).toBeCloseTo(0.689202); // geometric mean: sqrt(same-file * global)
     });
 
     it('uses generated ID when class not in symbol table', async () => {

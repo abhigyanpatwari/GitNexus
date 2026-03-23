@@ -61,9 +61,9 @@ describe('DEFAULT_VISIBLE_LABELS', () => {
 
 describe('edge types', () => {
   it('ALL_EDGE_TYPES contains all EDGE_INFO keys', () => {
-    for (const type of ALL_EDGE_TYPES) {
-      expect(EDGE_INFO).toHaveProperty(type);
-    }
+    const edgeInfoKeys = Object.keys(EDGE_INFO).sort();
+    const allEdgeTypes = [...ALL_EDGE_TYPES].sort();
+    expect(edgeInfoKeys).toEqual(allEdgeTypes);
   });
 
   it('DEFAULT_VISIBLE_EDGES is a subset of ALL_EDGE_TYPES', () => {

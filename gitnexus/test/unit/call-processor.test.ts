@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { processCallsFromExtracted, extractReturnTypeName } from '../../src/core/ingestion/call-processor.js';
+import { processCallsFromExtracted, seedCrossFileReceiverTypes } from '../../src/core/ingestion/call-processor.js';
+import { extractReturnTypeName } from '../../src/core/ingestion/type-extractors/shared.js';
 import { createResolutionContext, type ResolutionContext } from '../../src/core/ingestion/resolution-context.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { ExtractedCall, FileConstructorBindings } from '../../src/core/ingestion/workers/parse-worker.js';
@@ -476,6 +477,122 @@ describe('processCallsFromExtracted', () => {
 
   // ---- Scope-aware constructor bindings (Phase 3) ----
 
+  it('receiverKey collision: same method name in different classes does not collide', async () => {
+    // User.save@100 and Repo.save@200 are two methods named "save" in different classes.
+    // Each has a local variable "db" pointing to a different type.
+    // Without @startIndex in the key, the second binding would overwrite the first.
+    ctx.symbols.add('src/db/Database.ts', 'Database', 'Class:src/db/Database.ts:Database', 'Class');
+    ctx.symbols.add('src/db/Cache.ts', 'Cache', 'Class:src/db/Cache.ts:Cache', 'Class');
+    ctx.symbols.add('src/db/Database.ts', 'query', 'Method:src/db/Database.ts:query', 'Method', { ownerId: 'Class:src/db/Database.ts:Database' });
+    ctx.symbols.add('src/db/Cache.ts', 'query', 'Method:src/db/Cache.ts:query', 'Method', { ownerId: 'Class:src/db/Cache.ts:Cache' });
+    ctx.importMap.set('src/models/User.ts', new Set(['src/db/Database.ts']));
+    ctx.importMap.set('src/models/Repo.ts', new Set(['src/db/Cache.ts']));
+
+    // Two bindings: both enclosing scope is named "save" but at different startIndexes
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/models/User.ts',
+        bindings: [
+          // save@100: inside User.save(), db = new Database()
+          { scope: 'save@100', varName: 'db', calleeName: 'Database' },
+        ],
+      },
+      {
+        filePath: 'src/models/Repo.ts',
+        bindings: [
+          // save@200: inside Repo.save(), db = new Cache()
+          { scope: 'save@200', varName: 'db', calleeName: 'Cache' },
+        ],
+      },
+    ];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/models/User.ts',
+        calledName: 'query',
+        sourceId: 'Method:src/models/User.ts:save',
+        receiverName: 'db',
+        callForm: 'member',
+      },
+      {
+        filePath: 'src/models/Repo.ts',
+        calledName: 'query',
+        sourceId: 'Method:src/models/Repo.ts:save',
+        receiverName: 'db',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx, undefined, constructorBindings);
+
+    const rels = graph.relationships.filter(r => r.type === 'CALLS');
+    expect(rels).toHaveLength(2);
+    const userQueryRel = rels.find(r => r.sourceId === 'Method:src/models/User.ts:save');
+    const repoQueryRel = rels.find(r => r.sourceId === 'Method:src/models/Repo.ts:save');
+    expect(userQueryRel?.targetId).toBe('Method:src/db/Database.ts:query');
+    expect(repoQueryRel?.targetId).toBe('Method:src/db/Cache.ts:query');
+  });
+
+  it('receiverKey collision: same scope funcName + same varName + same type resolves (non-ambiguous)', async () => {
+    // Two save@* scopes both bind "db" to the same type — not ambiguous, should resolve.
+    ctx.symbols.add('src/db/Database.ts', 'Database', 'Class:src/db/Database.ts:Database', 'Class');
+    ctx.symbols.add('src/db/Database.ts', 'query', 'Method:src/db/Database.ts:query', 'Method', { ownerId: 'Class:src/db/Database.ts:Database' });
+    ctx.importMap.set('src/service.ts', new Set(['src/db/Database.ts']));
+
+    const constructorBindings: FileConstructorBindings[] = [{
+      filePath: 'src/service.ts',
+      bindings: [
+        { scope: 'save@10', varName: 'db', calleeName: 'Database' },
+        { scope: 'save@50', varName: 'db', calleeName: 'Database' },
+      ],
+    }];
+
+    const calls: ExtractedCall[] = [{
+      filePath: 'src/service.ts',
+      calledName: 'query',
+      sourceId: 'Method:src/service.ts:save',
+      receiverName: 'db',
+      callForm: 'member',
+    }];
+
+    await processCallsFromExtracted(graph, calls, ctx, undefined, constructorBindings);
+
+    const rels = graph.relationships.filter(r => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe('Method:src/db/Database.ts:query');
+  });
+
+  it('receiverKey collision: same scope funcName + same varName + different types → ambiguous, no CALLS edge', async () => {
+    // Two save@* scopes in the same file bind "db" to different types — truly ambiguous.
+    ctx.symbols.add('src/db/Database.ts', 'Database', 'Class:src/db/Database.ts:Database', 'Class');
+    ctx.symbols.add('src/db/Cache.ts', 'Cache', 'Class:src/db/Cache.ts:Cache', 'Class');
+    ctx.symbols.add('src/db/Database.ts', 'query', 'Method:src/db/Database.ts:query', 'Method', { ownerId: 'Class:src/db/Database.ts:Database' });
+    ctx.symbols.add('src/db/Cache.ts', 'query', 'Method:src/db/Cache.ts:query', 'Method', { ownerId: 'Class:src/db/Cache.ts:Cache' });
+    ctx.importMap.set('src/service.ts', new Set(['src/db/Database.ts', 'src/db/Cache.ts']));
+
+    const constructorBindings: FileConstructorBindings[] = [{
+      filePath: 'src/service.ts',
+      bindings: [
+        { scope: 'save@10', varName: 'db', calleeName: 'Database' },
+        { scope: 'save@50', varName: 'db', calleeName: 'Cache' },
+      ],
+    }];
+
+    const calls: ExtractedCall[] = [{
+      filePath: 'src/service.ts',
+      calledName: 'query',
+      sourceId: 'Method:src/service.ts:save',
+      receiverName: 'db',
+      callForm: 'member',
+    }];
+
+    await processCallsFromExtracted(graph, calls, ctx, undefined, constructorBindings);
+
+    // Ambiguous — different types for same funcName+varName, should not emit a CALLS edge
+    const rels = graph.relationships.filter(r => r.type === 'CALLS');
+    expect(rels).toHaveLength(0);
+  });
+
   it('scope-aware bindings: same varName in different functions resolves to correct type', async () => {
     ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
     ctx.symbols.add('src/models.ts', 'Repo', 'Class:src/models.ts:Repo', 'Class');
@@ -706,5 +823,212 @@ describe('extractReturnTypeName', () => {
     expect(extractReturnTypeName('ValueTask')).toBeUndefined();
     expect(extractReturnTypeName('CompletableFuture')).toBeUndefined();
     expect(extractReturnTypeName('Optional')).toBeUndefined();
+  });
+
+  // ---- Length caps (Phase 6) ----
+
+  it('pre-cap: returns undefined when raw input exceeds 2048 characters', () => {
+    const longInput = 'A'.repeat(2049);
+    expect(extractReturnTypeName(longInput)).toBeUndefined();
+  });
+
+  it('pre-cap: accepts raw input at exactly 2048 characters (boundary)', () => {
+    // A 2048-char string of uppercase letters passes the pre-cap gate.
+    // It won't match as a valid identifier (too long for post-cap), so the
+    // result is undefined — but the pre-cap itself does NOT reject it.
+    // We test this by verifying a 2048-char type that WOULD be valid in all
+    // other respects is still returned as undefined (post-cap rejects it).
+    const atLimit = 'U' + 'x'.repeat(2047); // 2048 chars, starts with uppercase
+    // Post-cap (512) will reject this, but the pre-cap should not fire.
+    // The important assertion: no throw and the result is undefined from post-cap.
+    expect(extractReturnTypeName(atLimit)).toBeUndefined();
+  });
+
+  it('pre-cap: accepts inputs shorter than 2048 characters without rejection', () => {
+    // 'User' is well under 2048 — should resolve normally.
+    expect(extractReturnTypeName('User')).toBe('User');
+  });
+
+  it('post-cap: returns undefined when extracted type name exceeds 512 characters', () => {
+    // Construct a raw string that is under the 2048-char pre-cap but produces
+    // a final identifier longer than 512 characters after extraction.
+    // A bare uppercase identifier of 513 chars satisfies all rules except post-cap.
+    const longTypeName = 'U' + 'x'.repeat(512); // 513 chars, starts with uppercase
+    expect(extractReturnTypeName(longTypeName)).toBeUndefined();
+  });
+
+  it('post-cap: accepts extracted type name at exactly 512 characters (boundary)', () => {
+    // 512-char identifier should pass the post-cap check (> 512 rejects, not >=).
+    const atLimit = 'U' + 'x'.repeat(511); // exactly 512 chars
+    expect(extractReturnTypeName(atLimit)).toBe(atLimit);
+  });
+
+  it('post-cap: accepts normal short type names well under 512 characters', () => {
+    expect(extractReturnTypeName('HttpClient')).toBe('HttpClient');
+    expect(extractReturnTypeName('UserService')).toBe('UserService');
+  });
+});
+
+describe('seedCrossFileReceiverTypes', () => {
+  it('single-hop: imported receiver gets type from ExportedTypeMap', () => {
+    const calls: ExtractedCall[] = [{
+      filePath: 'src/service.ts',
+      calledName: 'save',
+      sourceId: 'Function:src/service.ts:run',
+      receiverName: 'repo',
+      callForm: 'member',
+    }];
+
+    const namedImportMap = new Map([
+      ['src/service.ts', new Map([
+        ['repo', { sourcePath: 'src/models/repo.ts', exportedName: 'repo' }],
+      ])],
+    ]);
+
+    const exportedTypeMap = new Map([
+      ['src/models/repo.ts', new Map([
+        ['repo', 'Repo'],
+      ])],
+    ]);
+
+    const { enrichedCount } = seedCrossFileReceiverTypes(calls, namedImportMap, exportedTypeMap);
+
+    expect(enrichedCount).toBe(1);
+    expect(calls[0].receiverTypeName).toBe('Repo');
+  });
+
+  it('no-op when receiverTypeName already exists', () => {
+    const calls: ExtractedCall[] = [{
+      filePath: 'src/service.ts',
+      calledName: 'save',
+      sourceId: 'Function:src/service.ts:run',
+      receiverName: 'repo',
+      receiverTypeName: 'AlreadyKnown',
+      callForm: 'member',
+    }];
+
+    const namedImportMap = new Map([
+      ['src/service.ts', new Map([
+        ['repo', { sourcePath: 'src/models/repo.ts', exportedName: 'repo' }],
+      ])],
+    ]);
+
+    const exportedTypeMap = new Map([
+      ['src/models/repo.ts', new Map([
+        ['repo', 'Repo'],
+      ])],
+    ]);
+
+    const { enrichedCount } = seedCrossFileReceiverTypes(calls, namedImportMap, exportedTypeMap);
+
+    expect(enrichedCount).toBe(0);
+    expect(calls[0].receiverTypeName).toBe('AlreadyKnown');
+  });
+
+  it('no-op for free function calls (callForm !== member)', () => {
+    const calls: ExtractedCall[] = [{
+      filePath: 'src/service.ts',
+      calledName: 'doSomething',
+      sourceId: 'Function:src/service.ts:run',
+      receiverName: 'repo',
+      callForm: 'free',
+    }];
+
+    const namedImportMap = new Map([
+      ['src/service.ts', new Map([
+        ['repo', { sourcePath: 'src/models/repo.ts', exportedName: 'repo' }],
+      ])],
+    ]);
+
+    const exportedTypeMap = new Map([
+      ['src/models/repo.ts', new Map([
+        ['repo', 'Repo'],
+      ])],
+    ]);
+
+    const { enrichedCount } = seedCrossFileReceiverTypes(calls, namedImportMap, exportedTypeMap);
+
+    expect(enrichedCount).toBe(0);
+    expect(calls[0].receiverTypeName).toBeUndefined();
+  });
+
+  it('aliased imports: local name maps to exported name via binding', () => {
+    const calls: ExtractedCall[] = [{
+      filePath: 'src/controller.ts',
+      calledName: 'find',
+      sourceId: 'Function:src/controller.ts:handle',
+      receiverName: 'myRepo',
+      callForm: 'member',
+    }];
+
+    // import { repoInstance as myRepo } from 'src/models/repo.ts'
+    const namedImportMap = new Map([
+      ['src/controller.ts', new Map([
+        ['myRepo', { sourcePath: 'src/models/repo.ts', exportedName: 'repoInstance' }],
+      ])],
+    ]);
+
+    const exportedTypeMap = new Map([
+      ['src/models/repo.ts', new Map([
+        ['repoInstance', 'Repo'],
+      ])],
+    ]);
+
+    const { enrichedCount } = seedCrossFileReceiverTypes(calls, namedImportMap, exportedTypeMap);
+
+    expect(enrichedCount).toBe(1);
+    expect(calls[0].receiverTypeName).toBe('Repo');
+  });
+
+  it('early exit when maps are empty', () => {
+    const calls: ExtractedCall[] = [{
+      filePath: 'src/service.ts',
+      calledName: 'save',
+      sourceId: 'Function:src/service.ts:run',
+      receiverName: 'repo',
+      callForm: 'member',
+    }];
+
+    const { enrichedCount: countA } = seedCrossFileReceiverTypes(
+      calls,
+      new Map(),
+      new Map([['src/models/repo.ts', new Map([['repo', 'Repo']])]]),
+    );
+    expect(countA).toBe(0);
+
+    const { enrichedCount: countB } = seedCrossFileReceiverTypes(
+      calls,
+      new Map([['src/service.ts', new Map([['repo', { sourcePath: 'src/models/repo.ts', exportedName: 'repo' }]])]]),
+      new Map(),
+    );
+    expect(countB).toBe(0);
+
+    expect(calls[0].receiverTypeName).toBeUndefined();
+  });
+
+  it('no mutation when no matching exports found', () => {
+    const calls: ExtractedCall[] = [{
+      filePath: 'src/service.ts',
+      calledName: 'save',
+      sourceId: 'Function:src/service.ts:run',
+      receiverName: 'repo',
+      callForm: 'member',
+    }];
+
+    // namedImportMap has the file, but exportedTypeMap has no entry for the source path
+    const namedImportMap = new Map([
+      ['src/service.ts', new Map([
+        ['repo', { sourcePath: 'src/models/repo.ts', exportedName: 'repo' }],
+      ])],
+    ]);
+
+    const exportedTypeMap = new Map([
+      ['src/other-file.ts', new Map([['something', 'OtherType']])],
+    ]);
+
+    const { enrichedCount } = seedCrossFileReceiverTypes(calls, namedImportMap, exportedTypeMap);
+
+    expect(enrichedCount).toBe(0);
+    expect(calls[0].receiverTypeName).toBeUndefined();
   });
 });

@@ -2389,8 +2389,16 @@ export function createEntry(level: string, msg: string) {
     /* CI timeout tolerance */
     if (result1.status === null || result2.status === null) return;
 
-    expect(result1.status).toBe(0);
-    expect(result2.status).toBe(0);
+    expect(result1.status, [
+      `first analyze --skills exited with code ${result1.status}`,
+      `stdout: ${result1.stdout?.slice(0, 500)}`,
+      `stderr: ${result1.stderr?.slice(0, 500)}`,
+    ].join('\n')).toBe(0);
+    expect(result2.status, [
+      `second analyze --skills exited with code ${result2.status}`,
+      `stdout: ${result2.stdout?.slice(0, 500)}`,
+      `stderr: ${result2.stderr?.slice(0, 500)}`,
+    ].join('\n')).toBe(0);
 
     const generatedDir = path.join(tmpDir, '.claude', 'skills', 'generated');
     expect(fs.existsSync(generatedDir)).toBe(true);

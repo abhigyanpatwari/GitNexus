@@ -1,0 +1,103 @@
+name: Triage Sweep
+
+on:
+  workflow_dispatch:
+    inputs:
+      iqr_multiplier:
+        description: >-
+          IQR multiplier for outlier cutoff.
+          cutoff = Q75 + multiplier * IQR.
+          Higher = fewer outliers flagged.
+        type: number
+        default: 3.0
+      max_outlier_pct:
+        description: >-
+          Maximum fraction of items that can be flagged as outliers (0-1).
+          Hard cap to prevent over-flagging.
+        type: number
+        default: 0.05
+      contamination:
+        description: >-
+          Expected fraction of outliers in the data (0-0.5).
+          Controls how aggressively EllipticEnvelope downweights extremes.
+        type: number
+        default: 0.1
+      cosine_threshold:
+        description: >-
+          Cosine similarity threshold for duplicate detection.
+          Pairs with similarity above this are flagged as potential duplicates.
+          Higher = only very similar pairs flagged.
+        type: number
+        default: 0.92
+      max_items:
+        description: >-
+          Maximum number of open issues + PRs to process.
+          Hard cap to prevent runaway costs on very large repos.
+        type: number
+        default: 500
+      dry_run:
+        description: >-
+          Check this to only log results to the workflow summary.
+          Uncheck to create a GitHub issue with the report and apply labels.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: triage-sweep
+  cancel-in-progress: true
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          sparse-checkout: .github/scripts/triage
+          sparse-checkout-cone-mode: false
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: .github/scripts/triage/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r .github/scripts/triage/requirements.txt
+
+      - name: Cache FastEmbed model weights
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        with:
+          path: ${{ github.workspace }}/.fastembed_cache
+          key: fastembed-bge-small-en-v1.5
+
+      - name: Run triage sweep
+        id: sweep
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.fastembed_cache
+          INPUT_IQR_MULTIPLIER: ${{ inputs.iqr_multiplier }}
+          INPUT_MAX_OUTLIER_PCT: ${{ inputs.max_outlier_pct }}
+          INPUT_CONTAMINATION: ${{ inputs.contamination }}
+          INPUT_COSINE_THRESHOLD: ${{ inputs.cosine_threshold }}
+          INPUT_MAX_ITEMS: ${{ inputs.max_items }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: python .github/scripts/triage/sweep.py
+
+      - name: Post summary
+        if: always()
+        run: |
+          if [ -f /tmp/triage-report.md ]; then
+            cat /tmp/triage-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No report generated." >> "$GITHUB_STEP_SUMMARY"
+          fi

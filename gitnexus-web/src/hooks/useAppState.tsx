@@ -95,6 +95,7 @@ interface AppState {
   isAIHighlightsEnabled: boolean;
   toggleAIHighlights: () => void;
   clearAIToolHighlights: () => void;
+  clearAICitationHighlights: () => void;
   clearBlastRadius: () => void;
   queryResult: QueryResult | null;
   setQueryResult: (result: QueryResult | null) => void;
@@ -225,6 +226,10 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
   const clearAIToolHighlights = useCallback(() => {
     setAIToolHighlightedNodeIds(new Set());
+  }, []);
+
+  const clearAICitationHighlights = useCallback(() => {
+    setAICitationHighlightedNodeIds(new Set());
   }, []);
 
   const clearBlastRadius = useCallback(() => {
@@ -1000,11 +1005,13 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
     setProgress({ phase: 'extracting', percent: 0, message: 'Switching repository...', detail: `Loading ${repoName}` });
     setViewMode('loading');
+    setIsAgentReady(false);
 
     // Clear stale graph state from previous repo (highlights, selections, blast radius)
     // Without this, sigma reducers dim ALL nodes/edges because old node IDs don't match
     setHighlightedNodeIds(new Set());
     clearAIToolHighlights();
+    clearAICitationHighlights();
     clearBlastRadius();
     setSelectedNode(null);
     setQueryResult(null);
@@ -1039,19 +1046,22 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       for (const [p, c] of Object.entries(result.fileContents)) fileMap.set(p, c);
       setFileContents(fileMap);
 
-      setViewMode('exploring');
-
       // Load graph into LadybugDB for Nexus AI queries, then init agent
       try {
         await loadServerGraph(result.nodes, result.relationships, result.fileContents);
         if (getActiveProviderConfig()) {
           await initializeAgent(pName);
         }
+        setViewMode('exploring');
+        startEmbeddingsWithFallback();
       } catch (err) {
         console.warn('Failed to load graph into LadybugDB:', err);
+        setIsAgentReady(false);
+        await apiRef.current?.disposeAgent();
+        setAgentError('Failed to load graph into LadybugDB');
+        setViewMode('exploring');
+        setProgress(null);
       }
-
-      startEmbeddingsWithFallback();
     } catch (err) {
       console.error('Repo switch failed:', err);
       setProgress({
@@ -1059,9 +1069,11 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
         message: 'Failed to switch repository',
         detail: err instanceof Error ? err.message : 'Unknown error',
       });
+      setIsAgentReady(false);
+      await apiRef.current?.disposeAgent();
       setTimeout(() => { setViewMode('exploring'); setProgress(null); }, 3000);
     }
-  }, [serverBaseUrl, setProgress, setViewMode, setProjectName, setGraph, setFileContents, loadServerGraph, initializeAgent, startEmbeddingsWithFallback, setHighlightedNodeIds, clearAIToolHighlights, clearBlastRadius, setSelectedNode, setQueryResult, setCodeReferences, setCodePanelOpen, setCodeReferenceFocus]);
+  }, [serverBaseUrl, setProgress, setViewMode, setProjectName, setGraph, setFileContents, loadServerGraph, initializeAgent, startEmbeddingsWithFallback, setHighlightedNodeIds, clearAIToolHighlights, clearAICitationHighlights, clearBlastRadius, setSelectedNode, setQueryResult, setCodeReferences, setCodePanelOpen, setCodeReferenceFocus]);
 
   const removeCodeReference = useCallback((id: string) => {
     setCodeReferences(prev => {
@@ -1144,6 +1156,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     isAIHighlightsEnabled,
     toggleAIHighlights,
     clearAIToolHighlights,
+    clearAICitationHighlights,
     clearBlastRadius,
     queryResult,
     setQueryResult,

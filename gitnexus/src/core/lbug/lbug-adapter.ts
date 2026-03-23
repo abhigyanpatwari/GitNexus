@@ -18,9 +18,32 @@ let conn: lbug.Connection | null = null;
 let currentDbPath: string | null = null;
 let ftsLoaded = false;
 
+/** Expose the current Database for pool adapter reuse in tests. */
+export const getDatabase = (): lbug.Database | null => db;
+
 // Global session lock for operations that touch module-level lbug globals.
 // This guarantees no DB switch can happen while an operation is running.
 let sessionLock: Promise<void> = Promise.resolve();
+
+/** Number of times to retry on a BUSY / lock-held error before giving up. */
+const DB_LOCK_RETRY_ATTEMPTS = 3;
+/** Base back-off in ms between BUSY retries (multiplied by attempt number). */
+const DB_LOCK_RETRY_DELAY_MS = 500;
+
+/**
+ * Return true when the error message indicates that another process holds
+ * an exclusive lock on the LadybugDB file (e.g. `gitnexus analyze` or
+ * `gitnexus serve` running at the same time).
+ */
+export const isDbBusyError = (err: unknown): boolean => {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    msg.includes('busy')
+    || msg.includes('lock')
+    || msg.includes('already in use')
+    || msg.includes('could not set lock')
+  );
+};
 
 const runWithSessionLock = async <T>(operation: () => Promise<T>): Promise<T> => {
   const previous = sessionLock;
@@ -46,12 +69,41 @@ export const initLbug = async (dbPath: string) => {
 /**
  * Execute multiple queries against one repo DB atomically.
  * While the callback runs, no other request can switch the active DB.
+ *
+ * Automatically retries up to DB_LOCK_RETRY_ATTEMPTS times when the
+ * database is busy (e.g. `gitnexus analyze` holds the write lock).
+ * Each retry waits DB_LOCK_RETRY_DELAY_MS * attempt milliseconds.
  */
 export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>): Promise<T> => {
-  return runWithSessionLock(async () => {
-    await ensureLbugInitialized(dbPath);
-    return operation();
-  });
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= DB_LOCK_RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await runWithSessionLock(async () => {
+        await ensureLbugInitialized(dbPath);
+        return operation();
+      });
+    } catch (err) {
+      lastError = err;
+      if (!isDbBusyError(err) || attempt === DB_LOCK_RETRY_ATTEMPTS) {
+        throw err;
+      }
+      // Close stale connection inside the session lock to prevent race conditions
+      // with concurrent operations that might acquire the lock between cleanup steps
+      await runWithSessionLock(async () => {
+        try { if (conn) await conn.close(); } catch { /* best-effort */ }
+        try { if (db) await db.close(); } catch { /* best-effort */ }
+        conn = null;
+        db = null;
+        currentDbPath = null;
+        ftsLoaded = false;
+      });
+      // Sleep outside the lock — no need to block others while waiting
+      await new Promise(resolve => setTimeout(resolve, DB_LOCK_RETRY_DELAY_MS * attempt));
+    }
+  }
+  // This line is unreachable — the loop either returns or throws inside,
+  // but TypeScript needs an explicit throw to satisfy the return type.
+  throw lastError;
 };
 
 const ensureLbugInitialized = async (dbPath: string) => {
@@ -333,6 +385,9 @@ const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   if (table === 'Process') {
     return `COPY ${t}(id, label, heuristicLabel, processType, stepCount, communities, entryPointId, terminalId) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
+  if (table === 'Section') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, level, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
   if (table === 'Method') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
@@ -377,6 +432,9 @@ export const insertNodeToLbug = async (
       query = `CREATE (n:File {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, content: ${escapeValue(properties.content || '')}})`;
     } else if (label === 'Folder') {
       query = `CREATE (n:Folder {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}})`;
+    } else if (label === 'Section') {
+      const descPart = properties.description ? `, description: ${escapeValue(properties.description)}` : '';
+      query = `CREATE (n:Section {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, level: ${properties.level || 1}, content: ${escapeValue(properties.content || '')}${descPart}})`;
     } else if (TABLES_WITH_EXPORTED.has(label)) {
       const descPart = properties.description ? `, description: ${escapeValue(properties.description)}` : '';
       query = `CREATE (n:${t} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${escapeValue(properties.content || '')}${descPart}})`;
@@ -448,6 +506,9 @@ export const batchInsertNodesToLbug = async (
           query = `MERGE (n:File {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.content = ${escapeValue(properties.content || '')}`;
         } else if (label === 'Folder') {
           query = `MERGE (n:Folder {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}`;
+        } else if (label === 'Section') {
+          const descPart = properties.description ? `, n.description = ${escapeValue(properties.description)}` : '';
+          query = `MERGE (n:Section {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.level = ${properties.level || 1}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
         } else if (TABLES_WITH_EXPORTED.has(label)) {
           const descPart = properties.description ? `, n.description = ${escapeValue(properties.description)}` : '';
           query = `MERGE (n:${t} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${escapeValue(properties.content || '')}${descPart}`;

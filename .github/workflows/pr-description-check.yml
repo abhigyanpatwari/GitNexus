@@ -1,0 +1,94 @@
+name: PR Description Check
+
+on:
+  pull_request:
+    types: [opened, edited, reopened]
+    branches: [main]
+
+permissions:
+  pull-requests: write
+
+concurrency:
+  group: pr-desc-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check-description:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check PR description quality
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const MIN_BODY_LENGTH = 50;
+            const LABEL = 'needs-description';
+
+            const pr = context.payload.pull_request;
+            const body = (pr.body || '').trim();
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const number = pr.number;
+
+            const hasLabel = pr.labels.some(l => l.name === LABEL);
+
+            if (body.length < MIN_BODY_LENGTH) {
+              // Add label if not already present
+              if (!hasLabel) {
+                await github.rest.issues.addLabels({
+                  owner, repo, issue_number: number,
+                  labels: [LABEL],
+                });
+              }
+
+              // Post or update a comment
+              const marker = '<!-- pr-desc-check -->';
+              const message = [
+                marker,
+                `### PR description is too short`,
+                '',
+                `This PR's description is **${body.length}** characters, ` +
+                `but the minimum is **${MIN_BODY_LENGTH}**.`,
+                '',
+                'Please update the PR description to explain:',
+                '- **What** this PR changes',
+                '- **Why** the change is needed',
+                '',
+                'Use the PR template as a guide. This check will re-run when you edit the description.',
+              ].join('\n');
+
+              // Find existing bot comment to update (avoid spam)
+              const comments = await github.rest.issues.listComments({
+                owner, repo, issue_number: number,
+              });
+              const existing = comments.data.find(c =>
+                c.body && c.body.includes(marker)
+              );
+
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner, repo, comment_id: existing.id,
+                  body: message,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: number,
+                  body: message,
+                });
+              }
+
+              core.setFailed(
+                `PR description is ${body.length} chars (minimum: ${MIN_BODY_LENGTH})`
+              );
+            } else {
+              // Description is acceptable — remove the label if present
+              if (hasLabel) {
+                await github.rest.issues.removeLabel({
+                  owner, repo, issue_number: number,
+                  name: LABEL,
+                }).catch(() => {});
+                // .catch: label may have been removed manually
+              }
+
+              core.info(`PR description OK (${body.length} chars)`);
+            }

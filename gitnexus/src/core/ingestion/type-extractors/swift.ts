@@ -1,6 +1,7 @@
 import type { SyntaxNode } from '../utils.js';
 import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner } from './types.js';
-import { extractSimpleTypeName, extractVarName, findChildByType, hasTypeAnnotation } from './shared.js';
+import { extractSimpleTypeName, extractVarName, hasTypeAnnotation } from './shared.js';
+import { findChild } from '../resolvers/utils.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
   'property_declaration',
@@ -10,9 +11,9 @@ const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
 const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
   // Swift property_declaration has pattern and type_annotation
   const pattern = node.childForFieldName('pattern')
-    ?? findChildByType(node, 'pattern');
+    ?? findChild(node, 'pattern');
   const typeAnnotation = node.childForFieldName('type')
-    ?? findChildByType(node, 'type_annotation');
+    ?? findChild(node, 'type_annotation');
   if (!pattern || !typeAnnotation) return;
   const varName = extractVarName(pattern) ?? pattern.text;
   const typeName = extractSimpleTypeName(typeAnnotation);
@@ -45,14 +46,14 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
 const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ClassNameLookup): void => {
   if (node.type !== 'property_declaration') return;
   // Skip if has type annotation — extractDeclaration handled it
-  if (node.childForFieldName('type') || findChildByType(node, 'type_annotation')) return;
+  if (node.childForFieldName('type') || findChild(node, 'type_annotation')) return;
   // Find pattern (variable name)
-  const pattern = node.childForFieldName('pattern') ?? findChildByType(node, 'pattern');
+  const pattern = node.childForFieldName('pattern') ?? findChild(node, 'pattern');
   if (!pattern) return;
   const varName = extractVarName(pattern) ?? pattern.text;
   if (!varName || env.has(varName)) return;
   // Find call_expression in the value
-  const callExpr = findChildByType(node, 'call_expression');
+  const callExpr = findChild(node, 'call_expression');
   if (!callExpr) return;
   const callee = callExpr.firstNamedChild;
   if (!callee) return;

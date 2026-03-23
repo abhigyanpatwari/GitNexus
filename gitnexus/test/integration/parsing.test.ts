@@ -10,7 +10,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import { isNodeExported } from '../../src/core/ingestion/parsing-processor.js';
+import { isNodeExported } from '../../src/core/ingestion/export-detection.js';
 import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
 import { getLanguageFromFilename } from '../../src/core/ingestion/utils.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';

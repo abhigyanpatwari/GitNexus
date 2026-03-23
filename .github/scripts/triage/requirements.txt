@@ -1,0 +1,4 @@
+fastembed>=0.5.0
+numpy>=1.26.0
+scikit-learn>=1.4.0
+scipy>=1.10.0

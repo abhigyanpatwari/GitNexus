@@ -3,7 +3,7 @@
  * Extracted from import-processor.ts for maintainability.
  */
 
-export { EXTENSIONS, tryResolveWithExtensions, buildSuffixIndex, suffixResolve } from './utils.js';
+export { EXTENSIONS, tryResolveWithExtensions, buildSuffixIndex, suffixResolve, EMPTY_INDEX } from './utils.js';
 export type { SuffixIndex } from './utils.js';
 
 export { KOTLIN_EXTENSIONS, appendKotlinWildcard, resolveJvmWildcard, resolveJvmMemberImport } from './jvm.js';
@@ -20,6 +20,8 @@ export type { ComposerConfig } from './php.js';
 export { resolveRustImport, tryRustModulePath } from './rust.js';
 
 export { resolveRubyImport } from './ruby.js';
+
+export { resolvePythonImport } from './python.js';
 
 export { resolveImportPath, RESOLVE_CACHE_CAP } from './standard.js';
 export type { TsconfigPaths } from './standard.js';

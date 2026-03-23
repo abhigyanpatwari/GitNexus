@@ -231,7 +231,9 @@ const workerApi = {
     storedFileContents = fileMap;
 
     // Track graph result for downstream APIs (enrichCommunities, etc.)
-    currentGraphResult = { graph, fileContents: fileMap } as PipelineResult;
+    currentGraphResult = { graph, fileContents: fileMap };
+    isEmbeddingComplete = false;
+    embeddingProgress = null;
 
     const lbug = await getLbugAdapter();
     await lbug.loadGraphToLbug(graph, fileMap);

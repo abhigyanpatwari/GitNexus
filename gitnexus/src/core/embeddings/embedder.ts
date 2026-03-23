@@ -17,18 +17,53 @@ if (!process.env.ORT_LOG_LEVEL) {
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
 import { existsSync } from 'fs';
 import { execFileSync } from 'child_process';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { createRequire } from 'module';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
+
+/**
+ * Check whether the onnxruntime-node package that @huggingface/transformers
+ * will actually load at runtime ships the CUDA execution provider.
+ *
+ * Critical: we resolve from transformers' own module scope, NOT from ours.
+ * npm may install two copies — a top-level 1.24.x (our dep) and a nested
+ * 1.21.0 (transformers' pinned dep). The guard must inspect whichever copy
+ * transformers.js will dlopen, otherwise the check is meaningless.
+ */
+function hasOrtCudaProvider(): boolean {
+  try {
+    const require = createRequire(import.meta.url);
+    // Resolve from @huggingface/transformers' scope so we find the same
+    // onnxruntime-node binary that transformers.js will use at runtime
+    const transformersDir = dirname(require.resolve('@huggingface/transformers/package.json'));
+    const ortRequire = createRequire(join(transformersDir, 'package.json'));
+    const ortPath = dirname(ortRequire.resolve('onnxruntime-node/package.json'));
+    // ORT 1.24.x only ships CUDA binaries for linux/x64 (downloaded from NuGet
+    // at postinstall). arm64 will correctly return false here until ORT adds support.
+    const arch = process.arch;
+    return existsSync(join(ortPath, 'bin', 'napi-v6', 'linux', arch, 'libonnxruntime_providers_cuda.so'));
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Check whether CUDA libraries are actually available on this system.
  * ONNX Runtime's native layer crashes (uncatchable) if we attempt CUDA
  * without the required shared libraries, so we probe first.
  *
- * Checks the dynamic linker cache (ldconfig) which covers all architectures
- * and install paths, then falls back to CUDA_PATH / LD_LIBRARY_PATH env vars.
+ * Checks both:
+ * 1. That system CUDA libraries (libcublasLt) are present
+ * 2. That onnxruntime-node ships the CUDA execution provider binary
+ *
+ * Both conditions must be true — system CUDA libs alone are not enough
+ * if onnxruntime-node is a CPU-only build (versions < 1.24.0).
  */
 function isCudaAvailable(): boolean {
+  // First, verify onnxruntime-node has the CUDA provider binary.
+  // Without this, requesting CUDA causes an uncatchable native crash.
+  if (!hasOrtCudaProvider()) return false;
+
   // Primary: query the dynamic linker cache — covers all architectures,
   // distro layouts, and custom install paths registered with ldconfig
   try {

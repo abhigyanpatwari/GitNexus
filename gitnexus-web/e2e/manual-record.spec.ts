@@ -11,7 +11,7 @@ import { test } from '@playwright/test';
  * Also skipped when PWDEBUG is not set or in CI, as a safety net.
  */
 test.skip(
-  !!process.env.CI || !process.env.PWDEBUG,
+  !!process.env.CI || process.env.PWDEBUG !== '1',
   'Manual recording requires --headed and PWDEBUG=1. Run: PWDEBUG=1 npx playwright test e2e/manual-record.spec.ts --headed --timeout=0'
 );
 

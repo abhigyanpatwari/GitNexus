@@ -292,19 +292,19 @@ describe('computeMRO', () => {
       addExtends(graph, 'Child', 'ParentA');
       addExtends(graph, 'Child', 'ParentB');
 
-      // Add Property nodes (same name 'name') to both parents via HAS_METHOD
+      // Add Property nodes (same name 'name') to both parents via HAS_PROPERTY
       const propA = generateId('Property', 'ParentA.name');
       graph.addNode({ id: propA, label: 'Property', properties: { name: 'name', filePath: 'src/ParentA.ts' } });
       graph.addRelationship({
-        id: generateId('HAS_METHOD', `${parentA}->${propA}`),
-        sourceId: parentA, targetId: propA, type: 'HAS_METHOD', confidence: 1.0, reason: '',
+        id: generateId('HAS_PROPERTY', `${parentA}->${propA}`),
+        sourceId: parentA, targetId: propA, type: 'HAS_PROPERTY', confidence: 1.0, reason: '',
       });
 
       const propB = generateId('Property', 'ParentB.name');
       graph.addNode({ id: propB, label: 'Property', properties: { name: 'name', filePath: 'src/ParentB.ts' } });
       graph.addRelationship({
-        id: generateId('HAS_METHOD', `${parentB}->${propB}`),
-        sourceId: parentB, targetId: propB, type: 'HAS_METHOD', confidence: 1.0, reason: '',
+        id: generateId('HAS_PROPERTY', `${parentB}->${propB}`),
+        sourceId: parentB, targetId: propB, type: 'HAS_PROPERTY', confidence: 1.0, reason: '',
       });
 
       const result = computeMRO(graph);
@@ -328,19 +328,19 @@ describe('computeMRO', () => {
       const methodA = addMethod(graph, 'PA', 'doWork');
       addMethod(graph, 'PB', 'doWork');
 
-      // Property collision (should NOT trigger OVERRIDES)
+      // Property collision (should NOT trigger OVERRIDES — properties use HAS_PROPERTY, not HAS_METHOD)
       const propA = generateId('Property', 'PA.id');
       graph.addNode({ id: propA, label: 'Property', properties: { name: 'id', filePath: 'src/PA.ts' } });
       graph.addRelationship({
-        id: generateId('HAS_METHOD', `${parentA}->${propA}`),
-        sourceId: parentA, targetId: propA, type: 'HAS_METHOD', confidence: 1.0, reason: '',
+        id: generateId('HAS_PROPERTY', `${parentA}->${propA}`),
+        sourceId: parentA, targetId: propA, type: 'HAS_PROPERTY', confidence: 1.0, reason: '',
       });
 
       const propB = generateId('Property', 'PB.id');
       graph.addNode({ id: propB, label: 'Property', properties: { name: 'id', filePath: 'src/PB.ts' } });
       graph.addRelationship({
-        id: generateId('HAS_METHOD', `${parentB}->${propB}`),
-        sourceId: parentB, targetId: propB, type: 'HAS_METHOD', confidence: 1.0, reason: '',
+        id: generateId('HAS_PROPERTY', `${parentB}->${propB}`),
+        sourceId: parentB, targetId: propB, type: 'HAS_PROPERTY', confidence: 1.0, reason: '',
       });
 
       const result = computeMRO(graph);

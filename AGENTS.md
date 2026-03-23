@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **GitNexus** (1999 symbols, 4681 relationships, 149 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **GitNexus** (2273 symbols, 5419 relationships, 174 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -99,3 +99,38 @@ To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+## Cursor Cloud specific instructions
+
+### Repository structure
+
+This is a monorepo with two main products and supporting config packages:
+
+| Component | Path | Purpose |
+|-----------|------|---------|
+| **GitNexus CLI/Core** | `gitnexus/` | Main product — TypeScript CLI, indexing pipeline, MCP server. Published to npm. |
+| **GitNexus Web UI** | `gitnexus-web/` | React/Vite browser app — graph explorer + AI chat. Runs entirely in WASM. |
+| Claude Plugin | `gitnexus-claude-plugin/` | Static config for Claude marketplace (no build). |
+| Cursor Integration | `gitnexus-cursor-integration/` | Static config for Cursor editor (no build). |
+| SWE-bench Eval | `eval/` | Python evaluation harness (optional; needs Docker + LLM API keys). |
+
+### Running services
+
+- **CLI/Core**: `cd gitnexus && npm run dev` (tsx watch mode) or `npm run build && node dist/cli/index.js <command>`
+- **Web UI**: `cd gitnexus-web && npm run dev` (Vite on port 5173)
+- **Backend mode**: `cd <indexed-repo> && node /workspace/gitnexus/dist/cli/index.js serve` (HTTP API on port 3741 by default)
+
+### Testing
+
+- **Unit tests**: `cd gitnexus && npm test` (vitest, ~1350 tests, ~4s)
+- **Integration tests**: `cd gitnexus && npm run test:integration` (vitest, ~980 tests, ~35s). Two LadybugDB file-locking tests (`lbug-core-adapter`, `search-core`) may fail in containerized environments due to `/tmp` locking limitations — this is a known environment issue, not a code bug.
+- **TypeScript check (CLI)**: `cd gitnexus && npx tsc --noEmit`
+- **TypeScript check (Web)**: `cd gitnexus-web && npx tsc -b --noEmit`
+- No separate lint command is configured; TypeScript strict checking serves as the primary static analysis.
+
+### Gotchas
+
+- `npm install` in `gitnexus/` triggers `prepare` (builds via `tsc`) and `postinstall` (patches tree-sitter-swift). Native tree-sitter bindings require `python3`, `make`, and `g++` to be present.
+- `tree-sitter-kotlin` and `tree-sitter-swift` are optional dependencies — install warnings for these are expected and non-blocking.
+- The Web UI uses `vite-plugin-wasm` and requires `Cross-Origin-Opener-Policy`/`Cross-Origin-Embedder-Policy` headers for `SharedArrayBuffer` (handled automatically by Vite dev server).
+- There is no ESLint/Prettier configuration in this repo.

@@ -4,9 +4,42 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, getRelationships, getNodesByLabel,
+  FIXTURES, CROSS_FILE_FIXTURES, getRelationships, getNodesByLabel, edgeSet,
   runPipelineFromRepo, type PipelineResult,
 } from './helpers.js';
+
+// ---------------------------------------------------------------------------
+// skipGraphPhases: verify pipeline works correctly when graph phases are skipped
+// ---------------------------------------------------------------------------
+
+describe('Pipeline skipGraphPhases option', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'javascript-self-this-resolution'),
+      () => {},
+      { skipGraphPhases: true },
+    );
+  }, 60000);
+
+  it('produces graph nodes without community/process phases', () => {
+    expect(getNodesByLabel(result, 'Class').length).toBeGreaterThan(0);
+  });
+
+  it('still resolves CALLS edges correctly', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
+  it('omits communityResult when skipGraphPhases is true', () => {
+    expect(result.communityResult).toBeUndefined();
+  });
+
+  it('omits processResult when skipGraphPhases is true', () => {
+    expect(result.processResult).toBeUndefined();
+  });
+});
 
 // ---------------------------------------------------------------------------
 // this.save() resolves to enclosing class's own save method
@@ -70,6 +103,52 @@ describe('JavaScript parent resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Nullable receiver: JSDoc @param {User | null} strips nullable via TypeEnv
+// ---------------------------------------------------------------------------
+
+describe('JavaScript nullable receiver resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'js-nullable-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, both with save methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves user.save() to src/user.js via nullable-stripped JSDoc type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'save' && c.source === 'processEntities' && c.targetFilePath === 'src/user.js');
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves repo.save() to src/repo.js via nullable-stripped JSDoc type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'save' && c.source === 'processEntities' && c.targetFilePath === 'src/repo.js');
+    expect(repoSave).toBeDefined();
+  });
+
+  it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save');
+    expect(saveCalls.length).toBe(2);
+  });
+
+  it('each save() call resolves to a distinct file (no duplicates)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save' && c.source === 'processEntities');
+    const files = saveCalls.map(c => c.targetFilePath).sort();
+    expect(files).toEqual(['src/repo.js', 'src/user.js']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // super.save() resolves to parent class's save method
 // ---------------------------------------------------------------------------
 
@@ -103,5 +182,240 @@ describe('JavaScript super resolution', () => {
     expect(superSave).toBeDefined();
     const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/models/Repo.js');
     expect(repoSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Chained method calls: svc.getUser().save()
+// Tests that JavaScript chain call resolution correctly infers the intermediate
+// receiver type from getUser()'s JSDoc @returns {User} and resolves save().
+// ---------------------------------------------------------------------------
+
+describe('JavaScript chained method call resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'javascript-chain-call'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes, and UserService', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('User');
+    expect(classes).toContain('Repo');
+    expect(classes).toContain('UserService');
+  });
+
+  it('detects getUser and save methods', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('getUser');
+    expect(methods).toContain('save');
+  });
+
+  it('resolves svc.getUser().save() to User#save via chain resolution', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'processUser' &&
+      c.targetFilePath?.includes('user.js'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('does NOT resolve svc.getUser().save() to Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'processUser' &&
+      c.targetFilePath?.includes('repo.js'),
+    );
+    expect(repoSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8: Field/property type resolution — class field_definition capture
+// ---------------------------------------------------------------------------
+
+describe('Field type resolution (JavaScript)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'js-field-types'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, Config, User', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'Config', 'User']);
+  });
+
+  it('detects Property nodes for JS class fields', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('address');
+    expect(properties).toContain('name');
+    expect(properties).toContain('city');
+  });
+
+  it('emits HAS_PROPERTY edges linking fields to classes', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(propEdges.length).toBe(4);
+    expect(edgeSet(propEdges)).toContain('User → address');
+    expect(edgeSet(propEdges)).toContain('User → name');
+    expect(edgeSet(propEdges)).toContain('Address → city');
+    expect(edgeSet(propEdges)).toContain('Config → DEFAULT');
+  });
+});
+
+// ACCESSES write edges from assignment expressions
+// ---------------------------------------------------------------------------
+
+describe('Write access tracking (JavaScript)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'js-write-access'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits ACCESSES write edges for field assignments', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writes = accesses.filter(e => e.rel.reason === 'write');
+    expect(writes.length).toBe(2);
+    const fieldNames = writes.map(e => e.target);
+    expect(fieldNames).toContain('name');
+    expect(fieldNames).toContain('address');
+    const sources = writes.map(e => e.source);
+    expect(sources).toContain('updateUser');
+  });
+
+  it('write ACCESSES edges have confidence 1.0', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writes = accesses.filter(e => e.rel.reason === 'write');
+    for (const edge of writes) {
+      expect(edge.rel.confidence).toBe(1.0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase A: JS object destructuring — const { field } = receiver → fieldAccess PendingAssignment
+// ---------------------------------------------------------------------------
+
+describe('JavaScript object destructuring resolution (Phase A)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'js-object-destructuring'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User, Address classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('User');
+    expect(classes).toContain('Address');
+  });
+
+  it('resolves address.save() to Address#save via object destructuring', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.targetFilePath.includes('models'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase A: Post-fixpoint for-loop replay — iterable resolved via callResult fixpoint
+// ---------------------------------------------------------------------------
+
+describe('JavaScript post-fixpoint for-loop replay (Phase A ex-9B)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'js-fixpoint-for-loop'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves u.save() to User#save via post-fixpoint for-loop replay', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('models'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 14: Cross-file binding propagation
+// models.js exports getUser() returning User
+// app.js imports getUser, calls const u = getUser(); u.save(); u.getName()
+// → u is typed User via cross-file return type propagation
+// ---------------------------------------------------------------------------
+
+describe('JavaScript cross-file binding propagation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(CROSS_FILE_FIXTURES, 'js-cross-file'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User class with save and getName methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toContain('getName');
+  });
+
+  it('detects getUser and run functions', () => {
+    expect(getNodesByLabel(result, 'Function')).toContain('getUser');
+    expect(getNodesByLabel(result, 'Function')).toContain('run');
+  });
+
+  it('emits IMPORTS edge from app.js to models.js', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const edge = imports.find(e =>
+      e.sourceFilePath.includes('app') && e.targetFilePath.includes('models'),
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('resolves u.save() in run() to User#save via cross-file return type propagation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'run' &&
+      c.targetFilePath.includes('models'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves u.getName() in run() to User#getName via cross-file return type propagation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCall = calls.find(c =>
+      c.target === 'getName' &&
+      c.source === 'run' &&
+      c.targetFilePath.includes('models'),
+    );
+    expect(getNameCall).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edges linking save and getName to User', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const saveEdge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
+    const getNameEdge = hasMethod.find(e => e.source === 'User' && e.target === 'getName');
+    expect(saveEdge).toBeDefined();
+    expect(getNameEdge).toBeDefined();
   });
 });

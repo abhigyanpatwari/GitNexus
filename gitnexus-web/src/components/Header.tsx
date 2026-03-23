@@ -32,6 +32,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
     isRightPanelOpen,
     rightPanelTab,
     setSettingsPanelOpen,
+    setHelpDialogBoxOpen
   } = useAppState();
   const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
   const repoDropdownRef = useRef<HTMLDivElement>(null);
@@ -266,10 +267,13 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
           className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors"
           title="AI Settings"
         >
-          <Settings className="w-[18px] h-[18px]" />
+          <Settings className="w-4.5 h-4.5" />
         </button>
-        <button className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors">
-          <HelpCircle className="w-[18px] h-[18px]" />
+        <button
+          title="Help"
+          onClick={() => setHelpDialogBoxOpen(true)}
+          className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors">
+          <HelpCircle className="w-4.5 h-4.5" />
         </button>
 
         {/* AI Button */}

@@ -3,10 +3,12 @@
  */
 import path from 'path';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
+import type { PipelineOptions } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 import type { GraphRelationship } from '../../../src/core/graph/types.js';
 
 export const FIXTURES = path.resolve(__dirname, '..', '..', 'fixtures', 'lang-resolution');
+export const CROSS_FILE_FIXTURES = path.resolve(__dirname, '..', '..', 'fixtures', 'cross-file-binding');
 
 export type RelEdge = {
   source: string;
@@ -50,5 +52,16 @@ export function edgeSet(edges: Array<{ source: string; target: string }>): strin
   return edges.map(e => `${e.source} → ${e.target}`).sort();
 }
 
+/** Get graph nodes by label with full properties (for parameterTypes assertions). */
+export function getNodesByLabelFull(result: PipelineResult, label: string): Array<{ name: string; properties: Record<string, any> }> {
+  const nodes: Array<{ name: string; properties: Record<string, any> }> = [];
+  result.graph.forEachNode(n => {
+    if (n.label === label) nodes.push({ name: n.properties.name, properties: n.properties });
+  });
+  return nodes.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Tests can pass { skipGraphPhases: true } as third arg for faster runs
+// (skips MRO, community detection, and process extraction).
 export { runPipelineFromRepo };
-export type { PipelineResult };
+export type { PipelineOptions, PipelineResult };

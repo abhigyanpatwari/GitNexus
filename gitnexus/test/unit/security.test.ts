@@ -10,12 +10,11 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  CYPHER_WRITE_RE,
   VALID_RELATION_TYPES,
   VALID_NODE_LABELS,
-  isWriteQuery,
   isTestFilePath,
 } from '../../src/mcp/local/local-backend.js';
+import { CYPHER_WRITE_RE, isWriteQuery } from '../../src/mcp/core/lbug-adapter.js';
 
 // ─── Write-operation blocking (CYPHER_WRITE_RE) ──────────────────────
 
@@ -96,12 +95,16 @@ describe('isWriteQuery', () => {
 // ─── Relation type allowlist ──────────────────────────────────────────
 
 describe('VALID_RELATION_TYPES', () => {
-  it('contains exactly the expected 4 types', () => {
-    expect(VALID_RELATION_TYPES.size).toBe(4);
+  it('contains exactly the expected 8 types', () => {
+    expect(VALID_RELATION_TYPES.size).toBe(8);
     expect(VALID_RELATION_TYPES.has('CALLS')).toBe(true);
     expect(VALID_RELATION_TYPES.has('IMPORTS')).toBe(true);
     expect(VALID_RELATION_TYPES.has('EXTENDS')).toBe(true);
     expect(VALID_RELATION_TYPES.has('IMPLEMENTS')).toBe(true);
+    expect(VALID_RELATION_TYPES.has('HAS_METHOD')).toBe(true);
+    expect(VALID_RELATION_TYPES.has('HAS_PROPERTY')).toBe(true);
+    expect(VALID_RELATION_TYPES.has('OVERRIDES')).toBe(true);
+    expect(VALID_RELATION_TYPES.has('ACCESSES')).toBe(true);
   });
 
   it('rejects invalid relation types', () => {

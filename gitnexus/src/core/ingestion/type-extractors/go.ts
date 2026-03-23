@@ -1,6 +1,6 @@
 import type { SyntaxNode } from '../utils.js';
-import type { ConstructorBindingScanner, LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor } from './types.js';
-import { extractSimpleTypeName, extractVarName } from './shared.js';
+import type { ConstructorBindingScanner, ForLoopExtractor, LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, PendingAssignmentExtractor } from './types.js';
+import { extractSimpleTypeName, extractVarName, extractElementTypeFromString, extractGenericTypeArgs, resolveIterableElementType, methodToTypeArgPosition, type TypeArgPosition } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
   'var_declaration',
@@ -181,9 +181,303 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   return { varName: leftIds[0].text, calleeName };
 };
 
+const FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set([
+  'for_statement',
+]);
+
+/** Go function/method node types that carry a parameter list. */
+const GO_FUNCTION_NODE_TYPES = new Set([
+  'function_declaration', 'method_declaration', 'func_literal',
+]);
+
+/**
+ * Extract element type from a Go type annotation AST node.
+ * Handles:
+ *   slice_type "[]User"  →  element field → type_identifier "User"
+ *   array_type "[10]User" →  element field → type_identifier "User"
+ * Falls back to text-based extraction via extractElementTypeFromString.
+ */
+const extractGoElementTypeFromTypeNode = (typeNode: SyntaxNode, pos: TypeArgPosition = 'last'): string | undefined => {
+  // slice_type: []User — element field is the element type
+  if (typeNode.type === 'slice_type' || typeNode.type === 'array_type') {
+    const elemNode = typeNode.childForFieldName('element');
+    if (elemNode) return extractSimpleTypeName(elemNode);
+  }
+  // map_type: map[string]User — value field is the element type (for range, second var gets value)
+  if (typeNode.type === 'map_type') {
+    const valueNode = typeNode.childForFieldName('value');
+    if (valueNode) return extractSimpleTypeName(valueNode);
+  }
+  // channel_type: chan User — the type argument is the element type
+  if (typeNode.type === 'channel_type') {
+    const valueNode = typeNode.childForFieldName('value') ?? typeNode.lastNamedChild;
+    if (valueNode) return extractSimpleTypeName(valueNode);
+  }
+  // generic_type: Go 1.18+ generics (e.g., MySlice[User], Cache[string, User])
+  // Use position-aware arg selection: 'first' for keys, 'last' for values.
+  if (typeNode.type === 'generic_type') {
+    const args = extractGenericTypeArgs(typeNode);
+    if (args.length >= 1) return pos === 'first' ? args[0] : args[args.length - 1];
+  }
+  // Fallback: text-based extraction ([]User → User, User[] → User)
+  return extractElementTypeFromString(typeNode.text, pos);
+};
+
+/** Check if a Go type node represents a channel type. Used to determine
+ *  whether single-var range yields the element (channels) vs index (slices/maps). */
+const isChannelType = (
+  iterableName: string,
+  scopeEnv: ReadonlyMap<string, string>,
+  declarationTypeNodes?: ReadonlyMap<string, SyntaxNode>,
+  scope?: string,
+): boolean => {
+  if (declarationTypeNodes && scope) {
+    const typeNode = declarationTypeNodes.get(`${scope}\0${iterableName}`);
+    if (typeNode) return typeNode.type === 'channel_type';
+  }
+  const t = scopeEnv.get(iterableName);
+  return !!t && t.startsWith('chan ');
+};
+
+/**
+ * Walk up the AST from a for-statement to find the enclosing function declaration,
+ * then search its parameters for one named `iterableName`.
+ * Returns the element type extracted from its type annotation, or undefined.
+ *
+ * Go parameter_declaration has:
+ *   name field: identifier (the parameter name)
+ *   type field: the type node (slice_type for []User)
+ */
+const findGoParamElementType = (iterableName: string, startNode: SyntaxNode, pos: TypeArgPosition = 'last'): string | undefined => {
+  let current: SyntaxNode | null = startNode.parent;
+  while (current) {
+    if (GO_FUNCTION_NODE_TYPES.has(current.type)) {
+      const paramsNode = current.childForFieldName('parameters');
+      if (paramsNode) {
+        for (let i = 0; i < paramsNode.namedChildCount; i++) {
+          const paramDecl = paramsNode.namedChild(i);
+          if (!paramDecl || paramDecl.type !== 'parameter_declaration') continue;
+          // parameter_declaration: name type — name field is the identifier
+          const nameNode = paramDecl.childForFieldName('name');
+          if (nameNode?.text === iterableName) {
+            const typeNode = paramDecl.childForFieldName('type');
+            if (typeNode) return extractGoElementTypeFromTypeNode(typeNode, pos);
+          }
+        }
+      }
+      break;
+    }
+    current = current.parent;
+  }
+  return undefined;
+};
+
+/**
+ * Go: for _, user := range users where users has a known slice type.
+ *
+ * Go uses a single `for_statement` node for all for-loop forms. We detect
+ * range-based loops by looking for a `range_clause` child node. C-style for
+ * loops (with `for_clause`) and infinite loops (no clause) are ignored.
+ *
+ * Tier 1c: resolves the element type via three strategies in priority order:
+ *   1. declarationTypeNodes — raw type annotation AST node
+ *   2. scopeEnv string — extractElementTypeFromString on the stored type
+ *   3. AST walk — walks up to the enclosing function's parameters to read []User directly
+ * For `_, user := range users`, the loop variable is the second identifier in
+ * the `left` expression_list (index is discarded, value is the element).
+ */
+const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTypeNodes, scope, returnTypeLookup }): void => {
+  if (node.type !== 'for_statement') return;
+
+  // Find the range_clause child — this distinguishes range loops from other for forms.
+  let rangeClause: SyntaxNode | null = null;
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child?.type === 'range_clause') {
+      rangeClause = child;
+      break;
+    }
+  }
+  if (!rangeClause) return;
+
+  // The iterable is the `right` field of the range_clause.
+  const rightNode = rangeClause.childForFieldName('right');
+  let iterableName: string | undefined;
+  let callExprElementType: string | undefined;
+  if (rightNode?.type === 'identifier') {
+    iterableName = rightNode.text;
+  } else if (rightNode?.type === 'selector_expression') {
+    const field = rightNode.childForFieldName('field');
+    if (field) iterableName = field.text;
+  } else if (rightNode?.type === 'call_expression') {
+    // Range over a call result: `for _, v := range getItems()` or `for _, v := range repo.All()`
+    const funcNode = rightNode.childForFieldName('function');
+    let callee: string | undefined;
+    if (funcNode?.type === 'identifier') {
+      callee = funcNode.text;
+    } else if (funcNode?.type === 'selector_expression') {
+      const field = funcNode.childForFieldName('field');
+      if (field) callee = field.text;
+    }
+    if (callee) {
+      const rawReturn = returnTypeLookup.lookupRawReturnType(callee);
+      if (rawReturn) callExprElementType = extractElementTypeFromString(rawReturn);
+    }
+  }
+  if (!iterableName && !callExprElementType) return;
+
+  let elementType: string | undefined;
+  if (callExprElementType) {
+    elementType = callExprElementType;
+  } else {
+    const containerTypeName = scopeEnv.get(iterableName!);
+    const typeArgPos = methodToTypeArgPosition(undefined, containerTypeName);
+    elementType = resolveIterableElementType(
+      iterableName!, node, scopeEnv, declarationTypeNodes, scope,
+      extractGoElementTypeFromTypeNode, findGoParamElementType,
+      typeArgPos,
+    );
+  }
+  if (!elementType) return;
+
+  // The loop variable(s) are in the `left` field.
+  // Go range semantics:
+  //   Slice/Array/String: single-var → INDEX (int); two-var → (index, element)
+  //   Map:                single-var → KEY; two-var → (key, value)
+  //   Channel:            single-var → ELEMENT (channels have no index)
+  const leftNode = rangeClause.childForFieldName('left');
+  if (!leftNode) return;
+
+  let loopVarNode: SyntaxNode | null = null;
+  if (leftNode.type === 'expression_list') {
+    if (leftNode.namedChildCount >= 2) {
+      // Two-var form: `_, user` or `i, user` — second variable gets element/value type
+      loopVarNode = leftNode.namedChild(1);
+    } else {
+      // Single-var in expression_list — yields INDEX for slices/maps, ELEMENT for channels.
+      // For call-expression iterables (iterableName undefined), conservative: treat as non-channel.
+      // Channels are rarely returned from function calls, and even if they were, skipping here
+      // just means we miss a binding rather than create an incorrect one.
+      if (iterableName && isChannelType(iterableName, scopeEnv, declarationTypeNodes, scope)) {
+        loopVarNode = leftNode.namedChild(0);
+      } else {
+        return; // index-only range on slice/map — skip
+      }
+    }
+  } else {
+    // Plain identifier (single-var form without expression_list)
+    // For call-expression iterables (iterableName undefined), conservative: treat as non-channel.
+    // Channels are rarely returned from function calls, and even if they were, skipping here
+    // just means we miss a binding rather than create an incorrect one.
+    if (iterableName && isChannelType(iterableName, scopeEnv, declarationTypeNodes, scope)) {
+      loopVarNode = leftNode;
+    } else {
+      return; // index-only range on slice/map — skip
+    }
+  }
+  if (!loopVarNode) return;
+
+  // Skip the blank identifier `_`
+  if (loopVarNode.text === '_') return;
+
+  const loopVarName = extractVarName(loopVarNode);
+  if (loopVarName) scopeEnv.set(loopVarName, elementType);
+};
+
+/** Go: alias := u (short_var_declaration) or var b = u (var_spec) */
+const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
+  if (node.type === 'short_var_declaration') {
+    const left = node.childForFieldName('left');
+    const right = node.childForFieldName('right');
+    if (!left || !right) return undefined;
+    const lhsNode = left.type === 'expression_list' ? left.firstNamedChild : left;
+    const rhsNode = right.type === 'expression_list' ? right.firstNamedChild : right;
+    if (!lhsNode || !rhsNode) return undefined;
+    if (lhsNode.type !== 'identifier') return undefined;
+    const lhs = lhsNode.text;
+    if (scopeEnv.has(lhs)) return undefined;
+    if (rhsNode.type === 'identifier') return { kind: 'copy', lhs, rhs: rhsNode.text };
+    // selector_expression RHS → fieldAccess (a.field)
+    if (rhsNode.type === 'selector_expression') {
+      const operand = rhsNode.childForFieldName('operand');
+      const field = rhsNode.childForFieldName('field');
+      if (operand?.type === 'identifier' && field) {
+        return { kind: 'fieldAccess', lhs, receiver: operand.text, field: field.text };
+      }
+    }
+    // call_expression RHS
+    if (rhsNode.type === 'call_expression') {
+      const funcNode = rhsNode.childForFieldName('function');
+      if (funcNode?.type === 'identifier') {
+        return { kind: 'callResult', lhs, callee: funcNode.text };
+      }
+      // method call with receiver: call_expression → function: selector_expression
+      if (funcNode?.type === 'selector_expression') {
+        const operand = funcNode.childForFieldName('operand');
+        const field = funcNode.childForFieldName('field');
+        if (operand?.type === 'identifier' && field) {
+          return { kind: 'methodCallResult', lhs, receiver: operand.text, method: field.text };
+        }
+      }
+    }
+    return undefined;
+  }
+  if (node.type === 'var_spec' || node.type === 'var_declaration') {
+    // var_declaration contains var_spec children; var_spec has name + expression_list value
+    const specs: SyntaxNode[] = [];
+    if (node.type === 'var_declaration') {
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const c = node.namedChild(i);
+        if (c?.type === 'var_spec') specs.push(c);
+      }
+    } else {
+      specs.push(node);
+    }
+    for (const spec of specs) {
+      const nameNode = spec.childForFieldName('name');
+      if (!nameNode || nameNode.type !== 'identifier') continue;
+      const lhs = nameNode.text;
+      if (scopeEnv.has(lhs)) continue;
+      // Check if the last named child is a bare identifier (no type annotation between name and value)
+      let exprList: SyntaxNode | null = null;
+      for (let i = 0; i < spec.childCount; i++) {
+        if (spec.child(i)?.type === 'expression_list') { exprList = spec.child(i); break; }
+      }
+      const rhsNode = exprList?.firstNamedChild;
+      if (rhsNode?.type === 'identifier') return { kind: 'copy', lhs, rhs: rhsNode.text };
+      // selector_expression RHS → fieldAccess
+      if (rhsNode?.type === 'selector_expression') {
+        const operand = rhsNode.childForFieldName('operand');
+        const field = rhsNode.childForFieldName('field');
+        if (operand?.type === 'identifier' && field) {
+          return { kind: 'fieldAccess', lhs, receiver: operand.text, field: field.text };
+        }
+      }
+      // call_expression RHS
+      if (rhsNode?.type === 'call_expression') {
+        const funcNode = rhsNode.childForFieldName('function');
+        if (funcNode?.type === 'identifier') {
+          return { kind: 'callResult', lhs, callee: funcNode.text };
+        }
+        if (funcNode?.type === 'selector_expression') {
+          const operand = funcNode.childForFieldName('operand');
+          const field = funcNode.childForFieldName('field');
+          if (operand?.type === 'identifier' && field) {
+            return { kind: 'methodCallResult', lhs, receiver: operand.text, method: field.text };
+          }
+        }
+      }
+    }
+  }
+  return undefined;
+};
+
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
+  forLoopNodeTypes: FOR_LOOP_NODE_TYPES,
   extractDeclaration,
   extractParameter,
   scanConstructorBinding,
+  extractForLoopBinding,
+  extractPendingAssignment,
 };

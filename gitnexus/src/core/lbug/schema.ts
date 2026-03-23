@@ -13,7 +13,7 @@
 // NODE TABLE NAMES
 // ============================================================================
 export const NODE_TABLES = [
-  'File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement', 'Community', 'Process',
+  'File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement', 'Community', 'Process', 'Section',
   // Multi-language support
   'Struct', 'Enum', 'Macro', 'Typedef', 'Union', 'Namespace', 'Trait', 'Impl',
   'TypeAlias', 'Const', 'Static', 'Property', 'Record', 'Delegate', 'Annotation', 'Constructor', 'Template', 'Module'
@@ -26,7 +26,7 @@ export type NodeTableName = typeof NODE_TABLES[number];
 export const REL_TABLE_NAME = 'CodeRelation';
 
 // Valid relation types
-export const REL_TYPES = ['CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'OVERRIDES', 'MEMBER_OF', 'STEP_IN_PROCESS'] as const;
+export const REL_TYPES = ['CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'ACCESSES', 'OVERRIDES', 'MEMBER_OF', 'STEP_IN_PROCESS'] as const;
 export type RelType = typeof REL_TYPES[number];
 
 // ============================================================================
@@ -192,6 +192,19 @@ export const ANNOTATION_SCHEMA = CODE_ELEMENT_BASE('Annotation');
 export const CONSTRUCTOR_SCHEMA = CODE_ELEMENT_BASE('Constructor');
 export const TEMPLATE_SCHEMA = CODE_ELEMENT_BASE('Template');
 export const MODULE_SCHEMA = CODE_ELEMENT_BASE('Module');
+// Markdown heading sections
+export const SECTION_SCHEMA = `
+CREATE NODE TABLE Section (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  level INT64,
+  content STRING,
+  description STRING,
+  PRIMARY KEY (id)
+)`;
 
 // ============================================================================
 // RELATION TABLE SCHEMA
@@ -225,6 +238,7 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM File TO \`Constructor\`,
   FROM File TO \`Template\`,
   FROM File TO \`Module\`,
+  FROM File TO Section,
   FROM Folder TO Folder,
   FROM Folder TO File,
   FROM Function TO Function,
@@ -289,6 +303,8 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM \`Template\` TO Interface,
   FROM \`Template\` TO \`Constructor\`,
   FROM \`Module\` TO \`Module\`,
+  FROM Section TO Section,
+  FROM Section TO File,
   FROM CodeElement TO Community,
   FROM Interface TO Community,
   FROM Interface TO Function,
@@ -447,6 +463,8 @@ export const NODE_SCHEMA_QUERIES = [
   CONSTRUCTOR_SCHEMA,
   TEMPLATE_SCHEMA,
   MODULE_SCHEMA,
+  // Markdown support
+  SECTION_SCHEMA,
 ];
 
 export const REL_SCHEMA_QUERIES = [

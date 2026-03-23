@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, getRelationships, getNodesByLabel, edgeSet,
+  FIXTURES, CROSS_FILE_FIXTURES, getRelationships, getNodesByLabel, edgeSet,
   runPipelineFromRepo, type PipelineResult,
 } from './helpers.js';
 
@@ -656,5 +656,624 @@ describe('Go multi-return factory type inference', () => {
       c.target === 'Save' && c.source === 'processRepo' && c.targetFilePath.includes('user.go')
     );
     expect(wrongSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Nullable receiver: var user *models.User = findUser(); user.Save()
+// Go pointer types (*User) — extractSimpleTypeName strips pointer prefix.
+// ---------------------------------------------------------------------------
+
+describe('Go nullable receiver resolution (pointer types)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-nullable-receiver'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs, both with Save methods', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'Save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves user.Save() to User.Save via pointer receiver typing', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c => c.target === 'Save' && c.targetFilePath === 'models/user.go');
+    expect(userSave).toBeDefined();
+    expect(userSave!.source).toBe('processEntities');
+  });
+
+  it('resolves repo.Save() to Repo.Save via pointer receiver typing', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c => c.target === 'Save' && c.targetFilePath === 'models/repo.go');
+    expect(repoSave).toBeDefined();
+    expect(repoSave!.source).toBe('processEntities');
+  });
+
+  it('user.Save() does NOT resolve to Repo.Save (negative disambiguation)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'Save' && c.source === 'processEntities');
+    expect(saveCalls.filter(c => c.targetFilePath === 'models/user.go').length).toBe(1);
+    expect(saveCalls.filter(c => c.targetFilePath === 'models/repo.go').length).toBe(1);
+  });
+
+  it('emits exactly 2 Save() CALLS edges (one per receiver type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'Save');
+    expect(saveCalls.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Assignment chain propagation (Phase 4.3)
+// ---------------------------------------------------------------------------
+
+describe('Go assignment chain propagation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-assignment-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs each with a Save method', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'Save');
+    expect(saveMethods.length).toBe(2);
+  });
+
+  it('resolves alias.Save() to User#Save via assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // Positive: alias.Save() must resolve to User#Save
+    const userSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processEntities' && c.targetFilePath.includes('user.go'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('alias.Save() does NOT resolve to Repo#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // Negative: alias comes from User, so only one edge to user.go
+    const wrongCall = calls.filter(c =>
+      c.target === 'Save' && c.source === 'processEntities' && c.targetFilePath.includes('user.go'),
+    );
+    expect(wrongCall.length).toBe(1);
+  });
+
+  it('resolves rAlias.Save() to Repo#Save via assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // Positive: rAlias.Save() must resolve to Repo#Save
+    const repoSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processEntities' && c.targetFilePath.includes('repo.go'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('each alias resolves to its own struct, not the other', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processEntities' && c.targetFilePath.includes('user.go'),
+    );
+    const repoSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processEntities' && c.targetFilePath.includes('repo.go'),
+    );
+    expect(userSave).toBeDefined();
+    expect(repoSave).toBeDefined();
+    expect(userSave!.targetFilePath).not.toBe(repoSave!.targetFilePath);
+  });
+
+  // --- var form assignment chain ---
+
+  it('resolves var alias.Save() to User via var assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processWithVar' && c.targetFilePath.includes('user.go'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves var rAlias.Save() to Repo via var assignment chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processWithVar' && c.targetFilePath.includes('repo.go'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('var alias.Save() does NOT resolve to Repo (negative)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSaves = calls.filter(c =>
+      c.target === 'Save' && c.source === 'processWithVar' && c.targetFilePath.includes('user.go'),
+    );
+    expect(userSaves.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Chained method calls: svc.GetUser().Save()
+// Tests that Go chain call resolution correctly infers the intermediate
+// receiver type from GetUser()'s return type and resolves Save() to User.
+// ---------------------------------------------------------------------------
+
+describe('Go chained method call resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-chain-call'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User, Repo structs and UserService', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
+    expect(getNodesByLabel(result, 'Struct')).toContain('UserService');
+  });
+
+  it('detects GetUser and Save symbols', () => {
+    const allSymbols = [...getNodesByLabel(result, 'Function'), ...getNodesByLabel(result, 'Method')];
+    expect(allSymbols).toContain('GetUser');
+    expect(allSymbols).toContain('Save');
+  });
+
+  it('resolves svc.GetUser().Save() to User#Save via chain resolution', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'Save' &&
+      c.source === 'processUser' &&
+      c.targetFilePath?.includes('user.go'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('does NOT resolve svc.GetUser().Save() to Repo#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'Save' &&
+      c.source === 'processUser' &&
+      c.targetFilePath?.includes('repo.go'),
+    );
+    expect(repoSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Go map range: for _, user := range userMap where map[string]User
+// ---------------------------------------------------------------------------
+
+describe('Go map range type resolution (Tier 1c)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-map-range'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs with Save methods in separate files', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    expect(structs).toContain('User');
+    expect(structs).toContain('Repo');
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods.filter(m => m === 'Save').length).toBe(2);
+  });
+
+  it('resolves user.Save() in map range to User#Save via map_type value', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processMap' && c.targetFilePath?.includes('user.go'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('does NOT resolve user.Save() to Repo#Save (negative disambiguation)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processMap' && c.targetFilePath?.includes('repo.go'),
+    );
+    expect(wrongSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Go for-loop with call_expression iterable: for _, user := range GetUsers()
+// Phase 7.3: call_expression iterable resolution via ReturnTypeLookup
+// ---------------------------------------------------------------------------
+
+describe('Go for-loop call_expression iterable resolution (Phase 7.3)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-for-call-expr'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs with competing Save methods', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    expect(structs).toContain('User');
+    expect(structs).toContain('Repo');
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods.filter(m => m === 'Save').length).toBe(2);
+  });
+
+  it('resolves user.Save() in range GetUsers() to User#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processUsers' && c.targetFilePath?.includes('user.go'),
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves repo.Save() in range GetRepos() to Repo#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processRepos' && c.targetFilePath?.includes('repo.go'),
+    );
+    expect(repoSave).toBeDefined();
+  });
+
+  it('does NOT resolve user.Save() to Repo#Save (negative disambiguation)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processUsers' && c.targetFilePath?.includes('repo.go'),
+    );
+    expect(wrongSave).toBeUndefined();
+  });
+
+  it('does NOT resolve repo.Save() to User#Save (negative disambiguation)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c =>
+      c.target === 'Save' && c.source === 'processRepos' && c.targetFilePath?.includes('user.go'),
+    );
+    expect(wrongSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8: Field/property type resolution (1-level)
+// ---------------------------------------------------------------------------
+
+describe('Field type resolution (Go)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-field-types'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects structs: Address, User', () => {
+    expect(getNodesByLabel(result, 'Struct')).toEqual(['Address', 'User']);
+  });
+
+  it('detects Property nodes for Go struct fields', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('Address');
+    expect(properties).toContain('Name');
+    expect(properties).toContain('City');
+  });
+
+  it('emits HAS_PROPERTY edges linking struct fields to structs', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(propEdges.length).toBe(3);
+    expect(edgeSet(propEdges)).toContain('User → Name');
+    expect(edgeSet(propEdges)).toContain('User → Address');
+    expect(edgeSet(propEdges)).toContain('Address → City');
+  });
+
+  it('resolves user.Address.Save() → Address#Save via field type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'Save');
+    const addressSave = saveCalls.find(
+      e => e.source === 'processUser' && e.targetFilePath.includes('models'),
+    );
+    expect(addressSave).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8A: Deep field chain resolution (3-level)
+// ---------------------------------------------------------------------------
+
+describe('Deep field chain resolution (Go)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-deep-field-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects structs: Address, City, User', () => {
+    expect(getNodesByLabel(result, 'Struct')).toEqual(['Address', 'City', 'User']);
+  });
+
+  it('detects Property nodes for Go struct fields', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('Address');
+    expect(properties).toContain('City');
+    expect(properties).toContain('ZipCode');
+  });
+
+  it('emits HAS_PROPERTY edges for nested type chain', () => {
+    const propEdges = getRelationships(result, 'HAS_PROPERTY');
+    expect(propEdges.length).toBe(5);
+    expect(edgeSet(propEdges)).toContain('User → Name');
+    expect(edgeSet(propEdges)).toContain('User → Address');
+    expect(edgeSet(propEdges)).toContain('Address → City');
+    expect(edgeSet(propEdges)).toContain('Address → Street');
+    expect(edgeSet(propEdges)).toContain('City → ZipCode');
+  });
+
+  it('resolves 2-level chain: user.Address.Save() → Address#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'Save' && e.source === 'processUser');
+    const addressSave = saveCalls.find(e => e.targetFilePath.includes('models'));
+    expect(addressSave).toBeDefined();
+  });
+
+  it('resolves 3-level chain: user.Address.City.GetName() → City#GetName', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCalls = calls.filter(e => e.target === 'GetName' && e.source === 'processUser');
+    const cityGetName = getNameCalls.find(e => e.targetFilePath.includes('models'));
+    expect(cityGetName).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mixed field+call chain resolution (Go)
+// ---------------------------------------------------------------------------
+
+describe('Mixed field+call chain resolution (Go)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-mixed-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects structs: Address, City, User, UserService', () => {
+    expect(getNodesByLabel(result, 'Struct')).toEqual(['Address', 'City', 'User', 'UserService']);
+  });
+
+  it('detects Property nodes for mixed-chain fields', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties).toContain('City');
+    expect(properties).toContain('Address');
+  });
+
+  it('resolves call→field chain: svc.GetUser().Address.Save() → Address#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(e => e.target === 'Save' && e.source === 'processWithService');
+    expect(saveCalls.length).toBe(1);
+    expect(saveCalls[0].targetFilePath).toContain('models');
+  });
+
+  it('resolves field→call chain: user.GetAddress().City.GetName() → City#GetName', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCalls = calls.filter(e => e.target === 'GetName' && e.source === 'processWithUser');
+    expect(getNameCalls.length).toBe(1);
+    expect(getNameCalls[0].targetFilePath).toContain('models');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ACCESSES write edges from assignment statements
+// ---------------------------------------------------------------------------
+
+describe('Write access tracking (Go)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-write-access'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits ACCESSES write edges for field assignments', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writes = accesses.filter(e => e.rel.reason === 'write');
+    expect(writes.length).toBe(2);
+    const nameWrite = writes.find(e => e.target === 'Name');
+    const addressWrite = writes.find(e => e.target === 'Address');
+    expect(nameWrite).toBeDefined();
+    expect(nameWrite!.source).toBe('updateUser');
+    expect(addressWrite).toBeDefined();
+    expect(addressWrite!.source).toBe('updateUser');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Call-result variable binding (Phase 9): user := GetUser(); user.Save()
+// ---------------------------------------------------------------------------
+
+describe('Go call-result variable binding (Tier 2b)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-call-result-binding'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.Save() to User#Save via call-result binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'Save' && c.source === 'processUser' && c.targetFilePath.includes('models')
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Method chain binding (Phase 9C): GetUser() → .Address → .GetCity() → .Save()
+// ---------------------------------------------------------------------------
+
+describe('Go method chain binding via unified fixpoint (Phase 9C)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-method-chain-binding'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves city.Save() to City#Save via 3-step chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'Save' && c.source === 'processChain' && c.targetFilePath.includes('models')
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase B: Go inc_statement / dec_statement write access
+// obj.Field++ and obj.Field-- emit ACCESSES write edges
+// ---------------------------------------------------------------------------
+
+describe('Go inc/dec write access tracking (Phase B)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-inc-dec-write-access'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits ACCESSES write edge for Count++ in increment', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writes = accesses.filter(e => e.rel.reason === 'write');
+    const countInc = writes.find(e => e.target === 'Count' && e.source === 'increment');
+    expect(countInc).toBeDefined();
+  });
+
+  it('emits ACCESSES write edge for Total++ in increment', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writes = accesses.filter(e => e.rel.reason === 'write');
+    const totalInc = writes.find(e => e.target === 'Total' && e.source === 'increment');
+    expect(totalInc).toBeDefined();
+  });
+
+  it('emits ACCESSES write edge for Count-- in decrement', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writes = accesses.filter(e => e.rel.reason === 'write');
+    const countDec = writes.find(e => e.target === 'Count' && e.source === 'decrement');
+    expect(countDec).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 14: Cross-file binding propagation (via synthesized wildcard imports)
+// models/user.go exports User struct with Save() and GetName() methods
+// models/factory.go exports GetUser() -> User
+// app/main.go imports models package, calls models.GetUser().Save()
+// → user is typed User via cross-file return type propagation
+// ---------------------------------------------------------------------------
+
+describe('Go cross-file binding propagation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(CROSS_FILE_FIXTURES, 'go-cross-file'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User struct with Save and GetName methods', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Method')).toContain('Save');
+    expect(getNodesByLabel(result, 'Method')).toContain('GetName');
+  });
+
+  it('detects GetUser factory function', () => {
+    expect(getNodesByLabel(result, 'Function')).toContain('GetUser');
+  });
+
+  it('emits IMPORTS edge from main.go to models package files', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const edge = imports.find(e =>
+      e.sourceFilePath.includes('main') && e.targetFilePath.includes('models'),
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('resolves user.Save() in main() to User#Save via cross-file propagation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'Save' &&
+      c.source === 'main' &&
+      c.targetFilePath.includes('models'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves user.GetName() in main() to User#GetName via cross-file propagation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCall = calls.find(c =>
+      c.target === 'GetName' &&
+      c.source === 'main' &&
+      c.targetFilePath.includes('models'),
+    );
+    expect(getNameCall).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edges linking Save and GetName to User', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const saveEdge = hasMethod.find(e => e.source === 'User' && e.target === 'Save');
+    const getNameEdge = hasMethod.find(e => e.source === 'User' && e.target === 'GetName');
+    expect(saveEdge).toBeDefined();
+    expect(getNameEdge).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Go cmd/ helper files should NOT get entry-point multiplier (P0-1 fix)
+// Only main.go files should get the 3.0 entry-point boost, not arbitrary
+// .go files under cmd/ subdirectories.
+// ---------------------------------------------------------------------------
+
+describe('Go cmd/ helper files entry-point scoring', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-cmd-helper'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects main function and Load function', () => {
+    expect(getNodesByLabel(result, 'Function')).toContain('main');
+    expect(getNodesByLabel(result, 'Function')).toContain('Load');
+  });
+
+  it('emits IMPORTS edge from main.go to config/config.go', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const edge = imports.find(e =>
+      e.sourceFilePath.includes('main') && e.targetFilePath.includes('config'),
+    );
+    expect(edge).toBeDefined();
   });
 });

@@ -18,6 +18,7 @@ concurrency:
 #   ci-quality.yml       — typecheck (tsc --noEmit)
 #   ci-unit-tests.yml    — unit tests with coverage + cross-platform
 #   ci-integration.yml   — integration test matrix (3 OS x 4 groups)
+#   ci-e2e.yml           — E2E tests (only when gitnexus-web/ changes)
 #
 # Shared setup is DRY via .github/actions/setup-gitnexus composite action.
 
@@ -39,6 +40,11 @@ jobs:
     permissions:
       contents: read
 
+  e2e:
+    uses: ./.github/workflows/ci-e2e.yml
+    permissions:
+      contents: read
+
   # ── Save PR metadata for the reporting workflow ─────────────────
   # The ci-report.yml workflow (triggered by workflow_run) needs the
   # PR number and job results to post a comment.  We save them as an
@@ -47,7 +53,7 @@ jobs:
   save-pr-meta:
     name: Save PR Metadata
     if: always() && github.event_name == 'pull_request'
-    needs: [quality, unit-tests, integration]
+    needs: [quality, unit-tests, integration, e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -58,12 +64,14 @@ jobs:
           QUALITY: ${{ needs.quality.result }}
           UNIT: ${{ needs.unit-tests.result }}
           INTEG: ${{ needs.integration.result }}
+          E2E: ${{ needs.e2e.result }}
         run: |
           mkdir -p pr-meta
           echo "$PR_NUMBER"  > pr-meta/pr_number
           echo "$QUALITY"    > pr-meta/quality_result
           echo "$UNIT"       > pr-meta/unit_result
           echo "$INTEG"      > pr-meta/integration_result
+          echo "$E2E"        > pr-meta/e2e_result
 
       - name: Upload PR metadata
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -76,7 +84,7 @@ jobs:
   # Single required check for branch protection.
   ci-status:
     name: CI Gate
-    needs: [quality, unit-tests, integration]
+    needs: [quality, unit-tests, integration, e2e]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -87,13 +95,16 @@ jobs:
           QUALITY: ${{ needs.quality.result }}
           UNIT: ${{ needs.unit-tests.result }}
           INTEG: ${{ needs.integration.result }}
+          E2E: ${{ needs.e2e.result }}
         run: |
           echo "Quality:     $QUALITY"
           echo "Unit Tests:  $UNIT"
           echo "Integration: $INTEG"
+          echo "E2E:         $E2E"
           if [[ "$QUALITY" != "success" ]] ||
              [[ "$UNIT" != "success" ]] ||
-             [[ "$INTEG" != "success" ]]; then
+             [[ "$INTEG" != "success" ]] ||
+             [[ "$E2E" != "success" ]]; then
             echo "::error::One or more CI jobs failed"
             exit 1
           fi

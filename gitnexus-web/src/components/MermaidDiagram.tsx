@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, lazy } from 'react';
+import { Suspense, useEffect, useRef, useState, lazy } from 'react';
 import mermaid from 'mermaid';
 import { AlertTriangle, Maximize2 } from '@/lib/lucide-icons';
 import type { ProcessData } from '../lib/mermaid-generator';
@@ -150,10 +150,16 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
 
       {/* Use ProcessFlowModal for expansion */}
       {showModal && processData && (
-        <ProcessFlowModal
-          process={processData}
-          onClose={() => setShowModal(false)}
-        />
+        <Suspense
+          fallback={
+            <div className="p-4 text-sm text-text-muted">Loading diagram…</div>
+          }
+        >
+          <ProcessFlowModal
+            process={processData}
+            onClose={() => setShowModal(false)}
+          />
+        </Suspense>
       )}
     </>
   );

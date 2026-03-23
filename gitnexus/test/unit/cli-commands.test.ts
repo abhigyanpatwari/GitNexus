@@ -24,7 +24,7 @@ describe('CLI commands', () => {
       const pkg = await import('../../package.json', { with: { type: 'json' } });
       expect(pkg.default.scripts.test).toBeDefined();
       expect(pkg.default.scripts['test:integration']).toBeDefined();
-      expect(pkg.default.scripts['test:all']).toBeDefined();
+      expect(pkg.default.scripts['test:unit']).toBeDefined();
     });
 
     it('has build script', async () => {

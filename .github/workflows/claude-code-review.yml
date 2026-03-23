@@ -2,8 +2,9 @@ name: Claude Code Review
 
 # Uses pull_request_target so the workflow runs as defined on the default branch,
 # which allows access to secrets for posting review comments on fork PRs.
-# SECURITY: The checkout below uses the PR head SHA to review the correct code.
-# The claude-code-action sandboxes execution — it does NOT run arbitrary code
+# SECURITY: The checkout pins the fork's HEAD SHA (not the branch name) to
+# prevent TOCTOU races (force-push between trigger and checkout). The
+# claude-code-action sandboxes execution — it does NOT run arbitrary code
 # from the checked-out source.
 
 on:
@@ -14,6 +15,11 @@ on:
     types: [labeled]
   issue_comment:
     types: [created]
+
+# Serialize per-PR to avoid racing review comments.
+concurrency:
+  group: claude-review-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
 
 jobs:
   claude-review:
@@ -41,13 +47,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write       # needed to push fork branch to origin
+      contents: read
       pull-requests: write
       issues: read
       id-token: write
 
     steps:
-      # For issue_comment triggers, resolve the PR number, head SHA, and branch name
+      # For issue_comment triggers, resolve the PR number, head SHA, and fork repo
       - name: Resolve PR context
         id: pr
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
@@ -66,32 +72,24 @@ jobs:
             }
             core.setOutput('number', pr.number);
             core.setOutput('sha', pr.head.sha);
+            core.setOutput('repo', pr.head.repo.full_name);
             core.setOutput('branch', pr.head.ref);
-            core.setOutput('is_fork', String(pr.head.repo.full_name !== pr.base.repo.full_name));
 
       - name: Checkout PR head
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          repository: ${{ steps.pr.outputs.repo }}
           ref: ${{ steps.pr.outputs.sha }}
           fetch-depth: 1
-
-      # claude-code-action fetches branches by name from origin, which fails
-      # for fork PRs. Work around by pushing the fork branch to origin so
-      # the action can find it.  Cleaned up in the post step below.
-      - name: Push fork branch to origin
-        if: steps.pr.outputs.is_fork == 'true'
-        run: git push origin HEAD:refs/heads/${{ steps.pr.outputs.branch }}
 
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@9469d113c6afd29550c402740f22d1a97dd1209b # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: '*'
+          show_full_output: true
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ steps.pr.outputs.number }}'
-
-      # Clean up the temporary branch we pushed for fork PRs
-      - name: Delete fork branch from origin
-        if: always() && steps.pr.outputs.is_fork == 'true'
-        run: git push origin --delete refs/heads/${{ steps.pr.outputs.branch }} || true

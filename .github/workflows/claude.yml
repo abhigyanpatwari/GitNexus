@@ -10,13 +10,42 @@ on:
   pull_request_review:
     types: [submitted]
 
+# Serialize per-PR/issue to avoid racing comments.
+concurrency:
+  group: claude-code-${{ github.event.issue.number || github.event.pull_request.number || github.event.issue.id }}
+  cancel-in-progress: false
+
 jobs:
   claude:
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      (
+        github.event_name == 'issue_comment' &&
+        contains(github.event.comment.body, '@claude') &&
+        (github.event.comment.author_association == 'OWNER' ||
+         github.event.comment.author_association == 'MEMBER' ||
+         github.event.comment.author_association == 'COLLABORATOR')
+      ) ||
+      (
+        github.event_name == 'pull_request_review_comment' &&
+        contains(github.event.comment.body, '@claude') &&
+        (github.event.comment.author_association == 'OWNER' ||
+         github.event.comment.author_association == 'MEMBER' ||
+         github.event.comment.author_association == 'COLLABORATOR')
+      ) ||
+      (
+        github.event_name == 'pull_request_review' &&
+        contains(github.event.review.body, '@claude') &&
+        (github.event.review.author_association == 'OWNER' ||
+         github.event.review.author_association == 'MEMBER' ||
+         github.event.review.author_association == 'COLLABORATOR')
+      ) ||
+      (
+        github.event_name == 'issues' &&
+        (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')) &&
+        (github.event.issue.author_association == 'OWNER' ||
+         github.event.issue.author_association == 'MEMBER' ||
+         github.event.issue.author_association == 'COLLABORATOR')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -24,11 +53,47 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-      actions: read # Required for Claude to read CI results on PRs
+      actions: read         # required for Claude to read CI results on PRs
     steps:
+      # For PR-related triggers, resolve the fork repo so we can checkout correctly.
+      - name: Resolve PR context
+        id: pr
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            // Determine if this event is PR-related
+            let prNumber = null;
+            if (context.eventName === 'issue_comment' && context.payload.issue.pull_request) {
+              prNumber = context.payload.issue.number;
+            } else if (context.eventName === 'pull_request_review_comment') {
+              prNumber = context.payload.pull_request.number;
+            } else if (context.eventName === 'pull_request_review') {
+              prNumber = context.payload.pull_request.number;
+            }
+
+            if (!prNumber) {
+              core.setOutput('is_pr', 'false');
+              return;
+            }
+
+            const resp = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const pr = resp.data;
+
+            core.setOutput('is_pr', 'true');
+            core.setOutput('number', String(prNumber));
+            core.setOutput('sha', pr.head.sha);
+            core.setOutput('repo', pr.head.repo.full_name);
+            core.setOutput('branch', pr.head.ref);
+
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          repository: ${{ steps.pr.outputs.is_pr == 'true' && steps.pr.outputs.repo || github.repository }}
+          ref: ${{ steps.pr.outputs.is_pr == 'true' && steps.pr.outputs.sha || '' }}
           fetch-depth: 1
 
       - name: Run Claude Code
@@ -36,6 +101,9 @@ jobs:
         uses: anthropics/claude-code-action@9469d113c6afd29550c402740f22d1a97dd1209b # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: '*'
+          show_full_output: true
 
           # This is an optional setting that allows Claude to read CI results on PRs
           additional_permissions: |

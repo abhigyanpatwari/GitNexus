@@ -5,42 +5,15 @@ import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/pa
 import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename, isVerboseIngestionEnabled, yieldToEventLoop } from './utils.js';
-import { SupportedLanguages } from '../../config/supported-languages.js';
-import { extractNamedBindings } from './named-binding-extraction.js';
 import type { ExtractedImport } from './workers/parse-worker.js';
 import { getTreeSitterBufferSize } from './constants.js';
-import {
-  loadTsconfigPaths,
-  loadGoModulePath,
-  loadComposerConfig,
-  loadCSharpProjectConfig,
-  loadSwiftPackageConfig,
-  type SwiftPackageConfig,
-} from './language-config.js';
-import {
-  buildSuffixIndex,
-  resolveImportPath,
-  appendKotlinWildcard,
-  KOTLIN_EXTENSIONS,
-  resolveJvmWildcard,
-  resolveJvmMemberImport,
-  resolveGoPackageDir,
-  resolveGoPackage,
-  resolveCSharpImport,
-  resolveCSharpNamespaceDir,
-  resolvePhpImport,
-  resolveRustImport,
-  resolveRubyImport,
-} from './resolvers/index.js';
+import { loadImportConfigs } from './language-config.js';
+import { buildSuffixIndex } from './resolvers/index.js';
 import { callRouters } from './call-routing.js';
 import type { ResolutionContext } from './resolution-context.js';
-import type {
-  SuffixIndex,
-  TsconfigPaths,
-  GoModuleConfig,
-  CSharpProjectConfig,
-  ComposerConfig
-} from './resolvers/index.js';
+import type { SuffixIndex } from './resolvers/index.js';
+import { importResolvers, namedBindingExtractors, preprocessImportPath } from './import-resolution.js';
+import type { ImportResult, ResolveCtx, NamedBinding } from './import-resolution.js';
 
 // Re-export resolver types for consumers
 export type {
@@ -88,7 +61,7 @@ export interface ImportResolutionContext {
   allFilePaths: Set<string>;
   allFileList: string[];
   normalizedFileList: string[];
-  suffixIndex: SuffixIndex;
+  index: SuffixIndex;
   resolveCache: Map<string, string | null>;
 }
 
@@ -96,161 +69,32 @@ export function buildImportResolutionContext(allPaths: string[]): ImportResoluti
   const allFileList = allPaths;
   const normalizedFileList = allFileList.map(p => p.replace(/\\/g, '/'));
   const allFilePaths = new Set(allFileList);
-  const suffixIndex = buildSuffixIndex(normalizedFileList, allFileList);
-  return { allFilePaths, allFileList, normalizedFileList, suffixIndex, resolveCache: new Map() };
+  const index = buildSuffixIndex(normalizedFileList, allFileList);
+  return { allFilePaths, allFileList, normalizedFileList, index, resolveCache: new Map() };
 }
 
 // Config loaders extracted to ./language-config.ts (Phase 2 refactor)
-// Resolver functions are in ./resolvers/ — imported above
+// Resolver dispatch tables are in ./import-resolution.ts — imported above
 
-// ============================================================================
-// SHARED LANGUAGE DISPATCH
-// ============================================================================
+/** Create IMPORTS edge helpers that share a resolved-count tracker. */
+function createImportEdgeHelpers(graph: KnowledgeGraph, importMap: ImportMap) {
+  let totalImportsResolved = 0;
 
-/** Bundled language-specific configs loaded once per ingestion run. */
-interface LanguageConfigs {
-  tsconfigPaths: TsconfigPaths | null;
-  goModule: GoModuleConfig | null;
-  composerConfig: ComposerConfig | null;
-  swiftPackageConfig: SwiftPackageConfig | null;
-  csharpConfigs: CSharpProjectConfig[];
-}
+  const addImportGraphEdge = (filePath: string, resolvedPath: string) => {
+    const sourceId = generateId('File', filePath);
+    const targetId = generateId('File', resolvedPath);
+    const relId = generateId('IMPORTS', `${filePath}->${resolvedPath}`);
+    totalImportsResolved++;
+    graph.addRelationship({ id: relId, sourceId, targetId, type: 'IMPORTS', confidence: 1.0, reason: '' });
+  };
 
-/** Context for import path resolution (file lists, indexes, cache). */
-interface ResolveCtx {
-  allFilePaths: Set<string>;
-  allFileList: string[];
-  normalizedFileList: string[];
-  index: SuffixIndex;
-  resolveCache: Map<string, string | null>;
-}
+  const addImportEdge = (filePath: string, resolvedPath: string) => {
+    addImportGraphEdge(filePath, resolvedPath);
+    if (!importMap.has(filePath)) importMap.set(filePath, new Set());
+    importMap.get(filePath)!.add(resolvedPath);
+  };
 
-/**
- * Result of resolving an import via language-specific dispatch.
- * - 'files': resolved to one or more files → add to ImportMap
- * - 'package': resolved to a directory → add graph edges + store dirSuffix in PackageMap
- * - null: no resolution (external dependency, etc.)
- */
-type ImportResult =
-  | { kind: 'files'; files: string[] }
-  | { kind: 'package'; files: string[]; dirSuffix: string }
-  | null;
-
-/**
- * Shared language dispatch for import resolution.
- * Used by both processImports and processImportsFromExtracted.
- */
-function resolveLanguageImport(
-  filePath: string,
-  rawImportPath: string,
-  language: SupportedLanguages,
-  configs: LanguageConfigs,
-  ctx: ResolveCtx,
-): ImportResult {
-  const { allFilePaths, allFileList, normalizedFileList, index, resolveCache } = ctx;
-  const { tsconfigPaths, goModule, composerConfig, swiftPackageConfig, csharpConfigs } = configs;
-
-  // JVM languages (Java + Kotlin): handle wildcards and member imports
-  if (language === SupportedLanguages.Java || language === SupportedLanguages.Kotlin) {
-    const exts = language === SupportedLanguages.Java ? ['.java'] : KOTLIN_EXTENSIONS;
-
-    if (rawImportPath.endsWith('.*')) {
-      const matchedFiles = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, exts, index);
-      if (matchedFiles.length === 0 && language === SupportedLanguages.Kotlin) {
-        const javaMatches = resolveJvmWildcard(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
-        if (javaMatches.length > 0) return { kind: 'files', files: javaMatches };
-      }
-      if (matchedFiles.length > 0) return { kind: 'files', files: matchedFiles };
-      // Fall through to standard resolution
-    } else {
-      let memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, exts, index);
-      if (!memberResolved && language === SupportedLanguages.Kotlin) {
-        memberResolved = resolveJvmMemberImport(rawImportPath, normalizedFileList, allFileList, ['.java'], index);
-      }
-      if (memberResolved) return { kind: 'files', files: [memberResolved] };
-      // Fall through to standard resolution
-    }
-  }
-
-  // Go: handle package-level imports
-  if (language === SupportedLanguages.Go && goModule && rawImportPath.startsWith(goModule.modulePath)) {
-    const pkgSuffix = resolveGoPackageDir(rawImportPath, goModule);
-    if (pkgSuffix) {
-      const pkgFiles = resolveGoPackage(rawImportPath, goModule, normalizedFileList, allFileList);
-      if (pkgFiles.length > 0) {
-        return { kind: 'package', files: pkgFiles, dirSuffix: pkgSuffix };
-      }
-    }
-    // Fall through if no files found (package might be external)
-  }
-
-  // C#: handle namespace-based imports (using directives)
-  if (language === SupportedLanguages.CSharp && csharpConfigs.length > 0) {
-    const resolvedFiles = resolveCSharpImport(rawImportPath, csharpConfigs, normalizedFileList, allFileList, index);
-    if (resolvedFiles.length > 1) {
-      const dirSuffix = resolveCSharpNamespaceDir(rawImportPath, csharpConfigs);
-      if (dirSuffix) {
-        return { kind: 'package', files: resolvedFiles, dirSuffix };
-      }
-    }
-    if (resolvedFiles.length > 0) return { kind: 'files', files: resolvedFiles };
-    return null;
-  }
-
-  // PHP: handle namespace-based imports (use statements)
-  if (language === SupportedLanguages.PHP) {
-    const resolved = resolvePhpImport(rawImportPath, composerConfig, allFilePaths, normalizedFileList, allFileList, index);
-    return resolved ? { kind: 'files', files: [resolved] } : null;
-  }
-
-  // Swift: handle module imports
-  if (language === SupportedLanguages.Swift && swiftPackageConfig) {
-    const targetDir = swiftPackageConfig.targets.get(rawImportPath);
-    if (targetDir) {
-      const dirPrefix = targetDir + '/';
-      const files: string[] = [];
-      for (let i = 0; i < normalizedFileList.length; i++) {
-        if (normalizedFileList[i].startsWith(dirPrefix) && normalizedFileList[i].endsWith('.swift')) {
-          files.push(allFileList[i]);
-        }
-      }
-      if (files.length > 0) return { kind: 'files', files };
-    }
-    return null; // External framework (Foundation, UIKit, etc.)
-  }
-
-  // Ruby: require / require_relative
-  if (language === SupportedLanguages.Ruby) {
-    const resolved = resolveRubyImport(rawImportPath, normalizedFileList, allFileList, index);
-    return resolved ? { kind: 'files', files: [resolved] } : null;
-  }
-
-  // Rust: expand top-level grouped imports: use {crate::a, crate::b}
-  if (language === SupportedLanguages.Rust && rawImportPath.startsWith('{') && rawImportPath.endsWith('}')) {
-    const inner = rawImportPath.slice(1, -1);
-    const parts = inner.split(',').map(p => p.trim()).filter(Boolean);
-    const resolved: string[] = [];
-    for (const part of parts) {
-      const r = resolveRustImport(filePath, part, allFilePaths);
-      if (r) resolved.push(r);
-    }
-    return resolved.length > 0 ? { kind: 'files', files: resolved } : null;
-  }
-
-  // Standard single-file resolution
-  const resolvedPath = resolveImportPath(
-    filePath,
-    rawImportPath,
-    allFilePaths,
-    allFileList,
-    normalizedFileList,
-    resolveCache,
-    language,
-    tsconfigPaths,
-    index,
-  );
-
-  return resolvedPath ? { kind: 'files', files: [resolvedPath] } : null;
+  return { addImportEdge, addImportGraphEdge, getResolvedCount: () => totalImportsResolved };
 }
 
 /**
@@ -265,7 +109,7 @@ function applyImportResult(
   packageMap: PackageMap | undefined,
   addImportEdge: (from: string, to: string) => void,
   addImportGraphEdge: (from: string, to: string) => void,
-  namedBindings?: { local: string; exported: string }[],
+  namedBindings?: NamedBinding[],
   namedImportMap?: NamedImportMap,
 ): void {
   if (!result) return;
@@ -284,13 +128,44 @@ function applyImportResult(
       addImportEdge(filePath, resolvedFile);
     }
 
-    // Record named bindings for precise Tier 2a resolution
-    if (namedBindings && namedImportMap && files.length === 1) {
-      const resolvedFile = files[0];
+    // Record named bindings for precise Tier 2a resolution.
+    // If the same local name is imported from multiple files (e.g., Java static imports
+    // of overloaded methods), remove the entry so resolution falls through to Tier 2a
+    // import-scoped which sees all candidates and can apply arity narrowing.
+    if (namedBindings && namedImportMap) {
       if (!namedImportMap.has(filePath)) namedImportMap.set(filePath, new Map());
       const fileBindings = namedImportMap.get(filePath)!;
-      for (const binding of namedBindings) {
-        fileBindings.set(binding.local, { sourcePath: resolvedFile, exportedName: binding.exported });
+
+      if (files.length === 1) {
+        const resolvedFile = files[0];
+        for (const binding of namedBindings) {
+          const existing = fileBindings.get(binding.local);
+          if (existing && existing.sourcePath !== resolvedFile) {
+            fileBindings.delete(binding.local);
+          } else {
+            fileBindings.set(binding.local, { sourcePath: resolvedFile, exportedName: binding.exported });
+          }
+        }
+      } else {
+        // Multi-file resolution (e.g., Rust `use crate::models::{User, Repo}`).
+        // Match each binding to a resolved file by comparing the lowercase binding name
+        // to the file's basename (without extension). If no match, skip the binding.
+        for (const binding of namedBindings) {
+          const lowerName = binding.exported.toLowerCase();
+          const matchedFile = files.find(f => {
+            const base = f.replace(/\\/g, '/').split('/').pop() ?? '';
+            const nameWithoutExt = base.substring(0, base.lastIndexOf('.')).toLowerCase();
+            return nameWithoutExt === lowerName;
+          });
+          if (matchedFile) {
+            const existing = fileBindings.get(binding.local);
+            if (existing && existing.sourcePath !== matchedFile) {
+              fileBindings.delete(binding.local);
+            } else {
+              fileBindings.set(binding.local, { sourcePath: matchedFile, exportedName: binding.exported });
+            }
+          }
+        }
       }
     }
   }
@@ -326,46 +201,11 @@ export const processImports = async (
 
   // Track import statistics
   let totalImportsFound = 0;
-  let totalImportsResolved = 0;
 
   // Load language-specific configs once before the file loop
-  const effectiveRoot = repoRoot || '';
-  const configs: LanguageConfigs = {
-    tsconfigPaths: await loadTsconfigPaths(effectiveRoot),
-    goModule: await loadGoModulePath(effectiveRoot),
-    composerConfig: await loadComposerConfig(effectiveRoot),
-    swiftPackageConfig: await loadSwiftPackageConfig(effectiveRoot),
-    csharpConfigs: await loadCSharpProjectConfig(effectiveRoot),
-  };
-  const resolveCtx: ResolveCtx = { allFilePaths, allFileList, normalizedFileList, index, resolveCache };
-
-  // Helper: add an IMPORTS edge to the graph only (no ImportMap update)
-  const addImportGraphEdge = (filePath: string, resolvedPath: string) => {
-    const sourceId = generateId('File', filePath);
-    const targetId = generateId('File', resolvedPath);
-    const relId = generateId('IMPORTS', `${filePath}->${resolvedPath}`);
-
-    totalImportsResolved++;
-
-    graph.addRelationship({
-      id: relId,
-      sourceId,
-      targetId,
-      type: 'IMPORTS',
-      confidence: 1.0,
-      reason: '',
-    });
-  };
-
-  // Helper: add an IMPORTS edge + update import map
-  const addImportEdge = (filePath: string, resolvedPath: string) => {
-    addImportGraphEdge(filePath, resolvedPath);
-
-    if (!importMap.has(filePath)) {
-      importMap.set(filePath, new Set());
-    }
-    importMap.get(filePath)!.add(resolvedPath);
-  };
+  const configs = await loadImportConfigs(repoRoot || '');
+  const resolveCtx: ResolveCtx = { allFilePaths, allFileList, normalizedFileList, index, resolveCache, configs };
+  const { addImportEdge, addImportGraphEdge, getResolvedCount } = createImportEdgeHelpers(graph, importMap);
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
@@ -438,14 +278,13 @@ export const processImports = async (
           return;
         }
 
-        // Clean path (remove quotes and angle brackets for C/C++ includes)
-        const rawImportPath = language === SupportedLanguages.Kotlin
-          ? appendKotlinWildcard(sourceNode.text.replace(/['"<>]/g, ''), captureMap['import'])
-          : sourceNode.text.replace(/['"<>]/g, '');
+        const rawImportPath = preprocessImportPath(sourceNode.text, captureMap['import'], language);
+        if (!rawImportPath) return;
         totalImportsFound++;
 
-        const result = resolveLanguageImport(file.path, rawImportPath, language, configs, resolveCtx);
-        const bindings = namedImportMap ? extractNamedBindings(captureMap['import'], language) : undefined;
+        const result = importResolvers[language](rawImportPath, file.path, resolveCtx);
+        const extractor = namedBindingExtractors[language];
+        const bindings = namedImportMap && extractor ? extractor(captureMap['import']) : undefined;
         applyImportResult(result, file.path, importMap, packageMap, addImportEdge, addImportGraphEdge, bindings, namedImportMap);
       }
 
@@ -457,7 +296,7 @@ export const processImports = async (
           const routed = callRouter(callNameNode.text, captureMap['call']);
           if (routed && routed.kind === 'import') {
             totalImportsFound++;
-            const result = resolveLanguageImport(file.path, routed.importPath, language, configs, resolveCtx);
+            const result = importResolvers[language](routed.importPath, file.path, resolveCtx);
             applyImportResult(result, file.path, importMap, packageMap, addImportEdge, addImportGraphEdge);
           }
         }
@@ -476,7 +315,7 @@ export const processImports = async (
   }
 
   if (isDev) {
-    console.log(`📊 Import processing complete: ${totalImportsResolved}/${totalImportsFound} imports resolved to graph edges`);
+    console.log(`📊 Import processing complete: ${getResolvedCount()}/${totalImportsFound} imports resolved to graph edges`);
   }
 };
 
@@ -497,47 +336,13 @@ export const processImportsFromExtracted = async (
   const packageMap = ctx.packageMap;
   const namedImportMap = ctx.namedImportMap;
   const importCtx = prebuiltCtx ?? buildImportResolutionContext(files.map(f => f.path));
-  const { allFilePaths, allFileList, normalizedFileList, suffixIndex: index, resolveCache } = importCtx;
+  const { allFilePaths, allFileList, normalizedFileList, index, resolveCache } = importCtx;
 
   let totalImportsFound = 0;
-  let totalImportsResolved = 0;
 
-  const effectiveRoot = repoRoot || '';
-  const configs: LanguageConfigs = {
-    tsconfigPaths: await loadTsconfigPaths(effectiveRoot),
-    goModule: await loadGoModulePath(effectiveRoot),
-    composerConfig: await loadComposerConfig(effectiveRoot),
-    swiftPackageConfig: await loadSwiftPackageConfig(effectiveRoot),
-    csharpConfigs: await loadCSharpProjectConfig(effectiveRoot),
-  };
-  const resolveCtx: ResolveCtx = { allFilePaths, allFileList, normalizedFileList, index, resolveCache };
-
-  // Helper: add an IMPORTS edge to the graph only (no ImportMap update)
-  const addImportGraphEdge = (filePath: string, resolvedPath: string) => {
-    const sourceId = generateId('File', filePath);
-    const targetId = generateId('File', resolvedPath);
-    const relId = generateId('IMPORTS', `${filePath}->${resolvedPath}`);
-
-    totalImportsResolved++;
-
-    graph.addRelationship({
-      id: relId,
-      sourceId,
-      targetId,
-      type: 'IMPORTS',
-      confidence: 1.0,
-      reason: '',
-    });
-  };
-
-  const addImportEdge = (filePath: string, resolvedPath: string) => {
-    addImportGraphEdge(filePath, resolvedPath);
-
-    if (!importMap.has(filePath)) {
-      importMap.set(filePath, new Set());
-    }
-    importMap.get(filePath)!.add(resolvedPath);
-  };
+  const configs = await loadImportConfigs(repoRoot || '');
+  const resolveCtx: ResolveCtx = { allFilePaths, allFileList, normalizedFileList, index, resolveCache, configs };
+  const { addImportEdge, addImportGraphEdge, getResolvedCount } = createImportEdgeHelpers(graph, importMap);
 
   // Group by file for progress reporting (users see file count, not import count)
   const importsByFile = new Map<string, ExtractedImport[]>();
@@ -563,7 +368,7 @@ export const processImportsFromExtracted = async (
     for (const imp of fileImports) {
       totalImportsFound++;
 
-      const result = resolveLanguageImport(filePath, imp.rawImportPath, imp.language, configs, resolveCtx);
+      const result = importResolvers[imp.language](imp.rawImportPath, filePath, resolveCtx);
       applyImportResult(result, filePath, importMap, packageMap, addImportEdge, addImportGraphEdge, imp.namedBindings, namedImportMap);
     }
   }
@@ -571,6 +376,6 @@ export const processImportsFromExtracted = async (
   onProgress?.(totalFiles, totalFiles);
 
   if (isDev) {
-    console.log(`📊 Import processing (fast path): ${totalImportsResolved}/${totalImportsFound} imports resolved to graph edges`);
+    console.log(`📊 Import processing (fast path): ${getResolvedCount()}/${totalImportsFound} imports resolved to graph edges`);
   }
 };

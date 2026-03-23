@@ -107,6 +107,164 @@ describe('filesystem-walker', () => {
     });
   });
 
+  describe('.gitignore support', () => {
+    let gitignoreDir: string;
+
+    beforeAll(async () => {
+      gitignoreDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-gitignore-'));
+
+      // Create directory structure
+      await fs.mkdir(path.join(gitignoreDir, 'src'), { recursive: true });
+      await fs.mkdir(path.join(gitignoreDir, 'data', 'cache'), { recursive: true });
+      await fs.mkdir(path.join(gitignoreDir, 'logs'), { recursive: true });
+
+      // Source files (should be indexed)
+      await fs.writeFile(path.join(gitignoreDir, 'src', 'index.ts'), 'export const main = () => {}');
+      await fs.writeFile(path.join(gitignoreDir, 'src', 'utils.ts'), 'export const helper = () => {}');
+
+      // Data files (should be ignored via .gitignore)
+      await fs.writeFile(path.join(gitignoreDir, 'data', 'cache', 'file.json'), '{}');
+      await fs.writeFile(path.join(gitignoreDir, 'logs', 'app.log'), 'log entry');
+
+      // .gitignore
+      await fs.writeFile(path.join(gitignoreDir, '.gitignore'), 'data/\nlogs/\n');
+    });
+
+    afterAll(async () => {
+      await fs.rm(gitignoreDir, { recursive: true, force: true });
+    });
+
+    it('excludes directories listed in .gitignore', async () => {
+      const files = await walkRepositoryPaths(gitignoreDir);
+      const paths = files.map(f => f.path.replace(/\\/g, '/'));
+
+      // Source files should be present
+      expect(paths.some(p => p.includes('src/index.ts'))).toBe(true);
+      expect(paths.some(p => p.includes('src/utils.ts'))).toBe(true);
+
+      // Ignored directories should not be present
+      expect(paths.every(p => !p.includes('data/'))).toBe(true);
+      expect(paths.every(p => !p.includes('logs/'))).toBe(true);
+    });
+
+    it('still applies hardcoded ignore list alongside .gitignore', async () => {
+      // Add node_modules (hardcoded ignore) to verify both work
+      await fs.mkdir(path.join(gitignoreDir, 'node_modules', 'pkg'), { recursive: true });
+      await fs.writeFile(path.join(gitignoreDir, 'node_modules', 'pkg', 'index.js'), 'module.exports = {}');
+
+      const files = await walkRepositoryPaths(gitignoreDir);
+      const paths = files.map(f => f.path.replace(/\\/g, '/'));
+
+      expect(paths.every(p => !p.includes('node_modules'))).toBe(true);
+      expect(paths.every(p => !p.includes('data/'))).toBe(true);
+
+      await fs.rm(path.join(gitignoreDir, 'node_modules'), { recursive: true, force: true });
+    });
+  });
+
+  describe('.gitnexusignore support', () => {
+    let nexusignoreDir: string;
+
+    beforeAll(async () => {
+      nexusignoreDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-nexusignore-'));
+
+      await fs.mkdir(path.join(nexusignoreDir, 'src'), { recursive: true });
+      await fs.mkdir(path.join(nexusignoreDir, 'local', 'grafana'), { recursive: true });
+
+      await fs.writeFile(path.join(nexusignoreDir, 'src', 'index.ts'), 'export const main = () => {}');
+      await fs.writeFile(path.join(nexusignoreDir, 'local', 'grafana', 'module.js'), 'var x = 1;');
+
+      // Only .gitnexusignore, no .gitignore
+      await fs.writeFile(path.join(nexusignoreDir, '.gitnexusignore'), 'local/\n');
+    });
+
+    afterAll(async () => {
+      await fs.rm(nexusignoreDir, { recursive: true, force: true });
+    });
+
+    it('excludes directories listed in .gitnexusignore', async () => {
+      const files = await walkRepositoryPaths(nexusignoreDir);
+      const paths = files.map(f => f.path.replace(/\\/g, '/'));
+
+      expect(paths.some(p => p.includes('src/index.ts'))).toBe(true);
+      expect(paths.every(p => !p.includes('local/'))).toBe(true);
+    });
+  });
+
+  describe('combined .gitignore + .gitnexusignore', () => {
+    let combinedDir: string;
+
+    beforeAll(async () => {
+      combinedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-combined-'));
+
+      await fs.mkdir(path.join(combinedDir, 'src'), { recursive: true });
+      await fs.mkdir(path.join(combinedDir, 'data'), { recursive: true });
+      await fs.mkdir(path.join(combinedDir, 'local', 'plugins'), { recursive: true });
+
+      await fs.writeFile(path.join(combinedDir, 'src', 'index.ts'), 'export const main = () => {}');
+      await fs.writeFile(path.join(combinedDir, 'data', 'dump.json'), '{}');
+      await fs.writeFile(path.join(combinedDir, 'local', 'plugins', 'module.js'), 'var x = 1;');
+
+      await fs.writeFile(path.join(combinedDir, '.gitignore'), 'data/\n');
+      await fs.writeFile(path.join(combinedDir, '.gitnexusignore'), 'local/\n');
+    });
+
+    afterAll(async () => {
+      await fs.rm(combinedDir, { recursive: true, force: true });
+    });
+
+    it('excludes directories from both files', async () => {
+      const files = await walkRepositoryPaths(combinedDir);
+      const paths = files.map(f => f.path.replace(/\\/g, '/'));
+
+      expect(paths.some(p => p.includes('src/index.ts'))).toBe(true);
+      expect(paths.every(p => !p.includes('data/'))).toBe(true);
+      expect(paths.every(p => !p.includes('local/'))).toBe(true);
+    });
+  });
+
+  describe('GITNEXUS_NO_GITIGNORE env var', () => {
+    let envDir: string;
+
+    beforeAll(async () => {
+      envDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-noignore-'));
+
+      await fs.mkdir(path.join(envDir, 'src'), { recursive: true });
+      await fs.mkdir(path.join(envDir, 'data'), { recursive: true });
+
+      await fs.writeFile(path.join(envDir, 'src', 'index.ts'), 'export const main = () => {}');
+      await fs.writeFile(path.join(envDir, 'data', 'dump.json'), '{}');
+
+      await fs.writeFile(path.join(envDir, '.gitignore'), 'data/\n');
+    });
+
+    afterAll(async () => {
+      await fs.rm(envDir, { recursive: true, force: true });
+    });
+
+    it('excludes gitignored directory by default', async () => {
+      const files = await walkRepositoryPaths(envDir);
+      const paths = files.map(f => f.path.replace(/\\/g, '/'));
+      expect(paths.every(p => !p.includes('data/'))).toBe(true);
+    });
+
+    it('includes gitignored directory when GITNEXUS_NO_GITIGNORE is set', async () => {
+      const original = process.env.GITNEXUS_NO_GITIGNORE;
+      process.env.GITNEXUS_NO_GITIGNORE = '1';
+      try {
+        const files = await walkRepositoryPaths(envDir);
+        const paths = files.map(f => f.path.replace(/\\/g, '/'));
+        expect(paths.some(p => p.includes('data/dump.json'))).toBe(true);
+      } finally {
+        if (original === undefined) {
+          delete process.env.GITNEXUS_NO_GITIGNORE;
+        } else {
+          process.env.GITNEXUS_NO_GITIGNORE = original;
+        }
+      }
+    });
+  });
+
   describe('readFileContents', () => {
     it('reads file contents by relative paths', async () => {
       const contents = await readFileContents(tmpDir, ['src/index.ts', 'src/utils.ts']);

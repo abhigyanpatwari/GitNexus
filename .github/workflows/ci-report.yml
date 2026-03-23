@@ -111,6 +111,7 @@ jobs:
           echo "quality=$(validate_result "$DIR/quality_result")"        >> "$GITHUB_OUTPUT"
           echo "unit=$(validate_result "$DIR/unit_result")"              >> "$GITHUB_OUTPUT"
           echo "integration=$(validate_result "$DIR/integration_result")" >> "$GITHUB_OUTPUT"
+          echo "e2e=$(validate_result "$DIR/e2e_result")"                >> "$GITHUB_OUTPUT"
 
       - name: Checkout (for vitest config)
         if: steps.meta.outputs.skip != 'true'
@@ -242,6 +243,7 @@ jobs:
           QUALITY: ${{ steps.meta.outputs.quality }}
           UNIT: ${{ steps.meta.outputs.unit }}
           INTEG: ${{ steps.meta.outputs.integration }}
+          E2E: ${{ steps.meta.outputs.e2e }}
           HAS_MERGED: ${{ steps.coverage.outputs.has_merged }}
           BASE_FOUND: ${{ steps.base-coverage.outputs.found }}
           BASE_DIR: ${{ steps.base-coverage.outputs.dir }}
@@ -380,7 +382,7 @@ jobs:
           }
 
           # ── Overall status ──
-          if [[ "$QUALITY" == "success" && "$UNIT" == "success" && "$INTEG" == "success" ]]; then
+          if [[ "$QUALITY" == "success" && "$UNIT" == "success" && "$INTEG" == "success" && "$E2E" == "success" ]]; then
             OVERALL="✅ **All checks passed**"
           else
             OVERALL="❌ **Some checks failed**"
@@ -400,6 +402,7 @@ jobs:
             echo "| $(status_icon "$QUALITY") Typecheck | \`${QUALITY}\` | tsc --noEmit |"
             echo "| $(status_icon "$UNIT") Unit Tests | \`${UNIT}\` | 3 platforms |"
             echo "| $(status_icon "$INTEG") Integration | \`${INTEG}\` | 3 OS x 4 groups = 12 jobs |"
+            echo "| $(status_icon "$E2E") E2E | \`${E2E}\` | gitnexus-web changes only |"
             echo ""
 
             if [ "$TOTAL" -gt 0 ] 2>/dev/null; then

@@ -155,13 +155,14 @@ const AppContent = () => {
           return initializeAgent(projectName);
         }
       })
+      .then(() => {
+        startEmbeddingsWithFallback();
+      })
       .catch((err) => {
         console.warn('Failed to load graph into LadybugDB:', err);
         // Agent won't work but graph visualization still does
       });
 
-    // Auto-start embeddings
-    startEmbeddingsWithFallback();
     return loadGraphPromise;
   }, [setViewMode, setGraph, setFileContents, setProjectName, loadServerGraph, initializeAgent, startEmbeddingsWithFallback]);
 

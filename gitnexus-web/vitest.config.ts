@@ -1,4 +1,4 @@
-/// <reference types="vitest/config" />
+/// <reference types="vitest" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
@@ -8,6 +8,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      '@anthropic-ai/sdk/lib/transform-json-schema': path.resolve(__dirname, 'node_modules/@anthropic-ai/sdk/lib/transform-json-schema.mjs'),
+      'mermaid': path.resolve(__dirname, 'node_modules/mermaid/dist/mermaid.esm.min.mjs'),
     },
   },
   test: {
@@ -32,7 +34,6 @@ export default defineConfig({
         branches: 10,
         functions: 10,
         lines: 10,
-        autoUpdate: true,
       },
     },
   },

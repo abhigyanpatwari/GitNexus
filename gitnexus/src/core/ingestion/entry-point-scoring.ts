@@ -14,30 +14,33 @@ import { detectFrameworkFromPath } from './framework-detection.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
 
 // ============================================================================
-// NAME PATTERNS - All 11 supported languages
+// NAME PATTERNS - All 13 supported languages
 // ============================================================================
 
 /**
- * Common entry point naming patterns by language
- * These patterns indicate functions that are likely feature entry points
+ * Common entry point naming patterns by language.
+ * These patterns indicate functions that are likely feature entry points.
+ *
+ * Universal patterns are separated from per-language patterns so the per-language
+ * table can use `satisfies Record<SupportedLanguages, RegExp[]>` for compile-time
+ * exhaustiveness — the compiler catches any missing language entry.
  */
-const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
-  // Universal patterns (apply to all languages)
-  '*': [
-    /^(main|init|bootstrap|start|run|setup|configure)$/i,
-    /^handle[A-Z]/,           // handleLogin, handleSubmit
-    /^on[A-Z]/,               // onClick, onSubmit
-    /Handler$/,               // RequestHandler
-    /Controller$/,            // UserController
-    /^process[A-Z]/,          // processPayment
-    /^execute[A-Z]/,          // executeQuery
-    /^perform[A-Z]/,          // performAction
-    /^dispatch[A-Z]/,         // dispatchEvent
-    /^trigger[A-Z]/,          // triggerAction
-    /^fire[A-Z]/,             // fireEvent
-    /^emit[A-Z]/,             // emitEvent
-  ],
-  
+const UNIVERSAL_ENTRY_POINT_PATTERNS: RegExp[] = [
+  /^(main|init|bootstrap|start|run|setup|configure)$/i,
+  /^handle[A-Z]/,           // handleLogin, handleSubmit
+  /^on[A-Z]/,               // onClick, onSubmit
+  /Handler$/,               // RequestHandler
+  /Controller$/,            // UserController
+  /^process[A-Z]/,          // processPayment
+  /^execute[A-Z]/,          // executeQuery
+  /^perform[A-Z]/,          // performAction
+  /^dispatch[A-Z]/,         // dispatchEvent
+  /^trigger[A-Z]/,          // triggerAction
+  /^fire[A-Z]/,             // fireEvent
+  /^emit[A-Z]/,             // emitEvent
+];
+
+const ENTRY_POINT_PATTERNS = {
   // JavaScript/TypeScript
   [SupportedLanguages.JavaScript]: [
     /^use[A-Z]/,              // React hooks (useEffect, etc.)
@@ -62,6 +65,17 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
     /Service$/,               // UserService
   ],
 
+  // Kotlin
+  [SupportedLanguages.Kotlin]: [
+    /^on(Create|Start|Resume|Pause|Stop|Destroy)$/,  // Android lifecycle
+    /^do[A-Z]/,               // doGet, doPost (shared JVM Servlet pattern)
+    /^create[A-Z]/,           // Factory patterns
+    /^build[A-Z]/,            // Builder patterns
+    /ViewModel$/,             // MVVM pattern (Android)
+    /^module$/,               // Ktor module entry point
+    /Service$/,               // Service classes
+  ],
+
   // C#
   [SupportedLanguages.CSharp]: [
     /^(Get|Post|Put|Delete|Patch)/,  // ASP.NET action methods
@@ -77,7 +91,7 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
     /Service$/,                      // Service classes
     /^Seed/,                         // Database seeding
   ],
-  
+
   // Go
   [SupportedLanguages.Go]: [
     /Handler$/,               // http.Handler pattern
@@ -85,7 +99,7 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
     /^New[A-Z]/,              // Constructor pattern (returns new instance)
     /^Make[A-Z]/,             // Make functions
   ],
-  
+
   // Rust
   [SupportedLanguages.Rust]: [
     /^(get|post|put|delete)_handler$/i,
@@ -94,7 +108,7 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
     /^run$/,                  // run entry point
     /^spawn/,                 // Async spawn
   ],
-  
+
   // C - explicit main() boost plus common C entry point conventions
   [SupportedLanguages.C]: [
     /^main$/,                 // THE entry point
@@ -198,15 +212,15 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
     /^perform$/,              // Background jobs (Sidekiq, ActiveJob)
     /^execute$/,              // Command pattern
   ],
-};
+} satisfies Record<SupportedLanguages, RegExp[]>;
 
 /** Pre-computed merged patterns (universal + language-specific) to avoid per-call array allocation. */
-const MERGED_ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {};
-const UNIVERSAL_PATTERNS = ENTRY_POINT_PATTERNS['*'] || [];
-for (const [lang, patterns] of Object.entries(ENTRY_POINT_PATTERNS)) {
-  if (lang === '*') continue;
-  MERGED_ENTRY_POINT_PATTERNS[lang] = [...UNIVERSAL_PATTERNS, ...patterns];
-}
+const MERGED_ENTRY_POINT_PATTERNS = Object.fromEntries(
+  (Object.keys(ENTRY_POINT_PATTERNS) as SupportedLanguages[]).map(lang => [
+    lang,
+    [...UNIVERSAL_ENTRY_POINT_PATTERNS, ...ENTRY_POINT_PATTERNS[lang]],
+  ])
+) as Record<SupportedLanguages, RegExp[]>;
 
 // ============================================================================
 // UTILITY PATTERNS - Functions that should be penalized
@@ -295,7 +309,7 @@ export function calculateEntryPointScore(
     reasons.push('utility-pattern');
   } else {
     // Check positive patterns
-    const allPatterns = MERGED_ENTRY_POINT_PATTERNS[language] || UNIVERSAL_PATTERNS;
+    const allPatterns = MERGED_ENTRY_POINT_PATTERNS[language];
     
     if (allPatterns.some(p => p.test(name))) {
       nameMultiplier = 1.5;  // Bonus for matching entry point pattern

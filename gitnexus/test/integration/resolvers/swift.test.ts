@@ -57,7 +57,8 @@ describe.skipIf(!swiftAvailable)('Swift constructor-inferred type resolution', (
 
 // ---------------------------------------------------------------------------
 // self.save() resolves to enclosing class's own save method
-// Known issue: tree-sitter-swift has build issues on Node 22
+// Build-dep issue (NOT a feature gap): tree-sitter-swift has build issues on Node 22.
+// The self/super resolution code already exists in type-env.ts lookupInEnv (lines 56-66).
 // ---------------------------------------------------------------------------
 
 describe.skip('Swift self resolution', () => {
@@ -86,7 +87,8 @@ describe.skip('Swift self resolution', () => {
 
 // ---------------------------------------------------------------------------
 // Parent class resolution: EXTENDS + protocol conformance
-// Known issue: tree-sitter-swift has build issues on Node 22
+// Build-dep issue (NOT a feature gap): tree-sitter-swift has build issues on Node 22.
+// findEnclosingParentClassName in type-env.ts already has Swift inheritance_specifier handler.
 // ---------------------------------------------------------------------------
 
 describe.skip('Swift parent resolution', () => {

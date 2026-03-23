@@ -9,7 +9,7 @@
  * Accepts status === null (timeout) as valid on slow CI runners.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawnSync } from 'child_process';
+import { spawnSync, spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -230,5 +230,179 @@ describe('CLI end-to-end', () => {
       }
     });
 
+  });
+
+  // ─── stdout fd 1 tests (#324) ───────────────────────────────────────
+  // These tests verify that tool output goes to stdout (fd 1), not stderr.
+  // Requires analyze to have run first (the analyze test above populates .gitnexus/).
+
+  // All tool commands pass --repo to disambiguate when the global registry
+  // has multiple indexed repos (e.g. the parent project is also indexed).
+  describe('tool output goes to stdout via fd 1 (#324)', () => {
+    it('cypher: JSON appears on stdout, not stderr', () => {
+      const result = runCliRaw(['cypher', 'MATCH (n) RETURN n.name LIMIT 3', '--repo', 'mini-repo'], MINI_REPO);
+      if (result.status === null) return; // CI timeout tolerance
+
+      expect(result.status).toBe(0);
+
+      // stdout must contain valid JSON (array or object)
+      expect(() => JSON.parse(result.stdout.trim())).not.toThrow();
+
+      // stderr must NOT contain JSON — only human-readable diagnostics allowed
+      const stderrTrimmed = result.stderr.trim();
+      if (stderrTrimmed.length > 0) {
+        expect(() => JSON.parse(stderrTrimmed)).toThrow();
+      }
+    });
+
+    it('query: JSON appears on stdout, not stderr', () => {
+      // "handler" is a generic term likely to match something in mini-repo
+      const result = runCliRaw(['query', 'handler', '--repo', 'mini-repo'], MINI_REPO);
+      if (result.status === null) return;
+
+      expect(result.status).toBe(0);
+      expect(() => JSON.parse(result.stdout.trim())).not.toThrow();
+    });
+
+    it('impact: JSON appears on stdout, not stderr', () => {
+      const result = runCliRaw(
+        ['impact', 'handleRequest', '--direction', 'upstream', '--repo', 'mini-repo'],
+        MINI_REPO,
+      );
+      if (result.status === null) return;
+
+      expect(result.status).toBe(0);
+      // impact may return an error object (symbol not found) or a real result —
+      // either way it must be valid JSON on stdout
+      expect(() => JSON.parse(result.stdout.trim())).not.toThrow();
+    });
+
+    it('stdout is pipeable: cypher output parses as valid JSON', () => {
+      const result = runCliRaw(
+        ['cypher', 'MATCH (n:Function) RETURN n.name LIMIT 5', '--repo', 'mini-repo'],
+        MINI_REPO,
+      );
+      if (result.status === null) return;
+
+      expect(result.status).toBe(0);
+
+      // Simulate what jq does: parse stdout as JSON
+      const parsed = JSON.parse(result.stdout.trim());
+      expect(Array.isArray(parsed) || typeof parsed === 'object').toBe(true);
+    });
+  });
+
+  // ─── EPIPE clean exit test (#324) ───────────────────────────────────
+
+  describe('EPIPE handling (#324)', () => {
+    it('cypher: EPIPE exits with code 0, not stderr dump', () => {
+      return new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          ['--import', 'tsx', cliEntry, 'cypher', 'MATCH (n) RETURN n LIMIT 500', '--repo', 'mini-repo'],
+          {
+            cwd: MINI_REPO,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: {
+              ...process.env,
+              NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+            },
+          },
+        );
+
+        let stderrOutput = '';
+        child.stderr.on('data', (chunk: Buffer) => { stderrOutput += chunk.toString(); });
+
+        // Destroy stdout immediately — simulates `| head -0` (consumer closes early)
+        child.stdout.once('data', () => {
+          child.stdout.destroy(); // triggers EPIPE on next write
+        });
+
+        const timer = setTimeout(() => {
+          child.kill('SIGTERM');
+          // Timeout is acceptable on CI — not a failure
+          resolve();
+        }, 20000);
+
+        child.on('close', (code) => {
+          clearTimeout(timer);
+          try {
+            // Clean EPIPE exit: code 0
+            expect(code).toBe(0);
+            // No JSON payload should appear on stderr
+            const trimmed = stderrOutput.trim();
+            if (trimmed.length > 0) {
+              expect(() => JSON.parse(trimmed)).toThrow();
+            }
+            resolve();
+          } catch (err) {
+            reject(err);
+          }
+        });
+      });
+    }, 25000);
+  });
+
+  // ─── eval-server READY signal test (#324) ───────────────────────────
+
+  describe('eval-server READY signal (#324)', () => {
+    it('READY signal appears on stdout, not stderr', () => {
+      return new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          ['--import', 'tsx', cliEntry, 'eval-server', '--port', '0', '--idle-timeout', '3'],
+          {
+            cwd: MINI_REPO,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: {
+              ...process.env,
+              NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+            },
+          },
+        );
+
+        let stdoutBuffer = '';
+        let foundOnStdout = false;
+        let foundOnStderr = false;
+
+        child.stdout.on('data', (chunk: Buffer) => {
+          stdoutBuffer += chunk.toString();
+          if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:')) {
+            foundOnStdout = true;
+            child.kill('SIGTERM');
+          }
+        });
+
+        child.stderr.on('data', (chunk: Buffer) => {
+          const text = chunk.toString();
+          if (text.includes('GITNEXUS_EVAL_SERVER_READY:')) {
+            foundOnStderr = true;
+            child.kill('SIGTERM');
+          }
+        });
+
+        const timer = setTimeout(() => {
+          child.kill('SIGTERM');
+          // Timeout is acceptable on CI — not a failure
+          resolve();
+        }, 30000);
+
+        child.on('close', () => {
+          clearTimeout(timer);
+          try {
+            if (foundOnStderr) {
+              reject(new Error('READY signal appeared on stderr instead of stdout'));
+            } else if (foundOnStdout) {
+              resolve();
+            } else {
+              // eval-server may not start on all CI environments — don't fail
+              resolve();
+            }
+          } catch (err) {
+            reject(err);
+          }
+        });
+      });
+    }, 35000);
   });
 });

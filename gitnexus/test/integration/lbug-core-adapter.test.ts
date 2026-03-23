@@ -5,9 +5,8 @@
  *
  * IMPORTANT: All core adapter tests share ONE coreHandle and ONE coreInitLbug
  * call because the core adapter is a module-level singleton. Calling
- * coreInitLbug with a different path would close the previous native DB
- * handle, which segfaults in forked processes. Sharing a single handle
- * avoids this entirely.
+ * coreInitLbug with a different path closes the previous native DB handle
+ * and opens a new one — sharing a single handle avoids unnecessary churn.
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'fs/promises';

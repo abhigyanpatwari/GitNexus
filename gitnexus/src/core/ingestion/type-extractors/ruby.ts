@@ -1,6 +1,6 @@
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, ReturnTypeExtractor } from './types.js';
-import { extractRubyConstructorAssignment, extractSimpleTypeName } from './shared.js';
-import { SyntaxNode } from '../utils.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, ReturnTypeExtractor, PendingAssignmentExtractor, ForLoopExtractor } from './types.js';
+import { extractRubyConstructorAssignment, extractSimpleTypeName, extractElementTypeFromString, extractVarName, resolveIterableElementType } from './shared.js';
+import type { SyntaxNode } from '../utils.js';
 
 /**
  * Ruby type extractor — YARD annotation parsing.
@@ -261,11 +261,160 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   return { varName: left.text, calleeName };
 };
 
+/** Ruby method node types that carry a parameter list. */
+const RUBY_METHOD_NODE_TYPES = new Set(['method', 'singleton_method']);
+
+const FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set(['for']);
+
+/**
+ * Collect raw YARD @param type strings from comment nodes preceding a method.
+ * Unlike collectYardParams which returns simplified type names, this returns the
+ * raw bracket content (e.g., "Array<User>" not "Array") for element type extraction.
+ */
+const collectYardRawParams = (methodNode: SyntaxNode): Map<string, string> => {
+  const params = new Map<string, string>();
+  const commentTexts: string[] = [];
+
+  const collectComments = (startNode: SyntaxNode): void => {
+    let sibling = startNode.previousSibling;
+    while (sibling) {
+      if (sibling.type === 'comment') {
+        commentTexts.unshift(sibling.text);
+      } else if (sibling.isNamed) {
+        break;
+      }
+      sibling = sibling.previousSibling;
+    }
+  };
+
+  collectComments(methodNode);
+  if (commentTexts.length === 0 && methodNode.parent?.type === 'body_statement') {
+    collectComments(methodNode.parent);
+  }
+
+  const commentBlock = commentTexts.join('\n');
+  let match: RegExpExecArray | null;
+
+  YARD_PARAM_RE.lastIndex = 0;
+  while ((match = YARD_PARAM_RE.exec(commentBlock)) !== null) {
+    params.set(match[1], match[2]);
+  }
+  YARD_PARAM_ALT_RE.lastIndex = 0;
+  while ((match = YARD_PARAM_ALT_RE.exec(commentBlock)) !== null) {
+    if (!params.has(match[2])) params.set(match[2], match[1]);
+  }
+
+  return params;
+};
+
+/**
+ * Walk up the AST from a for-statement to find the enclosing method,
+ * then search its YARD @param annotations for one named `iterableName`.
+ * Returns the element type extracted from the raw YARD type string.
+ *
+ * Example: `@param users [Array<User>]` → extracts "User" from "Array<User>".
+ */
+const findRubyParamElementType = (iterableName: string, startNode: SyntaxNode): string | undefined => {
+  let current: SyntaxNode | null = startNode.parent;
+  while (current) {
+    if (RUBY_METHOD_NODE_TYPES.has(current.type)) {
+      const rawParams = collectYardRawParams(current);
+      const rawType = rawParams.get(iterableName);
+      if (rawType) return extractElementTypeFromString(rawType);
+      break;
+    }
+    current = current.parent;
+  }
+  return undefined;
+};
+
+/**
+ * Ruby: for user in users ... end
+ *
+ * tree-sitter-ruby `for` node structure:
+ *   pattern field: the loop variable (identifier)
+ *   value field: `in` node whose child is the iterable expression
+ *
+ * Tier 1c: resolves the element type via:
+ *   1. scopeEnv string — extractElementTypeFromString on the stored type
+ *   2. AST walk — walks up to the enclosing method's YARD @param to read Array<User> directly
+ *
+ * Ruby has no static types on loop variables, so this mainly works when the
+ * iterable has a YARD-annotated container type (e.g., `@param users [Array<User>]`).
+ */
+const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTypeNodes, scope }): void => {
+  if (node.type !== 'for') return;
+
+  // The loop variable is the `pattern` field (identifier).
+  const patternNode = node.childForFieldName('pattern');
+  if (!patternNode) return;
+  const loopVarName = extractVarName(patternNode);
+  if (!loopVarName) return;
+
+  // The iterable is inside the `value` field which is an `in` node wrapping the expression.
+  const inNode = node.childForFieldName('value');
+  if (!inNode) return;
+  const iterableNode = inNode.firstNamedChild;
+  let iterableName: string | undefined;
+  if (iterableNode?.type === 'identifier') {
+    iterableName = iterableNode.text;
+  } else if (iterableNode?.type === 'call') {
+    const method = iterableNode.childForFieldName('method');
+    if (method) iterableName = method.text;
+  }
+  if (!iterableName) return;
+
+  // Ruby has no extractFromTypeNode (no AST type annotations), pass a no-op.
+  const noopExtractFromTypeNode = (): string | undefined => undefined;
+
+  const elementType = resolveIterableElementType(
+    iterableName, node, scopeEnv, declarationTypeNodes, scope,
+    noopExtractFromTypeNode, findRubyParamElementType,
+    undefined,
+  );
+  if (!elementType) return;
+
+  scopeEnv.set(loopVarName, elementType);
+};
+
+/**
+ * Ruby: alias_user = user → assignment with left/right identifier fields.
+ * Only handles plain identifier RHS (not calls, not literals).
+ * Skips if LHS already has a resolved type in scopeEnv.
+ */
+const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
+  if (node.type !== 'assignment') return undefined;
+  const lhsNode = node.childForFieldName('left');
+  if (!lhsNode || lhsNode.type !== 'identifier') return undefined;
+  const varName = lhsNode.text;
+  if (scopeEnv.has(varName)) return undefined;
+  const rhsNode = node.childForFieldName('right');
+  if (!rhsNode) return undefined;
+  if (rhsNode.type === 'identifier') return { kind: 'copy', lhs: varName, rhs: rhsNode.text };
+  // call/method_call RHS — Ruby uses method calls for both field access and method calls
+  if (rhsNode.type === 'call' || rhsNode.type === 'method_call') {
+    const methodNode = rhsNode.childForFieldName('method');
+    const receiverNode = rhsNode.childForFieldName('receiver');
+    if (!receiverNode && methodNode?.type === 'identifier') {
+      // No receiver → callResult (bare function call)
+      return { kind: 'callResult', lhs: varName, callee: methodNode.text };
+    }
+    if (receiverNode?.type === 'identifier' && methodNode?.type === 'identifier') {
+      // With receiver → methodCallResult (a.method)
+      return { kind: 'methodCallResult', lhs: varName, receiver: receiverNode.text, method: methodNode.text };
+    }
+  }
+  return undefined;
+};
+
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
+  forLoopNodeTypes: FOR_LOOP_NODE_TYPES,
   extractDeclaration,
   extractParameter,
   extractInitializer,
   scanConstructorBinding,
   extractReturnType,
+  extractForLoopBinding,
+  extractPendingAssignment,
 };

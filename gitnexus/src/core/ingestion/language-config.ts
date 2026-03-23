@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import type { ImportConfigs } from './import-resolution.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -212,4 +213,19 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
     return { targets };
   }
   return null;
+}
+
+// ============================================================================
+// BUNDLED CONFIG LOADER
+// ============================================================================
+
+/** Load all language-specific configs once for an ingestion run. */
+export async function loadImportConfigs(repoRoot: string): Promise<ImportConfigs> {
+  return {
+    tsconfigPaths: await loadTsconfigPaths(repoRoot),
+    goModule: await loadGoModulePath(repoRoot),
+    composerConfig: await loadComposerConfig(repoRoot),
+    swiftPackageConfig: await loadSwiftPackageConfig(repoRoot),
+    csharpConfigs: await loadCSharpProjectConfig(repoRoot),
+  };
 }

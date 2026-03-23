@@ -113,32 +113,6 @@ export const resolveImportPath = (
     // Fall through to generic resolution if Rust-specific didn't match
   }
 
-  // ---- Python relative imports (PEP 328): .module, ..module, ... ----
-  if (language === SupportedLanguages.Python && importPath.startsWith('.')) {
-    const dotMatch = importPath.match(/^(\.+)(.*)/);
-    if (dotMatch) {
-      const dotCount = dotMatch[1].length;
-      const modulePart = dotMatch[2]; // e.g., "models" from ".models"
-      const dirParts = currentFile.split('/').slice(0, -1); // remove filename
-
-      // Navigate up: 1 dot = same package, 2 dots = parent package, etc.
-      // First dot means "current package", each additional dot goes up one level
-      for (let i = 1; i < dotCount; i++) {
-        dirParts.pop();
-      }
-
-      if (modulePart) {
-        // from .models import User → resolve "models" relative to current package
-        const modulePath = modulePart.replace(/\./g, '/');
-        dirParts.push(...modulePath.split('/'));
-      }
-
-      const basePath = dirParts.join('/');
-      const resolved = tryResolveWithExtensions(basePath, allFiles);
-      return cache(resolved);
-    }
-  }
-
   // ---- Generic relative import resolution (./ and ../) ----
   const currentDir = currentFile.split('/').slice(0, -1);
   const parts = importPath.split('/');

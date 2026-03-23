@@ -15,14 +15,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  CYPHER_WRITE_RE,
   executeQuery,
   executeParameterized,
-} from '../../src/mcp/core/lbug-adapter.js';
-import {
-  CYPHER_WRITE_RE,
-  VALID_RELATION_TYPES,
   isWriteQuery,
-} from '../../src/mcp/local/local-backend.js';
+} from '../../src/mcp/core/lbug-adapter.js';
+import { VALID_RELATION_TYPES } from '../../src/mcp/local/local-backend.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import { LOCAL_BACKEND_SEED_DATA } from '../fixtures/local-backend-seed.js';
 
@@ -76,7 +74,7 @@ withTestLbugDB('local-backend', (handle) => {
 
   describe('relation type filtering', () => {
     it('only allows valid relation types in queries', () => {
-      const validTypes = ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
+      const validTypes = ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'OVERRIDES', 'ACCESSES'];
       const invalidTypes = ['CONTAINS', 'STEP_IN_PROCESS', 'MEMBER_OF', 'DROP_TABLE'];
 
       for (const t of validTypes) {

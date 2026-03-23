@@ -81,10 +81,10 @@ export const createResolutionContext = (): ResolutionContext => {
   // --- Core resolution (single implementation of tier logic) ---
 
   const resolveUncached = (name: string, fromFile: string): TieredCandidates | null => {
-    // Tier 1: Same file — authoritative match
-    const localDef = symbols.lookupExactFull(fromFile, name);
-    if (localDef) {
-      return { candidates: [localDef], tier: 'same-file' };
+    // Tier 1: Same file — authoritative match (returns all overloads)
+    const localDefs = symbols.lookupExactAll(fromFile, name);
+    if (localDefs.length > 0) {
+      return { candidates: localDefs, tier: 'same-file' };
     }
 
     // Get all global definitions for subsequent tiers

@@ -140,6 +140,29 @@ describe('extractMethodSignature', () => {
       const sig = extractMethodSignature(methodNode);
       expect(sig.parameterCount).toBe(0);
     });
+
+    it('extracts parameterTypes for Java overloaded methods', () => {
+      parser.setLanguage(Java);
+      const code = `class Svc {
+  public User lookup(int id) { return null; }
+  public User lookup(String name) { return null; }
+  public void process(int code, String msg) {}
+}`;
+      const tree = parser.parse(code);
+      const classBody = tree.rootNode.child(0)!.childForFieldName('body')!;
+
+      const sig0 = extractMethodSignature(classBody.namedChild(0)!);
+      expect(sig0.parameterCount).toBe(1);
+      expect(sig0.parameterTypes).toEqual(['int']);
+
+      const sig1 = extractMethodSignature(classBody.namedChild(1)!);
+      expect(sig1.parameterCount).toBe(1);
+      expect(sig1.parameterTypes).toEqual(['String']);
+
+      const sig2 = extractMethodSignature(classBody.namedChild(2)!);
+      expect(sig2.parameterCount).toBe(2);
+      expect(sig2.parameterTypes).toEqual(['int', 'String']);
+    });
   });
 
   describe('Kotlin', () => {
@@ -174,6 +197,24 @@ describe('extractMethodSignature', () => {
       const sig = extractMethodSignature(functionNode);
       expect(sig.parameterCount).toBe(0);
     });
+
+    it('extracts parameterTypes for Kotlin overloaded functions', () => {
+      parser.setLanguage(Kotlin);
+      const code = `class Svc {
+  fun lookup(id: Int): User? { return null }
+  fun lookup(name: String): User? { return null }
+}`;
+      const tree = parser.parse(code);
+      const classBody = tree.rootNode.child(0)!.namedChild(1)!;
+
+      const sig0 = extractMethodSignature(classBody.namedChild(0)!);
+      expect(sig0.parameterCount).toBe(1);
+      expect(sig0.parameterTypes).toEqual(['Int']);
+
+      const sig1 = extractMethodSignature(classBody.namedChild(1)!);
+      expect(sig1.parameterCount).toBe(1);
+      expect(sig1.parameterTypes).toEqual(['String']);
+    });
   });
 
   describe('C++', () => {
@@ -200,6 +241,21 @@ describe('extractMethodSignature', () => {
       const sig = extractMethodSignature(functionNode);
       expect(sig.parameterCount).toBe(0);
     });
+
+    it('extracts parameterTypes for C++ overloaded functions', () => {
+      parser.setLanguage(CPP);
+      const code = `User* lookup(int id) { return nullptr; }
+User* lookup(string name) { return nullptr; }`;
+      const tree = parser.parse(code);
+
+      const sig0 = extractMethodSignature(tree.rootNode.namedChild(0)!);
+      expect(sig0.parameterCount).toBe(1);
+      expect(sig0.parameterTypes).toEqual(['int']);
+
+      const sig1 = extractMethodSignature(tree.rootNode.namedChild(1)!);
+      expect(sig1.parameterCount).toBe(1);
+      expect(sig1.parameterTypes).toEqual(['string']);
+    });
   });
 
   describe('C#', () => {
@@ -215,6 +271,24 @@ describe('extractMethodSignature', () => {
 
       const sig = extractMethodSignature(methodNode);
       expect(sig.parameterCount).toBe(2);
+    });
+
+    it('extracts parameterTypes for C# overloaded methods', () => {
+      parser.setLanguage(CSharp);
+      const code = `class Svc {
+  public User Lookup(int id) { return null; }
+  public User Lookup(string name) { return null; }
+}`;
+      const tree = parser.parse(code);
+      const classBody = tree.rootNode.child(0)!.childForFieldName('body')!;
+
+      const sig0 = extractMethodSignature(classBody.namedChild(0)!);
+      expect(sig0.parameterCount).toBe(1);
+      expect(sig0.parameterTypes).toEqual(['int']);
+
+      const sig1 = extractMethodSignature(classBody.namedChild(1)!);
+      expect(sig1.parameterCount).toBe(1);
+      expect(sig1.parameterTypes).toEqual(['string']);
     });
 
     it('handles C# method with no params', () => {

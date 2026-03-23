@@ -1,6 +1,6 @@
 {
   "name": "gitnexus",
-  "version": "1.4.0",
+  "version": "1.4.7",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -20,6 +20,7 @@
     "knowledge-graph",
     "cursor",
     "claude",
+    "codex",
     "ai-agent",
     "gitnexus",
     "static-analysis",
@@ -39,16 +40,18 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/cli/index.ts",
-    "test": "vitest run test/unit",
+    "test": "vitest run",
+    "test:unit": "vitest run test/unit",
     "test:integration": "vitest run test/integration",
-    "test:all": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "prepare": "npm run build",
-    "postinstall": "node scripts/patch-tree-sitter-swift.cjs"
+    "postinstall": "node scripts/patch-tree-sitter-swift.cjs",
+    "prepack": "npm run build && chmod +x dist/cli/index.js"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.0.0",
+    "onnxruntime-node": "^1.24.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "cli-progress": "^3.12.0",
     "commander": "^12.0.0",
@@ -58,7 +61,8 @@
     "graphology": "^0.25.4",
     "graphology-indices": "^0.17.0",
     "graphology-utils": "^2.3.0",
-    "@ladybugdb/core": "^0.15.1",
+    "@ladybugdb/core": "^0.15.2",
+    "ignore": "^7.0.5",
     "lru-cache": "^11.0.0",
     "mnemonist": "^0.39.0",
     "pandemonium": "^2.4.0",
@@ -86,10 +90,15 @@
     "@types/express": "^4.17.21",
     "@types/node": "^20.0.0",
     "@types/uuid": "^10.0.0",
-    "@vitest/coverage-v8": "^4.0.18",
+    "@vitest/coverage-v8": "^3.2.4",
     "tsx": "^4.0.0",
     "typescript": "^5.4.5",
-    "vitest": "^4.0.18"
+    "vitest": "^3.2.4"
+  },
+  "overrides": {
+    "@huggingface/transformers": {
+      "onnxruntime-node": "$onnxruntime-node"
+    }
   },
   "engines": {
     "node": ">=18.0.0"

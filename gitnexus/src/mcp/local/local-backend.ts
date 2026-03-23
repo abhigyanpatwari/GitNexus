@@ -47,7 +47,45 @@ export const VALID_NODE_LABELS = new Set([
 ]);
 
 /** Valid relation types for impact analysis filtering */
-export const VALID_RELATION_TYPES = new Set(['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS']);
+export const VALID_RELATION_TYPES = new Set(['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES']);
+
+/**
+ * Per-relation-type confidence floor for impact analysis.
+ *
+ * When the graph stores a relation with a confidence value, that stored
+ * value is used as-is (it reflects resolution-tier accuracy from analysis
+ * time).  This map provides the floor for each edge type when no stored
+ * confidence is available, and is also used for display / tooltip hints.
+ *
+ * Rationale:
+ *   CALLS / IMPORTS  – direct, strongly-typed references → 0.9
+ *   EXTENDS          – class hierarchy, statically verifiable → 0.85
+ *   IMPLEMENTS       – interface contract, statically verifiable → 0.85
+ *   OVERRIDES        – method override, statically verifiable → 0.85
+ *   HAS_METHOD       – structural containment → 0.95
+ *   HAS_PROPERTY     – structural containment → 0.95
+ *   ACCESSES         – field read/write, may be indirect → 0.8
+ *   CONTAINS         – folder/file containment → 0.95
+ *   (unknown type)   – conservative fallback → 0.5
+ */
+export const IMPACT_RELATION_CONFIDENCE: Readonly<Record<string, number>> = {
+  CALLS: 0.9,
+  IMPORTS: 0.9,
+  EXTENDS: 0.85,
+  IMPLEMENTS: 0.85,
+  OVERRIDES: 0.85,
+  HAS_METHOD: 0.95,
+  HAS_PROPERTY: 0.95,
+  ACCESSES: 0.8,
+  CONTAINS: 0.95,
+};
+
+/**
+ * Return the confidence floor for a given relation type.
+ * Falls back to 0.5 for unknown types so they are not silently elevated.
+ */
+const confidenceForRelType = (relType: string | undefined): number =>
+  IMPACT_RELATION_CONFIDENCE[relType ?? ''] ?? 0.5;
 
 /** Regex to detect write operations in user-supplied Cypher queries */
 export const CYPHER_WRITE_RE = /\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH)\b/i;
@@ -88,6 +126,8 @@ export class LocalBackend {
   private repos: Map<string, RepoHandle> = new Map();
   private contextCache: Map<string, CodebaseContext> = new Map();
   private initializedRepos: Set<string> = new Set();
+  private reinitPromises: Map<string, Promise<void>> = new Map();
+  private lastStalenessCheck: Map<string, number> = new Map();
 
   // ─── Initialization ──────────────────────────────────────────────
 
@@ -246,11 +286,50 @@ export class LocalBackend {
   // ─── Lazy LadybugDB Init ────────────────────────────────────────────
 
   private async ensureInitialized(repoId: string): Promise<void> {
-    // Always check the actual pool — the idle timer may have evicted the connection
-    if (this.initializedRepos.has(repoId) && isLbugReady(repoId)) return;
+    // If a reinit is already in progress for this repo, wait for it
+    const pending = this.reinitPromises.get(repoId);
+    if (pending) return pending;
 
     const handle = this.repos.get(repoId);
     if (!handle) throw new Error(`Unknown repo: ${repoId}`);
+
+    // Check if the index was rebuilt since we opened the connection (#297).
+    // Throttle staleness checks to at most once per 5 seconds per repo to
+    // avoid an fs.readFile round-trip on every tool invocation.
+    if (this.initializedRepos.has(repoId) && isLbugReady(repoId)) {
+      const now = Date.now();
+      const lastCheck = this.lastStalenessCheck.get(repoId) ?? 0;
+      if (now - lastCheck < 5000) return; // Checked recently — skip
+
+      this.lastStalenessCheck.set(repoId, now);
+      try {
+        const metaPath = path.join(handle.storagePath, 'meta.json');
+        const metaRaw = await fs.readFile(metaPath, 'utf-8');
+        const meta = JSON.parse(metaRaw);
+        if (meta.indexedAt && meta.indexedAt !== handle.indexedAt) {
+          // Index was rebuilt — close stale connection and re-init.
+          // Wrap in reinitPromises to prevent TOCTOU race where concurrent
+          // callers both detect staleness and double-close the pool.
+          const reinit = (async () => {
+            try {
+              await closeLbug(repoId);
+              this.initializedRepos.delete(repoId);
+              handle.indexedAt = meta.indexedAt;
+              await initLbug(repoId, handle.lbugPath);
+              this.initializedRepos.add(repoId);
+            } finally {
+              this.reinitPromises.delete(repoId);
+            }
+          })();
+          this.reinitPromises.set(repoId, reinit);
+          return reinit;
+        } else {
+          return; // Pool is current
+        }
+      } catch {
+        return; // Can't read meta — assume pool is fine
+      }
+    }
 
     try {
       await initLbug(repoId, handle.lbugPath);
@@ -898,7 +977,7 @@ export class LocalBackend {
     // Categorized incoming refs
     const incomingRows = await executeParameterized(repo.id, `
       MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS']
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES']
       RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       LIMIT 30
     `, { symId });
@@ -906,7 +985,7 @@ export class LocalBackend {
     // Categorized outgoing refs
     const outgoingRows = await executeParameterized(repo.id, `
       MATCH (n {id: $symId})-[r:CodeRelation]->(target)
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS']
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES']
       RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       LIMIT 30
     `, { symId });
@@ -1330,6 +1409,29 @@ export class LocalBackend {
     includeTests?: boolean;
     minConfidence?: number;
   }): Promise<any> {
+    try {
+      return await this._impactImpl(repo, params);
+    } catch (err: any) {
+      // Return structured error instead of crashing (#321)
+      return {
+        error: (err instanceof Error ? err.message : String(err)) || 'Impact analysis failed',
+        target: { name: params.target },
+        direction: params.direction,
+        impactedCount: 0,
+        risk: 'UNKNOWN',
+        suggestion: 'The graph query failed — try gitnexus context <symbol> as a fallback',
+      };
+    }
+  }
+
+  private async _impactImpl(repo: RepoHandle, params: {
+    target: string;
+    direction: 'upstream' | 'downstream';
+    maxDepth?: number;
+    relationTypes?: string[];
+    includeTests?: boolean;
+    minConfidence?: number;
+  }): Promise<any> {
     await this.ensureInitialized(repo.id);
     
     const { target, direction } = params;
@@ -1358,6 +1460,7 @@ export class LocalBackend {
     const impacted: any[] = [];
     const visited = new Set<string>([symId]);
     let frontier = [symId];
+    let traversalComplete = true;
     
     for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
       const nextFrontier: string[] = [];
@@ -1380,18 +1483,32 @@ export class LocalBackend {
           if (!visited.has(relId)) {
             visited.add(relId);
             nextFrontier.push(relId);
+            const storedConfidence = rel.confidence ?? rel[6];
+            const relationType = rel.relType || rel[5];
+            // Prefer the stored confidence from the graph (set at analysis time);
+            // fall back to the per-type floor for edges without a stored value.
+            const effectiveConfidence =
+              typeof storedConfidence === 'number' && storedConfidence > 0
+                ? storedConfidence
+                : confidenceForRelType(relationType);
             impacted.push({
               depth,
               id: relId,
               name: rel.name || rel[2],
               type: rel.type || rel[3],
               filePath,
-              relationType: rel.relType || rel[5],
-              confidence: rel.confidence || rel[6] || 1.0,
+              relationType,
+              confidence: effectiveConfidence,
             });
           }
         }
-      } catch (e) { logQueryError('impact:depth-traversal', e); }
+      } catch (e) {
+        logQueryError('impact:depth-traversal', e);
+        // Break out of depth loop on query failure but return partial results
+        // collected so far, rather than silently swallowing the error (#321)
+        traversalComplete = false;
+        break;
+      }
       
       frontier = nextFrontier;
     }
@@ -1408,31 +1525,51 @@ export class LocalBackend {
     let affectedModules: any[] = [];
 
     if (impacted.length > 0) {
-      const allIds = impacted.map(i => `'${i.id.replace(/'/g, "''")}'`).join(', ');
-      const d1Ids = (grouped[1] || []).map((i: any) => `'${i.id.replace(/'/g, "''")}'`).join(', ');
+      // Cap IN-clause to 100 IDs to prevent oversized queries that crash
+      // the native DB engine on arm64 macOS (#292)
+      const cappedImpacted = impacted.slice(0, 100);
+      const allIds = cappedImpacted.map(i => `'${String(i.id ?? '').replace(/'/g, "''")}'`).join(', ');
+      const d1Items = (grouped[1] || []).slice(0, 100);
+      const d1Ids = d1Items.map((i: any) => `'${String(i.id ?? '').replace(/'/g, "''")}'`).join(', ');
 
-      // Affected processes: which execution flows are broken and at which step
-      const [processRows, moduleRows, directModuleRows] = await Promise.all([
-        executeQuery(repo.id, `
-          MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-          WHERE s.id IN [${allIds}]
-          RETURN p.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits, MIN(r.step) AS minStep, p.stepCount AS stepCount
-          ORDER BY hits DESC
-          LIMIT 20
-        `).catch(() => []),
-        executeQuery(repo.id, `
-          MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-          WHERE s.id IN [${allIds}]
-          RETURN c.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits
-          ORDER BY hits DESC
-          LIMIT 20
-        `).catch(() => []),
-        d1Ids ? executeQuery(repo.id, `
-          MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-          WHERE s.id IN [${d1Ids}]
-          RETURN DISTINCT c.heuristicLabel AS name
-        `).catch(() => []) : Promise.resolve([]),
-      ]);
+      // Enrichment queries: sequential on arm64 macOS to avoid SIGSEGV from
+      // concurrent native DB access (#285, #290, #292); parallel elsewhere
+      // to preserve performance on unaffected platforms.
+      const isArm64Mac = process.platform === 'darwin' && process.arch === 'arm64';
+
+      const processQuery = executeQuery(repo.id, `
+        MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+        WHERE s.id IN [${allIds}]
+        RETURN p.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits, MIN(r.step) AS minStep, p.stepCount AS stepCount
+        ORDER BY hits DESC
+        LIMIT 20
+      `).catch(() => []);
+      const moduleQuery = () => executeQuery(repo.id, `
+        MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+        WHERE s.id IN [${allIds}]
+        RETURN c.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits
+        ORDER BY hits DESC
+        LIMIT 20
+      `).catch(() => []);
+      const directModuleQuery = () => d1Ids
+        ? executeQuery(repo.id, `
+            MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+            WHERE s.id IN [${d1Ids}]
+            RETURN DISTINCT c.heuristicLabel AS name
+          `).catch(() => [])
+        : Promise.resolve([]);
+
+      let processRows: any[], moduleRows: any[], directModuleRows: any[];
+      if (isArm64Mac) {
+        // Sequential: avoid concurrent native DB access
+        processRows = await processQuery;
+        moduleRows = await moduleQuery();
+        directModuleRows = await directModuleQuery();
+      } else {
+        // Parallel: safe on non-arm64 platforms
+        processRows = await processQuery;
+        [moduleRows, directModuleRows] = await Promise.all([moduleQuery(), directModuleQuery()]);
+      }
 
       affectedProcesses = processRows.map((r: any) => ({
         name: r.name || r[0],
@@ -1474,6 +1611,7 @@ export class LocalBackend {
       direction,
       impactedCount: impacted.length,
       risk,
+      ...(!traversalComplete && { partial: true }),
       summary: {
         direct: directCount,
         processes_affected: processCount,

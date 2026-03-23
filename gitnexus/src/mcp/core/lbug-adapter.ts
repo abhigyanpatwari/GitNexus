@@ -27,6 +27,8 @@ interface PoolEntry {
   waiters: Array<(conn: lbug.Connection) => void>;
   lastUsed: number;
   dbPath: string;
+  /** Set to true when the pool entry is closed — checkin will close orphaned connections */
+  closed: boolean;
 }
 
 const pool = new Map<string, PoolEntry>();
@@ -40,6 +42,8 @@ interface SharedDB {
   db: lbug.Database;
   refCount: number;
   ftsLoaded: boolean;
+  /** When true, closeOne skips db.close() — the Database is owned externally. */
+  external?: boolean;
 }
 const dbCache = new Map<string, SharedDB>();
 
@@ -49,14 +53,14 @@ const MAX_POOL_SIZE = 5;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 /** Max connections per repo (caps concurrent queries per repo) */
 const MAX_CONNS_PER_REPO = 8;
-/** Connections created eagerly on init */
-const INITIAL_CONNS_PER_REPO = 2;
 
 let idleTimer: ReturnType<typeof setInterval> | null = null;
 
 /** Saved real stdout.write — used to silence LadybugDB native output without race conditions */
-const realStdoutWrite = process.stdout.write.bind(process.stdout);
+export const realStdoutWrite = process.stdout.write.bind(process.stdout);
 let stdoutSilenceCount = 0;
+/** True while pre-warming connections — prevents watchdog from prematurely restoring stdout */
+let preWarmActive = false;
 
 /**
  * Start the idle cleanup timer (runs every 60s)
@@ -96,21 +100,47 @@ function evictLRU(): void {
 }
 
 /**
- * Remove a repo from the pool and release its shared Database ref.
- *
- * LadybugDB's native .closeSync() triggers N-API destructor hooks that
- * segfault on Linux/macOS.  Pool databases are opened read-only, so
- * there is no WAL to flush — just deleting the pool entry and letting
- * the GC (or process exit) reclaim native resources is safe.
+ * Remove a repo from the pool, close its connections, and release its
+ * shared Database ref.  Only closes the Database when no other repoIds
+ * reference it (refCount === 0).
  */
 function closeOne(repoId: string): void {
   const entry = pool.get(repoId);
-  if (entry) {
-    const shared = dbCache.get(entry.dbPath);
-    if (shared && shared.refCount > 0) {
-      shared.refCount--;
+  if (!entry) return;
+
+  entry.closed = true;
+
+  // Close available connections — fire-and-forget with .catch() to prevent
+  // unhandled rejections.  Native close() returns Promise<void> but can crash
+  // the N-API destructor on macOS/Windows; deferring to process exit lets
+  // dangerouslyIgnoreUnhandledErrors absorb the crash.
+  for (const conn of entry.available) {
+    conn.close().catch(() => {});
+  }
+  entry.available.length = 0;
+
+  // Checked-out connections can't be closed here — they're in-flight.
+  // The checkin() function detects entry.closed and closes them on return.
+
+  // Only close the Database when no other repoIds reference it.
+  // External databases (injected via initLbugWithDb) are never closed here —
+  // the core adapter owns them and handles their lifecycle.
+  const shared = dbCache.get(entry.dbPath);
+  if (shared) {
+    shared.refCount--;
+    if (shared.refCount === 0) {
+      if (shared.external) {
+        // External databases are owned by the core adapter — don't close
+        // or remove from cache.  Keep the entry so future initLbug() calls
+        // for the same dbPath reuse it instead of hitting a file lock.
+        shared.refCount = 0;
+      } else {
+        shared.db.close().catch(() => {});
+        dbCache.delete(entry.dbPath);
+      }
     }
   }
+
   pool.delete(repoId);
 }
 
@@ -118,6 +148,8 @@ function closeOne(repoId: string): void {
  * Create a new Connection from a repo's Database.
  * Silences stdout to prevent native module output from corrupting MCP stdio.
  */
+let activeQueryCount = 0;
+
 function silenceStdout(): void {
   if (stdoutSilenceCount++ === 0) {
     process.stdout.write = (() => true) as any;
@@ -130,6 +162,17 @@ function restoreStdout(): void {
     process.stdout.write = realStdoutWrite;
   }
 }
+
+// Safety watchdog: restore stdout if it gets stuck silenced (e.g. native crash
+// inside createConnection before restoreStdout runs).
+// Exempts active queries and pre-warm — these legitimately hold silence for
+// longer than 1 second (queries can take up to QUERY_TIMEOUT_MS = 30s).
+setInterval(() => {
+  if (stdoutSilenceCount > 0 && !preWarmActive && activeQueryCount === 0) {
+    stdoutSilenceCount = 0;
+    process.stdout.write = realStdoutWrite;
+  }
+}, 1000).unref();
 
 function createConnection(db: lbug.Database): lbug.Connection {
   silenceStdout();
@@ -148,9 +191,15 @@ const WAITER_TIMEOUT_MS = 15_000;
 const LOCK_RETRY_ATTEMPTS = 3;
 const LOCK_RETRY_DELAY_MS = 2000;
 
+/** Deduplicates concurrent initLbug calls for the same repoId */
+const initPromises = new Map<string, Promise<void>>();
+
 /**
  * Initialize (or reuse) a Database + connection pool for a specific repo.
  * Retries on lock errors (e.g., when `gitnexus analyze` is running).
+ *
+ * Concurrent calls for the same repoId are deduplicated — the second caller
+ * awaits the first's in-progress init rather than starting a redundant one.
  */
 export const initLbug = async (repoId: string, dbPath: string): Promise<void> => {
   const existing = pool.get(repoId);
@@ -159,6 +208,27 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
     return;
   }
 
+  // Deduplicate concurrent init calls for the same repoId —
+  // prevents double-init race when multiple parallel tool calls
+  // trigger initialization for the same repo simultaneously.
+  const pending = initPromises.get(repoId);
+  if (pending) return pending;
+
+  const promise = doInitLbug(repoId, dbPath);
+  initPromises.set(repoId, promise);
+  try {
+    await promise;
+  } finally {
+    initPromises.delete(repoId);
+  }
+};
+
+/**
+ * Internal init — creates DB, pre-warms connections, loads FTS, then registers pool.
+ * Pool entry is registered LAST so concurrent executeQuery calls see either
+ * "not initialized" (and throw) or a fully ready pool — never a half-built one.
+ */
+async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // Check if database exists
   try {
     await fs.stat(dbPath);
@@ -210,16 +280,22 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
   shared.refCount++;
   const db = shared.db;
 
-  // Pre-create a small pool of connections
+  // Pre-create the full pool upfront so createConnection() (which silences
+  // stdout) is never called lazily during active query execution.
+  // Mark preWarmActive so the watchdog timer doesn't interfere.
+  preWarmActive = true;
   const available: lbug.Connection[] = [];
-  for (let i = 0; i < INITIAL_CONNS_PER_REPO; i++) {
-    available.push(createConnection(db));
+  try {
+    for (let i = 0; i < MAX_CONNS_PER_REPO; i++) {
+      available.push(createConnection(db));
+    }
+  } finally {
+    preWarmActive = false;
   }
 
-  pool.set(repoId, { db, available, checkedOut: 0, waiters: [], lastUsed: Date.now(), dbPath });
-  ensureIdleTimer();
-
-  // Load FTS extension once per shared Database
+  // Load FTS extension once per shared Database.
+  // Done BEFORE pool registration so no concurrent checkout can grab
+  // the connection while the async FTS load is in progress.
   if (!shared.ftsLoaded) {
     try {
       await available[0].query('LOAD EXTENSION fts');
@@ -228,7 +304,75 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
       // Extension may not be installed — FTS queries will fail gracefully
     }
   }
-};
+
+  // Register pool entry only after all connections are pre-warmed and FTS is
+  // loaded.  Concurrent executeQuery calls see either "not initialized"
+  // (and throw cleanly) or a fully ready pool — never a half-built one.
+  pool.set(repoId, { db, available, checkedOut: 0, waiters: [], lastUsed: Date.now(), dbPath, closed: false });
+  ensureIdleTimer();
+}
+
+/**
+ * Initialize a pool entry from a pre-existing Database object.
+ *
+ * Used in tests to avoid the writable→close→read-only cycle that crashes
+ * on macOS due to N-API destructor segfaults.  The pool adapter reuses
+ * the core adapter's writable Database instead of opening a new read-only one.
+ *
+ * The Database is registered in the shared dbCache so closeOne() decrements
+ * the refCount correctly.  If the Database is already cached (e.g. another
+ * repoId already injected it), the existing entry is reused.
+ */
+export async function initLbugWithDb(
+  repoId: string,
+  existingDb: lbug.Database,
+  dbPath: string,
+): Promise<void> {
+  const existing = pool.get(repoId);
+  if (existing) {
+    existing.lastUsed = Date.now();
+    return;
+  }
+
+  // Register in dbCache with external: true so other initLbug() calls
+  // for the same dbPath reuse this Database instead of trying to open
+  // a new one (which would fail with a file lock error).
+  // closeOne() respects the external flag and skips db.close().
+  let shared = dbCache.get(dbPath);
+  if (!shared) {
+    shared = { db: existingDb, refCount: 0, ftsLoaded: false, external: true };
+    dbCache.set(dbPath, shared);
+  }
+  shared.refCount++;
+
+  const available: lbug.Connection[] = [];
+  preWarmActive = true;
+  try {
+    for (let i = 0; i < MAX_CONNS_PER_REPO; i++) {
+      available.push(createConnection(existingDb));
+    }
+  } finally {
+    preWarmActive = false;
+  }
+
+  // Load FTS extension if not already loaded on this Database
+  try {
+    await available[0].query('LOAD EXTENSION fts');
+  } catch {
+    // Extension may already be loaded or not installed
+  }
+
+  pool.set(repoId, { 
+    db: existingDb,
+    available,
+    checkedOut: 0,
+    waiters: [],
+    lastUsed: Date.now(),
+    dbPath,
+    closed: false 
+  });
+  ensureIdleTimer();
+}
 
 /**
  * Checkout a connection from the pool.
@@ -242,11 +386,16 @@ function checkout(entry: PoolEntry): Promise<lbug.Connection> {
     return Promise.resolve(entry.available.pop()!);
   }
 
-  // Grow the pool if under the cap
+  // Pool was pre-warmed to MAX_CONNS_PER_REPO during init.  If we're here
+  // with fewer total connections, something leaked — surface the bug rather
+  // than silently creating a connection (which would silence stdout mid-query).
   const totalConns = entry.available.length + entry.checkedOut;
   if (totalConns < MAX_CONNS_PER_REPO) {
-    entry.checkedOut++;
-    return Promise.resolve(createConnection(entry.db));
+    throw new Error(
+      `Connection pool integrity error: expected ${MAX_CONNS_PER_REPO} ` +
+      `connections but found ${totalConns} (${entry.available.length} available, ` +
+      `${entry.checkedOut} checked out)`
+    );
   }
 
   // At capacity — queue the caller with a timeout.
@@ -266,10 +415,17 @@ function checkout(entry: PoolEntry): Promise<lbug.Connection> {
 
 /**
  * Return a connection to the pool after use.
+ * If the pool entry was closed while the connection was checked out (e.g.
+ * LRU eviction), close the orphaned connection instead of returning it.
  * If there are queued waiters, hand the connection directly to the next one
  * instead of putting it back in the available array (avoids race conditions).
  */
 function checkin(entry: PoolEntry, conn: lbug.Connection): void {
+  if (entry.closed) {
+    // Pool entry was deleted during checkout — close the orphaned connection
+    conn.close().catch(() => {});
+    return;
+  }
   if (entry.waiters.length > 0) {
     // Hand directly to the next waiter — no intermediate available state
     const waiter = entry.waiters.shift()!;
@@ -299,15 +455,23 @@ export const executeQuery = async (repoId: string, cypher: string): Promise<any[
     throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
   }
 
+  if (isWriteQuery(cypher)) {
+    throw new Error('Write operations are not allowed. The pool adapter is read-only.');
+  }
+
   entry.lastUsed = Date.now();
 
   const conn = await checkout(entry);
+  silenceStdout();
+  activeQueryCount++;
   try {
     const queryResult = await withTimeout(conn.query(cypher), QUERY_TIMEOUT_MS, 'Query');
     const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
     const rows = await result.getAll();
     return rows;
   } finally {
+    activeQueryCount--;
+    restoreStdout();
     checkin(entry, conn);
   }
 };
@@ -329,6 +493,8 @@ export const executeParameterized = async (
   entry.lastUsed = Date.now();
 
   const conn = await checkout(entry);
+  silenceStdout();
+  activeQueryCount++;
   try {
     const stmt = await withTimeout(conn.prepare(cypher), QUERY_TIMEOUT_MS, 'Prepare');
     if (!stmt.isSuccess()) {
@@ -340,6 +506,8 @@ export const executeParameterized = async (
     const rows = await result.getAll();
     return rows;
   } finally {
+    activeQueryCount--;
+    restoreStdout();
     checkin(entry, conn);
   }
 };
@@ -370,3 +538,11 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
  * Check if a specific repo's pool is active
  */
 export const isLbugReady = (repoId: string): boolean => pool.has(repoId);
+
+/** Regex to detect write operations in user-supplied Cypher queries */
+export const CYPHER_WRITE_RE = /\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH)\b/i;
+
+/** Check if a Cypher query contains write operations */
+export function isWriteQuery(query: string): boolean {
+  return CYPHER_WRITE_RE.test(query);
+}
