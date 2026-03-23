@@ -642,6 +642,12 @@ const workerApi = {
   /**
    * Initialize the Graph RAG agent in backend mode (HTTP-backed tools).
    * Uses HTTP wrappers instead of local LadybugDB for all tool queries.
+   *
+   * NOTE: Currently not called by any UI flow. The server-connect path
+   * downloads the full graph and uses local WASM queries via initializeAgent.
+   * This method is retained for future large-repo mode where downloading
+   * the entire graph to the browser would be impractical.
+   *
    * @param config - Provider configuration for the LLM
    * @param backendUrl - Base URL of the gitnexus serve backend
    * @param repoName - Repository name on the backend

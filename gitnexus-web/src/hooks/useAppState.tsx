@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useRef, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useRef, useEffect, useMemo, ReactNode } from 'react';
 import * as Comlink from 'comlink';
 import { KnowledgeGraph, GraphNode, GraphRelationship, NodeLabel } from '../core/graph/types';
 import { PipelineProgress, PipelineResult, deserializePipelineResult } from '../types/pipeline';
@@ -329,14 +329,20 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     return resolvePathFromContents(fileContents, requestedPath);
   }, [fileContents]);
 
-  const findFileNodeId = useCallback((filePath: string): string | undefined => {
-    if (!graph) return undefined;
-    const target = normalizePath(filePath);
-    const fileNode = graph.nodes.find(
-      (n) => n.label === 'File' && normalizePath(n.properties.filePath) === target
-    );
-    return fileNode?.id;
+  const fileNodeByPath = useMemo(() => {
+    if (!graph) return new Map<string, string>();
+    const map = new Map<string, string>();
+    for (const n of graph.nodes) {
+      if (n.label === 'File') {
+        map.set(normalizePath(n.properties.filePath), n.id);
+      }
+    }
+    return map;
   }, [graph]);
+
+  const findFileNodeId = useCallback((filePath: string): string | undefined => {
+    return fileNodeByPath.get(normalizePath(filePath));
+  }, [fileNodeByPath]);
 
   // Code References methods
   const addCodeReference = useCallback((ref: Omit<CodeReference, 'id'>) => {
@@ -395,7 +401,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       }
       return kept;
     });
-  }, [queryResult, selectedNode]);
+  }, [selectedNode]);
 
   // Auto-add a code reference when the user selects a node in the graph/tree
   useEffect(() => {
@@ -904,15 +910,15 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
                   const rawIds = highlightMatch[1].split(',').map((id: string) => id.trim()).filter(Boolean);
                   if (rawIds.length > 0 && graph) {
                     const matchedIds = new Set<string>();
-                    const graphNodeIds = graph.nodes.map(n => n.id);
+                    const graphNodeIdSet = new Set(graph.nodes.map(n => n.id));
 
                     for (const rawId of rawIds) {
-                      if (graphNodeIds.includes(rawId)) {
+                      if (graphNodeIdSet.has(rawId)) {
                         matchedIds.add(rawId);
                       } else {
-                        const found = graphNodeIds.find(gid =>
-                          gid.endsWith(rawId) || gid.endsWith(':' + rawId)
-                        );
+                        const found = graph.nodes.find(n =>
+                          n.id.endsWith(rawId) || n.id.endsWith(':' + rawId)
+                        )?.id;
                         if (found) {
                           matchedIds.add(found);
                         }
@@ -933,15 +939,15 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
                   const rawIds = impactMatch[1].split(',').map((id: string) => id.trim()).filter(Boolean);
                   if (rawIds.length > 0 && graph) {
                     const matchedIds = new Set<string>();
-                    const graphNodeIds = graph.nodes.map(n => n.id);
+                    const graphNodeIdSet = new Set(graph.nodes.map(n => n.id));
 
                     for (const rawId of rawIds) {
-                      if (graphNodeIds.includes(rawId)) {
+                      if (graphNodeIdSet.has(rawId)) {
                         matchedIds.add(rawId);
                       } else {
-                        const found = graphNodeIds.find(gid =>
-                          gid.endsWith(rawId) || gid.endsWith(':' + rawId)
-                        );
+                        const found = graph.nodes.find(n =>
+                          n.id.endsWith(rawId) || n.id.endsWith(':' + rawId)
+                        )?.id;
                         if (found) {
                           matchedIds.add(found);
                         }

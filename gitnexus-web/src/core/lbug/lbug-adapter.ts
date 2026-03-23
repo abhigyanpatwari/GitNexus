@@ -619,6 +619,12 @@ export const testArrayParams = async (): Promise<{ success: boolean; error?: str
       const verifyRow = verifyRows[0];
       const storedEmb = verifyRow?.emb ?? verifyRow?.[0];
 
+      // Clean up test embedding
+      try {
+        const cleanupStmt = await conn.prepare(`MATCH (e:${EMBEDDING_TABLE_NAME} {nodeId: $nodeId}) DELETE e`);
+        try { await conn.execute(cleanupStmt, { nodeId: testNodeId }); } finally { await cleanupStmt.close(); }
+      } catch {}
+
       if (storedEmb && Array.isArray(storedEmb) && storedEmb.length === 384) {
         if (import.meta.env.DEV) {
           console.log('✅ Array params WORK! Stored embedding length:', storedEmb.length);
