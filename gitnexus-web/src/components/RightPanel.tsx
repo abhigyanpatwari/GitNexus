@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Send, Square, Sparkles, User,
   PanelRightClose, Loader2, AlertTriangle, GitBranch
-} from 'lucide-react';
+} from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
 import { ToolCallCard } from './ToolCallCard';
 import { isProviderConfigured } from '../core/llm/settings-service';

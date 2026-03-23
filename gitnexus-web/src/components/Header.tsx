@@ -1,4 +1,4 @@
-import { Search, Settings, HelpCircle, Sparkles, Github, Star, ChevronDown } from 'lucide-react';
+import { Search, Settings, HelpCircle, Sparkles, Github, Star, ChevronDown } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
 import type { RepoSummary } from '../services/server-connection';
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';

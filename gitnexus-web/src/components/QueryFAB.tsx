@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Terminal, Play, X, ChevronDown, ChevronUp, Loader2, Sparkles, Table } from 'lucide-react';
+import { Terminal, Play, X, ChevronDown, ChevronUp, Loader2, Sparkles, Table } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
 
 const EXAMPLE_QUERIES = [

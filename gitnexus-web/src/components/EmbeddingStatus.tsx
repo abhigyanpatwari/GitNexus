@@ -1,4 +1,4 @@
-import { Brain, Loader2, Check, AlertCircle, Zap, FlaskConical } from 'lucide-react';
+import { Brain, Loader2, Check, AlertCircle, Zap, FlaskConical } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
 import { useState } from 'react';
 import { WebGPUFallbackDialog } from './WebGPUFallbackDialog';
