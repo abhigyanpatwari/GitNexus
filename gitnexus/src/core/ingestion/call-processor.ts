@@ -1346,7 +1346,22 @@ export const processRoutesFromExtracted = async (
  * 3. Optional chaining: `data?.key1?.key2`
  *
  * Returns deduplicated top-level property names accessed on the response.
+ *
+ * NOTE: This scans the entire file content, not just code near a specific fetch call.
+ * If a file has multiple fetch calls to different routes, all accessed keys are
+ * attributed to each fetch. This is an acceptable tradeoff for regex-based extraction.
  */
+
+/** Common method names on response/data objects that are NOT property accesses */
+const RESPONSE_METHOD_BLOCKLIST = new Set([
+  'json', 'text', 'blob', 'arrayBuffer', 'formData', 'ok', 'status', 'headers',
+  'then', 'catch', 'finally', 'clone',
+  'map', 'filter', 'forEach', 'reduce', 'find', 'some', 'every',
+  'length', 'toString', 'valueOf',
+  'push', 'pop', 'shift', 'unshift', 'splice', 'slice', 'concat', 'join',
+  'sort', 'reverse', 'includes', 'indexOf', 'keys', 'values', 'entries',
+]);
+
 export const extractConsumerAccessedKeys = (content: string): string[] => {
   const keys = new Set<string>();
 
@@ -1383,7 +1398,7 @@ export const extractConsumerAccessedKeys = (content: string): string[] => {
   while ((match = propAccessPattern.exec(content)) !== null) {
     const key = match[1];
     // Skip common method calls that aren't property accesses
-    if (!['json', 'text', 'blob', 'arrayBuffer', 'formData', 'ok', 'status', 'headers', 'then', 'catch', 'finally', 'clone', 'map', 'filter', 'forEach', 'reduce', 'find', 'some', 'every', 'length', 'toString', 'valueOf'].includes(key)) {
+    if (!RESPONSE_METHOD_BLOCKLIST.has(key)) {
       keys.add(key);
     }
   }

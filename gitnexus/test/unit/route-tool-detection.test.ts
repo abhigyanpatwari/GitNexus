@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import { nextjsFileToRouteURL, normalizeFetchURL, routeMatches } from '../../src/core/ingestion/route-extractors/nextjs.js';
 import { phpFileToRouteURL } from '../../src/core/ingestion/route-extractors/php.js';
-import { extractMiddlewareChain, detectStatusCode } from '../../src/core/ingestion/pipeline.js';
+import { extractMiddlewareChain, detectStatusCode, extractResponseShapes } from '../../src/core/ingestion/pipeline.js';
 
 // ---------------------------------------------------------------------------
 // Next.js route extractor
@@ -397,59 +397,6 @@ describe('detectStatusCode', () => {
 });
 
 describe('error response shape separation', () => {
-  // Helper that simulates the pipeline's brace-depth parser WITH status code detection
-  function extractShapes(content: string): { responseKeys?: string[]; errorKeys?: string[] } {
-    const successKeys: string[] = [];
-    const errKeys: string[] = [];
-    const jsonPattern = /\.json\s*\(/g;
-    let jsonMatch;
-    while ((jsonMatch = jsonPattern.exec(content)) !== null) {
-      const matchPos = jsonMatch.index;
-      const startIdx = matchPos + jsonMatch[0].length;
-      let i = startIdx;
-      while (i < content.length && content[i] !== '{' && content[i] !== ')') i++;
-      if (i >= content.length || content[i] !== '{') continue;
-      const callKeys: string[] = [];
-      let depth = 0;
-      let keyStart = -1;
-      let inString: string | null = null;
-      let closingBracePos = -1;
-      for (let j = i; j < content.length; j++) {
-        const ch = content[j];
-        if (inString) {
-          if (ch === '\\') { j++; continue; }
-          if (ch === inString) inString = null;
-          continue;
-        }
-        if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue; }
-        if (ch === '{') { depth++; continue; }
-        if (ch === '}') { depth--; if (depth === 0) { closingBracePos = j; break; } continue; }
-        if (depth !== 1) continue;
-        if (keyStart === -1 && /[a-zA-Z_$]/.test(ch)) {
-          keyStart = j;
-        } else if (keyStart !== -1 && !/[a-zA-Z0-9_$]/.test(ch)) {
-          const key = content.slice(keyStart, j);
-          const rest = content.slice(j).trimStart();
-          if (rest[0] === ':' || rest[0] === ',' || rest[0] === '}') {
-            callKeys.push(key);
-          }
-          keyStart = -1;
-        }
-      }
-      if (callKeys.length === 0) continue;
-      const status = detectStatusCode(content, matchPos, closingBracePos);
-      if (status !== undefined && status >= 400) {
-        errKeys.push(...callKeys);
-      } else {
-        successKeys.push(...callKeys);
-      }
-    }
-    const result: { responseKeys?: string[]; errorKeys?: string[] } = {};
-    if (successKeys.length > 0) result.responseKeys = [...new Set(successKeys)];
-    if (errKeys.length > 0) result.errorKeys = [...new Set(errKeys)];
-    return result;
-  }
-
   it('separates success and error responses in NextResponse pattern', () => {
     const content = `
       export async function GET() {
@@ -461,7 +408,7 @@ describe('error response shape separation', () => {
         }
       }
     `;
-    const shapes = extractShapes(content);
+    const shapes = extractResponseShapes(content);
     expect(shapes.responseKeys).toEqual(['data', 'pagination']);
     expect(shapes.errorKeys).toEqual(['error', 'message']);
   });
@@ -477,7 +424,7 @@ describe('error response shape separation', () => {
         }
       });
     `;
-    const shapes = extractShapes(content);
+    const shapes = extractResponseShapes(content);
     expect(shapes.responseKeys).toEqual(['users', 'total']);
     expect(shapes.errorKeys).toEqual(['error', 'code']);
   });
@@ -490,7 +437,7 @@ describe('error response shape separation', () => {
         return NextResponse.json({ data, id });
       }
     `;
-    const shapes = extractShapes(content);
+    const shapes = extractResponseShapes(content);
     expect(shapes.responseKeys).toEqual(['data', 'id']);
     expect(shapes.errorKeys).toEqual(['error']);
   });
@@ -501,21 +448,21 @@ describe('error response shape separation', () => {
         return NextResponse.json({ data, count });
       }
     `;
-    const shapes = extractShapes(content);
+    const shapes = extractResponseShapes(content);
     expect(shapes.responseKeys).toEqual(['data', 'count']);
     expect(shapes.errorKeys).toBeUndefined();
   });
 
   it('treats status 200 as success', () => {
     const content = `return NextResponse.json({ ok }, { status: 200 })`;
-    const shapes = extractShapes(content);
+    const shapes = extractResponseShapes(content);
     expect(shapes.responseKeys).toEqual(['ok']);
     expect(shapes.errorKeys).toBeUndefined();
   });
 
   it('treats status 201 as success', () => {
     const content = `return NextResponse.json({ created, id }, { status: 201 })`;
-    const shapes = extractShapes(content);
+    const shapes = extractResponseShapes(content);
     expect(shapes.responseKeys).toEqual(['created', 'id']);
     expect(shapes.errorKeys).toBeUndefined();
   });

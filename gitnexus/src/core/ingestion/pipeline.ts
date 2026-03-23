@@ -142,8 +142,8 @@ export function extractMiddlewareChain(content: string): string[] | undefined {
  */
 export function detectStatusCode(content: string, jsonMatchPos: number, closingBracePos: number): number | undefined {
   // Pattern 1: .status(N).json( — look backwards from .json
-  // Check the ~100 chars before .json for .status(NNN)
-  const lookbackStart = Math.max(0, jsonMatchPos - 100);
+  // Check the ~200 chars before .json for .status(NNN) (generous window for chained calls)
+  const lookbackStart = Math.max(0, jsonMatchPos - 200);
   const before = content.slice(lookbackStart, jsonMatchPos);
   const statusChainMatch = before.match(/\.status\s*\(\s*(\d{3})\s*\)\s*$/);
   if (statusChainMatch) {
@@ -174,6 +174,63 @@ export function detectStatusCode(content: string, jsonMatchPos: number, closingB
   }
 
   return undefined;
+}
+
+/**
+ * Extract response shapes from handler file content.
+ * Finds all .json({...}) calls, extracts top-level keys using brace-depth counting,
+ * and classifies into success (responseKeys) vs error (errorKeys) by HTTP status code.
+ */
+export function extractResponseShapes(content: string): { responseKeys?: string[]; errorKeys?: string[] } {
+  const successKeys: string[] = [];
+  const errKeys: string[] = [];
+  const jsonPattern = /\.json\s*\(/g;
+  let jsonMatch;
+  while ((jsonMatch = jsonPattern.exec(content)) !== null) {
+    const matchPos = jsonMatch.index;
+    const startIdx = matchPos + jsonMatch[0].length;
+    let i = startIdx;
+    while (i < content.length && content[i] !== '{' && content[i] !== ')') i++;
+    if (i >= content.length || content[i] !== '{') continue;
+    const callKeys: string[] = [];
+    let depth = 0;
+    let keyStart = -1;
+    let inString: string | null = null;
+    let closingBracePos = -1;
+    for (let j = i; j < content.length; j++) {
+      const ch = content[j];
+      if (inString) {
+        if (ch === '\\') { j++; continue; }
+        if (ch === inString) inString = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue; }
+      if (ch === '{') { depth++; continue; }
+      if (ch === '}') { depth--; if (depth === 0) { closingBracePos = j; break; } continue; }
+      if (depth !== 1) continue;
+      if (keyStart === -1 && /[a-zA-Z_$]/.test(ch)) {
+        keyStart = j;
+      } else if (keyStart !== -1 && !/[a-zA-Z0-9_$]/.test(ch)) {
+        const key = content.slice(keyStart, j);
+        const rest = content.slice(j).trimStart();
+        if (rest[0] === ':' || rest[0] === ',' || rest[0] === '}') {
+          callKeys.push(key);
+        }
+        keyStart = -1;
+      }
+    }
+    if (callKeys.length === 0) continue;
+    const status = detectStatusCode(content, matchPos, closingBracePos);
+    if (status !== undefined && status >= 400) {
+      errKeys.push(...callKeys);
+    } else {
+      successKeys.push(...callKeys);
+    }
+  }
+  return {
+    ...(successKeys.length > 0 ? { responseKeys: [...new Set(successKeys)] } : {}),
+    ...(errKeys.length > 0 ? { errorKeys: [...new Set(errKeys)] } : {}),
+  };
 }
 
 /** Minimum percentage of files that must benefit from cross-file seeding to justify the re-resolution pass. */
@@ -824,67 +881,9 @@ export const runPipelineFromRepo = async (
         const { filePath: handlerPath, source: routeSource } = entry;
         const content = handlerContents.get(handlerPath);
 
-        // Extract top-level keys from .json({...}) calls using brace-depth counting
-        // to correctly handle nested objects (regex [^}]* breaks on nested braces).
-        // Separate into success (responseKeys) vs error (errorKeys) by status code.
-        let responseKeys: string[] | undefined;
-        let errorKeys: string[] | undefined;
-        if (content) {
-          const successKeys: string[] = [];
-          const errKeys: string[] = [];
-          // Find all .json( positions
-          const jsonPattern = /\.json\s*\(/g;
-          let jsonMatch;
-          while ((jsonMatch = jsonPattern.exec(content)) !== null) {
-            const matchPos = jsonMatch.index;
-            const startIdx = matchPos + jsonMatch[0].length;
-            // Find the opening { of the first argument
-            let i = startIdx;
-            while (i < content.length && content[i] !== '{' && content[i] !== ')') i++;
-            if (i >= content.length || content[i] !== '{') continue;
-            // Extract top-level keys at brace depth 1, skipping string literals
-            const callKeys: string[] = [];
-            let depth = 0;
-            let keyStart = -1;
-            let inString: string | null = null; // tracks quote char we're inside
-            let closingBracePos = -1;
-            for (let j = i; j < content.length; j++) {
-              const ch = content[j];
-              // Skip string literal contents (handles braces inside strings)
-              if (inString) {
-                if (ch === '\\') { j++; continue; } // skip escaped char
-                if (ch === inString) inString = null;
-                continue;
-              }
-              if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue; }
-              if (ch === '{') { depth++; continue; }
-              if (ch === '}') { depth--; if (depth === 0) { closingBracePos = j; break; } continue; }
-              if (depth !== 1) continue;
-              if (keyStart === -1 && /[a-zA-Z_$]/.test(ch)) {
-                keyStart = j;
-              } else if (keyStart !== -1 && !/[a-zA-Z0-9_$]/.test(ch)) {
-                const key = content.slice(keyStart, j);
-                const rest = content.slice(j).trimStart();
-                if (rest[0] === ':' || rest[0] === ',' || rest[0] === '}') {
-                  callKeys.push(key);
-                }
-                keyStart = -1;
-              }
-            }
-            if (callKeys.length === 0) continue;
-
-            // Detect HTTP status code to classify this .json() call as success or error
-            const status = detectStatusCode(content, matchPos, closingBracePos);
-            if (status !== undefined && status >= 400) {
-              errKeys.push(...callKeys);
-            } else {
-              successKeys.push(...callKeys);
-            }
-          }
-          // If no status codes were detected at all, all keys go to responseKeys (backward compat)
-          if (successKeys.length > 0) responseKeys = [...new Set(successKeys)];
-          if (errKeys.length > 0) errorKeys = [...new Set(errKeys)];
-        }
+        const { responseKeys, errorKeys } = content
+          ? extractResponseShapes(content)
+          : { responseKeys: undefined, errorKeys: undefined };
 
         const middleware = content ? extractMiddlewareChain(content) : undefined;
 

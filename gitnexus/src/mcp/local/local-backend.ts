@@ -1861,6 +1861,7 @@ export class LocalBackend {
 
       // Build consumer list with mismatch detection
       const consumers = r.consumers.map(c => ({
+        name: c.name,
         file: c.filePath,
         accesses: c.accessedKeys ?? [],
       }));
