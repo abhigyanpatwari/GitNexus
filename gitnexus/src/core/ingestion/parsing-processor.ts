@@ -1,15 +1,13 @@
 import { KnowledgeGraph, GraphNode, GraphRelationship, type NodeLabel } from '../graph/types.js';
 import Parser from 'tree-sitter';
 import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/parser-loader.js';
-import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
+import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
 import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
 import { getLanguageFromFilename, yieldToEventLoop, getDefinitionNodeFromCaptures, findEnclosingClassId, extractMethodSignature, getLabelFromCaptures } from './utils.js';
 import { extractPropertyDeclaredType } from './type-extractors/shared.js';
-import { isNodeExported } from './export-detection.js';
 import { detectFrameworkFromAST } from './framework-detection.js';
-import { typeConfigs } from './type-extractors/index.js';
 import { WorkerPool } from './workers/worker-pool.js';
 import type { ParseWorkerResult, ParseWorkerInput, ExtractedImport, ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, FileConstructorBindings, FileTypeEnvBindings } from './workers/parse-worker.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
@@ -168,7 +166,8 @@ const processParsingSequential = async (
 
     astCache.set(file.path, tree);
 
-    const queryString = LANGUAGE_QUERIES[language];
+    const provider = getProvider(language);
+    const queryString = provider.treeSitterQueries;
     if (!queryString) {
       continue;
     }
@@ -191,7 +190,7 @@ const processParsingSequential = async (
         captureMap[c.name] = c.node;
       });
 
-      const nodeLabel = getLabelFromCaptures(captureMap, language);
+      const nodeLabel = getLabelFromCaptures(captureMap, provider);
       if (!nodeLabel) return;
 
       const nameNode = captureMap['name'];
@@ -216,7 +215,7 @@ const processParsingSequential = async (
       // Language-specific return type fallback (e.g. Ruby YARD @return [Type])
       // Also upgrades uninformative AST types like PHP `array` with PHPDoc `@return User[]`
       if (methodSig && (!methodSig.returnType || methodSig.returnType === 'array' || methodSig.returnType === 'iterable') && definitionNode) {
-        const tc = typeConfigs[language as keyof typeof typeConfigs];
+        const tc = provider.typeConfig;
         if (tc?.extractReturnType) {
           const docReturn = tc.extractReturnType(definitionNode);
           if (docReturn) methodSig.returnType = docReturn;
@@ -232,7 +231,7 @@ const processParsingSequential = async (
           startLine: definitionNodeForRange ? definitionNodeForRange.startPosition.row : startLine,
           endLine: definitionNodeForRange ? definitionNodeForRange.endPosition.row : startLine,
           language: language,
-          isExported: isNodeExported(nameNode || definitionNodeForRange, nodeName, language),
+          isExported: provider.exportChecker(nameNode || definitionNodeForRange, nodeName),
           ...(frameworkHint ? {
             astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
             astFrameworkReason: frameworkHint.reason,

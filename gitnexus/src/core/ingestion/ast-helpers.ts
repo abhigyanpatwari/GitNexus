@@ -1,6 +1,6 @@
 import type Parser from 'tree-sitter';
-import { SupportedLanguages } from '../../config/supported-languages.js';
 import type { NodeLabel } from '../graph/types.js';
+import type { LanguageProvider } from './language-provider.js';
 import { generateId } from '../../lib/utils.js';
 import { extractSimpleTypeName } from './type-extractors/shared.js';
 
@@ -147,40 +147,23 @@ export function isKotlinClassMethod(captureNode: { parent?: any } | null | undef
 }
 
 /**
- * C/C++: check if a Function capture is inside a class/struct body.
- * If true, the function is already captured by @definition.method and should be skipped
- * to prevent double-indexing in globalIndex.
- */
-export function isCppDuplicateClassFunction(
-  functionNode: { parent?: any } | null | undefined,
-  nodeLabel: string,
-  language: SupportedLanguages,
-): boolean {
-  if (nodeLabel !== 'Function') return false;
-  if (language !== SupportedLanguages.CPlusPlus && language !== SupportedLanguages.C) return false;
-  let ancestor = functionNode?.parent;
-  while (ancestor) {
-    if (ancestor.type === 'class_specifier' || ancestor.type === 'struct_specifier') return true;
-    ancestor = ancestor.parent;
-  }
-  return false;
-}
-
-/**
  * Determine the graph node label from a tree-sitter capture map.
- * Handles language-specific reclassification (C/C++ duplicate skipping, Kotlin Method promotion).
+ * Handles language-specific reclassification via the provider's labelOverride hook
+ * (e.g. C/C++ duplicate skipping, Kotlin Method promotion).
  * Returns null if the capture should be skipped (import, call, C/C++ duplicate, missing name).
  */
 export function getLabelFromCaptures(
   captureMap: Record<string, any>,
-  language: SupportedLanguages,
+  provider: LanguageProvider,
 ): NodeLabel | null {
   if (captureMap['import'] || captureMap['call']) return null;
   if (!captureMap['name'] && !captureMap['definition.constructor']) return null;
 
   if (captureMap['definition.function']) {
-    if (isCppDuplicateClassFunction(captureMap['definition.function'], 'Function', language)) return null;
-    if (language === SupportedLanguages.Kotlin && isKotlinClassMethod(captureMap['definition.function'])) return 'Method';
+    if (provider.labelOverride) {
+      const override = provider.labelOverride(captureMap['definition.function'], 'Function');
+      if (override !== 'Function') return override as NodeLabel | null;
+    }
     return 'Function';
   }
   if (captureMap['definition.class']) return 'Class';

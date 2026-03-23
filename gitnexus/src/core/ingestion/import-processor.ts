@@ -2,19 +2,17 @@ import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
 import Parser from 'tree-sitter';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
-import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
+import { getProvider, getProviderForFile, providersWithImplicitWiring } from './languages/index.js';
+import type { LanguageProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename, isVerboseIngestionEnabled, yieldToEventLoop } from './utils.js';
-import { SupportedLanguages } from '../../config/supported-languages.js';
-import type { SwiftPackageConfig } from './language-config.js';
 import type { ExtractedImport } from './workers/parse-worker.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import { loadImportConfigs } from './language-config.js';
 import { buildSuffixIndex } from './resolvers/index.js';
-import { callRouters } from './call-routing.js';
 import type { ResolutionContext, ModuleAliasMap } from './resolution-context.js';
 import type { SuffixIndex } from './resolvers/index.js';
-import { importResolvers, namedBindingExtractors, preprocessImportPath } from './import-resolution.js';
+import { preprocessImportPath } from './import-resolution.js';
 import type { ImportResult, ResolveCtx, NamedBinding } from './import-resolution.js';
 
 // Re-export resolver types for consumers
@@ -31,6 +29,32 @@ const isDev = process.env.NODE_ENV === 'development';
 // Type: Map<FilePath, Set<ResolvedFilePath>>
 // Stores all files that a given file imports from
 export type ImportMap = Map<string, Set<string>>;
+
+/** Group files by provider (only those with implicit import wiring), then call each wirer
+ *  with its own language's files. O(n) over files, O(1) per provider lookup. */
+function wireImplicitImports(
+  files: string[],
+  importMap: Map<string, Set<string>>,
+  addImportEdge: (src: string, target: string) => void,
+  projectConfig: unknown,
+): void {
+  if (providersWithImplicitWiring.length === 0) return;
+
+  const grouped = new Map<LanguageProvider, string[]>();
+  for (const file of files) {
+    const provider = getProviderForFile(file);
+    if (!provider?.implicitImportWirer) continue;
+    let list = grouped.get(provider);
+    if (!list) { list = []; grouped.set(provider, list); }
+    list.push(file);
+  }
+
+  for (const [provider, langFiles] of grouped) {
+    if (langFiles.length > 1) {
+      provider.implicitImportWirer!(langFiles, importMap, addImportEdge, projectConfig);
+    }
+  }
+}
 
 // Type: Map<FilePath, Set<PackageDirSuffix>>
 // Stores Go package directory suffixes imported by a file (e.g., "/internal/auth/").
@@ -97,82 +121,6 @@ function createImportEdgeHelpers(graph: KnowledgeGraph, importMap: ImportMap) {
   };
 
   return { addImportEdge, addImportGraphEdge, getResolvedCount: () => totalImportsResolved };
-}
-
-/**
- * Group Swift files by target for implicit module visibility.
- *
- * If SwiftPackageConfig is available, use SPM target → directory mappings.
- * Otherwise, group all Swift files under a single "default" target
- * (assumes a single-module Xcode project).
- */
-function groupSwiftFilesByTarget(
-  swiftFiles: string[],
-  swiftPackageConfig: SwiftPackageConfig | null,
-): Map<string, string[]> {
-  const groups = new Map<string, string[]>();
-
-  if (swiftPackageConfig && swiftPackageConfig.targets.size > 0) {
-    for (const file of swiftFiles) {
-      const normalized = file.replace(/\\/g, '/');
-      let assigned = false;
-      for (const [targetName, targetDir] of swiftPackageConfig.targets) {
-        const dirPrefix = targetDir + '/';
-        const idx = normalized.indexOf(dirPrefix);
-        if (idx === 0 || (idx > 0 && normalized[idx - 1] === '/')) {
-          if (!groups.has(targetName)) groups.set(targetName, []);
-          groups.get(targetName)!.push(file);
-          assigned = true;
-          break;
-        }
-      }
-      if (!assigned) {
-        if (!groups.has('__default__')) groups.set('__default__', []);
-        groups.get('__default__')!.push(file);
-      }
-    }
-  } else {
-    groups.set('__default__', [...swiftFiles]);
-  }
-
-  return groups;
-}
-
-/**
- * Add implicit IMPORTS edges between all Swift files in the same module/target.
- * Swift has no file-level imports — all files in a module see each other.
- */
-function addSwiftImplicitImports(
-  files: string[] | { path: string }[],
-  swiftPackageConfig: SwiftPackageConfig | null,
-  importMap: Map<string, Set<string>>,
-  addImportEdge: (src: string, target: string) => void,
-  logSuffix = '',
-): void {
-  const paths = typeof files[0] === 'string'
-    ? files as string[]
-    : (files as { path: string }[]).map(f => f.path);
-  const swiftFiles = paths
-    .filter(f => getLanguageFromFilename(f) === SupportedLanguages.Swift);
-
-  if (swiftFiles.length <= 1) return;
-
-  const targetGroups = groupSwiftFilesByTarget(swiftFiles, swiftPackageConfig);
-
-  for (const group of targetGroups.values()) {
-    for (const srcFile of group) {
-      const existing = importMap.get(srcFile);
-      for (const otherFile of group) {
-        if (srcFile === otherFile) continue;
-        if (existing?.has(otherFile)) continue;
-        addImportEdge(srcFile, otherFile);
-      }
-    }
-  }
-
-  if (isDev) {
-    console.log(`📊 Swift: ${swiftFiles.length} files in ${targetGroups.size} target group(s), implicit imports added${logSuffix}`);
-  }
 }
 
 /**
@@ -320,7 +268,8 @@ export const processImports = async (
       continue;
     }
 
-    const queryStr = LANGUAGE_QUERIES[language];
+    const provider = getProvider(language);
+    const queryStr = provider.treeSitterQueries;
     if (!queryStr) continue;
 
     // 2. ALWAYS load the language before querying (parser is stateful)
@@ -376,12 +325,12 @@ export const processImports = async (
           return;
         }
 
-        const rawImportPath = preprocessImportPath(sourceNode.text, captureMap['import'], language);
+        const rawImportPath = preprocessImportPath(sourceNode.text, captureMap['import'], provider);
         if (!rawImportPath) return;
         totalImportsFound++;
 
-        const result = importResolvers[language](rawImportPath, file.path, resolveCtx);
-        const extractor = namedBindingExtractors[language];
+        const result = provider.importResolver(rawImportPath, file.path, resolveCtx);
+        const extractor = provider.namedBindingExtractor;
         const bindings = namedImportMap && extractor ? extractor(captureMap['import']) : undefined;
         applyImportResult(result, file.path, importMap, packageMap, addImportEdge, addImportGraphEdge, bindings, namedImportMap, moduleAliasMap);
       }
@@ -390,11 +339,10 @@ export const processImports = async (
       if (captureMap['call']) {
         const callNameNode = captureMap['call.name'];
         if (callNameNode) {
-          const callRouter = callRouters[language];
-          const routed = callRouter(callNameNode.text, captureMap['call']);
+          const routed = provider.callRouter?.(callNameNode.text, captureMap['call']);
           if (routed && routed.kind === 'import') {
             totalImportsFound++;
-            const result = importResolvers[language](routed.importPath, file.path, resolveCtx);
+            const result = provider.importResolver(routed.importPath, file.path, resolveCtx);
             applyImportResult(result, file.path, importMap, packageMap, addImportEdge, addImportGraphEdge);
           }
         }
@@ -404,7 +352,7 @@ export const processImports = async (
     // Tree is now owned by the LRU cache — no manual delete needed
   }
 
-  addSwiftImplicitImports(allFileList, configs.swiftPackageConfig, importMap, addImportEdge);
+  wireImplicitImports(allFileList, importMap, addImportEdge, configs);
 
   if (skippedByLang && skippedByLang.size > 0) {
     for (const [lang, count] of skippedByLang.entries()) {
@@ -469,14 +417,14 @@ export const processImportsFromExtracted = async (
     for (const imp of fileImports) {
       totalImportsFound++;
 
-      const result = importResolvers[imp.language](imp.rawImportPath, filePath, resolveCtx);
+      const result = getProvider(imp.language).importResolver(imp.rawImportPath, filePath, resolveCtx);
       applyImportResult(result, filePath, importMap, packageMap, addImportEdge, addImportGraphEdge, imp.namedBindings, namedImportMap, moduleAliasMap);
     }
   }
 
   onProgress?.(totalFiles, totalFiles);
 
-  addSwiftImplicitImports(files, configs.swiftPackageConfig, importMap, addImportEdge, ' (fast path)');
+  wireImplicitImports(files.map(f => f.path), importMap, addImportEdge, configs);
 
   if (isDev) {
     console.log(`📊 Import processing (fast path): ${getResolvedCount()}/${totalImportsFound} imports resolved to graph edges`);

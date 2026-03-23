@@ -12,6 +12,7 @@
  */
 
 import { SupportedLanguages } from '../../config/supported-languages.js';
+import type { LanguageProvider } from './language-provider.js';
 import type { SyntaxNode } from './utils.js';
 import {
   KOTLIN_EXTENSIONS,
@@ -89,7 +90,7 @@ export type ImportResolverFn = (
 export interface NamedBinding { local: string; exported: string; isModuleAlias?: boolean }
 
 /** Per-language named binding extractor -- optional (returns undefined if language has no named imports). */
-type NamedBindingExtractorFn = (importNode: SyntaxNode) => NamedBinding[] | undefined;
+export type NamedBindingExtractorFn = (importNode: SyntaxNode) => NamedBinding[] | undefined;
 
 // ============================================================================
 // Import path preprocessing
@@ -97,19 +98,19 @@ type NamedBindingExtractorFn = (importNode: SyntaxNode) => NamedBinding[] | unde
 
 /**
  * Clean and preprocess a raw import source text into a resolved import path.
- * Strips quotes/angle brackets (universal) and applies language-specific
+ * Strips quotes/angle brackets (universal) and applies provider-specific
  * transformations (currently only Kotlin wildcard import detection).
  */
 export function preprocessImportPath(
   sourceText: string,
   importNode: SyntaxNode,
-  language: SupportedLanguages,
+  provider: LanguageProvider,
 ): string | null {
   const cleaned = sourceText.replace(/['"<>]/g, '');
   // Defense-in-depth: reject null bytes and control characters (matches Ruby call-routing pattern)
   if (!cleaned || cleaned.length > 2048 || /[\x00-\x1f]/.test(cleaned)) return null;
-  if (language === SupportedLanguages.Kotlin) {
-    return appendKotlinWildcard(cleaned, importNode);
+  if (provider.importPathPreprocessor) {
+    return provider.importPathPreprocessor(cleaned, importNode);
   }
   return cleaned;
 }

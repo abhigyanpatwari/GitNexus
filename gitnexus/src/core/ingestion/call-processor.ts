@@ -5,7 +5,7 @@ import Parser from 'tree-sitter';
 import type { ResolutionContext } from './resolution-context.js';
 import { TIER_CONFIDENCE, type ResolutionTier } from './resolution-context.js';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
-import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
+import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
 import {
   getLanguageFromFilename,
@@ -27,9 +27,7 @@ import { buildTypeEnv, isSubclassOf } from './type-env.js';
 import type { ConstructorBinding } from './type-env.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type { ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, FileConstructorBindings } from './workers/parse-worker.js';
-import { callRouters } from './call-routing.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
-import { typeConfigs } from './type-extractors/index.js';
 import type { LiteralTypeInferrer } from './type-extractors/types.js';
 import type { SyntaxNode } from './utils.js';
 
@@ -84,12 +82,12 @@ export function buildImportedRawReturnTypes(
 /** Collect resolved type bindings for exported file-scope symbols.
  *  Uses graph node isExported flag — does NOT require isExported on SymbolDefinition. */
 function collectExportedBindings(
-  typeEnv: { readonly env: ReadonlyMap<string, ReadonlyMap<string, string>> },
+  typeEnv: { fileScope(): ReadonlyMap<string, string> },
   filePath: string,
   symbolTable: { lookupExact(filePath: string, name: string): string | undefined },
   graph: { getNode(id: string): { properties?: { isExported?: boolean } } | undefined },
 ): Map<string, string> | null {
-  const fileScope = typeEnv.env.get('');
+  const fileScope = typeEnv.fileScope();
   if (!fileScope || fileScope.size === 0) return null;
 
   const exported = new Map<string, string>();
@@ -312,7 +310,8 @@ export const processCalls = async (
       continue;
     }
 
-    const queryStr = LANGUAGE_QUERIES[language];
+    const provider = getProvider(language);
+    const queryStr = provider.treeSitterQueries;
     if (!queryStr) continue;
 
     await loadLanguage(language, file.path);
@@ -337,8 +336,6 @@ export const processCalls = async (
       console.warn(`Query error for ${file.path}:`, queryError);
       continue;
     }
-
-    const lang = getLanguageFromFilename(file.path);
 
     // Pre-pass: extract heritage from query matches to build parentMap for buildTypeEnv.
     // Heritage-processor runs in PARALLEL, so graph edges don't exist when buildTypeEnv runs.
@@ -373,14 +370,14 @@ export const processCalls = async (
     const importedBindings = importedBindingsMap?.get(file.path);
     const importedReturnTypes = importedReturnTypesMap?.get(file.path);
     const importedRawReturnTypes = importedRawReturnTypesMap?.get(file.path);
-    const typeEnv = lang ? buildTypeEnv(tree, lang, { symbolTable: ctx.symbols, parentMap, importedBindings, importedReturnTypes, importedRawReturnTypes }) : null;
+    const typeEnv = buildTypeEnv(tree, language, { symbolTable: ctx.symbols, parentMap, importedBindings, importedReturnTypes, importedRawReturnTypes });
     if (typeEnv && exportedTypeMap) {
       const fileExports = collectExportedBindings(typeEnv, file.path, ctx.symbols, graph);
       if (fileExports) exportedTypeMap.set(file.path, fileExports);
     }
-    const callRouter = callRouters[language];
+    const callRouter = provider.callRouter;
 
-    const verifiedReceivers = typeEnv && typeEnv.constructorBindings.length > 0
+    const verifiedReceivers = typeEnv.constructorBindings.length > 0
       ? verifyConstructorBindings(typeEnv.constructorBindings, file.path, ctx)
       : new Map<string, string>();
     const receiverIndex = buildReceiverTypeIndex(verifiedReceivers);
@@ -435,7 +432,7 @@ export const processCalls = async (
 
       const calledName = nameNode.text;
 
-      const routed = callRouter(calledName, captureMap['call']);
+      const routed = callRouter?.(calledName, captureMap['call']);
       if (routed) {
         switch (routed.kind) {
           case 'skip':
@@ -590,7 +587,7 @@ export const processCalls = async (
 
       // Build overload hints for languages with inferLiteralType (Java/Kotlin/C#/C++).
       // Only used when multiple candidates survive arity filtering — ~1-3% of calls.
-      const langConfig = lang ? typeConfigs[lang as keyof typeof typeConfigs] : undefined;
+      const langConfig = provider.typeConfig;
       const hints: OverloadHints | undefined = langConfig?.inferLiteralType
         ? { callNode, inferLiteralType: langConfig.inferLiteralType }
         : undefined;

@@ -1,7 +1,8 @@
 import type { SyntaxNode } from './utils.js';
 import { FUNCTION_NODE_TYPES, extractFunctionName, CLASS_CONTAINER_TYPES, CALL_EXPRESSION_TYPES, isBuiltInOrNoise } from './utils.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
-import { typeConfigs, TYPED_PARAMETER_TYPES } from './type-extractors/index.js';
+import { TYPED_PARAMETER_TYPES } from './type-extractors/index.js';
+import { getProvider } from './languages/index.js';
 import type { ClassNameLookup, ReturnTypeLookup, ForLoopExtractorContext, PendingAssignment } from './type-extractors/types.js';
 import { extractSimpleTypeName, extractVarName, stripNullable, extractReturnTypeName } from './type-extractors/shared.js';
 import type { SymbolTable } from './symbol-table.js';
@@ -19,10 +20,13 @@ import type { SymbolTable } from './symbol-table.js';
  * - Conservative: complex/generic types extract the base name only
  * - Per-file: built once, used for receiver resolution, then discarded
  */
-export type TypeEnv = Map<string, Map<string, string>>;
+type TypeEnv = Map<string, Map<string, string>>;
 
 /** File-level scope key */
 const FILE_SCOPE = '';
+
+/** Shared empty map for files with no file-scope bindings. */
+const EMPTY_FILE_SCOPE: ReadonlyMap<string, string> = new Map();
 
 /** Fallback for languages where class names aren't in a 'name' field (e.g. Kotlin uses type_identifier). */
 const findTypeIdentifierChild = (node: SyntaxNode): SyntaxNode | null => {
@@ -44,8 +48,11 @@ export interface TypeEnvironment {
   lookup(varName: string, callNode: SyntaxNode): string | undefined;
   /** Unverified cross-file constructor bindings for SymbolTable verification. */
   readonly constructorBindings: readonly ConstructorBinding[];
-  /** Raw per-scope type bindings — for testing and debugging. */
-  readonly env: TypeEnv;
+  /** Get all file-scope bindings (scope key = '') as a read-only map. */
+  fileScope(): ReadonlyMap<string, string>;
+  /** All scoped bindings as a read-only nested map (scope → varName → type).
+   *  Use for diagnostics/testing. Prefer lookup() for production call resolution. */
+  allScopes(): ReadonlyMap<string, ReadonlyMap<string, string>>;
   /** Maps `scope\0varName` → constructor type for virtual dispatch override.
    *  Populated when a variable has BOTH a declared base type AND a more specific
    *  constructor type (e.g., `Animal a = new Dog()` → key maps to 'Dog'). */
@@ -692,7 +699,7 @@ export const buildTypeEnv = (
   const constructorTypeMap = new Map<string, string>();
   const localClassNames = new Set<string>();
   const classNames = createClassNameLookup(localClassNames, symbolTable);
-  const config = typeConfigs[language];
+  const config = getProvider(language).typeConfig;
   const bindings: ConstructorBinding[] = [];
 
   // Build ReturnTypeLookup: SymbolTable is authoritative when it has an unambiguous match.
@@ -1083,7 +1090,8 @@ export const buildTypeEnv = (
   return {
     lookup: (varName, callNode) => lookupInEnv(env, varName, callNode, patternOverrides),
     constructorBindings: bindings,
-    env,
+    fileScope: () => env.get(FILE_SCOPE) ?? EMPTY_FILE_SCOPE,
+    allScopes: () => env as ReadonlyMap<string, ReadonlyMap<string, string>>,
     constructorTypeMap,
   };
 };

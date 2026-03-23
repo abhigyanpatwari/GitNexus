@@ -11,7 +11,7 @@ import { findSiblingChild, SyntaxNode } from './utils.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
 
 /** Handler type: given a node and symbol name, return true if the symbol is exported/public. */
-type ExportChecker = (node: SyntaxNode, name: string) => boolean;
+export type ExportChecker = (node: SyntaxNode, name: string) => boolean;
 
 // ============================================================================
 // Per-language export checkers
@@ -219,7 +219,7 @@ const swiftExportChecker: ExportChecker = (node, _name) => {
 // Exhaustive dispatch table — satisfies enforces all SupportedLanguages are covered
 // ============================================================================
 
-const exportCheckers = {
+export const exportCheckers = {
   [SupportedLanguages.JavaScript]: tsExportChecker,
   [SupportedLanguages.TypeScript]: tsExportChecker,
   [SupportedLanguages.Python]: pythonExportChecker,
@@ -248,6 +248,5 @@ const exportCheckers = {
  */
 export const isNodeExported = (node: SyntaxNode, name: string, language: SupportedLanguages): boolean => {
   const checker = exportCheckers[language];
-  if (!checker) return false;
   return checker(node, name);
 };

@@ -13,7 +13,7 @@ import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
 import { createRequire } from 'node:module';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
-import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
+import { getProvider } from '../languages/index.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from '../constants.js';
 
 // tree-sitter-swift is an optionalDependency — may not be installed
@@ -42,13 +42,10 @@ import {
 } from '../utils.js';
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
-import { isNodeExported } from '../export-detection.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
-import { typeConfigs } from '../type-extractors/index.js';
 import { generateId } from '../../../lib/utils.js';
-import { namedBindingExtractors, preprocessImportPath } from '../import-resolution.js';
+import { preprocessImportPath } from '../import-resolution.js';
 import type { NamedBinding } from '../import-resolution.js';
-import { callRouters } from '../call-routing.js';
 import { extractPropertyDeclaredType } from '../type-extractors/shared.js';
 import type { NodeLabel } from '../../graph/types.js';
 
@@ -238,8 +235,6 @@ const setLanguage = (language: SupportedLanguages, filePath: string): void => {
   parser.setLanguage(lang);
 };
 
-// isNodeExported imported from ../export-detection.js (shared module)
-
 // ============================================================================
 // Enclosing function detection (for call extraction)
 // ============================================================================
@@ -310,7 +305,7 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
   } : undefined;
 
   for (const [language, langFiles] of byLanguage) {
-    const queryString = LANGUAGE_QUERIES[language];
+    const queryString = getProvider(language).treeSitterQueries;
     if (!queryString) continue;
 
     // Track if we need to handle tsx separately
@@ -362,19 +357,10 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
 };
 
 // ============================================================================
-// PHP Eloquent metadata extraction
+// Laravel Route Extraction (procedural AST walk)
 // ============================================================================
 
-/** Eloquent model properties whose array values are worth indexing */
-const ELOQUENT_ARRAY_PROPS = new Set(['fillable', 'casts', 'hidden', 'guarded', 'with', 'appends']);
-
-/** Eloquent relationship method names */
-const ELOQUENT_RELATIONS = new Set([
-  'hasMany', 'hasOne', 'belongsTo', 'belongsToMany',
-  'morphTo', 'morphMany', 'morphOne', 'morphToMany', 'morphedByMany',
-  'hasManyThrough', 'hasOneThrough',
-]);
-
+/** Walk an AST node depth-first, returning the first descendant with the given type. */
 function findDescendant(node: any, type: string): any {
   if (node.type === type) return node;
   for (const child of (node.children ?? [])) {
@@ -384,6 +370,7 @@ function findDescendant(node: any, type: string): any {
   return null;
 }
 
+/** Extract the text content from a string or encapsed_string AST node. */
 function extractStringContent(node: any): string | null {
   if (!node) return null;
   const content = node.children?.find((c: any) => c.type === 'string_content');
@@ -391,82 +378,6 @@ function extractStringContent(node: any): string | null {
   if (node.type === 'string_content') return node.text;
   return null;
 }
-
-/**
- * For a PHP property_declaration node, extract array values as a description string.
- * Returns null if not an Eloquent model property or no array values found.
- */
-function extractPhpPropertyDescription(propName: string, propDeclNode: any): string | null {
-  if (!ELOQUENT_ARRAY_PROPS.has(propName)) return null;
-
-  const arrayNode = findDescendant(propDeclNode, 'array_creation_expression');
-  if (!arrayNode) return null;
-
-  const items: string[] = [];
-  for (const child of (arrayNode.children ?? [])) {
-    if (child.type !== 'array_element_initializer') continue;
-    const children = child.children ?? [];
-    const arrowIdx = children.findIndex((c: any) => c.type === '=>');
-    if (arrowIdx !== -1) {
-      // key => value pair (used in $casts)
-      const key = extractStringContent(children[arrowIdx - 1]);
-      const val = extractStringContent(children[arrowIdx + 1]);
-      if (key && val) items.push(`${key}:${val}`);
-    } else {
-      // Simple value (used in $fillable, $hidden, etc.)
-      const val = extractStringContent(children[0]);
-      if (val) items.push(val);
-    }
-  }
-
-  return items.length > 0 ? items.join(', ') : null;
-}
-
-/**
- * For a PHP method_declaration node, detect if it defines an Eloquent relationship.
- * Returns description like "hasMany(Post)" or null.
- */
-function extractEloquentRelationDescription(methodNode: any): string | null {
-  function findRelationCall(node: any): any {
-    if (node.type === 'member_call_expression') {
-      const children = node.children ?? [];
-      const objectNode = children.find((c: any) => c.type === 'variable_name' && c.text === '$this');
-      const nameNode = children.find((c: any) => c.type === 'name');
-      if (objectNode && nameNode && ELOQUENT_RELATIONS.has(nameNode.text)) return node;
-    }
-    for (const child of (node.children ?? [])) {
-      const found = findRelationCall(child);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  const callNode = findRelationCall(methodNode);
-  if (!callNode) return null;
-
-  const relType = callNode.children?.find((c: any) => c.type === 'name')?.text;
-  const argsNode = callNode.children?.find((c: any) => c.type === 'arguments');
-  let targetModel: string | null = null;
-  if (argsNode) {
-    const firstArg = argsNode.children?.find((c: any) => c.type === 'argument');
-    if (firstArg) {
-      const classConstant = firstArg.children?.find((c: any) =>
-        c.type === 'class_constant_access_expression'
-      );
-      if (classConstant) {
-        targetModel = classConstant.children?.find((c: any) => c.type === 'name')?.text ?? null;
-      }
-    }
-  }
-
-  if (relType && targetModel) return `${relType}(${targetModel})`;
-  if (relType) return relType;
-  return null;
-}
-
-// ============================================================================
-// Laravel Route Extraction (procedural AST walk)
-// ============================================================================
 
 interface RouteGroupContext {
   middleware: string[];
@@ -907,7 +818,8 @@ const processFileGroup = (
     // Constructor bindings are verified against the SymbolTable in processCallsFromExtracted.
     const parentMap: ReadonlyMap<string, readonly string[]> = fileParentMap;
     const typeEnv = buildTypeEnv(tree, language, { parentMap });
-    const callRouter = callRouters[language];
+    const provider = getProvider(language);
+    const callRouter = provider.callRouter;
 
     if (typeEnv.constructorBindings.length > 0) {
       result.constructorBindings.push({ filePath: file.path, bindings: [...typeEnv.constructorBindings] });
@@ -916,8 +828,8 @@ const processFileGroup = (
     // Extract file-scope bindings for ExportedTypeMap (closes worker/sequential quality gap).
     // Sequential path uses collectExportedBindings(typeEnv) directly; worker path serializes
     // these bindings so the main thread can merge them into ExportedTypeMap.
-    const fileScope = typeEnv.env.get('');
-    if (fileScope && fileScope.size > 0) {
+    const fileScope = typeEnv.fileScope();
+    if (fileScope.size > 0) {
       const bindings: [string, string][] = [];
       for (const [name, type] of fileScope) bindings.push([name, type]);
       result.typeEnvBindings.push({ filePath: file.path, bindings });
@@ -931,9 +843,9 @@ const processFileGroup = (
 
       // Extract import paths before skipping
       if (captureMap['import'] && captureMap['import.source']) {
-        const rawImportPath = preprocessImportPath(captureMap['import.source'].text, captureMap['import'], language);
+        const rawImportPath = preprocessImportPath(captureMap['import.source'].text, captureMap['import'], provider);
         if (!rawImportPath) continue;
-        const extractor = namedBindingExtractors[language];
+        const extractor = provider.namedBindingExtractor;
         const namedBindings = extractor ? extractor(captureMap['import']) : undefined;
         result.imports.push({
           filePath: file.path,
@@ -973,7 +885,7 @@ const processFileGroup = (
           const calledName = callNameNode.text;
 
           // Dispatch: route language-specific calls (heritage, properties, imports)
-          const routed = callRouter(calledName, captureMap['call']);
+          const routed = callRouter?.(calledName, captureMap['call']);
           if (routed) {
             if (routed.kind === 'skip') continue;
 
@@ -1133,7 +1045,7 @@ const processFileGroup = (
         }
       }
 
-      const nodeLabel = getLabelFromCaptures(captureMap, language);
+      const nodeLabel = getLabelFromCaptures(captureMap, provider);
       if (!nodeLabel) continue;
 
       const nameNode = captureMap['name'];
@@ -1144,14 +1056,7 @@ const processFileGroup = (
       const startLine = definitionNode ? definitionNode.startPosition.row : (nameNode ? nameNode.startPosition.row : 0);
       const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}`);
 
-      let description: string | undefined;
-      if (language === SupportedLanguages.PHP) {
-        if (nodeLabel === 'Property' && captureMap['definition.property']) {
-          description = extractPhpPropertyDescription(nodeName, captureMap['definition.property']) ?? undefined;
-        } else if (nodeLabel === 'Method' && captureMap['definition.method']) {
-          description = extractEloquentRelationDescription(captureMap['definition.method']) ?? undefined;
-        }
-      }
+      const description = provider.descriptionExtractor?.(nodeLabel, nodeName, captureMap);
 
       const frameworkHint = definitionNode
         ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
@@ -1172,7 +1077,7 @@ const processFileGroup = (
         // Language-specific return type fallback (e.g. Ruby YARD @return [Type])
         // Also upgrades uninformative AST types like PHP `array` with PHPDoc `@return User[]`
         if ((!returnType || returnType === 'array' || returnType === 'iterable') && definitionNode) {
-          const tc = typeConfigs[language as keyof typeof typeConfigs];
+          const tc = provider.typeConfig;
           if (tc?.extractReturnType) {
             const docReturn = tc.extractReturnType(definitionNode);
             if (docReturn) returnType = docReturn;
@@ -1193,7 +1098,7 @@ const processFileGroup = (
           startLine: definitionNode ? definitionNode.startPosition.row : startLine,
           endLine: definitionNode ? definitionNode.endPosition.row : startLine,
           language: language,
-          isExported: isNodeExported(nameNode || definitionNode, nodeName, language),
+          isExported: provider.exportChecker(nameNode || definitionNode, nodeName),
           ...(frameworkHint ? {
             astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
             astFrameworkReason: frameworkHint.reason,
@@ -1249,8 +1154,8 @@ const processFileGroup = (
       }
     }
 
-    // Extract Laravel routes from route files via procedural AST walk
-    if (language === SupportedLanguages.PHP && (file.path.includes('/routes/') || file.path.startsWith('routes/')) && file.path.endsWith('.php')) {
+    // Extract framework routes via provider detection (e.g., Laravel routes.php)
+    if (provider.isRouteFile?.(file.path)) {
       const extractedRoutes = extractLaravelRoutes(tree, file.path);
       result.routes.push(...extractedRoutes);
     }

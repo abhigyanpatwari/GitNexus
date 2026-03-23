@@ -471,7 +471,7 @@ interface AstFrameworkPatternConfig {
   patterns: string[];
 }
 
-const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE = {
+export const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE = {
   [SupportedLanguages.JavaScript]: [
     { framework: 'nestjs', entryPointMultiplier: 3.2, reason: 'nestjs-decorator', patterns: FRAMEWORK_AST_PATTERNS.nestjs },
   ],
