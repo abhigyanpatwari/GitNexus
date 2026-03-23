@@ -91,9 +91,6 @@ const isTestEnv = () => {
   if (typeof navigator !== 'undefined' && navigator.webdriver) {
     return true;
   }
-  if (typeof navigator !== 'undefined' && typeof navigator.userAgent === 'string' && navigator.userAgent.includes('HeadlessChrome')) {
-    return true;
-  }
   return typeof process !== 'undefined' && (process.env.PLAYWRIGHT_TEST || process.env.NODE_ENV === 'test');
 };
 
@@ -356,7 +353,7 @@ const getCopyQuery = (table: NodeTableName, path: string): string => {
  * Execute a Cypher query against the database
  * Returns results as named objects (not tuples) for better usability
  */
-export const executeQuery = async (cypher: string, readOnly = false): Promise<any[]> => {
+export const executeQuery = async (cypher: string, readOnly = true): Promise<any[]> => {
   if (!conn) {
     await initLbug();
   }
@@ -612,26 +609,29 @@ export const testArrayParams = async (): Promise<{ success: boolean; error?: str
     const verifyStmt = await conn.prepare(
       `MATCH (e:${EMBEDDING_TABLE_NAME} {nodeId: $nodeId}) RETURN e.embedding AS emb`
     );
-    if (!verifyStmt.isSuccess()) {
-      const errMsg = await verifyStmt.getErrorMessage();
-      return { success: false, error: `Verify prepare failed: ${errMsg}` };
-    }
-    const verifyResult = await conn.execute(verifyStmt, { nodeId: testNodeId });
-    const verifyRows = await verifyResult.getAllRows();
-    await verifyStmt.close();
-    const verifyRow = verifyRows[0];
-    const storedEmb = verifyRow?.emb ?? verifyRow?.[0];
-
-    if (storedEmb && Array.isArray(storedEmb) && storedEmb.length === 384) {
-      if (import.meta.env.DEV) {
-        console.log('✅ Array params WORK! Stored embedding length:', storedEmb.length);
+    try {
+      if (!verifyStmt.isSuccess()) {
+        const errMsg = await verifyStmt.getErrorMessage();
+        return { success: false, error: `Verify prepare failed: ${errMsg}` };
       }
-      return { success: true };
-    } else {
-      return {
-        success: false,
-        error: `Embedding not stored correctly. Got: ${typeof storedEmb}, length: ${storedEmb?.length}`
-      };
+      const verifyResult = await conn.execute(verifyStmt, { nodeId: testNodeId });
+      const verifyRows = await verifyResult.getAllRows();
+      const verifyRow = verifyRows[0];
+      const storedEmb = verifyRow?.emb ?? verifyRow?.[0];
+
+      if (storedEmb && Array.isArray(storedEmb) && storedEmb.length === 384) {
+        if (import.meta.env.DEV) {
+          console.log('✅ Array params WORK! Stored embedding length:', storedEmb.length);
+        }
+        return { success: true };
+      } else {
+        return {
+          success: false,
+          error: `Embedding not stored correctly. Got: ${typeof storedEmb}, length: ${storedEmb?.length}`
+        };
+      }
+    } finally {
+      await verifyStmt.close();
     }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);

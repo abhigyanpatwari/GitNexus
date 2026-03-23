@@ -24,9 +24,9 @@ export default defineConfig({
   retries: 0,
   use: {
     baseURL: 'http://localhost:5173',
-    trace: 'on',
-    screenshot: 'on',
-    video: 'on',
+    trace: 'retain-on-failure',
+    screenshot: 'retain-on-failure',
+    video: 'retain-on-failure',
     launchOptions: {
       args: launchArgs,
     },

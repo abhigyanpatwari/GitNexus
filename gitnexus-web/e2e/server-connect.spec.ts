@@ -33,10 +33,6 @@ test.beforeAll(async () => {
 
 /** Shared helper: connect to the local server and wait for the graph to load */
 async function connectAndWaitForGraph(page: import('@playwright/test').Page, testInfo: TestInfo) {
-  // Collect all console messages for debugging
-  page.on('console', msg => console.log(`[browser ${msg.type()}] ${msg.text()}`));
-  page.on('pageerror', err => console.log(`[browser crash] ${err.message}`));
-
   // Signal to the app that we are running under Playwright (used to skip heavy Ladybug loads).
   await page.addInitScript(() => {
     (window as unknown as { __PLAYWRIGHT_TEST__?: boolean }).__PLAYWRIGHT_TEST__ = true;
@@ -148,7 +144,7 @@ test.describe('Turn Off All Highlights', () => {
     await page.screenshot({ path: testInfo.outputPath('before-select.png'), fullPage: true });
 
     // Click a file in the file tree to select a node
-    const fileItem = page.getByText('start.sh');
+    const fileItem = page.getByText('package.json');
     if (await fileItem.isVisible()) {
       await fileItem.click();
       // Wait for node selection to take effect

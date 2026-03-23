@@ -196,9 +196,9 @@ const AppContent = () => {
       } else if (phase === 'extracting') {
         setProgress({ phase: 'extracting', percent: 97, message: 'Processing...', detail: 'Extracting file contents' });
       }
-    }).then((result) => {
+    }).then(async (result) => {
       // Run connect and repo list in parallel (avoid waterfall)
-      handleServerConnect(result);
+      await handleServerConnect(result);
       setServerBaseUrl(baseUrl);
       fetchRepos(baseUrl)
         .then((repos) => setAvailableRepos(repos))
@@ -235,8 +235,8 @@ const AppContent = () => {
       <DropZone
         onFileSelect={handleFileSelect}
         onGitClone={handleGitClone}
-        onServerConnect={(result, serverUrl) => {
-          handleServerConnect(result);
+        onServerConnect={async (result, serverUrl) => {
+          await handleServerConnect(result);
           if (serverUrl) {
             const baseUrl = normalizeServerUrl(serverUrl);
             setServerBaseUrl(baseUrl);
