@@ -12,8 +12,6 @@ import { test, expect, type TestInfo } from '@playwright/test';
 
 const BACKEND_URL = process.env.BACKEND_URL ?? 'http://localhost:4747';
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
-const IS_PLAYWRIGHT_AUTOMATION = process.env.PLAYWRIGHT_TEST === '1';
-
 // Skip all tests if the gitnexus server or Vite dev server isn't reachable
 test.beforeAll(async () => {
   if (process.env.E2E) return; // force-run

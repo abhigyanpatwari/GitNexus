@@ -28,6 +28,14 @@ jobs:
           --coverage.reportOnFailure=true
         working-directory: gitnexus
 
+      - name: Install gitnexus-web dependencies
+        run: npm ci
+        working-directory: gitnexus-web
+
+      - name: Run gitnexus-web unit tests
+        run: npx vitest run --reporter=default
+        working-directory: gitnexus-web
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
