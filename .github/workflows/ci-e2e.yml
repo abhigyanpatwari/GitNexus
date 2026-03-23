@@ -22,7 +22,7 @@ jobs:
   e2e:
     name: e2e (chromium)
     needs: check-changes
-    if: needs.check-changes.outputs.web_changed == 'true'
+    if: needs.check-changes.result == 'success' && needs.check-changes.outputs.web_changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

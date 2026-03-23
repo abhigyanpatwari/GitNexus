@@ -15,8 +15,8 @@ const ProcessFlowModal = lazy(() =>
   import('./ProcessFlowModal').then((m) => ({ default: m.ProcessFlowModal }))
 );
 
-/** Validate that an ID looks like a safe node identifier (e.g., "Process:name" or "proc_5") */
-const isSafeId = (id: string): boolean => /^[a-zA-Z0-9_:.\-/@ ]+$/.test(id);
+/** Validate that an ID contains only expected node identifier characters (no Cypher metacharacters, spaces, or slashes) */
+const isSafeId = (id: string): boolean => /^[a-zA-Z0-9_:.\-]+$/.test(id);
 
 export const ProcessesPanel = () => {
     const { graph, runQuery, setHighlightedNodeIds, highlightedNodeIds } = useAppState();
