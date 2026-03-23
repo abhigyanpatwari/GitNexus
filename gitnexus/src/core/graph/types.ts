@@ -99,7 +99,7 @@ export type RelationshipType =
   | 'FETCHES'        // Function/File → Route (consumer calls this endpoint)
   | 'HANDLES_TOOL'   // Function/File → Tool (handler implements this tool)
   | 'ENTRY_POINT_OF'  // Route/Tool → Process (this endpoint starts this execution flow)
-  | 'WRAPS'           // Function → Function (middleware wrapper chain)
+  | 'WRAPS'           // Function → Function (middleware wrapper chain) — Reserved: future middleware graph traversal (not yet emitted)
 
 export interface GraphNode {
   id:  string,

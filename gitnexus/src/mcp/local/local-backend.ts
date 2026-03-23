@@ -1940,7 +1940,10 @@ export class LocalBackend {
           error: errorKeys,
         },
         middleware: middlewareArr,
-        ...(middlewarePartial ? { middlewareDetection: 'partial' as const } : {}),
+        ...(middlewarePartial ? {
+          middlewareDetection: 'partial' as const,
+          middlewareNote: 'Middleware captured from first HTTP method export only — other methods in this handler may use different middleware chains.',
+        } : {}),
         consumers,
         ...(mismatches.length > 0 ? { mismatches } : {}),
         executionFlows: flows,

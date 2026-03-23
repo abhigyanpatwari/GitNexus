@@ -4,7 +4,8 @@
 import { describe, it, expect } from 'vitest';
 import { nextjsFileToRouteURL, normalizeFetchURL, routeMatches } from '../../src/core/ingestion/route-extractors/nextjs.js';
 import { phpFileToRouteURL } from '../../src/core/ingestion/route-extractors/php.js';
-import { extractMiddlewareChain, detectStatusCode, extractResponseShapes } from '../../src/core/ingestion/pipeline.js';
+import { extractMiddlewareChain } from '../../src/core/ingestion/route-extractors/middleware.js';
+import { detectStatusCode, extractResponseShapes } from '../../src/core/ingestion/route-extractors/response-shapes.js';
 
 // ---------------------------------------------------------------------------
 // Next.js route extractor
@@ -286,32 +287,32 @@ describe('response shape extraction edge cases', () => {
 describe('middleware chain extraction', () => {
   it('extracts triple-nested middleware chain', () => {
     const content = `export const POST = withRateLimit(withCSRF(withAuth(async (req) => { return NextResponse.json({ ok: true }); })));`;
-    expect(extractMiddlewareChain(content)).toEqual(['withRateLimit', 'withCSRF', 'withAuth']);
+    expect(extractMiddlewareChain(content)).toEqual({ chain: ['withRateLimit', 'withCSRF', 'withAuth'], method: 'POST' });
   });
 
   it('extracts double-nested middleware chain', () => {
     const content = `export const GET = withAuth(withCache(handler));`;
-    expect(extractMiddlewareChain(content)).toEqual(['withAuth', 'withCache']);
+    expect(extractMiddlewareChain(content)).toEqual({ chain: ['withAuth', 'withCache'], method: 'GET' });
   });
 
   it('extracts single withX wrapper', () => {
     const content = `export const POST = withAuth(handler);`;
-    expect(extractMiddlewareChain(content)).toEqual(['withAuth']);
+    expect(extractMiddlewareChain(content)).toEqual({ chain: ['withAuth'], method: 'POST' });
   });
 
   it('extracts from export default', () => {
     const content = `export default withAuth(handler);`;
-    expect(extractMiddlewareChain(content)).toEqual(['withAuth']);
+    expect(extractMiddlewareChain(content)).toEqual({ chain: ['withAuth'], method: 'default' });
   });
 
   it('extracts from export default with nesting', () => {
     const content = `export default withRateLimit(withAuth(handler));`;
-    expect(extractMiddlewareChain(content)).toEqual(['withRateLimit', 'withAuth']);
+    expect(extractMiddlewareChain(content)).toEqual({ chain: ['withRateLimit', 'withAuth'], method: 'default' });
   });
 
   it('stops at async keyword (arrow function body)', () => {
     const content = `export const POST = withAuth(async (req) => { return res.json({}); });`;
-    expect(extractMiddlewareChain(content)).toEqual(['withAuth']);
+    expect(extractMiddlewareChain(content)).toEqual({ chain: ['withAuth'], method: 'POST' });
   });
 
   it('returns undefined for plain handler without wrappers', () => {
@@ -330,17 +331,17 @@ describe('middleware chain extraction', () => {
       export const GET = withCache(handler);
       export const POST = withAuth(withCSRF(handler));
     `;
-    expect(extractMiddlewareChain(content)).toEqual(['withCache']);
+    expect(extractMiddlewareChain(content)).toEqual({ chain: ['withCache'], method: 'GET' });
   });
 
   it('handles whitespace and newlines in chain', () => {
     const content = `export const POST = withRateLimit(\n  withAuth(\n    async (req) => {}\n  )\n);`;
-    expect(extractMiddlewareChain(content)).toEqual(['withRateLimit', 'withAuth']);
+    expect(extractMiddlewareChain(content)).toEqual({ chain: ['withRateLimit', 'withAuth'], method: 'POST' });
   });
 
   it('handles DELETE method', () => {
     const content = `export const DELETE = withAuth(withAdmin(handler));`;
-    expect(extractMiddlewareChain(content)).toEqual(['withAuth', 'withAdmin']);
+    expect(extractMiddlewareChain(content)).toEqual({ chain: ['withAuth', 'withAdmin'], method: 'DELETE' });
   });
 
   it('returns undefined when no export pattern exists', () => {
