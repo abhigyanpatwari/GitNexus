@@ -36,9 +36,10 @@ This project uses the [PolyForm Noncommercial License 1.0.0](https://polyformpro
 ## Before you open a PR
 
 - [ ] Tests pass for the packages you touched (`gitnexus` and/or `gitnexus-web`).
-- [ ] Typecheck passes where applicable (`npx tsc --noEmit` in `gitnexus`).
+- [ ] Typecheck passes: `npx tsc --noEmit` in `gitnexus/` and `npx tsc -b --noEmit` in `gitnexus-web/`.
 - [ ] No secrets, tokens, or machine-specific paths committed.
 - [ ] Documentation updated if behavior or public CLI/MCP contract changes.
+- [ ] Pre-commit hook runs clean (`.husky/pre-commit` — typecheck + unit tests for staged packages).
 
 ## Code review
 

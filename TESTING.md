@@ -32,10 +32,20 @@ npx tsc --noEmit            # typecheck (matches CI)
 ```bash
 cd gitnexus-web
 npm install
-npm test
+npm test                    # unit tests (vitest)
+npx tsc -b --noEmit         # typecheck (matches CI)
 npm run test:coverage
-npm run test:e2e            # Playwright (when applicable)
+npm run test:e2e            # Playwright (requires gitnexus serve + npm run dev)
 ```
+
+## Pre-commit hook
+
+A husky pre-commit hook (`.husky/pre-commit`) runs automatically on every `git commit`:
+
+- **`gitnexus-web/` files staged** → `tsc -b --noEmit` + `vitest run`
+- **`gitnexus/` files staged** → `tsc --noEmit` + `vitest run --project default`
+
+Skip with `git commit --no-verify` (use sparingly).
 
 ## Test categories
 
@@ -65,13 +75,20 @@ Re-run the full relevant suite when:
 
 ## CI integration
 
-GitHub Actions call into `.github/workflows/` (e.g. unit tests with coverage, quality/typecheck). Local checks before pushing:
+GitHub Actions (`.github/workflows/ci.yml`) orchestrate:
+
+- **`ci-quality.yml`** — `tsc --noEmit` for `gitnexus/` + `tsc -b --noEmit` for `gitnexus-web/`
+- **`ci-tests.yml`** — `vitest run` with coverage (ubuntu) + cross-platform (macOS, Windows)
+- **`ci-e2e.yml`** — Playwright E2E tests, gated on `gitnexus-web/**` changes
+
+Local checks before pushing:
 
 ```bash
-cd gitnexus && npx tsc --noEmit && npx vitest run test/unit
+cd gitnexus && npx tsc --noEmit && npm test
+cd ../gitnexus-web && npx tsc -b --noEmit && npm test
 ```
 
-Add `gitnexus-web` tests when your change touches that package.
+Or rely on the pre-commit hook which runs these automatically for staged files.
 
 ## User acceptance / beta (optional)
 
