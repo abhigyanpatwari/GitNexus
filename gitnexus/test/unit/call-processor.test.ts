@@ -1194,4 +1194,56 @@ describe('processNextjsFetchRoutes', () => {
     expect(rels).toHaveLength(1);
     expect(rels[0].reason).toBe('fetch-url-match');
   });
+
+  it('encodes fetch count in reason when consumer fetches multiple routes', () => {
+    graph.addNode({ id: 'File:src/dashboard.tsx', label: 'File', properties: { name: 'src/dashboard.tsx', filePath: 'src/dashboard.tsx' } });
+
+    const fetchCalls: ExtractedFetchCall[] = [
+      { filePath: 'src/dashboard.tsx', fetchURL: '/api/grants', lineNumber: 10 },
+      { filePath: 'src/dashboard.tsx', fetchURL: '/api/users', lineNumber: 20 },
+    ];
+    const routeRegistry = new Map([
+      ['/api/grants', 'src/app/api/grants/route.ts'],
+      ['/api/users', 'src/app/api/users/route.ts'],
+    ]);
+
+    const consumerContents = new Map([
+      ['src/dashboard.tsx', `
+        const { data, pagination } = await grantsRes.json();
+        const { users } = await usersRes.json();
+      `],
+    ]);
+
+    processNextjsFetchRoutes(graph, fetchCalls, routeRegistry, consumerContents);
+
+    const rels = graph.relationships.filter(r => r.type === 'FETCHES');
+    expect(rels).toHaveLength(2);
+    // Both edges should have |fetches:2 suffix
+    for (const rel of rels) {
+      expect(rel.reason).toContain('|fetches:2');
+      expect(rel.reason).toMatch(/^fetch-url-match\|keys:[^|]+\|fetches:2$/);
+    }
+  });
+
+  it('does not encode fetch count when consumer fetches only one route', () => {
+    graph.addNode({ id: 'File:src/page.tsx', label: 'File', properties: { name: 'src/page.tsx', filePath: 'src/page.tsx' } });
+
+    const fetchCalls: ExtractedFetchCall[] = [
+      { filePath: 'src/page.tsx', fetchURL: '/api/grants', lineNumber: 10 },
+    ];
+    const routeRegistry = new Map([
+      ['/api/grants', 'src/app/api/grants/route.ts'],
+      ['/api/users', 'src/app/api/users/route.ts'],
+    ]);
+
+    const consumerContents = new Map([
+      ['src/page.tsx', `const { data } = await res.json();`],
+    ]);
+
+    processNextjsFetchRoutes(graph, fetchCalls, routeRegistry, consumerContents);
+
+    const rels = graph.relationships.filter(r => r.type === 'FETCHES');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].reason).not.toContain('|fetches:');
+  });
 });

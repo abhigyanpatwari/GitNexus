@@ -1641,7 +1641,7 @@ export class LocalBackend {
     repoId: string,
     routeFilter: string,
     params: Record<string, string>,
-  ): Promise<Array<{ id: string; name: string; filePath: string; responseKeys: string[] | null; errorKeys: string[] | null; middleware: string[] | null; consumers: Array<{ name: string; filePath: string; accessedKeys?: string[] }> }>> {
+  ): Promise<Array<{ id: string; name: string; filePath: string; responseKeys: string[] | null; errorKeys: string[] | null; middleware: string[] | null; consumers: Array<{ name: string; filePath: string; accessedKeys?: string[]; fetchCount?: number }> }>> {
     const rows = await executeParameterized(repoId, `
       MATCH (n:Route)
       WHERE n.id STARTS WITH 'Route:' ${routeFilter}
@@ -1653,7 +1653,7 @@ export class LocalBackend {
              r.reason AS fetchReason
     `, params);
 
-    const routeMap = new Map<string, { id: string; name: string; filePath: string; responseKeys: string[] | null; errorKeys: string[] | null; middleware: string[] | null; consumers: Array<{ name: string; filePath: string; accessedKeys?: string[] }> }>();
+    const routeMap = new Map<string, { id: string; name: string; filePath: string; responseKeys: string[] | null; errorKeys: string[] | null; middleware: string[] | null; consumers: Array<{ name: string; filePath: string; accessedKeys?: string[]; fetchCount?: number }> }>();
     for (const row of rows) {
       const id = row.routeId ?? row[0];
       const name = row.routeName ?? row[1];
@@ -1669,15 +1669,25 @@ export class LocalBackend {
         routeMap.set(id, { id, name, filePath, responseKeys, errorKeys, middleware, consumers: [] });
       }
       if (consumerName && consumerFile) {
-        // Parse accessed keys from reason field: "fetch-url-match|keys:data,pagination"
+        // Parse accessed keys from reason field: "fetch-url-match|keys:data,pagination|fetches:3"
         let accessedKeys: string[] | undefined;
+        let fetchCount: number | undefined;
         if (fetchReason) {
-          const keysMatch = fetchReason.match(/\|keys:(.+)$/);
+          const keysMatch = fetchReason.match(/\|keys:([^|]+)/);
           if (keysMatch) {
             accessedKeys = keysMatch[1].split(',').filter(k => k.length > 0);
           }
+          const fetchesMatch = fetchReason.match(/\|fetches:(\d+)/);
+          if (fetchesMatch) {
+            fetchCount = parseInt(fetchesMatch[1], 10);
+          }
         }
-        routeMap.get(id)!.consumers.push({ name: consumerName, filePath: consumerFile, ...(accessedKeys ? { accessedKeys } : {}) });
+        routeMap.get(id)!.consumers.push({
+          name: consumerName,
+          filePath: consumerFile,
+          ...(accessedKeys ? { accessedKeys } : {}),
+          ...(fetchCount && fetchCount > 1 ? { fetchCount } : {}),
+        });
       }
     }
 
@@ -1758,11 +1768,13 @@ export class LocalBackend {
             return { name: c.name, filePath: c.filePath };
           }
           const mismatched = c.accessedKeys.filter(k => !allKnownKeys.has(k));
+          const isMultiFetch = (c.fetchCount ?? 1) > 1;
           return {
             name: c.name,
             filePath: c.filePath,
             accessedKeys: c.accessedKeys,
-            ...(mismatched.length > 0 ? { mismatched } : {}),
+            ...(mismatched.length > 0 ? { mismatched, mismatchConfidence: isMultiFetch ? 'low' as const : 'high' as const } : {}),
+            ...(isMultiFetch ? { attributionNote: `This file fetches ${c.fetchCount} routes — accessed keys may belong to a different route.` } : {}),
           };
         });
 
@@ -1854,6 +1866,14 @@ export class LocalBackend {
 
     const flowMap = await this.fetchLinkedFlowsBatch(repo.id, routes.map(r => r.id));
 
+    // Count how many routes share the same handler file (for middleware partial detection)
+    const routeCountByHandler = new Map<string, number>();
+    for (const r of routes) {
+      if (r.filePath) {
+        routeCountByHandler.set(r.filePath, (routeCountByHandler.get(r.filePath) ?? 0) + 1);
+      }
+    }
+
     const results = routes.map(r => {
       const responseKeys = r.responseKeys ?? [];
       const errorKeys = r.errorKeys ?? [];
@@ -1864,19 +1884,22 @@ export class LocalBackend {
         name: c.name,
         file: c.filePath,
         accesses: c.accessedKeys ?? [],
+        ...(c.fetchCount && c.fetchCount > 1 ? { attributionNote: `This file fetches ${c.fetchCount} routes — accessed keys may belong to a different route.` } : {}),
       }));
 
       // Detect mismatches: consumer accesses keys not in response shape
-      const mismatches: Array<{ consumer: string; field: string; reason: string }> = [];
+      const mismatches: Array<{ consumer: string; field: string; reason: string; confidence: 'high' | 'low' }> = [];
       if (allKnownKeys.size > 0) {
         for (const c of r.consumers) {
           if (!c.accessedKeys) continue;
+          const isMultiFetch = (c.fetchCount ?? 1) > 1;
           for (const key of c.accessedKeys) {
             if (!allKnownKeys.has(key)) {
               mismatches.push({
                 consumer: c.filePath,
                 field: key,
                 reason: 'accessed but not in response shape',
+                confidence: isMultiFetch ? 'low' : 'high',
               });
             }
           }
@@ -1905,6 +1928,12 @@ export class LocalBackend {
         ? `Changing response shape will affect ${consumerCount} component${consumerCount === 1 ? '' : 's'}`
         : undefined;
 
+      // Flag when middleware was detected but handler exports multiple HTTP methods
+      // (middleware chain may only reflect one export)
+      const middlewareArr = r.middleware || [];
+      const handlerRouteCount = r.filePath ? (routeCountByHandler.get(r.filePath) ?? 1) : 1;
+      const middlewarePartial = middlewareArr.length > 0 && handlerRouteCount > 1;
+
       return {
         route: r.name,
         handler: r.filePath,
@@ -1912,7 +1941,8 @@ export class LocalBackend {
           success: responseKeys,
           error: errorKeys,
         },
-        middleware: r.middleware || [],
+        middleware: middlewareArr,
+        ...(middlewarePartial ? { middlewareDetection: 'partial' as const } : {}),
         consumers,
         ...(mismatches.length > 0 ? { mismatches } : {}),
         executionFlows: flows,

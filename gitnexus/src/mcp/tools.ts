@@ -230,7 +230,7 @@ Confidence: 1.0 = certain, <0.8 = fuzzy match`,
     name: 'route_map',
     description: `Show API route mappings: which components/hooks fetch which API endpoints, and which handler files serve them.
 
-WHEN TO USE: Understanding API consumption patterns, finding orphaned routes, impact analysis for API changes.
+WHEN TO USE: Understanding API consumption patterns, finding orphaned routes. For pre-change analysis, prefer \`api_impact\` which combines this data with mismatch detection and risk assessment.
 AFTER THIS: Use impact() on specific route handlers to see full blast radius.
 
 Returns: route nodes with their handlers, middleware wrapper chains (e.g., withAuth, withRateLimit), and consumers.`,
@@ -263,7 +263,7 @@ Returns: tool nodes with their handler files and descriptions.`,
     name: 'shape_check',
     description: `Check response shapes for API routes against their consumers' property accesses.
 
-WHEN TO USE: Detecting mismatches between what an API route returns and what consumers expect. Finding shape drift.
+WHEN TO USE: Detecting mismatches between what an API route returns and what consumers expect. Finding shape drift. For pre-change analysis, prefer \`api_impact\` which combines this data with mismatch detection and risk assessment.
 REQUIRES: Route nodes with responseKeys (extracted from .json({...}) calls during indexing).
 
 Returns routes that have both detected response keys AND consumers. Shows top-level keys each endpoint returns (e.g., data, pagination, error) and what keys each consumer accesses. Reports MISMATCH status when a consumer accesses keys not present in the route's response shape.`,

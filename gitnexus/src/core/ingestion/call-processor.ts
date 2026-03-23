@@ -1440,6 +1440,19 @@ export const processNextjsFetchRoutes = (
   routeRegistry: Map<string, string>,  // routeURL → handlerFilePath
   consumerContents?: Map<string, string>,  // filePath → file content
 ) => {
+  // Pre-count how many routes each consumer file matches (for confidence attribution)
+  const routeCountByFile = new Map<string, number>();
+  for (const call of fetchCalls) {
+    const normalized = normalizeFetchURL(call.fetchURL);
+    if (!normalized) continue;
+    for (const [routeURL] of routeRegistry) {
+      if (routeMatches(normalized, routeURL)) {
+        routeCountByFile.set(call.filePath, (routeCountByFile.get(call.filePath) ?? 0) + 1);
+        break;
+      }
+    }
+  }
+
   for (const call of fetchCalls) {
     const normalized = normalizeFetchURL(call.fetchURL);
     if (!normalized) continue;
@@ -1459,6 +1472,12 @@ export const processNextjsFetchRoutes = (
               reason = `fetch-url-match|keys:${accessedKeys.join(',')}`;
             }
           }
+        }
+
+        // Encode multi-fetch count so downstream can set confidence
+        const fetchCount = routeCountByFile.get(call.filePath) ?? 1;
+        if (fetchCount > 1) {
+          reason = `${reason}|fetches:${fetchCount}`;
         }
 
         graph.addRelationship({

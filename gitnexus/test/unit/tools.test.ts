@@ -108,4 +108,16 @@ describe('GITNEXUS_TOOLS', () => {
     expect(relProp.type).toBe('array');
     expect(relProp.items).toEqual({ type: 'string' });
   });
+
+  it('route_map description defers to api_impact for pre-change analysis', () => {
+    const routeMapTool = GITNEXUS_TOOLS.find(t => t.name === 'route_map')!;
+    expect(routeMapTool.description).toContain('api_impact');
+    expect(routeMapTool.description).toContain('pre-change analysis');
+  });
+
+  it('shape_check description defers to api_impact for pre-change analysis', () => {
+    const shapeCheckTool = GITNEXUS_TOOLS.find(t => t.name === 'shape_check')!;
+    expect(shapeCheckTool.description).toContain('api_impact');
+    expect(shapeCheckTool.description).toContain('pre-change analysis');
+  });
 });
