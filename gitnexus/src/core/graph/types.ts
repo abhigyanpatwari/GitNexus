@@ -33,7 +33,8 @@ export type NodeLabel =
   | 'Annotation'
   | 'Constructor'
   | 'Template'
-  | 'Section';
+  | 'Section'
+  | 'PR';
 
 
 import { SupportedLanguages } from '../../config/supported-languages.js';
@@ -90,11 +91,30 @@ export type RelationshipType =
   | 'MEMBER_OF'
   | 'STEP_IN_PROCESS'
   | 'CROSS_REPO_CALL'
+  | 'MODIFIED_BY_PR'
 
 export interface GraphNode {
   id:  string,
   label: NodeLabel,
   properties: NodeProperties,  
+}
+
+/**
+ * PR node — represents a GitHub Pull Request that modified code nodes.
+ * Connected to File/Function nodes via MODIFIED_BY_PR relationships.
+ */
+export interface PRNode {
+  id: string;
+  label: 'PR';
+  properties: {
+    prNumber: number;
+    title: string;
+    url: string;
+    sha?: string;
+    mergedAt?: string;
+    author?: string;
+    state: 'open' | 'closed' | 'merged';
+  };
 }
 
 export interface GraphRelationship {

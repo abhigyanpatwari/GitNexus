@@ -586,6 +586,163 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     res.json({ ok: true });
   });
 
+  // ── T016: Historical PR Analysis ────────────────────────────────────────────
+
+  /**
+   * GET /api/pr-history/:nodeId
+   * Returns all PRs that modified the given code node (by file path).
+   * Query params:
+   *   - repo: optional repository path override
+   */
+  app.get('/api/pr-history/:nodeId', authenticateOptional, async (req, res) => {
+    const { nodeId } = req.params;
+    const { repo } = req.query as { repo?: string };
+
+    try {
+      const { execSync } = await import('child_process');
+      const repoPath = repo || requestedRepo(req) || process.cwd();
+
+      // Get git log of merge commits that touched this file
+      const gitLog = execSync(
+        `git log --merges --format="%H|%s|%ai|%an" -- "${nodeId}" 2>/dev/null | head -20`,
+        { cwd: repoPath, encoding: 'utf-8' }
+      ).trim();
+
+      const prHistory = gitLog
+        ? gitLog
+            .split('\n')
+            .map((line) => {
+              const [sha, subject, date, author] = line.split('|');
+              // Extract PR number from merge commit message e.g. "Merge pull request #42 from ..."
+              const prMatch = subject?.match(/#(\d+)/);
+              if (!prMatch) return null;
+              return {
+                sha: sha?.slice(0, 7),
+                prNumber: parseInt(prMatch[1], 10),
+                subject,
+                date,
+                author,
+              };
+            })
+            .filter(Boolean)
+        : [];
+
+      res.json({ nodeId, prHistory });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || String(err) });
+    }
+  });
+
+  /**
+   * GET /api/pr-nodes
+   * Returns all PR nodes derived from git merge history in the repository.
+   * Query params:
+   *   - repo: optional repository path override
+   *   - limit: max PRs to return (default 50)
+   */
+  app.get('/api/pr-nodes', authenticateOptional, async (req, res) => {
+    const { repo, limit = '50' } = req.query as { repo?: string; limit?: string };
+
+    try {
+      const { execSync } = await import('child_process');
+      const repoPath = repo || requestedRepo(req) || process.cwd();
+      const n = Math.min(parseInt(limit, 10) || 50, 200);
+
+      const gitLog = execSync(
+        `git log --merges --format="%H|%s|%ai|%an" -n ${n} 2>/dev/null`,
+        { cwd: repoPath, encoding: 'utf-8' }
+      ).trim();
+
+      const prNodes = gitLog
+        ? gitLog
+            .split('\n')
+            .map((line) => {
+              const [sha, subject, date, author] = line.split('|');
+              const prMatch = subject?.match(/#(\d+)/);
+              if (!prMatch) return null;
+              const prNumber = parseInt(prMatch[1], 10);
+              // Strip "Merge pull request #N from owner/branch " prefix for cleaner title
+              const title =
+                subject
+                  ?.replace(/^Merge pull request #\d+ from \S+\s*/, '')
+                  .trim() || subject;
+              return {
+                id: `pr-${prNumber}`,
+                label: 'PR' as const,
+                properties: {
+                  prNumber,
+                  title,
+                  url: '',
+                  sha: sha?.slice(0, 7),
+                  mergedAt: date,
+                  author,
+                  state: 'merged' as const,
+                },
+              };
+            })
+            .filter(Boolean)
+        : [];
+
+      res.json({ prNodes });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || String(err) });
+    }
+  });
+
+  /**
+   * GET /api/file-pr-map
+   * Returns a mapping of file paths to the PR numbers that modified them,
+   * derived from recent git merge commits.
+   * Query params:
+   *   - repo: optional repository path override
+   *   - limit: number of recent merge commits to scan (default 10, max 50)
+   */
+  app.get('/api/file-pr-map', authenticateOptional, async (req, res) => {
+    const { repo, limit = '10' } = req.query as { repo?: string; limit?: string };
+
+    try {
+      const { execSync } = await import('child_process');
+      const repoPath = repo || requestedRepo(req) || process.cwd();
+      const n = Math.min(parseInt(limit, 10) || 10, 50);
+
+      const mergeLines = execSync(
+        `git log --merges --format="%H|%s" -n ${n} 2>/dev/null`,
+        { cwd: repoPath, encoding: 'utf-8' }
+      )
+        .trim()
+        .split('\n')
+        .filter(Boolean);
+
+      const fileMap: Record<string, number[]> = {};
+
+      for (const line of mergeLines) {
+        const [sha, subject] = line.split('|');
+        const prMatch = subject?.match(/#(\d+)/);
+        if (!prMatch || !sha) continue;
+
+        const prNumber = parseInt(prMatch[1], 10);
+        const files = execSync(
+          `git diff-tree --no-commit-id -r --name-only "${sha}" 2>/dev/null`,
+          { cwd: repoPath, encoding: 'utf-8' }
+        )
+          .trim()
+          .split('\n')
+          .filter(Boolean);
+
+        for (const file of files) {
+          if (!fileMap[file]) fileMap[file] = [];
+          if (!fileMap[file].includes(prNumber)) {
+            fileMap[file].push(prNumber);
+          }
+        }
+      }
+
+      res.json({ fileMap });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || String(err) });
+    }
+  });
+
   // Global error handler — catch anything the route handlers miss
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error('Unhandled error:', err);
