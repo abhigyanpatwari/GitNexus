@@ -1,0 +1,4 @@
+# file: /Users/johneakin/PyCharmProjects/GitNexus/eval/constants.py
+# hypothesis_version: 6.151.9
+
+[0.5, 5.0, 'GITNEXUS_EVAL_DEBUG']

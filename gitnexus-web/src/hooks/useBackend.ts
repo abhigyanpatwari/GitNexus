@@ -6,16 +6,13 @@ import {
   getBackendUrl,
   type BackendRepo,
 } from '../services/backend';
+import { BACKEND_URL_DEBOUNCE_MS, DEFAULT_BACKEND_URL } from '../config/ui-constants';
 
 // ── localStorage keys ────────────────────────────────────────────────────────
 
 const LS_URL_KEY = 'gitnexus-backend-url';
 const LS_REPO_KEY = 'gitnexus-backend-repo';
-const DEFAULT_URL = 'http://localhost:4747';
-
-// ── Debounce delay ───────────────────────────────────────────────────────────
-
-const DEBOUNCE_MS = 500;
+const DEFAULT_URL = DEFAULT_BACKEND_URL;
 
 // ── Public interface ─────────────────────────────────────────────────────────
 
@@ -133,7 +130,7 @@ export function useBackend(): UseBackendResult {
       debounceRef.current = setTimeout(() => {
         debounceRef.current = null;
         void probe();
-      }, DEBOUNCE_MS);
+      }, BACKEND_URL_DEBOUNCE_MS);
     },
     [probe],
   );

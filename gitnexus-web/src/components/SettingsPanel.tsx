@@ -7,6 +7,8 @@ import {
   fetchOpenRouterModels,
 } from '../core/llm/settings-service';
 import type { LLMSettings, LLMProvider } from '../core/llm/types';
+import { DEFAULT_OLLAMA_BASE_URL } from '../config/ui-constants';
+import { ProviderConfigCard } from './settings/ProviderConfigCard';
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -252,7 +254,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
 
   useEffect(() => {
     if (settings.activeProvider === 'ollama') {
-      const baseUrl = settings.ollama?.baseUrl ?? 'http://localhost:11434';
+      const baseUrl = settings.ollama?.baseUrl ?? DEFAULT_OLLAMA_BASE_URL;
       const timer = setTimeout(() => {
         checkOllamaConnection(baseUrl);
       }, 300);
@@ -374,60 +376,36 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
             </div>
           </div>
 
+          <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-xs text-amber-200">
+            API keys are stored in session storage and will be cleared when you close this tab.
+          </div>
+
           {/* OpenAI Settings */}
           {settings.activeProvider === 'openai' && (
-            <div className="space-y-4 animate-fade-in">
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 text-sm font-medium text-text-secondary">
-                  <Key className="w-4 h-4" />
-                  API Key
-                </label>
-                <div className="relative">
-                  <input
-                    type={showApiKey['openai'] ? 'text' : 'password'}
-                    value={settings.openai?.apiKey ?? ''}
-                    onChange={e => setSettings(prev => ({
-                      ...prev,
-                      openai: { ...prev.openai!, apiKey: e.target.value }
-                    }))}
-                    placeholder="Enter your OpenAI API key"
-                    className="w-full px-4 py-3 pr-12 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => toggleApiKeyVisibility('openai')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary transition-colors"
-                  >
-                    {showApiKey['openai'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-                <p className="text-xs text-text-muted">
-                  Get your API key from{' '}
-                  <a
-                    href="https://platform.openai.com/api-keys"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-accent hover:underline"
-                  >
-                    OpenAI Platform
-                  </a>
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-text-secondary">Model</label>
-                <input
-                  type="text"
-                  value={settings.openai?.model ?? 'gpt-5.2-chat'}
-                  onChange={e => setSettings(prev => ({
-                    ...prev,
-                    openai: { ...prev.openai!, model: e.target.value }
-                  }))}
-                  placeholder="e.g., gpt-4o, gpt-4-turbo, gpt-3.5-turbo"
-                  className="w-full px-4 py-3 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all font-mono text-sm"
-                />
-              </div>
-
+            <ProviderConfigCard
+              title="OpenAI"
+              apiKey={{
+                value: settings.openai?.apiKey ?? '',
+                placeholder: 'Enter your OpenAI API key',
+                helperText: 'Get your API key from',
+                helperLink: 'https://platform.openai.com/api-keys',
+                helperLinkLabel: 'OpenAI Platform',
+                isVisible: !!showApiKey['openai'],
+                onChange: (value) => setSettings(prev => ({
+                  ...prev,
+                  openai: { ...prev.openai!, apiKey: value }
+                })),
+                onToggleVisibility: () => toggleApiKeyVisibility('openai'),
+              }}
+              model={{
+                value: settings.openai?.model ?? 'gpt-5.2-chat',
+                placeholder: 'e.g., gpt-4o, gpt-4-turbo, gpt-3.5-turbo',
+                onChange: (value) => setSettings(prev => ({
+                  ...prev,
+                  openai: { ...prev.openai!, model: value }
+                })),
+              }}
+            >
               <div className="space-y-2">
                 <label className="flex items-center gap-2 text-sm font-medium text-text-secondary">
                   <Server className="w-4 h-4" />
@@ -447,119 +425,63 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
                   Leave empty to use the default OpenAI API. Set a custom URL for proxies or compatible APIs.
                 </p>
               </div>
-            </div>
+            </ProviderConfigCard>
           )}
 
           {/* Gemini Settings */}
           {settings.activeProvider === 'gemini' && (
-            <div className="space-y-4 animate-fade-in">
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 text-sm font-medium text-text-secondary">
-                  <Key className="w-4 h-4" />
-                  API Key
-                </label>
-                <div className="relative">
-                  <input
-                    type={showApiKey['gemini'] ? 'text' : 'password'}
-                    value={settings.gemini?.apiKey ?? ''}
-                    onChange={e => setSettings(prev => ({
-                      ...prev,
-                      gemini: { ...prev.gemini!, apiKey: e.target.value }
-                    }))}
-                    placeholder="Enter your Google AI API key"
-                    className="w-full px-4 py-3 pr-12 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => toggleApiKeyVisibility('gemini')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary transition-colors"
-                  >
-                    {showApiKey['gemini'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-                <p className="text-xs text-text-muted">
-                  Get your API key from{' '}
-                  <a
-                    href="https://aistudio.google.com/app/apikey"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-accent hover:underline"
-                  >
-                    Google AI Studio
-                  </a>
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-text-secondary">Model</label>
-                <input
-                  type="text"
-                  value={settings.gemini?.model ?? 'gemini-2.0-flash'}
-                  onChange={e => setSettings(prev => ({
-                    ...prev,
-                    gemini: { ...prev.gemini!, model: e.target.value }
-                  }))}
-                  placeholder="e.g., gemini-2.0-flash, gemini-1.5-pro"
-                  className="w-full px-4 py-3 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all font-mono text-sm"
-                />
-              </div>
-            </div>
+            <ProviderConfigCard
+              title="Google Gemini"
+              apiKey={{
+                value: settings.gemini?.apiKey ?? '',
+                placeholder: 'Enter your Google AI API key',
+                helperText: 'Get your API key from',
+                helperLink: 'https://aistudio.google.com/app/apikey',
+                helperLinkLabel: 'Google AI Studio',
+                isVisible: !!showApiKey['gemini'],
+                onChange: (value) => setSettings(prev => ({
+                  ...prev,
+                  gemini: { ...prev.gemini!, apiKey: value }
+                })),
+                onToggleVisibility: () => toggleApiKeyVisibility('gemini'),
+              }}
+              model={{
+                value: settings.gemini?.model ?? 'gemini-2.0-flash',
+                placeholder: 'e.g., gemini-2.0-flash, gemini-1.5-pro',
+                onChange: (value) => setSettings(prev => ({
+                  ...prev,
+                  gemini: { ...prev.gemini!, model: value }
+                })),
+              }}
+            />
           )}
 
           {/* Anthropic Settings */}
           {settings.activeProvider === 'anthropic' && (
-            <div className="space-y-4 animate-fade-in">
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 text-sm font-medium text-text-secondary">
-                  <Key className="w-4 h-4" />
-                  API Key
-                </label>
-                <div className="relative">
-                  <input
-                    type={showApiKey['anthropic'] ? 'text' : 'password'}
-                    value={settings.anthropic?.apiKey ?? ''}
-                    onChange={e => setSettings(prev => ({
-                      ...prev,
-                      anthropic: { ...prev.anthropic!, apiKey: e.target.value }
-                    }))}
-                    placeholder="Enter your Anthropic API key"
-                    className="w-full px-4 py-3 pr-12 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => toggleApiKeyVisibility('anthropic')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary transition-colors"
-                  >
-                    {showApiKey['anthropic'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-                <p className="text-xs text-text-muted">
-                  Get your API key from{' '}
-                  <a
-                    href="https://console.anthropic.com/settings/keys"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-accent hover:underline"
-                  >
-                    Anthropic Console
-                  </a>
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-text-secondary">Model</label>
-                <input
-                  type="text"
-                  value={settings.anthropic?.model ?? 'claude-sonnet-4-20250514'}
-                  onChange={e => setSettings(prev => ({
-                    ...prev,
-                    anthropic: { ...prev.anthropic!, model: e.target.value }
-                  }))}
-                  placeholder="e.g., claude-sonnet-4-20250514, claude-3-opus"
-                  className="w-full px-4 py-3 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all font-mono text-sm"
-                />
-              </div>
-            </div>
+            <ProviderConfigCard
+              title="Anthropic"
+              apiKey={{
+                value: settings.anthropic?.apiKey ?? '',
+                placeholder: 'Enter your Anthropic API key',
+                helperText: 'Get your API key from',
+                helperLink: 'https://console.anthropic.com/settings/keys',
+                helperLinkLabel: 'Anthropic Console',
+                isVisible: !!showApiKey['anthropic'],
+                onChange: (value) => setSettings(prev => ({
+                  ...prev,
+                  anthropic: { ...prev.anthropic!, apiKey: value }
+                })),
+                onToggleVisibility: () => toggleApiKeyVisibility('anthropic'),
+              }}
+              model={{
+                value: settings.anthropic?.model ?? 'claude-sonnet-4-20250514',
+                placeholder: 'e.g., claude-sonnet-4-20250514, claude-3-opus',
+                onChange: (value) => setSettings(prev => ({
+                  ...prev,
+                  anthropic: { ...prev.anthropic!, model: value }
+                })),
+              }}
+            />
           )}
 
           {/* Azure OpenAI Settings */}
@@ -695,17 +617,17 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
                 <div className="flex gap-2">
                   <input
                     type="url"
-                    value={settings.ollama?.baseUrl ?? 'http://localhost:11434'}
+                    value={settings.ollama?.baseUrl ?? DEFAULT_OLLAMA_BASE_URL}
                     onChange={e => setSettings(prev => ({
                       ...prev,
                       ollama: { ...prev.ollama!, baseUrl: e.target.value }
                     }))}
-                    placeholder="http://localhost:11434"
+                    placeholder={DEFAULT_OLLAMA_BASE_URL}
                     className="flex-1 px-4 py-3 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all font-mono text-sm"
                   />
                   <button
                     type="button"
-                    onClick={() => checkOllamaConnection(settings.ollama?.baseUrl ?? 'http://localhost:11434')}
+                    onClick={() => checkOllamaConnection(settings.ollama?.baseUrl ?? DEFAULT_OLLAMA_BASE_URL)}
                     disabled={isCheckingOllama}
                     className="px-3 py-3 bg-elevated border border-border-subtle rounded-xl text-text-secondary hover:text-text-primary hover:border-accent/50 transition-colors disabled:opacity-50"
                     title="Check connection"
@@ -749,44 +671,22 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
 
           {/* OpenRouter Settings */}
           {settings.activeProvider === 'openrouter' && (
-            <div className="space-y-4 animate-fade-in">
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 text-sm font-medium text-text-secondary">
-                  <Key className="w-4 h-4" />
-                  API Key
-                </label>
-                <div className="relative">
-                  <input
-                    type={showApiKey['openrouter'] ? 'text' : 'password'}
-                    value={settings.openrouter?.apiKey ?? ''}
-                    onChange={e => setSettings(prev => ({
-                      ...prev,
-                      openrouter: { ...prev.openrouter!, apiKey: e.target.value }
-                    }))}
-                    placeholder="Enter your OpenRouter API key"
-                    className="w-full px-4 py-3 pr-12 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => toggleApiKeyVisibility('openrouter')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary transition-colors"
-                  >
-                    {showApiKey['openrouter'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-                <p className="text-xs text-text-muted">
-                  Get your API key from{' '}
-                  <a
-                    href="https://openrouter.ai/keys"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-accent hover:underline"
-                  >
-                    OpenRouter Keys
-                  </a>
-                </p>
-              </div>
-
+            <ProviderConfigCard
+              title="OpenRouter"
+              apiKey={{
+                value: settings.openrouter?.apiKey ?? '',
+                placeholder: 'Enter your OpenRouter API key',
+                helperText: 'Get your API key from',
+                helperLink: 'https://openrouter.ai/keys',
+                helperLinkLabel: 'OpenRouter Keys',
+                isVisible: !!showApiKey['openrouter'],
+                onChange: (value) => setSettings(prev => ({
+                  ...prev,
+                  openrouter: { ...prev.openrouter!, apiKey: value }
+                })),
+                onToggleVisibility: () => toggleApiKeyVisibility('openrouter'),
+              }}
+            >
               <div className="space-y-2">
                 <label className="text-sm font-medium text-text-secondary">Model</label>
                 <OpenRouterModelCombobox
@@ -811,66 +711,36 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
                   </a>
                 </p>
               </div>
-            </div>
+            </ProviderConfigCard>
           )}
 
           {/* MiniMax Settings */}
           {settings.activeProvider === 'minimax' && (
-            <div className="space-y-4 animate-fade-in">
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 text-sm font-medium text-text-secondary">
-                  <Key className="w-4 h-4" />
-                  API Key
-                </label>
-                <div className="relative">
-                  <input
-                    type={showApiKey['minimax'] ? 'text' : 'password'}
-                    value={settings.minimax?.apiKey ?? ''}
-                    onChange={e => setSettings(prev => ({
-                      ...prev,
-                      minimax: { ...prev.minimax!, apiKey: e.target.value }
-                    }))}
-                    placeholder="Enter your MiniMax API key"
-                    className="w-full px-4 py-3 pr-12 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => toggleApiKeyVisibility('minimax')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary transition-colors"
-                  >
-                    {showApiKey['minimax'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-                <p className="text-xs text-text-muted">
-                  Get your API key from{' '}
-                  <a
-                    href="https://platform.minimax.io"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-accent hover:underline"
-                  >
-                    MiniMax Platform
-                  </a>
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-text-secondary">Model</label>
-                <input
-                  type="text"
-                  value={settings.minimax?.model ?? 'MiniMax-M2.5'}
-                  onChange={e => setSettings(prev => ({
-                    ...prev,
-                    minimax: { ...prev.minimax!, model: e.target.value }
-                  }))}
-                  placeholder="e.g., MiniMax-M2.5, MiniMax-M2.5-highspeed"
-                  className="w-full px-4 py-3 bg-elevated border border-border-subtle rounded-xl text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all font-mono text-sm"
-                />
-                <p className="text-xs text-text-muted">
-                  Available models: MiniMax-M2.5 (default), MiniMax-M2.5-highspeed (faster)
-                </p>
-              </div>
-            </div>
+            <ProviderConfigCard
+              title="MiniMax"
+              apiKey={{
+                value: settings.minimax?.apiKey ?? '',
+                placeholder: 'Enter your MiniMax API key',
+                helperText: 'Get your API key from',
+                helperLink: 'https://platform.minimax.io',
+                helperLinkLabel: 'MiniMax Platform',
+                isVisible: !!showApiKey['minimax'],
+                onChange: (value) => setSettings(prev => ({
+                  ...prev,
+                  minimax: { ...prev.minimax!, apiKey: value }
+                })),
+                onToggleVisibility: () => toggleApiKeyVisibility('minimax'),
+              }}
+              model={{
+                value: settings.minimax?.model ?? 'MiniMax-M2.5',
+                placeholder: 'e.g., MiniMax-M2.5, MiniMax-M2.5-highspeed',
+                onChange: (value) => setSettings(prev => ({
+                  ...prev,
+                  minimax: { ...prev.minimax!, model: value }
+                })),
+                helperText: 'Available: MiniMax-M2.5 (default), MiniMax-M2.5-highspeed (faster)',
+              }}
+            />
           )}
 
           {/* Privacy Note */}
@@ -880,8 +750,7 @@ export const SettingsPanel = ({ isOpen, onClose, onSettingsSaved, backendUrl, is
                 🔒
               </div>
               <div className="text-xs text-text-muted leading-relaxed">
-                <span className="text-text-secondary font-medium">Privacy:</span> Your API keys are stored only in your browser's local storage.
-                They're sent directly to the LLM provider when you chat. Your code never leaves your machine.
+                <span className="text-text-secondary font-medium">Privacy:</span> Your API keys are stored only in your browser's session storage and are cleared when the tab closes. They're sent directly to the LLM provider when you chat. Your code never leaves your machine.
               </div>
             </div>
           </div>

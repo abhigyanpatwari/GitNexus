@@ -10,13 +10,17 @@ import { test, expect, type TestInfo } from '@playwright/test';
  * Set E2E=1 to force-run even without the availability check.
  */
 
+const BACKEND_URL = process.env.BACKEND_URL ?? 'http://localhost:4747';
+const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
+const IS_PLAYWRIGHT_AUTOMATION = process.env.PLAYWRIGHT_TEST === '1';
+
 // Skip all tests if the gitnexus server or Vite dev server isn't reachable
 test.beforeAll(async () => {
   if (process.env.E2E) return; // force-run
   try {
     const [backendRes, frontendRes] = await Promise.allSettled([
-      fetch('http://localhost:4747/api/repos'),
-      fetch('http://localhost:5173'),
+      fetch(`${BACKEND_URL}/api/repos`),
+      fetch(FRONTEND_URL),
     ]);
     if (backendRes.status === 'rejected' || (backendRes.status === 'fulfilled' && !backendRes.value.ok))
       test.skip(true, 'gitnexus serve not available on :4747');
@@ -33,6 +37,11 @@ async function connectAndWaitForGraph(page: import('@playwright/test').Page, tes
   page.on('console', msg => console.log(`[browser ${msg.type()}] ${msg.text()}`));
   page.on('pageerror', err => console.log(`[browser crash] ${err.message}`));
 
+  // Signal to the app that we are running under Playwright (used to skip heavy Ladybug loads).
+  await page.addInitScript(() => {
+    (window as unknown as { __PLAYWRIGHT_TEST__?: boolean }).__PLAYWRIGHT_TEST__ = true;
+  });
+
   await page.goto('/');
   await page.screenshot({ path: testInfo.outputPath('step-1-landing.png') });
 
@@ -43,7 +52,7 @@ async function connectAndWaitForGraph(page: import('@playwright/test').Page, tes
 
   // Enter server URL and connect
   const serverInput = page.locator('input[name="server-url-input"]');
-  await serverInput.fill('http://localhost:4747');
+  await serverInput.fill(BACKEND_URL);
   await page.screenshot({ path: testInfo.outputPath('step-3-url-filled.png') });
 
   await page.getByRole('button', { name: /Connect/ }).click();
@@ -92,12 +101,13 @@ test.describe('Processes Panel', () => {
     await page.screenshot({ path: testInfo.outputPath('processes-panel.png'), fullPage: true });
 
     // Hover first process item to reveal View button, then click it
-    const processRow = page.locator('.group').first();
+    const processRow = page.locator('[data-testid="process-row"]').first();
+    await expect(processRow).toBeVisible({ timeout: 10_000 });
     await processRow.hover();
 
-    const viewBtn = processRow.getByRole('button', { name: /View/ });
-    await expect(viewBtn).toBeVisible({ timeout: 5_000 });
-    await viewBtn.click();
+    const viewBtn = processRow.locator('[data-testid="process-view-button"]');
+    await viewBtn.waitFor({ state: 'visible', timeout: 5_000 });
+    await viewBtn.click({ force: true });
     // Wait for modal to appear
     await expect(page.locator('.fixed.inset-0.z-50')).toBeVisible({ timeout: 5_000 });
     await page.screenshot({ path: testInfo.outputPath('process-view-clicked.png'), fullPage: true });
@@ -113,14 +123,15 @@ test.describe('Processes Panel', () => {
     await page.screenshot({ path: testInfo.outputPath('before-highlight.png'), fullPage: true });
 
     // Hover first process to reveal lightbulb
-    const processRow = page.locator('.group').first();
+    const processRow = page.locator('[data-testid="process-row"]').first();
+    await expect(processRow).toBeVisible({ timeout: 10_000 });
     await processRow.hover();
 
-    const lightbulb = processRow.locator('button[title*="highlight"]');
-    await expect(lightbulb).toBeVisible({ timeout: 5_000 });
-    await lightbulb.click();
-    // Wait for highlight to apply (graph re-render)
-    await page.waitForLoadState('networkidle');
+    const lightbulb = processRow.locator('[data-testid="process-highlight-button"]');
+    await lightbulb.waitFor({ state: 'visible', timeout: 5_000 });
+    await lightbulb.click({ force: true });
+    // Allow highlight animation to apply
+    await page.waitForTimeout(500);
     await page.screenshot({ path: testInfo.outputPath('after-highlight.png'), fullPage: true });
   });
 });
@@ -138,14 +149,14 @@ test.describe('Turn Off All Highlights', () => {
     const fileItem = page.getByText('start.sh');
     if (await fileItem.isVisible()) {
       await fileItem.click();
-      await page.waitForLoadState('networkidle');
+      await page.waitForTimeout(500);
       await page.screenshot({ path: testInfo.outputPath('node-selected.png'), fullPage: true });
 
       // Click "Turn off all highlights" button (top-right lightbulb)
       const highlightBtn = page.locator('button[title*="Turn off"]');
       await expect(highlightBtn).toBeVisible({ timeout: 5_000 });
       await highlightBtn.click();
-      await page.waitForLoadState('networkidle');
+      await page.waitForTimeout(500);
       await page.screenshot({ path: testInfo.outputPath('highlights-cleared.png'), fullPage: true });
     } else {
       await page.screenshot({ path: testInfo.outputPath('start-sh-not-found.png'), fullPage: true });

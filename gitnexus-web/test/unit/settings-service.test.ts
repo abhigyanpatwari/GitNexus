@@ -19,7 +19,7 @@ describe('loadSettings', () => {
   });
 
   it('merges stored values with defaults', () => {
-    localStorage.setItem('gitnexus-llm-settings', JSON.stringify({
+    sessionStorage.setItem('gitnexus-llm-settings', JSON.stringify({
       activeProvider: 'ollama',
       ollama: { model: 'qwen3-coder:30b' },
     }));
@@ -32,24 +32,37 @@ describe('loadSettings', () => {
   });
 
   it('returns defaults on corrupted JSON', () => {
-    localStorage.setItem('gitnexus-llm-settings', 'not-json{{{');
+    sessionStorage.setItem('gitnexus-llm-settings', 'not-json{{{');
     const settings = loadSettings();
     expect(settings.activeProvider).toBeDefined();
+  });
+
+  it('migrates legacy localStorage to sessionStorage', () => {
+    localStorage.setItem('gitnexus-llm-settings', JSON.stringify({
+      activeProvider: 'ollama',
+      ollama: { model: 'migrated-model' },
+    }));
+
+    const settings = loadSettings();
+    expect(settings.ollama.model).toBe('migrated-model');
+    expect(sessionStorage.getItem('gitnexus-llm-settings')).not.toBeNull();
+    expect(localStorage.getItem('gitnexus-llm-settings')).toBeNull();
   });
 });
 
 describe('saveSettings / clearSettings', () => {
-  it('persists settings to localStorage', () => {
+  it('persists settings to sessionStorage', () => {
     const settings = loadSettings();
     settings.activeProvider = 'anthropic';
     saveSettings(settings);
     expect(loadSettings().activeProvider).toBe('anthropic');
   });
 
-  it('clearSettings removes settings from localStorage', () => {
+  it('clearSettings removes settings from both storages', () => {
     saveSettings({ ...loadSettings(), activeProvider: 'anthropic' });
-    expect(localStorage.getItem('gitnexus-llm-settings')).not.toBeNull();
+    expect(sessionStorage.getItem('gitnexus-llm-settings')).not.toBeNull();
     clearSettings();
+    expect(sessionStorage.getItem('gitnexus-llm-settings')).toBeNull();
     expect(localStorage.getItem('gitnexus-llm-settings')).toBeNull();
   });
 });

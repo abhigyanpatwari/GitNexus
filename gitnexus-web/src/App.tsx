@@ -13,6 +13,7 @@ import { FileEntry } from './services/zip';
 import { getActiveProviderConfig } from './core/llm/settings-service';
 import { createKnowledgeGraph } from './core/graph/graph';
 import { connectToServer, fetchRepos, normalizeServerUrl, type ConnectToServerResult } from './services/server-connection';
+import { ERROR_RESET_DELAY_MS } from './config/ui-constants';
 
 const AppContent = () => {
   const {
@@ -80,7 +81,7 @@ const AppContent = () => {
       setTimeout(() => {
         setViewMode('onboarding');
         setProgress(null);
-      }, 3000);
+      }, ERROR_RESET_DELAY_MS);
     }
   }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipeline, startEmbeddingsWithFallback, initializeAgent]);
 
@@ -117,7 +118,7 @@ const AppContent = () => {
       setTimeout(() => {
         setViewMode('onboarding');
         setProgress(null);
-      }, 3000);
+      }, ERROR_RESET_DELAY_MS);
     }
   }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles, startEmbeddingsWithFallback, initializeAgent]);
 
@@ -213,7 +214,7 @@ const AppContent = () => {
       setTimeout(() => {
         setViewMode('onboarding');
         setProgress(null);
-      }, 3000);
+      }, ERROR_RESET_DELAY_MS);
     });
   }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos]);
 

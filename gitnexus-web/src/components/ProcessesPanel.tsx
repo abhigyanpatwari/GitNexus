@@ -465,7 +465,11 @@ const ProcessItem = ({ process, isLoading, isSelected, isFocused, onView, onTogg
             : '';
 
     return (
-        <div className={`flex items-center gap-2 px-4 py-2 mx-2 rounded-lg hover:bg-hover group transition-all ${rowClass}`}>
+        <div
+            className={`flex items-center gap-2 px-4 py-2 mx-2 rounded-lg hover:bg-hover group transition-all ${rowClass}`}
+            data-testid="process-row"
+            data-process-id={process.id}
+        >
             <GitBranch className="w-4 h-4 text-text-muted flex-shrink-0" />
             <div className="flex-1 min-w-0">
                 <div className="text-sm text-text-primary truncate">{process.label}</div>
@@ -487,6 +491,7 @@ const ProcessItem = ({ process, isLoading, isSelected, isFocused, onView, onTogg
                     : 'text-text-muted hover:text-cyan-400 bg-white/5 hover:bg-cyan-500/20 border border-white/10 hover:border-cyan-400/40 opacity-0 group-hover:opacity-100'
                     }`}
                 title={isFocused ? 'Click to remove highlight from graph' : 'Click to highlight in graph'}
+                data-testid="process-highlight-button"
             >
                 <Lightbulb className="w-4 h-4" />
             </button>
@@ -497,6 +502,7 @@ const ProcessItem = ({ process, isLoading, isSelected, isFocused, onView, onTogg
                     ? 'text-cyan-300 bg-cyan-900/60 border border-cyan-400/60 opacity-100'
                     : 'text-cyan-400 hover:text-cyan-300 bg-cyan-950/30 hover:bg-cyan-900/50 border border-cyan-500/30 hover:border-cyan-400/50 opacity-0 group-hover:opacity-100 shadow-cyan-900/20'
                     }`}
+                data-testid="process-view-button"
             >
                 {isLoading ? (
                     <span className="animate-pulse">Loading...</span>

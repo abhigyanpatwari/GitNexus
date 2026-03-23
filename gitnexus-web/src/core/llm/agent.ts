@@ -28,6 +28,7 @@ import {
   type CodebaseContext,
   buildDynamicSystemPrompt,
 } from './context-builder';
+import { DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENROUTER_BASE_URL } from '../../config/ui-constants';
 
 /**
  * System prompt for the Graph RAG agent
@@ -184,7 +185,7 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
     case 'ollama': {
       const ollamaConfig = config as OllamaConfig;
       return new ChatOllama({
-        baseUrl: ollamaConfig.baseUrl ?? 'http://localhost:11434',
+        baseUrl: ollamaConfig.baseUrl ?? DEFAULT_OLLAMA_BASE_URL,
         model: ollamaConfig.model,
         temperature: ollamaConfig.temperature ?? 0.1,
         streaming: true,
@@ -221,7 +222,7 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
         maxTokens: openRouterConfig.maxTokens,
         configuration: {
           apiKey: openRouterConfig.apiKey, // Ensure client receives it
-          baseURL: openRouterConfig.baseUrl ?? 'https://openrouter.ai/api/v1',
+          baseURL: openRouterConfig.baseUrl ?? DEFAULT_OPENROUTER_BASE_URL,
         },
         streaming: true,
       });

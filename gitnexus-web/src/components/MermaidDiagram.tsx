@@ -2,6 +2,7 @@ import { Suspense, useEffect, useRef, useState, lazy } from 'react';
 import mermaid from 'mermaid';
 import { AlertTriangle, Maximize2 } from '@/lib/lucide-icons';
 import type { ProcessData } from '../lib/mermaid-generator';
+import DOMPurify from 'dompurify';
 
 const ProcessFlowModal = lazy(() =>
   import('./ProcessFlowModal').then((m) => ({ default: m.ProcessFlowModal })),
@@ -70,7 +71,8 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
 
         // Render the diagram
         const { svg: renderedSvg } = await mermaid.render(id, code.trim());
-        setSvg(renderedSvg);
+        const sanitizedSvg = DOMPurify.sanitize(renderedSvg, { USE_PROFILES: { svg: true, svgFilters: true } });
+        setSvg(sanitizedSvg);
         setError(null);
       } catch (err) {
         // Silent catch for streaming: 

@@ -9,6 +9,7 @@ const launchArgs = [
   '--use-gl=angle',
   '--use-angle=swiftshader',
   '--enable-webgl',
+  '--enable-unsafe-swiftshader',
 ];
 
 if (insecureE2E) {

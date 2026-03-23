@@ -1,0 +1,4 @@
+# file: /Users/johneakin/PyCharmProjects/GitNexus/eval/environments/gitnexus_docker.py
+# hypothesis_version: 6.151.9
+
+[0.0, 120, 4848, '#!/bin/bash', '--skip-embeddings', '.gitnexus-eval-cache', 'NOT_FOUND', 'NOT_READY', '_container_id', 'apt-get update -qq', 'command', 'commit', 'container_id', 'cp', 'docker', 'enabled', 'error', 'eval_server_port', 'gitnexus_docker', 'gitnexus_env', 'gitnexus_index_time', 'gitnexus_ready', 'index.tar.gz', 'index_time_seconds', 'indexed', 'info', 'metadata.json', 'ok', 'output', 'ready', 'repo', 'returncode', 'skip_embeddings', 'timeout', 'unknown', 'warning']
