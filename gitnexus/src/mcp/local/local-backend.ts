@@ -49,7 +49,7 @@ export const VALID_NODE_LABELS = new Set([
 ]);
 
 /** Valid relation types for impact analysis filtering */
-export const VALID_RELATION_TYPES = new Set(['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES', 'HANDLES_ROUTE', 'FETCHES', 'HANDLES_TOOL', 'ENTRY_POINT_OF']);
+export const VALID_RELATION_TYPES = new Set(['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES', 'HANDLES_ROUTE', 'FETCHES', 'HANDLES_TOOL', 'ENTRY_POINT_OF', 'WRAPS']);
 
 /**
  * Per-relation-type confidence floor for impact analysis.
@@ -1639,30 +1639,31 @@ export class LocalBackend {
     repoId: string,
     routeFilter: string,
     params: Record<string, string>,
-  ): Promise<Array<{ id: string; name: string; filePath: string; responseKeys: string[] | null; consumers: Array<{ name: string; filePath: string; accessedKeys?: string[] }> }>> {
+  ): Promise<Array<{ id: string; name: string; filePath: string; responseKeys: string[] | null; middleware: string[] | null; consumers: Array<{ name: string; filePath: string; accessedKeys?: string[] }> }>> {
     const rows = await executeParameterized(repoId, `
       MATCH (n:Route)
       WHERE n.id STARTS WITH 'Route:' ${routeFilter}
       OPTIONAL MATCH (consumer)-[r:CodeRelation]->(n)
       WHERE r.type = 'FETCHES'
       RETURN n.id AS routeId, n.name AS routeName, n.filePath AS handlerFile,
-             n.responseKeys AS responseKeys,
+             n.responseKeys AS responseKeys, n.middleware AS middleware,
              consumer.name AS consumerName, consumer.filePath AS consumerFile,
              r.reason AS fetchReason
     `, params);
 
-    const routeMap = new Map<string, { id: string; name: string; filePath: string; responseKeys: string[] | null; consumers: Array<{ name: string; filePath: string; accessedKeys?: string[] }> }>();
+    const routeMap = new Map<string, { id: string; name: string; filePath: string; responseKeys: string[] | null; middleware: string[] | null; consumers: Array<{ name: string; filePath: string; accessedKeys?: string[] }> }>();
     for (const row of rows) {
       const id = row.routeId ?? row[0];
       const name = row.routeName ?? row[1];
       const filePath = row.handlerFile ?? row[2];
       const responseKeys: string[] | null = row.responseKeys ?? row[3] ?? null;
-      const consumerName = row.consumerName ?? row[4];
-      const consumerFile = row.consumerFile ?? row[5];
-      const fetchReason: string | null = row.fetchReason ?? row[6] ?? null;
+      const middleware: string[] | null = row.middleware ?? row[4] ?? null;
+      const consumerName = row.consumerName ?? row[5];
+      const consumerFile = row.consumerFile ?? row[6];
+      const fetchReason: string | null = row.fetchReason ?? row[7] ?? null;
 
       if (!routeMap.has(id)) {
-        routeMap.set(id, { id, name, filePath, responseKeys, consumers: [] });
+        routeMap.set(id, { id, name, filePath, responseKeys, middleware, consumers: [] });
       }
       if (consumerName && consumerFile) {
         // Parse accessed keys from reason field: "fetch-url-match|keys:data,pagination"
@@ -1724,7 +1725,9 @@ export class LocalBackend {
 
     return {
       routes: routes.map(r => ({
-        route: r.name, handler: r.filePath, consumers: r.consumers,
+        route: r.name, handler: r.filePath,
+        middleware: r.middleware || [],
+        consumers: r.consumers,
         flows: flowMap.get(r.id) || [],
       })),
       total: routes.length,

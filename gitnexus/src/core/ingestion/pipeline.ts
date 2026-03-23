@@ -789,6 +789,41 @@ export const runPipelineFromRepo = async (
           if (keys.length > 0) responseKeys = [...new Set(keys)];
         }
 
+        // Extract middleware wrapper chain: export const POST = withA(withB(withC(handler)))
+        // Walks nested call expressions to collect wrapper function names (outermost first)
+        let middleware: string[] | undefined;
+        if (content) {
+          const mwPattern = /export\s+(?:const\s+(?:POST|GET|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*=|default)\s+(\w+)\s*\(/g;
+          let mwMatch;
+          while ((mwMatch = mwPattern.exec(content)) !== null) {
+            const chain: string[] = [];
+            const firstName = mwMatch[1];
+            // Only collect if the first name looks like a wrapper (starts with 'with' or common middleware names)
+            // But actually collect any nested call pattern — the user may have custom wrappers
+            chain.push(firstName);
+            // Walk forward from the match to find nested calls: withA(withB(withC(
+            let pos = mwMatch.index + mwMatch[0].length; // position after the opening paren
+            // Look for more wrapper calls: identifier followed by (
+            const nestedPattern = /^\s*(\w+)\s*\(/;
+            let remaining = content.slice(pos);
+            let nestedMatch;
+            while ((nestedMatch = nestedPattern.exec(remaining)) !== null) {
+              const name = nestedMatch[1];
+              // Stop if this looks like a keyword or arrow function param, not a wrapper
+              if (['async', 'await', 'function', 'new', 'return', 'if', 'for', 'while', 'switch', 'class', 'const', 'let', 'var', 'req', 'res', 'request', 'response', 'event', 'ctx', 'context', 'next'].includes(name)) break;
+              chain.push(name);
+              pos += nestedMatch[0].length;
+              remaining = content.slice(pos);
+            }
+            // Store if: chain has 2+ wrappers (definitely nesting), or 1 wrapper whose name
+            // starts with common middleware prefixes (withAuth, withRateLimit, etc.)
+            if (chain.length >= 2 || (chain.length === 1 && /^with[A-Z]/.test(chain[0]))) {
+              middleware = chain;
+              break; // Use the first export match
+            }
+          }
+        }
+
         const routeNodeId = generateId('Route', routeURL);
         graph.addNode({
           id: routeNodeId,
@@ -797,6 +832,7 @@ export const runPipelineFromRepo = async (
             name: routeURL,
             filePath: handlerPath,
             ...(responseKeys ? { responseKeys } : {}),
+            ...(middleware && middleware.length > 0 ? { middleware } : {}),
           },
         });
 

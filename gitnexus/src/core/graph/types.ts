@@ -73,6 +73,8 @@ export type NodeProperties = {
   returnType?: string,
   // Response shape (top-level keys from NextResponse.json({...}) / res.json({...}))
   responseKeys?: string[],
+  // Middleware wrapper chain (outermost first): ['withRateLimit', 'withCSRF', 'withAuth']
+  middleware?: string[],
 }
 
 export type RelationshipType =
@@ -95,6 +97,7 @@ export type RelationshipType =
   | 'FETCHES'        // Function/File → Route (consumer calls this endpoint)
   | 'HANDLES_TOOL'   // Function/File → Tool (handler implements this tool)
   | 'ENTRY_POINT_OF'  // Route/Tool → Process (this endpoint starts this execution flow)
+  | 'WRAPS'           // Function → Function (middleware wrapper chain)
 
 export interface GraphNode {
   id:  string,

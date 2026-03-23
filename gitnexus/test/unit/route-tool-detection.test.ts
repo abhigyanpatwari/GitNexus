@@ -277,3 +277,99 @@ describe('response shape extraction edge cases', () => {
     expect(keys).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Middleware chain extraction
+// ---------------------------------------------------------------------------
+
+describe('middleware chain extraction', () => {
+  // Helper that mirrors the pipeline's middleware extraction logic
+  function extractMiddlewareChain(content: string): string[] | undefined {
+    const STOP_KEYWORDS = ['async', 'await', 'function', 'new', 'return', 'if', 'for', 'while', 'switch', 'class', 'const', 'let', 'var', 'req', 'res', 'request', 'response', 'event', 'ctx', 'context', 'next'];
+    const mwPattern = /export\s+(?:const\s+(?:POST|GET|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*=|default)\s+(\w+)\s*\(/g;
+    let mwMatch;
+    while ((mwMatch = mwPattern.exec(content)) !== null) {
+      const chain: string[] = [];
+      chain.push(mwMatch[1]);
+      let pos = mwMatch.index + mwMatch[0].length;
+      const nestedPattern = /^\s*(\w+)\s*\(/;
+      let remaining = content.slice(pos);
+      let nestedMatch;
+      while ((nestedMatch = nestedPattern.exec(remaining)) !== null) {
+        const name = nestedMatch[1];
+        if (STOP_KEYWORDS.includes(name)) break;
+        chain.push(name);
+        pos += nestedMatch[0].length;
+        remaining = content.slice(pos);
+      }
+      if (chain.length >= 2 || (chain.length === 1 && /^with[A-Z]/.test(chain[0]))) {
+        return chain;
+      }
+    }
+    return undefined;
+  }
+
+  it('extracts triple-nested middleware chain', () => {
+    const content = `export const POST = withRateLimit(withCSRF(withAuth(async (req) => { return NextResponse.json({ ok: true }); })));`;
+    expect(extractMiddlewareChain(content)).toEqual(['withRateLimit', 'withCSRF', 'withAuth']);
+  });
+
+  it('extracts double-nested middleware chain', () => {
+    const content = `export const GET = withAuth(withCache(handler));`;
+    expect(extractMiddlewareChain(content)).toEqual(['withAuth', 'withCache']);
+  });
+
+  it('extracts single withX wrapper', () => {
+    const content = `export const POST = withAuth(handler);`;
+    expect(extractMiddlewareChain(content)).toEqual(['withAuth']);
+  });
+
+  it('extracts from export default', () => {
+    const content = `export default withAuth(handler);`;
+    expect(extractMiddlewareChain(content)).toEqual(['withAuth']);
+  });
+
+  it('extracts from export default with nesting', () => {
+    const content = `export default withRateLimit(withAuth(handler));`;
+    expect(extractMiddlewareChain(content)).toEqual(['withRateLimit', 'withAuth']);
+  });
+
+  it('stops at async keyword (arrow function body)', () => {
+    const content = `export const POST = withAuth(async (req) => { return res.json({}); });`;
+    expect(extractMiddlewareChain(content)).toEqual(['withAuth']);
+  });
+
+  it('returns undefined for plain handler without wrappers', () => {
+    const content = `export const POST = handler;`;
+    expect(extractMiddlewareChain(content)).toBeUndefined();
+  });
+
+  it('returns undefined for non-middleware single wrapper', () => {
+    // createHandler is not a withX pattern and chain length is 1
+    const content = `export const POST = createHandler(config);`;
+    expect(extractMiddlewareChain(content)).toBeUndefined();
+  });
+
+  it('handles multiple HTTP methods — uses first match', () => {
+    const content = `
+      export const GET = withCache(handler);
+      export const POST = withAuth(withCSRF(handler));
+    `;
+    expect(extractMiddlewareChain(content)).toEqual(['withCache']);
+  });
+
+  it('handles whitespace and newlines in chain', () => {
+    const content = `export const POST = withRateLimit(\n  withAuth(\n    async (req) => {}\n  )\n);`;
+    expect(extractMiddlewareChain(content)).toEqual(['withRateLimit', 'withAuth']);
+  });
+
+  it('handles DELETE method', () => {
+    const content = `export const DELETE = withAuth(withAdmin(handler));`;
+    expect(extractMiddlewareChain(content)).toEqual(['withAuth', 'withAdmin']);
+  });
+
+  it('returns undefined when no export pattern exists', () => {
+    const content = `const handler = withAuth(doSomething);`;
+    expect(extractMiddlewareChain(content)).toBeUndefined();
+  });
+});
