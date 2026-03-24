@@ -11,8 +11,6 @@ import { SupportedLanguages } from '../../../config/supported-languages.js';
 import type { ImportResult, ImportResolverFn, ResolveCtx } from './types.js';
 import type { TsconfigPaths } from '../language-config.js';
 
-export type { TsconfigPaths };
-
 /** Max entries in the resolve cache. Beyond this, entries are evicted.
  *  100K entries ≈ 15MB — covers the most common import patterns. */
 export const RESOLVE_CACHE_CAP = 100_000;

@@ -8,8 +8,6 @@ import type { ImportResult, ResolveCtx } from './types.js';
 import { resolveStandard } from './standard.js';
 import type { GoModuleConfig } from '../language-config.js';
 
-export type { GoModuleConfig };
-
 /**
  * Extract the package directory suffix from a Go import path.
  * Returns the suffix string (e.g., "/internal/auth/") or null if invalid.

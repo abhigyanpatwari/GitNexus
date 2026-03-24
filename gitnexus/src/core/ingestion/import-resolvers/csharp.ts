@@ -10,8 +10,6 @@ import type { ImportResult, ResolveCtx } from './types.js';
 import { resolveStandard } from './standard.js';
 import type { CSharpProjectConfig } from '../language-config.js';
 
-export type { CSharpProjectConfig };
-
 /**
  * Resolve a C# using-directive import path to matching .cs files (low-level helper).
  * Tries single-file match first, then directory match for namespace imports.

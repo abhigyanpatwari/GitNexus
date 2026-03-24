@@ -19,8 +19,7 @@ import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { NodeLabel } from '../graph/types.js';
 
 // ── Shared type aliases ────────────────────────────────────────────────────
-/** Tree-sitter query captures: capture name → AST node. Uses `any` because
- *  SyntaxNode comes from an optional native module not available in all contexts. */
+/** Tree-sitter query captures: capture name → AST node (or undefined if not captured). */
 export type CaptureMap = Record<string, SyntaxNode | undefined>;
 
 // ── Strategy tag types ─────────────────────────────────────────────────────

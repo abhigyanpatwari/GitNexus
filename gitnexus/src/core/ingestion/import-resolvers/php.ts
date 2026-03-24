@@ -8,8 +8,6 @@ import { suffixResolve } from './utils.js';
 import type { ImportResult, ResolveCtx } from './types.js';
 import type { ComposerConfig } from '../language-config.js';
 
-export type { ComposerConfig };
-
 /** Get or compute the sorted PSR-4 entries (cached after first call). */
 function getSortedPsr4(config: ComposerConfig): readonly [string, string][] {
   if (!config.psr4Sorted) {
