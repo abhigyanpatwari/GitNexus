@@ -9,9 +9,9 @@ import { getLanguageFromFilename, isVerboseIngestionEnabled, yieldToEventLoop } 
 import type { ExtractedImport } from './workers/parse-worker.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import { loadImportConfigs } from './language-config.js';
-import { buildSuffixIndex } from './resolvers/index.js';
+import { buildSuffixIndex } from './import-resolvers/index.js';
 import type { ResolutionContext, ModuleAliasMap } from './resolution-context.js';
-import type { SuffixIndex } from './resolvers/index.js';
+import type { SuffixIndex } from './import-resolvers/index.js';
 import { preprocessImportPath } from './import-resolution.js';
 import type { ImportResult, ResolveCtx, NamedBinding } from './import-resolution.js';
 
@@ -22,7 +22,7 @@ export type {
   GoModuleConfig,
   CSharpProjectConfig,
   ComposerConfig
-} from './resolvers/index.js';
+} from './import-resolvers/index.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 

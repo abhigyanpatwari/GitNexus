@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { routeRubyCall, noRouting } from '../../src/core/ingestion/call-routing.js';
+import { routeRubyCall, noRouting } from '../../../src/core/ingestion/call-routing.js';
 
 // ── Mock AST node helpers ────────────────────────────────────────────────────
 

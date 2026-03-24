@@ -26,13 +26,13 @@ import {
   resolveRubyImport as resolveRubyImportHelper,
   resolvePythonImport as resolvePythonImportHelper,
   resolveImportPath,
-} from './resolvers/index.js';
+} from './import-resolvers/index.js';
 import type {
   TsconfigPaths,
   GoModuleConfig,
   CSharpProjectConfig,
   ComposerConfig,
-} from './resolvers/index.js';
+} from './import-resolvers/index.js';
 import type { SwiftPackageConfig } from './language-config.js';
 import type { ImportResolutionContext } from './import-processor.js';
 

@@ -1,7 +1,7 @@
 import type { SyntaxNode } from '../utils.js';
 import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, ForLoopExtractor, PendingAssignmentExtractor, PatternBindingExtractor, LiteralTypeInferrer, ConstructorTypeDetector } from './types.js';
 import { extractSimpleTypeName, extractVarName, extractGenericTypeArgs, resolveIterableElementType, methodToTypeArgPosition, extractElementTypeFromString, type TypeArgPosition } from './shared.js';
-import { findChild } from '../resolvers/utils.js';
+import { findChild } from '../import-resolvers/utils.js';
 
 // ── Java ──────────────────────────────────────────────────────────────────
 

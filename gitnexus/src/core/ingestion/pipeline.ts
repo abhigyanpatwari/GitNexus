@@ -7,7 +7,7 @@ import {
   processImportsFromExtracted,
   buildImportResolutionContext
 } from './import-processor.js';
-import { EMPTY_INDEX } from './resolvers/index.js';
+import { EMPTY_INDEX } from './import-resolvers/index.js';
 import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracted, processRoutesFromExtracted, processNextjsFetchRoutes, extractFetchCallsFromFiles, seedCrossFileReceiverTypes, buildImportedReturnTypes, buildImportedRawReturnTypes, type ExportedTypeMap, buildExportedTypeMapFromGraph } from './call-processor.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from './route-extractors/nextjs.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';

@@ -10,9 +10,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { preprocessImportPath } from '../../src/core/ingestion/import-resolution.js';
-import { getProvider } from '../../src/core/ingestion/languages/index.js';
-import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { preprocessImportPath } from '../../../src/core/ingestion/import-resolution.js';
+import { getProvider } from '../../../src/core/ingestion/languages/index.js';
+import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 
 // ---------------------------------------------------------------------------
 // Minimal SyntaxNode stub — only the fields preprocessImportPath touches.

@@ -8,9 +8,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildSuffixIndex, suffixResolve } from '../../src/core/ingestion/resolvers/utils.js';
-import { resolvePythonImport } from '../../src/core/ingestion/resolvers/python.js';
-import { resolveImportPath } from '../../src/core/ingestion/resolvers/standard.js';
+import { buildSuffixIndex, suffixResolve } from '../../src/core/ingestion/import-resolvers/utils.js';
+import { resolvePythonImport } from '../../src/core/ingestion/import-resolvers/python.js';
+import { resolveImportPath } from '../../src/core/ingestion/import-resolvers/standard.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
 // ---------------------------------------------------------------------------
