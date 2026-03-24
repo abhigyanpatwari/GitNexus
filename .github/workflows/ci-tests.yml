@@ -33,7 +33,11 @@ jobs:
         working-directory: gitnexus-web
 
       - name: Run gitnexus-web unit tests
-        run: npx vitest run --reporter=default
+        run: >-
+          npx vitest run
+          --reporter=default
+          --reporter=json
+          --outputFile=web-test-results.json
         working-directory: gitnexus-web
 
       - name: Upload test reports
@@ -45,6 +49,7 @@ jobs:
             gitnexus/coverage/coverage-summary.json
             gitnexus/coverage/coverage-final.json
             gitnexus/test-results.json
+            gitnexus-web/web-test-results.json
           retention-days: 5
 
   cross-platform:
