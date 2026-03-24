@@ -58,6 +58,19 @@ export function resolvePythonImportInternal(
   if (allFiles.has(`${importerDir}/${pathLike}/__init__.py`)) return `${importerDir}/${pathLike}/__init__.py`;
   if (allFiles.has(`${importerDir}/${pathLike}.py`)) return `${importerDir}/${pathLike}.py`;
 
+  // Ancestor directory walk — Python resolves bare imports against sys.path entries,
+  // which typically includes the project root and package directories. Walk up from the
+  // importer's directory to find the module in an ancestor, preferring the closest match.
+  // This prevents cross-language misresolution (e.g., Python `from middleware import X`
+  // resolving to a TypeScript middleware.ts via suffix matching). Issue #417.
+  const dirParts = importerDir.split('/');
+  for (let i = dirParts.length - 1; i >= 0; i--) {
+    const ancestorDir = dirParts.slice(0, i).join('/');
+    const prefix = ancestorDir ? `${ancestorDir}/` : '';
+    if (allFiles.has(`${prefix}${pathLike}/__init__.py`)) return `${prefix}${pathLike}/__init__.py`;
+    if (allFiles.has(`${prefix}${pathLike}.py`)) return `${prefix}${pathLike}.py`;
+  }
+
   return null;
 }
 

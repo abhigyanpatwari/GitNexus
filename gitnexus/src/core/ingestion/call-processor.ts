@@ -853,16 +853,26 @@ const resolveCallTarget = (
     filteredCandidates = filterCallableCandidates(tiered.candidates, call.argCount, 'constructor');
   }
 
-  // Module-alias disambiguation: Python `import auth; auth.User()` — when both models.py and
-  // auth.py export User, receiverName='auth' selects auth.py via moduleAliasMap.
-  // Runs when multiple candidates survive filtering and the receiver is a known module alias.
-  if (filteredCandidates.length > 1 && call.callForm === 'member' && call.receiverName) {
+  // Module-alias disambiguation: Python `import auth; auth.User()` — receiverName='auth'
+  // selects auth.py via moduleAliasMap. Runs for ALL member calls with a known module alias,
+  // not just ambiguous ones — same-file tier may shadow the correct cross-module target when
+  // the caller defines a function with the same name as the callee (Issue #417).
+  if (call.callForm === 'member' && call.receiverName) {
     const aliasMap = ctx.moduleAliasMap?.get(currentFile);
     if (aliasMap) {
       const moduleFile = aliasMap.get(call.receiverName);
       if (moduleFile) {
         const aliasFiltered = filteredCandidates.filter(c => c.filePath === moduleFile);
-        if (aliasFiltered.length > 0) filteredCandidates = aliasFiltered;
+        if (aliasFiltered.length > 0) {
+          filteredCandidates = aliasFiltered;
+        } else {
+          // Same-file tier returned a local match, but the alias points elsewhere.
+          // Widen to global candidates and filter to the aliased module's file.
+          const widened = filterCallableCandidates(
+            ctx.symbols.lookupFuzzy(call.calledName), call.argCount, call.callForm,
+          ).filter(c => c.filePath === moduleFile);
+          if (widened.length > 0) filteredCandidates = widened;
+        }
       }
     }
   }
