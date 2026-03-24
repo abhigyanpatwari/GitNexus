@@ -10,7 +10,6 @@
  *    tree-sitter-queries.ts            | Query string + LANGUAGE_QUERIES entry    | (required)
  *    export-detection.ts               | ExportChecker function + table entry     | (required)
  *    import-resolution.ts              | Resolver in importResolvers              | resolveStandard(...)
- *    import-resolution.ts              | namedBindingExtractors entry             | undefined
  *    call-routing.ts                   | callRouters entry                        | noRouting
  *    entry-point-scoring.ts            | ENTRY_POINT_PATTERNS entry               | []
  *    framework-detection.ts            | AST_FRAMEWORK_PATTERNS entry             | []

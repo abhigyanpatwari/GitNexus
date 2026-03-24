@@ -9,21 +9,22 @@
 
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
-import { typeConfigs } from '../type-extractors/index.js';
+import { javaTypeConfig } from '../type-extractors/jvm.js';
 import { callRouters } from '../call-routing.js';
 import { exportCheckers } from '../export-detection.js';
-import { importResolvers, namedBindingExtractors } from '../import-resolution.js';
-import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
+import { importResolvers } from '../import-resolution.js';
+import { extractJavaNamedBindings } from '../named-binding-extraction.js';
+import { JAVA_QUERIES } from '../tree-sitter-queries.js';
 
 export const javaProvider = defineLanguage({
   id: SupportedLanguages.Java,
   extensions: ['.java'],
-  treeSitterQueries: LANGUAGE_QUERIES[SupportedLanguages.Java],
-  typeConfig: typeConfigs[SupportedLanguages.Java],
+  treeSitterQueries: JAVA_QUERIES,
+  typeConfig: javaTypeConfig,
   exportChecker: exportCheckers[SupportedLanguages.Java],
   importResolver: importResolvers[SupportedLanguages.Java],
   callRouter: callRouters[SupportedLanguages.Java],
-  namedBindingExtractor: namedBindingExtractors[SupportedLanguages.Java],
+  namedBindingExtractor: extractJavaNamedBindings,
   interfaceNamePattern: /^I[A-Z]/,
   mroStrategy: 'implements-split',
 });

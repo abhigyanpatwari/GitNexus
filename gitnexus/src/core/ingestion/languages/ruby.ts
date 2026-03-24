@@ -9,17 +9,17 @@
 
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
-import { typeConfigs } from '../type-extractors/index.js';
+import { typeConfig as rubyConfig } from '../type-extractors/ruby.js';
 import { callRouters } from '../call-routing.js';
 import { exportCheckers } from '../export-detection.js';
 import { importResolvers } from '../import-resolution.js';
-import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
+import { RUBY_QUERIES } from '../tree-sitter-queries.js';
 
 export const rubyProvider = defineLanguage({
   id: SupportedLanguages.Ruby,
   extensions: ['.rb', '.rake', '.gemspec'],
-  treeSitterQueries: LANGUAGE_QUERIES[SupportedLanguages.Ruby],
-  typeConfig: typeConfigs[SupportedLanguages.Ruby],
+  treeSitterQueries: RUBY_QUERIES,
+  typeConfig: rubyConfig,
   exportChecker: exportCheckers[SupportedLanguages.Ruby],
   importResolver: importResolvers[SupportedLanguages.Ruby],
   callRouter: callRouters[SupportedLanguages.Ruby],

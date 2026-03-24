@@ -10,30 +10,31 @@
 
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
-import { typeConfigs } from '../type-extractors/index.js';
+import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { callRouters } from '../call-routing.js';
 import { exportCheckers } from '../export-detection.js';
-import { importResolvers, namedBindingExtractors } from '../import-resolution.js';
-import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
+import { importResolvers } from '../import-resolution.js';
+import { extractTsNamedBindings } from '../named-binding-extraction.js';
+import { TYPESCRIPT_QUERIES, JAVASCRIPT_QUERIES } from '../tree-sitter-queries.js';
 
 export const typescriptProvider = defineLanguage({
   id: SupportedLanguages.TypeScript,
   extensions: ['.ts', '.tsx'],
-  treeSitterQueries: LANGUAGE_QUERIES[SupportedLanguages.TypeScript],
-  typeConfig: typeConfigs[SupportedLanguages.TypeScript],
+  treeSitterQueries: TYPESCRIPT_QUERIES,
+  typeConfig: typescriptConfig,
   exportChecker: exportCheckers[SupportedLanguages.TypeScript],
   importResolver: importResolvers[SupportedLanguages.TypeScript],
   callRouter: callRouters[SupportedLanguages.TypeScript],
-  namedBindingExtractor: namedBindingExtractors[SupportedLanguages.TypeScript],
+  namedBindingExtractor: extractTsNamedBindings,
 });
 
 export const javascriptProvider = defineLanguage({
   id: SupportedLanguages.JavaScript,
   extensions: ['.js', '.jsx'],
-  treeSitterQueries: LANGUAGE_QUERIES[SupportedLanguages.JavaScript],
-  typeConfig: typeConfigs[SupportedLanguages.JavaScript],
+  treeSitterQueries: JAVASCRIPT_QUERIES,
+  typeConfig: typescriptConfig,
   exportChecker: exportCheckers[SupportedLanguages.JavaScript],
   importResolver: importResolvers[SupportedLanguages.JavaScript],
   callRouter: callRouters[SupportedLanguages.JavaScript],
-  namedBindingExtractor: namedBindingExtractors[SupportedLanguages.JavaScript],
+  namedBindingExtractor: extractTsNamedBindings,
 });

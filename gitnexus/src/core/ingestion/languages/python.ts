@@ -13,21 +13,22 @@
 
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
-import { typeConfigs } from '../type-extractors/index.js';
+import { typeConfig as pythonConfig } from '../type-extractors/python.js';
 import { callRouters } from '../call-routing.js';
 import { exportCheckers } from '../export-detection.js';
-import { importResolvers, namedBindingExtractors } from '../import-resolution.js';
-import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
+import { importResolvers } from '../import-resolution.js';
+import { extractPythonNamedBindings } from '../named-binding-extraction.js';
+import { PYTHON_QUERIES } from '../tree-sitter-queries.js';
 
 export const pythonProvider = defineLanguage({
   id: SupportedLanguages.Python,
   extensions: ['.py'],
-  treeSitterQueries: LANGUAGE_QUERIES[SupportedLanguages.Python],
-  typeConfig: typeConfigs[SupportedLanguages.Python],
+  treeSitterQueries: PYTHON_QUERIES,
+  typeConfig: pythonConfig,
   exportChecker: exportCheckers[SupportedLanguages.Python],
   importResolver: importResolvers[SupportedLanguages.Python],
   callRouter: callRouters[SupportedLanguages.Python],
-  namedBindingExtractor: namedBindingExtractors[SupportedLanguages.Python],
+  namedBindingExtractor: extractPythonNamedBindings,
   importSemantics: 'namespace',
   mroStrategy: 'c3',
 });

@@ -10,11 +10,11 @@
 
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
-import { typeConfigs } from '../type-extractors/index.js';
+import { typeConfig as cCppConfig } from '../type-extractors/c-cpp.js';
 import { callRouters } from '../call-routing.js';
 import { exportCheckers } from '../export-detection.js';
 import { importResolvers } from '../import-resolution.js';
-import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
+import { C_QUERIES, CPP_QUERIES } from '../tree-sitter-queries.js';
 
 import { isCppInsideClassOrStruct } from '../ast-helpers.js';
 import type { LanguageProvider } from '../language-provider.js';
@@ -29,8 +29,8 @@ const cppLabelOverride: NonNullable<LanguageProvider['labelOverride']> = (functi
 export const cProvider = defineLanguage({
   id: SupportedLanguages.C,
   extensions: ['.c'],
-  treeSitterQueries: LANGUAGE_QUERIES[SupportedLanguages.C],
-  typeConfig: typeConfigs[SupportedLanguages.C],
+  treeSitterQueries: C_QUERIES,
+  typeConfig: cCppConfig,
   exportChecker: exportCheckers[SupportedLanguages.C],
   importResolver: importResolvers[SupportedLanguages.C],
   callRouter: callRouters[SupportedLanguages.C],
@@ -41,8 +41,8 @@ export const cProvider = defineLanguage({
 export const cppProvider = defineLanguage({
   id: SupportedLanguages.CPlusPlus,
   extensions: ['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh'],
-  treeSitterQueries: LANGUAGE_QUERIES[SupportedLanguages.CPlusPlus],
-  typeConfig: typeConfigs[SupportedLanguages.CPlusPlus],
+  treeSitterQueries: CPP_QUERIES,
+  typeConfig: cCppConfig,
   exportChecker: exportCheckers[SupportedLanguages.CPlusPlus],
   importResolver: importResolvers[SupportedLanguages.CPlusPlus],
   callRouter: callRouters[SupportedLanguages.CPlusPlus],

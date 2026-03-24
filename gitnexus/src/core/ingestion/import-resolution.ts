@@ -1,14 +1,17 @@
 /**
  * Import Resolution Dispatch
  *
- * Per-language dispatch table for import resolution and named binding extraction.
- * Replaces the 120-line if-chain in resolveLanguageImport() and the 7-branch
- * dispatch in extractNamedBindings() with a single table lookup each.
+ * Per-language dispatch table for import resolution.
+ * Replaces the 120-line if-chain in resolveLanguageImport() with a single
+ * table lookup.
  *
  * Follows the existing ExportChecker / CallRouter pattern:
  *   - Function aliases (not interfaces) to avoid megamorphic inline-cache issues
  *   - `satisfies Record<SupportedLanguages, ...>` for compile-time exhaustiveness
  *   - Const dispatch table — configs are accessed via ctx.configs at call time
+ *
+ * Named binding extractors are imported directly from named-binding-extraction.ts
+ * by each language provider — no dispatch table needed.
  */
 
 import { SupportedLanguages } from '../../config/supported-languages.js';
@@ -37,15 +40,6 @@ import type {
   ComposerConfig,
 } from './resolvers/index.js';
 import type { SwiftPackageConfig } from './language-config.js';
-import {
-  extractTsNamedBindings,
-  extractPythonNamedBindings,
-  extractKotlinNamedBindings,
-  extractRustNamedBindings,
-  extractPhpNamedBindings,
-  extractCsharpNamedBindings,
-  extractJavaNamedBindings,
-} from './named-binding-extraction.js';
 import type { ImportResolutionContext } from './import-processor.js';
 
 // ============================================================================
@@ -364,23 +358,3 @@ export const importResolvers = {
   [SupportedLanguages.Swift]: (raw, fp, ctx) => resolveSwiftImportDispatch(raw, fp, ctx),
 } satisfies Record<SupportedLanguages, ImportResolverFn>;
 
-/**
- * Per-language named binding extractor dispatch table.
- * Languages with whole-module import semantics (Go, Ruby, C/C++, Swift) return undefined --
- * their bindings are synthesized post-parse by synthesizeWildcardImportBindings() in pipeline.ts.
- */
-export const namedBindingExtractors = {
-  [SupportedLanguages.JavaScript]: extractTsNamedBindings,
-  [SupportedLanguages.TypeScript]: extractTsNamedBindings,
-  [SupportedLanguages.Python]: extractPythonNamedBindings,
-  [SupportedLanguages.Java]: extractJavaNamedBindings,
-  [SupportedLanguages.C]: undefined,
-  [SupportedLanguages.CPlusPlus]: undefined,
-  [SupportedLanguages.CSharp]: extractCsharpNamedBindings,
-  [SupportedLanguages.Go]: undefined,
-  [SupportedLanguages.Ruby]: undefined,
-  [SupportedLanguages.Rust]: extractRustNamedBindings,
-  [SupportedLanguages.PHP]: extractPhpNamedBindings,
-  [SupportedLanguages.Kotlin]: extractKotlinNamedBindings,
-  [SupportedLanguages.Swift]: undefined,
-} satisfies Record<SupportedLanguages, NamedBindingExtractorFn | undefined>;
