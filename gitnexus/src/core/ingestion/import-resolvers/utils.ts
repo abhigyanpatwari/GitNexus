@@ -3,7 +3,7 @@
  * Extracted from import-processor.ts to reduce file size.
  */
 
-import type { SyntaxNode } from '../utils.js';
+import type { SyntaxNode } from '../ast-helpers.js';
 
 /** All file extensions to try during resolution */
 export const EXTENSIONS = [

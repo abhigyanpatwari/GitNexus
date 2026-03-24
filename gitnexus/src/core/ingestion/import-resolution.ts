@@ -12,7 +12,7 @@
 
 import { SupportedLanguages } from '../../config/supported-languages.js';
 import type { LanguageProvider } from './language-provider.js';
-import type { SyntaxNode } from './utils.js';
+import type { SyntaxNode } from './ast-helpers.js';
 import {
   KOTLIN_EXTENSIONS,
   resolveJvmWildcard,

@@ -12,7 +12,7 @@ import path from 'path';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { isNodeExported } from '../../src/core/ingestion/export-detection.js';
 import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
-import { getLanguageFromFilename } from '../../src/core/ingestion/utils.js';
+import { getLanguageFromFilename } from '../../src/core/ingestion/language-detection.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
 const FIXTURES_DIR = path.join(process.cwd(), 'test', 'fixtures', 'sample-code');

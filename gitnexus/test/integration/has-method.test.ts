@@ -16,7 +16,7 @@ import {
   findEnclosingClassId,
   DEFINITION_CAPTURE_KEYS,
   getDefinitionNodeFromCaptures,
-} from '../../src/core/ingestion/utils.js';
+} from '../../src/core/ingestion/ast-helpers.js';
 
 let parser: Parser;
 

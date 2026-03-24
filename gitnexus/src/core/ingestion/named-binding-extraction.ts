@@ -1,7 +1,7 @@
 import type { SymbolTable, SymbolDefinition } from './symbol-table.js';
 import type { NamedImportMap } from './import-processor.js';
 import type { NamedBinding } from './import-resolution.js';
-import type { SyntaxNode } from './utils.js';
+import type { SyntaxNode } from './ast-helpers.js';
 import { findChild } from './import-resolvers/utils.js';
 
 /**

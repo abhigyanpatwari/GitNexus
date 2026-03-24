@@ -24,24 +24,26 @@ try { Swift = _require('tree-sitter-swift'); } catch {}
 // tree-sitter-kotlin is an optionalDependency — may not be installed
 let Kotlin: any = null;
 try { Kotlin = _require('tree-sitter-kotlin'); } catch {}
+import { getLanguageFromFilename } from '../language-detection.js';
+import { isBuiltInOrNoise } from '../noise-filter.js';
 import {
-  getLanguageFromFilename,
   FUNCTION_NODE_TYPES,
   extractFunctionName,
-  isBuiltInOrNoise,
   getDefinitionNodeFromCaptures,
   findEnclosingClassId,
   getLabelFromCaptures,
   extractMethodSignature,
+  findDescendant,
+  extractStringContent,
+} from '../ast-helpers.js';
+import {
   countCallArguments,
   inferCallForm,
   extractReceiverName,
   extractReceiverNode,
   extractMixedChain,
-  findDescendant,
-  extractStringContent,
   type MixedChainStep,
-} from '../utils.js';
+} from '../call-analysis.js';
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';

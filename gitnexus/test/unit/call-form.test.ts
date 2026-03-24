@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { inferCallForm, extractReceiverName, type SyntaxNode } from '../../src/core/ingestion/utils.js';
+import { inferCallForm, extractReceiverName } from '../../src/core/ingestion/call-analysis.js';
+import type { SyntaxNode } from '../../src/core/ingestion/ast-helpers.js';
 import { createSymbolTable } from '../../src/core/ingestion/symbol-table.js';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';

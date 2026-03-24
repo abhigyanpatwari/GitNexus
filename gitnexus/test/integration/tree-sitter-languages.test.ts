@@ -4,7 +4,7 @@ import path from 'path';
 import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
 import { LANGUAGE_QUERIES } from '../../src/core/ingestion/tree-sitter-queries.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
-import { getLanguageFromFilename } from '../../src/core/ingestion/utils.js';
+import { getLanguageFromFilename } from '../../src/core/ingestion/language-detection.js';
 import Parser from 'tree-sitter';
 
 const fixturesDir = path.resolve(__dirname, '..', 'fixtures', 'sample-code');

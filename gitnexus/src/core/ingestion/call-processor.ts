@@ -7,22 +7,19 @@ import { TIER_CONFIDENCE, type ResolutionTier } from './resolution-context.js';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
+import { getLanguageFromFilename } from './language-detection.js';
+import { isVerboseIngestionEnabled, yieldToEventLoop } from './utils.js';
+import { FUNCTION_NODE_TYPES, extractFunctionName, findEnclosingClassId } from './ast-helpers.js';
+import { isBuiltInOrNoise } from './noise-filter.js';
 import {
-  getLanguageFromFilename,
-  isVerboseIngestionEnabled,
-  yieldToEventLoop,
-  FUNCTION_NODE_TYPES,
-  extractFunctionName,
-  isBuiltInOrNoise,
   countCallArguments,
   inferCallForm,
   extractReceiverName,
   extractReceiverNode,
-  findEnclosingClassId,
   CALL_EXPRESSION_TYPES,
   extractMixedChain,
   type MixedChainStep,
-} from './utils.js';
+} from './call-analysis.js';
 import { buildTypeEnv, isSubclassOf } from './type-env.js';
 import type { ConstructorBinding } from './type-env.js';
 import { getTreeSitterBufferSize } from './constants.js';
@@ -31,7 +28,7 @@ import type { ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRo
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
 import type { LiteralTypeInferrer } from './type-extractors/types.js';
-import type { SyntaxNode } from './utils.js';
+import type { SyntaxNode } from './ast-helpers.js';
 
 /** Per-file resolved type bindings for exported symbols.
  *  Populated during call processing, consumed by Phase 14 re-resolution pass. */

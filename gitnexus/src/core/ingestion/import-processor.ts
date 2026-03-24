@@ -5,7 +5,8 @@ import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/pa
 import { getProvider, getProviderForFile, providersWithImplicitWiring } from './languages/index.js';
 import type { LanguageProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
-import { getLanguageFromFilename, isVerboseIngestionEnabled, yieldToEventLoop } from './utils.js';
+import { getLanguageFromFilename } from './language-detection.js';
+import { isVerboseIngestionEnabled, yieldToEventLoop } from './utils.js';
 import type { ExtractedImport } from './workers/parse-worker.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import { loadImportConfigs } from './language-config.js';

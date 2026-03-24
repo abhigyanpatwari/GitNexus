@@ -1,5 +1,6 @@
-import type { SyntaxNode } from './utils.js';
-import { FUNCTION_NODE_TYPES, extractFunctionName, CLASS_CONTAINER_TYPES, CALL_EXPRESSION_TYPES, isBuiltInOrNoise } from './utils.js';
+import { type SyntaxNode, FUNCTION_NODE_TYPES, extractFunctionName, CLASS_CONTAINER_TYPES } from './ast-helpers.js';
+import { CALL_EXPRESSION_TYPES } from './call-analysis.js';
+import { isBuiltInOrNoise } from './noise-filter.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
 import { TYPED_PARAMETER_TYPES } from './type-extractors/index.js';
 import { getProvider } from './languages/index.js';

@@ -7,7 +7,7 @@
  * Shared between parse-worker.ts (worker pool) and parsing-processor.ts (sequential fallback).
  */
 
-import { findSiblingChild, SyntaxNode } from './utils.js';
+import { findSiblingChild, type SyntaxNode } from './ast-helpers.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
 
 /** Handler type: given a node and symbol name, return true if the symbol is exported/public. */
