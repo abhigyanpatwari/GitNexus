@@ -128,6 +128,27 @@ const processParsingWithWorkers = async (
 // Sequential fallback (original implementation)
 // ============================================================================
 
+// Inline caches to avoid repeated parent-walks per node (same pattern as parse-worker.ts).
+// Keyed by tree-sitter node reference — cleared at the start of each file.
+const classIdCache = new Map<any, string | null>();
+const exportCache = new Map<any, boolean>();
+
+const cachedFindEnclosingClassId = (node: any, filePath: string): string | null => {
+  const cached = classIdCache.get(node);
+  if (cached !== undefined) return cached;
+  const result = findEnclosingClassId(node, filePath);
+  classIdCache.set(node, result);
+  return result;
+};
+
+const cachedExportCheck = (checker: (node: any, name: string) => boolean, node: any, name: string): boolean => {
+  const cached = exportCache.get(node);
+  if (cached !== undefined) return cached;
+  const result = checker(node, name);
+  exportCache.set(node, result);
+  return result;
+};
+
 const processParsingSequential = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
@@ -141,6 +162,10 @@ const processParsingSequential = async (
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
+
+    // Reset memoization before each new file (node refs are per-tree)
+    classIdCache.clear();
+    exportCache.clear();
 
     onFileProgress?.(i + 1, total, file.path);
 
@@ -240,7 +265,7 @@ const processParsingSequential = async (
           startLine: definitionNodeForRange ? definitionNodeForRange.startPosition.row : startLine,
           endLine: definitionNodeForRange ? definitionNodeForRange.endPosition.row : startLine,
           language: language,
-          isExported: provider.exportChecker(nameNode || definitionNodeForRange, nodeName),
+          isExported: cachedExportCheck(provider.exportChecker, nameNode || definitionNodeForRange, nodeName),
           ...(frameworkHint ? {
             astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
             astFrameworkReason: frameworkHint.reason,
@@ -259,7 +284,7 @@ const processParsingSequential = async (
       // Compute enclosing class for Method/Constructor/Property/Function — used for both ownerId and HAS_METHOD
       // Function is included because Kotlin/Rust/Python capture class methods as Function nodes
       const needsOwner = nodeLabel === 'Method' || nodeLabel === 'Constructor' || nodeLabel === 'Property' || nodeLabel === 'Function';
-      const enclosingClassId = needsOwner ? findEnclosingClassId(nameNode || definitionNodeForRange, file.path) : null;
+      const enclosingClassId = needsOwner ? cachedFindEnclosingClassId(nameNode || definitionNodeForRange, file.path) : null;
 
       // Extract declared type for Property nodes (field/property type annotations)
       const declaredType = (nodeLabel === 'Property' && definitionNode)

@@ -159,21 +159,31 @@ const lookupInEnv = (
   return raw ? fastStripNullable(raw) : undefined;
 };
 
+/** Per-file memoization caches for expensive parent-walk functions.
+ *  Cleared at the start of each buildTypeEnv call (one call per file). */
+const enclosingClassNameCache = new Map<SyntaxNode, string | undefined>();
+const enclosingParentClassNameCache = new Map<SyntaxNode, string | undefined>();
 
 /**
  * Walk up the AST from a node to find the enclosing class/module name.
  * Used to resolve `self`/`this` receivers to their containing type.
+ * Memoized per-file: cache is cleared at buildTypeEnv entry.
  */
 const findEnclosingClassName = (node: SyntaxNode): string | undefined => {
+  if (enclosingClassNameCache.has(node)) return enclosingClassNameCache.get(node);
   let current = node.parent;
   while (current) {
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
       const nameNode = current.childForFieldName('name')
         ?? findTypeIdentifierChild(current);
-      if (nameNode) return nameNode.text;
+      if (nameNode) {
+        enclosingClassNameCache.set(node, nameNode.text);
+        return nameNode.text;
+      }
     }
     current = current.parent;
   }
+  enclosingClassNameCache.set(node, undefined);
   return undefined;
 };
 
@@ -209,13 +219,17 @@ const substituteThisReceiver = (item: PendingAssignment, node: SyntaxNode): Pend
  * - Swift: unnamed `inheritance_specifier` child → user_type → type_identifier
  */
 const findEnclosingParentClassName = (node: SyntaxNode): string | undefined => {
+  if (enclosingParentClassNameCache.has(node)) return enclosingParentClassNameCache.get(node);
   let current = node.parent;
   while (current) {
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
-      return extractParentClassFromNode(current);
+      const result = extractParentClassFromNode(current);
+      enclosingParentClassNameCache.set(node, result);
+      return result;
     }
     current = current.parent;
   }
+  enclosingParentClassNameCache.set(node, undefined);
   return undefined;
 };
 
@@ -689,6 +703,10 @@ export const buildTypeEnv = (
   language: SupportedLanguages,
   options?: BuildTypeEnvOptions,
 ): TypeEnvironment => {
+  // Clear per-file memoization caches from the previous file.
+  enclosingClassNameCache.clear();
+  enclosingParentClassNameCache.clear();
+
   const symbolTable = options?.symbolTable;
   const parentMap = options?.parentMap;
   const env: TypeEnv = new Map();
