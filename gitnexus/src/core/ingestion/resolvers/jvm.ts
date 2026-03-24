@@ -4,6 +4,7 @@
  */
 
 import type { SuffixIndex } from './utils.js';
+import type { SyntaxNode } from '../utils.js';
 
 /** Kotlin file extensions for JVM resolver reuse */
 export const KOTLIN_EXTENSIONS: readonly string[] = ['.kt', '.kts'];
@@ -12,7 +13,7 @@ export const KOTLIN_EXTENSIONS: readonly string[] = ['.kt', '.kts'];
  * Append .* to a Kotlin import path if the AST has a wildcard_import sibling node.
  * Pure function — returns a new string without mutating the input.
  */
-export const appendKotlinWildcard = (importPath: string, importNode: any): string => {
+export const appendKotlinWildcard = (importPath: string, importNode: SyntaxNode): string => {
   for (let i = 0; i < importNode.childCount; i++) {
     if (importNode.child(i)?.type === 'wildcard_import') {
       return importPath.endsWith('.*') ? importPath : `${importPath}.*`;
@@ -39,26 +40,39 @@ export function resolveJvmWildcard(
     const candidates = extensions.flatMap(ext => index.getFilesInDir(packagePath, ext));
     // Filter to only direct children (no subdirectories)
     const packageSuffix = '/' + packagePath + '/';
+    const packagePrefix = packagePath + '/';
     return candidates.filter(f => {
       const normalized = f.replace(/\\/g, '/');
-      const idx = normalized.indexOf(packageSuffix);
-      if (idx < 0) return false;
-      const afterPkg = normalized.substring(idx + packageSuffix.length);
+      // Match both nested (src/models/User.kt) and root-level (models/User.kt) packages
+      let afterPkg: string;
+      const idx = normalized.lastIndexOf(packageSuffix);
+      if (idx >= 0) {
+        afterPkg = normalized.substring(idx + packageSuffix.length);
+      } else if (normalized.startsWith(packagePrefix)) {
+        afterPkg = normalized.substring(packagePrefix.length);
+      } else {
+        return false;
+      }
       return !afterPkg.includes('/');
     });
   }
 
   // Fallback: linear scan
   const packageSuffix = '/' + packagePath + '/';
+  const packagePrefix = packagePath + '/';
   const matches: string[] = [];
   for (let i = 0; i < normalizedFileList.length; i++) {
     const normalized = normalizedFileList[i];
-    if (normalized.includes(packageSuffix) &&
-        extensions.some(ext => normalized.endsWith(ext))) {
-      const afterPackage = normalized.substring(normalized.indexOf(packageSuffix) + packageSuffix.length);
-      if (!afterPackage.includes('/')) {
-        matches.push(allFileList[i]);
-      }
+    if (!extensions.some(ext => normalized.endsWith(ext))) continue;
+    // Match both nested (src/models/User.kt) and root-level (models/User.kt) packages
+    let afterPackage: string | null = null;
+    if (normalized.includes(packageSuffix)) {
+      afterPackage = normalized.substring(normalized.lastIndexOf(packageSuffix) + packageSuffix.length);
+    } else if (normalized.startsWith(packagePrefix)) {
+      afterPackage = normalized.substring(packagePrefix.length);
+    }
+    if (afterPackage !== null && !afterPackage.includes('/')) {
+      matches.push(allFileList[i]);
     }
   }
   return matches;

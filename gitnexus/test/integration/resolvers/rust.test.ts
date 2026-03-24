@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, getRelationships, getNodesByLabel, edgeSet,
+  FIXTURES, CROSS_FILE_FIXTURES, getRelationships, getNodesByLabel, edgeSet,
   runPipelineFromRepo, type PipelineResult,
 } from './helpers.js';
 
@@ -405,6 +405,54 @@ describe('Rust grouped import resolution', () => {
     expect(imports[0].source).toBe('main.rs');
     expect(imports[0].target).toBe('mod.rs');
     expect(imports[0].targetFilePath).toBe('src/helpers/mod.rs');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scoped grouped imports with multi-file resolution:
+// use crate::models::{User, Repo} where User and Repo are in separate files.
+// Verifies IMPORTS edges are created for each file AND namedImportMap entries
+// match bindings to files by basename.
+// ---------------------------------------------------------------------------
+
+describe('Rust scoped grouped imports (multi-file)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-scoped-multi-file'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo structs', () => {
+    const classes = getNodesByLabel(result, 'Struct');
+    expect(classes).toContain('User');
+    expect(classes).toContain('Repo');
+  });
+
+  it('emits IMPORTS edge from main.rs to models/mod.rs', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const edge = imports.find(e =>
+      e.sourceFilePath.includes('main') && e.targetFilePath.includes('models'),
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('resolves user.save() call to User#save in models/user.rs', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'main' && c.targetFilePath.includes('user'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves repo.clone_repo() call to Repo#clone_repo in models/repo.rs', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const cloneCall = calls.find(c =>
+      c.target === 'clone_repo' && c.source === 'main' && c.targetFilePath.includes('repo'),
+    );
+    expect(cloneCall).toBeDefined();
   });
 });
 
@@ -1427,5 +1475,154 @@ describe('Write access tracking (Rust)', () => {
     const scoreWrite = writes.find(e => e.target === 'score');
     expect(scoreWrite).toBeDefined();
     expect(scoreWrite!.source).toBe('update_user');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Call-result variable binding (Phase 9): let user = get_user(); user.save()
+// ---------------------------------------------------------------------------
+
+describe('Rust call-result variable binding (Tier 2b)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-call-result-binding'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.save() to User#save via call-result binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'process_user' && c.targetFilePath.includes('models')
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Method chain binding (Phase 9C): get_user() → .address → .get_city() → .save()
+// ---------------------------------------------------------------------------
+
+describe('Rust method chain binding via unified fixpoint (Phase 9C)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-method-chain-binding'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves city.save() to City#save via method chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'process_chain' && c.targetFilePath.includes('models')
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase A: Rust struct_pattern destructuring — let Point { x, y } = p
+// Each field emits a fieldAccess PendingAssignment; fixpoint resolves x/y → Vec2
+// ---------------------------------------------------------------------------
+
+describe('Rust struct_pattern destructuring resolution (Phase A)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-struct-destructuring'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Point and Vec2 structs', () => {
+    const classes = getNodesByLabel(result, 'Struct');
+    expect(classes).toContain('Point');
+    expect(classes).toContain('Vec2');
+  });
+
+  it('resolves x.save() to Vec2#save via struct destructuring', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('vec2'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves both x.save() and y.save() — emits at least 1 CALLS to Vec2#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter(c => c.target === 'save' && c.targetFilePath.includes('vec2'));
+    // Both x and y are Vec2 — the same function, so calls may deduplicate to 1
+    expect(saveCalls.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 14: Cross-file binding propagation
+// src/models.rs exports User struct with save() and get_name() methods
+// src/factory.rs exports get_user() -> User (uses crate::models::User)
+// src/main.rs uses crate::factory::get_user, calls u.save() / u.get_name()
+// → u is typed User via cross-file return type propagation
+// ---------------------------------------------------------------------------
+
+describe('Rust cross-file binding propagation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(CROSS_FILE_FIXTURES, 'rs-cross-file'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User struct with save and get_name methods', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Function')).toContain('get_name');
+  });
+
+  it('detects get_user and process functions', () => {
+    expect(getNodesByLabel(result, 'Function')).toContain('get_user');
+    expect(getNodesByLabel(result, 'Function')).toContain('process');
+  });
+
+  it('emits IMPORTS edge from main.rs to factory.rs', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const edge = imports.find(e =>
+      e.sourceFilePath.includes('main') && e.targetFilePath.includes('factory'),
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('resolves u.save() in process() to User#save via cross-file return type propagation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'process' &&
+      c.targetFilePath.includes('models'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves u.get_name() in process() to User#get_name via cross-file return type propagation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCall = calls.find(c =>
+      c.target === 'get_name' &&
+      c.source === 'process' &&
+      c.targetFilePath.includes('models'),
+    );
+    expect(getNameCall).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edges linking save and get_name to User', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const saveEdge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
+    const getNameEdge = hasMethod.find(e => e.source === 'User' && e.target === 'get_name');
+    expect(saveEdge).toBeDefined();
+    expect(getNameEdge).toBeDefined();
   });
 });

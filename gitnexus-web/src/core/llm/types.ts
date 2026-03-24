@@ -2,13 +2,14 @@
  * LLM Provider Types
  * 
  * Type definitions for multi-provider LLM support.
- * Supports Azure OpenAI and Google Gemini (with extensibility for others).
+ * Supports OpenAI, Azure OpenAI, Gemini, Anthropic, Ollama, OpenRouter, MiniMax, and GLM5.
  */
 
 /**
  * Supported LLM providers
  */
-export type LLMProvider = 'openai' | 'azure-openai' | 'gemini' | 'anthropic' | 'ollama' | 'openrouter';
+import { DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENROUTER_BASE_URL } from '../../config/ui-constants';
+export type LLMProvider = 'openai' | 'azure-openai' | 'gemini' | 'anthropic' | 'ollama' | 'openrouter' | 'minimax' | 'glm';
 
 /**
  * Base configuration shared by all providers
@@ -79,9 +80,28 @@ export interface OpenRouterConfig extends BaseProviderConfig {
 }
 
 /**
+ * MiniMax configuration (Anthropic-compatible API)
+ */
+export interface MiniMaxConfig extends BaseProviderConfig {
+  provider: 'minimax';
+  apiKey: string;
+  model: string;  // e.g., 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed'
+}
+
+/**
+ * GLM (Z.AI) configuration — OpenAI-compatible API
+ */
+export interface GLMConfig extends BaseProviderConfig {
+  provider: 'glm';
+  apiKey: string;
+  model: string;  // e.g., 'GLM-4.7', 'GLM-4.5', 'GLM-4.5-Air', 'GLM-5'
+  baseUrl?: string;  // defaults to https://api.z.ai/api/coding/paas/v4
+}
+
+/**
  * Union type for all provider configurations
  */
-export type ProviderConfig = OpenAIConfig | AzureOpenAIConfig | GeminiConfig | AnthropicConfig | OllamaConfig | OpenRouterConfig;
+export type ProviderConfig = OpenAIConfig | AzureOpenAIConfig | GeminiConfig | AnthropicConfig | OllamaConfig | OpenRouterConfig | MiniMaxConfig | GLMConfig;
 
 /**
  * Stored settings (what goes to localStorage)
@@ -98,6 +118,8 @@ export interface LLMSettings {
   anthropic?: Partial<Omit<AnthropicConfig, 'provider'>>;
   ollama?: Partial<Omit<OllamaConfig, 'provider'>>;
   openrouter?: Partial<Omit<OpenRouterConfig, 'provider'>>;
+  minimax?: Partial<Omit<MiniMaxConfig, 'provider'>>;
+  glm?: Partial<Omit<GLMConfig, 'provider'>>;
 
   // Intelligent Clustering Settings
   intelligentClustering: boolean;
@@ -138,14 +160,25 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
     temperature: 0.1,
   },
   ollama: {
-    baseUrl: 'http://localhost:11434',
+    baseUrl: DEFAULT_OLLAMA_BASE_URL,
     model: 'llama3.2',
     temperature: 0.1,
   },
   openrouter: {
     apiKey: '',
     model: '',
-    baseUrl: 'https://openrouter.ai/api/v1',
+    baseUrl: DEFAULT_OPENROUTER_BASE_URL,
+    temperature: 0.1,
+  },
+  minimax: {
+    apiKey: '',
+    model: 'MiniMax-M2.5',
+    temperature: 0.1,
+  },
+  glm: {
+    apiKey: '',
+    model: 'GLM-5',
+    baseUrl: 'https://api.z.ai/api/coding/paas/v4',
     temperature: 0.1,
   },
 };

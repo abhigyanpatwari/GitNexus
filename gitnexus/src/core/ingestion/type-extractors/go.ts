@@ -1,6 +1,6 @@
 import type { SyntaxNode } from '../utils.js';
 import type { ConstructorBindingScanner, ForLoopExtractor, LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, PendingAssignmentExtractor } from './types.js';
-import { extractSimpleTypeName, extractVarName, extractElementTypeFromString, extractGenericTypeArgs, findChildByType, resolveIterableElementType, methodToTypeArgPosition, type TypeArgPosition } from './shared.js';
+import { extractSimpleTypeName, extractVarName, extractElementTypeFromString, extractGenericTypeArgs, resolveIterableElementType, methodToTypeArgPosition, type TypeArgPosition } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
   'var_declaration',
@@ -397,6 +397,29 @@ const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) =>
     const lhs = lhsNode.text;
     if (scopeEnv.has(lhs)) return undefined;
     if (rhsNode.type === 'identifier') return { kind: 'copy', lhs, rhs: rhsNode.text };
+    // selector_expression RHS → fieldAccess (a.field)
+    if (rhsNode.type === 'selector_expression') {
+      const operand = rhsNode.childForFieldName('operand');
+      const field = rhsNode.childForFieldName('field');
+      if (operand?.type === 'identifier' && field) {
+        return { kind: 'fieldAccess', lhs, receiver: operand.text, field: field.text };
+      }
+    }
+    // call_expression RHS
+    if (rhsNode.type === 'call_expression') {
+      const funcNode = rhsNode.childForFieldName('function');
+      if (funcNode?.type === 'identifier') {
+        return { kind: 'callResult', lhs, callee: funcNode.text };
+      }
+      // method call with receiver: call_expression → function: selector_expression
+      if (funcNode?.type === 'selector_expression') {
+        const operand = funcNode.childForFieldName('operand');
+        const field = funcNode.childForFieldName('field');
+        if (operand?.type === 'identifier' && field) {
+          return { kind: 'methodCallResult', lhs, receiver: operand.text, method: field.text };
+        }
+      }
+    }
     return undefined;
   }
   if (node.type === 'var_spec' || node.type === 'var_declaration') {
@@ -422,6 +445,28 @@ const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) =>
       }
       const rhsNode = exprList?.firstNamedChild;
       if (rhsNode?.type === 'identifier') return { kind: 'copy', lhs, rhs: rhsNode.text };
+      // selector_expression RHS → fieldAccess
+      if (rhsNode?.type === 'selector_expression') {
+        const operand = rhsNode.childForFieldName('operand');
+        const field = rhsNode.childForFieldName('field');
+        if (operand?.type === 'identifier' && field) {
+          return { kind: 'fieldAccess', lhs, receiver: operand.text, field: field.text };
+        }
+      }
+      // call_expression RHS
+      if (rhsNode?.type === 'call_expression') {
+        const funcNode = rhsNode.childForFieldName('function');
+        if (funcNode?.type === 'identifier') {
+          return { kind: 'callResult', lhs, callee: funcNode.text };
+        }
+        if (funcNode?.type === 'selector_expression') {
+          const operand = funcNode.childForFieldName('operand');
+          const field = funcNode.childForFieldName('field');
+          if (operand?.type === 'identifier' && field) {
+            return { kind: 'methodCallResult', lhs, receiver: operand.text, method: field.text };
+          }
+        }
+      }
     }
   }
   return undefined;

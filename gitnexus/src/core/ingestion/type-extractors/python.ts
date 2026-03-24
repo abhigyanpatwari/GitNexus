@@ -358,6 +358,29 @@ const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) =>
   const lhs = left.type === 'identifier' ? left.text : undefined;
   if (!lhs || scopeEnv.has(lhs)) return undefined;
   if (right.type === 'identifier') return { kind: 'copy', lhs, rhs: right.text };
+  // attribute RHS → fieldAccess (a.field)
+  if (right.type === 'attribute') {
+    const obj = right.firstNamedChild;
+    const field = right.lastNamedChild;
+    if (obj?.type === 'identifier' && field?.type === 'identifier' && obj !== field) {
+      return { kind: 'fieldAccess', lhs, receiver: obj.text, field: field.text };
+    }
+  }
+  // call RHS
+  if (right.type === 'call') {
+    const funcNode = right.childForFieldName('function');
+    if (funcNode?.type === 'identifier') {
+      return { kind: 'callResult', lhs, callee: funcNode.text };
+    }
+    // method call with receiver: call → function: attribute
+    if (funcNode?.type === 'attribute') {
+      const obj = funcNode.firstNamedChild;
+      const method = funcNode.lastNamedChild;
+      if (obj?.type === 'identifier' && method?.type === 'identifier' && obj !== method) {
+        return { kind: 'methodCallResult', lhs, receiver: obj.text, method: method.text };
+      }
+    }
+  }
   return undefined;
 };
 

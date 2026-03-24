@@ -1,8 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState, lazy } from 'react';
 import mermaid from 'mermaid';
-import { AlertTriangle, Maximize2 } from 'lucide-react';
-import { ProcessFlowModal } from './ProcessFlowModal';
+import DOMPurify from 'dompurify';
+import { AlertTriangle, Maximize2 } from '@/lib/lucide-icons';
 import type { ProcessData } from '../lib/mermaid-generator';
+
+const ProcessFlowModal = lazy(() =>
+  import('./ProcessFlowModal').then((m) => ({ default: m.ProcessFlowModal })),
+);
 
 // Initialize mermaid with cyan theme matching ProcessFlowModal
 mermaid.initialize({
@@ -67,7 +71,8 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
 
         // Render the diagram
         const { svg: renderedSvg } = await mermaid.render(id, code.trim());
-        setSvg(renderedSvg);
+        const sanitizedSvg = DOMPurify.sanitize(renderedSvg, { USE_PROFILES: { svg: true, svgFilters: true }, ADD_TAGS: ['foreignObject'] });
+        setSvg(sanitizedSvg);
         setError(null);
       } catch (err) {
         // Silent catch for streaming: 
@@ -140,17 +145,23 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
           <div
             ref={containerRef}
             className="flex items-center justify-center p-4 overflow-auto max-h-[400px]"
-            dangerouslySetInnerHTML={{ __html: svg }}
+            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true }, ADD_TAGS: ['foreignObject'] }) }}
           />
         </div>
       </div>
 
       {/* Use ProcessFlowModal for expansion */}
       {showModal && processData && (
-        <ProcessFlowModal
-          process={processData}
-          onClose={() => setShowModal(false)}
-        />
+        <Suspense
+          fallback={
+            <div className="p-4 text-sm text-text-muted">Loading diagram…</div>
+          }
+        >
+          <ProcessFlowModal
+            process={processData}
+            onClose={() => setShowModal(false)}
+          />
+        </Suspense>
       )}
     </>
   );

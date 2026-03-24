@@ -10,8 +10,7 @@ on:
   pull_request_review:
     types: [submitted]
 
-# Serialize per-PR so concurrent @claude comments don't race on the
-# temporary fork branch push/delete.
+# Serialize per-PR/issue to avoid racing comments.
 concurrency:
   group: claude-code-${{ github.event.issue.number || github.event.pull_request.number || github.event.issue.id }}
   cancel-in-progress: false
@@ -19,21 +18,44 @@ concurrency:
 jobs:
   claude:
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      (
+        github.event_name == 'issue_comment' &&
+        contains(github.event.comment.body, '@claude') &&
+        (github.event.comment.author_association == 'OWNER' ||
+         github.event.comment.author_association == 'MEMBER' ||
+         github.event.comment.author_association == 'COLLABORATOR')
+      ) ||
+      (
+        github.event_name == 'pull_request_review_comment' &&
+        contains(github.event.comment.body, '@claude') &&
+        (github.event.comment.author_association == 'OWNER' ||
+         github.event.comment.author_association == 'MEMBER' ||
+         github.event.comment.author_association == 'COLLABORATOR')
+      ) ||
+      (
+        github.event_name == 'pull_request_review' &&
+        contains(github.event.review.body, '@claude') &&
+        (github.event.review.author_association == 'OWNER' ||
+         github.event.review.author_association == 'MEMBER' ||
+         github.event.review.author_association == 'COLLABORATOR')
+      ) ||
+      (
+        github.event_name == 'issues' &&
+        (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')) &&
+        (github.event.issue.author_association == 'OWNER' ||
+         github.event.issue.author_association == 'MEMBER' ||
+         github.event.issue.author_association == 'COLLABORATOR')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write       # needed to create fork branch ref via API
+      contents: read
       pull-requests: write
       issues: write
       id-token: write
       actions: read         # required for Claude to read CI results on PRs
     steps:
-      # For PR-related triggers, resolve fork context so we can create a
-      # temporary branch ref (claude-code-action fetches by branch name).
+      # For PR-related triggers, resolve the fork repo so we can checkout correctly.
       - name: Resolve PR context
         id: pr
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
@@ -51,7 +73,6 @@ jobs:
 
             if (!prNumber) {
               core.setOutput('is_pr', 'false');
-              core.setOutput('is_fork', 'false');
               return;
             }
 
@@ -61,58 +82,29 @@ jobs:
               pull_number: prNumber,
             });
             const pr = resp.data;
-            const isFork = pr.head.repo.full_name !== pr.base.repo.full_name;
 
             core.setOutput('is_pr', 'true');
             core.setOutput('number', String(prNumber));
-            core.setOutput('is_fork', String(isFork));
-            core.setOutput('branch', pr.head.ref);
             core.setOutput('sha', pr.head.sha);
+            core.setOutput('repo', pr.head.repo.full_name);
+            core.setOutput('branch', pr.head.ref);
 
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ steps.pr.outputs.is_fork == 'true' && steps.pr.outputs.sha || '' }}
+          repository: ${{ steps.pr.outputs.is_pr == 'true' && steps.pr.outputs.repo || github.repository }}
+          ref: ${{ steps.pr.outputs.is_pr == 'true' && steps.pr.outputs.sha || '' }}
           fetch-depth: 1
-
-      # claude-code-action fetches branches by name from origin, which fails
-      # for fork PRs. Create a temporary branch ref via the API so the action
-      # can find it. Using the API (not git push) avoids the GITHUB_TOKEN
-      # restriction that blocks pushing commits containing workflow file changes.
-      # Use a prefixed temporary branch name to avoid overwriting real branches
-      # (e.g. a fork branch named "main" would overwrite origin/main).
-      - name: Create fork branch ref on origin
-        id: push-fork
-        if: steps.pr.outputs.is_fork == 'true'
-        env:
-          FORK_BRANCH: claude-tmp/fork-pr-${{ steps.pr.outputs.number }}
-          FORK_SHA: ${{ steps.pr.outputs.sha }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "FORK_BRANCH=$FORK_BRANCH" >> "$GITHUB_ENV"
-          gh api "repos/${{ github.repository }}/git/refs" \
-            --method POST \
-            -f ref="refs/heads/$FORK_BRANCH" \
-            -f sha="$FORK_SHA" \
-          || gh api "repos/${{ github.repository }}/git/refs/heads/$FORK_BRANCH" \
-            --method PATCH \
-            -f sha="$FORK_SHA" \
-            -F force=true
 
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@9469d113c6afd29550c402740f22d1a97dd1209b # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: '*'
+          show_full_output: true
 
           # This is an optional setting that allows Claude to read CI results on PRs
           additional_permissions: |
             actions: read
-
-      # Clean up the temporary branch ref we created for fork PRs.
-      # Only delete if the create step actually succeeded.
-      - name: Delete fork branch ref from origin
-        if: always() && steps.push-fork.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh api "repos/${{ github.repository }}/git/refs/heads/$FORK_BRANCH" --method DELETE || true

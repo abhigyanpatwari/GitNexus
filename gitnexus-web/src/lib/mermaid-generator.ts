@@ -26,6 +26,7 @@ export interface ProcessData {
   steps: ProcessStep[];
   edges?: ProcessEdge[];  // CALLS edges between steps for branching
   clusters?: string[];
+  rawMermaid?: string;    // AI-generated mermaid code (sanitized before rendering)
 }
 
 /**

@@ -18,8 +18,9 @@ program
 
 program
   .command('setup')
-  .description('One-time setup: configure MCP for Cursor, Claude Code, OpenCode')
+  .description('One-time setup: configure MCP for Cursor, Claude Code, OpenCode, Codex')
   .action(createLazyAction(() => import('./setup.js'), 'setupCommand'));
+
 
 program
   .command('analyze [path]')
@@ -27,6 +28,7 @@ program
   .option('-f, --force', 'Force full re-index even if up to date')
   .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
   .option('--skills', 'Generate repo-specific skill files from detected communities')
+  .option('--skip-git', 'Index a folder without requiring a .git directory')
    .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')
    .addHelpText('after', '\nEnvironment variables:\n  GITNEXUS_NO_GITIGNORE=1  Skip .gitignore parsing (still reads .gitnexusignore)')
    .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));

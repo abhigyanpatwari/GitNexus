@@ -16,10 +16,8 @@ concurrency:
 # ── Reusable workflow orchestration ─────────────────────────────────
 # Each concern lives in its own workflow file for maintainability:
 #   ci-quality.yml       — typecheck (tsc --noEmit)
-#   ci-unit-tests.yml    — unit tests with coverage + cross-platform
-#   ci-integration.yml   — integration test matrix (3 OS x 4 groups)
-#
-# Shared setup is DRY via .github/actions/setup-gitnexus composite action.
+#   ci-tests.yml         — all tests with coverage (ubuntu) + cross-platform
+#   ci-report.yml        — PR comment (workflow_run trigger for fork write access)
 
 jobs:
   quality:
@@ -27,56 +25,16 @@ jobs:
     permissions:
       contents: read
 
-  unit-tests:
-    uses: ./.github/workflows/ci-unit-tests.yml
+  tests:
+    uses: ./.github/workflows/ci-tests.yml
     permissions:
       contents: read
-
-  integration:
-    uses: ./.github/workflows/ci-integration.yml
-    with:
-      collect-coverage: ${{ github.event_name == 'pull_request' }}
-    permissions:
-      contents: read
-
-  # ── Save PR metadata for the reporting workflow ─────────────────
-  # The ci-report.yml workflow (triggered by workflow_run) needs the
-  # PR number and job results to post a comment.  We save them as an
-  # artifact because workflow_run context doesn't reliably carry PR
-  # info for fork PRs.
-  save-pr-meta:
-    name: Save PR Metadata
-    if: always() && github.event_name == 'pull_request'
-    needs: [quality, unit-tests, integration]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Write metadata
-        shell: bash
-        env:
-          PR_NUMBER: ${{ github.event.number }}
-          QUALITY: ${{ needs.quality.result }}
-          UNIT: ${{ needs.unit-tests.result }}
-          INTEG: ${{ needs.integration.result }}
-        run: |
-          mkdir -p pr-meta
-          echo "$PR_NUMBER"  > pr-meta/pr_number
-          echo "$QUALITY"    > pr-meta/quality_result
-          echo "$UNIT"       > pr-meta/unit_result
-          echo "$INTEG"      > pr-meta/integration_result
-
-      - name: Upload PR metadata
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: pr-meta
-          path: pr-meta/
-          retention-days: 1
 
   # ── Unified CI gate ──────────────────────────────────────────────
   # Single required check for branch protection.
   ci-status:
     name: CI Gate
-    needs: [quality, unit-tests, integration]
+    needs: [quality, tests]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -85,15 +43,41 @@ jobs:
         shell: bash
         env:
           QUALITY: ${{ needs.quality.result }}
-          UNIT: ${{ needs.unit-tests.result }}
-          INTEG: ${{ needs.integration.result }}
+          TESTS: ${{ needs.tests.result }}
         run: |
-          echo "Quality:     $QUALITY"
-          echo "Unit Tests:  $UNIT"
-          echo "Integration: $INTEG"
+          echo "Quality:  $QUALITY"
+          echo "Tests:    $TESTS"
           if [[ "$QUALITY" != "success" ]] ||
-             [[ "$UNIT" != "success" ]] ||
-             [[ "$INTEG" != "success" ]]; then
+             [[ "$TESTS" != "success" ]]; then
             echo "::error::One or more CI jobs failed"
             exit 1
           fi
+
+  # ── PR metadata for ci-report.yml ────────────────────────────────
+  # Saves PR number and job results so the workflow_run-triggered
+  # report can post comments with a write token (works for forks).
+  save-pr-meta:
+    name: Save PR Metadata
+    if: always() && github.event_name == 'pull_request'
+    needs: [quality, tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Write PR metadata
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          QUALITY: ${{ needs.quality.result }}
+          TESTS: ${{ needs.tests.result }}
+        run: |
+          mkdir -p pr-meta
+          echo "$PR_NUMBER" > pr-meta/pr-number
+          echo "$QUALITY"   > pr-meta/quality-result
+          echo "$TESTS"     > pr-meta/tests-result
+
+      - name: Upload PR metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-meta
+          path: pr-meta/
+          retention-days: 1

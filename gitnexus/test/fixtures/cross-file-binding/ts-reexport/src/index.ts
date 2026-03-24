@@ -1,0 +1,1 @@
+export { getConfig } from './core';

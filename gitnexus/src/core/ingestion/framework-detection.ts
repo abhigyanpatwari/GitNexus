@@ -10,6 +10,8 @@
  * (no bonus, no penalty) - same behavior as before this feature.
  */
 
+import { SupportedLanguages } from '../../config/supported-languages.js';
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -234,8 +236,8 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
     return { framework: 'go-mvc', entryPointMultiplier: 2.5, reason: 'go-controller' };
   }
   
-  // Go main.go files (THE entry point)
-  if (p.endsWith('/main.go') || p.endsWith('/cmd/') && p.endsWith('.go')) {
+  // Go main.go files (THE entry point) — only match main.go, not arbitrary .go files under cmd/
+  if (p.endsWith('/main.go')) {
     return { framework: 'go', entryPointMultiplier: 3.0, reason: 'go-main' };
   }
   
@@ -431,25 +433,36 @@ export const FRAMEWORK_AST_PATTERNS = {
   'blazor': ['@page', '[Parameter]', '@inject'],
   'efcore': ['DbContext', 'DbSet<', 'OnModelCreating'],
   
-  // Go patterns (function signatures)
-  'go-http': ['http.Handler', 'http.HandlerFunc', 'ServeHTTP'],
+  // Go patterns (function signatures include framework types)
+  'go-http': ['http.Handler', 'http.HandlerFunc', 'ServeHTTP', 'http.ResponseWriter', 'http.Request'],
+  'gin': ['gin.Context', 'gin.Default', 'gin.New'],
+  'echo': ['echo.Context', 'echo.New'],
+  'fiber': ['fiber.Ctx', 'fiber.New', 'fiber.App'],
+  'go-grpc': ['grpc.Server', 'RegisterServer', 'pb.Unimplemented'],
 
   // PHP/Laravel
   'laravel': ['Route::get', 'Route::post', 'Route::put', 'Route::delete',
               'Route::resource', 'Route::apiResource', '#[Route('],
 
-  // Rust macros
-  'actix': ['#[get', '#[post', '#[put', '#[delete'],
-  'axum': ['Router::new'],
-  'rocket': ['#[get', '#[post'],
+  // Rust macros (proc-macro attributes in definition text)
+  'actix': ['#[get', '#[post', '#[put', '#[delete', '#[actix_web', 'HttpRequest', 'HttpResponse'],
+  'axum': ['Router::new', 'axum::extract', 'axum::routing'],
+  'rocket': ['#[get', '#[post', '#[launch', 'rocket::'],
+  'tokio': ['#[tokio::main]', '#[tokio::test]'],
+
+  // C++ patterns (Qt, Boost)
+  'qt': ['Q_OBJECT', 'Q_INVOKABLE', 'Q_PROPERTY', 'Q_SIGNALS', 'Q_SLOTS', 'Q_SIGNAL', 'Q_SLOT', 'QWidget', 'QApplication'],
 
   // Swift/iOS
-  'uikit': ['viewDidLoad', 'viewWillAppear', 'viewDidAppear', 'UIViewController'],
-  'swiftui': ['@main', 'WindowGroup', 'ContentView', '@StateObject', '@ObservedObject'],
-  'combine': ['sink', 'assign', 'Publisher', 'Subscriber'],
-};
+  'uikit': ['viewDidLoad', 'viewWillAppear', 'viewDidAppear', 'UIViewController', '@IBOutlet', '@IBAction', '@objc'],
+  'swiftui': ['@main', 'WindowGroup', 'ContentView', '@StateObject', '@ObservedObject', '@EnvironmentObject', '@Published'],
+  'vapor': ['app.get', 'app.post', 'req.content.decode', 'Vapor'],
 
-import { SupportedLanguages } from '../../config/supported-languages.js';
+  // Ruby patterns (class-level macros in definition text)
+  'rails': ['ApplicationController', 'ApplicationRecord', 'ActiveRecord::Base',
+            'before_action', 'after_action', 'has_many', 'belongs_to', 'has_one', 'validates'],
+  'sinatra': ['Sinatra::Base', 'Sinatra::Application'],
+};
 
 interface AstFrameworkPatternConfig {
   framework: string;
@@ -458,7 +471,7 @@ interface AstFrameworkPatternConfig {
   patterns: string[];
 }
 
-const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE: Record<string, AstFrameworkPatternConfig[]> = {
+const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE = {
   [SupportedLanguages.JavaScript]: [
     { framework: 'nestjs', entryPointMultiplier: 3.2, reason: 'nestjs-decorator', patterns: FRAMEWORK_AST_PATTERNS.nestjs },
   ],
@@ -488,7 +501,33 @@ const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE: Record<string, AstFrameworkPatternConf
   [SupportedLanguages.PHP]: [
     { framework: 'laravel', entryPointMultiplier: 3.0, reason: 'php-route-attribute', patterns: FRAMEWORK_AST_PATTERNS.laravel },
   ],
-};
+  [SupportedLanguages.Go]: [
+    { framework: 'go-http', entryPointMultiplier: 2.5, reason: 'go-http-handler', patterns: FRAMEWORK_AST_PATTERNS['go-http'] },
+    { framework: 'gin', entryPointMultiplier: 3.0, reason: 'gin-handler', patterns: FRAMEWORK_AST_PATTERNS.gin },
+    { framework: 'echo', entryPointMultiplier: 3.0, reason: 'echo-handler', patterns: FRAMEWORK_AST_PATTERNS.echo },
+    { framework: 'fiber', entryPointMultiplier: 3.0, reason: 'fiber-handler', patterns: FRAMEWORK_AST_PATTERNS.fiber },
+    { framework: 'go-grpc', entryPointMultiplier: 2.8, reason: 'grpc-service', patterns: FRAMEWORK_AST_PATTERNS['go-grpc'] },
+  ],
+  [SupportedLanguages.Rust]: [
+    { framework: 'actix-web', entryPointMultiplier: 3.0, reason: 'actix-attribute', patterns: FRAMEWORK_AST_PATTERNS.actix },
+    { framework: 'axum', entryPointMultiplier: 3.0, reason: 'axum-routing', patterns: FRAMEWORK_AST_PATTERNS.axum },
+    { framework: 'rocket', entryPointMultiplier: 3.0, reason: 'rocket-attribute', patterns: FRAMEWORK_AST_PATTERNS.rocket },
+    { framework: 'tokio', entryPointMultiplier: 2.5, reason: 'tokio-runtime', patterns: FRAMEWORK_AST_PATTERNS.tokio },
+  ],
+  [SupportedLanguages.C]: [],  // C has no framework-specific AST patterns (POSIX/socket patterns are in entry-point-scoring)
+  [SupportedLanguages.CPlusPlus]: [
+    { framework: 'qt', entryPointMultiplier: 2.8, reason: 'qt-macro', patterns: FRAMEWORK_AST_PATTERNS.qt },
+  ],
+  [SupportedLanguages.Swift]: [
+    { framework: 'uikit', entryPointMultiplier: 2.5, reason: 'uikit-lifecycle', patterns: FRAMEWORK_AST_PATTERNS.uikit },
+    { framework: 'swiftui', entryPointMultiplier: 2.8, reason: 'swiftui-pattern', patterns: FRAMEWORK_AST_PATTERNS.swiftui },
+    { framework: 'vapor', entryPointMultiplier: 3.0, reason: 'vapor-routing', patterns: FRAMEWORK_AST_PATTERNS.vapor },
+  ],
+  [SupportedLanguages.Ruby]: [
+    { framework: 'rails', entryPointMultiplier: 3.0, reason: 'rails-pattern', patterns: FRAMEWORK_AST_PATTERNS.rails },
+    { framework: 'sinatra', entryPointMultiplier: 2.8, reason: 'sinatra-pattern', patterns: FRAMEWORK_AST_PATTERNS.sinatra },
+  ],
+} satisfies Record<SupportedLanguages, AstFrameworkPatternConfig[]>;
 
 /** Pre-lowercased patterns for O(1) pattern matching at runtime */
 const AST_PATTERNS_LOWERED: Record<string, Array<{ framework: string; entryPointMultiplier: number; reason: string; patterns: string[] }>> =

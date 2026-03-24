@@ -13,10 +13,12 @@
 // NODE TABLE NAMES
 // ============================================================================
 export const NODE_TABLES = [
-  'File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement', 'Community', 'Process',
+  'File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement', 'Community', 'Process', 'Section',
   // Multi-language support
   'Struct', 'Enum', 'Macro', 'Typedef', 'Union', 'Namespace', 'Trait', 'Impl',
-  'TypeAlias', 'Const', 'Static', 'Property', 'Record', 'Delegate', 'Annotation', 'Constructor', 'Template', 'Module'
+  'TypeAlias', 'Const', 'Static', 'Property', 'Record', 'Delegate', 'Annotation', 'Constructor', 'Template', 'Module',
+  'Route',
+  'Tool'
 ] as const;
 export type NodeTableName = typeof NODE_TABLES[number];
 
@@ -26,7 +28,8 @@ export type NodeTableName = typeof NODE_TABLES[number];
 export const REL_TABLE_NAME = 'CodeRelation';
 
 // Valid relation types
-export const REL_TYPES = ['CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'ACCESSES', 'OVERRIDES', 'MEMBER_OF', 'STEP_IN_PROCESS'] as const;
+// Note: WRAPS is reserved for future middleware graph traversal (not yet emitted)
+export const REL_TYPES = ['CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'ACCESSES', 'OVERRIDES', 'MEMBER_OF', 'STEP_IN_PROCESS', 'HANDLES_ROUTE', 'FETCHES', 'HANDLES_TOOL', 'ENTRY_POINT_OF', 'WRAPS'] as const;
 export type RelType = typeof REL_TYPES[number];
 
 // ============================================================================
@@ -192,6 +195,41 @@ export const ANNOTATION_SCHEMA = CODE_ELEMENT_BASE('Annotation');
 export const CONSTRUCTOR_SCHEMA = CODE_ELEMENT_BASE('Constructor');
 export const TEMPLATE_SCHEMA = CODE_ELEMENT_BASE('Template');
 export const MODULE_SCHEMA = CODE_ELEMENT_BASE('Module');
+// API route endpoints (Next.js, Express, etc.)
+export const ROUTE_SCHEMA = `
+CREATE NODE TABLE Route (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  responseKeys STRING[],
+  errorKeys STRING[],
+  middleware STRING[],
+  PRIMARY KEY (id)
+)`;
+
+// MCP tool definitions
+export const TOOL_SCHEMA = `
+CREATE NODE TABLE Tool (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  description STRING,
+  PRIMARY KEY (id)
+)`;
+
+// Markdown heading sections
+export const SECTION_SCHEMA = `
+CREATE NODE TABLE Section (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  level INT64,
+  content STRING,
+  description STRING,
+  PRIMARY KEY (id)
+)`;
 
 // ============================================================================
 // RELATION TABLE SCHEMA
@@ -225,6 +263,7 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM File TO \`Constructor\`,
   FROM File TO \`Template\`,
   FROM File TO \`Module\`,
+  FROM File TO Section,
   FROM Folder TO Folder,
   FROM Folder TO File,
   FROM Function TO Function,
@@ -289,6 +328,14 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM \`Template\` TO Interface,
   FROM \`Template\` TO \`Constructor\`,
   FROM \`Module\` TO \`Module\`,
+  FROM Section TO Section,
+  FROM Section TO File,
+  FROM File TO Route,
+  FROM Function TO Route,
+  FROM Method TO Route,
+  FROM File TO Tool,
+  FROM Function TO Tool,
+  FROM Method TO Tool,
   FROM CodeElement TO Community,
   FROM Interface TO Community,
   FROM Interface TO Function,
@@ -387,6 +434,8 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM \`Annotation\` TO Process,
   FROM \`Template\` TO Process,
   FROM CodeElement TO Process,
+  FROM Route TO Process,
+  FROM Tool TO Process,
   type STRING,
   confidence DOUBLE,
   reason STRING,
@@ -398,10 +447,19 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
 // Separate table for vector storage to avoid copy-on-write overhead
 // ============================================================================
 
+/** Embedding vector dimensions. Default 384 (snowflake-arctic-embed-xs). */
+const _rawDims = parseInt(process.env.GITNEXUS_EMBEDDING_DIMS ?? '384', 10);
+if (Number.isNaN(_rawDims) || _rawDims <= 0) {
+  throw new Error(
+    `GITNEXUS_EMBEDDING_DIMS must be a positive integer, got "${process.env.GITNEXUS_EMBEDDING_DIMS}"`,
+  );
+}
+export const EMBEDDING_DIMS = _rawDims;
+
 export const EMBEDDING_SCHEMA = `
 CREATE NODE TABLE ${EMBEDDING_TABLE_NAME} (
   nodeId STRING,
-  embedding FLOAT[384],
+  embedding FLOAT[${EMBEDDING_DIMS}],
   PRIMARY KEY (nodeId)
 )`;
 
@@ -447,6 +505,12 @@ export const NODE_SCHEMA_QUERIES = [
   CONSTRUCTOR_SCHEMA,
   TEMPLATE_SCHEMA,
   MODULE_SCHEMA,
+  // Markdown support
+  SECTION_SCHEMA,
+  // API routes
+  ROUTE_SCHEMA,
+  // MCP tools
+  TOOL_SCHEMA,
 ];
 
 export const REL_SCHEMA_QUERIES = [

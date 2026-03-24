@@ -70,3 +70,5 @@ gitnexus/test/fixtures/lang-resolution/**/bin
 GitNexus.sln
 # Git worktrees
 .worktrees/
+
+/github/scripts/triage/__pycache__/

@@ -20,5 +20,6 @@
     },
     "types": ["vite/client"]
   },
-  "include": ["src", "api/proxy-utils.ts"]
+  "include": ["src", "api/proxy-utils.ts"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }

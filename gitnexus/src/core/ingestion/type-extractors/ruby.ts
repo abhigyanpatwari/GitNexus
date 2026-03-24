@@ -389,8 +389,22 @@ const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) =>
   const varName = lhsNode.text;
   if (scopeEnv.has(varName)) return undefined;
   const rhsNode = node.childForFieldName('right');
-  if (!rhsNode || rhsNode.type !== 'identifier') return undefined;
-  return { kind: 'copy', lhs: varName, rhs: rhsNode.text };
+  if (!rhsNode) return undefined;
+  if (rhsNode.type === 'identifier') return { kind: 'copy', lhs: varName, rhs: rhsNode.text };
+  // call/method_call RHS — Ruby uses method calls for both field access and method calls
+  if (rhsNode.type === 'call' || rhsNode.type === 'method_call') {
+    const methodNode = rhsNode.childForFieldName('method');
+    const receiverNode = rhsNode.childForFieldName('receiver');
+    if (!receiverNode && methodNode?.type === 'identifier') {
+      // No receiver → callResult (bare function call)
+      return { kind: 'callResult', lhs: varName, callee: methodNode.text };
+    }
+    if (receiverNode?.type === 'identifier' && methodNode?.type === 'identifier') {
+      // With receiver → methodCallResult (a.method)
+      return { kind: 'methodCallResult', lhs: varName, receiver: receiverNode.text, method: methodNode.text };
+    }
+  }
+  return undefined;
 };
 
 export const typeConfig: LanguageTypeConfig = {

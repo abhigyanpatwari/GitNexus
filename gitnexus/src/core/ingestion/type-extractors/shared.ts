@@ -275,7 +275,11 @@ export const extractSimpleTypeName = (typeNode: SyntaxNode, depth = 0): string |
 
   // Primitive/predefined types: string, int, float, bool, number, unknown, any
   // PHP: primitive_type; TS/JS: predefined_type
-  if (typeNode.type === 'primitive_type' || typeNode.type === 'predefined_type') {
+  // Java: integral_type (int/long/short/byte), floating_point_type (float/double),
+  //       boolean_type (boolean), void_type (void)
+  if (typeNode.type === 'primitive_type' || typeNode.type === 'predefined_type'
+    || typeNode.type === 'integral_type' || typeNode.type === 'floating_point_type'
+    || typeNode.type === 'boolean_type' || typeNode.type === 'void_type') {
     return typeNode.text;
   }
 
@@ -310,6 +314,11 @@ export const extractVarName = (node: SyntaxNode): string | undefined => {
   }
   // Rust: let mut x = ... — mut_pattern wraps an identifier
   if (node.type === 'mut_pattern') {
+    const inner = node.firstNamedChild;
+    if (inner) return extractVarName(inner);
+  }
+  // Swift: pattern node wraps a simple_identifier
+  if (node.type === 'pattern') {
     const inner = node.firstNamedChild;
     if (inner) return extractVarName(inner);
   }
@@ -491,15 +500,6 @@ export const extractCalleeName = (callNode: SyntaxNode): string | undefined => {
   const func = callNode.childForFieldName('function') ?? callNode.firstNamedChild;
   if (!func) return undefined;
   return extractSimpleTypeName(func);
-};
-
-/** Find the first named child with the given node type */
-export const findChildByType = (node: SyntaxNode, type: string): SyntaxNode | null => {
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child?.type === type) return child;
-  }
-  return null;
 };
 
 // Internal helper: extract the first comma-separated argument from a string,

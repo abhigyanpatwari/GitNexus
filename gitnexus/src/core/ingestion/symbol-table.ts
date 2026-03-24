@@ -5,6 +5,13 @@ export interface SymbolDefinition {
   filePath: string;
   type: NodeLabel;
   parameterCount?: number;
+  /** Number of required (non-optional, non-default) parameters.
+   *  Enables range-based arity filtering: argCount >= requiredParameterCount && argCount <= parameterCount. */
+  requiredParameterCount?: number;
+  /** Per-parameter type names for overload disambiguation (e.g. ['int', 'String']).
+   *  Populated when parameter types are resolvable from AST (any typed language).
+   *  Used for disambiguation in overloading languages (Java, Kotlin, C#, C++). */
+  parameterTypes?: string[];
   /** Raw return type text extracted from AST (e.g. 'User', 'Promise<User>') */
   returnType?: string;
   /** Declared type for non-callable symbols — fields/properties (e.g. 'Address', 'List<User>') */
@@ -22,9 +29,9 @@ export interface SymbolTable {
     name: string,
     nodeId: string,
     type: NodeLabel,
-    metadata?: { parameterCount?: number; returnType?: string; declaredType?: string; ownerId?: string }
+    metadata?: { parameterCount?: number; requiredParameterCount?: number; parameterTypes?: string[]; returnType?: string; declaredType?: string; ownerId?: string }
   ) => void;
-  
+
   /**
    * High Confidence: Look for a symbol specifically inside a file
    * Returns the Node ID if found
@@ -34,8 +41,16 @@ export interface SymbolTable {
   /**
    * High Confidence: Look for a symbol in a specific file, returning full definition.
    * Includes type information needed for heritage resolution (Class vs Interface).
+   * Returns first matching definition — use lookupExactAll for overloaded methods.
    */
   lookupExactFull: (filePath: string, name: string) => SymbolDefinition | undefined;
+
+  /**
+   * High Confidence: Look for ALL symbols with this name in a specific file.
+   * Returns all definitions, including overloaded methods with the same name.
+   * Used by resolution-context to pass all same-file overloads to candidate filtering.
+   */
+  lookupExactAll: (filePath: string, name: string) => SymbolDefinition[];
 
   /**
    * Low Confidence: Look for a symbol anywhere in the project
@@ -69,9 +84,10 @@ export interface SymbolTable {
 }
 
 export const createSymbolTable = (): SymbolTable => {
-  // 1. File-Specific Index — stores full SymbolDefinition for O(1) lookupExactFull
-  // Structure: FilePath -> (SymbolName -> SymbolDefinition)
-  const fileIndex = new Map<string, Map<string, SymbolDefinition>>();
+  // 1. File-Specific Index — stores full SymbolDefinition(s) for O(1) lookup.
+  // Structure: FilePath -> (SymbolName -> SymbolDefinition[])
+  // Array allows overloaded methods (same name, different signatures) to coexist.
+  const fileIndex = new Map<string, Map<string, SymbolDefinition[]>>();
 
   // 2. Global Reverse Index (The "Backup")
   // Structure: SymbolName -> [List of Definitions]
@@ -93,13 +109,15 @@ export const createSymbolTable = (): SymbolTable => {
     name: string,
     nodeId: string,
     type: NodeLabel,
-    metadata?: { parameterCount?: number; returnType?: string; declaredType?: string; ownerId?: string }
+    metadata?: { parameterCount?: number; requiredParameterCount?: number; parameterTypes?: string[]; returnType?: string; declaredType?: string; ownerId?: string }
   ) => {
     const def: SymbolDefinition = {
       nodeId,
       filePath,
       type,
       ...(metadata?.parameterCount !== undefined ? { parameterCount: metadata.parameterCount } : {}),
+      ...(metadata?.requiredParameterCount !== undefined ? { requiredParameterCount: metadata.requiredParameterCount } : {}),
+      ...(metadata?.parameterTypes !== undefined ? { parameterTypes: metadata.parameterTypes } : {}),
       ...(metadata?.returnType !== undefined ? { returnType: metadata.returnType } : {}),
       ...(metadata?.declaredType !== undefined ? { declaredType: metadata.declaredType } : {}),
       ...(metadata?.ownerId !== undefined ? { ownerId: metadata.ownerId } : {}),
@@ -109,7 +127,12 @@ export const createSymbolTable = (): SymbolTable => {
     if (!fileIndex.has(filePath)) {
       fileIndex.set(filePath, new Map());
     }
-    fileIndex.get(filePath)!.set(name, def);
+    const fileMap = fileIndex.get(filePath)!;
+    if (!fileMap.has(name)) {
+      fileMap.set(name, [def]);
+    } else {
+      fileMap.get(name)!.push(def);
+    }
 
     // B. Properties go to fieldByOwner index only — skip globalIndex to prevent
     // namespace pollution for common names like 'id', 'name', 'type'.
@@ -134,11 +157,17 @@ export const createSymbolTable = (): SymbolTable => {
   };
 
   const lookupExact = (filePath: string, name: string): string | undefined => {
-    return fileIndex.get(filePath)?.get(name)?.nodeId;
+    const defs = fileIndex.get(filePath)?.get(name);
+    return defs?.[0]?.nodeId;
   };
 
   const lookupExactFull = (filePath: string, name: string): SymbolDefinition | undefined => {
-    return fileIndex.get(filePath)?.get(name);
+    const defs = fileIndex.get(filePath)?.get(name);
+    return defs?.[0];
+  };
+
+  const lookupExactAll = (filePath: string, name: string): SymbolDefinition[] => {
+    return fileIndex.get(filePath)?.get(name) ?? [];
   };
 
   const lookupFuzzy = (name: string): SymbolDefinition[] => {
@@ -173,5 +202,5 @@ export const createSymbolTable = (): SymbolTable => {
     fieldByOwner.clear();
   };
 
-  return { add, lookupExact, lookupExactFull, lookupFuzzy, lookupFuzzyCallable, lookupFieldByOwner, getStats, clear };
+  return { add, lookupExact, lookupExactFull, lookupExactAll, lookupFuzzy, lookupFuzzyCallable, lookupFieldByOwner, getStats, clear };
 };

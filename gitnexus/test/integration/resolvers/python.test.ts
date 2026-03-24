@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, getRelationships, getNodesByLabel, edgeSet,
+  FIXTURES, CROSS_FILE_FIXTURES, getRelationships, getNodesByLabel, edgeSet,
   runPipelineFromRepo, type PipelineResult,
 } from './helpers.js';
 
@@ -282,6 +282,57 @@ describe('Python alias import resolution', () => {
     expect(imports.length).toBe(1);
     expect(imports[0].sourceFilePath).toBe('app.py');
     expect(imports[0].targetFilePath).toBe('models.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plain import alias: import models as m → m.User() resolves to models.py
+// ---------------------------------------------------------------------------
+
+describe('Python plain import alias resolution (import X as Y)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-plain-import-alias'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User classes in both models.py and auth.py', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('User');
+    expect(classes).toContain('Repo');
+  });
+
+  it('emits IMPORTS edges: app.py → models.py and app.py → auth.py', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const importFiles = imports
+      .filter(i => i.sourceFilePath === 'app.py')
+      .map(i => i.targetFilePath)
+      .sort();
+    expect(importFiles).toEqual(['auth.py', 'models.py']);
+  });
+
+  it('resolves m.User() and u.save() to models.py via alias', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c => c.target === 'save' && c.source === 'main');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('models.py');
+  });
+
+  it('resolves m.Repo() and r.persist() to models.py via alias', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const persistCall = calls.find(c => c.target === 'persist' && c.source === 'main');
+    expect(persistCall).toBeDefined();
+    expect(persistCall!.targetFilePath).toBe('models.py');
+  });
+
+  it('resolves a.User() and v.login() to auth.py via alias (disambiguation)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const loginCall = calls.find(c => c.target === 'login' && c.source === 'main');
+    expect(loginCall).toBeDefined();
+    expect(loginCall!.targetFilePath).toBe('auth.py');
   });
 });
 
@@ -1006,25 +1057,7 @@ describe('Python match/case as-pattern type binding', () => {
     expect(saveFns.length).toBe(2);
   });
 
-  it('DEBUG: shows pipeline result details', () => {
-    const calls = getRelationships(result, 'CALLS');
-    console.log('ALL CALLS:', JSON.stringify(calls.map(c => ({ source: c.source, target: c.target, targetFilePath: c.targetFilePath }))));
-    // Check all relationships
-    const allRels: string[] = [];
-    result.graph.iterRelationships && [...result.graph.iterRelationships()].forEach(r => {
-      const src = result.graph.getNode(r.sourceId);
-      const tgt = result.graph.getNode(r.targetId);
-      allRels.push(r.type + ': ' + src?.properties.name + ' -> ' + tgt?.properties.name);
-    });
-    console.log('ALL RELATIONSHIPS:', allRels.join(', '));
-    expect(true).toBe(true);
-  });
-
-  // Skip: call extraction issue, NOT a type-env limitation.
-  // Type-env binding works correctly (unit test passes). The root cause is likely
-  // in call-processor's findEnclosingFunction scope resolution within match_statement
-  // blocks, not the tree-sitter query patterns (which descend recursively by default).
-  it.skip('resolves u.save() to User#save via match/case as-pattern binding', () => {
+  it('resolves u.save() to User#save via match/case as-pattern binding', () => {
     const calls = getRelationships(result, 'CALLS');
     const userSave = calls.find(c =>
       c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('user.py'),
@@ -1032,7 +1065,7 @@ describe('Python match/case as-pattern type binding', () => {
     expect(userSave).toBeDefined();
   });
 
-  it.skip('does NOT resolve u.save() to Repo#save (negative disambiguation)', () => {
+  it('does NOT resolve u.save() to Repo#save (negative disambiguation)', () => {
     const calls = getRelationships(result, 'CALLS');
     const wrongSave = calls.find(c =>
       c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('repo.py'),
@@ -1380,5 +1413,364 @@ describe('Write access tracking (Python)', () => {
     expect(nameWrite!.source).toBe('update_user');
     expect(addressWrite).toBeDefined();
     expect(addressWrite!.source).toBe('update_user');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Call-result variable binding (Phase 9): user = get_user(); user.save()
+// ---------------------------------------------------------------------------
+
+describe('Python call-result variable binding (Tier 2b)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-call-result-binding'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.save() to User#save via call-result binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'process_user' && c.targetFilePath.includes('models')
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Method chain binding (Phase 9C): get_user() → .get_city() → .save()
+// ---------------------------------------------------------------------------
+
+describe('Python method chain binding via unified fixpoint (Phase 9C)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-method-chain-binding'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves city.save() to City#save via method chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'process_chain' && c.targetFilePath.includes('models')
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase B: Deep MRO — walkParentChain() at depth 2 (C→B→A)
+// greet() is defined on A, accessed via C. Tests BFS depth-2 parent traversal.
+// ---------------------------------------------------------------------------
+
+describe('Python grandparent method resolution via MRO (Phase B)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-grandparent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects A, B, C, Greeting classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('A');
+    expect(classes).toContain('B');
+    expect(classes).toContain('C');
+    expect(classes).toContain('Greeting');
+  });
+
+  it('emits EXTENDS edges: B→A, C→B', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('B → A');
+    expect(edgeSet(extends_)).toContain('C → B');
+  });
+
+  it('resolves c.greet().save() to Greeting#save via depth-2 MRO lookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.targetFilePath.includes('greeting'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves c.greet() to A#greet (method found via MRO walk)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCall = calls.find(c =>
+      c.target === 'greet' && c.targetFilePath.includes('a.py'),
+    );
+    expect(greetCall).toBeDefined();
+  });
+});
+
+// ── Phase P: Default Parameter Arity Resolution ──────────────────────────
+
+describe('Python default parameter arity resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-default-params'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves greet("alice") with 1 arg to greet with 2 params (1 default)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCalls = calls.filter(c => c.source === 'process' && c.target === 'greet');
+    expect(greetCalls.length).toBe(1);
+  });
+
+  it('resolves search("test") with 1 arg to search with 2 params (1 default)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const searchCalls = calls.filter(c => c.source === 'process' && c.target === 'search');
+    expect(searchCalls.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 14: Cross-file binding propagation
+// models.py exports get_user() -> User
+// app.py imports get_user, calls u = get_user(); u.save(); u.get_name()
+// → u is typed User via cross-file return type propagation
+// ---------------------------------------------------------------------------
+
+describe('Python cross-file binding propagation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(CROSS_FILE_FIXTURES, 'py-cross-file'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User class with save and get_name methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Function')).toContain('get_name');
+  });
+
+  it('detects get_user and run functions', () => {
+    expect(getNodesByLabel(result, 'Function')).toContain('get_user');
+    expect(getNodesByLabel(result, 'Function')).toContain('run');
+  });
+
+  it('emits IMPORTS edge from app.py to models.py', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const edge = imports.find(e =>
+      e.sourceFilePath.includes('app') && e.targetFilePath.includes('models'),
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('resolves u.save() in run() to User#save via cross-file return type propagation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'run' &&
+      c.targetFilePath.includes('models'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves u.get_name() in run() to User#get_name via cross-file return type propagation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCall = calls.find(c =>
+      c.target === 'get_name' &&
+      c.source === 'run' &&
+      c.targetFilePath.includes('models'),
+    );
+    expect(getNameCall).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edges linking save and get_name to User', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const saveEdge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
+    const getNameEdge = hasMethod.find(e => e.source === 'User' && e.target === 'get_name');
+    expect(saveEdge).toBeDefined();
+    expect(getNameEdge).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Module import: `import models; models.User()` should produce CALLS edges
+// even when multiple imported modules export a class with the same name.
+// Python's `import models` is a namespace import — moduleAliasMap maps the
+// module alias to its source file, enabling resolveCallTarget to disambiguate
+// `models.User()` from `auth.User()` when both modules export `User`.
+// ---------------------------------------------------------------------------
+
+describe('Python module import CALLS resolution (Issue #337)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-module-import'),
+      () => {},
+    );
+  }, 60000);
+
+  // ── Node detection ──────────────────────────────────────────────────
+
+  it('detects exactly 3 Class nodes: User (×2) and Admin (×1)', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes.length).toBe(3);
+    expect(classes.filter(c => c === 'User').length).toBe(2);
+    expect(classes.filter(c => c === 'Admin').length).toBe(1);
+  });
+
+  it('detects exactly 3 Function nodes: save, verify, login', () => {
+    const fns = getNodesByLabel(result, 'Function');
+    expect(fns.length).toBe(3);
+    expect(fns).toContain('save');
+    expect(fns).toContain('verify');
+    expect(fns).toContain('login');
+  });
+
+  // ── IMPORTS edges ───────────────────────────────────────────────────
+
+  it('emits exactly 2 IMPORTS edges from app.py', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const appImports = imports.filter(e => e.sourceFilePath === 'app.py');
+    expect(appImports.length).toBe(2);
+  });
+
+  it('resolves `import models` IMPORTS edge: app.py → models.py', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const toModels = imports.find(e =>
+      e.sourceFilePath === 'app.py' && e.targetFilePath === 'models.py',
+    );
+    expect(toModels).toBeDefined();
+  });
+
+  it('resolves `import auth` IMPORTS edge: app.py → auth.py', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const toAuth = imports.find(e =>
+      e.sourceFilePath === 'app.py' && e.targetFilePath === 'auth.py',
+    );
+    expect(toAuth).toBeDefined();
+  });
+
+  it('no IMPORTS edge from models.py or auth.py (they import nothing)', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const fromModels = imports.filter(e => e.sourceFilePath === 'models.py');
+    const fromAuth = imports.filter(e => e.sourceFilePath === 'auth.py');
+    expect(fromModels.length).toBe(0);
+    expect(fromAuth.length).toBe(0);
+  });
+
+  // ── CALLS edges: key regression test (Issue #337) ───────────────────
+
+  it('resolves models.User() CALLS edge from app.py to models.py:User', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userCall = calls.find(c =>
+      c.target === 'User' && c.targetFilePath === 'models.py' && c.sourceFilePath === 'app.py',
+    );
+    expect(userCall).toBeDefined();
+  });
+
+  it('resolves auth.Admin() CALLS edge from app.py to auth.py:Admin', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const adminCall = calls.find(c =>
+      c.target === 'Admin' && c.targetFilePath === 'auth.py' && c.sourceFilePath === 'app.py',
+    );
+    expect(adminCall).toBeDefined();
+  });
+
+  it('resolves u.save() method call from app.py to models.py:save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.targetFilePath === 'models.py' && c.sourceFilePath === 'app.py',
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves a.login() method call from app.py to auth.py:login', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const loginCall = calls.find(c =>
+      c.target === 'login' && c.targetFilePath === 'auth.py' && c.sourceFilePath === 'app.py',
+    );
+    expect(loginCall).toBeDefined();
+  });
+
+  // ── Negative tests ──────────────────────────────────────────────────
+
+  it('no CALLS edges originate from models.py or auth.py (they have no callers)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fromModels = calls.filter(c => c.sourceFilePath === 'models.py');
+    const fromAuth = calls.filter(c => c.sourceFilePath === 'auth.py');
+    expect(fromModels.length).toBe(0);
+    expect(fromAuth.length).toBe(0);
+  });
+
+  it('Admin() does NOT resolve to models.py (Admin only exists in auth.py)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongAdmin = calls.find(c =>
+      c.target === 'Admin' && c.targetFilePath === 'models.py',
+    );
+    expect(wrongAdmin).toBeUndefined();
+  });
+
+  it('no EXTENDS edges (no inheritance in this fixture)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(0);
+  });
+
+  // ── Same-name cross-module disambiguation ───────────────────────────
+
+  it('resolves auth.User() CALLS edge to auth.py:User (not models.py:User)', () => {
+    // Both models.py and auth.py export User. moduleAliasMap maps
+    // receiverName='auth' → auth.py for correct disambiguation.
+    const calls = getRelationships(result, 'CALLS');
+    const authUserCall = calls.find(c =>
+      c.target === 'User' && c.targetFilePath === 'auth.py' && c.sourceFilePath === 'app.py',
+    );
+    expect(authUserCall).toBeDefined();
+  });
+
+  it('models.User() and auth.User() resolve to DIFFERENT files', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userCalls = calls.filter(c =>
+      c.target === 'User' && c.sourceFilePath === 'app.py',
+    );
+    expect(userCalls.length).toBe(2);
+    const targetFiles = new Set(userCalls.map(c => c.targetFilePath));
+    expect(targetFiles.size).toBe(2);
+    expect(targetFiles).toContain('models.py');
+    expect(targetFiles).toContain('auth.py');
+  });
+
+  it('v.verify() resolves to auth.py:verify (via auth.User() constructor inference)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const verifyCall = calls.find(c =>
+      c.target === 'verify' && c.targetFilePath === 'auth.py' && c.sourceFilePath === 'app.py',
+    );
+    expect(verifyCall).toBeDefined();
+  });
+
+  // ── HAS_METHOD edges ────────────────────────────────────────────────
+
+  it('emits HAS_METHOD edges linking methods to their classes', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    // models.py: User → save
+    const modelsUserSave = hasMethod.find(e =>
+      e.source === 'User' && e.target === 'save' && e.sourceFilePath === 'models.py',
+    );
+    expect(modelsUserSave).toBeDefined();
+    // auth.py: User → verify, Admin → login
+    const authUserVerify = hasMethod.find(e =>
+      e.source === 'User' && e.target === 'verify' && e.sourceFilePath === 'auth.py',
+    );
+    const authAdminLogin = hasMethod.find(e =>
+      e.source === 'Admin' && e.target === 'login' && e.sourceFilePath === 'auth.py',
+    );
+    expect(authUserVerify).toBeDefined();
+    expect(authAdminLogin).toBeDefined();
   });
 });

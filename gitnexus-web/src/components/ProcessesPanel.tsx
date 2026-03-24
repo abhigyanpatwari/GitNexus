@@ -11,6 +11,9 @@ import { useAppState } from '../hooks/useAppState';
 import { ProcessFlowModal } from './ProcessFlowModal';
 import type { ProcessData, ProcessStep } from '../lib/mermaid-generator';
 
+/** Validate that an ID contains only expected node identifier characters (no Cypher metacharacters or spaces) */
+const isSafeId = (id: string): boolean => /^[a-zA-Z0-9_:.\-/@]+$/.test(id);
+
 export const ProcessesPanel = () => {
     const { graph, runQuery, setHighlightedNodeIds, highlightedNodeIds } = useAppState();
     const [searchQuery, setSearchQuery] = useState('');
@@ -79,7 +82,7 @@ export const ProcessesPanel = () => {
         setLoadingProcess('all');
 
         try {
-            const allProcessIds = [...processes.cross, ...processes.intra].map(p => p.id);
+            const allProcessIds = [...processes.cross, ...processes.intra].map(p => p.id).filter(isSafeId);
 
             if (allProcessIds.length === 0) return;
 
@@ -110,7 +113,7 @@ export const ProcessesPanel = () => {
             }
 
             const allSteps = Array.from(allStepsMap.values());
-            const stepIds = allSteps.map(s => s.id);
+            const stepIds = allSteps.map(s => s.id).filter(isSafeId);
 
             // Query for all CALLS edges between the combined steps
             if (stepIds.length > 0) {
@@ -155,6 +158,7 @@ export const ProcessesPanel = () => {
 
     // Load process steps and open modal
     const handleViewProcess = useCallback(async (processId: string, label: string, processType: string) => {
+        if (!isSafeId(processId)) return;
         setLoadingProcess(processId);
 
         try {
@@ -175,7 +179,7 @@ export const ProcessesPanel = () => {
             }));
 
             // Get step IDs for edge query
-            const stepIds = steps.map(s => s.id);
+            const stepIds = steps.map(s => s.id).filter(isSafeId);
 
             // Query for CALLS edges between the steps in this process
             let edges: Array<{ from: string; to: string; type: string }> = [];
@@ -228,6 +232,7 @@ export const ProcessesPanel = () => {
 
     // Toggle focus for any process - loads steps on demand
     const handleToggleFocusForProcess = useCallback(async (processId: string) => {
+        if (!isSafeId(processId)) return;
         // If already focused on this process, turn off
         if (focusedProcessId === processId) {
             setHighlightedNodeIds(new Set());

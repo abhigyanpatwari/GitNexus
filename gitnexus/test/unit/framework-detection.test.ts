@@ -140,6 +140,11 @@ describe('detectFrameworkFromPath', () => {
       expect(result).not.toBeNull();
       expect(result!.entryPointMultiplier).toBe(3.0);
     });
+
+    it('does NOT treat Go helper files under cmd/ as entry points', () => {
+      expect(detectFrameworkFromPath('cmd/server/internal/util.go')).toBeNull();
+      expect(detectFrameworkFromPath('cmd/foo/config/setup.go')).toBeNull();
+    });
   });
 
   describe('Rust frameworks', () => {
@@ -299,8 +304,14 @@ describe('detectFrameworkFromAST', () => {
     expect(result!.framework).toBe('laravel');
   });
 
-  it('returns null for unsupported language', () => {
-    expect(detectFrameworkFromAST('rust', '#[get("/")]')).toBeNull();
+  it('detects Actix-web route attributes in Rust', () => {
+    const result = detectFrameworkFromAST('rust', '#[get("/")]');
+    expect(result).not.toBeNull();
+    expect(result!.framework).toBe('actix-web');
+  });
+
+  it('returns null for language with no matching pattern', () => {
+    expect(detectFrameworkFromAST('c', 'int main() { return 0; }')).toBeNull();
   });
 
   it('is case-insensitive', () => {
@@ -313,8 +324,9 @@ describe('FRAMEWORK_AST_PATTERNS', () => {
   it('has patterns for all expected frameworks', () => {
     const expectedFrameworks = [
       'nestjs', 'express', 'fastapi', 'flask', 'spring', 'jaxrs',
-      'aspnet', 'go-http', 'laravel', 'actix', 'axum', 'rocket',
-      'uikit', 'swiftui', 'combine',
+      'aspnet', 'go-http', 'gin', 'echo', 'fiber', 'go-grpc',
+      'laravel', 'actix', 'axum', 'rocket', 'tokio', 'qt',
+      'uikit', 'swiftui', 'vapor', 'rails', 'sinatra',
     ];
     for (const fw of expectedFrameworks) {
       expect(FRAMEWORK_AST_PATTERNS).toHaveProperty(fw);

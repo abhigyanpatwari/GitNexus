@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Code, PanelLeftClose, PanelLeft, Trash2, X, Target, FileCode, Sparkles, MousePointerClick } from 'lucide-react';
+import { Code, PanelLeftClose, PanelLeft, Trash2, X, Target, FileCode, Sparkles, MousePointerClick } from '@/lib/lucide-icons';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useAppState } from '../hooks/useAppState';
+import type { GraphNode } from '../core/graph/types';
 import { NODE_COLORS } from '../lib/constants';
 
 /** Map file extension to Prism syntax highlighter language identifier */
@@ -74,6 +75,11 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     setSelectedNode,
     codeReferenceFocus,
   } = useAppState();
+
+  const nodeById = useMemo(() => {
+    if (!graph) return new Map<string, GraphNode>();
+    return new Map(graph.nodes.map(n => [n.id, n]));
+  }, [graph]);
 
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [glowRefId, setGlowRefId] = useState<string | null>(null);
@@ -161,8 +167,9 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     if (!target) return;
 
     // Double rAF: wait for collapse state + list DOM to render.
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
+    const rafIds: number[] = [];
+    const outerRafId = requestAnimationFrame(() => {
+      const innerRafId = requestAnimationFrame(() => {
         const el = refCardEls.current.get(target.id);
         if (!el) return;
 
@@ -177,7 +184,13 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
           glowTimerRef.current = null;
         }, 1200);
       });
+      rafIds.push(innerRafId);
     });
+    rafIds.push(outerRafId);
+
+    return () => {
+      rafIds.forEach(id => cancelAnimationFrame(id));
+    };
   }, [codeReferenceFocus?.ts, aiReferences]);
 
   const refsWithSnippets = useMemo(() => {
@@ -414,7 +427,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                         const nodeId = ref.nodeId!;
                         // Sync selection + focus graph
                         if (graph) {
-                          const node = graph.nodes.find((n) => n.id === nodeId);
+                          const node = nodeById.get(nodeId);
                           if (node) setSelectedNode(node);
                         }
                         onFocusNode(nodeId);

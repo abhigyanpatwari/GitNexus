@@ -18,6 +18,12 @@ import { SupportedLanguages } from '../../config/supported-languages.js';
 /** null = this call was not routed; fall through to default call handling */
 export type CallRoutingResult = RubyCallRouting | null;
 
+/**
+ * Per-language call router.
+ * IMPORTANT: Call-routed imports bypass preprocessImportPath(), so any router that
+ * returns an importPath MUST validate it independently (length cap, control-char
+ * rejection). See routeRubyCall for the reference implementation.
+ */
 export type CallRouter = (
   calledName: string,
   callNode: any,

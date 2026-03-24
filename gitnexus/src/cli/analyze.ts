@@ -15,7 +15,7 @@ import { initLbug, loadGraphToLbug, getLbugStats, executeQuery, executeWithReuse
 // versions whose ABI is not yet supported by the native binary (#89).
 // disposeEmbedder intentionally not called — ONNX Runtime segfaults on cleanup (see #38)
 import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath, cleanupOldKuzuFiles } from '../storage/repo-manager.js';
-import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
+import { getCurrentCommit, getGitRoot, hasGitDir } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
 import { generateSkillFiles, type GeneratedSkillInfo } from './skill-gen.js';
 import fs from 'fs/promises';
@@ -48,6 +48,8 @@ export interface AnalyzeOptions {
   embeddings?: boolean;
   skills?: boolean;
   verbose?: boolean;
+  /** Index the folder even when no .git directory is present. */
+  skipGit?: boolean;
 }
 
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
@@ -87,17 +89,26 @@ export const analyzeCommand = async (
   } else {
     const gitRoot = getGitRoot(process.cwd());
     if (!gitRoot) {
-      console.log('  Not inside a git repository\n');
-      process.exitCode = 1;
-      return;
+      if (!options?.skipGit) {
+        console.log('  Not inside a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n');
+        process.exitCode = 1;
+        return;
+      }
+      // --skip-git: fall back to cwd as the root
+      repoPath = path.resolve(process.cwd());
+    } else {
+      repoPath = gitRoot;
     }
-    repoPath = gitRoot;
   }
 
-  if (!isGitRepo(repoPath)) {
-    console.log('  Not a git repository\n');
+  const repoHasGit = hasGitDir(repoPath);
+  if (!repoHasGit && !options?.skipGit) {
+    console.log('  Not a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n');
     process.exitCode = 1;
     return;
+  }
+  if (!repoHasGit) {
+    console.log('  Warning: no .git directory found \u2014 commit-tracking and incremental updates disabled.\n');
   }
 
   const { storagePath, lbugPath } = getStoragePaths(repoPath);
@@ -109,12 +120,15 @@ export const analyzeCommand = async (
     console.log('  Migrating from KuzuDB to LadybugDB — rebuilding index...\n');
   }
 
-  const currentCommit = getCurrentCommit(repoPath);
+  const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
   const existingMeta = await loadMeta(storagePath);
 
   if (existingMeta && !options?.force && !options?.skills && existingMeta.lastCommit === currentCommit) {
-    console.log('  Already up to date\n');
-    return;
+    // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
+    if (currentCommit !== '') {
+      console.log('  Already up to date\n');
+      return;
+    }
   }
 
   if (process.env.GITNEXUS_NO_GITIGNORE) {
@@ -246,17 +260,27 @@ export const analyzeCommand = async (
 
   // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
   if (cachedEmbeddings.length > 0) {
-    updateBar(88, `Restoring ${cachedEmbeddings.length} cached embeddings...`);
-    const EMBED_BATCH = 200;
-    for (let i = 0; i < cachedEmbeddings.length; i += EMBED_BATCH) {
-      const batch = cachedEmbeddings.slice(i, i + EMBED_BATCH);
-      const paramsList = batch.map(e => ({ nodeId: e.nodeId, embedding: e.embedding }));
-      try {
-        await executeWithReusedStatement(
-          `CREATE (e:CodeEmbedding {nodeId: $nodeId, embedding: $embedding})`,
-          paramsList,
-        );
-      } catch { /* some may fail if node was removed, that's fine */ }
+    // Check if cached embedding dimensions match current schema
+    const cachedDims = cachedEmbeddings[0].embedding.length;
+    const { EMBEDDING_DIMS } = await import('../core/lbug/schema.js');
+    if (cachedDims !== EMBEDDING_DIMS) {
+      // Dimensions changed (e.g. switched embedding model) — discard cache and re-embed all
+      console.error(`⚠️  Embedding dimensions changed (${cachedDims}d → ${EMBEDDING_DIMS}d), discarding cache`);
+      cachedEmbeddings = [];
+      cachedEmbeddingNodeIds = new Set();
+    } else {
+      updateBar(88, `Restoring ${cachedEmbeddings.length} cached embeddings...`);
+      const EMBED_BATCH = 200;
+      for (let i = 0; i < cachedEmbeddings.length; i += EMBED_BATCH) {
+        const batch = cachedEmbeddings.slice(i, i + EMBED_BATCH);
+        const paramsList = batch.map(e => ({ nodeId: e.nodeId, embedding: e.embedding }));
+        try {
+          await executeWithReusedStatement(
+            `CREATE (e:CodeEmbedding {nodeId: $nodeId, embedding: $embedding})`,
+            paramsList,
+          );
+        } catch { /* some may fail if node was removed, that's fine */ }
+      }
     }
   }
 
@@ -275,7 +299,9 @@ export const analyzeCommand = async (
   }
 
   if (!embeddingSkipped) {
-    updateBar(90, 'Loading embedding model...');
+    const { isHttpMode } = await import('../core/embeddings/http-client.js');
+    const httpMode = isHttpMode();
+    updateBar(90, httpMode ? 'Connecting to embedding endpoint...' : 'Loading embedding model...');
     const t0Emb = Date.now();
     const { runEmbeddingPipeline } = await import('../core/embeddings/embedding-pipeline.js');
     await runEmbeddingPipeline(
@@ -283,7 +309,9 @@ export const analyzeCommand = async (
       executeWithReusedStatement,
       (progress) => {
         const scaled = 90 + Math.round((progress.percent / 100) * 8);
-        const label = progress.phase === 'loading-model' ? 'Loading embedding model...' : `Embedding ${progress.nodesProcessed || 0}/${progress.totalNodes || '?'}`;
+        const label = progress.phase === 'loading-model'
+          ? (httpMode ? 'Connecting to embedding endpoint...' : 'Loading embedding model...')
+          : `Embedding ${progress.nodesProcessed || 0}/${progress.totalNodes || '?'}`;
         updateBar(scaled, label);
       },
       {},
@@ -317,7 +345,12 @@ export const analyzeCommand = async (
   };
   await saveMeta(storagePath, meta);
   await registerRepo(repoPath, meta);
-  await addToGitignore(repoPath);
+  // Only attempt to update .gitignore when a .git directory is present.
+  // Use hasGitDir (filesystem check) rather than git CLI subprocess
+  // so we skip correctly for --skip-git folders even if git CLI is available.
+  if (hasGitDir(repoPath)) {
+    await addToGitignore(repoPath);
+  }
 
   const projectName = path.basename(repoPath);
   let aggregatedClusterCount = 0;

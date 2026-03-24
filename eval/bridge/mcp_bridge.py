@@ -2,7 +2,7 @@
 MCP Bridge for GitNexus
 
 Starts the GitNexus MCP server as a subprocess and provides a Python interface
-to call MCP tools. Used by the bash wrapper scripts and the augmentation layer.
+to call MCP tools. Used by the bash wrapper scripts and the augmentation layer..
 
 The bridge communicates with the MCP server via stdio using the JSON-RPC protocol.
 """

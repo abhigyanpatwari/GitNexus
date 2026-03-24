@@ -5,9 +5,9 @@
  * All API keys are stored locally - never sent to any server except the LLM provider.
  */
 
-import { 
-  LLMSettings, 
-  DEFAULT_LLM_SETTINGS, 
+import {
+  LLMSettings,
+  DEFAULT_LLM_SETTINGS,
   LLMProvider,
   OpenAIConfig,
   AzureOpenAIConfig,
@@ -15,52 +15,93 @@ import {
   AnthropicConfig,
   OllamaConfig,
   OpenRouterConfig,
+  MiniMaxConfig,
+  GLMConfig,
   ProviderConfig,
 } from './types';
+import { DEFAULT_OPENROUTER_BASE_URL, DEFAULT_OLLAMA_BASE_URL } from '../../config/ui-constants';
 
 const STORAGE_KEY = 'gitnexus-llm-settings';
 
+const mergeWithDefaults = (parsed?: Partial<LLMSettings> | null): LLMSettings => ({
+  ...DEFAULT_LLM_SETTINGS,
+  ...parsed,
+  openai: {
+    ...DEFAULT_LLM_SETTINGS.openai,
+    ...parsed?.openai,
+  },
+  azureOpenAI: {
+    ...DEFAULT_LLM_SETTINGS.azureOpenAI,
+    ...parsed?.azureOpenAI,
+  },
+  gemini: {
+    ...DEFAULT_LLM_SETTINGS.gemini,
+    ...parsed?.gemini,
+  },
+  anthropic: {
+    ...DEFAULT_LLM_SETTINGS.anthropic,
+    ...parsed?.anthropic,
+  },
+  ollama: {
+    ...DEFAULT_LLM_SETTINGS.ollama,
+    ...parsed?.ollama,
+  },
+  openrouter: {
+    ...DEFAULT_LLM_SETTINGS.openrouter,
+    ...parsed?.openrouter,
+  },
+  minimax: {
+    ...DEFAULT_LLM_SETTINGS.minimax,
+    ...parsed?.minimax,
+  },
+  glm: {
+    ...DEFAULT_LLM_SETTINGS.glm,
+    ...parsed?.glm,
+  },
+});
+
+const readSettings = (storage: Storage): Partial<LLMSettings> | null => {
+  const raw = storage.getItem(STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Partial<LLMSettings>;
+  } catch (error) {
+    console.warn('Failed to parse LLM settings:', error);
+    return null;
+  }
+};
+
+const writeSettings = (storage: Storage, settings: LLMSettings): void => {
+  storage.setItem(STORAGE_KEY, JSON.stringify(settings));
+};
+
 /**
- * Load settings from localStorage
+ * Load settings from sessionStorage (migrates legacy localStorage once).
  */
 export const loadSettings = (): LLMSettings => {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (!stored) {
-      return DEFAULT_LLM_SETTINGS;
+    const sessionData = typeof sessionStorage !== 'undefined' ? readSettings(sessionStorage) : null;
+    if (sessionData) {
+      return mergeWithDefaults(sessionData);
     }
-    
-    const parsed = JSON.parse(stored) as Partial<LLMSettings>;
-    
-    // Merge with defaults to handle new fields
-    return {
-      ...DEFAULT_LLM_SETTINGS,
-      ...parsed,
-      openai: {
-        ...DEFAULT_LLM_SETTINGS.openai,
-        ...parsed.openai,
-      },
-      azureOpenAI: {
-        ...DEFAULT_LLM_SETTINGS.azureOpenAI,
-        ...parsed.azureOpenAI,
-      },
-      gemini: {
-        ...DEFAULT_LLM_SETTINGS.gemini,
-        ...parsed.gemini,
-      },
-      anthropic: {
-        ...DEFAULT_LLM_SETTINGS.anthropic,
-        ...parsed.anthropic,
-      },
-      ollama: {
-        ...DEFAULT_LLM_SETTINGS.ollama,
-        ...parsed.ollama,
-      },
-      openrouter: {
-        ...DEFAULT_LLM_SETTINGS.openrouter,
-        ...parsed.openrouter,
-      },
-    };
+
+    const legacyData = typeof localStorage !== 'undefined' ? readSettings(localStorage) : null;
+    if (legacyData) {
+      const merged = mergeWithDefaults(legacyData);
+      try {
+        if (typeof sessionStorage !== 'undefined') {
+          writeSettings(sessionStorage, merged);
+        }
+        if (typeof localStorage !== 'undefined') {
+          localStorage.removeItem(STORAGE_KEY);
+        }
+      } catch (error) {
+        console.warn('Failed to migrate legacy LLM settings to sessionStorage:', error);
+      }
+      return merged;
+    }
+
+    return DEFAULT_LLM_SETTINGS;
   } catch (error) {
     console.warn('Failed to load LLM settings:', error);
     return DEFAULT_LLM_SETTINGS;
@@ -68,11 +109,13 @@ export const loadSettings = (): LLMSettings => {
 };
 
 /**
- * Save settings to localStorage
+ * Save settings to sessionStorage
  */
 export const saveSettings = (settings: LLMSettings): void => {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    if (typeof sessionStorage !== 'undefined') {
+      writeSettings(sessionStorage, settings);
+    }
   } catch (error) {
     console.error('Failed to save LLM settings:', error);
   }
@@ -89,6 +132,9 @@ export const updateProviderSettings = <T extends LLMProvider>(
     T extends 'gemini' ? Partial<Omit<GeminiConfig, 'provider'>> :
     T extends 'anthropic' ? Partial<Omit<AnthropicConfig, 'provider'>> :
     T extends 'ollama' ? Partial<Omit<OllamaConfig, 'provider'>> :
+    T extends 'openrouter' ? Partial<Omit<OpenRouterConfig, 'provider'>> :
+    T extends 'minimax' ? Partial<Omit<MiniMaxConfig, 'provider'>> :
+    T extends 'glm' ? Partial<Omit<GLMConfig, 'provider'>> :
     never
   >
 ): LLMSettings => {
@@ -162,6 +208,28 @@ export const updateProviderSettings = <T extends LLMProvider>(
       saveSettings(updated);
       return updated;
     }
+    case 'minimax': {
+      const updated: LLMSettings = {
+        ...current,
+        minimax: {
+          ...(current.minimax ?? {}),
+          ...(updates as Partial<Omit<MiniMaxConfig, 'provider'>>),
+        },
+      };
+      saveSettings(updated);
+      return updated;
+    }
+    case 'glm': {
+      const updated: LLMSettings = {
+        ...current,
+        glm: {
+          ...(current.glm ?? {}),
+          ...(updates as Partial<Omit<GLMConfig, 'provider'>>),
+        },
+      };
+      saveSettings(updated);
+      return updated;
+    }
     default: {
       // Should be unreachable due to T extends LLMProvider, but keep a safe fallback
       const updated: LLMSettings = { ...current };
@@ -187,68 +255,64 @@ export const setActiveProvider = (provider: LLMProvider): LLMSettings => {
 /**
  * Get the current provider configuration
  */
+type ProviderBuilder = (settings: LLMSettings) => ProviderConfig | null;
+
+const providerBuilders: Record<LLMProvider, ProviderBuilder> = {
+  openai: (settings) => {
+    if (!settings.openai?.apiKey) return null;
+    return { provider: 'openai', ...settings.openai } as OpenAIConfig;
+  },
+  'azure-openai': (settings) => {
+    if (!settings.azureOpenAI?.apiKey || !settings.azureOpenAI?.endpoint) return null;
+    return { provider: 'azure-openai', ...settings.azureOpenAI } as AzureOpenAIConfig;
+  },
+  gemini: (settings) => {
+    if (!settings.gemini?.apiKey) return null;
+    return { provider: 'gemini', ...settings.gemini } as GeminiConfig;
+  },
+  anthropic: (settings) => {
+    if (!settings.anthropic?.apiKey) return null;
+    return { provider: 'anthropic', ...settings.anthropic } as AnthropicConfig;
+  },
+  ollama: (settings) => {
+    return {
+      provider: 'ollama',
+      ...settings.ollama,
+      baseUrl: settings.ollama?.baseUrl ?? DEFAULT_OLLAMA_BASE_URL,
+    } as OllamaConfig;
+  },
+  openrouter: (settings) => {
+    if (!settings.openrouter?.apiKey || settings.openrouter.apiKey.trim() === '') return null;
+    return {
+      provider: 'openrouter',
+      apiKey: settings.openrouter.apiKey,
+      model: settings.openrouter.model || '',
+      baseUrl: settings.openrouter.baseUrl || DEFAULT_OPENROUTER_BASE_URL,
+      temperature: settings.openrouter.temperature,
+      maxTokens: settings.openrouter.maxTokens,
+    } as OpenRouterConfig;
+  },
+  minimax: (settings) => {
+    if (!settings.minimax?.apiKey) return null;
+    return { provider: 'minimax', ...settings.minimax } as MiniMaxConfig;
+  },
+  glm: (settings) => {
+    if (!settings.glm?.apiKey) return null;
+    return {
+      provider: 'glm',
+      apiKey: settings.glm.apiKey,
+      model: settings.glm.model || 'GLM-5',
+      baseUrl: settings.glm.baseUrl || 'https://api.z.ai/api/coding/paas/v4',
+      temperature: settings.glm.temperature,
+      maxTokens: settings.glm.maxTokens,
+    } as GLMConfig;
+  },
+};
+
 export const getActiveProviderConfig = (): ProviderConfig | null => {
   const settings = loadSettings();
-  
-  switch (settings.activeProvider) {
-    case 'openai':
-      if (!settings.openai?.apiKey) {
-        return null;
-      }
-      return {
-        provider: 'openai',
-        ...settings.openai,
-      } as OpenAIConfig;
-      
-    case 'azure-openai':
-      if (!settings.azureOpenAI?.apiKey || !settings.azureOpenAI?.endpoint) {
-        return null;
-      }
-      return {
-        provider: 'azure-openai',
-        ...settings.azureOpenAI,
-      } as AzureOpenAIConfig;
-      
-    case 'gemini':
-      if (!settings.gemini?.apiKey) {
-        return null;
-      }
-      return {
-        provider: 'gemini',
-        ...settings.gemini,
-      } as GeminiConfig;
-      
-    case 'anthropic':
-      if (!settings.anthropic?.apiKey) {
-        return null;
-      }
-      return {
-        provider: 'anthropic',
-        ...settings.anthropic,
-      } as AnthropicConfig;
-      
-    case 'ollama':
-      return {
-        provider: 'ollama',
-        ...settings.ollama,
-      } as OllamaConfig;
-      
-    case 'openrouter':
-      if (!settings.openrouter?.apiKey || settings.openrouter.apiKey.trim() === '') {
-        return null;
-      }
-      return {
-        provider: 'openrouter',
-        apiKey: settings.openrouter.apiKey,
-        model: settings.openrouter.model || '',
-        baseUrl: settings.openrouter.baseUrl || 'https://openrouter.ai/api/v1',
-        temperature: settings.openrouter.temperature,
-        maxTokens: settings.openrouter.maxTokens,
-      } as OpenRouterConfig;
-      
-    default:
-      return null;
-  }
+  const builder = providerBuilders[settings.activeProvider];
+  return builder ? builder(settings) : null;
 };
 
 /**
@@ -262,7 +326,16 @@ export const isProviderConfigured = (): boolean => {
  * Clear all settings (reset to defaults)
  */
 export const clearSettings = (): void => {
-  localStorage.removeItem(STORAGE_KEY);
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem(STORAGE_KEY);
+    }
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+  } catch (error) {
+    console.warn('Failed to clear LLM settings:', error);
+  }
 };
 
 /**
@@ -282,6 +355,10 @@ export const getProviderDisplayName = (provider: LLMProvider): string => {
       return 'Ollama (Local)';
     case 'openrouter':
       return 'OpenRouter';
+    case 'minimax':
+      return 'MiniMax';
+    case 'glm':
+      return 'GLM (Z.AI)';
     default:
       return provider;
   }
@@ -303,6 +380,10 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
       return ['claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'];
     case 'ollama':
       return ['llama3.2', 'llama3.1', 'mistral', 'codellama', 'deepseek-coder'];
+    case 'minimax':
+      return ['MiniMax-M2.5', 'MiniMax-M2.5-highspeed'];
+    case 'glm':
+      return ['GLM-5', 'GLM-5-Turbo', 'GLM-4.7', 'GLM-4.5'];
     default:
       return [];
   }
@@ -313,7 +394,7 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
  */
 export const fetchOpenRouterModels = async (): Promise<Array<{ id: string; name: string }>> => {
   try {
-    const response = await fetch('https://openrouter.ai/api/v1/models');
+    const response = await fetch(`${DEFAULT_OPENROUTER_BASE_URL}/models`);
     if (!response.ok) throw new Error('Failed to fetch models');
     const data = await response.json();
     return data.data.map((model: any) => ({

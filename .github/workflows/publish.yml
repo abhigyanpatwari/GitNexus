@@ -12,6 +12,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
+      actions: read
       pull-requests: write
 
   publish:

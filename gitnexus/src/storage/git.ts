@@ -1,4 +1,5 @@
 import { execSync } from 'child_process';
+import { statSync } from 'fs';
 import path from 'path';
 
 // Git utilities for repository detection, commit tracking, and diff analysis
@@ -32,5 +33,24 @@ export const getGitRoot = (fromPath: string): string | null => {
     return path.resolve(raw);
   } catch {
     return null;
+  }
+};
+/**
+ * Check whether a directory contains a .git entry (file or folder).
+ *
+ * This is intentionally a simple filesystem check rather than running
+ * `git rev-parse`, so it works even when git is not installed or when
+ * the directory is a git-worktree root (which has a .git file, not a
+ * directory).  Use `isGitRepo` for a definitive git answer.
+ *
+ * @param dirPath - Absolute path to the directory to inspect.
+ * @returns `true` when `.git` is present, `false` otherwise.
+ */
+export const hasGitDir = (dirPath: string): boolean => {
+  try {
+    statSync(path.join(dirPath, '.git'));
+    return true;
+  } catch {
+    return false;
   }
 };

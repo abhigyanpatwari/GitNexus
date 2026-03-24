@@ -3,7 +3,7 @@
  * Extracted from import-processor.ts for maintainability.
  */
 
-export { EXTENSIONS, tryResolveWithExtensions, buildSuffixIndex, suffixResolve } from './utils.js';
+export { EXTENSIONS, tryResolveWithExtensions, buildSuffixIndex, suffixResolve, EMPTY_INDEX } from './utils.js';
 export type { SuffixIndex } from './utils.js';
 
 export { KOTLIN_EXTENSIONS, appendKotlinWildcard, resolveJvmWildcard, resolveJvmMemberImport } from './jvm.js';

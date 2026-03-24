@@ -13,6 +13,7 @@ import { FileEntry } from './services/zip';
 import { getActiveProviderConfig } from './core/llm/settings-service';
 import { createKnowledgeGraph } from './core/graph/graph';
 import { connectToServer, fetchRepos, normalizeServerUrl, type ConnectToServerResult } from './services/server-connection';
+import { ERROR_RESET_DELAY_MS } from './config/ui-constants';
 
 const AppContent = () => {
   const {
@@ -30,7 +31,7 @@ const AppContent = () => {
     setSettingsPanelOpen,
     refreshLLMSettings,
     initializeAgent,
-    startEmbeddings,
+    startEmbeddingsWithFallback,
     embeddingStatus,
     codeReferences,
     selectedNode,
@@ -40,6 +41,7 @@ const AppContent = () => {
     availableRepos,
     setAvailableRepos,
     switchRepo,
+    loadServerGraph,
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
@@ -67,13 +69,7 @@ const AppContent = () => {
 
       // Auto-start embeddings pipeline in background
       // Uses WebGPU if available, falls back to WASM
-      startEmbeddings().catch((err) => {
-        if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
-          startEmbeddings('wasm').catch(console.warn);
-        } else {
-          console.warn('Embeddings auto-start failed:', err);
-        }
-      });
+      startEmbeddingsWithFallback();
     } catch (error) {
       console.error('Pipeline error:', error);
       setProgress({
@@ -85,13 +81,16 @@ const AppContent = () => {
       setTimeout(() => {
         setViewMode('onboarding');
         setProgress(null);
-      }, 3000);
+      }, ERROR_RESET_DELAY_MS);
     }
-  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipeline, startEmbeddings, initializeAgent]);
+  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipeline, startEmbeddingsWithFallback, initializeAgent]);
 
-  const handleGitClone = useCallback(async (files: FileEntry[]) => {
-    const firstPath = files[0]?.path || 'repository';
-    const projectName = firstPath.split('/')[0].replace(/-\d+$/, '') || 'repository';
+  const handleGitClone = useCallback(async (files: FileEntry[], repoName?: string) => {
+    let projectName = repoName;
+    if (!projectName) {
+      const firstPath = files[0]?.path || 'repository';
+      projectName = firstPath.split('/')[0].replace(/-\d+$/, '') || 'repository';
+    }
 
     setProjectName(projectName);
     setProgress({ phase: 'extracting', percent: 0, message: 'Starting...', detail: 'Preparing to process files' });
@@ -110,13 +109,7 @@ const AppContent = () => {
         initializeAgent(projectName);
       }
 
-      startEmbeddings().catch((err) => {
-        if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
-          startEmbeddings('wasm').catch(console.warn);
-        } else {
-          console.warn('Embeddings auto-start failed:', err);
-        }
-      });
+      startEmbeddingsWithFallback();
     } catch (error) {
       console.error('Pipeline error:', error);
       setProgress({
@@ -128,17 +121,18 @@ const AppContent = () => {
       setTimeout(() => {
         setViewMode('onboarding');
         setProgress(null);
-      }, 3000);
+      }, ERROR_RESET_DELAY_MS);
     }
-  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles, startEmbeddings, initializeAgent]);
+  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles, startEmbeddingsWithFallback, initializeAgent]);
 
-  const handleServerConnect = useCallback((result: ConnectToServerResult) => {
+  const handleServerConnect = useCallback((result: ConnectToServerResult): Promise<void> => {
     // Extract project name from repoPath
     const repoPath = result.repoInfo.repoPath;
-    const projectName = repoPath.split('/').pop() || 'server-project';
+    const parts = repoPath.split('/').filter(p => p && !p.startsWith('.'));
+    const projectName = parts[parts.length - 1] || parts[0] || 'server-project';
     setProjectName(projectName);
 
-    // Build KnowledgeGraph from server data (bypasses WASM pipeline entirely)
+    // Build KnowledgeGraph from server data for visualization
     const graph = createKnowledgeGraph();
     for (const node of result.nodes) {
       graph.addNode(node);
@@ -158,20 +152,24 @@ const AppContent = () => {
     // Transition directly to exploring view
     setViewMode('exploring');
 
-    // Initialize agent if LLM is configured
-    if (getActiveProviderConfig()) {
-      initializeAgent(projectName);
-    }
+    // Load graph into LadybugDB (in-browser WASM database) for Nexus AI queries,
+    // then initialize agent once the database is ready
+    const loadGraphPromise = loadServerGraph(result.nodes, result.relationships, result.fileContents)
+      .then(() => {
+        if (getActiveProviderConfig()) {
+          return initializeAgent(projectName);
+        }
+      })
+      .then(() => {
+        startEmbeddingsWithFallback();
+      })
+      .catch((err) => {
+        console.warn('Failed to load graph into LadybugDB:', err);
+        // Agent won't work but graph visualization still does
+      });
 
-    // Auto-start embeddings
-    startEmbeddings().catch((err) => {
-      if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
-        startEmbeddings('wasm').catch(console.warn);
-      } else {
-        console.warn('Embeddings auto-start failed:', err);
-      }
-    });
-  }, [setViewMode, setGraph, setFileContents, setProjectName, initializeAgent, startEmbeddings]);
+    return loadGraphPromise;
+  }, [setViewMode, setGraph, setFileContents, setProjectName, loadServerGraph, initializeAgent, startEmbeddingsWithFallback]);
 
   // Auto-connect when ?server query param is present (bookmarkable shortcut)
   const autoConnectRan = useRef(false);
@@ -203,16 +201,12 @@ const AppContent = () => {
         setProgress({ phase: 'extracting', percent: 97, message: 'Processing...', detail: 'Extracting file contents' });
       }
     }).then(async (result) => {
-      handleServerConnect(result);
-
-      // Store server URL and fetch available repos for the repo switcher
+      await handleServerConnect(result);
+      setProgress(null);
       setServerBaseUrl(baseUrl);
-      try {
-        const repos = await fetchRepos(baseUrl);
-        setAvailableRepos(repos);
-      } catch (e) {
-        console.warn('Failed to fetch repo list:', e);
-      }
+      fetchRepos(baseUrl)
+        .then((repos) => setAvailableRepos(repos))
+        .catch((e) => console.warn('Failed to fetch repo list:', e));
     }).catch((err) => {
       console.error('Auto-connect failed:', err);
       setProgress({
@@ -224,7 +218,7 @@ const AppContent = () => {
       setTimeout(() => {
         setViewMode('onboarding');
         setProgress(null);
-      }, 3000);
+      }, ERROR_RESET_DELAY_MS);
     });
   }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos]);
 
@@ -246,16 +240,14 @@ const AppContent = () => {
         onFileSelect={handleFileSelect}
         onGitClone={handleGitClone}
         onServerConnect={async (result, serverUrl) => {
-          handleServerConnect(result);
+          await handleServerConnect(result);
+          setProgress(null);
           if (serverUrl) {
             const baseUrl = normalizeServerUrl(serverUrl);
             setServerBaseUrl(baseUrl);
-            try {
-              const repos = await fetchRepos(baseUrl);
-              setAvailableRepos(repos);
-            } catch (e) {
-              console.warn('Failed to fetch repo list:', e);
-            }
+            fetchRepos(baseUrl)
+              .then((repos) => setAvailableRepos(repos))
+              .catch((e) => console.warn('Failed to fetch repo list:', e));
           }
         }}
       />

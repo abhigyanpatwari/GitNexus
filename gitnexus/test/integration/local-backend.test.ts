@@ -15,14 +15,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  CYPHER_WRITE_RE,
   executeQuery,
   executeParameterized,
-} from '../../src/mcp/core/lbug-adapter.js';
-import {
-  CYPHER_WRITE_RE,
-  VALID_RELATION_TYPES,
   isWriteQuery,
-} from '../../src/mcp/local/local-backend.js';
+} from '../../src/mcp/core/lbug-adapter.js';
+import { VALID_RELATION_TYPES } from '../../src/mcp/local/local-backend.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import { LOCAL_BACKEND_SEED_DATA } from '../fixtures/local-backend-seed.js';
 

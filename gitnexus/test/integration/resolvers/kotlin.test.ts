@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, getRelationships, getNodesByLabel, edgeSet,
+  FIXTURES, CROSS_FILE_FIXTURES, getRelationships, getNodesByLabel, getNodesByLabelFull, edgeSet,
   runPipelineFromRepo, type PipelineResult,
 } from './helpers.js';
 
@@ -27,8 +27,9 @@ describe('Kotlin heritage resolution', () => {
     expect(getNodesByLabel(result, 'Interface')).toEqual(['Serializable', 'Validatable']);
   });
 
-  it('detects 6 functions (interface declarations + implementations + service)', () => {
-    expect(getNodesByLabel(result, 'Function')).toEqual([
+  it('detects 6 class/interface methods (processUser is inside UserService)', () => {
+    expect(getNodesByLabel(result, 'Function')).toEqual([]);
+    expect(getNodesByLabel(result, 'Method')).toEqual([
       'processUser', 'save', 'serialize', 'serialize', 'validate', 'validate',
     ]);
   });
@@ -199,10 +200,9 @@ describe('Kotlin member-call resolution', () => {
     expect(saveCall!.targetFilePath).toBe('models/User.kt');
   });
 
-  it('detects User class and save function (Kotlin fns are Function nodes)', () => {
+  it('detects User class and save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
-    // Kotlin tree-sitter captures all function_declaration as Function, including class methods
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
   });
 });
 
@@ -220,12 +220,11 @@ describe('Kotlin receiver-constrained resolution', () => {
     );
   }, 60000);
 
-  it('detects User and Repo classes, both with save functions', () => {
+  it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    // Kotlin tree-sitter captures all function_declaration as Function
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
-    expect(saveFns.length).toBe(2);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() to User.save and repo.save() to Repo.save via receiver typing', () => {
@@ -259,9 +258,8 @@ describe('Kotlin alias import resolution', () => {
 
   it('detects User and Repo classes with their methods', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
-    // Kotlin tree-sitter captures all function_declaration as Function, including class methods
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
-    expect(getNodesByLabel(result, 'Function')).toContain('persist');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toContain('persist');
   });
 
   it('resolves u.save() to models/Models.kt and r.persist() to models/Models.kt via alias', () => {
@@ -295,7 +293,7 @@ describe('Kotlin constructor-call resolution', () => {
 
   it('detects User class with save method and main function', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
     expect(getNodesByLabel(result, 'Function')).toContain('main');
   });
 
@@ -395,11 +393,11 @@ describe('Kotlin constructor-inferred type resolution', () => {
     );
   }, 60000);
 
-  it('detects User and Repo classes, both with save functions', () => {
+  it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
-    expect(saveFns.length).toBe(2);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
 it('resolves user.save() to models/User.kt via constructor-inferred type', () => {
@@ -477,8 +475,8 @@ describe('Kotlin return type inference', () => {
   it('detects User and Repo classes with competing save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(f => f === 'save');
-    expect(saveFns.length).toBe(2);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() to User#save via return type inference', () => {
@@ -590,11 +588,11 @@ describe('Kotlin for-each loop type resolution', () => {
     );
   }, 60000);
 
-  it('detects User and Repo classes, both with save functions', () => {
+  it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(f => f === 'save');
-    expect(saveFns.length).toBe(2);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() inside for-each to models/User.kt', () => {
@@ -673,7 +671,7 @@ describe('Kotlin nullable receiver resolution (safe calls)', () => {
   it('detects User and Repo classes with competing save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Function').filter((m: string) => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m: string) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
@@ -717,11 +715,11 @@ describe('Kotlin assignment chain propagation', () => {
     );
   }, 60000);
 
-  it('detects User and Repo classes each with a save function', () => {
+  it('detects User and Repo classes each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(f => f === 'save');
-    expect(saveFns.length).toBe(2);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
   it('resolves alias.save() to User#save via assignment chain', () => {
@@ -780,11 +778,11 @@ describe('Kotlin assignment chain inside class method', () => {
     );
   }, 60000);
 
-  it('detects User and Repo classes each with a save function', () => {
+  it('detects User and Repo classes each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
-    expect(saveFns.length).toBe(2);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
   it('resolves alias.save() to User#save via chain inside function', () => {
@@ -843,10 +841,10 @@ describe('Kotlin chained method call resolution (Phase 5 review fix)', () => {
     expect(classes).toContain('UserService');
   });
 
-  it('detects getUser and save functions', () => {
-    const fns = getNodesByLabel(result, 'Function');
-    expect(fns).toContain('getUser');
-    expect(fns).toContain('save');
+  it('detects getUser and save methods', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('getUser');
+    expect(methods).toContain('save');
   });
 
   it('resolves svc.getUser().save() to User#save via chain resolution', () => {
@@ -928,11 +926,11 @@ describe('Kotlin when/is pattern binding', () => {
     );
   }, 60000);
 
-  it('detects User and Repo classes, both with save functions', () => {
+  it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(f => f === 'save');
-    expect(saveFns.length).toBe(2);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
   it('resolves obj.save() in when/is User arm to models/User.kt', () => {
@@ -1182,8 +1180,8 @@ describe('Kotlin for-loop call_expression iterable resolution (Phase 7.3)', () =
   it('detects User and Repo classes with competing save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(f => f === 'save');
-    expect(saveFns.length).toBe(2);
+    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() in for-loop over getUsers() to User#save', () => {
@@ -1393,5 +1391,280 @@ describe('Write access tracking (Kotlin)', () => {
     for (const edge of writes) {
       expect(edge.rel.confidence).toBe(1.0);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Call-result variable binding (Phase 9): val user = getUser(); user.save()
+// ---------------------------------------------------------------------------
+
+describe('Kotlin call-result variable binding (Tier 2b)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-call-result-binding'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.save() to User#save via call-result binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('User')
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Method chain binding (Phase 9C): getUser() → .address → .getCity() → .save()
+// ---------------------------------------------------------------------------
+
+describe('Kotlin method chain binding via unified fixpoint (Phase 9C)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-method-chain-binding'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves city.save() to City#save via method chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'processChain' && c.targetFilePath.includes('Models')
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase B: Deep MRO — walkParentChain() at depth 2 (C→B→A)
+// greet() is defined on A, accessed via C. Tests BFS depth-2 parent traversal.
+// ---------------------------------------------------------------------------
+
+describe('Kotlin grandparent method resolution via MRO (Phase B)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-grandparent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects A, B, C, Greeting classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('A');
+    expect(classes).toContain('B');
+    expect(classes).toContain('C');
+    expect(classes).toContain('Greeting');
+  });
+
+  it('emits EXTENDS edges: B→A, C→B', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('B → A');
+    expect(edgeSet(extends_)).toContain('C → B');
+  });
+
+  it('resolves c.greet().save() to Greeting#save via depth-2 MRO lookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.targetFilePath.includes('Greeting'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves c.greet() to A#greet (method found via MRO walk)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCall = calls.find(c =>
+      c.target === 'greet' && c.targetFilePath.includes('A.kt'),
+    );
+    expect(greetCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase C: Kotlin null-check narrowing — if (x != null) { x.save() }
+// NOTE: depends on nullable_type capture being fixed in jvm.ts
+// ---------------------------------------------------------------------------
+
+describe('Kotlin null-check narrowing resolution (Phase C)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-null-check-narrowing'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+  });
+
+  it('resolves x.save() inside != null guard to User#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'processNullable' && c.targetFilePath.includes('User'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('does NOT resolve to Repo#save (no cross-contamination)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongCall = calls.find(c =>
+      c.target === 'save' && c.targetFilePath.includes('Repo'),
+    );
+    expect(wrongCall).toBeUndefined();
+  });
+
+  it('resolves x.save() from local variable val x: User? via null-check narrowing', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'processLocalNullable' && c.targetFilePath.includes('User'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ── Phase P: Overload Disambiguation via Parameter Types ─────────────────
+
+describe('Kotlin overload disambiguation by parameter types', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-overload-param-types'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects lookup method with parameterTypes on graph node', () => {
+    const nodes = getNodesByLabelFull(result, 'Method');
+    const lookupNodes = nodes.filter(m => m.name === 'lookup');
+    expect(lookupNodes.length).toBe(1);
+    expect(lookupNodes[0].properties.parameterTypes).toEqual(['Int']);
+  });
+
+  it('emits CALLS edge from run() → lookup() via overload disambiguation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const lookupCalls = calls.filter(c => c.source === 'run' && c.target === 'lookup');
+    // Both lookup(42) and lookup("alice") resolve to same nodeId → 1 CALLS edge
+    expect(lookupCalls.length).toBe(1);
+  });
+});
+
+// ── Phase P: Virtual Dispatch via Constructor Type (cross-file) ──────────
+
+describe('Kotlin virtual dispatch via constructor type (cross-file)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-virtual-dispatch'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Dog class', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Dog');
+  });
+
+  it('resolves animal.speak() to models/Dog.kt via constructor type override', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const speakCall = calls.find(c =>
+      c.source === 'process' && c.target === 'speak' && c.targetFilePath === 'models/Dog.kt',
+    );
+    expect(speakCall).toBeDefined();
+  });
+});
+
+// ── Phase P: Default Parameter Arity Resolution ──────────────────────────
+
+describe('Kotlin default parameter arity resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-default-params'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves greet("Alice") with 1 arg to greet with 2 params (1 default)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCalls = calls.filter(c => c.source === 'process' && c.target === 'greet');
+    expect(greetCalls.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 14: Cross-file binding propagation
+// models/User.kt exports top-level getUser(): User
+// app/App.kt imports getUser, calls val u = getUser(); u.save(); u.getName()
+// → u is typed User via cross-file return type propagation
+// ---------------------------------------------------------------------------
+
+describe('Kotlin cross-file binding propagation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(CROSS_FILE_FIXTURES, 'kotlin-cross-file'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User class with save and getName methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toContain('getName');
+  });
+
+  it('detects getUser and App class with run method', () => {
+    expect(getNodesByLabel(result, 'Function')).toContain('getUser');
+    expect(getNodesByLabel(result, 'Class')).toContain('App');
+    expect(getNodesByLabel(result, 'Method')).toContain('run');
+  });
+
+  it('emits IMPORTS edge from App.kt to User.kt', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const edge = imports.find(e =>
+      e.sourceFilePath.includes('App') && e.targetFilePath.includes('User'),
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('resolves u.save() in run() to User#save via cross-file return type propagation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'run' &&
+      c.targetFilePath.includes('User'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves u.getName() in run() to User#getName via cross-file return type propagation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCall = calls.find(c =>
+      c.target === 'getName' &&
+      c.source === 'run' &&
+      c.targetFilePath.includes('User'),
+    );
+    expect(getNameCall).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edges linking save and getName to User', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const saveEdge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
+    const getNameEdge = hasMethod.find(e => e.source === 'User' && e.target === 'getName');
+    expect(saveEdge).toBeDefined();
+    expect(getNameEdge).toBeDefined();
   });
 });

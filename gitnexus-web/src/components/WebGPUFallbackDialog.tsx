@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { X, Snail, Rocket, SkipForward } from 'lucide-react';
+import { X, Snail, Rocket, SkipForward } from '@/lib/lucide-icons';
 
 interface WebGPUFallbackDialogProps {
   isOpen: boolean;

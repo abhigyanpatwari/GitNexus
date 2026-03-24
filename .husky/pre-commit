@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Pre-commit hook (husky): typecheck + unit tests for both packages.
+# Mirrors CI checks from ci-quality.yml and ci-tests.yml.
+# Skip with: git commit --no-verify
+#
+# CI coverage:
+#   quality / typecheck      → tsc --noEmit in gitnexus/
+#   quality / typecheck-web  → tsc -b --noEmit in gitnexus-web/
+#   tests / ubuntu+coverage  → vitest run in gitnexus/ (all projects)
+#   e2e / chromium           → playwright (requires servers — skipped)
+
+ROOT="$(git rev-parse --show-toplevel)"
+
+WEB_CHANGED=$(git diff --cached --name-only -- 'gitnexus-web/' | head -1)
+CLI_CHANGED=$(git diff --cached --name-only -- 'gitnexus/' | head -1)
+
+if [ -n "$WEB_CHANGED" ]; then
+  echo "pre-commit: typechecking gitnexus-web (tsc -b)..."
+  cd "$ROOT/gitnexus-web" && npx tsc -b --noEmit
+
+  echo "pre-commit: running gitnexus-web unit tests..."
+  npx vitest run --reporter=dot
+fi
+
+if [ -n "$CLI_CHANGED" ]; then
+  echo "pre-commit: typechecking gitnexus..."
+  cd "$ROOT/gitnexus" && npx tsc --noEmit
+
+  echo "pre-commit: running gitnexus unit tests (default project)..."
+  npx vitest run --project default --reporter=dot
+fi
+
+echo "pre-commit: all checks passed"

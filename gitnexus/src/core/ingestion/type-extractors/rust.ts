@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, PendingAssignmentExtractor, PatternBindingExtractor, ForLoopExtractor } from './types.js';
+import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, PendingAssignmentExtractor, PendingAssignment, PatternBindingExtractor, ForLoopExtractor } from './types.js';
 import { extractSimpleTypeName, extractVarName, hasTypeAnnotation, unwrapAwait, extractGenericTypeArgs, resolveIterableElementType, methodToTypeArgPosition, extractElementTypeFromString, type TypeArgPosition } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
@@ -189,15 +189,75 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   return { varName: patternNode.text, calleeName };
 };
 
-/** Rust: let alias = u; → let_declaration with pattern + value fields */
+/** Rust: let alias = u; → let_declaration with pattern + value fields.
+ *  Also handles struct destructuring: `let Point { x, y } = p` → N fieldAccess items. */
 const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
   if (node.type !== 'let_declaration') return undefined;
   const pattern = node.childForFieldName('pattern');
   const value = node.childForFieldName('value');
   if (!pattern || !value) return undefined;
+
+  // Struct pattern destructuring: `let Point { x, y } = receiver`
+  // struct_pattern has a type child (struct name) and field_pattern children
+  if (pattern.type === 'struct_pattern' && value.type === 'identifier') {
+    const receiver = value.text;
+    const items: PendingAssignment[] = [];
+    for (let j = 0; j < pattern.namedChildCount; j++) {
+      const field = pattern.namedChild(j);
+      if (!field) continue;
+      if (field.type === 'field_pattern') {
+        // `Point { x: local_x }` → field_pattern with name + pattern children
+        const nameNode = field.childForFieldName('name');
+        const patNode = field.childForFieldName('pattern');
+        if (nameNode && patNode) {
+          const fieldName = nameNode.text;
+          const varName = extractVarName(patNode);
+          if (varName && !scopeEnv.has(varName)) {
+            items.push({ kind: 'fieldAccess', lhs: varName, receiver, field: fieldName });
+          }
+        } else if (nameNode) {
+          // Shorthand: `Point { x }` → field_pattern with only name (varName = fieldName)
+          const varName = nameNode.text;
+          if (!scopeEnv.has(varName)) {
+            items.push({ kind: 'fieldAccess', lhs: varName, receiver, field: varName });
+          }
+        }
+      }
+    }
+    if (items.length > 0) return items;
+    return undefined;
+  }
+
   const lhs = extractVarName(pattern);
   if (!lhs || scopeEnv.has(lhs)) return undefined;
-  if (value.type === 'identifier') return { kind: 'copy', lhs, rhs: value.text };
+  // Unwrap Rust .await: `let user = get_user().await` → call_expression
+  const unwrapped = unwrapAwait(value) ?? value;
+  if (unwrapped.type === 'identifier') return { kind: 'copy', lhs, rhs: unwrapped.text };
+  // field_expression RHS → fieldAccess (a.field)
+  if (unwrapped.type === 'field_expression') {
+    const obj = unwrapped.firstNamedChild;
+    const field = unwrapped.lastNamedChild;
+    if (obj?.type === 'identifier' && field?.type === 'field_identifier') {
+      return { kind: 'fieldAccess', lhs, receiver: obj.text, field: field.text };
+    }
+  }
+  // call_expression RHS → callResult (simple calls only)
+  if (unwrapped.type === 'call_expression') {
+    const funcNode = unwrapped.childForFieldName('function');
+    if (funcNode?.type === 'identifier') {
+      return { kind: 'callResult', lhs, callee: funcNode.text };
+    }
+  }
+  // method_call_expression RHS → methodCallResult (receiver.method())
+  if (unwrapped.type === 'method_call_expression') {
+    const obj = unwrapped.firstNamedChild;
+    if (obj?.type === 'identifier') {
+      const methodNode = unwrapped.childForFieldName('name') ?? unwrapped.namedChild(1);
+      if (methodNode?.type === 'field_identifier') {
+        return { kind: 'methodCallResult', lhs, receiver: obj.text, method: methodNode.text };
+      }
+    }
+  }
   return undefined;
 };
 

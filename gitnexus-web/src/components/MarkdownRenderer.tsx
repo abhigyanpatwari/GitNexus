@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { MermaidDiagram } from './MermaidDiagram';
 import { ToolCallCard } from './ToolCallCard';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check } from '@/lib/lucide-icons';
 
 // Custom syntax theme
 const customTheme = {
@@ -39,12 +39,24 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     showCopyButton = false
 }) => {
     const [copied, setCopied] = useState(false);
+    const copyTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+    useEffect(() => {
+        return () => {
+            if (copyTimerRef.current) {
+                clearTimeout(copyTimerRef.current);
+            }
+        };
+    }, []);
 
     const handleCopy = async () => {
         try {
             await navigator.clipboard.writeText(content);
             setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
+            if (copyTimerRef.current) {
+                clearTimeout(copyTimerRef.current);
+            }
+            copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
         } catch (err) {
             console.error('Failed to copy:', err);
         }
@@ -78,13 +90,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
         return parts.join('```');
     };
 
-    const handleLinkClick = (e: React.MouseEvent<HTMLAnchorElement>, href: string) => {
+    const handleLinkClick = React.useCallback((e: React.MouseEvent<HTMLAnchorElement>, href: string) => {
         if (href.startsWith('code-ref:') || href.startsWith('node-ref:')) {
             e.preventDefault();
             onLinkClick?.(href);
         }
         // External links open in new tab (default behavior)
-    };
+    }, [onLinkClick]);
 
     const formattedContent = React.useMemo(() => formatMarkdownForDisplay(content), [content]);
 
@@ -164,7 +176,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
             );
         },
         pre: ({ children }: any) => <>{children}</>,
-    }), [onLinkClick]); // Removed handleLinkClick dependency as it is defined inside component but depends on onLinkClick
+    }), [handleLinkClick]);
 
     return (
         <div className="text-text-primary text-sm">

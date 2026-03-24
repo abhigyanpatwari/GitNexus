@@ -53,7 +53,7 @@ export interface EmbeddingProgress {
  * Configuration for the embedding pipeline
  */
 export interface EmbeddingConfig {
-  /** Model identifier for transformers.js */
+  /** Model identifier for transformers.js (local) or the HTTP endpoint model name */
   modelId: string;
   /** Number of nodes to embed in each batch */
   batchSize: number;
@@ -64,6 +64,7 @@ export interface EmbeddingConfig {
   /** Maximum characters of code snippet to include */
   maxSnippetLength: number;
 }
+
 
 /**
  * Default embedding configuration

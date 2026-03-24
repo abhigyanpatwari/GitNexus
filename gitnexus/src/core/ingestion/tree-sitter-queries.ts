@@ -19,6 +19,10 @@ export const TYPESCRIPT_QUERIES = `
 (function_declaration
   name: (identifier) @name) @definition.function
 
+; TypeScript overload signatures (function_signature is a separate node type from function_declaration)
+(function_signature
+  name: (identifier) @name) @definition.function
+
 (method_definition
   name: (property_identifier) @name) @definition.method
 
@@ -102,6 +106,34 @@ export const TYPESCRIPT_QUERIES = `
     object: (_) @assignment.receiver
     property: (property_identifier) @assignment.property)
   right: (_)) @assignment
+
+; HTTP consumers: fetch('/path'), axios.get('/path'), $.get('/path'), etc.
+; fetch() — global function
+(call_expression
+  function: (identifier) @_fetch_fn (#eq? @_fetch_fn "fetch")
+  arguments: (arguments
+    [(string (string_fragment) @route.url)
+     (template_string) @route.template_url])) @route.fetch
+
+; axios.get/post/put/delete/patch('/path'), $.get/post/ajax({url:'/path'})
+(call_expression
+  function: (member_expression
+    property: (property_identifier) @http_client.method)
+  arguments: (arguments
+    (string (string_fragment) @http_client.url))) @http_client
+
+; Decorators: @Controller, @Get, @Post, etc.
+(decorator
+  (call_expression
+    function: (identifier) @decorator.name
+    arguments: (arguments (string (string_fragment) @decorator.arg)?))) @decorator
+
+; Express/Hono route registration: app.get('/path', handler), router.post('/path', fn)
+(call_expression
+  function: (member_expression
+    property: (property_identifier) @express_route.method)
+  arguments: (arguments
+    (string (string_fragment) @express_route.path))) @express_route
 `;
 
 // JavaScript queries - works with tree-sitter-javascript
@@ -179,6 +211,27 @@ export const JAVASCRIPT_QUERIES = `
     object: (_) @assignment.receiver
     property: (property_identifier) @assignment.property)
   right: (_)) @assignment
+
+; HTTP consumers: fetch('/path'), axios.get('/path'), $.get('/path'), etc.
+(call_expression
+  function: (identifier) @_fetch_fn (#eq? @_fetch_fn "fetch")
+  arguments: (arguments
+    [(string (string_fragment) @route.url)
+     (template_string) @route.template_url])) @route.fetch
+
+; axios.get/post, $.get/post/ajax
+(call_expression
+  function: (member_expression
+    property: (property_identifier) @http_client.method)
+  arguments: (arguments
+    (string (string_fragment) @http_client.url))) @http_client
+
+; Express/Hono route registration
+(call_expression
+  function: (member_expression
+    property: (property_identifier) @express_route.method)
+  arguments: (arguments
+    (string (string_fragment) @express_route.path))) @express_route
 `;
 
 // Python queries - works with tree-sitter-python
@@ -191,6 +244,12 @@ export const PYTHON_QUERIES = `
 
 (import_statement
   name: (dotted_name) @import.source) @import
+
+; import numpy as np  →  aliased_import captures the module name so the
+; import path is resolved and named-binding extraction stores "np" → "numpy".
+(import_statement
+  name: (aliased_import
+    name: (dotted_name) @import.source)) @import
 
 (import_from_statement
   module_name: (dotted_name) @import.source) @import
@@ -232,6 +291,22 @@ export const PYTHON_QUERIES = `
     object: (_) @assignment.receiver
     attribute: (identifier) @assignment.property)
   right: (_)) @assignment
+
+; Python HTTP clients: requests.get('/path'), httpx.post('/path'), session.get('/path')
+(call
+  function: (attribute
+    attribute: (identifier) @http_client.method)
+  arguments: (argument_list
+    (string (string_content) @http_client.url))) @http_client
+
+; Python decorators: @app.route, @router.get, etc.
+(decorator
+  (call
+    function: (attribute
+      object: (identifier) @decorator.receiver
+      attribute: (identifier) @decorator.name)
+    arguments: (argument_list
+      (string (string_content) @decorator.arg)?))) @decorator
 `;
 
 // Java queries - works with tree-sitter-java
@@ -350,6 +425,16 @@ export const GO_QUERIES = `
       operand: (_) @assignment.receiver
       field: (field_identifier) @assignment.property))
   right: (_)) @assignment
+
+; Write access: obj.field++ / obj.field--
+(inc_statement
+  (selector_expression
+    operand: (_) @assignment.receiver
+    field: (field_identifier) @assignment.property)) @assignment
+(dec_statement
+  (selector_expression
+    operand: (_) @assignment.receiver
+    field: (field_identifier) @assignment.property)) @assignment
 `;
 
 // C++ queries - works with tree-sitter-cpp
@@ -406,14 +491,35 @@ export const CPP_QUERIES = `
   declarator: (reference_declarator
     (field_identifier) @name)) @definition.property
 
-; Inline class method declarations (inside class body, no body: void Foo();)
-(field_declaration declarator: (function_declarator declarator: (identifier) @name)) @definition.method
+; Inline class method declarations (inside class body, no body: void save();)
+; tree-sitter-cpp uses field_identifier (not identifier) for names inside class bodies
+(field_declaration declarator: (function_declarator declarator: [(field_identifier) (identifier)] @name)) @definition.method
+
+; Inline class method declarations returning a pointer (User* lookup();)
+(field_declaration declarator: (pointer_declarator declarator: (function_declarator declarator: [(field_identifier) (identifier)] @name))) @definition.method
+
+; Inline class method declarations returning a reference (User& lookup();)
+(field_declaration declarator: (reference_declarator (function_declarator declarator: [(field_identifier) (identifier)] @name))) @definition.method
 
 ; Inline class method definitions (inside class body, with body: void Foo() { ... })
 (field_declaration_list
   (function_definition
     declarator: (function_declarator
       declarator: [(field_identifier) (identifier) (operator_name) (destructor_name)] @name)) @definition.method)
+
+; Inline class methods returning a pointer type (User* lookup(int id) { ... })
+(field_declaration_list
+  (function_definition
+    declarator: (pointer_declarator
+      declarator: (function_declarator
+        declarator: [(field_identifier) (identifier) (operator_name)] @name))) @definition.method)
+
+; Inline class methods returning a reference type (User& lookup(int id) { ... })
+(field_declaration_list
+  (function_definition
+    declarator: (reference_declarator
+      (function_declarator
+        declarator: [(field_identifier) (identifier) (operator_name)] @name))) @definition.method)
 
 ; Templates
 (template_declaration (class_specifier name: (type_identifier) @name)) @definition.template
@@ -650,6 +756,12 @@ export const PHP_QUERIES = `
     (use_declaration
       [(name) (qualified_name)] @heritage.trait))) @heritage
 
+; PHP HTTP consumers: file_get_contents('/path'), curl_init('/path')
+(function_call_expression
+  function: (name) @_php_http (#match? @_php_http "^(file_get_contents|curl_init)$")
+  arguments: (arguments
+    (argument (string (string_content) @http_client.url)))) @http_client
+
 ; Write access: $obj->field = value
 (assignment_expression
   left: (member_access_expression
@@ -854,6 +966,9 @@ export const SWIFT_QUERIES = `
 ; Properties (stored and computed)
 (property_declaration (pattern (simple_identifier) @name)) @definition.property
 
+; Enum cases
+(enum_entry (simple_identifier) @name) @definition.property
+
 ; Imports
 (import_declaration (identifier (simple_identifier) @import.source)) @import
 
@@ -876,13 +991,14 @@ export const SWIFT_QUERIES = `
 (class_declaration "extension" name: (user_type (type_identifier) @heritage.class)
   (inheritance_specifier inherits_from: (user_type (type_identifier) @heritage.extends))) @heritage
 
-; Write access: obj.field = value
+; Write access: obj.field = value (tree-sitter-swift 0.7.1 uses named fields)
 (assignment
-  (directly_assignable_expression
-    (_) @assignment.receiver
-    (navigation_suffix
-      (simple_identifier) @assignment.property))
-  (_)) @assignment
+  target: (directly_assignable_expression
+    (navigation_expression
+      target: (_) @assignment.receiver
+      suffix: (navigation_suffix
+        suffix: (simple_identifier) @assignment.property)))
+  result: (_)) @assignment
 
 `;
 

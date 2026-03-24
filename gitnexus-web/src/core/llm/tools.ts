@@ -15,6 +15,13 @@ import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 // Note: GRAPH_SCHEMA_DESCRIPTION from './types' is available if needed for additional context
 import { WebGPUNotAvailableError, embedText, embeddingToArray, initEmbedder, isEmbedderReady } from '../embeddings/embedder';
+import { NODE_TABLES, REL_TYPES } from '../lbug/schema';
+
+const validLabel = (label: string): boolean =>
+  (NODE_TABLES as readonly string[]).includes(label);
+
+const validRelType = (t: string): boolean =>
+  (REL_TYPES as readonly string[]).includes(t);
 
 /**
  * Tool factory - creates tools bound to the LadybugDB query functions
@@ -96,11 +103,12 @@ export const createGraphRAGTools = (
         if (nodeId) {
           try {
             const nodeLabel = nodeId.split(':')[0];
+            if (!validLabel(nodeLabel)) throw new Error('invalid label');
             const connectionsQuery = `
               MATCH (n:${nodeLabel} {id: '${nodeId.replace(/'/g, "''")}'})
               OPTIONAL MATCH (n)-[r1:CodeRelation]->(dst)
               OPTIONAL MATCH (src)-[r2:CodeRelation]->(n)
-              RETURN 
+              RETURN
                 collect(DISTINCT {name: dst.name, type: r1.type, confidence: r1.confidence}) AS outgoing,
                 collect(DISTINCT {name: src.name, type: r2.type, confidence: r2.confidence}) AS incoming
               LIMIT 1
@@ -136,6 +144,7 @@ export const createGraphRAGTools = (
         if (nodeId) {
           try {
             const nodeLabel = nodeId.split(':')[0];
+            if (!validLabel(nodeLabel)) throw new Error('invalid label');
             const clusterQuery = `
               MATCH (n:${nodeLabel} {id: '${nodeId.replace(/'/g, "''")}'})
               MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
@@ -158,6 +167,7 @@ export const createGraphRAGTools = (
         if (nodeId) {
           try {
             const nodeLabel = nodeId.split(':')[0];
+            if (!validLabel(nodeLabel)) throw new Error('invalid label');
             const processQuery = `
               MATCH (n:${nodeLabel} {id: '${nodeId.replace(/'/g, "''")}'})
               MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
@@ -783,7 +793,11 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         const name = getRowValue(symbolRow, 1, 'name');
         const filePath = getRowValue(symbolRow, 2, 'filePath');
         const nodeType = getRowValue(symbolRow, 3, 'nodeType');
-        
+
+        if (!validLabel(nodeType)) {
+          return `Unknown node type "${nodeType}" for symbol "${target}".`;
+        }
+
         const clusterQuery = `
           MATCH (n:${nodeType} {id: '${String(nodeId).replace(/'/g, "''")}'})
           MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
@@ -898,10 +912,13 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       
       // Default to usage-based relation types (exclude CONTAINS, DEFINES for impact analysis)
       const defaultRelTypes = ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
-      const activeRelTypes = relationTypes && relationTypes.length > 0 
-        ? relationTypes 
+      const activeRelTypes = relationTypes && relationTypes.length > 0
+        ? relationTypes.filter(t => validRelType(t))
         : defaultRelTypes;
-      const relTypeFilter = activeRelTypes.map(t => `'${t}'`).join(', ');
+      if (activeRelTypes.length === 0) {
+        return `No valid relation types provided. Valid types: ${(REL_TYPES as readonly string[]).join(', ')}`;
+      }
+      const relTypeFilter = activeRelTypes.map(t => `'${t.replace(/'/g, "''")}'`).join(', ');
       
       const directionLabel = direction === 'upstream' 
         ? 'Files that DEPEND ON this (breakage risk)'

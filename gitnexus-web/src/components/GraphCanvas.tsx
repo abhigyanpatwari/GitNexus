@@ -1,8 +1,9 @@
 import { useEffect, useCallback, useMemo, useState, forwardRef, useImperativeHandle } from 'react';
-import { ZoomIn, ZoomOut, Maximize2, Focus, RotateCcw, Play, Pause, Lightbulb, LightbulbOff } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize2, Focus, RotateCcw, Play, Pause, Lightbulb, LightbulbOff } from '@/lib/lucide-icons';
 import { useSigma } from '../hooks/useSigma';
 import { useAppState } from '../hooks/useAppState';
 import { knowledgeGraphToGraphology, filterGraphByDepth, SigmaNodeAttributes, SigmaEdgeAttributes } from '../lib/graph-adapter';
+import type { GraphNode } from '../core/graph/types';
 import { QueryFAB } from './QueryFAB';
 import Graph from 'graphology';
 
@@ -26,6 +27,9 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     blastRadiusNodeIds,
     isAIHighlightsEnabled,
     toggleAIHighlights,
+    clearAIToolHighlights,
+    clearAICitationHighlights,
+    clearBlastRadius,
     animatedNodes,
   } = useAppState();
   const [hoveredNodeName, setHoveredNodeName] = useState<string | null>(null);
@@ -51,29 +55,43 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     return animatedNodes;
   }, [animatedNodes, isAIHighlightsEnabled]);
 
+  const nodeById = useMemo(() => {
+    if (!graph) return new Map<string, GraphNode>();
+    return new Map(graph.nodes.map(n => [n.id, n]));
+  }, [graph]);
+
   const handleNodeClick = useCallback((nodeId: string) => {
     if (!graph) return;
-    const node = graph.nodes.find(n => n.id === nodeId);
+    const node = nodeById.get(nodeId);
     if (node) {
       setSelectedNode(node);
       openCodePanel();
     }
-  }, [graph, setSelectedNode, openCodePanel]);
+  }, [graph, nodeById, setSelectedNode, openCodePanel]);
 
   const handleNodeHover = useCallback((nodeId: string | null) => {
     if (!nodeId || !graph) {
       setHoveredNodeName(null);
       return;
     }
-    const node = graph.nodes.find(n => n.id === nodeId);
-    if (node) {
-      setHoveredNodeName(node.properties.name);
-    }
-  }, [graph]);
+    const node = nodeById.get(nodeId);
+    setHoveredNodeName(node ? node.properties.name : null);
+  }, [graph, nodeById]);
 
   const handleStageClick = useCallback(() => {
     setSelectedNode(null);
   }, [setSelectedNode]);
+
+  const handleToggleAIHighlights = useCallback(() => {
+    if (isAIHighlightsEnabled) {
+      clearAIToolHighlights();
+      clearAICitationHighlights();
+      clearBlastRadius();
+      setSelectedNode(null);
+      setSigmaSelectedNode(null);
+    }
+    toggleAIHighlights();
+  }, [isAIHighlightsEnabled, clearAIToolHighlights, clearAICitationHighlights, clearBlastRadius, setSelectedNode, toggleAIHighlights]);
 
   const {
     containerRef,
@@ -103,7 +121,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     focusNode: (nodeId: string) => {
       // Also update app state so the selection syncs properly
       if (graph) {
-        const node = graph.nodes.find(n => n.id === nodeId);
+        const node = nodeById.get(nodeId);
         if (node) {
           setSelectedNode(node);
           openCodePanel();
@@ -111,7 +129,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
       }
       focusNode(nodeId);
     }
-  }), [focusNode, graph, setSelectedNode, openCodePanel]);
+  }), [focusNode, graph, nodeById, setSelectedNode, openCodePanel]);
 
   // Update Sigma graph when KnowledgeGraph changes
   useEffect(() => {
@@ -123,10 +141,11 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     graph.relationships.forEach(rel => {
       if (rel.type === 'MEMBER_OF') {
         // Find the community node to get its index
-        const communityNode = graph.nodes.find(n => n.id === rel.targetId && n.label === 'Community');
-        if (communityNode) {
+        const communityNode = nodeById.get(rel.targetId);
+        if (communityNode && communityNode.label === 'Community') {
           // Extract community index from id (e.g., "comm_5" -> 5)
-          const communityIdx = parseInt(rel.targetId.replace('comm_', ''), 10) || 0;
+          const numericPart = rel.targetId.replace('comm_', '');
+          const communityIdx = /^\d+$/.test(numericPart) ? parseInt(numericPart, 10) : 0;
           communityMemberships.set(rel.sourceId, communityIdx);
         }
       }
@@ -134,7 +153,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
 
     const sigmaGraph = knowledgeGraphToGraphology(graph, communityMemberships);
     setSigmaGraph(sigmaGraph);
-  }, [graph, setSigmaGraph]);
+  }, [graph, nodeById, setSigmaGraph]);
 
   // Update node visibility when filters change
   useEffect(() => {
@@ -146,7 +165,8 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
 
     filterGraphByDepth(sigmaGraph, appSelectedNode?.id || null, depthFilter, visibleLabels);
     sigma.refresh();
-  }, [visibleLabels, depthFilter, appSelectedNode, sigmaRef]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- sigmaRef identity never changes
+  }, [visibleLabels, depthFilter, appSelectedNode]);
 
   // Sync app selected node with sigma
   useEffect(() => {
@@ -304,13 +324,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
       {/* AI Highlights toggle - Top Right */}
       <div className="absolute top-4 right-4 z-20">
         <button
-          onClick={() => {
-            // If turning off, also clear process highlights
-            if (isAIHighlightsEnabled) {
-              setHighlightedNodeIds(new Set());
-            }
-            toggleAIHighlights();
-          }}
+          onClick={handleToggleAIHighlights}
           className={
             isAIHighlightsEnabled
               ? 'w-10 h-10 flex items-center justify-center bg-cyan-500/15 border border-cyan-400/40 rounded-lg text-cyan-200 hover:bg-cyan-500/20 hover:border-cyan-300/60 transition-colors'

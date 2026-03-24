@@ -15,7 +15,24 @@ export type NodeLabel =
   | 'Type'
   | 'CodeElement'
   | 'Community'
-  | 'Process';
+  | 'Process'
+  | 'Section'
+  | 'Struct'
+  | 'Trait'
+  | 'Impl'
+  | 'TypeAlias'
+  | 'Const'
+  | 'Static'
+  | 'Namespace'
+  | 'Union'
+  | 'Typedef'
+  | 'Macro'
+  | 'Property'
+  | 'Record'
+  | 'Delegate'
+  | 'Annotation'
+  | 'Constructor'
+  | 'Template';
 
 
 export type NodeProperties = {
@@ -55,6 +72,8 @@ export type RelationshipType =
   | 'IMPLEMENTS'
   | 'EXTENDS'
   | 'HAS_METHOD'
+  | 'HAS_PROPERTY'
+  | 'ACCESSES'
   | 'MEMBER_OF'
   | 'STEP_IN_PROCESS'
 

@@ -203,6 +203,35 @@ const generateCodeElementCSV = (
 };
 
 /**
+ * Generate CSV for multi-language code element nodes (Struct, Enum, Macro, etc.)
+ * These do NOT have isExported column.
+ * Headers: id,name,filePath,startLine,endLine,content
+ */
+const generateMultiLangCSV = (
+  nodes: GraphNode[],
+  label: NodeLabel,
+  fileContents: Map<string, string>
+): string => {
+  const headers = ['id', 'name', 'filePath', 'startLine', 'endLine', 'content'];
+  const rows: string[] = [headers.join(',')];
+
+  for (const node of nodes) {
+    if (node.label !== label) continue;
+    const content = extractContent(node, fileContents);
+    rows.push([
+      escapeCSVField(node.id),
+      escapeCSVField(node.properties.name || ''),
+      escapeCSVField(node.properties.filePath || ''),
+      escapeCSVNumber(node.properties.startLine, -1),
+      escapeCSVNumber(node.properties.endLine, -1),
+      escapeCSVField(content),
+    ].join(','));
+  }
+
+  return rows.join('\n');
+};
+
+/**
  * Generate CSV for Community nodes (from Leiden algorithm)
  * Headers: id,label,heuristicLabel,keywords,description,enrichedBy,cohesion,symbolCount
  */
@@ -221,7 +250,7 @@ const generateCommunityCSV = (nodes: GraphNode[]): string => {
       escapeCSVField(node.id),
       escapeCSVField(node.properties.name || ''),  // label is stored in name
       escapeCSVField(node.properties.heuristicLabel || ''),
-      keywordsStr,  // Array format for LadybugDB
+      escapeCSVField(keywordsStr),  // Array format for LadybugDB, needs CSV escaping for commas
       escapeCSVField((node.properties as any).description || ''),
       escapeCSVField((node.properties as any).enrichedBy || 'heuristic'),
       escapeCSVNumber(node.properties.cohesion, 0),
@@ -312,7 +341,17 @@ export const generateAllCSVs = (
   nodeCSVs.set('CodeElement', generateCodeElementCSV(nodes, 'CodeElement', fileContents));
   nodeCSVs.set('Community', generateCommunityCSV(nodes));
   nodeCSVs.set('Process', generateProcessCSV(nodes));
-  
+
+  // Generate CSVs for remaining multi-language tables (no isExported column)
+  const handledTables = new Set<NodeTableName>([
+    'File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement', 'Community', 'Process',
+  ]);
+  for (const table of NODE_TABLES) {
+    if (!handledTables.has(table)) {
+      nodeCSVs.set(table, generateMultiLangCSV(nodes, table as NodeLabel, fileContents));
+    }
+  }
+
   // Generate single relation CSV
   const relCSV = generateRelationCSV(graph);
   

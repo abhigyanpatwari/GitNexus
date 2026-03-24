@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, getRelationships, getNodesByLabel, edgeSet,
+  FIXTURES, CROSS_FILE_FIXTURES, getRelationships, getNodesByLabel, getNodesByLabelFull, edgeSet,
   runPipelineFromRepo, type PipelineResult,
 } from './helpers.js';
 
@@ -1230,5 +1230,239 @@ describe('Write access tracking (Java)', () => {
     expect(nameWrite!.source).toBe('updateUser');
     expect(addressWrite).toBeDefined();
     expect(addressWrite!.source).toBe('updateUser');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Call-result variable binding (Phase 9): var user = getUser(); user.save()
+// ---------------------------------------------------------------------------
+
+describe('Java call-result variable binding (Tier 2b)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-call-result-binding'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.save() to User#save via call-result binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('User')
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Method chain binding (Phase 9C): getUser() → .address → .getCity() → .save()
+// ---------------------------------------------------------------------------
+
+describe('Java method chain binding via unified fixpoint (Phase 9C)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-method-chain-binding'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves city.save() to City#save via method chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'processChain' && c.targetFilePath.includes('Models')
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase B: Deep MRO — walkParentChain() at depth 2 (C→B→A)
+// greet() is defined on A, accessed via C. Tests BFS depth-2 parent traversal.
+// ---------------------------------------------------------------------------
+
+describe('Java grandparent method resolution via MRO (Phase B)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-grandparent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects A, B, C, Greeting classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('A');
+    expect(classes).toContain('B');
+    expect(classes).toContain('C');
+    expect(classes).toContain('Greeting');
+  });
+
+  it('emits EXTENDS edges: B→A, C→B', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('B → A');
+    expect(edgeSet(extends_)).toContain('C → B');
+  });
+
+  it('resolves c.greet().save() to Greeting#save via depth-2 MRO lookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.targetFilePath.includes('Greeting'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves c.greet() to A#greet (method found via MRO walk)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCall = calls.find(c =>
+      c.target === 'greet' && c.targetFilePath.includes('A.java'),
+    );
+    expect(greetCall).toBeDefined();
+  });
+});
+
+// ── Phase P: Overload Disambiguation via Parameter Types ─────────────────
+
+describe('Java overload disambiguation by parameter types', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-overload-param-types'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects lookup method with parameterTypes on graph node', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const lookupNodes = methods.filter(m => m.name === 'lookup');
+    // generateId collision → 1 graph node, first overload's parameterTypes wins
+    expect(lookupNodes.length).toBe(1);
+    // The node has parameterTypes from whichever overload was registered first
+    expect(lookupNodes[0].properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('emits CALLS edge from run() → lookup() via overload disambiguation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const lookupCalls = calls.filter(c => c.source === 'run' && c.target === 'lookup');
+    // Phase 0 (fileIndex stores both overloads) + Phase 2 (literal type matching)
+    // enables resolution where previously 2 same-arity candidates → null.
+    // Both calls resolve to same nodeId (ID collision) → 1 CALLS edge after dedup.
+    expect(lookupCalls.length).toBe(1);
+  });
+});
+
+// ── Phase P: Virtual Dispatch via Constructor Type ───────────────────────
+
+describe('Java virtual dispatch via constructor type (same-file)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-virtual-dispatch'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Animal, Dog, and App classes in same file', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Animal');
+    expect(classes).toContain('Dog');
+    expect(classes).toContain('App');
+  });
+
+  it('detects Dog extends Animal heritage', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const dogExtends = extends_.find(e => e.source === 'Dog' && e.target === 'Animal');
+    expect(dogExtends).toBeDefined();
+  });
+
+  it('detects fetchBall() as Dog-only method', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('fetchBall');
+  });
+
+  it('resolves fetchBall() calls from run() — proves virtual dispatch override', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fetchCalls = calls.filter(c => c.source === 'run' && c.target === 'fetchBall');
+    // animal.fetchBall() only resolves if constructorTypeMap overrides
+    // receiver from Animal → Dog (since only Dog has fetchBall).
+    // dog.fetchBall() resolves directly via Dog type.
+    // Both target same nodeId → 1 CALLS edge after dedup.
+    expect(fetchCalls.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 14: Cross-file binding propagation
+// models/UserFactory.java exports static getUser() returning User
+// app/App.java static-imports getUser, calls var user = getUser(); user.save()
+// → user is typed User via cross-file return type propagation
+// ---------------------------------------------------------------------------
+
+describe('Java cross-file binding propagation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(CROSS_FILE_FIXTURES, 'java-cross-file'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User class with save and getName methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toContain('getName');
+  });
+
+  it('detects UserFactory class with getUser method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('UserFactory');
+    expect(getNodesByLabel(result, 'Method')).toContain('getUser');
+  });
+
+  it('detects App class with run method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('App');
+    expect(getNodesByLabel(result, 'Method')).toContain('run');
+  });
+
+  it('emits IMPORTS edge from App.java to UserFactory.java', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const edge = imports.find(e =>
+      e.sourceFilePath.includes('App') && e.targetFilePath.includes('UserFactory'),
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('resolves user.save() in run() to User#save via cross-file return type propagation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' &&
+      c.source === 'run' &&
+      c.targetFilePath.includes('User.java'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves user.getName() in run() to User#getName via cross-file return type propagation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCall = calls.find(c =>
+      c.target === 'getName' &&
+      c.source === 'run' &&
+      c.targetFilePath.includes('User.java'),
+    );
+    expect(getNameCall).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edges linking save and getName to User', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const saveEdge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
+    const getNameEdge = hasMethod.find(e => e.source === 'User' && e.target === 'getName');
+    expect(saveEdge).toBeDefined();
+    expect(getNameEdge).toBeDefined();
   });
 });

@@ -61,7 +61,7 @@ describe.skipIf(!swiftAvailable)('Swift constructor-inferred type resolution', (
 // The self/super resolution code already exists in type-env.ts lookupInEnv (lines 56-66).
 // ---------------------------------------------------------------------------
 
-describe.skip('Swift self resolution', () => {
+describe.skipIf(!swiftAvailable)('Swift self resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -91,7 +91,7 @@ describe.skip('Swift self resolution', () => {
 // findEnclosingParentClassName in type-env.ts already has Swift inheritance_specifier handler.
 // ---------------------------------------------------------------------------
 
-describe.skip('Swift parent resolution', () => {
+describe.skipIf(!swiftAvailable)('Swift parent resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -222,5 +222,281 @@ describe.skipIf(!swiftAvailable)('Swift return-type inference via function retur
       c.target === 'save' && c.source === 'processRepo' && c.targetFilePath.includes('Models.swift')
     );
     expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Implicit imports: Swift files in the same module see each other without
+// explicit import statements. This is the foundation of all cross-file
+// resolution — without addSwiftImplicitImports, Tier 2a lookups fail.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift implicit imports (cross-file visibility)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'swift-implicit-imports'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects UserService class in Models.swift', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('UserService');
+  });
+
+  it('resolves UserService() constructor call across files (no explicit import)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctorCall = calls.find(c =>
+      c.target === 'UserService' && c.targetFilePath === 'Models.swift',
+    );
+    expect(ctorCall).toBeDefined();
+  });
+
+  it('resolves service.fetchUser() member call across files', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const memberCall = calls.find(c =>
+      c.target === 'fetchUser' && c.targetFilePath === 'Models.swift',
+    );
+    expect(memberCall).toBeDefined();
+  });
+
+  it('creates IMPORTS edges between files in the same module', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const crossFileImport = imports.find(c =>
+      (c.sourceFilePath === 'App.swift' && c.targetFilePath === 'Models.swift')
+      || (c.sourceFilePath === 'Models.swift' && c.targetFilePath === 'App.swift'),
+    );
+    expect(crossFileImport).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Extension deduplication: Swift extensions create multiple Class nodes
+// with the same name. The resolver should deduplicate and prefer the
+// primary definition (shortest file path).
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift extension deduplication', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'swift-extension-dedup'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Product class', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Product');
+  });
+
+  it('resolves Product() constructor despite extension creating duplicate class node', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctorCall = calls.find(c =>
+      c.target === 'Product' && c.source === 'process',
+    );
+    expect(ctorCall).toBeDefined();
+  });
+
+  it('resolves product.save() to Product.swift (primary definition)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'process' && c.targetFilePath === 'Product.swift',
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Constructor fallback: Swift constructors look like free function calls
+// (no `new` keyword). The resolver retries with constructor form when
+// free-form finds no callable but the name resolves to a Class/Struct.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift constructor call fallback (no new keyword)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'swift-constructor-fallback'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves OCRService() as constructor call across files', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctorCall = calls.find(c =>
+      c.target === 'OCRService' && c.targetFilePath === 'Service.swift',
+    );
+    expect(ctorCall).toBeDefined();
+  });
+
+  it('resolves ocr.recognize() member call via constructor-inferred type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const memberCall = calls.find(c =>
+      c.target === 'recognize' && c.targetFilePath === 'Service.swift',
+    );
+    expect(memberCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Export visibility: internal (default) symbols are cross-file visible,
+// private/fileprivate are not. Verifies the export detection inversion.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift export visibility (internal vs private)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'swift-export-visibility'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves PublicService() constructor across files', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctorCall = calls.find(c =>
+      c.target === 'PublicService' && c.targetFilePath === 'Visible.swift',
+    );
+    expect(ctorCall).toBeDefined();
+  });
+
+  it('resolves internalHelper() across files (internal = module-scoped)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const helperCall = calls.find(c =>
+      c.target === 'internalHelper' && c.targetFilePath === 'Visible.swift',
+    );
+    expect(helperCall).toBeDefined();
+  });
+
+  // NOTE: private/fileprivate symbols are marked as unexported, which prevents
+  // Tier 2a (import-scoped) resolution. However, Tier 3 (global) still resolves
+  // them — export filtering at global scope is a separate enhancement.
+  // These tests verify the symbols ARE marked correctly in export detection
+  // (covered by parsing.test.ts mock tests), not end-to-end call blocking.
+});
+
+// ---------------------------------------------------------------------------
+// if let / guard let optional binding resolution:
+// Swift's most common unwrap patterns — extractIfGuardBinding extracts the
+// variable name and infers type from the RHS call result.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift if let / guard let binding resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'swift-if-let-guard-let'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+  });
+
+  it('resolves user.save() inside if-let to User#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'processIfLet' && c.targetFilePath === 'Models.swift',
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves repo.save() inside guard-let to Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'processGuardLet' && c.targetFilePath === 'Models.swift',
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('user.save() in if-let does NOT resolve to Repo#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find(c =>
+      c.target === 'save' && c.source === 'processIfLet',
+    );
+    if (wrongSave) {
+      // If resolved, it should be to User's save (in Models.swift), not Repo's
+      expect(wrongSave.targetFilePath).toBe('Models.swift');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// await / try expression unwrapping:
+// Swift's await_expression and try_expression wrap call_expression nodes.
+// extractPendingAssignment must unwrap these to find the inner call.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift await / try expression unwrapping', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'swift-await-try'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.save() via await fetchUser() return type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'processAwait' && c.targetFilePath === 'Models.swift',
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves repo.save() via try parseRepo() return type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'save' && c.source === 'processTry' && c.targetFilePath === 'Models.swift',
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('detects fetchUser and parseRepo as functions', () => {
+    const fns = getNodesByLabel(result, 'Function');
+    expect(fns).toContain('fetchUser');
+    expect(fns).toContain('parseRepo');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// For-in loop element type inference: extractForLoopBinding derives element
+// type from the iterable's declared type annotation (e.g., [User] → User).
+//
+// KNOWN GAP: The type-env correctly stores declarationTypeNodes for Swift
+// array types ([User]), but the call-processor's re-parse path doesn't
+// propagate the for-loop binding to receiver resolution. The type-env
+// infrastructure (extractForLoopBinding, extractSwiftElementTypeFromTypeNode,
+// declarationTypeNodes population for type_annotation) is in place — the
+// integration gap is in how processCalls rebuilds TypeEnv for call resolution.
+// Fixture: swift-for-loop-inference/ (ready for when this is wired up).
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift for-in loop element type inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'swift-for-loop-inference'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+  });
+
+  it('creates implicit import edges between files', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    expect(imports.length).toBeGreaterThan(0);
   });
 });

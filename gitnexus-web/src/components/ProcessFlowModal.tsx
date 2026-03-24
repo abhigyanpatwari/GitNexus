@@ -7,6 +7,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { X, GitBranch, Copy, Focus, Layers, ZoomIn, ZoomOut } from 'lucide-react';
 import mermaid from 'mermaid';
+import DOMPurify from 'dompurify';
 import { ProcessData, generateProcessMermaid } from '../lib/mermaid-generator';
 
 interface ProcessFlowModalProps {
@@ -90,6 +91,7 @@ export const ProcessFlowModal = ({ process, onClose, onFocusInGraph, isFullScree
     // Handle keyboard zoom
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
             if (e.key === '+' || e.key === '=') {
                 setZoom(prev => Math.min(prev + 0.2, maxZoom));
             } else if (e.key === '-' || e.key === '_') {
@@ -136,8 +138,8 @@ export const ProcessFlowModal = ({ process, onClose, onFocusInGraph, isFullScree
         const renderDiagram = async () => {
             try {
                 // Check if we have raw mermaid code (from AI chat) or need to generate it
-                const mermaidCode = (process as any).rawMermaid
-                    ? (process as any).rawMermaid
+                const mermaidCode = process.rawMermaid
+                    ? process.rawMermaid
                     : generateProcessMermaid(process);
                 const id = `mermaid-${Date.now()}`;
 
@@ -145,7 +147,8 @@ export const ProcessFlowModal = ({ process, onClose, onFocusInGraph, isFullScree
                 diagramRef.current!.innerHTML = '';
 
                 const { svg } = await mermaid.render(id, mermaidCode);
-                diagramRef.current!.innerHTML = svg;
+                if (!diagramRef.current) return;
+                diagramRef.current!.innerHTML = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true }, ADD_TAGS: ['foreignObject'] });
             } catch (error) {
                 console.error('Mermaid render error:', error);
                 const errorMessage = error instanceof Error ? error.message : String(error);

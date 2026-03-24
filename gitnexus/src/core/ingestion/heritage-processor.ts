@@ -25,6 +25,7 @@ import { SupportedLanguages } from '../../config/supported-languages.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type { ExtractedHeritage } from './workers/parse-worker.js';
 import type { ResolutionContext } from './resolution-context.js';
+import { TIER_CONFIDENCE } from './resolution-context.js';
 
 /** C#/Java convention: interfaces start with I followed by an uppercase letter */
 const INTERFACE_NAME_RE = /^I[A-Z]/;
@@ -66,22 +67,28 @@ const resolveExtendsType = (
  * Resolve a symbol ID for heritage, with fallback to generated ID.
  * Uses ctx.resolve() → pick first candidate's nodeId → generate synthetic ID.
  */
+interface ResolvedHeritage {
+  readonly id: string;
+  readonly confidence: number;
+}
+
 const resolveHeritageId = (
   name: string,
   filePath: string,
   ctx: ResolutionContext,
   fallbackLabel: string,
   fallbackKey?: string,
-): string => {
+): ResolvedHeritage => {
   const resolved = ctx.resolve(name, filePath);
   if (resolved && resolved.candidates.length > 0) {
     // For global with multiple candidates, refuse (a wrong edge is worse than no edge)
     if (resolved.tier === 'global' && resolved.candidates.length > 1) {
-      return generateId(fallbackLabel, fallbackKey ?? name);
+      return { id: generateId(fallbackLabel, fallbackKey ?? name), confidence: TIER_CONFIDENCE['global'] };
     }
-    return resolved.candidates[0].nodeId;
+    return { id: resolved.candidates[0].nodeId, confidence: TIER_CONFIDENCE[resolved.tier] };
   }
-  return generateId(fallbackLabel, fallbackKey ?? name);
+  // Unresolved: use global-tier confidence as fallback
+  return { id: generateId(fallbackLabel, fallbackKey ?? name), confidence: TIER_CONFIDENCE['global'] };
 };
 
 export const processHeritage = async (
@@ -163,16 +170,16 @@ export const processHeritage = async (
 
         const { type: relType, idPrefix } = resolveExtendsType(parentClassName, file.path, ctx, language);
 
-        const childId = resolveHeritageId(className, file.path, ctx, 'Class', `${file.path}:${className}`);
-        const parentId = resolveHeritageId(parentClassName, file.path, ctx, idPrefix);
+        const child = resolveHeritageId(className, file.path, ctx, 'Class', `${file.path}:${className}`);
+        const parent = resolveHeritageId(parentClassName, file.path, ctx, idPrefix);
 
-        if (childId && parentId && childId !== parentId) {
+        if (child.id && parent.id && child.id !== parent.id) {
           graph.addRelationship({
-            id: generateId(relType, `${childId}->${parentId}`),
-            sourceId: childId,
-            targetId: parentId,
+            id: generateId(relType, `${child.id}->${parent.id}`),
+            sourceId: child.id,
+            targetId: parent.id,
             type: relType,
-            confidence: 1.0,
+            confidence: Math.sqrt(child.confidence * parent.confidence),
             reason: '',
           });
         }
@@ -183,16 +190,16 @@ export const processHeritage = async (
         const className = captureMap['heritage.class'].text;
         const interfaceName = captureMap['heritage.implements'].text;
 
-        const classId = resolveHeritageId(className, file.path, ctx, 'Class', `${file.path}:${className}`);
-        const interfaceId = resolveHeritageId(interfaceName, file.path, ctx, 'Interface');
+        const cls = resolveHeritageId(className, file.path, ctx, 'Class', `${file.path}:${className}`);
+        const iface = resolveHeritageId(interfaceName, file.path, ctx, 'Interface');
 
-        if (classId && interfaceId) {
+        if (cls.id && iface.id) {
           graph.addRelationship({
-            id: generateId('IMPLEMENTS', `${classId}->${interfaceId}`),
-            sourceId: classId,
-            targetId: interfaceId,
+            id: generateId('IMPLEMENTS', `${cls.id}->${iface.id}`),
+            sourceId: cls.id,
+            targetId: iface.id,
             type: 'IMPLEMENTS',
-            confidence: 1.0,
+            confidence: Math.sqrt(cls.confidence * iface.confidence),
             reason: '',
           });
         }
@@ -203,16 +210,16 @@ export const processHeritage = async (
         const structName = captureMap['heritage.class'].text;
         const traitName = captureMap['heritage.trait'].text;
 
-        const structId = resolveHeritageId(structName, file.path, ctx, 'Struct', `${file.path}:${structName}`);
-        const traitId = resolveHeritageId(traitName, file.path, ctx, 'Trait');
+        const strct = resolveHeritageId(structName, file.path, ctx, 'Struct', `${file.path}:${structName}`);
+        const trait = resolveHeritageId(traitName, file.path, ctx, 'Trait');
 
-        if (structId && traitId) {
+        if (strct.id && trait.id) {
           graph.addRelationship({
-            id: generateId('IMPLEMENTS', `${structId}->${traitId}`),
-            sourceId: structId,
-            targetId: traitId,
+            id: generateId('IMPLEMENTS', `${strct.id}->${trait.id}`),
+            sourceId: strct.id,
+            targetId: trait.id,
             type: 'IMPLEMENTS',
-            confidence: 1.0,
+            confidence: Math.sqrt(strct.confidence * trait.confidence),
             reason: 'trait-impl',
           });
         }
@@ -256,44 +263,44 @@ export const processHeritageFromExtracted = async (
       if (!fileLanguage) continue;
       const { type: relType, idPrefix } = resolveExtendsType(h.parentName, h.filePath, ctx, fileLanguage);
 
-      const childId = resolveHeritageId(h.className, h.filePath, ctx, 'Class', `${h.filePath}:${h.className}`);
-      const parentId = resolveHeritageId(h.parentName, h.filePath, ctx, idPrefix);
+      const child = resolveHeritageId(h.className, h.filePath, ctx, 'Class', `${h.filePath}:${h.className}`);
+      const parent = resolveHeritageId(h.parentName, h.filePath, ctx, idPrefix);
 
-      if (childId && parentId && childId !== parentId) {
+      if (child.id && parent.id && child.id !== parent.id) {
         graph.addRelationship({
-          id: generateId(relType, `${childId}->${parentId}`),
-          sourceId: childId,
-          targetId: parentId,
+          id: generateId(relType, `${child.id}->${parent.id}`),
+          sourceId: child.id,
+          targetId: parent.id,
           type: relType,
-          confidence: 1.0,
+          confidence: Math.sqrt(child.confidence * parent.confidence),
           reason: '',
         });
       }
     } else if (h.kind === 'implements') {
-      const classId = resolveHeritageId(h.className, h.filePath, ctx, 'Class', `${h.filePath}:${h.className}`);
-      const interfaceId = resolveHeritageId(h.parentName, h.filePath, ctx, 'Interface');
+      const cls = resolveHeritageId(h.className, h.filePath, ctx, 'Class', `${h.filePath}:${h.className}`);
+      const iface = resolveHeritageId(h.parentName, h.filePath, ctx, 'Interface');
 
-      if (classId && interfaceId) {
+      if (cls.id && iface.id) {
         graph.addRelationship({
-          id: generateId('IMPLEMENTS', `${classId}->${interfaceId}`),
-          sourceId: classId,
-          targetId: interfaceId,
+          id: generateId('IMPLEMENTS', `${cls.id}->${iface.id}`),
+          sourceId: cls.id,
+          targetId: iface.id,
           type: 'IMPLEMENTS',
-          confidence: 1.0,
+          confidence: Math.sqrt(cls.confidence * iface.confidence),
           reason: '',
         });
       }
     } else if (h.kind === 'trait-impl' || h.kind === 'include' || h.kind === 'extend' || h.kind === 'prepend') {
-      const structId = resolveHeritageId(h.className, h.filePath, ctx, 'Struct', `${h.filePath}:${h.className}`);
-      const traitId = resolveHeritageId(h.parentName, h.filePath, ctx, 'Trait');
+      const strct = resolveHeritageId(h.className, h.filePath, ctx, 'Struct', `${h.filePath}:${h.className}`);
+      const trait = resolveHeritageId(h.parentName, h.filePath, ctx, 'Trait');
 
-      if (structId && traitId) {
+      if (strct.id && trait.id) {
         graph.addRelationship({
-          id: generateId('IMPLEMENTS', `${structId}->${traitId}:${h.kind}`),
-          sourceId: structId,
-          targetId: traitId,
+          id: generateId('IMPLEMENTS', `${strct.id}->${trait.id}:${h.kind}`),
+          sourceId: strct.id,
+          targetId: trait.id,
           type: 'IMPLEMENTS',
-          confidence: 1.0,
+          confidence: Math.sqrt(strct.confidence * trait.confidence),
           reason: h.kind,
         });
       }

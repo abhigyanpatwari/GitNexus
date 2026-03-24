@@ -321,6 +321,15 @@ nodes:
 
 additional_node_types: "Multi-language: Struct, Enum, Macro, Typedef, Union, Namespace, Trait, Impl, TypeAlias, Const, Static, Property, Record, Delegate, Annotation, Constructor, Template, Module (use backticks in queries: \`Struct\`, \`Enum\`, etc.)"
 
+node_properties:
+  common: "name (STRING), filePath (STRING), startLine (INT32), endLine (INT32)"
+  Method: "parameterCount (INT32), returnType (STRING), isVariadic (BOOL)"
+  Function: "parameterCount (INT32), returnType (STRING), isVariadic (BOOL)"
+  Property: "declaredType (STRING) — the field's type annotation (e.g., 'Address', 'City'). Used for field-access chain resolution."
+  Constructor: "parameterCount (INT32)"
+  Community: "heuristicLabel (STRING), cohesion (DOUBLE), symbolCount (INT32), keywords (STRING[]), description (STRING), enrichedBy (STRING)"
+  Process: "heuristicLabel (STRING), processType (STRING — 'intra_community' or 'cross_community'), stepCount (INT32), communities (STRING[]), entryPointId (STRING), terminalId (STRING)"
+
 relationships:
   - CONTAINS: File/Folder contains child
   - DEFINES: File defines a symbol

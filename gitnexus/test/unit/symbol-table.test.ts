@@ -30,11 +30,13 @@ describe('SymbolTable', () => {
       expect(table.getStats().globalSymbolCount).toBe(1);
     });
 
-    it('allows duplicate adds for same file and name', () => {
+    it('allows duplicate adds for same file and name (overloads preserved)', () => {
       table.add('src/a.ts', 'foo', 'func:foo:1', 'Function');
       table.add('src/a.ts', 'foo', 'func:foo:2', 'Function');
-      // File index overwrites: last wins
-      expect(table.lookupExact('src/a.ts', 'foo')).toBe('func:foo:2');
+      // File index stores both overloads; lookupExact returns first
+      expect(table.lookupExact('src/a.ts', 'foo')).toBe('func:foo:1');
+      // lookupExactAll returns all overloads
+      expect(table.lookupExactAll('src/a.ts', 'foo')).toHaveLength(2);
       // Global index appends
       expect(table.lookupFuzzy('foo')).toHaveLength(2);
     });
@@ -495,13 +497,20 @@ describe('SymbolTable', () => {
       expect(def!.ownerId).toBe('class:User');
     });
 
-    it('last-write-wins when same file and name are added twice', () => {
+    it('returns first definition when same file and name are added twice (overloads preserved)', () => {
       table.add('src/a.ts', 'foo', 'func:foo:v1', 'Function', { returnType: 'void' });
       table.add('src/a.ts', 'foo', 'func:foo:v2', 'Function', { returnType: 'string' });
+      // lookupExactFull returns first match
       const def = table.lookupExactFull('src/a.ts', 'foo');
       expect(def).toBeDefined();
-      expect(def!.nodeId).toBe('func:foo:v2');
-      expect(def!.returnType).toBe('string');
+      expect(def!.nodeId).toBe('func:foo:v1');
+      expect(def!.returnType).toBe('void');
+      // lookupExactAll returns all overloads
+      const all = table.lookupExactAll('src/a.ts', 'foo');
+      expect(all).toHaveLength(2);
+      expect(all[0].nodeId).toBe('func:foo:v1');
+      expect(all[1].nodeId).toBe('func:foo:v2');
+      expect(all[1].returnType).toBe('string');
     });
   });
 

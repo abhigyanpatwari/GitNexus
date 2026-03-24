@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, getRelationships, getNodesByLabel, edgeSet,
+  FIXTURES, CROSS_FILE_FIXTURES, getRelationships, getNodesByLabel, getNodesByLabelFull, edgeSet,
   runPipelineFromRepo, type PipelineResult,
 } from './helpers.js';
 
@@ -1314,5 +1314,315 @@ describe('Write access tracking (C#)', () => {
     for (const edge of writes) {
       expect(edge.rel.confidence).toBe(1.0);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Call-result variable binding (Phase 9): var user = GetUser(); user.Save()
+// ---------------------------------------------------------------------------
+
+describe('C# call-result variable binding (Tier 2b)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-call-result-binding'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves user.Save() to User#Save via call-result binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'Save' && c.source === 'ProcessUser' && c.targetFilePath.includes('App')
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Method chain binding (Phase 9C): GetUser() → .Address → .GetCity() → .Save()
+// ---------------------------------------------------------------------------
+
+describe('C# method chain binding via unified fixpoint (Phase 9C)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-method-chain-binding'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves city.Save() to City#Save via method chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'Save' && c.source === 'ProcessChain' && c.targetFilePath.includes('App')
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase B: Deep MRO — walkParentChain() at depth 2 (C→B→A)
+// Greet() is defined on A, accessed via C. Tests BFS depth-2 parent traversal.
+// ---------------------------------------------------------------------------
+
+describe('C# grandparent method resolution via MRO (Phase B)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-grandparent-resolution'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects A, B, C, Greeting classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('A');
+    expect(classes).toContain('B');
+    expect(classes).toContain('C');
+    expect(classes).toContain('Greeting');
+  });
+
+  it('emits EXTENDS edges: B→A, C→B', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('B → A');
+    expect(edgeSet(extends_)).toContain('C → B');
+  });
+
+  it('resolves c.Greet().Save() to Greeting#Save via depth-2 MRO lookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'Save' && c.targetFilePath.includes('Greeting'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves c.Greet() to A#Greet (method found via MRO walk)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCall = calls.find(c =>
+      c.target === 'Greet' && c.targetFilePath.includes('A.cs'),
+    );
+    expect(greetCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase C: C# null-check narrowing — if (x != null) and if (x is not null)
+// Both patterns emit patternOverrides for the if-body position range
+// ---------------------------------------------------------------------------
+
+describe('C# null-check narrowing resolution (Phase C)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-null-check-narrowing'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and Repo classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
+  });
+
+  it('resolves x.Save() inside != null guard (ProcessInequality) to User#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'Save' && c.source === 'ProcessInequality' && c.targetFilePath.includes('User'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves x.Save() inside is not null guard (ProcessIsNotNull) to User#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'Save' && c.source === 'ProcessIsNotNull' && c.targetFilePath.includes('User'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('does NOT cross-resolve to Repo#Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongCall = calls.find(c =>
+      c.target === 'Save' && c.targetFilePath.includes('Repo'),
+    );
+    expect(wrongCall).toBeUndefined();
+  });
+
+  it('resolves x.Save() inside constructor via null-check narrowing', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'Save' && c.source === 'App' && c.targetFilePath.includes('User'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves x.Save() inside lambda via null-check narrowing', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'Save' && c.source === 'ProcessInLambda' && c.targetFilePath.includes('User'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+// ── Phase P: Overload Disambiguation via Parameter Types ─────────────────
+
+describe('C# overload disambiguation by parameter types', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-overload-param-types'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Lookup method with parameterTypes on graph node', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const lookupNodes = methods.filter(m => m.name === 'Lookup');
+    expect(lookupNodes.length).toBe(1);
+    expect(lookupNodes[0].properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('emits CALLS edge from Run() → Lookup() via overload disambiguation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const lookupCalls = calls.filter(c => c.source === 'Run' && c.target === 'Lookup');
+    // Both Lookup(42) and Lookup("alice") resolve to same nodeId → 1 CALLS edge
+    expect(lookupCalls.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C# optional parameter arity resolution
+// ---------------------------------------------------------------------------
+
+describe('C# optional parameter arity resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-optional-params'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves g.Greet("Alice") with 1 arg to Greet with 2 params (1 optional)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCalls = calls.filter(c => c.source === 'Main' && c.target === 'Greet');
+    expect(greetCalls.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 14: Cross-file binding propagation
+// Models/UserFactory.cs exports static GetUser() returning User
+// App/Program.cs uses static import, calls var u = GetUser(); u.Save()
+// → u is typed User via cross-file return type propagation
+// ---------------------------------------------------------------------------
+
+describe('C# cross-file binding propagation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(CROSS_FILE_FIXTURES, 'csharp-cross-file'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User class with Save and GetName methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Method')).toContain('Save');
+    expect(getNodesByLabel(result, 'Method')).toContain('GetName');
+  });
+
+  it('detects UserFactory class with GetUser method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('UserFactory');
+    expect(getNodesByLabel(result, 'Method')).toContain('GetUser');
+  });
+
+  it('detects Program class with Run method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Program');
+    expect(getNodesByLabel(result, 'Method')).toContain('Run');
+  });
+
+  it('emits IMPORTS edge from Program.cs to UserFactory.cs', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const edge = imports.find(e =>
+      e.sourceFilePath.includes('Program') && e.targetFilePath.includes('UserFactory'),
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('resolves u.Save() in Run() to User#Save via cross-file return type propagation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(c =>
+      c.target === 'Save' &&
+      c.source === 'Run' &&
+      c.targetFilePath.includes('User.cs'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves u.GetName() in Run() to User#GetName via cross-file return type propagation', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCall = calls.find(c =>
+      c.target === 'GetName' &&
+      c.source === 'Run' &&
+      c.targetFilePath.includes('User.cs'),
+    );
+    expect(getNameCall).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edges linking Save and GetName to User', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const saveEdge = hasMethod.find(e => e.source === 'User' && e.target === 'Save');
+    const getNameEdge = hasMethod.find(e => e.source === 'User' && e.target === 'GetName');
+    expect(saveEdge).toBeDefined();
+    expect(getNameEdge).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C# fallback without .csproj (P1-4 fix)
+// When no .csproj file is found, import resolution should fall back to
+// suffix-based matching rather than returning null.
+// ---------------------------------------------------------------------------
+
+describe('C# import resolution without .csproj (suffix fallback)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-no-csproj'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User class with Save and GetName methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Method')).toContain('Save');
+  });
+
+  it('detects UserService class with ProcessUser method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('UserService');
+    expect(getNodesByLabel(result, 'Method')).toContain('ProcessUser');
+  });
+
+  // C# 'using Models;' is a namespace import — suffix matching cannot resolve
+  // namespace-to-directory mappings without .csproj. The fallback prevents a null
+  // return (so other resolution paths can attempt it), but namespace imports
+  // inherently require project config for file discovery.
+  it('does not crash on namespace import without .csproj (graceful fallback)', () => {
+    // Pipeline completes without errors and detects symbols from both files,
+    // even though no IMPORTS edge is created for the namespace import.
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('User');
+    expect(classes).toContain('UserService');
   });
 });

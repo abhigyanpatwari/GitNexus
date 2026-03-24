@@ -1375,7 +1375,7 @@ class RepoService {
         expect(flatGet(env, 'user')).toBe('User');
       });
 
-      it('does NOT extract binding from plain instanceof without variable', () => {
+      it('extracts boolean type from plain instanceof (no pattern variable)', () => {
         const tree = parse(`
           class App {
             void process(Object obj) {
@@ -1384,8 +1384,8 @@ class RepoService {
           }
         `, Java);
         const { env } = buildTypeEnv(tree, 'java');
-        // No pattern variable declared — no binding
-        expect(flatGet(env, 'b')).toBeUndefined();
+        // No pattern variable — b gets its declared type 'boolean', not 'User'
+        expect(flatGet(env, 'b')).toBe('boolean');
       });
 
       it('extracts correct type when multiple instanceof patterns exist', () => {
@@ -1589,7 +1589,7 @@ class RepoService {
           getStats: () => ({ fileCount: 0, globalSymbolCount: 0 }),
           clear: () => {},
         };
-        const { env } = buildTypeEnv(tree, 'kotlin', mockSymbolTable as any);
+        const { env } = buildTypeEnv(tree, 'kotlin', { symbolTable: mockSymbolTable as any });
         expect(flatGet(env, 'user')).toBe('User');
       });
 
@@ -1602,13 +1602,15 @@ class RepoService {
         const mockSymbolTable = {
           lookupFuzzy: (name: string) =>
             name === 'doStuff' ? [{ nodeId: 'n1', filePath: 'utils.kt', type: 'Function' }] : [],
+          lookupFuzzyCallable: () => [],
+          lookupFieldByOwner: () => undefined,
           lookupExact: () => undefined,
           lookupExactFull: () => undefined,
           add: () => {},
           getStats: () => ({ fileCount: 0, globalSymbolCount: 0 }),
           clear: () => {},
         };
-        const { env } = buildTypeEnv(tree, 'kotlin', mockSymbolTable as any);
+        const { env } = buildTypeEnv(tree, 'kotlin', { symbolTable: mockSymbolTable as any });
         expect(flatGet(env, 'result')).toBeUndefined();
       });
 
@@ -2241,10 +2243,11 @@ svc = App::Models::Service.new
       expect(env.get(scopeKey!)?.get('b')).toBe('User');
     });
 
-    it('does NOT resolve reverse-ordered Tier 2 chains (b = a, a = c, c: User)', () => {
+    it('resolves reverse-ordered Tier 2 chains via fixpoint (b = a, a = c, c: User)', () => {
       // Two chained Tier 2 assignments in reverse source order.
-      // Post-walk iterates source order: b = a (a not yet resolved) → fails,
-      // then a = c (c is Tier 0) → succeeds. b stays unresolved.
+      // The unified fixpoint loop resolves this in 2 iterations:
+      //   Iter 1: a = c (c is Tier 0 → a = User)
+      //   Iter 2: b = a (a now resolved → b = User)
       const tree = parse(`
         function process() {
           const b = a;
@@ -2257,8 +2260,8 @@ svc = App::Models::Service.new
       expect(scopeKey).toBeDefined();
       expect(env.get(scopeKey!)?.get('c')).toBe('User');
       expect(env.get(scopeKey!)?.get('a')).toBe('User');
-      // b should NOT resolve — reverse Tier 2 chain
-      expect(env.get(scopeKey!)?.get('b')).toBeUndefined();
+      // Fixpoint now resolves reverse-ordered chains
+      expect(env.get(scopeKey!)?.get('b')).toBe('User');
     });
   });
 
@@ -3688,6 +3691,553 @@ function calculate(service: Service) {
       `, TypeScript.typescript);
       const { env } = buildTypeEnv(tree, 'typescript');
       expect(flatGet(env, 'service')).toBe('Service');
+    });
+  });
+
+  describe('null-check narrowing via patternOverrides (Phase C Task 7)', () => {
+    it('TS: if (x !== null) narrows User | null to User inside if-body', () => {
+      const code = `
+function process(x: User | null) {
+  if (x !== null) {
+    x.save();
+  }
+}`;
+      const tree = parse(code, TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      // Inside the if-body, x should resolve to User (nullable stripped)
+      const saveCall = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('x.save'));
+      expect(typeEnv.lookup('x', saveCall)).toBe('User');
+    });
+
+    it('TS: if (x !== undefined) narrows User | undefined to User inside if-body', () => {
+      const code = `
+function process(x: User | undefined) {
+  if (x !== undefined) {
+    x.save();
+  }
+}`;
+      const tree = parse(code, TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const saveCall = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('x.save'));
+      expect(typeEnv.lookup('x', saveCall)).toBe('User');
+    });
+
+    it('TS: if (x != null) narrows with loose inequality', () => {
+      const code = `
+function process(x: User | null) {
+  if (x != null) {
+    x.save();
+  }
+}`;
+      const tree = parse(code, TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const saveCall = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('x.save'));
+      expect(typeEnv.lookup('x', saveCall)).toBe('User');
+    });
+
+    it('TS: null-check narrowing does NOT leak to else branch', () => {
+      const code = `
+function process(x: User | null) {
+  if (x !== null) {
+    x.save();
+  } else {
+    x.fallback();
+  }
+}`;
+      const tree = parse(code, TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      // Inside else branch, x should retain original nullable type (User via fastStripNullable)
+      const fallbackCall = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('x.fallback'));
+      // The else branch is NOT in the narrowing range, so lookup falls through to
+      // the flat scopeEnv which has "User | null" — fastStripNullable strips it to User.
+      // This is expected: without negative narrowing (Phase 13A), else branches still get
+      // the base stripped type. The key invariant is that the narrowing override does NOT
+      // apply outside the if-body range.
+      expect(typeEnv.lookup('x', fallbackCall)).toBe('User');
+    });
+
+    it('TS: null-check narrowing does NOT apply outside the if block', () => {
+      const code = `
+function process(x: User | null) {
+  if (x !== null) {
+    x.save();
+  }
+  x.other();
+}`;
+      const tree = parse(code, TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      // After the if-block, x should use the flat scopeEnv (User | null → User via fastStripNullable)
+      const otherCall = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('x.other'));
+      expect(typeEnv.lookup('x', otherCall)).toBe('User');
+    });
+
+    it('TS: no narrowing when variable has no nullable type', () => {
+      const code = `
+function process(x: User) {
+  if (x !== null) {
+    x.save();
+  }
+}`;
+      const tree = parse(code, TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      // x is already non-nullable — no narrowing override is emitted, but lookup still works
+      const saveCall = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('x.save'));
+      expect(typeEnv.lookup('x', saveCall)).toBe('User');
+    });
+
+    it('TS: instanceof still works alongside null-check narrowing', () => {
+      const tree = parse(`
+function process(x) {
+  if (x instanceof User) {
+    x.save();
+  }
+}
+      `, TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(env, 'x')).toBe('User');
+    });
+
+    it('Kotlin: if (x != null) narrows nullable type inside if-body', () => {
+      const code = `
+fun process(x: User?) {
+    if (x != null) {
+        x.save()
+    }
+}`;
+      const tree = parse(code, Kotlin);
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const saveCall = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('x.save'));
+      expect(typeEnv.lookup('x', saveCall)).toBe('User');
+    });
+
+    it('Kotlin: when/is still works alongside null-check narrowing', () => {
+      const tree = parse(`
+fun process(x: Any) {
+    when (x) {
+        is User -> x.name
+    }
+}
+      `, Kotlin);
+      const { env } = buildTypeEnv(tree, 'kotlin');
+      expect(flatGet(env, 'x')).toBe('User');
+    });
+
+    it('C#: if (x != null) narrows nullable type inside if-body', () => {
+      const code = `
+class App {
+    void Process(User? x) {
+        if (x != null) {
+            x.Save();
+        }
+    }
+}`;
+      const tree = parse(code, CSharp);
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const saveCall = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('x.Save'));
+      expect(typeEnv.lookup('x', saveCall)).toBe('User');
+    });
+
+    it('C#: is_pattern_expression type pattern still works alongside null-check', () => {
+      const tree = parse(`
+class App {
+    void Process(object obj) {
+        if (obj is User user) {
+            user.Save();
+        }
+    }
+}
+      `, CSharp);
+      const { env } = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(env, 'user')).toBe('User');
+    });
+  });
+
+  describe('multi-declarator type association (sizeBefore optimization)', () => {
+    it('Java: multi-declarator captures all variable names with shared type', () => {
+      const tree = parse(`
+class App {
+    void run() {
+        User a = getA(), b = getB();
+        a.save();
+        b.save();
+    }
+}
+      `, Java);
+      const { env } = buildTypeEnv(tree, 'java');
+      expect(flatGet(env, 'a')).toBe('User');
+      expect(flatGet(env, 'b')).toBe('User');
+    });
+
+    it('Java: untyped declaration before typed does not get false type association', () => {
+      // `x` has no type annotation → must NOT be associated with the User type
+      // from the later declaration. This guards the sizeBefore skip logic.
+      const tree = parse(`
+class App {
+    void run() {
+        var x = getX();
+        User user = getUser();
+        user.save();
+    }
+}
+      `, Java);
+      const { env } = buildTypeEnv(tree, 'java');
+      expect(flatGet(env, 'user')).toBe('User');
+      // x should NOT have a type binding (it's untyped via var)
+      expect(flatGet(env, 'x')).toBeUndefined();
+    });
+
+    it('C#: multi-declarator with shared type captures both variables', () => {
+      const tree = parse(`
+class App {
+    void Run() {
+        User a = GetA(), b = GetB();
+        a.Save();
+        b.Save();
+    }
+}
+      `, CSharp);
+      const { env } = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(env, 'a')).toBe('User');
+      expect(flatGet(env, 'b')).toBe('User');
+    });
+
+    it('Java: single declarator with type still works after optimization', () => {
+      const tree = parse(`
+class App {
+    void run() {
+        User user = getUser();
+        user.save();
+    }
+}
+      `, Java);
+      const { env } = buildTypeEnv(tree, 'java');
+      expect(flatGet(env, 'user')).toBe('User');
+    });
+
+    it('Java: for-loop resolves element type from multi-declarator typed iterable', () => {
+      // Tests that declarationTypeNodes is correctly populated for multi-declarator
+      // variables, enabling for-loop element type resolution (Strategy 1).
+      const tree = parse(`
+class App {
+    void run() {
+        List<User> users = getUsers(), admins = getAdmins();
+        for (User u : users) {
+            u.save();
+        }
+    }
+}
+      `, Java);
+      const { env } = buildTypeEnv(tree, 'java');
+      expect(flatGet(env, 'users')).toBe('List');
+      expect(flatGet(env, 'admins')).toBe('List');
+      expect(flatGet(env, 'u')).toBe('User');
+    });
+  });
+
+  describe('constructorTypeMap (virtual dispatch detection)', () => {
+    it('Java: Animal a = new Dog() populates constructorTypeMap with Dog', () => {
+      const tree = parse(`
+class Animal {}
+class Dog extends Animal {}
+class App {
+    void run() {
+        Animal a = new Dog();
+    }
+}
+      `, Java);
+      const { constructorTypeMap } = buildTypeEnv(tree, 'java');
+      // Find the entry for variable 'a'
+      let ctorType: string | undefined;
+      for (const [key, value] of constructorTypeMap) {
+        if (key.endsWith('\0a')) { ctorType = value; break; }
+      }
+      expect(ctorType).toBe('Dog');
+    });
+
+    it('Java: same-type constructor does NOT populate constructorTypeMap', () => {
+      const tree = parse(`
+class User {}
+class App {
+    void run() {
+        User u = new User();
+    }
+}
+      `, Java);
+      const { constructorTypeMap } = buildTypeEnv(tree, 'java');
+      let found = false;
+      for (const [key] of constructorTypeMap) {
+        if (key.endsWith('\0u')) { found = true; break; }
+      }
+      expect(found).toBe(false);
+    });
+
+    it('TypeScript: const a: Animal = new Dog() — constructorTypeMap not populated (type on variable_declarator, not lexical_declaration)', () => {
+      // TS virtual dispatch for this pattern works through call-processor,
+      // not constructorTypeMap — the type annotation is on the child
+      // variable_declarator, not the outer lexical_declaration.
+      const tree = parse(`
+class Animal {}
+class Dog extends Animal {}
+const a: Animal = new Dog();
+      `, TypeScript.typescript);
+      const { env, constructorTypeMap } = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(env, 'a')).toBe('Animal');
+      let found = false;
+      for (const [key] of constructorTypeMap) {
+        if (key.endsWith('\0a')) { found = true; break; }
+      }
+      expect(found).toBe(false);
+    });
+
+    it('C++: Animal* a = new Dog() populates constructorTypeMap', () => {
+      const tree = parse(`
+class Animal {};
+class Dog : public Animal {};
+void run() {
+    Animal* a = new Dog();
+}
+      `, CPP);
+      const { constructorTypeMap } = buildTypeEnv(tree, 'cpp');
+      let ctorType: string | undefined;
+      for (const [key, value] of constructorTypeMap) {
+        if (key.endsWith('\0a')) { ctorType = value; break; }
+      }
+      expect(ctorType).toBe('Dog');
+    });
+
+    it('C#: Animal a = new Dog() populates constructorTypeMap', () => {
+      const tree = parse(`
+class Animal {}
+class Dog : Animal {}
+class App {
+    void Run() {
+        Animal a = new Dog();
+    }
+}
+      `, CSharp);
+      const { constructorTypeMap } = buildTypeEnv(tree, 'csharp');
+      let ctorType: string | undefined;
+      for (const [key, value] of constructorTypeMap) {
+        if (key.endsWith('\0a')) { ctorType = value; break; }
+      }
+      expect(ctorType).toBe('Dog');
+    });
+
+    it('C#: implicit new() does NOT populate constructorTypeMap (type from declaration)', () => {
+      const tree = parse(`
+class Dog {}
+class App {
+    void Run() {
+        Dog d = new();
+    }
+}
+      `, CSharp);
+      const { env, constructorTypeMap } = buildTypeEnv(tree, 'csharp');
+      // d should be bound via declared type path
+      expect(flatGet(env, 'd')).toBe('Dog');
+      // constructorTypeMap should NOT have an entry (same type, no override needed)
+      let found = false;
+      for (const [key] of constructorTypeMap) {
+        if (key.endsWith('\0d')) { found = true; break; }
+      }
+      expect(found).toBe(false);
+    });
+  });
+
+  describe('Phase 14: importedBindings seeding', () => {
+    it('seeds imported bindings into file scope for unbound names', () => {
+      // Source has no local declaration of 'config', so the imported binding wins
+      const tree = parse('', TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript', {
+        importedBindings: new Map([['config', 'Config']]),
+      });
+      const fileScope = env.get('');
+      expect(fileScope?.get('config')).toBe('Config');
+    });
+
+    it('local declarations take precedence over imported bindings', () => {
+      // Source declares config: AppConfig — imported binding for 'config' must not overwrite it
+      const tree = parse('const config: AppConfig = getConfig();', TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript', {
+        importedBindings: new Map([['config', 'Config']]),
+      });
+      const fileScope = env.get('');
+      // AppConfig from the local annotation wins over the imported 'Config'
+      expect(fileScope?.get('config')).toBe('AppConfig');
+    });
+
+    it('does nothing when importedBindings is empty', () => {
+      const tree = parse('const user: User = getUser();', TypeScript.typescript);
+      const { env: envWithout } = buildTypeEnv(tree, 'typescript');
+      const { env: envWith } = buildTypeEnv(tree, 'typescript', {
+        importedBindings: new Map(),
+      });
+      // Both envs should produce the same file-scope content
+      const scopeWithout = envWithout.get('');
+      const scopeWith = envWith.get('');
+      expect(scopeWith?.get('user')).toBe(scopeWithout?.get('user'));
+      expect(scopeWith?.size).toBe(scopeWithout?.size);
+    });
+
+    it('seeds multiple bindings', () => {
+      const tree = parse('', TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript', {
+        importedBindings: new Map([
+          ['user', 'User'],
+          ['config', 'Config'],
+        ]),
+      });
+      const fileScope = env.get('');
+      expect(fileScope?.get('user')).toBe('User');
+      expect(fileScope?.get('config')).toBe('Config');
+    });
+
+    it('seeded bindings are reachable via lookup from a nested call node', () => {
+      // A call inside a function should still be able to look up a file-scope seeded binding
+      const code = `
+function process() {
+  config.validate();
+}`;
+      const tree = parse(code, TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript', {
+        importedBindings: new Map([['config', 'Config']]),
+      });
+
+      const calls: any[] = [];
+      function findCalls(node: any) {
+        if (node.type === 'call_expression') calls.push(node);
+        for (let i = 0; i < node.childCount; i++) findCalls(node.child(i));
+      }
+      findCalls(tree.rootNode);
+
+      // config.validate() — lookup 'config' from inside the process function scope
+      expect(typeEnv.lookup('config', calls[0])).toBe('Config');
+    });
+
+    it('seeds bindings with no conflict when local file has unrelated declarations', () => {
+      // File has 'user' declared locally; 'config' comes from importedBindings
+      const tree = parse('const user: User = getUser();', TypeScript.typescript);
+      const { env } = buildTypeEnv(tree, 'typescript', {
+        importedBindings: new Map([['config', 'Config']]),
+      });
+      const fileScope = env.get('');
+      // Local binding preserved
+      expect(fileScope?.get('user')).toBe('User');
+      // Imported binding added for the name that had no local declaration
+      expect(fileScope?.get('config')).toBe('Config');
+    });
+  });
+
+  describe('importedReturnTypes (Phase 14 E3)', () => {
+    // Minimal mock SymbolTable that returns a known callable
+    const makeSymbolTable = (
+      callables: Array<{ name: string; returnType?: string }>,
+    ) => ({
+      lookupFuzzyCallable: (name: string) =>
+        callables
+          .filter(c => c.name === name)
+          .map(c => ({ nodeId: 'n1', filePath: 'src.ts', type: 'Function' as const, returnType: c.returnType })),
+      lookupFuzzy: () => [],
+      lookupExact: () => undefined,
+      lookupExactFull: () => undefined,
+      add: () => {},
+      getStats: () => ({ fileCount: 0, globalSymbolCount: 0 }),
+      clear: () => {},
+    });
+
+    it('SymbolTable has unambiguous match → uses it, ignores cross-file', () => {
+      // SymbolTable knows getConfig() returns Config (SymbolType)
+      // importedReturnTypes says getConfig → WrongType — SymbolTable must win
+      const symbolTable = makeSymbolTable([{ name: 'getConfig', returnType: 'Config' }]);
+      const tree = parse('const c = getConfig();', TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript', {
+        symbolTable: symbolTable as any,
+        importedReturnTypes: new Map([['getConfig', 'WrongType']]),
+      });
+      // SymbolTable result (Config) wins over cross-file fallback (WrongType)
+      expect(flatGet(typeEnv.env, 'c')).toBe('Config');
+    });
+
+    it('SymbolTable has no match (0 results) → falls back to cross-file', () => {
+      // SymbolTable knows nothing about getConfig
+      const symbolTable = makeSymbolTable([]);
+      const tree = parse('const c = getConfig();', TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript', {
+        symbolTable: symbolTable as any,
+        importedReturnTypes: new Map([['getConfig', 'Config']]),
+      });
+      // Cross-file fallback provides Config
+      expect(flatGet(typeEnv.env, 'c')).toBe('Config');
+    });
+
+    it('SymbolTable has 2+ matches (ambiguous) → returns undefined, NO cross-file fallback', () => {
+      // Two overloads of process() — ambiguous → must NOT fall back to cross-file
+      const symbolTable = makeSymbolTable([
+        { name: 'process', returnType: 'User' },
+        { name: 'process', returnType: 'Admin' },
+      ]);
+      const tree = parse('const r = process();', TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript', {
+        symbolTable: symbolTable as any,
+        importedReturnTypes: new Map([['process', 'User']]),
+      });
+      // Ambiguous → conservative → no binding produced
+      expect(flatGet(typeEnv.env, 'r')).toBeUndefined();
+    });
+
+    it('no SymbolTable → uses cross-file return types directly', () => {
+      const tree = parse('const c = getConfig();', TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript', {
+        importedReturnTypes: new Map([['getConfig', 'Config']]),
+      });
+      expect(flatGet(typeEnv.env, 'c')).toBe('Config');
+    });
+
+    it('cross-file has entry but SymbolTable covers it → SymbolTable wins', () => {
+      // SymbolTable provides the authoritative return type; cross-file entry is ignored
+      const symbolTable = makeSymbolTable([{ name: 'getUser', returnType: 'User' }]);
+      const tree = parse('const u = getUser();', TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript', {
+        symbolTable: symbolTable as any,
+        importedReturnTypes: new Map([['getUser', 'CrossFileUser']]),
+      });
+      // SymbolTable result (User) wins
+      expect(flatGet(typeEnv.env, 'u')).toBe('User');
+    });
+
+    it('does nothing when importedReturnTypes is absent', () => {
+      const tree = parse('const c = getConfig();', TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      // No annotation, no SymbolTable, no cross-file → no binding
+      expect(flatGet(typeEnv.env, 'c')).toBeUndefined();
+    });
+
+    it('resolved cross-file callee enables downstream call edges via lookup', () => {
+      // File has: const c = getConfig(); c.validate();
+      // importedReturnTypes maps getConfig → Config
+      // After fixpoint, c should be typed as Config, making lookup('c', ...) return 'Config'
+      const code = `
+function process() {
+  const c = getConfig();
+  c.validate();
+}`;
+      const tree = parse(code, TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript', {
+        importedReturnTypes: new Map([['getConfig', 'Config']]),
+      });
+
+      const calls: any[] = [];
+      function findCalls(node: any) {
+        if (node.type === 'call_expression') calls.push(node);
+        for (let i = 0; i < node.childCount; i++) findCalls(node.child(i));
+      }
+      findCalls(tree.rootNode);
+
+      // calls[0] = getConfig(), calls[1] = c.validate()
+      // From inside process(), c should resolve to Config
+      const validateCall = calls.find((n: any) => n.text.includes('validate'));
+      expect(validateCall).toBeDefined();
+      expect(typeEnv.lookup('c', validateCall)).toBe('Config');
     });
   });
 

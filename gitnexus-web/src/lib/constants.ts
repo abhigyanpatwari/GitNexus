@@ -19,6 +19,23 @@ export const NODE_COLORS: Record<NodeLabel, string> = {
   CodeElement: '#64748b', // Slate - muted
   Community: '#818cf8',  // Indigo light - cluster indicator
   Process: '#f43f5e',    // Rose - execution flow indicator
+  Section: '#60a5fa',    // Blue light - structural section
+  Struct: '#f59e0b',     // Amber - like Class
+  Trait: '#ec4899',      // Pink - like Interface
+  Impl: '#14b8a6',       // Teal - like Method
+  TypeAlias: '#a78bfa',  // Violet light - like Type
+  Const: '#64748b',      // Slate - like Variable
+  Static: '#64748b',     // Slate - like Variable
+  Namespace: '#7c3aed',  // Violet - like Module
+  Union: '#f97316',      // Orange - like Enum
+  Typedef: '#a78bfa',    // Violet light - like Type
+  Macro: '#eab308',      // Yellow - like Decorator
+  Property: '#64748b',   // Slate - like Variable
+  Record: '#f59e0b',     // Amber - like Class
+  Delegate: '#14b8a6',   // Teal - like Method
+  Annotation: '#eab308', // Yellow - like Decorator
+  Constructor: '#10b981', // Emerald - like Function
+  Template: '#a78bfa',   // Violet light - like Type
 };
 
 // Node sizes by type - clear visual hierarchy with dramatic size differences
@@ -41,6 +58,23 @@ export const NODE_SIZES: Record<NodeLabel, number> = {
   CodeElement: 2,  // Generic small
   Community: 0,    // Hidden by default - metadata node
   Process: 0,      // Hidden by default - metadata node
+  Section: 8,      // Structural section - similar to Folder
+  Struct: 8,       // Like Class
+  Trait: 7,        // Like Interface
+  Impl: 3,         // Like Method
+  TypeAlias: 3,    // Like Type
+  Const: 2,        // Like Variable
+  Static: 2,       // Like Variable
+  Namespace: 13,   // Like Module
+  Union: 5,        // Like Enum
+  Typedef: 3,      // Like Type
+  Macro: 2,        // Like Decorator
+  Property: 2,     // Like Variable
+  Record: 8,       // Like Class
+  Delegate: 3,     // Like Method
+  Annotation: 2,   // Like Decorator
+  Constructor: 4,  // Like Function
+  Template: 3,     // Like Type
 };
 
 // Community color palette for cluster-based coloring

@@ -13,20 +13,23 @@ import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatOllama } from '@langchain/ollama';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { createGraphRAGTools } from './tools';
-import type { 
-  ProviderConfig, 
+import type {
+  ProviderConfig,
   OpenAIConfig,
-  AzureOpenAIConfig, 
+  AzureOpenAIConfig,
   GeminiConfig,
   AnthropicConfig,
   OllamaConfig,
   OpenRouterConfig,
+  MiniMaxConfig,
+  GLMConfig,
   AgentStreamChunk,
 } from './types';
 import { 
   type CodebaseContext,
   buildDynamicSystemPrompt,
 } from './context-builder';
+import { DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENROUTER_BASE_URL } from '../../config/ui-constants';
 
 /**
  * System prompt for the Graph RAG agent
@@ -183,7 +186,7 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
     case 'ollama': {
       const ollamaConfig = config as OllamaConfig;
       return new ChatOllama({
-        baseUrl: ollamaConfig.baseUrl ?? 'http://localhost:11434',
+        baseUrl: ollamaConfig.baseUrl ?? DEFAULT_OLLAMA_BASE_URL,
         model: ollamaConfig.model,
         temperature: ollamaConfig.temperature ?? 0.1,
         streaming: true,
@@ -197,21 +200,20 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
     
     case 'openrouter': {
       const openRouterConfig = config as OpenRouterConfig;
-      
+
       // Debug logging
       if (import.meta.env.DEV) {
         console.log('🌐 OpenRouter config:', {
           hasApiKey: !!openRouterConfig.apiKey,
-          apiKeyLength: openRouterConfig.apiKey?.length || 0,
           model: openRouterConfig.model,
           baseUrl: openRouterConfig.baseUrl,
         });
       }
-      
+
       if (!openRouterConfig.apiKey || openRouterConfig.apiKey.trim() === '') {
         throw new Error('OpenRouter API key is required but was not provided');
       }
-      
+
       return new ChatOpenAI({
         openAIApiKey: openRouterConfig.apiKey,
         apiKey: openRouterConfig.apiKey, // Fallback for some versions
@@ -220,12 +222,51 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
         maxTokens: openRouterConfig.maxTokens,
         configuration: {
           apiKey: openRouterConfig.apiKey, // Ensure client receives it
-          baseURL: openRouterConfig.baseUrl ?? 'https://openrouter.ai/api/v1',
+          baseURL: openRouterConfig.baseUrl ?? DEFAULT_OPENROUTER_BASE_URL,
         },
         streaming: true,
       });
     }
-    
+
+    case 'minimax': {
+      const minimaxConfig = config as MiniMaxConfig;
+
+      if (!minimaxConfig.apiKey || minimaxConfig.apiKey.trim() === '') {
+        throw new Error('MiniMax API key is required but was not provided');
+      }
+
+      return new ChatAnthropic({
+        anthropicApiKey: minimaxConfig.apiKey,
+        model: minimaxConfig.model,
+        temperature: minimaxConfig.temperature ?? 0.1,
+        maxTokens: minimaxConfig.maxTokens ?? 8192,
+        streaming: true,
+        clientOptions: {
+          baseURL: 'https://api.minimax.io/anthropic',
+        },
+      });
+    }
+
+    case 'glm': {
+      const glmConfig = config as GLMConfig;
+
+      if (!glmConfig.apiKey || glmConfig.apiKey.trim() === '') {
+        throw new Error('GLM API key is required but was not provided');
+      }
+
+      return new ChatOpenAI({
+        apiKey: glmConfig.apiKey,
+        modelName: glmConfig.model,
+        temperature: glmConfig.temperature ?? 0.1,
+        maxTokens: glmConfig.maxTokens,
+        configuration: {
+          apiKey: glmConfig.apiKey,
+          baseURL: glmConfig.baseUrl ?? 'https://api.z.ai/api/coding/paas/v4',
+        },
+        streaming: true,
+      });
+    }
+
     default:
       throw new Error(`Unsupported provider: ${(config as any).provider}`);
   }
@@ -335,8 +376,8 @@ export async function* streamAgentResponse(
     const yieldedToolCalls = new Set<string>();
     const yieldedToolResults = new Set<string>();
     let lastProcessedMsgCount = formattedMessages.length;
-    // Track if all tools are done (for distinguishing reasoning vs final content)
-    let allToolsDone = true;
+    // Track pending tool calls (for distinguishing reasoning vs final content)
+    let pendingToolCalls = 0;
     // Track if we've seen any tool calls in this response turn.
     // Anything before the first tool call should be treated as "reasoning/narration"
     // so the UI can show the Cursor-like loop: plan → tool → update → tool → answer.
@@ -400,7 +441,7 @@ export async function* streamAgentResponse(
             const isReasoning =
               !hasSeenToolCallThisTurn ||
               toolCalls.length > 0 ||
-              !allToolsDone;
+              pendingToolCalls > 0;
             yield {
               type: isReasoning ? 'reasoning' : 'content',
               [isReasoning ? 'reasoning' : 'content']: content,
@@ -410,17 +451,23 @@ export async function* streamAgentResponse(
           // Track tool calls from message chunks
           if (toolCalls.length > 0) {
             hasSeenToolCallThisTurn = true;
-            allToolsDone = false;
+            pendingToolCalls += toolCalls.length;
             for (const tc of toolCalls) {
               const toolId = tc.id || `tool-${Date.now()}-${Math.random().toString(36).slice(2)}`;
               if (!yieldedToolCalls.has(toolId)) {
                 yieldedToolCalls.add(toolId);
+                let parsedArgs: Record<string, any>;
+                try {
+                  parsedArgs = tc.function?.arguments ? JSON.parse(tc.function.arguments) : {};
+                } catch {
+                  parsedArgs = {};
+                }
                 yield {
                   type: 'tool_call',
                   toolCall: {
                     id: toolId,
                     name: tc.name || tc.function?.name || 'unknown',
-                    args: tc.args || (tc.function?.arguments ? JSON.parse(tc.function.arguments) : {}),
+                    args: tc.args || parsedArgs,
                     status: 'running',
                   },
                 };
@@ -445,8 +492,8 @@ export async function* streamAgentResponse(
                 status: 'completed',
               },
             };
-            // After tool result, next AI content could be reasoning or final
-            allToolsDone = true;
+            // After tool result, decrement pending count
+            pendingToolCalls = Math.max(0, pendingToolCalls - 1);
           }
         }
       }
@@ -466,7 +513,7 @@ export async function* streamAgentResponse(
             for (const tc of toolCalls) {
               const toolId = tc.id || `tool-${Date.now()}`;
               if (!yieldedToolCalls.has(toolId)) {
-                allToolsDone = false;
+                pendingToolCalls++;
                 yieldedToolCalls.add(toolId);
                 yield {
                   type: 'tool_call',
@@ -497,7 +544,7 @@ export async function* streamAgentResponse(
                   status: 'completed',
                 },
               };
-              allToolsDone = true;
+              pendingToolCalls = Math.max(0, pendingToolCalls - 1);
             }
           }
         }

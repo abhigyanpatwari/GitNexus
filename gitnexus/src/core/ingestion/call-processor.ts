@@ -1,6 +1,6 @@
 import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
-import type { SymbolDefinition } from './symbol-table.js';
+import type { SymbolDefinition, SymbolTable } from './symbol-table.js';
 import Parser from 'tree-sitter';
 import type { ResolutionContext } from './resolution-context.js';
 import { TIER_CONFIDENCE, type ResolutionTier } from './resolution-context.js';
@@ -23,12 +23,155 @@ import {
   extractMixedChain,
   type MixedChainStep,
 } from './utils.js';
-import { buildTypeEnv } from './type-env.js';
+import { buildTypeEnv, isSubclassOf } from './type-env.js';
 import type { ConstructorBinding } from './type-env.js';
 import { getTreeSitterBufferSize } from './constants.js';
-import type { ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, FileConstructorBindings } from './workers/parse-worker.js';
+import type { ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, ExtractedFetchCall, FileConstructorBindings } from './workers/parse-worker.js';
+import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
 import { callRouters } from './call-routing.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
+import { typeConfigs } from './type-extractors/index.js';
+import type { LiteralTypeInferrer } from './type-extractors/types.js';
+import type { SyntaxNode } from './utils.js';
+
+/** Per-file resolved type bindings for exported symbols.
+ *  Populated during call processing, consumed by Phase 14 re-resolution pass. */
+export type ExportedTypeMap = Map<string, Map<string, string>>;
+
+const MAX_EXPORTS_PER_FILE = 500;
+const MAX_TYPE_NAME_LENGTH = 256;
+
+/** Build a map of imported callee names → return types for cross-file call-result binding.
+ *  Consulted ONLY when SymbolTable has no unambiguous local match (local-first principle). */
+export function buildImportedReturnTypes(
+  filePath: string,
+  namedImportMap: ReadonlyMap<string, ReadonlyMap<string, { sourcePath: string; exportedName: string }>>,
+  symbolTable: { lookupExactFull(filePath: string, name: string): { returnType?: string } | undefined },
+): ReadonlyMap<string, string> {
+  const result = new Map<string, string>();
+  const fileImports = namedImportMap.get(filePath);
+  if (!fileImports) return result;
+
+  for (const [localName, binding] of fileImports) {
+    const def = symbolTable.lookupExactFull(binding.sourcePath, binding.exportedName);
+    if (!def?.returnType) continue;
+    const simpleReturn = extractReturnTypeName(def.returnType);
+    if (simpleReturn) result.set(localName, simpleReturn);
+  }
+  return result;
+}
+
+/** Build cross-file RAW return types for imported callables.
+ *  Unlike buildImportedReturnTypes (which stores extractReturnTypeName output),
+ *  this stores the raw declared return type string (e.g., 'User[]', 'List<User>').
+ *  Used by lookupRawReturnType for for-loop element extraction via extractElementTypeFromString. */
+export function buildImportedRawReturnTypes(
+  filePath: string,
+  namedImportMap: ReadonlyMap<string, ReadonlyMap<string, { sourcePath: string; exportedName: string }>>,
+  symbolTable: { lookupExactFull(filePath: string, name: string): { returnType?: string } | undefined },
+): ReadonlyMap<string, string> {
+  const result = new Map<string, string>();
+  const fileImports = namedImportMap.get(filePath);
+  if (!fileImports) return result;
+
+  for (const [localName, binding] of fileImports) {
+    const def = symbolTable.lookupExactFull(binding.sourcePath, binding.exportedName);
+    if (!def?.returnType) continue;
+    result.set(localName, def.returnType);
+  }
+  return result;
+}
+
+/** Collect resolved type bindings for exported file-scope symbols.
+ *  Uses graph node isExported flag — does NOT require isExported on SymbolDefinition. */
+function collectExportedBindings(
+  typeEnv: { readonly env: ReadonlyMap<string, ReadonlyMap<string, string>> },
+  filePath: string,
+  symbolTable: { lookupExact(filePath: string, name: string): string | undefined },
+  graph: { getNode(id: string): { properties?: { isExported?: boolean } } | undefined },
+): Map<string, string> | null {
+  const fileScope = typeEnv.env.get('');
+  if (!fileScope || fileScope.size === 0) return null;
+
+  const exported = new Map<string, string>();
+  for (const [varName, typeName] of fileScope) {
+    if (exported.size >= MAX_EXPORTS_PER_FILE) break;
+    if (!typeName || typeName.length > MAX_TYPE_NAME_LENGTH) continue;
+    const nodeId = symbolTable.lookupExact(filePath, varName);
+    if (!nodeId) continue;
+    const node = graph.getNode(nodeId);
+    if (node?.properties?.isExported) {
+      exported.set(varName, typeName);
+    }
+  }
+  return exported.size > 0 ? exported : null;
+}
+
+/** Build ExportedTypeMap from graph nodes — used for worker path where TypeEnv
+ *  is not available in the main thread. Collects returnType/declaredType from
+ *  exported symbols that have callables with known return types. */
+export function buildExportedTypeMapFromGraph(
+  graph: KnowledgeGraph,
+  symbolTable: SymbolTable,
+): ExportedTypeMap {
+  const result: ExportedTypeMap = new Map();
+  graph.forEachNode(node => {
+    if (!node.properties?.isExported) return;
+    if (!node.properties?.filePath || !node.properties?.name) return;
+    const filePath = node.properties.filePath as string;
+    const name = node.properties.name as string;
+    if (!name || name.length > MAX_TYPE_NAME_LENGTH) return;
+    // For callable symbols, use returnType; for properties/variables, use declaredType
+    const def = symbolTable.lookupExactFull(filePath, name);
+    if (!def) return;
+    const typeName = def.returnType ?? def.declaredType;
+    if (!typeName || typeName.length > MAX_TYPE_NAME_LENGTH) return;
+    // Extract simple type name (strip Promise<>, etc.) — reuse shared utility
+    const simpleType = extractReturnTypeName(typeName) ?? typeName;
+    if (!simpleType) return;
+    let fileExports = result.get(filePath);
+    if (!fileExports) { fileExports = new Map(); result.set(filePath, fileExports); }
+    if (fileExports.size < MAX_EXPORTS_PER_FILE) {
+      fileExports.set(name, simpleType);
+    }
+  });
+  return result;
+}
+
+/** Seed cross-file receiver types into pre-extracted call records.
+ *  Fills missing receiverTypeName for single-hop imported variables
+ *  using ExportedTypeMap + namedImportMap — zero disk I/O, zero AST re-parsing.
+ *  Mutates calls in-place. Runs BEFORE processCallsFromExtracted. */
+export function seedCrossFileReceiverTypes(
+  calls: ExtractedCall[],
+  namedImportMap: ReadonlyMap<string, ReadonlyMap<string, { sourcePath: string; exportedName: string }>>,
+  exportedTypeMap: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): { enrichedCount: number } {
+  if (namedImportMap.size === 0 || exportedTypeMap.size === 0) {
+    return { enrichedCount: 0 };
+  }
+  let enrichedCount = 0;
+  for (const call of calls) {
+    if (call.receiverTypeName || !call.receiverName) continue;
+    if (call.callForm !== 'member') continue;
+
+    const fileImports = namedImportMap.get(call.filePath);
+    if (!fileImports) continue;
+
+    const binding = fileImports.get(call.receiverName);
+    if (!binding) continue;
+
+    const upstream = exportedTypeMap.get(binding.sourcePath);
+    if (!upstream) continue;
+
+    const type = upstream.get(binding.exportedName);
+    if (type) {
+      call.receiverTypeName = type;
+      enrichedCount++;
+    }
+  }
+  return { enrichedCount };
+}
 
 // Stdlib methods that preserve the receiver's type identity. When TypeEnv already
 // strips nullable wrappers (Option<User> → User), these chain steps are no-ops
@@ -45,7 +188,7 @@ const TYPE_PRESERVING_METHODS = new Set([
  * Returns null if the call is at module/file level (top-level code).
  */
 const findEnclosingFunction = (
-  node: any,
+  node: SyntaxNode,
   filePath: string,
   ctx: ResolutionContext
 ): string | null => {
@@ -135,10 +278,24 @@ export const processCalls = async (
   astCache: ASTCache,
   ctx: ResolutionContext,
   onProgress?: (current: number, total: number) => void,
+  exportedTypeMap?: ExportedTypeMap,
+  /** Phase 14: pre-resolved cross-file bindings to seed into buildTypeEnv. Keyed by filePath → Map<localName, typeName>. */
+  importedBindingsMap?: ReadonlyMap<string, ReadonlyMap<string, string>>,
+  /** Phase 14 E3: cross-file return types for imported callables. Keyed by filePath → Map<calleeName, returnType>.
+   *  Consulted ONLY when SymbolTable has no unambiguous match (local-first principle). */
+  importedReturnTypesMap?: ReadonlyMap<string, ReadonlyMap<string, string>>,
+  /** Phase 14 E3: cross-file RAW return types for for-loop element extraction. Keyed by filePath → Map<calleeName, rawReturnType>. */
+  importedRawReturnTypesMap?: ReadonlyMap<string, ReadonlyMap<string, string>>,
 ): Promise<ExtractedHeritage[]> => {
   const parser = await loadParser();
   const collectedHeritage: ExtractedHeritage[] = [];
   const pendingWrites: { receiverTypeName: string; propertyName: string; filePath: string; srcId: string }[] = [];
+  // Phase P cross-file: accumulate heritage across files for cross-file isSubclassOf.
+  // Used as a secondary check when per-file parentMap lacks the relationship — helps
+  // when the heritage-declaring file is processed before the call site file.
+  // For remaining cases (reverse file order), the SymbolTable class-type fallback applies.
+  const globalParentMap = new Map<string, string[]>();
+  const globalParentSeen = new Map<string, Set<string>>();
   const logSkipped = isVerboseIngestionEnabled();
   const skippedByLang = logSkipped ? new Map<string, number>() : null;
 
@@ -183,7 +340,45 @@ export const processCalls = async (
     }
 
     const lang = getLanguageFromFilename(file.path);
-    const typeEnv = lang ? buildTypeEnv(tree, lang, ctx.symbols) : null;
+
+    // Pre-pass: extract heritage from query matches to build parentMap for buildTypeEnv.
+    // Heritage-processor runs in PARALLEL, so graph edges don't exist when buildTypeEnv runs.
+    const fileParentMap = new Map<string, string[]>();
+    for (const match of matches) {
+      const captureMap: Record<string, any> = {};
+      match.captures.forEach(c => captureMap[c.name] = c.node);
+      if (captureMap['heritage.class'] && captureMap['heritage.extends']) {
+        const className: string = captureMap['heritage.class'].text;
+        const parentName: string = captureMap['heritage.extends'].text;
+        const extendsNode = captureMap['heritage.extends'];
+        const fieldDecl = extendsNode.parent;
+        if (fieldDecl?.type === 'field_declaration' && fieldDecl.childForFieldName('name')) continue;
+        let parents = fileParentMap.get(className);
+        if (!parents) { parents = []; fileParentMap.set(className, parents); }
+        if (!parents.includes(parentName)) parents.push(parentName);
+      }
+    }
+    const parentMap: ReadonlyMap<string, readonly string[]> = fileParentMap;
+    // Merge per-file heritage into globalParentMap for cross-file isSubclassOf lookups.
+    // Uses a parallel Set (globalParentSeen) for O(1) deduplication instead of O(n) includes().
+    for (const [cls, parents] of fileParentMap) {
+      let global = globalParentMap.get(cls);
+      let seen = globalParentSeen.get(cls);
+      if (!global) { global = []; globalParentMap.set(cls, global); }
+      if (!seen) { seen = new Set(); globalParentSeen.set(cls, seen); }
+      for (const p of parents) {
+        if (!seen.has(p)) { seen.add(p); global.push(p); }
+      }
+    }
+
+    const importedBindings = importedBindingsMap?.get(file.path);
+    const importedReturnTypes = importedReturnTypesMap?.get(file.path);
+    const importedRawReturnTypes = importedRawReturnTypesMap?.get(file.path);
+    const typeEnv = lang ? buildTypeEnv(tree, lang, { symbolTable: ctx.symbols, parentMap, importedBindings, importedReturnTypes, importedRawReturnTypes }) : null;
+    if (typeEnv && exportedTypeMap) {
+      const fileExports = collectExportedBindings(typeEnv, file.path, ctx.symbols, graph);
+      if (fileExports) exportedTypeMap.set(file.path, fileExports);
+    }
     const callRouter = callRouters[language];
 
     const verifiedReceivers = typeEnv && typeEnv.constructorBindings.length > 0
@@ -305,6 +500,41 @@ export const processCalls = async (
       const callForm = inferCallForm(callNode, nameNode);
       const receiverName = callForm === 'member' ? extractReceiverName(nameNode) : undefined;
       let receiverTypeName = receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
+      // Phase P: virtual dispatch override — when the declared type is a base class but
+      // the constructor created a known subclass, prefer the more specific type.
+      // Checks per-file parentMap first, then falls back to globalParentMap for
+      // cross-file heritage (e.g. Dog extends Animal declared in a different file).
+      // Reconstructs the exact scope key (funcName@startIndex\0varName) from the
+      // enclosing function AST node for a correct, O(1) map lookup.
+      if (receiverTypeName && receiverName && typeEnv && typeEnv.constructorTypeMap.size > 0) {
+        // Reconstruct scope key to match constructorTypeMap's scope\0varName format
+        let scope = '';
+        let p = callNode.parent;
+        while (p) {
+          if (FUNCTION_NODE_TYPES.has(p.type)) {
+            const { funcName } = extractFunctionName(p);
+            if (funcName) { scope = `${funcName}@${p.startIndex}`; break; }
+          }
+          p = p.parent;
+        }
+        const ctorType = typeEnv.constructorTypeMap.get(`${scope}\0${receiverName}`);
+        if (ctorType && ctorType !== receiverTypeName) {
+          // Verify subclass relationship: per-file parentMap first, then cross-file
+          // globalParentMap, then fall back to SymbolTable class verification.
+          // The SymbolTable fallback handles cross-file cases where heritage is declared
+          // in a file not yet processed (e.g. Dog extends Animal in models/Dog.kt when
+          // processing services/App.kt). Since constructorTypeMap only records entries
+          // when a type annotation AND constructor are both present (val x: Base = Sub()),
+          // confirming both are class-like types is sufficient — the original code would
+          // not compile if Sub didn't extend Base.
+          if (isSubclassOf(ctorType, receiverTypeName, parentMap)
+            || isSubclassOf(ctorType, receiverTypeName, globalParentMap)
+            || (ctx.symbols.lookupFuzzy(ctorType).some(d => d.type === 'Class' || d.type === 'Struct')
+              && ctx.symbols.lookupFuzzy(receiverTypeName).some(d => d.type === 'Class' || d.type === 'Struct' || d.type === 'Interface'))) {
+            receiverTypeName = ctorType;
+          }
+        }
+      }
       // Fall back to verified constructor bindings for return type inference
       if (!receiverTypeName && receiverName && receiverIndex.size > 0) {
         const enclosingFunc = findEnclosingFunction(callNode, file.path, ctx);
@@ -359,12 +589,20 @@ export const processCalls = async (
         }
       }
 
+      // Build overload hints for languages with inferLiteralType (Java/Kotlin/C#/C++).
+      // Only used when multiple candidates survive arity filtering — ~1-3% of calls.
+      const langConfig = lang ? typeConfigs[lang as keyof typeof typeConfigs] : undefined;
+      const hints: OverloadHints | undefined = langConfig?.inferLiteralType
+        ? { callNode, inferLiteralType: langConfig.inferLiteralType }
+        : undefined;
+
       const resolved = resolveCallTarget({
         calledName,
         argCount: countCallArguments(callNode),
         callForm,
         receiverTypeName,
-      }, file.path, ctx);
+        receiverName,
+      }, file.path, ctx, hints);
 
       if (!resolved) return;
       const relId = generateId('CALLS', `${sourceId}:${calledName}->${resolved.nodeId}`);
@@ -455,7 +693,9 @@ const filterCallableCandidates = (
   if (!hasParameterMetadata) return kindFiltered;
 
   return kindFiltered.filter(candidate =>
-    candidate.parameterCount === undefined || candidate.parameterCount === argCount
+    candidate.parameterCount === undefined
+    || (argCount >= (candidate.requiredParameterCount ?? candidate.parameterCount)
+      && argCount <= candidate.parameterCount)
   );
 };
 
@@ -470,24 +710,160 @@ const toResolveResult = (
 });
 
 
+/** Optional hints for overload disambiguation via argument literal types.
+ *  Only available on the sequential path (has AST); worker path passes undefined. */
+interface OverloadHints {
+  callNode: SyntaxNode;
+  inferLiteralType: LiteralTypeInferrer;
+}
+
+/**
+ * Kotlin (and JVM in general) uses boxed type names in parameter declarations
+ * (e.g. `Int`, `Long`, `Boolean`) while inferJvmLiteralType returns unboxed
+ * primitives (`int`, `long`, `boolean`). Normalise both sides to lowercase so
+ * that the comparison `'Int' === 'int'` does not fail.
+ *
+ * Only applied to single-word identifiers that look like a JVM primitive alias;
+ * multi-word or qualified names are left untouched.
+ */
+const KOTLIN_BOXED_TO_PRIMITIVE: Readonly<Record<string, string>> = {
+  Int: 'int',
+  Long: 'long',
+  Short: 'short',
+  Byte: 'byte',
+  Float: 'float',
+  Double: 'double',
+  Boolean: 'boolean',
+  Char: 'char',
+};
+
+const normalizeJvmTypeName = (name: string): string =>
+  KOTLIN_BOXED_TO_PRIMITIVE[name] ?? name;
+
+/**
+ * Try to disambiguate overloaded candidates using argument literal types.
+ * Only invoked when filteredCandidates.length > 1 and at least one has parameterTypes.
+ * Returns the single matching candidate, or null if ambiguous/inconclusive.
+ */
+const tryOverloadDisambiguation = (
+  candidates: SymbolDefinition[],
+  hints: OverloadHints,
+): SymbolDefinition | null => {
+  if (!candidates.some(c => c.parameterTypes)) return null;
+
+  // Find the argument list node in the call expression.
+  // Kotlin wraps value_arguments inside a call_suffix child, so we must also
+  // search one level deeper when a direct match is not found.
+  let argList: any = hints.callNode.childForFieldName?.('arguments')
+    ?? hints.callNode.children.find((c: any) =>
+      c.type === 'arguments' || c.type === 'argument_list' || c.type === 'value_arguments'
+    );
+  if (!argList) {
+    // Kotlin: call_expression → call_suffix → value_arguments
+    const callSuffix = hints.callNode.children.find((c: any) => c.type === 'call_suffix');
+    if (callSuffix) {
+      argList = callSuffix.children.find((c: any) => c.type === 'value_arguments');
+    }
+  }
+  if (!argList) return null;
+
+  const argTypes: (string | undefined)[] = [];
+  for (const arg of argList.namedChildren) {
+    if (arg.type === 'comment') continue;
+    // Unwrap argument wrapper nodes before passing to inferLiteralType:
+    //   - Kotlin value_argument: has 'value' field containing the literal
+    //   - C# argument: has 'expression' field (handles named args like `name: "alice"`
+    //     where firstNamedChild would return name_colon instead of the value)
+    //   - Java/others: arg IS the literal directly (no unwrapping needed)
+    const valueNode = arg.childForFieldName?.('value')
+      ?? arg.childForFieldName?.('expression')
+      ?? (arg.type === 'argument' || arg.type === 'value_argument'
+        ? arg.firstNamedChild ?? arg
+        : arg);
+    argTypes.push(hints.inferLiteralType(valueNode));
+  }
+
+  // If no literal types could be inferred, can't disambiguate
+  if (argTypes.every(t => t === undefined)) return null;
+
+  const matched = candidates.filter(c => {
+    // Keep candidates without type info — conservative: partially-annotated codebases
+    // (e.g. C++ with some missing declarations) may have mixed typed/untyped overloads.
+    // If one typed and one untyped both survive, matched.length > 1 → returns null (no edge).
+    if (!c.parameterTypes) return true;
+    return c.parameterTypes.every((pType, i) => {
+      if (i >= argTypes.length || !argTypes[i]) return true;
+      // Normalise Kotlin boxed type names (Int→int, Boolean→boolean, etc.) so
+      // that the stored declaration type matches the inferred literal type.
+      return normalizeJvmTypeName(pType) === argTypes[i];
+    });
+  });
+
+  if (matched.length === 1) return matched[0];
+  // Multiple survivors may share the same nodeId (e.g. TypeScript overload signatures +
+  // implementation body all collide via generateId). Deduplicate by nodeId — if all
+  // matched candidates resolve to the same graph node, disambiguation succeeded.
+  if (matched.length > 1) {
+    const uniqueIds = new Set(matched.map(c => c.nodeId));
+    if (uniqueIds.size === 1) return matched[0];
+  }
+  return null;
+};
+
 /**
  * Resolve a function call to its target node ID using priority strategy:
  * A. Narrow candidates by scope tier via ctx.resolve()
  * B. Filter to callable symbol kinds (constructor-aware when callForm is set)
  * C. Apply arity filtering when parameter metadata is available
  * D. Apply receiver-type filtering for member calls with typed receivers
+ * E. Apply overload disambiguation via argument literal types (when available)
  *
  * If filtering still leaves multiple candidates, refuse to emit a CALLS edge.
  */
 const resolveCallTarget = (
-  call: Pick<ExtractedCall, 'calledName' | 'argCount' | 'callForm' | 'receiverTypeName'>,
+  call: Pick<ExtractedCall, 'calledName' | 'argCount' | 'callForm' | 'receiverTypeName' | 'receiverName'>,
   currentFile: string,
   ctx: ResolutionContext,
+  overloadHints?: OverloadHints,
 ): ResolveResult | null => {
   const tiered = ctx.resolve(call.calledName, currentFile);
   if (!tiered) return null;
 
-  const filteredCandidates = filterCallableCandidates(tiered.candidates, call.argCount, call.callForm);
+  let filteredCandidates = filterCallableCandidates(tiered.candidates, call.argCount, call.callForm);
+
+  // Swift/Kotlin: constructor calls look like free function calls (no `new` keyword).
+  // If free-form filtering found no callable candidates but the symbol resolves to a
+  // Class/Struct, retry with constructor form so CONSTRUCTOR_TARGET_TYPES applies.
+  if (filteredCandidates.length === 0 && call.callForm === 'free') {
+    const hasTypeTarget = tiered.candidates.some(c =>
+      c.type === 'Class' || c.type === 'Struct' || c.type === 'Enum',
+    );
+    if (hasTypeTarget) {
+      filteredCandidates = filterCallableCandidates(tiered.candidates, call.argCount, 'constructor');
+    }
+  }
+
+  // Module-qualified constructor pattern: e.g. Python `import models; models.User()`.
+  // The attribute access gives callForm='member', but the callee may be a Class — a valid
+  // constructor target. Re-try with constructor-form filtering so that `module.ClassName()`
+  // emits a CALLS edge to the class node.
+  if (filteredCandidates.length === 0 && call.callForm === 'member') {
+    filteredCandidates = filterCallableCandidates(tiered.candidates, call.argCount, 'constructor');
+  }
+
+  // Module-alias disambiguation: Python `import auth; auth.User()` — when both models.py and
+  // auth.py export User, receiverName='auth' selects auth.py via moduleAliasMap.
+  // Runs when multiple candidates survive filtering and the receiver is a known module alias.
+  if (filteredCandidates.length > 1 && call.callForm === 'member' && call.receiverName) {
+    const aliasMap = ctx.moduleAliasMap?.get(currentFile);
+    if (aliasMap) {
+      const moduleFile = aliasMap.get(call.receiverName);
+      if (moduleFile) {
+        const aliasFiltered = filteredCandidates.filter(c => c.filePath === moduleFile);
+        if (aliasFiltered.length > 0) filteredCandidates = aliasFiltered;
+      }
+    }
+  }
 
   // D. Receiver-type filtering: for member calls with a known receiver type,
   // resolve the type through the same tiered import infrastructure, then
@@ -523,11 +899,38 @@ const resolveCallTarget = (
       if (ownerFiltered.length === 1) {
         return toResolveResult(ownerFiltered[0], tiered.tier);
       }
+      // E. Try overload disambiguation on the narrowed pool
+      if ((fileFiltered.length > 1 || ownerFiltered.length > 1) && overloadHints) {
+        const overloadPool = ownerFiltered.length > 1 ? ownerFiltered : fileFiltered;
+        const disambiguated = tryOverloadDisambiguation(overloadPool, overloadHints);
+        if (disambiguated) return toResolveResult(disambiguated, tiered.tier);
+      }
       if (fileFiltered.length > 1 || ownerFiltered.length > 1) return null;
     }
   }
 
-  if (filteredCandidates.length !== 1) return null;
+  // E. Overload disambiguation: when multiple candidates survive arity + receiver filtering,
+  // try matching argument literal types against parameter types (Phase P).
+  // Only available on sequential path (has AST); worker path falls through gracefully.
+  if (filteredCandidates.length > 1 && overloadHints) {
+    const disambiguated = tryOverloadDisambiguation(filteredCandidates, overloadHints);
+    if (disambiguated) return toResolveResult(disambiguated, tiered.tier);
+  }
+
+  if (filteredCandidates.length !== 1) {
+    // Deduplicate: Swift extensions create multiple Class nodes with the same name.
+    // When all candidates share the same type and differ only by file (extension vs
+    // primary definition), they represent the same symbol. Prefer the primary
+    // definition (shortest file path: Product.swift over ProductExtension.swift).
+    if (filteredCandidates.length > 1) {
+      const allSameType = filteredCandidates.every(c => c.type === filteredCandidates[0].type);
+      if (allSameType && (filteredCandidates[0].type === 'Class' || filteredCandidates[0].type === 'Struct')) {
+        const sorted = [...filteredCandidates].sort((a, b) => a.filePath.length - b.filePath.length);
+        return toResolveResult(sorted[0], tiered.tier);
+      }
+    }
+    return null;
+  }
 
   return toResolveResult(filteredCandidates[0], tiered.tier);
 };
@@ -980,4 +1383,202 @@ export const processRoutesFromExtracted = async (
   }
 
   onProgress?.(extractedRoutes.length, extractedRoutes.length);
+};
+
+/**
+ * Extract property access keys from a consumer file's source code near fetch calls.
+ *
+ * Looks for three patterns after a fetch/response variable assignment:
+ * 1. Destructuring: `const { data, pagination } = await res.json()`
+ * 2. Property access: `response.data`, `result.items`
+ * 3. Optional chaining: `data?.key1?.key2`
+ *
+ * Returns deduplicated top-level property names accessed on the response.
+ *
+ * NOTE: This scans the entire file content, not just code near a specific fetch call.
+ * If a file has multiple fetch calls to different routes, all accessed keys are
+ * attributed to each fetch. This is an acceptable tradeoff for regex-based extraction.
+ */
+
+/** Common method names on response/data objects that are NOT property accesses */
+const RESPONSE_METHOD_BLOCKLIST = new Set([
+  'json', 'text', 'blob', 'arrayBuffer', 'formData', 'ok', 'status', 'headers',
+  'then', 'catch', 'finally', 'clone',
+  'map', 'filter', 'forEach', 'reduce', 'find', 'some', 'every',
+  'length', 'toString', 'valueOf',
+  'push', 'pop', 'shift', 'unshift', 'splice', 'slice', 'concat', 'join',
+  'sort', 'reverse', 'includes', 'indexOf', 'keys', 'values', 'entries',
+]);
+
+export const extractConsumerAccessedKeys = (content: string): string[] => {
+  const keys = new Set<string>();
+
+  // Pattern 1: Destructuring from .json() — const { key1, key2 } = await res.json()
+  // Also matches: const { key1, key2 } = await (await fetch(...)).json()
+  const destructurePattern = /(?:const|let|var)\s+\{([^}]+)\}\s*=\s*(?:await\s+)?(?:\w+\.json\s*\(\)|(?:await\s+)?(?:fetch|axios|got)\s*\([^)]*\)(?:\.then\s*\([^)]*\))?(?:\.json\s*\(\))?)/g;
+  let match;
+  while ((match = destructurePattern.exec(content)) !== null) {
+    const destructuredBody = match[1];
+    // Extract identifiers from destructuring, handling renamed bindings (key: alias)
+    const keyPattern = /(\w+)\s*(?::\s*\w+)?/g;
+    let keyMatch;
+    while ((keyMatch = keyPattern.exec(destructuredBody)) !== null) {
+      keys.add(keyMatch[1]);
+    }
+  }
+
+  // Pattern 2: Destructuring from a data/result/response/json variable
+  // e.g., const { items, total } = data; or const { error } = result;
+  const dataVarDestructure = /(?:const|let|var)\s+\{([^}]+)\}\s*=\s*(?:data|result|response|json|body|res)\b/g;
+  while ((match = dataVarDestructure.exec(content)) !== null) {
+    const destructuredBody = match[1];
+    const keyPattern = /(\w+)\s*(?::\s*\w+)?/g;
+    let keyMatch;
+    while ((keyMatch = keyPattern.exec(destructuredBody)) !== null) {
+      keys.add(keyMatch[1]);
+    }
+  }
+
+  // Pattern 3: Property access on common response variable names
+  // Matches: data.key, response.key, result.key, json.key, body.key
+  // Also matches optional chaining: data?.key
+  const propAccessPattern = /\b(?:data|response|result|json|body|res)\s*(?:\?\.|\.)(\w+)/g;
+  while ((match = propAccessPattern.exec(content)) !== null) {
+    const key = match[1];
+    // Skip common method calls that aren't property accesses
+    if (!RESPONSE_METHOD_BLOCKLIST.has(key)) {
+      keys.add(key);
+    }
+  }
+
+  return [...keys];
+};
+
+/**
+ * Create FETCHES edges from extracted fetch() calls to matching Route nodes.
+ * When consumerContents is provided, extracts property access patterns from
+ * consumer files and encodes them in the edge reason field.
+ */
+export const processNextjsFetchRoutes = (
+  graph: KnowledgeGraph,
+  fetchCalls: ExtractedFetchCall[],
+  routeRegistry: Map<string, string>,  // routeURL → handlerFilePath
+  consumerContents?: Map<string, string>,  // filePath → file content
+) => {
+  // Pre-count how many routes each consumer file matches (for confidence attribution)
+  const routeCountByFile = new Map<string, number>();
+  for (const call of fetchCalls) {
+    const normalized = normalizeFetchURL(call.fetchURL);
+    if (!normalized) continue;
+    for (const [routeURL] of routeRegistry) {
+      if (routeMatches(normalized, routeURL)) {
+        routeCountByFile.set(call.filePath, (routeCountByFile.get(call.filePath) ?? 0) + 1);
+        break;
+      }
+    }
+  }
+
+  for (const call of fetchCalls) {
+    const normalized = normalizeFetchURL(call.fetchURL);
+    if (!normalized) continue;
+
+    for (const [routeURL] of routeRegistry) {
+      if (routeMatches(normalized, routeURL)) {
+        const sourceId = generateId('File', call.filePath);
+        const routeNodeId = generateId('Route', routeURL);
+
+        // Extract consumer accessed keys if file content is available
+        let reason = 'fetch-url-match';
+        if (consumerContents) {
+          const content = consumerContents.get(call.filePath);
+          if (content) {
+            const accessedKeys = extractConsumerAccessedKeys(content);
+            if (accessedKeys.length > 0) {
+              reason = `fetch-url-match|keys:${accessedKeys.join(',')}`;
+            }
+          }
+        }
+
+        // Encode multi-fetch count so downstream can set confidence
+        const fetchCount = routeCountByFile.get(call.filePath) ?? 1;
+        if (fetchCount > 1) {
+          reason = `${reason}|fetches:${fetchCount}`;
+        }
+
+        graph.addRelationship({
+          id: generateId('FETCHES', `${sourceId}->${routeNodeId}`),
+          sourceId,
+          targetId: routeNodeId,
+          type: 'FETCHES',
+          confidence: 0.9,
+          reason,
+        });
+        break;
+      }
+    }
+  }
+};
+
+/**
+ * Extract fetch() calls from source files (sequential path).
+ * Workers handle this via tree-sitter captures in parse-worker; this function
+ * provides the same extraction for the sequential fallback path.
+ */
+export const extractFetchCallsFromFiles = async (
+  files: { path: string; content: string }[],
+  astCache: ASTCache,
+): Promise<ExtractedFetchCall[]> => {
+  const parser = await loadParser();
+  const result: ExtractedFetchCall[] = [];
+
+  for (const file of files) {
+    const language = getLanguageFromFilename(file.path);
+    if (!language) continue;
+    if (!isLanguageAvailable(language)) continue;
+
+    const queryStr = LANGUAGE_QUERIES[language];
+    if (!queryStr) continue;
+
+    await loadLanguage(language, file.path);
+
+    let tree = astCache.get(file.path);
+    if (!tree) {
+      try {
+        tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
+      } catch { continue; }
+      astCache.set(file.path, tree);
+    }
+
+    let matches;
+    try {
+      const lang = parser.getLanguage();
+      const query = new Parser.Query(lang, queryStr);
+      matches = query.matches(tree.rootNode);
+    } catch { continue; }
+
+    for (const match of matches) {
+      const captureMap: Record<string, any> = {};
+      match.captures.forEach(c => captureMap[c.name] = c.node);
+
+      if (captureMap['route.fetch']) {
+        const urlNode = captureMap['route.url'] ?? captureMap['route.template_url'];
+        if (urlNode) {
+          result.push({
+            filePath: file.path,
+            fetchURL: urlNode.text,
+            lineNumber: captureMap['route.fetch'].startPosition.row,
+          });
+        }
+      } else if (captureMap['http_client'] && captureMap['http_client.url']) {
+        const method = captureMap['http_client.method']?.text;
+        const url = captureMap['http_client.url'].text;
+        const HTTP_CLIENT_ONLY = new Set(['head', 'options', 'request', 'ajax']);
+        if (method && HTTP_CLIENT_ONLY.has(method) && url.startsWith('/')) {
+          result.push({ filePath: file.path, fetchURL: url, lineNumber: captureMap['http_client'].startPosition.row });
+        }
+      }
+    }
+  }
+
+  return result;
 };

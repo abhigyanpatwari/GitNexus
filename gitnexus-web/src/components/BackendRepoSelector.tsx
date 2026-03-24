@@ -1,4 +1,4 @@
-import { Server, ArrowRight } from 'lucide-react';
+import { Server, ArrowRight } from '@/lib/lucide-icons';
 import { BackendRepo } from '../services/backend';
 
 interface BackendRepoSelectorProps {

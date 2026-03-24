@@ -209,7 +209,7 @@ function c3Linearize(
 // ---------------------------------------------------------------------------
 
 type MethodDef = { classId: string; className: string; methodId: string };
-type Resolution = { resolvedTo: string | null; reason: string };
+type Resolution = { resolvedTo: string | null; reason: string; confidence: number };
 
 /** Resolve by MRO order — first ancestor in linearized order wins. */
 function resolveByMroOrder(
@@ -224,10 +224,11 @@ function resolveByMroOrder(
       return {
         resolvedTo: match.methodId,
         reason: `${reasonPrefix}: ${match.className}::${methodName}`,
+        confidence: 0.9,  // MRO-ordered resolution
       };
     }
   }
-  return { resolvedTo: defs[0].methodId, reason: `${reasonPrefix} fallback: first definition` };
+  return { resolvedTo: defs[0].methodId, reason: `${reasonPrefix} fallback: first definition`, confidence: 0.7 };
 }
 
 function resolveCsharpJava(
@@ -251,6 +252,7 @@ function resolveCsharpJava(
     return {
       resolvedTo: classDefs[0].methodId,
       reason: `class method wins: ${classDefs[0].className}::${methodName}`,
+      confidence: 0.95,  // Class method is authoritative
     };
   }
 
@@ -258,6 +260,7 @@ function resolveCsharpJava(
     return {
       resolvedTo: null,
       reason: `ambiguous: ${methodName} defined in multiple interfaces: ${interfaceDefs.map(d => d.className).join(', ')}`,
+      confidence: 0.5,
     };
   }
 
@@ -265,10 +268,11 @@ function resolveCsharpJava(
     return {
       resolvedTo: interfaceDefs[0].methodId,
       reason: `single interface default: ${interfaceDefs[0].className}::${methodName}`,
+      confidence: 0.85,  // Single interface, unambiguous
     };
   }
 
-  return { resolvedTo: null, reason: 'no resolution found' };
+  return { resolvedTo: null, reason: 'no resolution found', confidence: 0.5 };
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +380,7 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
           resolution = {
             resolvedTo: null,
             reason: `Rust requires qualified syntax: <Type as Trait>::${methodName}()`,
+            confidence: 0.5,
           };
           break;
         default:
@@ -402,7 +407,7 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
           sourceId: classId,
           targetId: resolution.resolvedTo,
           type: 'OVERRIDES',
-          confidence: 1.0,
+          confidence: resolution.confidence,
           reason: resolution.reason,
         });
         overrideEdges++;

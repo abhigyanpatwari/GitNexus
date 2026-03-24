@@ -24,6 +24,23 @@ export type ConstructorBindingScanner = (node: SyntaxNode) => { varName: string;
  *  rather than in AST fields. Returns undefined if no return type can be determined. */
 export type ReturnTypeExtractor = (node: SyntaxNode) => string | undefined;
 
+/** Infer the type name of a literal AST node for overload disambiguation.
+ *  Returns the canonical type name (e.g. 'int', 'String', 'boolean') or undefined
+ *  for non-literal nodes. Only used when resolveCallTarget has multiple candidates
+ *  with parameterTypes — ~1-3% of call sites. */
+export type LiteralTypeInferrer = (node: SyntaxNode) => string | undefined;
+
+/** Detect constructor-style call expressions that don't use `new` keyword.
+ *  Returns the constructor class name if the node's initializer is a constructor call,
+ *  or undefined otherwise. Used for virtual dispatch in languages like Kotlin
+ *  where constructors are syntactically identical to function calls, and C++
+ *  where smart pointer factory functions (make_shared/make_unique) wrap constructors. */
+export type ConstructorTypeDetector = (node: SyntaxNode, classNames: ClassNameLookup) => string | undefined;
+
+/** Unwrap a declared type name to its inner type for virtual dispatch comparison.
+ *  E.g., C++ shared_ptr<Animal> → Animal. Returns undefined if no unwrapping applies. */
+export type DeclaredTypeUnwrapper = (declaredType: string, typeNode: SyntaxNode) => string | undefined;
+
 /** Narrow lookup interface for resolving a callee name → return type name.
  *  Backed by SymbolTable.lookupFuzzyCallable; passed via ForLoopExtractorContext.
  *  Conservative: returns undefined when the callee is ambiguous (0 or 2+ matches). */
@@ -53,24 +70,43 @@ export interface ForLoopExtractorContext {
 export type ForLoopExtractor = (node: SyntaxNode, ctx: ForLoopExtractorContext) => void;
 
 /** Discriminated union for pending Tier-2 propagation items.
- *  - `copy`       — `const b = a` (identifier alias, propagate a's type to b)
- *  - `callResult` — `const b = foo()` (bind b to foo's declared return type) */
+ *  - `copy`             — `const b = a` (identifier alias, propagate a's type to b)
+ *  - `callResult`       — `const b = foo()` (bind b to foo's declared return type)
+ *  - `fieldAccess`      — `const b = a.field` (bind b to field's declaredType on a's type)
+ *  - `methodCallResult` — `const b = a.method()` (bind b to method's returnType on a's type) */
 export type PendingAssignment =
   | { kind: 'copy'; lhs: string; rhs: string }
-  | { kind: 'callResult'; lhs: string; callee: string };
+  | { kind: 'callResult'; lhs: string; callee: string }
+  | { kind: 'fieldAccess'; lhs: string; receiver: string; field: string }
+  | { kind: 'methodCallResult'; lhs: string; receiver: string; method: string };
 
 /** Extracts a pending assignment for Tier 2 propagation.
- *  Returns a PendingAssignment when the RHS is a bare identifier (`copy`) or a
- *  call expression (`callResult`) and the LHS has no resolved type yet.
+ *  Returns a PendingAssignment when the RHS is a bare identifier (`copy`), a
+ *  call expression (`callResult`), a field access (`fieldAccess`), or a
+ *  method call with receiver (`methodCallResult`) and the LHS has no resolved type yet.
+ *  May return an array of PendingAssignment items for destructuring patterns
+ *  (e.g., `const { a, b } = obj` emits N fieldAccess items).
  *  Returns undefined if the node is not a matching assignment. */
 export type PendingAssignmentExtractor = (
   node: SyntaxNode,
   scopeEnv: ReadonlyMap<string, string>,
-) => PendingAssignment | undefined;
+) => PendingAssignment | PendingAssignment[] | undefined;
+
+/** Result of a pattern binding extraction. */
+export interface PatternBindingResult {
+  varName: string;
+  typeName: string;
+  /** Optional: AST node whose position range should be used for the patternOverride.
+   *  When present, the override uses this node's range instead of the auto-detected
+   *  branch scope. Used by null-check narrowing to target the if-body specifically. */
+  narrowingRange?: { startIndex: number; endIndex: number };
+}
 
 /** Extracts a typed variable binding from a pattern-matching construct.
- *  Returns { varName, typeName } for patterns that introduce NEW variables.
- *  Examples: `if let Some(user) = opt` (Rust), `x instanceof User user` (Java).
+ *  Returns { varName, typeName } for patterns that introduce NEW variables
+ *  or narrow existing variables (null-check narrowing).
+ *  Examples: `if let Some(user) = opt` (Rust), `x instanceof User user` (Java),
+ *  `if (x != null)` (null-check narrowing in TS/Kotlin/C#).
  *  Conservative: returns undefined when the source variable's type is unknown.
  *
  *  @param scopeEnv   Read-only view of already-resolved type bindings in the current scope.
@@ -83,7 +119,7 @@ export type PatternBindingExtractor = (
   scopeEnv: ReadonlyMap<string, string>,
   declarationTypeNodes: ReadonlyMap<string, SyntaxNode>,
   scope: string,
-) => { varName: string; typeName: string } | undefined;
+) => PatternBindingResult | undefined;
 
 /** Per-language type extraction configuration */
 export interface LanguageTypeConfig {
@@ -130,4 +166,7 @@ export interface LanguageTypeConfig {
    *  The extractor receives the current scope's resolved bindings (read-only) to look up the
    *  source variable's type. Returns undefined for non-matching nodes or unknown source types. */
   extractPatternBinding?: PatternBindingExtractor;
+  inferLiteralType?: LiteralTypeInferrer;
+  detectConstructorType?: ConstructorTypeDetector;
+  unwrapDeclaredType?: DeclaredTypeUnwrapper;
 }
