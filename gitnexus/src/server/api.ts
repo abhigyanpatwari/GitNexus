@@ -140,14 +140,21 @@ const buildGraph = async (): Promise<{ nodes: GraphNode[]; relationships: GraphR
     `MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`
   );
   for (const row of relRows) {
+    // WASM getAllRows() returns tuples; native getAll() returns named objects
+    const sourceId = row.sourceId ?? row[0];
+    const targetId = row.targetId ?? row[1];
+    const type = row.type ?? row[2];
+    const confidence = row.confidence ?? row[3];
+    const reason = row.reason ?? row[4];
+    const step = row.step ?? row[5];
     relationships.push({
-      id: `${row.sourceId}_${row.type}_${row.targetId}`,
-      type: row.type,
-      sourceId: row.sourceId,
-      targetId: row.targetId,
-      confidence: row.confidence,
-      reason: row.reason,
-      step: row.step,
+      id: `${sourceId}_${type}_${targetId}`,
+      type,
+      sourceId,
+      targetId,
+      confidence,
+      reason,
+      step,
     });
   }
 
