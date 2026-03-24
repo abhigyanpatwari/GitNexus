@@ -1,17 +1,13 @@
 /**
- * Import Resolution Dispatch
+ * Import Resolution
  *
- * Per-language dispatch table for import resolution.
- * Replaces the 120-line if-chain in resolveLanguageImport() with a single
- * table lookup.
+ * Per-language import resolver functions, each exported individually and
+ * imported directly by the corresponding language provider.
  *
  * Follows the existing ExportChecker / CallRouter pattern:
  *   - Function aliases (not interfaces) to avoid megamorphic inline-cache issues
- *   - `satisfies Record<SupportedLanguages, ...>` for compile-time exhaustiveness
- *   - Const dispatch table — configs are accessed via ctx.configs at call time
- *
- * Named binding extractors are imported directly from named-binding-extraction.ts
- * by each language provider — no dispatch table needed.
+ *   - Each provider imports its resolver directly — no dispatch table needed
+ *   - Configs are accessed via ctx.configs at call time
  */
 
 import { SupportedLanguages } from '../../config/supported-languages.js';
@@ -19,7 +15,6 @@ import type { LanguageProvider } from './language-provider.js';
 import type { SyntaxNode } from './utils.js';
 import {
   KOTLIN_EXTENSIONS,
-  appendKotlinWildcard,
   resolveJvmWildcard,
   resolveJvmMemberImport,
   resolveGoPackageDir,
@@ -33,7 +28,6 @@ import {
   resolveImportPath,
 } from './resolvers/index.js';
 import type {
-  SuffixIndex,
   TsconfigPaths,
   GoModuleConfig,
   CSharpProjectConfig,
@@ -117,7 +111,7 @@ export function preprocessImportPath(
  * Standard single-file resolution (TS/JS/C/C++ and fallback for other languages).
  * Handles relative imports, tsconfig path aliases, and suffix matching.
  */
-function resolveStandard(
+export function resolveStandard(
   rawImportPath: string,
   filePath: string,
   ctx: ResolveCtx,
@@ -137,8 +131,24 @@ function resolveStandard(
   return resolvedPath ? { kind: 'files', files: [resolvedPath] } : null;
 }
 
+/** JavaScript: standard single-file resolution. */
+export const resolveJavascriptImport: ImportResolverFn = (raw, fp, ctx) =>
+  resolveStandard(raw, fp, ctx, SupportedLanguages.JavaScript);
+
+/** TypeScript: standard single-file resolution. */
+export const resolveTypescriptImport: ImportResolverFn = (raw, fp, ctx) =>
+  resolveStandard(raw, fp, ctx, SupportedLanguages.TypeScript);
+
+/** C: standard single-file resolution for #include directives. */
+export const resolveCImport: ImportResolverFn = (raw, fp, ctx) =>
+  resolveStandard(raw, fp, ctx, SupportedLanguages.C);
+
+/** C++: standard single-file resolution for #include directives. */
+export const resolveCppImport: ImportResolverFn = (raw, fp, ctx) =>
+  resolveStandard(raw, fp, ctx, SupportedLanguages.CPlusPlus);
+
 /** Java: JVM wildcard -> member import -> standard fallthrough */
-function resolveJavaImport(
+export function resolveJavaImport(
   rawImportPath: string,
   filePath: string,
   ctx: ResolveCtx,
@@ -157,7 +167,7 @@ function resolveJavaImport(
  * Kotlin: JVM wildcard/member with Java-interop fallback -> top-level function imports -> standard.
  * Kotlin can import from .kt/.kts files OR from .java files (Java interop).
  */
-function resolveKotlinImport(
+export function resolveKotlinImport(
   rawImportPath: string,
   filePath: string,
   ctx: ResolveCtx,
@@ -195,7 +205,7 @@ function resolveKotlinImport(
 }
 
 /** Go: package-level imports via go.mod module path. */
-function resolveGoImport(
+export function resolveGoImport(
   rawImportPath: string,
   filePath: string,
   ctx: ResolveCtx,
@@ -215,7 +225,7 @@ function resolveGoImport(
 }
 
 /** C#: namespace-based resolution via .csproj configs, with suffix-match fallback. */
-function resolveCSharpImportDispatch(
+export function resolveCSharpImport(
   rawImportPath: string,
   filePath: string,
   ctx: ResolveCtx,
@@ -235,7 +245,7 @@ function resolveCSharpImportDispatch(
 }
 
 /** PHP: namespace-based resolution via composer.json PSR-4. */
-function resolvePhpImportDispatch(
+export function resolvePhpImport(
   rawImportPath: string,
   _filePath: string,
   ctx: ResolveCtx,
@@ -245,7 +255,7 @@ function resolvePhpImportDispatch(
 }
 
 /** Swift: module imports via Package.swift target map. */
-function resolveSwiftImportDispatch(
+export function resolveSwiftImport(
   rawImportPath: string,
   _filePath: string,
   ctx: ResolveCtx,
@@ -271,7 +281,7 @@ function resolveSwiftImportDispatch(
  * Python: relative imports (PEP 328) + proximity-based bare imports.
  * Falls through to standard suffix resolution when proximity finds no match.
  */
-function resolvePythonImportDispatch(
+export function resolvePythonImport(
   rawImportPath: string,
   filePath: string,
   ctx: ResolveCtx,
@@ -283,7 +293,7 @@ function resolvePythonImportDispatch(
 }
 
 /** Ruby: require / require_relative. */
-function resolveRubyImportDispatch(
+export function resolveRubyImport(
   rawImportPath: string,
   _filePath: string,
   ctx: ResolveCtx,
@@ -293,7 +303,7 @@ function resolveRubyImportDispatch(
 }
 
 /** Rust: expand grouped imports: use {crate::a, crate::b} and use crate::models::{User, Repo}. */
-function resolveRustImportDispatch(
+export function resolveRustImport(
   rawImportPath: string,
   filePath: string,
   ctx: ResolveCtx,
@@ -331,30 +341,4 @@ function resolveRustImportDispatch(
 
   return resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Rust);
 }
-
-// ============================================================================
-// Dispatch tables
-// ============================================================================
-
-/**
- * Per-language import resolver dispatch table.
- * Configs are accessed via ctx.configs at call time — no factory closure needed.
- * Each resolver encapsulates the full resolution flow for its language, including
- * fallthrough to standard resolution where appropriate.
- */
-export const importResolvers = {
-  [SupportedLanguages.JavaScript]: (raw, fp, ctx) => resolveStandard(raw, fp, ctx, SupportedLanguages.JavaScript),
-  [SupportedLanguages.TypeScript]: (raw, fp, ctx) => resolveStandard(raw, fp, ctx, SupportedLanguages.TypeScript),
-  [SupportedLanguages.Python]: (raw, fp, ctx) => resolvePythonImportDispatch(raw, fp, ctx),
-  [SupportedLanguages.Java]: (raw, fp, ctx) => resolveJavaImport(raw, fp, ctx),
-  [SupportedLanguages.C]: (raw, fp, ctx) => resolveStandard(raw, fp, ctx, SupportedLanguages.C),
-  [SupportedLanguages.CPlusPlus]: (raw, fp, ctx) => resolveStandard(raw, fp, ctx, SupportedLanguages.CPlusPlus),
-  [SupportedLanguages.CSharp]: (raw, fp, ctx) => resolveCSharpImportDispatch(raw, fp, ctx),
-  [SupportedLanguages.Go]: (raw, fp, ctx) => resolveGoImport(raw, fp, ctx),
-  [SupportedLanguages.Ruby]: (raw, fp, ctx) => resolveRubyImportDispatch(raw, fp, ctx),
-  [SupportedLanguages.Rust]: (raw, fp, ctx) => resolveRustImportDispatch(raw, fp, ctx),
-  [SupportedLanguages.PHP]: (raw, fp, ctx) => resolvePhpImportDispatch(raw, fp, ctx),
-  [SupportedLanguages.Kotlin]: (raw, fp, ctx) => resolveKotlinImport(raw, fp, ctx),
-  [SupportedLanguages.Swift]: (raw, fp, ctx) => resolveSwiftImportDispatch(raw, fp, ctx),
-} satisfies Record<SupportedLanguages, ImportResolverFn>;
 

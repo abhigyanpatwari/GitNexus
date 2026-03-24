@@ -14,9 +14,9 @@
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as pythonConfig } from '../type-extractors/python.js';
-import { callRouters } from '../call-routing.js';
-import { exportCheckers } from '../export-detection.js';
-import { importResolvers } from '../import-resolution.js';
+import { noRouting } from '../call-routing.js';
+import { pythonExportChecker } from '../export-detection.js';
+import { resolvePythonImport } from '../import-resolution.js';
 import { extractPythonNamedBindings } from '../named-binding-extraction.js';
 import { PYTHON_QUERIES } from '../tree-sitter-queries.js';
 
@@ -25,9 +25,9 @@ export const pythonProvider = defineLanguage({
   extensions: ['.py'],
   treeSitterQueries: PYTHON_QUERIES,
   typeConfig: pythonConfig,
-  exportChecker: exportCheckers[SupportedLanguages.Python],
-  importResolver: importResolvers[SupportedLanguages.Python],
-  callRouter: callRouters[SupportedLanguages.Python],
+  exportChecker: pythonExportChecker,
+  importResolver: resolvePythonImport,
+  callRouter: noRouting,
   namedBindingExtractor: extractPythonNamedBindings,
   importSemantics: 'namespace',
   mroStrategy: 'c3',

@@ -11,9 +11,9 @@
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
-import { callRouters } from '../call-routing.js';
-import { exportCheckers } from '../export-detection.js';
-import { importResolvers } from '../import-resolution.js';
+import { noRouting } from '../call-routing.js';
+import { tsExportChecker } from '../export-detection.js';
+import { resolveTypescriptImport, resolveJavascriptImport } from '../import-resolution.js';
 import { extractTsNamedBindings } from '../named-binding-extraction.js';
 import { TYPESCRIPT_QUERIES, JAVASCRIPT_QUERIES } from '../tree-sitter-queries.js';
 
@@ -22,9 +22,9 @@ export const typescriptProvider = defineLanguage({
   extensions: ['.ts', '.tsx'],
   treeSitterQueries: TYPESCRIPT_QUERIES,
   typeConfig: typescriptConfig,
-  exportChecker: exportCheckers[SupportedLanguages.TypeScript],
-  importResolver: importResolvers[SupportedLanguages.TypeScript],
-  callRouter: callRouters[SupportedLanguages.TypeScript],
+  exportChecker: tsExportChecker,
+  importResolver: resolveTypescriptImport,
+  callRouter: noRouting,
   namedBindingExtractor: extractTsNamedBindings,
 });
 
@@ -33,8 +33,8 @@ export const javascriptProvider = defineLanguage({
   extensions: ['.js', '.jsx'],
   treeSitterQueries: JAVASCRIPT_QUERIES,
   typeConfig: typescriptConfig,
-  exportChecker: exportCheckers[SupportedLanguages.JavaScript],
-  importResolver: importResolvers[SupportedLanguages.JavaScript],
-  callRouter: callRouters[SupportedLanguages.JavaScript],
+  exportChecker: tsExportChecker,
+  importResolver: resolveJavascriptImport,
+  callRouter: noRouting,
   namedBindingExtractor: extractTsNamedBindings,
 });

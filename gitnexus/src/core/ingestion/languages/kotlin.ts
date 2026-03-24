@@ -10,9 +10,9 @@
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
 import { kotlinTypeConfig } from '../type-extractors/jvm.js';
-import { callRouters } from '../call-routing.js';
-import { exportCheckers } from '../export-detection.js';
-import { importResolvers } from '../import-resolution.js';
+import { noRouting } from '../call-routing.js';
+import { kotlinExportChecker } from '../export-detection.js';
+import { resolveKotlinImport } from '../import-resolution.js';
 import { extractKotlinNamedBindings } from '../named-binding-extraction.js';
 import { appendKotlinWildcard } from '../resolvers/jvm.js';
 import { KOTLIN_QUERIES } from '../tree-sitter-queries.js';
@@ -23,9 +23,9 @@ export const kotlinProvider = defineLanguage({
   extensions: ['.kt', '.kts'],
   treeSitterQueries: KOTLIN_QUERIES,
   typeConfig: kotlinTypeConfig,
-  exportChecker: exportCheckers[SupportedLanguages.Kotlin],
-  importResolver: importResolvers[SupportedLanguages.Kotlin],
-  callRouter: callRouters[SupportedLanguages.Kotlin],
+  exportChecker: kotlinExportChecker,
+  importResolver: resolveKotlinImport,
+  callRouter: noRouting,
   namedBindingExtractor: extractKotlinNamedBindings,
   importPathPreprocessor: appendKotlinWildcard,
   mroStrategy: 'implements-split',

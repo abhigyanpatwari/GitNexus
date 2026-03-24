@@ -13,9 +13,9 @@
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as swiftConfig } from '../type-extractors/swift.js';
-import { callRouters } from '../call-routing.js';
-import { exportCheckers } from '../export-detection.js';
-import { importResolvers } from '../import-resolution.js';
+import { noRouting } from '../call-routing.js';
+import { swiftExportChecker } from '../export-detection.js';
+import { resolveSwiftImport } from '../import-resolution.js';
 import { SWIFT_QUERIES } from '../tree-sitter-queries.js';
 import { wireSwiftImplicitImports } from '../helpers/swift.js';
 
@@ -24,9 +24,9 @@ export const swiftProvider = defineLanguage({
   extensions: ['.swift'],
   treeSitterQueries: SWIFT_QUERIES,
   typeConfig: swiftConfig,
-  exportChecker: exportCheckers[SupportedLanguages.Swift],
-  importResolver: importResolvers[SupportedLanguages.Swift],
-  callRouter: callRouters[SupportedLanguages.Swift],
+  exportChecker: swiftExportChecker,
+  importResolver: resolveSwiftImport,
+  callRouter: noRouting,
   importSemantics: 'wildcard',
   heritageDefaultEdge: 'IMPLEMENTS',
   implicitImportWirer: wireSwiftImplicitImports,

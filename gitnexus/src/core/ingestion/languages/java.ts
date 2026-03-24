@@ -10,9 +10,9 @@
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
 import { javaTypeConfig } from '../type-extractors/jvm.js';
-import { callRouters } from '../call-routing.js';
-import { exportCheckers } from '../export-detection.js';
-import { importResolvers } from '../import-resolution.js';
+import { noRouting } from '../call-routing.js';
+import { javaExportChecker } from '../export-detection.js';
+import { resolveJavaImport } from '../import-resolution.js';
 import { extractJavaNamedBindings } from '../named-binding-extraction.js';
 import { JAVA_QUERIES } from '../tree-sitter-queries.js';
 
@@ -21,9 +21,9 @@ export const javaProvider = defineLanguage({
   extensions: ['.java'],
   treeSitterQueries: JAVA_QUERIES,
   typeConfig: javaTypeConfig,
-  exportChecker: exportCheckers[SupportedLanguages.Java],
-  importResolver: importResolvers[SupportedLanguages.Java],
-  callRouter: callRouters[SupportedLanguages.Java],
+  exportChecker: javaExportChecker,
+  importResolver: resolveJavaImport,
+  callRouter: noRouting,
   namedBindingExtractor: extractJavaNamedBindings,
   interfaceNamePattern: /^I[A-Z]/,
   mroStrategy: 'implements-split',

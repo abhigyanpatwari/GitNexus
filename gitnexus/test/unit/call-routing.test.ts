@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { routeRubyCall, callRouters } from '../../src/core/ingestion/call-routing.js';
-import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { routeRubyCall, noRouting } from '../../src/core/ingestion/call-routing.js';
 
 // ── Mock AST node helpers ────────────────────────────────────────────────────
 
@@ -649,46 +648,25 @@ describe('routeRubyCall — default (unknown method name)', () => {
   });
 });
 
-// ── callRouters dispatch table ────────────────────────────────────────────────
+// ── noRouting passthrough ─────────────────────────────────────────────────────
 
-describe('callRouters dispatch table', () => {
-  it('non-Ruby languages return null (noRouting passthrough)', () => {
+describe('noRouting passthrough', () => {
+  it('returns null for every call', () => {
     const dummyNode = { type: 'call', text: '' };
-    const nonRubyLanguages: SupportedLanguages[] = [
-      SupportedLanguages.JavaScript,
-      SupportedLanguages.TypeScript,
-      SupportedLanguages.Python,
-      SupportedLanguages.Java,
-      SupportedLanguages.Kotlin,
-      SupportedLanguages.Go,
-      SupportedLanguages.Rust,
-      SupportedLanguages.CSharp,
-      SupportedLanguages.PHP,
-      SupportedLanguages.Swift,
-      SupportedLanguages.CPlusPlus,
-      SupportedLanguages.C,
-    ];
-    for (const lang of nonRubyLanguages) {
-      expect(callRouters[lang]('require', dummyNode)).toBeNull();
-    }
+    expect(noRouting('require', dummyNode)).toBeNull();
+    expect(noRouting('include', dummyNode)).toBeNull();
+    expect(noRouting('render', dummyNode)).toBeNull();
   });
 
-  it('Ruby router is routeRubyCall (delegates correctly for require)', () => {
+  it('routeRubyCall delegates correctly for require', () => {
     const node = makeRequireCallNode('json');
-    const result = callRouters[SupportedLanguages.Ruby]('require', node);
+    const result = routeRubyCall('require', node);
     expect(result).toEqual({ kind: 'import', importPath: 'json', isRelative: false });
   });
 
-  it('Ruby router returns {kind: "call"} for an unknown method name', () => {
+  it('routeRubyCall returns {kind: "call"} for an unknown method name', () => {
     const node: MockNode = { type: 'call', text: '' };
-    const result = callRouters[SupportedLanguages.Ruby]('render', node);
+    const result = routeRubyCall('render', node);
     expect(result).toEqual({ kind: 'call' });
-  });
-
-  it('callRouters covers every SupportedLanguages value (no missing key)', () => {
-    const allLanguages = Object.values(SupportedLanguages) as SupportedLanguages[];
-    for (const lang of allLanguages) {
-      expect(typeof callRouters[lang]).toBe('function');
-    }
   });
 });

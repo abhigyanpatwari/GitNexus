@@ -10,9 +10,9 @@
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as rubyConfig } from '../type-extractors/ruby.js';
-import { callRouters } from '../call-routing.js';
-import { exportCheckers } from '../export-detection.js';
-import { importResolvers } from '../import-resolution.js';
+import { routeRubyCall } from '../call-routing.js';
+import type { ExportChecker } from '../export-detection.js';
+import { resolveRubyImport } from '../import-resolution.js';
 import { RUBY_QUERIES } from '../tree-sitter-queries.js';
 
 export const rubyProvider = defineLanguage({
@@ -20,8 +20,8 @@ export const rubyProvider = defineLanguage({
   extensions: ['.rb', '.rake', '.gemspec'],
   treeSitterQueries: RUBY_QUERIES,
   typeConfig: rubyConfig,
-  exportChecker: exportCheckers[SupportedLanguages.Ruby],
-  importResolver: importResolvers[SupportedLanguages.Ruby],
-  callRouter: callRouters[SupportedLanguages.Ruby],
+  exportChecker: ((_node, _name) => true) as ExportChecker,
+  importResolver: resolveRubyImport,
+  callRouter: routeRubyCall,
   importSemantics: 'wildcard',
 });

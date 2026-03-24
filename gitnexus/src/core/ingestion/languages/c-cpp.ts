@@ -11,9 +11,9 @@
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as cCppConfig } from '../type-extractors/c-cpp.js';
-import { callRouters } from '../call-routing.js';
-import { exportCheckers } from '../export-detection.js';
-import { importResolvers } from '../import-resolution.js';
+import { noRouting } from '../call-routing.js';
+import { cCppExportChecker } from '../export-detection.js';
+import { resolveCImport, resolveCppImport } from '../import-resolution.js';
 import { C_QUERIES, CPP_QUERIES } from '../tree-sitter-queries.js';
 
 import { isCppInsideClassOrStruct } from '../ast-helpers.js';
@@ -31,9 +31,9 @@ export const cProvider = defineLanguage({
   extensions: ['.c'],
   treeSitterQueries: C_QUERIES,
   typeConfig: cCppConfig,
-  exportChecker: exportCheckers[SupportedLanguages.C],
-  importResolver: importResolvers[SupportedLanguages.C],
-  callRouter: callRouters[SupportedLanguages.C],
+  exportChecker: cCppExportChecker,
+  importResolver: resolveCImport,
+  callRouter: noRouting,
   importSemantics: 'wildcard',
   labelOverride: cppLabelOverride,
 });
@@ -43,9 +43,9 @@ export const cppProvider = defineLanguage({
   extensions: ['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh'],
   treeSitterQueries: CPP_QUERIES,
   typeConfig: cCppConfig,
-  exportChecker: exportCheckers[SupportedLanguages.CPlusPlus],
-  importResolver: importResolvers[SupportedLanguages.CPlusPlus],
-  callRouter: callRouters[SupportedLanguages.CPlusPlus],
+  exportChecker: cCppExportChecker,
+  importResolver: resolveCppImport,
+  callRouter: noRouting,
   importSemantics: 'wildcard',
   mroStrategy: 'leftmost-base',
   labelOverride: cppLabelOverride,

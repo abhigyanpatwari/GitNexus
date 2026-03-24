@@ -11,8 +11,6 @@
  * Keep both copies in sync until a shared package is introduced.
  */
 
-import { SupportedLanguages } from '../../config/supported-languages.js';
-
 // ── Call routing dispatch table ─────────────────────────────────────────────
 
 /** null = this call was not routed; fall through to default call handling */
@@ -30,24 +28,7 @@ export type CallRouter = (
 ) => CallRoutingResult;
 
 /** No-op router: returns null for every call (passthrough to normal processing) */
-const noRouting: CallRouter = () => null;
-
-/** Per-language call routing. noRouting = no special routing (normal call processing) */
-export const callRouters = {
-  [SupportedLanguages.JavaScript]: noRouting,
-  [SupportedLanguages.TypeScript]: noRouting,
-  [SupportedLanguages.Python]: noRouting,
-  [SupportedLanguages.Java]: noRouting,
-  [SupportedLanguages.Kotlin]: noRouting,
-  [SupportedLanguages.Go]: noRouting,
-  [SupportedLanguages.Rust]: noRouting,
-  [SupportedLanguages.CSharp]: noRouting,
-  [SupportedLanguages.PHP]: noRouting,
-  [SupportedLanguages.Swift]: noRouting,
-  [SupportedLanguages.CPlusPlus]: noRouting,
-  [SupportedLanguages.C]: noRouting,
-  [SupportedLanguages.Ruby]: routeRubyCall,
-} satisfies Record<SupportedLanguages, CallRouter>;
+export const noRouting: CallRouter = () => null;
 
 // ── Result types ────────────────────────────────────────────────────────────
 

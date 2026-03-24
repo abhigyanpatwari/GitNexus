@@ -29,7 +29,6 @@ import { getTreeSitterBufferSize } from './constants.js';
 import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import type { ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, ExtractedFetchCall, FileConstructorBindings } from './workers/parse-worker.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
-import { callRouters } from './call-routing.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
 import type { LiteralTypeInferrer } from './type-extractors/types.js';
 import type { SyntaxNode } from './utils.js';

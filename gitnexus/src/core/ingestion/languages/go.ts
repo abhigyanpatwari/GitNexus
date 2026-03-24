@@ -12,9 +12,9 @@
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as goConfig } from '../type-extractors/go.js';
-import { callRouters } from '../call-routing.js';
-import { exportCheckers } from '../export-detection.js';
-import { importResolvers } from '../import-resolution.js';
+import { noRouting } from '../call-routing.js';
+import { goExportChecker } from '../export-detection.js';
+import { resolveGoImport } from '../import-resolution.js';
 import { GO_QUERIES } from '../tree-sitter-queries.js';
 
 export const goProvider = defineLanguage({
@@ -22,8 +22,8 @@ export const goProvider = defineLanguage({
   extensions: ['.go'],
   treeSitterQueries: GO_QUERIES,
   typeConfig: goConfig,
-  exportChecker: exportCheckers[SupportedLanguages.Go],
-  importResolver: importResolvers[SupportedLanguages.Go],
-  callRouter: callRouters[SupportedLanguages.Go],
+  exportChecker: goExportChecker,
+  importResolver: resolveGoImport,
+  callRouter: noRouting,
   importSemantics: 'wildcard',
 });

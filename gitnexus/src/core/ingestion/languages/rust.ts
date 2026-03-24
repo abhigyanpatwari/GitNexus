@@ -13,9 +13,9 @@
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as rustConfig } from '../type-extractors/rust.js';
-import { callRouters } from '../call-routing.js';
-import { exportCheckers } from '../export-detection.js';
-import { importResolvers } from '../import-resolution.js';
+import { noRouting } from '../call-routing.js';
+import { rustExportChecker } from '../export-detection.js';
+import { resolveRustImport } from '../import-resolution.js';
 import { extractRustNamedBindings } from '../named-binding-extraction.js';
 import { RUST_QUERIES } from '../tree-sitter-queries.js';
 
@@ -24,9 +24,9 @@ export const rustProvider = defineLanguage({
   extensions: ['.rs'],
   treeSitterQueries: RUST_QUERIES,
   typeConfig: rustConfig,
-  exportChecker: exportCheckers[SupportedLanguages.Rust],
-  importResolver: importResolvers[SupportedLanguages.Rust],
-  callRouter: callRouters[SupportedLanguages.Rust],
+  exportChecker: rustExportChecker,
+  importResolver: resolveRustImport,
+  callRouter: noRouting,
   namedBindingExtractor: extractRustNamedBindings,
   mroStrategy: 'qualified-syntax',
 });
