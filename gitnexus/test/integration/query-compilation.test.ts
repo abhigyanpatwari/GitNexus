@@ -43,7 +43,8 @@ describe('Query compilation smoke tests', () => {
       }
 
       await loadLanguage(lang as SupportedLanguages, filename);
-      const queryStr = getProvider(lang as SupportedLanguages).treeSitterQueries;
+      const provider = getProvider(lang as SupportedLanguages);
+      const queryStr = provider.treeSitterQueries;
       expect(queryStr).toBeTruthy();
 
       const grammar = parser.getLanguage();

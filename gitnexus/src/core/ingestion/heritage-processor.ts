@@ -115,7 +115,8 @@ export const processHeritage = async (
       continue;
     }
 
-    const queryStr = getProvider(language).treeSitterQueries;
+    const provider = getProvider(language);
+    const queryStr = provider.treeSitterQueries;
     if (!queryStr) continue;
 
     // 2. Load the language

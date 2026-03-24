@@ -718,7 +718,8 @@ export const buildTypeEnv = (
   const constructorTypeMap = new Map<string, string>();
   const localClassNames = new Set<string>();
   const classNames = createClassNameLookup(localClassNames, symbolTable);
-  const config = getProvider(language).typeConfig;
+  const provider = getProvider(language);
+  const config = provider.typeConfig;
   const bindings: ConstructorBinding[] = [];
 
   // Build ReturnTypeLookup: SymbolTable is authoritative when it has an unambiguous match.

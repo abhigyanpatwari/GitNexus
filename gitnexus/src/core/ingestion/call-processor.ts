@@ -1538,7 +1538,8 @@ export const extractFetchCallsFromFiles = async (
     if (!language) continue;
     if (!isLanguageAvailable(language)) continue;
 
-    const queryStr = getProvider(language).treeSitterQueries;
+    const provider = getProvider(language);
+    const queryStr = provider.treeSitterQueries;
     if (!queryStr) continue;
 
     await loadLanguage(language, file.path);

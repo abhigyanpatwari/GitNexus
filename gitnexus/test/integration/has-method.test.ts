@@ -31,7 +31,8 @@ function parseAndExtractMethods(
   filePath: string,
 ): { name: string; defType: string; enclosingClassId: string | null }[] {
   const tree = parser.parse(code);
-  const query = new Parser.Query(parser.getLanguage(), getProvider(lang).treeSitterQueries);
+  const provider = getProvider(lang);
+  const query = new Parser.Query(parser.getLanguage(), provider.treeSitterQueries);
   const matches = query.matches(tree.rootNode);
 
   const results: { name: string; defType: string; enclosingClassId: string | null }[] = [];

@@ -24,7 +24,8 @@ function extractCallCaptures(
   code: string,
   language: string,
 ): Array<{ callNode: SyntaxNode; nameNode: SyntaxNode; calledName: string }> {
-  const queryStr = getProvider(language as SupportedLanguages).treeSitterQueries;
+  const provider = getProvider(language as SupportedLanguages);
+  const queryStr = provider.treeSitterQueries;
   if (!queryStr) throw new Error(`No query for ${language}`);
 
   const tree = parser.parse(code);

@@ -385,7 +385,8 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
   } : undefined;
 
   for (const [language, langFiles] of byLanguage) {
-    const queryString = getProvider(language).treeSitterQueries;
+    const provider = getProvider(language);
+    const queryString = provider.treeSitterQueries;
     if (!queryString) continue;
 
     // Track if we need to handle tsx separately

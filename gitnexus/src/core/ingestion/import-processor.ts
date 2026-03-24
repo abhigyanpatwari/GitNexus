@@ -428,7 +428,8 @@ export const processImportsFromExtracted = async (
     for (const imp of fileImports) {
       totalImportsFound++;
 
-      const result = getProvider(imp.language).importResolver(imp.rawImportPath, filePath, resolveCtx);
+      const provider = getProvider(imp.language);
+      const result = provider.importResolver(imp.rawImportPath, filePath, resolveCtx);
       applyImportResult(result, filePath, importMap, packageMap, addImportEdge, addImportGraphEdge, imp.namedBindings, namedImportMap, moduleAliasMap);
     }
   }
