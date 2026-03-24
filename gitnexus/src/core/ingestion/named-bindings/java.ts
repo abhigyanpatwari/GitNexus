@@ -1,5 +1,5 @@
 import { findChild, type SyntaxNode } from '../utils/ast-helpers.js';
-import type { NamedBinding } from '../import-resolution.js';
+import type { NamedBinding } from './types.js';
 
 export function extractJavaNamedBindings(importNode: SyntaxNode): NamedBinding[] | undefined {
   // import_declaration > scoped_identifier "com.example.models.User"

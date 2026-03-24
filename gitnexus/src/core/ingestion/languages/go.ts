@@ -14,7 +14,7 @@ import { defineLanguage } from '../language-provider.js';
 import { typeConfig as goConfig } from '../type-extractors/go.js';
 import { noRouting } from '../call-routing.js';
 import { goExportChecker } from '../export-detection.js';
-import { resolveGoImport } from '../import-resolution.js';
+import { resolveGoImport } from '../import-resolvers/go.js';
 import { GO_QUERIES } from '../tree-sitter-queries.js';
 
 export const goProvider = defineLanguage({

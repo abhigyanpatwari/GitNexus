@@ -1,5 +1,5 @@
 import { findChild, type SyntaxNode } from '../utils/ast-helpers.js';
-import type { NamedBinding } from '../import-resolution.js';
+import type { NamedBinding } from './types.js';
 
 export function extractKotlinNamedBindings(importNode: SyntaxNode): NamedBinding[] | undefined {
   // import_header > identifier + import_alias > simple_identifier

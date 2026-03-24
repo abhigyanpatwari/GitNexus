@@ -12,7 +12,7 @@ import { defineLanguage } from '../language-provider.js';
 import { typeConfig as rubyConfig } from '../type-extractors/ruby.js';
 import { routeRubyCall } from '../call-routing.js';
 import type { ExportChecker } from '../export-detection.js';
-import { resolveRubyImport } from '../import-resolution.js';
+import { resolveRubyImport } from '../import-resolvers/ruby.js';
 import { RUBY_QUERIES } from '../tree-sitter-queries.js';
 
 export const rubyProvider = defineLanguage({

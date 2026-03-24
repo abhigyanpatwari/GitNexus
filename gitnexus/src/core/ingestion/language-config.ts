@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import type { ImportConfigs } from './import-resolution.js';
+import type { ImportConfigs } from './import-resolvers/types.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 

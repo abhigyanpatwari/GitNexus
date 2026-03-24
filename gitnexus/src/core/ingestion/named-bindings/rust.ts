@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
-import type { NamedBinding } from '../import-resolution.js';
+import type { NamedBinding } from './types.js';
 
 export function extractRustNamedBindings(importNode: SyntaxNode): NamedBinding[] | undefined {
   // use_declaration may contain use_as_clause at any depth

@@ -9,7 +9,7 @@
  *    ----------------------------------|------------------------------------------|---------------------------
  *    tree-sitter-queries.ts            | Query string + LANGUAGE_QUERIES entry    | (required)
  *    export-detection.ts               | ExportChecker function + table entry     | (required)
- *    import-resolution.ts              | Exported resolve<Lang>Import function    | resolveStandard(...)
+ *    import-resolvers/<lang>.ts        | Exported resolve<Lang>Import function    | resolveStandard(...)
  *    call-routing.ts                   | CallRouter function (or noRouting)       | noRouting
  *    entry-point-scoring.ts            | ENTRY_POINT_PATTERNS entry               | []
  *    framework-detection.ts            | AST_FRAMEWORK_PATTERNS entry             | []

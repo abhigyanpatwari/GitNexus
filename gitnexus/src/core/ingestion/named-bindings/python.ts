@@ -1,5 +1,5 @@
 import { findChild, type SyntaxNode } from '../utils/ast-helpers.js';
-import type { NamedBinding } from '../import-resolution.js';
+import type { NamedBinding } from './types.js';
 
 export function extractPythonNamedBindings(importNode: SyntaxNode): NamedBinding[] | undefined {
   // Handle: from x import User, Repo as R

@@ -12,7 +12,7 @@ import { defineLanguage } from '../language-provider.js';
 import { kotlinTypeConfig } from '../type-extractors/jvm.js';
 import { noRouting } from '../call-routing.js';
 import { kotlinExportChecker } from '../export-detection.js';
-import { resolveKotlinImport } from '../import-resolution.js';
+import { resolveKotlinImport } from '../import-resolvers/jvm.js';
 import { extractKotlinNamedBindings } from '../named-bindings/kotlin.js';
 import { appendKotlinWildcard } from '../import-resolvers/jvm.js';
 import { KOTLIN_QUERIES } from '../tree-sitter-queries.js';

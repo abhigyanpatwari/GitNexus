@@ -6,22 +6,26 @@
 export { EXTENSIONS, tryResolveWithExtensions, buildSuffixIndex, suffixResolve, EMPTY_INDEX } from './utils.js';
 export type { SuffixIndex } from './utils.js';
 
-export { KOTLIN_EXTENSIONS, appendKotlinWildcard, resolveJvmWildcard, resolveJvmMemberImport } from './jvm.js';
+export { KOTLIN_EXTENSIONS, appendKotlinWildcard, resolveJvmWildcard, resolveJvmMemberImport, resolveJavaImport, resolveKotlinImport } from './jvm.js';
 
-export { resolveGoPackageDir, resolveGoPackage } from './go.js';
+export { resolveGoPackageDir, resolveGoPackage, resolveGoImport } from './go.js';
 export type { GoModuleConfig } from './go.js';
 
-export { resolveCSharpImport, resolveCSharpNamespaceDir } from './csharp.js';
+export { resolveCSharpImportInternal, resolveCSharpNamespaceDir, resolveCSharpImport } from './csharp.js';
 export type { CSharpProjectConfig } from './csharp.js';
 
-export { resolvePhpImport } from './php.js';
+export { resolvePhpImportInternal, resolvePhpImport } from './php.js';
 export type { ComposerConfig } from './php.js';
 
-export { resolveRustImport, tryRustModulePath } from './rust.js';
+export { resolveRustImportInternal, tryRustModulePath, resolveRustImport } from './rust.js';
 
-export { resolveRubyImport } from './ruby.js';
+export { resolveRubyImportInternal, resolveRubyImport } from './ruby.js';
 
-export { resolvePythonImport } from './python.js';
+export { resolvePythonImportInternal, resolvePythonImport } from './python.js';
 
-export { resolveImportPath, RESOLVE_CACHE_CAP } from './standard.js';
+export { resolveImportPath, RESOLVE_CACHE_CAP, resolveStandard, resolveJavascriptImport, resolveTypescriptImport, resolveCImport, resolveCppImport } from './standard.js';
 export type { TsconfigPaths } from './standard.js';
+
+export { resolveSwiftImport } from './swift.js';
+
+export type { ImportResult, ImportConfigs, ResolveCtx, ImportResolverFn } from './types.js';

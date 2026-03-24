@@ -14,8 +14,9 @@ import { loadImportConfigs } from './language-config.js';
 import { buildSuffixIndex } from './import-resolvers/index.js';
 import type { ResolutionContext, ModuleAliasMap } from './resolution-context.js';
 import type { SuffixIndex } from './import-resolvers/index.js';
-import { preprocessImportPath } from './import-resolution.js';
-import type { ImportResult, ResolveCtx, NamedBinding } from './import-resolution.js';
+import type { ImportResult, ResolveCtx } from './import-resolvers/types.js';
+import type { NamedBinding } from './named-bindings/types.js';
+import type { SyntaxNode } from './utils/ast-helpers.js';
 
 // Re-export resolver types for consumers
 export type {
@@ -102,7 +103,30 @@ export function buildImportResolutionContext(allPaths: string[]): ImportResoluti
 }
 
 // Config loaders extracted to ./language-config.ts (Phase 2 refactor)
-// Resolver dispatch tables are in ./import-resolution.ts — imported above
+// Resolver types are in ./import-resolvers/types.ts; named binding types in ./named-bindings/types.ts
+
+// ============================================================================
+// Import path preprocessing
+// ============================================================================
+
+/**
+ * Clean and preprocess a raw import source text into a resolved import path.
+ * Strips quotes/angle brackets (universal) and applies provider-specific
+ * transformations (currently only Kotlin wildcard import detection).
+ */
+export function preprocessImportPath(
+  sourceText: string,
+  importNode: SyntaxNode,
+  provider: LanguageProvider,
+): string | null {
+  const cleaned = sourceText.replace(/['"<>]/g, '');
+  // Defense-in-depth: reject null bytes and control characters (matches Ruby call-routing pattern)
+  if (!cleaned || cleaned.length > 2048 || /[\x00-\x1f]/.test(cleaned)) return null;
+  if (provider.importPathPreprocessor) {
+    return provider.importPathPreprocessor(cleaned, importNode);
+  }
+  return cleaned;
+}
 
 /** Create IMPORTS edge helpers that share a resolved-count tracker. */
 function createImportEdgeHelpers(graph: KnowledgeGraph, importMap: ImportMap) {

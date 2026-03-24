@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { preprocessImportPath } from '../../../src/core/ingestion/import-resolution.js';
+import { preprocessImportPath } from '../../../src/core/ingestion/import-processor.js';
 import { getProvider } from '../../../src/core/ingestion/languages/index.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 

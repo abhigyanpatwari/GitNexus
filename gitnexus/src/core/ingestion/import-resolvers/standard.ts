@@ -6,8 +6,9 @@
 
 import type { SuffixIndex } from './utils.js';
 import { tryResolveWithExtensions, suffixResolve } from './utils.js';
-import { resolveRustImport } from './rust.js';
+import { resolveRustImportInternal } from './rust.js';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
+import type { ImportResult, ImportResolverFn, ResolveCtx } from './types.js';
 
 /** TypeScript path alias config parsed from tsconfig.json */
 export interface TsconfigPaths {
@@ -102,13 +103,13 @@ export const resolveImportPath = (
       const inner = importPath.slice(1, -1);
       const parts = inner.split(',').map(p => p.trim()).filter(Boolean);
       for (const part of parts) {
-        const partResult = resolveRustImport(currentFile, part, allFiles);
+        const partResult = resolveRustImportInternal(currentFile, part, allFiles);
         if (partResult) return cache(partResult);
       }
       return cache(null);
     }
 
-    const rustResult = resolveRustImport(currentFile, rustImportPath, allFiles);
+    const rustResult = resolveRustImportInternal(currentFile, rustImportPath, allFiles);
     if (rustResult) return cache(rustResult);
     // Fall through to generic resolution if Rust-specific didn't match
   }
@@ -149,3 +150,47 @@ export const resolveImportPath = (
   const resolved = suffixResolve(pathParts, normalizedFileList, allFileList, index);
   return cache(resolved);
 };
+
+// ============================================================================
+// Per-language dispatch functions (moved from import-resolution.ts)
+// ============================================================================
+
+/**
+ * Standard single-file resolution (TS/JS/C/C++ and fallback for other languages).
+ * Handles relative imports, tsconfig path aliases, and suffix matching.
+ */
+export function resolveStandard(
+  rawImportPath: string,
+  filePath: string,
+  ctx: ResolveCtx,
+  language: SupportedLanguages,
+): ImportResult {
+  const resolvedPath = resolveImportPath(
+    filePath,
+    rawImportPath,
+    ctx.allFilePaths,
+    ctx.allFileList,
+    ctx.normalizedFileList,
+    ctx.resolveCache,
+    language,
+    ctx.configs.tsconfigPaths,
+    ctx.index,
+  );
+  return resolvedPath ? { kind: 'files', files: [resolvedPath] } : null;
+}
+
+/** JavaScript: standard single-file resolution. */
+export const resolveJavascriptImport: ImportResolverFn = (raw, fp, ctx) =>
+  resolveStandard(raw, fp, ctx, SupportedLanguages.JavaScript);
+
+/** TypeScript: standard single-file resolution. */
+export const resolveTypescriptImport: ImportResolverFn = (raw, fp, ctx) =>
+  resolveStandard(raw, fp, ctx, SupportedLanguages.TypeScript);
+
+/** C: standard single-file resolution for #include directives. */
+export const resolveCImport: ImportResolverFn = (raw, fp, ctx) =>
+  resolveStandard(raw, fp, ctx, SupportedLanguages.C);
+
+/** C++: standard single-file resolution for #include directives. */
+export const resolveCppImport: ImportResolverFn = (raw, fp, ctx) =>
+  resolveStandard(raw, fp, ctx, SupportedLanguages.CPlusPlus);

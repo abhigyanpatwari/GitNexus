@@ -15,7 +15,7 @@ import { defineLanguage } from '../language-provider.js';
 import { typeConfig as swiftConfig } from '../type-extractors/swift.js';
 import { noRouting } from '../call-routing.js';
 import { swiftExportChecker } from '../export-detection.js';
-import { resolveSwiftImport } from '../import-resolution.js';
+import { resolveSwiftImport } from '../import-resolvers/swift.js';
 import { SWIFT_QUERIES } from '../tree-sitter-queries.js';
 import { wireSwiftImplicitImports } from '../helpers/swift.js';
 

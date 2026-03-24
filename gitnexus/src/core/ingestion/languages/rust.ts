@@ -15,7 +15,7 @@ import { defineLanguage } from '../language-provider.js';
 import { typeConfig as rustConfig } from '../type-extractors/rust.js';
 import { noRouting } from '../call-routing.js';
 import { rustExportChecker } from '../export-detection.js';
-import { resolveRustImport } from '../import-resolution.js';
+import { resolveRustImport } from '../import-resolvers/rust.js';
 import { extractRustNamedBindings } from '../named-bindings/rust.js';
 import { RUST_QUERIES } from '../tree-sitter-queries.js';
 

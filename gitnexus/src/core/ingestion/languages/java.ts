@@ -12,7 +12,7 @@ import { defineLanguage } from '../language-provider.js';
 import { javaTypeConfig } from '../type-extractors/jvm.js';
 import { noRouting } from '../call-routing.js';
 import { javaExportChecker } from '../export-detection.js';
-import { resolveJavaImport } from '../import-resolution.js';
+import { resolveJavaImport } from '../import-resolvers/jvm.js';
 import { extractJavaNamedBindings } from '../named-bindings/java.js';
 import { JAVA_QUERIES } from '../tree-sitter-queries.js';
 

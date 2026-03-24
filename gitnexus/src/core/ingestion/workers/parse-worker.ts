@@ -48,8 +48,8 @@ import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
-import { preprocessImportPath } from '../import-resolution.js';
-import type { NamedBinding } from '../import-resolution.js';
+import { preprocessImportPath } from '../import-processor.js';
+import type { NamedBinding } from '../named-bindings/types.js';
 import { extractPropertyDeclaredType } from '../type-extractors/shared.js';
 import type { NodeLabel } from '../../graph/types.js';
 

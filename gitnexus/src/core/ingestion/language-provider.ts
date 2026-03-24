@@ -13,7 +13,8 @@ import type { SupportedLanguages } from '../../config/supported-languages.js';
 import type { LanguageTypeConfig } from './type-extractors/types.js';
 import type { CallRouter } from './call-routing.js';
 import type { ExportChecker } from './export-detection.js';
-import type { ImportResolverFn, NamedBindingExtractorFn } from './import-resolution.js';
+import type { ImportResolverFn } from './import-resolvers/types.js';
+import type { NamedBindingExtractorFn } from './named-bindings/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { NodeLabel } from '../graph/types.js';
 

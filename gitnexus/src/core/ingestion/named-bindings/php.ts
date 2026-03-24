@@ -1,5 +1,5 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
-import type { NamedBinding } from '../import-resolution.js';
+import type { NamedBinding } from './types.js';
 
 export function extractPhpNamedBindings(importNode: SyntaxNode): NamedBinding[] | undefined {
   // namespace_use_declaration > namespace_use_clause* (flat)
