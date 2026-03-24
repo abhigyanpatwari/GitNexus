@@ -283,11 +283,17 @@ This is a monorepo with two main products and supporting config packages:
 
 ### Testing
 
-- **Unit tests**: `cd gitnexus && npm test` (vitest, ~1350 tests, ~4s)
-- **Integration tests**: `cd gitnexus && npm run test:integration` (vitest, ~980 tests, ~35s). Two LadybugDB file-locking tests (`lbug-core-adapter`, `search-core`) may fail in containerized environments due to `/tmp` locking limitations — this is a known environment issue, not a code bug.
-- **TypeScript check (CLI)**: `cd gitnexus && npx tsc --noEmit`
-- **TypeScript check (Web)**: `cd gitnexus-web && npx tsc -b --noEmit`
-- No separate lint command is configured; TypeScript strict checking serves as the primary static analysis.
+**CLI / Core (`gitnexus/`)**
+- **Unit tests**: `cd gitnexus && npm test` (vitest, ~2000 tests)
+- **Integration tests**: `cd gitnexus && npm run test:integration` (vitest, ~1850 tests). Two LadybugDB file-locking tests (`lbug-core-adapter`, `search-core`) may fail in containerized environments due to `/tmp` locking limitations — this is a known environment issue, not a code bug.
+- **TypeScript check**: `cd gitnexus && npx tsc --noEmit`
+
+**Web UI (`gitnexus-web/`)**
+- **Unit tests**: `cd gitnexus-web && npm test` (vitest, ~200 tests)
+- **E2E tests**: `cd gitnexus-web && E2E=1 npx playwright test` (Playwright, 5 tests — requires `gitnexus serve` + `npm run dev` running)
+- **TypeScript check**: `cd gitnexus-web && npx tsc -b --noEmit`
+
+No separate lint command is configured; TypeScript strict checking serves as the primary static analysis.
 
 ### Gotchas
 

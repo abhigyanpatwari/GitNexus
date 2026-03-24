@@ -4,7 +4,7 @@ Short, copy-paste operations for **local development**, **MCP**, and **CI**. Com
 
 ## Prerequisites
 
-- **Node.js** ≥ 18 (`gitnexus/package.json` `engines`).  
+- **Node.js** ≥ 20 (`gitnexus-web/package.json` `engines`).  
 - **Git** (analyze requires a git repository).  
 - From repo root, install and build the CLI package:
 
@@ -138,7 +138,7 @@ Orchestrator: `.github/workflows/ci.yml`.
 | **quality** | `cd gitnexus && npx tsc --noEmit` |
 | **unit-tests** | `cd gitnexus && npx vitest run test/unit` |
 | **integration** | `cd gitnexus && npx vitest run test/integration` (see workflow matrix for groups) |
-| **e2e** | Triggered when `gitnexus-web/` changes; `cd gitnexus-web && npm test` / Playwright per workflow |
+| **e2e** | Triggered when `gitnexus-web/` changes; `cd gitnexus-web && E2E=1 npx playwright test` (requires `gitnexus serve` + `npm run dev`) |
 
 **Note:** Pushes that touch only certain markdown paths may be skipped by `paths-ignore` in CI — see workflow file for exact patterns.
 
