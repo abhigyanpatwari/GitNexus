@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { processCallsFromExtracted, seedCrossFileReceiverTypes } from '../../src/core/ingestion/call-processor.js';
+import { processCallsFromExtracted, seedCrossFileReceiverTypes, extractConsumerAccessedKeys, processNextjsFetchRoutes } from '../../src/core/ingestion/call-processor.js';
 import { extractReturnTypeName } from '../../src/core/ingestion/type-extractors/shared.js';
 import { createResolutionContext, type ResolutionContext } from '../../src/core/ingestion/resolution-context.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import type { ExtractedCall, FileConstructorBindings } from '../../src/core/ingestion/workers/parse-worker.js';
+import type { ExtractedCall, ExtractedFetchCall, FileConstructorBindings } from '../../src/core/ingestion/workers/parse-worker.js';
 
 describe('processCallsFromExtracted', () => {
   let graph: ReturnType<typeof createKnowledgeGraph>;
@@ -1030,5 +1030,220 @@ describe('seedCrossFileReceiverTypes', () => {
 
     expect(enrichedCount).toBe(0);
     expect(calls[0].receiverTypeName).toBeUndefined();
+  });
+});
+
+describe('extractConsumerAccessedKeys', () => {
+  it('extracts keys from destructuring after .json()', () => {
+    const content = `
+      const response = await fetch('/api/grants');
+      const { data, pagination, error } = await response.json();
+    `;
+    const keys = extractConsumerAccessedKeys(content);
+    expect(keys).toContain('data');
+    expect(keys).toContain('pagination');
+    expect(keys).toContain('error');
+  });
+
+  it('extracts keys from destructuring of data variable', () => {
+    const content = `
+      const data = await response.json();
+      const { items, total } = data;
+    `;
+    const keys = extractConsumerAccessedKeys(content);
+    expect(keys).toContain('items');
+    expect(keys).toContain('total');
+  });
+
+  it('extracts keys from property access on data variable', () => {
+    const content = `
+      const data = await response.json();
+      console.log(data.items);
+      renderPagination(data.totalPages);
+    `;
+    const keys = extractConsumerAccessedKeys(content);
+    expect(keys).toContain('items');
+    expect(keys).toContain('totalPages');
+  });
+
+  it('extracts keys from optional chaining', () => {
+    const content = `
+      const result = await fetchData();
+      const items = result?.items;
+      const count = result?.count;
+    `;
+    const keys = extractConsumerAccessedKeys(content);
+    expect(keys).toContain('items');
+    expect(keys).toContain('count');
+  });
+
+  it('skips common method names like .json(), .map(), .filter()', () => {
+    const content = `
+      const data = await response.json();
+      data.items.map(x => x.name);
+      data.items.filter(x => x.active);
+    `;
+    const keys = extractConsumerAccessedKeys(content);
+    expect(keys).toContain('items');
+    expect(keys).not.toContain('json');
+    expect(keys).not.toContain('map');
+    expect(keys).not.toContain('filter');
+  });
+
+  it('returns empty array when no property accesses found', () => {
+    const content = `
+      function unrelated() {
+        console.log('hello');
+      }
+    `;
+    const keys = extractConsumerAccessedKeys(content);
+    expect(keys).toHaveLength(0);
+  });
+
+  it('handles renamed destructuring bindings', () => {
+    const content = `
+      const { data: myData, error: err } = await res.json();
+    `;
+    const keys = extractConsumerAccessedKeys(content);
+    expect(keys).toContain('data');
+    expect(keys).toContain('error');
+    // Should extract the original key names, not the aliases
+    expect(keys).not.toContain('myData');
+    expect(keys).not.toContain('err');
+  });
+
+  it('deduplicates keys accessed multiple times', () => {
+    const content = `
+      const { data } = await res.json();
+      console.log(data.items);
+      render(data.items);
+    `;
+    const keys = extractConsumerAccessedKeys(content);
+    const dataCount = keys.filter(k => k === 'data').length;
+    expect(dataCount).toBe(1);
+  });
+});
+
+describe('processNextjsFetchRoutes', () => {
+  let graph: ReturnType<typeof createKnowledgeGraph>;
+
+  beforeEach(() => {
+    graph = createKnowledgeGraph();
+  });
+
+  it('creates FETCHES edge with basic reason when no consumer contents', () => {
+    // Add a File node for the consumer
+    graph.addNode({ id: 'File:src/page.tsx', label: 'File', properties: { name: 'src/page.tsx', filePath: 'src/page.tsx' } });
+
+    const fetchCalls: ExtractedFetchCall[] = [
+      { filePath: 'src/page.tsx', fetchURL: '/api/grants', lineNumber: 10 },
+    ];
+    const routeRegistry = new Map([[ '/api/grants', 'src/app/api/grants/route.ts' ]]);
+
+    processNextjsFetchRoutes(graph, fetchCalls, routeRegistry);
+
+    const rels = graph.relationships.filter(r => r.type === 'FETCHES');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].reason).toBe('fetch-url-match');
+  });
+
+  it('creates FETCHES edge with accessed keys in reason when consumer contents provided', () => {
+    graph.addNode({ id: 'File:src/page.tsx', label: 'File', properties: { name: 'src/page.tsx', filePath: 'src/page.tsx' } });
+
+    const fetchCalls: ExtractedFetchCall[] = [
+      { filePath: 'src/page.tsx', fetchURL: '/api/grants', lineNumber: 10 },
+    ];
+    const routeRegistry = new Map([[ '/api/grants', 'src/app/api/grants/route.ts' ]]);
+
+    const consumerContents = new Map([
+      ['src/page.tsx', `
+        const res = await fetch('/api/grants');
+        const { data, pagination } = await res.json();
+        console.log(data.items);
+      `],
+    ]);
+
+    processNextjsFetchRoutes(graph, fetchCalls, routeRegistry, consumerContents);
+
+    const rels = graph.relationships.filter(r => r.type === 'FETCHES');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].reason).toMatch(/^fetch-url-match\|keys:/);
+    // Should contain the destructured keys
+    expect(rels[0].reason).toContain('data');
+    expect(rels[0].reason).toContain('pagination');
+  });
+
+  it('falls back to basic reason when consumer file has no property accesses', () => {
+    graph.addNode({ id: 'File:src/page.tsx', label: 'File', properties: { name: 'src/page.tsx', filePath: 'src/page.tsx' } });
+
+    const fetchCalls: ExtractedFetchCall[] = [
+      { filePath: 'src/page.tsx', fetchURL: '/api/grants', lineNumber: 10 },
+    ];
+    const routeRegistry = new Map([[ '/api/grants', 'src/app/api/grants/route.ts' ]]);
+
+    const consumerContents = new Map([
+      ['src/page.tsx', `
+        // This file just fetches without accessing properties
+        await fetch('/api/grants');
+      `],
+    ]);
+
+    processNextjsFetchRoutes(graph, fetchCalls, routeRegistry, consumerContents);
+
+    const rels = graph.relationships.filter(r => r.type === 'FETCHES');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].reason).toBe('fetch-url-match');
+  });
+
+  it('encodes fetch count in reason when consumer fetches multiple routes', () => {
+    graph.addNode({ id: 'File:src/dashboard.tsx', label: 'File', properties: { name: 'src/dashboard.tsx', filePath: 'src/dashboard.tsx' } });
+
+    const fetchCalls: ExtractedFetchCall[] = [
+      { filePath: 'src/dashboard.tsx', fetchURL: '/api/grants', lineNumber: 10 },
+      { filePath: 'src/dashboard.tsx', fetchURL: '/api/users', lineNumber: 20 },
+    ];
+    const routeRegistry = new Map([
+      ['/api/grants', 'src/app/api/grants/route.ts'],
+      ['/api/users', 'src/app/api/users/route.ts'],
+    ]);
+
+    const consumerContents = new Map([
+      ['src/dashboard.tsx', `
+        const { data, pagination } = await grantsRes.json();
+        const { users } = await usersRes.json();
+      `],
+    ]);
+
+    processNextjsFetchRoutes(graph, fetchCalls, routeRegistry, consumerContents);
+
+    const rels = graph.relationships.filter(r => r.type === 'FETCHES');
+    expect(rels).toHaveLength(2);
+    // Both edges should have |fetches:2 suffix
+    for (const rel of rels) {
+      expect(rel.reason).toContain('|fetches:2');
+      expect(rel.reason).toMatch(/^fetch-url-match\|keys:[^|]+\|fetches:2$/);
+    }
+  });
+
+  it('does not encode fetch count when consumer fetches only one route', () => {
+    graph.addNode({ id: 'File:src/page.tsx', label: 'File', properties: { name: 'src/page.tsx', filePath: 'src/page.tsx' } });
+
+    const fetchCalls: ExtractedFetchCall[] = [
+      { filePath: 'src/page.tsx', fetchURL: '/api/grants', lineNumber: 10 },
+    ];
+    const routeRegistry = new Map([
+      ['/api/grants', 'src/app/api/grants/route.ts'],
+      ['/api/users', 'src/app/api/users/route.ts'],
+    ]);
+
+    const consumerContents = new Map([
+      ['src/page.tsx', `const { data } = await res.json();`],
+    ]);
+
+    processNextjsFetchRoutes(graph, fetchCalls, routeRegistry, consumerContents);
+
+    const rels = graph.relationships.filter(r => r.type === 'FETCHES');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].reason).not.toContain('|fetches:');
   });
 });

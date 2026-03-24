@@ -111,20 +111,21 @@ async function setupCursor(result: SetupResult): Promise<void> {
 
 async function setupClaudeCode(result: SetupResult): Promise<void> {
   const claudeDir = path.join(os.homedir(), '.claude');
-  const hasClaude = await dirExists(claudeDir);
-
-  if (!hasClaude) {
+  if (!(await dirExists(claudeDir))) {
     result.skipped.push('Claude Code (not installed)');
     return;
   }
 
-  // Claude Code uses a JSON settings file at ~/.claude.json or claude mcp add
-  console.log('');
-  console.log('  Claude Code detected. Run this command to add GitNexus MCP:');
-  console.log('');
-  console.log('    claude mcp add gitnexus -- npx -y gitnexus mcp');
-  console.log('');
-  result.configured.push('Claude Code (MCP manual step printed)');
+  // Claude Code stores MCP config in ~/.claude.json
+  const mcpPath = path.join(os.homedir(), '.claude.json');
+  try {
+    const existing = await readJsonFile(mcpPath);
+    const updated = mergeMcpConfig(existing);
+    await writeJsonFile(mcpPath, updated);
+    result.configured.push('Claude Code');
+  } catch (err: any) {
+    result.errors.push(`Claude Code: ${err.message}`);
+  }
 }
 
 /**

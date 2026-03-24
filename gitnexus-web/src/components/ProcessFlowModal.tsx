@@ -211,6 +211,7 @@ export const ProcessFlowModal = ({ process, onClose, onFocusInGraph, isFullScree
             ref={containerRef}
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 animate-fade-in"
             onClick={handleBackdropClick}
+            data-testid="process-modal"
         >
             {/* Glassmorphism Modal */}
             <div className={`bg-slate-900/60 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl shadow-cyan-500/10 flex flex-col animate-scale-in overflow-hidden relative ${isFullScreen

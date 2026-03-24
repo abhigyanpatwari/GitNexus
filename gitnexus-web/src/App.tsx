@@ -85,9 +85,12 @@ const AppContent = () => {
     }
   }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipeline, startEmbeddingsWithFallback, initializeAgent]);
 
-  const handleGitClone = useCallback(async (files: FileEntry[]) => {
-    const firstPath = files[0]?.path || 'repository';
-    const projectName = firstPath.split('/')[0].replace(/-\d+$/, '') || 'repository';
+  const handleGitClone = useCallback(async (files: FileEntry[], repoName?: string) => {
+    let projectName = repoName;
+    if (!projectName) {
+      const firstPath = files[0]?.path || 'repository';
+      projectName = firstPath.split('/')[0].replace(/-\d+$/, '') || 'repository';
+    }
 
     setProjectName(projectName);
     setProgress({ phase: 'extracting', percent: 0, message: 'Starting...', detail: 'Preparing to process files' });
@@ -125,7 +128,8 @@ const AppContent = () => {
   const handleServerConnect = useCallback((result: ConnectToServerResult): Promise<void> => {
     // Extract project name from repoPath
     const repoPath = result.repoInfo.repoPath;
-    const projectName = repoPath.split('/').pop() || 'server-project';
+    const parts = repoPath.split('/').filter(p => p && !p.startsWith('.'));
+    const projectName = parts[parts.length - 1] || parts[0] || 'server-project';
     setProjectName(projectName);
 
     // Build KnowledgeGraph from server data for visualization

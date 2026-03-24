@@ -16,6 +16,7 @@ import {
   OllamaConfig,
   OpenRouterConfig,
   MiniMaxConfig,
+  GLMConfig,
   ProviderConfig,
 } from './types';
 import { DEFAULT_OPENROUTER_BASE_URL, DEFAULT_OLLAMA_BASE_URL } from '../../config/ui-constants';
@@ -52,6 +53,10 @@ const mergeWithDefaults = (parsed?: Partial<LLMSettings> | null): LLMSettings =>
   minimax: {
     ...DEFAULT_LLM_SETTINGS.minimax,
     ...parsed?.minimax,
+  },
+  glm: {
+    ...DEFAULT_LLM_SETTINGS.glm,
+    ...parsed?.glm,
   },
 });
 
@@ -127,7 +132,9 @@ export const updateProviderSettings = <T extends LLMProvider>(
     T extends 'gemini' ? Partial<Omit<GeminiConfig, 'provider'>> :
     T extends 'anthropic' ? Partial<Omit<AnthropicConfig, 'provider'>> :
     T extends 'ollama' ? Partial<Omit<OllamaConfig, 'provider'>> :
+    T extends 'openrouter' ? Partial<Omit<OpenRouterConfig, 'provider'>> :
     T extends 'minimax' ? Partial<Omit<MiniMaxConfig, 'provider'>> :
+    T extends 'glm' ? Partial<Omit<GLMConfig, 'provider'>> :
     never
   >
 ): LLMSettings => {
@@ -212,6 +219,17 @@ export const updateProviderSettings = <T extends LLMProvider>(
       saveSettings(updated);
       return updated;
     }
+    case 'glm': {
+      const updated: LLMSettings = {
+        ...current,
+        glm: {
+          ...(current.glm ?? {}),
+          ...(updates as Partial<Omit<GLMConfig, 'provider'>>),
+        },
+      };
+      saveSettings(updated);
+      return updated;
+    }
     default: {
       // Should be unreachable due to T extends LLMProvider, but keep a safe fallback
       const updated: LLMSettings = { ...current };
@@ -278,6 +296,17 @@ const providerBuilders: Record<LLMProvider, ProviderBuilder> = {
     if (!settings.minimax?.apiKey) return null;
     return { provider: 'minimax', ...settings.minimax } as MiniMaxConfig;
   },
+  glm: (settings) => {
+    if (!settings.glm?.apiKey) return null;
+    return {
+      provider: 'glm',
+      apiKey: settings.glm.apiKey,
+      model: settings.glm.model || 'GLM-5',
+      baseUrl: settings.glm.baseUrl || 'https://api.z.ai/api/coding/paas/v4',
+      temperature: settings.glm.temperature,
+      maxTokens: settings.glm.maxTokens,
+    } as GLMConfig;
+  },
 };
 
 export const getActiveProviderConfig = (): ProviderConfig | null => {
@@ -328,6 +357,8 @@ export const getProviderDisplayName = (provider: LLMProvider): string => {
       return 'OpenRouter';
     case 'minimax':
       return 'MiniMax';
+    case 'glm':
+      return 'GLM (Z.AI)';
     default:
       return provider;
   }
@@ -351,6 +382,8 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
       return ['llama3.2', 'llama3.1', 'mistral', 'codellama', 'deepseek-coder'];
     case 'minimax':
       return ['MiniMax-M2.5', 'MiniMax-M2.5-highspeed'];
+    case 'glm':
+      return ['GLM-5', 'GLM-5-Turbo', 'GLM-4.7', 'GLM-4.5'];
     default:
       return [];
   }

@@ -2,15 +2,14 @@
  * LLM Provider Types
  * 
  * Type definitions for multi-provider LLM support.
- * Supports Azure OpenAI and Google Gemini (with extensibility for others).
+ * Supports OpenAI, Azure OpenAI, Gemini, Anthropic, Ollama, OpenRouter, MiniMax, and GLM5.
  */
 
 /**
  * Supported LLM providers
  */
 import { DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENROUTER_BASE_URL } from '../../config/ui-constants';
-
-export type LLMProvider = 'openai' | 'azure-openai' | 'gemini' | 'anthropic' | 'ollama' | 'openrouter' | 'minimax';
+export type LLMProvider = 'openai' | 'azure-openai' | 'gemini' | 'anthropic' | 'ollama' | 'openrouter' | 'minimax' | 'glm';
 
 /**
  * Base configuration shared by all providers
@@ -90,9 +89,19 @@ export interface MiniMaxConfig extends BaseProviderConfig {
 }
 
 /**
+ * GLM (Z.AI) configuration — OpenAI-compatible API
+ */
+export interface GLMConfig extends BaseProviderConfig {
+  provider: 'glm';
+  apiKey: string;
+  model: string;  // e.g., 'GLM-4.7', 'GLM-4.5', 'GLM-4.5-Air', 'GLM-5'
+  baseUrl?: string;  // defaults to https://api.z.ai/api/coding/paas/v4
+}
+
+/**
  * Union type for all provider configurations
  */
-export type ProviderConfig = OpenAIConfig | AzureOpenAIConfig | GeminiConfig | AnthropicConfig | OllamaConfig | OpenRouterConfig | MiniMaxConfig;
+export type ProviderConfig = OpenAIConfig | AzureOpenAIConfig | GeminiConfig | AnthropicConfig | OllamaConfig | OpenRouterConfig | MiniMaxConfig | GLMConfig;
 
 /**
  * Stored settings (what goes to localStorage)
@@ -110,6 +119,7 @@ export interface LLMSettings {
   ollama?: Partial<Omit<OllamaConfig, 'provider'>>;
   openrouter?: Partial<Omit<OpenRouterConfig, 'provider'>>;
   minimax?: Partial<Omit<MiniMaxConfig, 'provider'>>;
+  glm?: Partial<Omit<GLMConfig, 'provider'>>;
 
   // Intelligent Clustering Settings
   intelligentClustering: boolean;
@@ -163,6 +173,12 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
   minimax: {
     apiKey: '',
     model: 'MiniMax-M2.5',
+    temperature: 0.1,
+  },
+  glm: {
+    apiKey: '',
+    model: 'GLM-5',
+    baseUrl: 'https://api.z.ai/api/coding/paas/v4',
     temperature: 0.1,
   },
 };

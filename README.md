@@ -107,7 +107,11 @@ If you prefer manual configuration:
 **Claude Code** (full support — MCP + skills + hooks):
 
 ```bash
+# macOS / Linux
 claude mcp add gitnexus -- npx -y gitnexus@latest mcp
+
+# Windows
+claude mcp add gitnexus -- cmd /c npx -y gitnexus@latest mcp
 ```
 
 **Codex** (full support — MCP + skills):

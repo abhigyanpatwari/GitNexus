@@ -1,0 +1,91 @@
+name: E2E Tests
+
+on:
+  workflow_call:
+
+jobs:
+  check-changes:
+    name: Check web module changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      web_changed: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3
+        id: filter
+        with:
+          filters: |
+            web:
+              - 'gitnexus-web/**'
+
+  e2e:
+    name: e2e (chromium)
+    needs: check-changes
+    if: needs.check-changes.result == 'success' && needs.check-changes.outputs.web_changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: gitnexus-web/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: gitnexus-web
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+        working-directory: gitnexus-web
+
+      - name: Install backend dependencies
+        run: npm ci
+        working-directory: gitnexus
+
+      - name: Build backend
+        run: npm run build
+        working-directory: gitnexus
+
+      - name: Analyze repository (index for backend)
+        run: |
+          node gitnexus/dist/cli/index.js analyze || true
+          if [ ! -d ".gitnexus" ]; then
+            echo "::error::No .gitnexus index created"
+            exit 1
+          fi
+
+      - name: Start backend server
+        run: node dist/cli/index.js serve &
+        working-directory: gitnexus
+
+      - name: Wait for backend readiness
+        run: npx wait-on http://localhost:4747/api/repos --timeout 30000
+        working-directory: gitnexus-web
+
+      - name: Start Vite dev server
+        run: npm run dev &
+        working-directory: gitnexus-web
+
+      - name: Wait for Vite dev server
+        run: npx wait-on http://localhost:5173 --timeout 30000
+        working-directory: gitnexus-web
+
+      - name: Run E2E tests
+        run: npx playwright test
+        working-directory: gitnexus-web
+        env:
+          E2E: '1'
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-results
+          path: |
+            gitnexus-web/test-results/
+            gitnexus-web/playwright-report/
+          retention-days: 5

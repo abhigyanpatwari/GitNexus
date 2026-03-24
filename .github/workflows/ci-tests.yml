@@ -28,6 +28,18 @@ jobs:
           --coverage.reportOnFailure=true
         working-directory: gitnexus
 
+      - name: Install gitnexus-web dependencies
+        run: npm ci
+        working-directory: gitnexus-web
+
+      - name: Run gitnexus-web unit tests
+        run: >-
+          npx vitest run
+          --reporter=default
+          --reporter=json
+          --outputFile=web-test-results.json
+        working-directory: gitnexus-web
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -37,6 +49,7 @@ jobs:
             gitnexus/coverage/coverage-summary.json
             gitnexus/coverage/coverage-final.json
             gitnexus/test-results.json
+            gitnexus-web/web-test-results.json
           retention-days: 5
 
   cross-platform:

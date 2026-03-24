@@ -971,7 +971,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
           case 'done':
             // Finalize the assistant message - just call updateMessage one more time
-          scheduleMessageUpdate();
+            scheduleMessageUpdate();
             break;
         }
       });
@@ -1036,7 +1036,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
       // Reuse the same handleServerConnect logic inline
       const repoPath = result.repoInfo.repoPath;
-      const pName = result.repoInfo.name || repoPath.split('/').pop() || 'server-project';
+      const pName = repoName || result.repoInfo.name || repoPath.split('/').pop() || 'server-project';
       setProjectName(pName);
 
       const graph = createKnowledgeGraph();

@@ -106,6 +106,34 @@ export const TYPESCRIPT_QUERIES = `
     object: (_) @assignment.receiver
     property: (property_identifier) @assignment.property)
   right: (_)) @assignment
+
+; HTTP consumers: fetch('/path'), axios.get('/path'), $.get('/path'), etc.
+; fetch() — global function
+(call_expression
+  function: (identifier) @_fetch_fn (#eq? @_fetch_fn "fetch")
+  arguments: (arguments
+    [(string (string_fragment) @route.url)
+     (template_string) @route.template_url])) @route.fetch
+
+; axios.get/post/put/delete/patch('/path'), $.get/post/ajax({url:'/path'})
+(call_expression
+  function: (member_expression
+    property: (property_identifier) @http_client.method)
+  arguments: (arguments
+    (string (string_fragment) @http_client.url))) @http_client
+
+; Decorators: @Controller, @Get, @Post, etc.
+(decorator
+  (call_expression
+    function: (identifier) @decorator.name
+    arguments: (arguments (string (string_fragment) @decorator.arg)?))) @decorator
+
+; Express/Hono route registration: app.get('/path', handler), router.post('/path', fn)
+(call_expression
+  function: (member_expression
+    property: (property_identifier) @express_route.method)
+  arguments: (arguments
+    (string (string_fragment) @express_route.path))) @express_route
 `;
 
 // JavaScript queries - works with tree-sitter-javascript
@@ -183,6 +211,27 @@ export const JAVASCRIPT_QUERIES = `
     object: (_) @assignment.receiver
     property: (property_identifier) @assignment.property)
   right: (_)) @assignment
+
+; HTTP consumers: fetch('/path'), axios.get('/path'), $.get('/path'), etc.
+(call_expression
+  function: (identifier) @_fetch_fn (#eq? @_fetch_fn "fetch")
+  arguments: (arguments
+    [(string (string_fragment) @route.url)
+     (template_string) @route.template_url])) @route.fetch
+
+; axios.get/post, $.get/post/ajax
+(call_expression
+  function: (member_expression
+    property: (property_identifier) @http_client.method)
+  arguments: (arguments
+    (string (string_fragment) @http_client.url))) @http_client
+
+; Express/Hono route registration
+(call_expression
+  function: (member_expression
+    property: (property_identifier) @express_route.method)
+  arguments: (arguments
+    (string (string_fragment) @express_route.path))) @express_route
 `;
 
 // Python queries - works with tree-sitter-python
@@ -242,6 +291,22 @@ export const PYTHON_QUERIES = `
     object: (_) @assignment.receiver
     attribute: (identifier) @assignment.property)
   right: (_)) @assignment
+
+; Python HTTP clients: requests.get('/path'), httpx.post('/path'), session.get('/path')
+(call
+  function: (attribute
+    attribute: (identifier) @http_client.method)
+  arguments: (argument_list
+    (string (string_content) @http_client.url))) @http_client
+
+; Python decorators: @app.route, @router.get, etc.
+(decorator
+  (call
+    function: (attribute
+      object: (identifier) @decorator.receiver
+      attribute: (identifier) @decorator.name)
+    arguments: (argument_list
+      (string (string_content) @decorator.arg)?))) @decorator
 `;
 
 // Java queries - works with tree-sitter-java
@@ -690,6 +755,12 @@ export const PHP_QUERIES = `
   body: (declaration_list
     (use_declaration
       [(name) (qualified_name)] @heritage.trait))) @heritage
+
+; PHP HTTP consumers: file_get_contents('/path'), curl_init('/path')
+(function_call_expression
+  function: (name) @_php_http (#match? @_php_http "^(file_get_contents|curl_init)$")
+  arguments: (arguments
+    (argument (string (string_content) @http_client.url)))) @http_client
 
 ; Write access: $obj->field = value
 (assignment_expression
