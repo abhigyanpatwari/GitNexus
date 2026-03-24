@@ -8,7 +8,7 @@
  * The dbPath is shared with test files via vitest's provide/inject API.
  */
 import path from 'path';
-import lbug from '@ladybugdb/core';
+import { getLbugBackend } from '../src/core/lbug/lbug-backend.js';
 import type { GlobalSetupContext } from 'vitest/node';
 import { createTempDir } from './helpers/test-db.js';
 import {
@@ -22,6 +22,7 @@ export default async function setup({ provide }: GlobalSetupContext) {
   const dbPath = path.join(tmpHandle.dbPath, 'lbug');
 
   // Create DB with full schema
+  const lbug = await getLbugBackend();
   const db = new lbug.Database(dbPath);
   const conn = new lbug.Connection(db);
 

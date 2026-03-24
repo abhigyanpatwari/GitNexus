@@ -81,6 +81,7 @@
     "uuid": "^13.0.0"
   },
   "optionalDependencies": {
+    "@ladybugdb/wasm-core": "^0.15.2",
     "tree-sitter-kotlin": "^0.3.8",
     "tree-sitter-swift": "0.7.1"
   },

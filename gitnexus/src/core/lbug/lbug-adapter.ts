@@ -2,7 +2,8 @@ import fs from 'fs/promises';
 import { createReadStream } from 'fs';
 import { createInterface } from 'readline';
 import path from 'path';
-import lbug from '@ladybugdb/core';
+import { getLbugBackend } from './lbug-backend.js';
+import type { LbugDatabase, LbugConnection } from './lbug-backend.js';
 import { KnowledgeGraph } from '../graph/types.js';
 import {
   NODE_TABLES,
@@ -13,13 +14,13 @@ import {
 } from './schema.js';
 import { streamAllCSVsToDisk } from './csv-generator.js';
 
-let db: lbug.Database | null = null;
-let conn: lbug.Connection | null = null;
+let db: LbugDatabase | null = null;
+let conn: LbugConnection | null = null;
 let currentDbPath: string | null = null;
 let ftsLoaded = false;
 
 /** Expose the current Database for pool adapter reuse in tests. */
-export const getDatabase = (): lbug.Database | null => db;
+export const getDatabase = (): LbugDatabase | null => db;
 
 // Global session lock for operations that touch module-level lbug globals.
 // This guarantees no DB switch can happen while an operation is running.
@@ -153,6 +154,7 @@ const doInitLbug = async (dbPath: string) => {
   const parentDir = path.dirname(dbPath);
   await fs.mkdir(parentDir, { recursive: true });
 
+  const lbug = await getLbugBackend();
   db = new lbug.Database(dbPath);
   conn = new lbug.Connection(db);
 
@@ -452,6 +454,7 @@ export const insertNodeToLbug = async (
 
     // Use per-query connection if dbPath provided (avoids lock conflicts)
     if (targetDbPath) {
+      const lbug = await getLbugBackend();
       const tempDb = new lbug.Database(targetDbPath);
       const tempConn = new lbug.Connection(tempDb);
       try {
@@ -495,6 +498,7 @@ export const batchInsertNodesToLbug = async (
   };
 
   // Open a single connection for all inserts
+  const lbug = await getLbugBackend();
   const tempDb = new lbug.Database(dbPath);
   const tempConn = new lbug.Connection(tempDb);
 
@@ -677,11 +681,12 @@ export const deleteNodesForFile = async (filePath: string, dbPath?: string): Pro
   const usePerQuery = !!dbPath;
 
   // Set up connection (either use existing or create per-query)
-  let tempDb: lbug.Database | null = null;
-  let tempConn: lbug.Connection | null = null;
-  let targetConn: lbug.Connection | null = conn;
+  let tempDb: LbugDatabase | null = null;
+  let tempConn: LbugConnection | null = null;
+  let targetConn: LbugConnection | null = conn;
 
   if (usePerQuery) {
+    const lbug = await getLbugBackend();
     tempDb = new lbug.Database(dbPath);
     tempConn = new lbug.Connection(tempDb);
     targetConn = tempConn;

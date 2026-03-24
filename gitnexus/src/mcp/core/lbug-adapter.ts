@@ -14,17 +14,18 @@
  */
 
 import fs from 'fs/promises';
-import lbug from '@ladybugdb/core';
+import { getLbugBackend } from '../../core/lbug/lbug-backend.js';
+import type { LbugDatabase, LbugConnection } from '../../core/lbug/lbug-backend.js';
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
-  db: lbug.Database;
+  db: LbugDatabase;
   /** Available connections ready for checkout */
-  available: lbug.Connection[];
+  available: LbugConnection[];
   /** Number of connections currently checked out */
   checkedOut: number;
   /** Queued waiters for when all connections are busy */
-  waiters: Array<(conn: lbug.Connection) => void>;
+  waiters: Array<(conn: LbugConnection) => void>;
   lastUsed: number;
   dbPath: string;
   /** Set to true when the pool entry is closed — checkin will close orphaned connections */
@@ -39,7 +40,7 @@ const pool = new Map<string, PoolEntry>();
  * object to avoid exhausting the buffer manager's mmap budget.
  */
 interface SharedDB {
-  db: lbug.Database;
+  db: LbugDatabase;
   refCount: number;
   ftsLoaded: boolean;
   /** When true, closeOne skips db.close() — the Database is owned externally. */
@@ -174,7 +175,8 @@ setInterval(() => {
   }
 }, 1000).unref();
 
-function createConnection(db: lbug.Database): lbug.Connection {
+async function createConnection(db: LbugDatabase): Promise<LbugConnection> {
+  const lbug = await getLbugBackend();
   silenceStdout();
   try {
     return new lbug.Connection(db);
@@ -249,11 +251,13 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
       silenceStdout();
       try {
+        const lbug = await getLbugBackend();
+        // Note: WASM backend ignores enableCompression and readOnly params
         const db = new lbug.Database(
           dbPath,
           0,     // bufferManagerSize (default)
           false, // enableCompression (default)
-          true,  // readOnly
+          true,  // readOnly — ignored by WASM backend
         );
         restoreStdout();
         shared = { db, refCount: 0, ftsLoaded: false };
@@ -284,10 +288,10 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // stdout) is never called lazily during active query execution.
   // Mark preWarmActive so the watchdog timer doesn't interfere.
   preWarmActive = true;
-  const available: lbug.Connection[] = [];
+  const available: LbugConnection[] = [];
   try {
     for (let i = 0; i < MAX_CONNS_PER_REPO; i++) {
-      available.push(createConnection(db));
+      available.push(await createConnection(db));
     }
   } finally {
     preWarmActive = false;
@@ -325,7 +329,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
  */
 export async function initLbugWithDb(
   repoId: string,
-  existingDb: lbug.Database,
+  existingDb: LbugDatabase,
   dbPath: string,
 ): Promise<void> {
   const existing = pool.get(repoId);
@@ -345,11 +349,11 @@ export async function initLbugWithDb(
   }
   shared.refCount++;
 
-  const available: lbug.Connection[] = [];
+  const available: LbugConnection[] = [];
   preWarmActive = true;
   try {
     for (let i = 0; i < MAX_CONNS_PER_REPO; i++) {
-      available.push(createConnection(existingDb));
+      available.push(await createConnection(existingDb));
     }
   } finally {
     preWarmActive = false;
@@ -379,7 +383,7 @@ export async function initLbugWithDb(
  * Returns an available connection, or creates a new one if under the cap.
  * If all connections are busy and at cap, queues the caller until one is returned.
  */
-function checkout(entry: PoolEntry): Promise<lbug.Connection> {
+function checkout(entry: PoolEntry): Promise<LbugConnection> {
   // Fast path: grab an available connection
   if (entry.available.length > 0) {
     entry.checkedOut++;
@@ -399,8 +403,8 @@ function checkout(entry: PoolEntry): Promise<lbug.Connection> {
   }
 
   // At capacity — queue the caller with a timeout.
-  return new Promise<lbug.Connection>((resolve, reject) => {
-    const waiter = (conn: lbug.Connection) => {
+  return new Promise<LbugConnection>((resolve, reject) => {
+    const waiter = (conn: LbugConnection) => {
       clearTimeout(timer);
       resolve(conn);
     };
@@ -420,7 +424,7 @@ function checkout(entry: PoolEntry): Promise<lbug.Connection> {
  * If there are queued waiters, hand the connection directly to the next one
  * instead of putting it back in the available array (avoids race conditions).
  */
-function checkin(entry: PoolEntry, conn: lbug.Connection): void {
+function checkin(entry: PoolEntry, conn: LbugConnection): void {
   if (entry.closed) {
     // Pool entry was deleted during checkout — close the orphaned connection
     conn.close().catch(() => {});
