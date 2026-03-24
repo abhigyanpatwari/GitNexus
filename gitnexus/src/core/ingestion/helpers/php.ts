@@ -8,7 +8,7 @@
  * Extracted from parse-worker.ts to sit behind the LanguageProvider abstraction.
  */
 
-import { findDescendant, extractStringContent } from '../ast-helpers.js';
+import { findDescendant, extractStringContent } from '../utils/ast-helpers.js';
 import type { NodeLabel } from '../../graph/types.js';
 
 /** Eloquent model properties whose array values are worth indexing. */

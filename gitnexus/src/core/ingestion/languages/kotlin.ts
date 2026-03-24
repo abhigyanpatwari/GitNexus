@@ -16,7 +16,7 @@ import { resolveKotlinImport } from '../import-resolution.js';
 import { extractKotlinNamedBindings } from '../named-binding-extraction.js';
 import { appendKotlinWildcard } from '../import-resolvers/jvm.js';
 import { KOTLIN_QUERIES } from '../tree-sitter-queries.js';
-import { isKotlinClassMethod } from '../ast-helpers.js';
+import { isKotlinClassMethod } from '../utils/ast-helpers.js';
 
 export const kotlinProvider = defineLanguage({
   id: SupportedLanguages.Kotlin,

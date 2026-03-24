@@ -2,7 +2,7 @@
  * Language Detection — maps file paths to SupportedLanguages enum values.
  */
 
-import { SupportedLanguages } from '../../config/supported-languages.js';
+import { SupportedLanguages } from '../../../config/supported-languages.js';
 
 /** Ruby extensionless filenames recognised as Ruby source */
 const RUBY_EXTENSIONLESS_FILES = new Set(['Rakefile', 'Gemfile', 'Guardfile', 'Vagrantfile', 'Brewfile']);

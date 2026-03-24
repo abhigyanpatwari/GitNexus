@@ -1,8 +1,8 @@
 import type Parser from 'tree-sitter';
-import type { NodeLabel } from '../graph/types.js';
-import type { LanguageProvider } from './language-provider.js';
-import { generateId } from '../../lib/utils.js';
-import { extractSimpleTypeName } from './type-extractors/shared.js';
+import type { NodeLabel } from '../../graph/types.js';
+import type { LanguageProvider } from '../language-provider.js';
+import { generateId } from '../../../lib/utils.js';
+import { extractSimpleTypeName } from '../type-extractors/shared.js';
 
 /** Tree-sitter AST node. Re-exported for use across ingestion modules. */
 export type SyntaxNode = Parser.SyntaxNode;

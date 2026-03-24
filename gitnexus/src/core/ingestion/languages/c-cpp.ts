@@ -16,7 +16,7 @@ import { cCppExportChecker } from '../export-detection.js';
 import { resolveCImport, resolveCppImport } from '../import-resolution.js';
 import { C_QUERIES, CPP_QUERIES } from '../tree-sitter-queries.js';
 
-import { isCppInsideClassOrStruct } from '../ast-helpers.js';
+import { isCppInsideClassOrStruct } from '../utils/ast-helpers.js';
 import type { LanguageProvider } from '../language-provider.js';
 
 /** Label override shared by C and C++: skip function_definition captures inside class/struct

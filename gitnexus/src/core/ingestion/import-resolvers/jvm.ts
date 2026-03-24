@@ -4,7 +4,7 @@
  */
 
 import type { SuffixIndex } from './utils.js';
-import type { SyntaxNode } from '../ast-helpers.js';
+import type { SyntaxNode } from '../utils/ast-helpers.js';
 
 /** Kotlin file extensions for JVM resolver reuse */
 export const KOTLIN_EXTENSIONS: readonly string[] = ['.kt', '.kts'];
