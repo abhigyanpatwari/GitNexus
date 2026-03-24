@@ -551,7 +551,7 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
 export const isLbugReady = (repoId: string): boolean => pool.has(repoId);
 
 /** Regex to detect write operations in user-supplied Cypher queries */
-export const CYPHER_WRITE_RE = /\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH)\b/i;
+export const CYPHER_WRITE_RE = /(?<!:)\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH)\b/i;
 
 /** Check if a Cypher query contains write operations */
 export function isWriteQuery(query: string): boolean {

@@ -90,7 +90,7 @@ const confidenceForRelType = (relType: string | undefined): number =>
   IMPACT_RELATION_CONFIDENCE[relType ?? ''] ?? 0.5;
 
 /** Regex to detect write operations in user-supplied Cypher queries */
-export const CYPHER_WRITE_RE = /\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH)\b/i;
+export const CYPHER_WRITE_RE = /(?<!:)\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH)\b/i;
 
 /** Check if a Cypher query contains write operations */
 export function isWriteQuery(query: string): boolean {
@@ -1722,25 +1722,72 @@ export class LocalBackend {
     let affectedModules: any[] = [];
 
     if (impacted.length > 0) {
-      // Cap IN-clause to 100 IDs to prevent oversized queries that crash
-      // the native DB engine on arm64 macOS (#292)
+      const isArm64Mac = process.platform === 'darwin' && process.arch === 'arm64';
+      const CHUNK_SIZE = 100;
+
+      // ── Process enrichment: batched chunking (full, no LIMIT) ────
+      // Uses merged Cypher query (WITH + OPTIONAL MATCH) to fetch
+      // process + entry point info in 1 round-trip per chunk.
+      const entryPointMap = new Map<string, {
+        name: string; type: string; filePath: string;
+        affected_process_count: number;
+        total_hits: number;
+        earliest_broken_step: number;
+      }>();
+
+      for (let i = 0; i < impacted.length; i += CHUNK_SIZE) {
+        const chunk = impacted.slice(i, i + CHUNK_SIZE);
+        const chunkIds = chunk.map(item => `'${String(item.id ?? '').replace(/'/g, "''")}'`).join(', ');
+
+        try {
+          const rows = await executeQuery(repo.id, `
+            MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+            WHERE s.id IN [${chunkIds}]
+            WITH p, COUNT(DISTINCT s.id) AS hits, MIN(r.step) AS minStep
+            OPTIONAL MATCH (ep {id: p.entryPointId})
+            RETURN p.id AS pId, p.heuristicLabel AS name, p.processType AS processType,
+                   p.entryPointId AS entryPointId, hits, minStep, p.stepCount AS stepCount,
+                   ep.name AS epName, labels(ep)[0] AS epType, ep.filePath AS epFilePath
+          `);
+
+          for (const row of rows) {
+            const epId = row.entryPointId ?? row[3] ?? row.pId ?? row[0];
+            const epName = row.epName ?? row[7] ?? row.name ?? row[1] ?? 'unknown';
+            const epType = row.epType ?? row[8] ?? 'Function';
+            const epFilePath = row.epFilePath ?? row[9] ?? '';
+            const hits = row.hits ?? row[4] ?? 0;
+            const minStep = row.minStep ?? row[5];
+            if (!entryPointMap.has(epId)) {
+              entryPointMap.set(epId, {
+                name: epName,
+                type: epType,
+                filePath: epFilePath,
+                affected_process_count: 0,
+                total_hits: 0,
+                earliest_broken_step: Infinity,
+              });
+            }
+            const ep = entryPointMap.get(epId)!;
+            ep.affected_process_count += 1;
+            ep.total_hits += hits;
+            ep.earliest_broken_step = Math.min(ep.earliest_broken_step, minStep ?? Infinity);
+          }
+        } catch (e) { logQueryError('impact:process-chunk', e); }
+      }
+
+      affectedProcesses = Array.from(entryPointMap.values())
+        .map(ep => ({
+          ...ep,
+          earliest_broken_step: ep.earliest_broken_step === Infinity ? null : ep.earliest_broken_step,
+        }))
+        .sort((a, b) => b.total_hits - a.total_hits);
+
+      // ── Module enrichment: unchanged (slice 100, LIMIT 20) ───────
       const cappedImpacted = impacted.slice(0, 100);
       const allIds = cappedImpacted.map(i => `'${String(i.id ?? '').replace(/'/g, "''")}'`).join(', ');
       const d1Items = (grouped[1] || []).slice(0, 100);
       const d1Ids = d1Items.map((i: any) => `'${String(i.id ?? '').replace(/'/g, "''")}'`).join(', ');
 
-      // Enrichment queries: sequential on arm64 macOS to avoid SIGSEGV from
-      // concurrent native DB access (#285, #290, #292); parallel elsewhere
-      // to preserve performance on unaffected platforms.
-      const isArm64Mac = process.platform === 'darwin' && process.arch === 'arm64';
-
-      const processQuery = executeQuery(repo.id, `
-        MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-        WHERE s.id IN [${allIds}]
-        RETURN p.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits, MIN(r.step) AS minStep, p.stepCount AS stepCount
-        ORDER BY hits DESC
-        LIMIT 20
-      `).catch(() => []);
       const moduleQuery = () => executeQuery(repo.id, `
         MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
         WHERE s.id IN [${allIds}]
@@ -1756,24 +1803,13 @@ export class LocalBackend {
           `).catch(() => [])
         : Promise.resolve([]);
 
-      let processRows: any[], moduleRows: any[], directModuleRows: any[];
+      let moduleRows: any[], directModuleRows: any[];
       if (isArm64Mac) {
-        // Sequential: avoid concurrent native DB access
-        processRows = await processQuery;
         moduleRows = await moduleQuery();
         directModuleRows = await directModuleQuery();
       } else {
-        // Parallel: safe on non-arm64 platforms
-        processRows = await processQuery;
         [moduleRows, directModuleRows] = await Promise.all([moduleQuery(), directModuleQuery()]);
       }
-
-      affectedProcesses = processRows.map((r: any) => ({
-        name: r.name || r[0],
-        hits: r.hits || r[1],
-        broken_at_step: r.minStep ?? r[2],
-        step_count: r.stepCount ?? r[3],
-      }));
 
       const directModuleSet = new Set(directModuleRows.map((r: any) => r.name || r[0]));
       affectedModules = moduleRows.map((r: any) => {
