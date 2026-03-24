@@ -12,8 +12,8 @@ import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import CPP from 'tree-sitter-cpp';
 import PHP from 'tree-sitter-php';
-import { LANGUAGE_QUERIES } from '../../src/core/ingestion/tree-sitter-queries.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { getProvider } from '../../src/core/ingestion/languages/index.js';
 
 /**
  * Helper: parse code, run the language query, and return all @call captures
@@ -24,7 +24,7 @@ function extractCallCaptures(
   code: string,
   language: string,
 ): Array<{ callNode: SyntaxNode; nameNode: SyntaxNode; calledName: string }> {
-  const queryStr = LANGUAGE_QUERIES[language];
+  const queryStr = getProvider(language as SupportedLanguages).treeSitterQueries;
   if (!queryStr) throw new Error(`No query for ${language}`);
 
   const tree = parser.parse(code);

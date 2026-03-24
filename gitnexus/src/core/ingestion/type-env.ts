@@ -2,7 +2,7 @@ import { type SyntaxNode, FUNCTION_NODE_TYPES, extractFunctionName, CLASS_CONTAI
 import { CALL_EXPRESSION_TYPES } from './utils/call-analysis.js';
 import { isBuiltInOrNoise } from './utils/noise-filter.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
-import { TYPED_PARAMETER_TYPES } from './type-extractors/index.js';
+import { TYPED_PARAMETER_TYPES } from './type-extractors/shared.js';
 import { getProvider } from './languages/index.js';
 import type { ClassNameLookup, ReturnTypeLookup, ForLoopExtractorContext, PendingAssignment } from './type-extractors/types.js';
 import { extractSimpleTypeName, extractVarName, stripNullable, extractReturnTypeName } from './type-extractors/shared.js';
