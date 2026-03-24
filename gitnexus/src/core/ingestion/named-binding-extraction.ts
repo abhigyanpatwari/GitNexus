@@ -1,8 +1,7 @@
 import type { SymbolTable, SymbolDefinition } from './symbol-table.js';
 import type { NamedImportMap } from './import-processor.js';
 import type { NamedBinding } from './import-resolution.js';
-import type { SyntaxNode } from './utils/ast-helpers.js';
-import { findChild } from './import-resolvers/utils.js';
+import { findChild, type SyntaxNode } from './utils/ast-helpers.js';
 
 /**
  * Walk a named-binding re-export chain through NamedImportMap.
