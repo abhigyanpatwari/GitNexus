@@ -22,6 +22,7 @@ import type {
   OllamaConfig,
   OpenRouterConfig,
   MiniMaxConfig,
+  GLMConfig,
   AgentStreamChunk,
 } from './types';
 import { 
@@ -243,6 +244,26 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
         clientOptions: {
           baseURL: 'https://api.minimax.io/anthropic',
         },
+      });
+    }
+
+    case 'glm': {
+      const glmConfig = config as GLMConfig;
+
+      if (!glmConfig.apiKey || glmConfig.apiKey.trim() === '') {
+        throw new Error('GLM API key is required but was not provided');
+      }
+
+      return new ChatOpenAI({
+        apiKey: glmConfig.apiKey,
+        modelName: glmConfig.model,
+        temperature: glmConfig.temperature ?? 0.1,
+        maxTokens: glmConfig.maxTokens,
+        configuration: {
+          apiKey: glmConfig.apiKey,
+          baseURL: glmConfig.baseUrl ?? 'https://api.z.ai/api/coding/paas/v4',
+        },
+        streaming: true,
       });
     }
 

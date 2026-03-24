@@ -159,6 +159,27 @@ export interface ExtractedRoute {
   lineNumber: number;
 }
 
+export interface ExtractedFetchCall {
+  filePath: string;
+  fetchURL: string;
+  lineNumber: number;
+}
+
+export interface ExtractedDecoratorRoute {
+  filePath: string;
+  routePath: string;
+  httpMethod: string;
+  decoratorName: string;
+  lineNumber: number;
+}
+
+export interface ExtractedToolDef {
+  filePath: string;
+  toolName: string;
+  description: string;
+  lineNumber: number;
+}
+
 /** Constructor bindings keyed by filePath for cross-file type resolution */
 export interface FileConstructorBindings {
   filePath: string;
@@ -181,6 +202,9 @@ export interface ParseWorkerResult {
   assignments: ExtractedAssignment[];
   heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
+  fetchCalls: ExtractedFetchCall[];
+  decoratorRoutes: ExtractedDecoratorRoute[];
+  toolDefs: ExtractedToolDef[];
   constructorBindings: FileConstructorBindings[];
   /** File-scope type bindings from TypeEnv fixpoint for exported symbol collection. */
   typeEnvBindings: FileTypeEnvBindings[];
@@ -278,6 +302,9 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
     assignments: [],
     heritage: [],
     routes: [],
+    fetchCalls: [],
+    decoratorRoutes: [],
+    toolDefs: [],
     constructorBindings: [],
     typeEnvBindings: [],
     skippedLanguages: {},
@@ -479,6 +506,22 @@ const ROUTE_HTTP_METHODS = new Set([
 ]);
 
 const ROUTE_RESOURCE_METHODS = new Set(['resource', 'apiResource']);
+
+// Express/Hono method names that register routes
+const EXPRESS_ROUTE_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'all', 'use', 'route']);
+
+// HTTP client methods that are ONLY used by clients, not Express route registration.
+// Methods like get/post/put/delete/patch overlap with Express — those are captured by
+// the express_route handler as route definitions, not consumers. The fetch() global
+// function is captured separately by the route.fetch query.
+const HTTP_CLIENT_ONLY_METHODS = new Set(['head', 'options', 'request', 'ajax']);
+
+// Decorator names that indicate HTTP route handlers (NestJS, Flask, FastAPI, Spring)
+const ROUTE_DECORATOR_NAMES = new Set([
+  'Get', 'Post', 'Put', 'Delete', 'Patch', 'Route',
+  'get', 'post', 'put', 'delete', 'patch', 'route',
+  'RequestMapping', 'GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping',
+]);
 
 const RESOURCE_ACTIONS = ['index', 'create', 'store', 'show', 'edit', 'update', 'destroy'];
 const API_RESOURCE_ACTIONS = ['index', 'store', 'show', 'update', 'destroy'];
@@ -923,6 +966,9 @@ const processFileGroup = (
       result.typeEnvBindings.push({ filePath: file.path, bindings });
     }
 
+    // Per-file map: decorator end-line → decorator info, for associating with definitions
+    const fileDecorators = new Map<number, { name: string; arg?: string; isTool?: boolean }>();
+
     for (const match of matches) {
       const captureMap: Record<string, any> = {};
       for (const c of match.captures) {
@@ -964,6 +1010,80 @@ const processFileGroup = (
           });
         }
         if (!captureMap['call']) continue;
+      }
+
+      // Store decorator metadata for later association with definitions
+      if (captureMap['decorator'] && captureMap['decorator.name']) {
+        const decoratorName = captureMap['decorator.name'].text;
+        const decoratorArg = captureMap['decorator.arg']?.text;
+        const decoratorNode = captureMap['decorator'];
+        // Store by the decorator's end line — the definition follows immediately after
+        fileDecorators.set(decoratorNode.endPosition.row, { name: decoratorName, arg: decoratorArg });
+
+        if (ROUTE_DECORATOR_NAMES.has(decoratorName)) {
+          const routePath = decoratorArg || '';
+          const method = decoratorName.replace('Mapping', '').toUpperCase();
+          const httpMethod = ['GET','POST','PUT','DELETE','PATCH'].includes(method) ? method : 'GET';
+          result.decoratorRoutes.push({
+            filePath: file.path,
+            routePath,
+            httpMethod,
+            decoratorName,
+            lineNumber: decoratorNode.startPosition.row,
+          });
+        }
+        // MCP/RPC tool detection: @mcp.tool(), @app.tool(), @server.tool()
+        if (decoratorName === 'tool') {
+          // Re-store with isTool flag for the definition handler
+          fileDecorators.set(decoratorNode.endPosition.row, { name: decoratorName, arg: decoratorArg, isTool: true });
+        }
+        continue;
+      }
+
+      // Extract HTTP consumer URLs: fetch(), axios.get(), $.get(), requests.get(), etc.
+      if (captureMap['route.fetch']) {
+        const urlNode = captureMap['route.url'] ?? captureMap['route.template_url'];
+        if (urlNode) {
+          result.fetchCalls.push({
+            filePath: file.path,
+            fetchURL: urlNode.text,
+            lineNumber: captureMap['route.fetch'].startPosition.row,
+          });
+        }
+        continue;
+      }
+
+      // HTTP client calls: axios.get('/path'), $.post('/path'), requests.get('/path')
+      // Skip methods also in EXPRESS_ROUTE_METHODS to avoid double-registering Express
+      // routes as both route definitions AND consumers (both queries match same AST node)
+      if (captureMap['http_client'] && captureMap['http_client.url']) {
+        const method = captureMap['http_client.method']?.text;
+        const url = captureMap['http_client.url'].text;
+        if (method && HTTP_CLIENT_ONLY_METHODS.has(method) && url.startsWith('/')) {
+          result.fetchCalls.push({
+            filePath: file.path,
+            fetchURL: url,
+            lineNumber: captureMap['http_client'].startPosition.row,
+          });
+        }
+        continue;
+      }
+
+      // Express/Hono route registration: app.get('/path', handler)
+      if (captureMap['express_route'] && captureMap['express_route.method'] && captureMap['express_route.path']) {
+        const method = captureMap['express_route.method'].text;
+        const routePath = captureMap['express_route.path'].text;
+        if (EXPRESS_ROUTE_METHODS.has(method) && routePath.startsWith('/')) {
+          const httpMethod = method === 'all' || method === 'use' || method === 'route' ? 'GET' : method.toUpperCase();
+          result.decoratorRoutes.push({
+            filePath: file.path,
+            routePath,
+            httpMethod,
+            decoratorName: `express.${method}`,
+            lineNumber: captureMap['express_route'].startPosition.row,
+          });
+        }
+        continue;
       }
 
       // Extract call sites
@@ -1153,9 +1273,39 @@ const processFileGroup = (
         }
       }
 
-      const frameworkHint = definitionNode
+      let frameworkHint = definitionNode
         ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
         : null;
+
+      // Decorators appear on lines immediately before their definition; allow up to
+      // MAX_DECORATOR_SCAN_LINES gap for blank lines / multi-line decorator stacks.
+      const MAX_DECORATOR_SCAN_LINES = 5;
+      if (definitionNode) {
+        const defStartLine = definitionNode.startPosition.row;
+        for (let checkLine = defStartLine - 1; checkLine >= Math.max(0, defStartLine - MAX_DECORATOR_SCAN_LINES); checkLine--) {
+          const dec = fileDecorators.get(checkLine);
+          if (dec) {
+            // Use first (closest) decorator found for framework hint
+            if (!frameworkHint) {
+              frameworkHint = {
+                framework: 'decorator',
+                entryPointMultiplier: 1.2,
+                reason: `@${dec.name}${dec.arg ? `("${dec.arg}")` : ''}`,
+              };
+            }
+            // Emit tool definition if this is a @tool decorator
+            if (dec.isTool) {
+              result.toolDefs.push({
+                filePath: file.path,
+                toolName: nodeName,
+                description: dec.arg || '',
+                lineNumber: definitionNode.startPosition.row,
+              });
+            }
+            fileDecorators.delete(checkLine);
+          }
+        }
+      }
 
       let parameterCount: number | undefined;
       let requiredParameterCount: number | undefined;
@@ -1264,7 +1414,7 @@ const processFileGroup = (
 /** Accumulated result across sub-batches */
 let accumulated: ParseWorkerResult = {
   nodes: [], relationships: [], symbols: [],
-  imports: [], calls: [], assignments: [], heritage: [], routes: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0,
+  imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], decoratorRoutes: [], toolDefs: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0,
 };
 let cumulativeProcessed = 0;
 
@@ -1277,6 +1427,9 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   target.assignments.push(...src.assignments);
   target.heritage.push(...src.heritage);
   target.routes.push(...src.routes);
+  target.fetchCalls.push(...src.fetchCalls);
+  target.decoratorRoutes.push(...src.decoratorRoutes);
+  target.toolDefs.push(...src.toolDefs);
   target.constructorBindings.push(...src.constructorBindings);
   target.typeEnvBindings.push(...src.typeEnvBindings);
   for (const [lang, count] of Object.entries(src.skippedLanguages)) {
@@ -1303,7 +1456,7 @@ parentPort!.on('message', (msg: any) => {
     if (msg && msg.type === 'flush') {
       parentPort!.postMessage({ type: 'result', data: accumulated });
       // Reset for potential reuse
-      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], assignments: [], heritage: [], routes: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0 };
+      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], decoratorRoutes: [], toolDefs: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0 };
       cumulativeProcessed = 0;
       return;
     }

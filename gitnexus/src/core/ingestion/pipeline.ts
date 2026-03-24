@@ -8,7 +8,13 @@ import {
   buildImportResolutionContext
 } from './import-processor.js';
 import { EMPTY_INDEX } from './resolvers/index.js';
-import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracted, processRoutesFromExtracted, seedCrossFileReceiverTypes, buildImportedReturnTypes, buildImportedRawReturnTypes, type ExportedTypeMap, buildExportedTypeMapFromGraph } from './call-processor.js';
+import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracted, processRoutesFromExtracted, processNextjsFetchRoutes, extractFetchCallsFromFiles, seedCrossFileReceiverTypes, buildImportedReturnTypes, buildImportedRawReturnTypes, type ExportedTypeMap, buildExportedTypeMapFromGraph } from './call-processor.js';
+import { nextjsFileToRouteURL, normalizeFetchURL } from './route-extractors/nextjs.js';
+import { phpFileToRouteURL } from './route-extractors/php.js';
+import { extractResponseShapes } from './route-extractors/response-shapes.js';
+import { extractMiddlewareChain } from './route-extractors/middleware.js';
+import { generateId } from '../../lib/utils.js';
+import type { ExtractedFetchCall, ExtractedRoute, ExtractedDecoratorRoute, ExtractedToolDef } from './workers/parse-worker.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
 import { computeMRO } from './mro-processor.js';
 import { processCommunities } from './community-processor.js';
@@ -91,6 +97,14 @@ const CHUNK_BYTE_BUDGET = 20 * 1024 * 1024; // 20MB
 
 /** Max AST trees to keep in LRU cache */
 const AST_CACHE_CAP = 50;
+
+// MIDDLEWARE_STOP_KEYWORDS and extractMiddlewareChain moved to ./route-extractors/middleware.ts
+// Re-export for backward compatibility
+export { extractMiddlewareChain, MIDDLEWARE_STOP_KEYWORDS } from './route-extractors/middleware.js';
+
+// detectStatusCode and extractResponseShapes moved to ./route-extractors/response-shapes.ts
+// Re-export for backward compatibility
+export { detectStatusCode, extractResponseShapes } from './route-extractors/response-shapes.js';
 
 /** Minimum percentage of files that must benefit from cross-file seeding to justify the re-resolution pass. */
 const CROSS_FILE_SKIP_THRESHOLD = 0.03;
@@ -576,6 +590,14 @@ export const runPipelineFromRepo = async (
     const exportedTypeMap: ExportedTypeMap = new Map();
     // Accumulate file-scope TypeEnv bindings from workers (closes worker/sequential quality gap)
     const workerTypeEnvBindings: { filePath: string; bindings: [string, string][] }[] = [];
+    // Accumulate fetch() calls from workers for Next.js route matching
+    const allFetchCalls: ExtractedFetchCall[] = [];
+    // Accumulate framework-extracted routes (Laravel, etc.) for Route node creation
+    const allExtractedRoutes: ExtractedRoute[] = [];
+    // Accumulate decorator-based routes (@Get, @Post, @app.route, etc.)
+    const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
+    // Accumulate MCP/RPC tool definitions (@mcp.tool(), @app.tool(), etc.)
+    const allToolDefs: ExtractedToolDef[] = [];
 
     try {
       for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
@@ -691,6 +713,19 @@ export const runPipelineFromRepo = async (
           if (chunkWorkerData.typeEnvBindings?.length) {
             workerTypeEnvBindings.push(...chunkWorkerData.typeEnvBindings);
           }
+          // Collect fetch() calls for Next.js route matching
+          if (chunkWorkerData.fetchCalls?.length) {
+            allFetchCalls.push(...chunkWorkerData.fetchCalls);
+          }
+          if (chunkWorkerData.routes?.length) {
+            allExtractedRoutes.push(...chunkWorkerData.routes);
+          }
+          if (chunkWorkerData.decoratorRoutes?.length) {
+            allDecoratorRoutes.push(...chunkWorkerData.decoratorRoutes);
+          }
+          if (chunkWorkerData.toolDefs?.length) {
+            allToolDefs.push(...chunkWorkerData.toolDefs);
+          }
         } else {
           await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
           sequentialChunkPaths.push(chunkPaths);
@@ -721,7 +756,182 @@ export const runPipelineFromRepo = async (
       if (rubyHeritage.length > 0) {
         await processHeritageFromExtracted(graph, rubyHeritage, ctx);
       }
+      // Extract fetch() calls for Next.js route matching (sequential path)
+      const chunkFetchCalls = await extractFetchCallsFromFiles(chunkFiles, astCache);
+      if (chunkFetchCalls.length > 0) {
+        allFetchCalls.push(...chunkFetchCalls);
+      }
       astCache.clear();
+    }
+
+    // ── Phase 3.5: Route Registry (Next.js + PHP + Laravel + decorators) ──
+    type RouteEntry = { filePath: string; source: string };
+    const routeRegistry = new Map<string, RouteEntry>();
+    for (const p of allPaths) {
+      const nextjsURL = nextjsFileToRouteURL(p);
+      if (nextjsURL && !routeRegistry.has(nextjsURL)) {
+        routeRegistry.set(nextjsURL, { filePath: p, source: 'nextjs-filesystem-route' });
+        continue;
+      }
+      if (p.endsWith('.php')) {
+        const phpURL = phpFileToRouteURL(p);
+        if (phpURL && !routeRegistry.has(phpURL)) {
+          routeRegistry.set(phpURL, { filePath: p, source: 'php-file-route' });
+        }
+      }
+    }
+
+    const ensureSlash = (path: string) => path.startsWith('/') ? path : '/' + path;
+    let duplicateRoutes = 0;
+    const addRoute = (url: string, entry: RouteEntry) => {
+      if (routeRegistry.has(url)) { duplicateRoutes++; return; }
+      routeRegistry.set(url, entry);
+    };
+    for (const route of allExtractedRoutes) {
+      if (!route.routePath) continue;
+      addRoute(ensureSlash(route.routePath), { filePath: route.filePath, source: 'framework-route' });
+    }
+    for (const dr of allDecoratorRoutes) {
+      addRoute(ensureSlash(dr.routePath), { filePath: dr.filePath, source: `decorator-${dr.decoratorName}` });
+    }
+
+    if (routeRegistry.size > 0) {
+      const handlerPaths = [...routeRegistry.values()].map(e => e.filePath);
+      const handlerContents = await readFileContents(repoPath, handlerPaths);
+
+      for (const [routeURL, entry] of routeRegistry) {
+        const { filePath: handlerPath, source: routeSource } = entry;
+        const content = handlerContents.get(handlerPath);
+
+        const { responseKeys, errorKeys } = content
+          ? extractResponseShapes(content)
+          : { responseKeys: undefined, errorKeys: undefined };
+
+        const mwResult = content ? extractMiddlewareChain(content) : undefined;
+        const middleware = mwResult?.chain;
+
+        const routeNodeId = generateId('Route', routeURL);
+        graph.addNode({
+          id: routeNodeId,
+          label: 'Route',
+          properties: {
+            name: routeURL,
+            filePath: handlerPath,
+            ...(responseKeys ? { responseKeys } : {}),
+            ...(errorKeys ? { errorKeys } : {}),
+            ...(middleware && middleware.length > 0 ? { middleware } : {}),
+          },
+        });
+
+        const handlerFileId = generateId('File', handlerPath);
+        graph.addRelationship({
+          id: generateId('HANDLES_ROUTE', `${handlerFileId}->${routeNodeId}`),
+          sourceId: handlerFileId,
+          targetId: routeNodeId,
+          type: 'HANDLES_ROUTE',
+          confidence: 1.0,
+          reason: routeSource,
+        });
+      }
+
+      if (isDev) {
+        console.log(`🗺️ Route registry: ${routeRegistry.size} routes${duplicateRoutes > 0 ? ` (${duplicateRoutes} duplicate URLs skipped)` : ''}`);
+      }
+    }
+
+    // Scan HTML/PHP/template files for <form action="/path"> and AJAX url patterns
+    // Scan HTML/template files for <form action="/path"> and AJAX url patterns
+    // Skip .php — already parsed by tree-sitter with http_client/fetch queries
+    const htmlCandidates = allPaths.filter(p =>
+      p.endsWith('.html') || p.endsWith('.htm') ||
+      p.endsWith('.ejs') || p.endsWith('.hbs') || p.endsWith('.blade.php')
+    );
+    if (htmlCandidates.length > 0 && routeRegistry.size > 0) {
+      const htmlContents = await readFileContents(repoPath, htmlCandidates);
+      const htmlPatterns = [/action=["']([^"']+)["']/g, /url:\s*["']([^"']+)["']/g];
+      for (const [filePath, content] of htmlContents) {
+        for (const pattern of htmlPatterns) {
+          pattern.lastIndex = 0;
+          let match;
+          while ((match = pattern.exec(content)) !== null) {
+            const normalized = normalizeFetchURL(match[1]);
+            if (normalized) {
+              allFetchCalls.push({ filePath, fetchURL: normalized, lineNumber: 0 });
+            }
+          }
+        }
+      }
+    }
+
+    if (routeRegistry.size > 0 && allFetchCalls.length > 0) {
+      const routeURLToFile = new Map<string, string>();
+      for (const [url, entry] of routeRegistry) routeURLToFile.set(url, entry.filePath);
+
+      // Read consumer file contents so we can extract property access patterns
+      const consumerPaths = [...new Set(allFetchCalls.map(c => c.filePath))];
+      const consumerContents = await readFileContents(repoPath, consumerPaths);
+
+      processNextjsFetchRoutes(graph, allFetchCalls, routeURLToFile, consumerContents);
+      if (isDev) {
+        console.log(`🔗 Processed ${allFetchCalls.length} fetch() calls against ${routeRegistry.size} routes`);
+      }
+    }
+
+    // ── Phase 3.6: Tool Detection (MCP/RPC) ──────────────────────────
+    const toolDefs: { name: string; filePath: string; description: string }[] = [];
+    const seenToolNames = new Set<string>();
+
+    for (const td of allToolDefs) {
+      if (seenToolNames.has(td.toolName)) continue;
+      seenToolNames.add(td.toolName);
+      toolDefs.push({ name: td.toolName, filePath: td.filePath, description: td.description });
+    }
+
+    // TS tool definition arrays — require inputSchema nearby to distinguish from config objects
+    const toolCandidatePaths = allPaths.filter(p =>
+      (p.endsWith('.ts') || p.endsWith('.js')) && p.toLowerCase().includes('tool')
+      && !p.includes('node_modules') && !p.includes('test') && !p.includes('__')
+    );
+    if (toolCandidatePaths.length > 0) {
+      const toolContents = await readFileContents(repoPath, toolCandidatePaths);
+      for (const [filePath, content] of toolContents) {
+        // Only scan files that contain 'inputSchema' — this is the MCP tool signature
+        if (!content.includes('inputSchema')) continue;
+        const toolPattern = /name:\s*['"](\w+)['"]\s*,\s*\n?\s*description:\s*[`'"]([\s\S]*?)[`'"]/g;
+        let match;
+        while ((match = toolPattern.exec(content)) !== null) {
+          const name = match[1];
+          if (seenToolNames.has(name)) continue;
+          seenToolNames.add(name);
+          toolDefs.push({ name, filePath, description: match[2].slice(0, 200).replace(/\n/g, ' ').trim() });
+        }
+      }
+    }
+
+    // Create Tool nodes and HANDLES_TOOL edges
+    if (toolDefs.length > 0) {
+      for (const td of toolDefs) {
+        const toolNodeId = generateId('Tool', td.name);
+        graph.addNode({
+          id: toolNodeId,
+          label: 'Tool',
+          properties: { name: td.name, filePath: td.filePath, description: td.description },
+        });
+
+        const handlerFileId = generateId('File', td.filePath);
+        graph.addRelationship({
+          id: generateId('HANDLES_TOOL', `${handlerFileId}->${toolNodeId}`),
+          sourceId: handlerFileId,
+          targetId: toolNodeId,
+          type: 'HANDLES_TOOL',
+          confidence: 1.0,
+          reason: 'tool-definition',
+        });
+      }
+
+      if (isDev) {
+        console.log(`🔧 Tool registry: ${toolDefs.length} tools detected`);
+      }
     }
 
     // Log resolution cache stats
@@ -905,6 +1115,66 @@ export const runPipelineFromRepo = async (
           step: step.step,
         });
       });
+
+      // Link Route and Tool nodes to Processes via reverse index (file → node id)
+      if (routeRegistry.size > 0 || toolDefs.length > 0) {
+        // Reverse indexes: file → all route URLs / tool names (handles multi-route files)
+        const routesByFile = new Map<string, string[]>();
+        for (const [url, entry] of routeRegistry) {
+          let list = routesByFile.get(entry.filePath);
+          if (!list) { list = []; routesByFile.set(entry.filePath, list); }
+          list.push(url);
+        }
+        const toolsByFile = new Map<string, string[]>();
+        for (const td of toolDefs) {
+          let list = toolsByFile.get(td.filePath);
+          if (!list) { list = []; toolsByFile.set(td.filePath, list); }
+          list.push(td.name);
+        }
+
+        let linked = 0;
+        for (const proc of processResult.processes) {
+          if (!proc.entryPointId) continue;
+          const entryNode = graph.getNode(proc.entryPointId);
+          if (!entryNode) continue;
+          const entryFile = entryNode.properties.filePath;
+          if (!entryFile) continue;
+
+          const routeURLs = routesByFile.get(entryFile);
+          if (routeURLs) {
+            for (const routeURL of routeURLs) {
+              const routeNodeId = generateId('Route', routeURL);
+              graph.addRelationship({
+                id: generateId('ENTRY_POINT_OF', `${routeNodeId}->${proc.id}`),
+                sourceId: routeNodeId,
+                targetId: proc.id,
+                type: 'ENTRY_POINT_OF',
+                confidence: 0.85,
+                reason: 'route-handler-entry-point',
+              });
+              linked++;
+            }
+          }
+          const toolNames = toolsByFile.get(entryFile);
+          if (toolNames) {
+            for (const toolName of toolNames) {
+              const toolNodeId = generateId('Tool', toolName);
+              graph.addRelationship({
+                id: generateId('ENTRY_POINT_OF', `${toolNodeId}->${proc.id}`),
+                sourceId: toolNodeId,
+                targetId: proc.id,
+                type: 'ENTRY_POINT_OF',
+                confidence: 0.85,
+                reason: 'tool-handler-entry-point',
+              });
+              linked++;
+            }
+          }
+        }
+        if (isDev && linked > 0) {
+          console.log(`🔗 Linked ${linked} Route/Tool nodes to execution flows`);
+        }
+      }
     }
 
     onProgress({

@@ -26,7 +26,8 @@ import {
 import { buildTypeEnv, isSubclassOf } from './type-env.js';
 import type { ConstructorBinding } from './type-env.js';
 import { getTreeSitterBufferSize } from './constants.js';
-import type { ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, FileConstructorBindings } from './workers/parse-worker.js';
+import type { ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, ExtractedFetchCall, FileConstructorBindings } from './workers/parse-worker.js';
+import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
 import { callRouters } from './call-routing.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
 import { typeConfigs } from './type-extractors/index.js';
@@ -1382,4 +1383,202 @@ export const processRoutesFromExtracted = async (
   }
 
   onProgress?.(extractedRoutes.length, extractedRoutes.length);
+};
+
+/**
+ * Extract property access keys from a consumer file's source code near fetch calls.
+ *
+ * Looks for three patterns after a fetch/response variable assignment:
+ * 1. Destructuring: `const { data, pagination } = await res.json()`
+ * 2. Property access: `response.data`, `result.items`
+ * 3. Optional chaining: `data?.key1?.key2`
+ *
+ * Returns deduplicated top-level property names accessed on the response.
+ *
+ * NOTE: This scans the entire file content, not just code near a specific fetch call.
+ * If a file has multiple fetch calls to different routes, all accessed keys are
+ * attributed to each fetch. This is an acceptable tradeoff for regex-based extraction.
+ */
+
+/** Common method names on response/data objects that are NOT property accesses */
+const RESPONSE_METHOD_BLOCKLIST = new Set([
+  'json', 'text', 'blob', 'arrayBuffer', 'formData', 'ok', 'status', 'headers',
+  'then', 'catch', 'finally', 'clone',
+  'map', 'filter', 'forEach', 'reduce', 'find', 'some', 'every',
+  'length', 'toString', 'valueOf',
+  'push', 'pop', 'shift', 'unshift', 'splice', 'slice', 'concat', 'join',
+  'sort', 'reverse', 'includes', 'indexOf', 'keys', 'values', 'entries',
+]);
+
+export const extractConsumerAccessedKeys = (content: string): string[] => {
+  const keys = new Set<string>();
+
+  // Pattern 1: Destructuring from .json() — const { key1, key2 } = await res.json()
+  // Also matches: const { key1, key2 } = await (await fetch(...)).json()
+  const destructurePattern = /(?:const|let|var)\s+\{([^}]+)\}\s*=\s*(?:await\s+)?(?:\w+\.json\s*\(\)|(?:await\s+)?(?:fetch|axios|got)\s*\([^)]*\)(?:\.then\s*\([^)]*\))?(?:\.json\s*\(\))?)/g;
+  let match;
+  while ((match = destructurePattern.exec(content)) !== null) {
+    const destructuredBody = match[1];
+    // Extract identifiers from destructuring, handling renamed bindings (key: alias)
+    const keyPattern = /(\w+)\s*(?::\s*\w+)?/g;
+    let keyMatch;
+    while ((keyMatch = keyPattern.exec(destructuredBody)) !== null) {
+      keys.add(keyMatch[1]);
+    }
+  }
+
+  // Pattern 2: Destructuring from a data/result/response/json variable
+  // e.g., const { items, total } = data; or const { error } = result;
+  const dataVarDestructure = /(?:const|let|var)\s+\{([^}]+)\}\s*=\s*(?:data|result|response|json|body|res)\b/g;
+  while ((match = dataVarDestructure.exec(content)) !== null) {
+    const destructuredBody = match[1];
+    const keyPattern = /(\w+)\s*(?::\s*\w+)?/g;
+    let keyMatch;
+    while ((keyMatch = keyPattern.exec(destructuredBody)) !== null) {
+      keys.add(keyMatch[1]);
+    }
+  }
+
+  // Pattern 3: Property access on common response variable names
+  // Matches: data.key, response.key, result.key, json.key, body.key
+  // Also matches optional chaining: data?.key
+  const propAccessPattern = /\b(?:data|response|result|json|body|res)\s*(?:\?\.|\.)(\w+)/g;
+  while ((match = propAccessPattern.exec(content)) !== null) {
+    const key = match[1];
+    // Skip common method calls that aren't property accesses
+    if (!RESPONSE_METHOD_BLOCKLIST.has(key)) {
+      keys.add(key);
+    }
+  }
+
+  return [...keys];
+};
+
+/**
+ * Create FETCHES edges from extracted fetch() calls to matching Route nodes.
+ * When consumerContents is provided, extracts property access patterns from
+ * consumer files and encodes them in the edge reason field.
+ */
+export const processNextjsFetchRoutes = (
+  graph: KnowledgeGraph,
+  fetchCalls: ExtractedFetchCall[],
+  routeRegistry: Map<string, string>,  // routeURL → handlerFilePath
+  consumerContents?: Map<string, string>,  // filePath → file content
+) => {
+  // Pre-count how many routes each consumer file matches (for confidence attribution)
+  const routeCountByFile = new Map<string, number>();
+  for (const call of fetchCalls) {
+    const normalized = normalizeFetchURL(call.fetchURL);
+    if (!normalized) continue;
+    for (const [routeURL] of routeRegistry) {
+      if (routeMatches(normalized, routeURL)) {
+        routeCountByFile.set(call.filePath, (routeCountByFile.get(call.filePath) ?? 0) + 1);
+        break;
+      }
+    }
+  }
+
+  for (const call of fetchCalls) {
+    const normalized = normalizeFetchURL(call.fetchURL);
+    if (!normalized) continue;
+
+    for (const [routeURL] of routeRegistry) {
+      if (routeMatches(normalized, routeURL)) {
+        const sourceId = generateId('File', call.filePath);
+        const routeNodeId = generateId('Route', routeURL);
+
+        // Extract consumer accessed keys if file content is available
+        let reason = 'fetch-url-match';
+        if (consumerContents) {
+          const content = consumerContents.get(call.filePath);
+          if (content) {
+            const accessedKeys = extractConsumerAccessedKeys(content);
+            if (accessedKeys.length > 0) {
+              reason = `fetch-url-match|keys:${accessedKeys.join(',')}`;
+            }
+          }
+        }
+
+        // Encode multi-fetch count so downstream can set confidence
+        const fetchCount = routeCountByFile.get(call.filePath) ?? 1;
+        if (fetchCount > 1) {
+          reason = `${reason}|fetches:${fetchCount}`;
+        }
+
+        graph.addRelationship({
+          id: generateId('FETCHES', `${sourceId}->${routeNodeId}`),
+          sourceId,
+          targetId: routeNodeId,
+          type: 'FETCHES',
+          confidence: 0.9,
+          reason,
+        });
+        break;
+      }
+    }
+  }
+};
+
+/**
+ * Extract fetch() calls from source files (sequential path).
+ * Workers handle this via tree-sitter captures in parse-worker; this function
+ * provides the same extraction for the sequential fallback path.
+ */
+export const extractFetchCallsFromFiles = async (
+  files: { path: string; content: string }[],
+  astCache: ASTCache,
+): Promise<ExtractedFetchCall[]> => {
+  const parser = await loadParser();
+  const result: ExtractedFetchCall[] = [];
+
+  for (const file of files) {
+    const language = getLanguageFromFilename(file.path);
+    if (!language) continue;
+    if (!isLanguageAvailable(language)) continue;
+
+    const queryStr = LANGUAGE_QUERIES[language];
+    if (!queryStr) continue;
+
+    await loadLanguage(language, file.path);
+
+    let tree = astCache.get(file.path);
+    if (!tree) {
+      try {
+        tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
+      } catch { continue; }
+      astCache.set(file.path, tree);
+    }
+
+    let matches;
+    try {
+      const lang = parser.getLanguage();
+      const query = new Parser.Query(lang, queryStr);
+      matches = query.matches(tree.rootNode);
+    } catch { continue; }
+
+    for (const match of matches) {
+      const captureMap: Record<string, any> = {};
+      match.captures.forEach(c => captureMap[c.name] = c.node);
+
+      if (captureMap['route.fetch']) {
+        const urlNode = captureMap['route.url'] ?? captureMap['route.template_url'];
+        if (urlNode) {
+          result.push({
+            filePath: file.path,
+            fetchURL: urlNode.text,
+            lineNumber: captureMap['route.fetch'].startPosition.row,
+          });
+        }
+      } else if (captureMap['http_client'] && captureMap['http_client.url']) {
+        const method = captureMap['http_client.method']?.text;
+        const url = captureMap['http_client.url'].text;
+        const HTTP_CLIENT_ONLY = new Set(['head', 'options', 'request', 'ajax']);
+        if (method && HTTP_CLIENT_ONLY.has(method) && url.startsWith('/')) {
+          result.push({ filePath: file.path, fetchURL: url, lineNumber: captureMap['http_client'].startPosition.row });
+        }
+      }
+    }
+  }
+
+  return result;
 };

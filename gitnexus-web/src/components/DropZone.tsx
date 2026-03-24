@@ -6,7 +6,7 @@ import { FileEntry } from '../services/zip';
 
 interface DropZoneProps {
   onFileSelect: (file: File) => void;
-  onGitClone?: (files: FileEntry[]) => void;
+  onGitClone?: (files: FileEntry[], repoName?: string) => void;
   onServerConnect?: (result: ConnectToServerResult, serverUrl?: string) => void;
 }
 
@@ -108,7 +108,7 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
       setGithubToken('');
 
       if (onGitClone) {
-        onGitClone(files);
+        onGitClone(files, parsed.repo);
       }
     } catch (err) {
       console.error('Clone failed:', err);
