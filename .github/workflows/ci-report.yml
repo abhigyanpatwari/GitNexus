@@ -176,6 +176,7 @@ jobs:
         shell: bash
         run: |
           cd "${{ steps.base-coverage.outputs.dir }}"
+          mkdir -p base
           unzip -o base.zip -d base
 
       - name: Build report
@@ -272,14 +273,20 @@ jobs:
             esac
           }
 
+          # Validate a value looks like a number (integer or decimal, optional
+          # leading minus).  Returns 1 for anything else — guards against awk
+          # injection when artifact values come from untrusted fork code.
+          is_numeric() { [[ "$1" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; }
+
           cov_delta() {
             local pct=$1 base=$2
             if [ "$pct" = "N/A" ] || [ "$base" = "N/A" ]; then echo "—"; return; fi
+            if ! is_numeric "$pct" || ! is_numeric "$base"; then echo "—"; return; fi
             local diff
-            diff=$(awk "BEGIN { printf \"%.1f\", $pct - $base }")
-            if [ "$(awk "BEGIN { print ($pct > $base) ? 1 : 0 }")" = "1" ]; then
+            diff=$(awk -v p="$pct" -v b="$base" 'BEGIN { printf "%.1f", p - b }')
+            if [ "$(awk -v p="$pct" -v b="$base" 'BEGIN { print (p > b) ? 1 : 0 }')" = "1" ]; then
               echo "📈 +${diff}"
-            elif [ "$(awk "BEGIN { print ($pct < $base) ? 1 : 0 }")" = "1" ]; then
+            elif [ "$(awk -v p="$pct" -v b="$base" 'BEGIN { print (p < b) ? 1 : 0 }')" = "1" ]; then
               echo "📉 ${diff}"
             else
               echo "＝ ${diff}"
@@ -288,9 +295,9 @@ jobs:
 
           cov_bar() {
             local pct=$1 base=$2
-            if [ "$pct" = "N/A" ]; then echo "—"; return; fi
+            if [ "$pct" = "N/A" ] || ! is_numeric "$pct"; then echo "—"; return; fi
             local filled
-            filled=$(awk "BEGIN { printf \"%d\", $pct / 5 }")
+            filled=$(awk -v p="$pct" 'BEGIN { printf "%d", p / 5 }')
             (( filled < 0 )) && filled=0
             (( filled > 20 )) && filled=20
             local empty=$((20 - filled))
@@ -298,7 +305,7 @@ jobs:
             for ((i=0; i<filled; i++)); do bar+="█"; done
             for ((i=0; i<empty; i++)); do bar+="░"; done
             # Green if >= base (or base unavailable), red if dropped
-            if [ "$base" = "N/A" ] || [ "$(awk "BEGIN { print ($pct >= $base) ? 1 : 0 }")" = "1" ]; then
+            if [ "$base" = "N/A" ] || ! is_numeric "$base" || [ "$(awk -v p="$pct" -v b="$base" 'BEGIN { print (p >= b) ? 1 : 0 }')" = "1" ]; then
               echo "🟢 ${bar}"
             else
               echo "🔴 ${bar}"
