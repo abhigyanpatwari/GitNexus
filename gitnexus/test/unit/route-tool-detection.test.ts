@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest';
 import { nextjsFileToRouteURL, normalizeFetchURL, routeMatches } from '../../src/core/ingestion/route-extractors/nextjs.js';
 import { phpFileToRouteURL } from '../../src/core/ingestion/route-extractors/php.js';
 import { extractMiddlewareChain } from '../../src/core/ingestion/route-extractors/middleware.js';
-import { detectStatusCode, extractResponseShapes } from '../../src/core/ingestion/route-extractors/response-shapes.js';
+import { detectStatusCode, extractResponseShapes, extractPHPResponseShapes } from '../../src/core/ingestion/route-extractors/response-shapes.js';
 
 // ---------------------------------------------------------------------------
 // Next.js route extractor
@@ -466,5 +466,92 @@ describe('error response shape separation', () => {
     const shapes = extractResponseShapes(content);
     expect(shapes.responseKeys).toEqual(['created', 'id']);
     expect(shapes.errorKeys).toBeUndefined();
+  });
+});
+
+describe('PHP response shape extraction', () => {
+  it('extracts keys from short array syntax', () => {
+    const content = `echo json_encode(['success' => true, 'data' => $items], JSON_UNESCAPED_UNICODE);`;
+    const shapes = extractPHPResponseShapes(content);
+    expect(shapes.responseKeys).toEqual(['success', 'data']);
+    expect(shapes.errorKeys).toBeUndefined();
+  });
+
+  it('extracts keys from long array syntax', () => {
+    const content = `echo json_encode(array('ok' => true, 'count' => $n));`;
+    const shapes = extractPHPResponseShapes(content);
+    expect(shapes.responseKeys).toEqual(['ok', 'count']);
+  });
+
+  it('classifies error responses by http_response_code', () => {
+    const content = `
+      http_response_code(401);
+      echo json_encode(['error' => 'Unauthorized'], JSON_UNESCAPED_UNICODE);
+    `;
+    const shapes = extractPHPResponseShapes(content);
+    expect(shapes.responseKeys).toBeUndefined();
+    expect(shapes.errorKeys).toEqual(['error']);
+  });
+
+  it('separates success and error responses', () => {
+    const content = `
+      header('Content-Type: application/json');
+      if (!is_logged_in()) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Not logged in'], JSON_UNESCAPED_UNICODE);
+        exit;
+      }
+      echo json_encode(['ok' => true, 'new_status' => $status], JSON_UNESCAPED_UNICODE);
+    `;
+    const shapes = extractPHPResponseShapes(content);
+    expect(shapes.responseKeys).toEqual(['ok', 'new_status']);
+    expect(shapes.errorKeys).toEqual(['error']);
+  });
+
+  it('handles multiple error status codes with exit boundaries', () => {
+    const content = `
+      if (!$user) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Unauthorized'], JSON_UNESCAPED_UNICODE);
+        exit;
+      }
+      if (!$valid) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Invalid data', 'field' => 'name'], JSON_UNESCAPED_UNICODE);
+        exit;
+      }
+      echo json_encode(['ok' => true, 'id' => $id], JSON_UNESCAPED_UNICODE);
+    `;
+    const shapes = extractPHPResponseShapes(content);
+    expect(shapes.responseKeys).toEqual(['ok', 'id']);
+    expect(shapes.errorKeys).toEqual(['error', 'field']);
+  });
+
+  it('detects status from header() pattern', () => {
+    const content = `
+      header('HTTP/1.1 403 Forbidden');
+      echo json_encode(['error' => 'Forbidden', 'message' => 'Access denied']);
+    `;
+    const shapes = extractPHPResponseShapes(content);
+    expect(shapes.errorKeys).toEqual(['error', 'message']);
+  });
+
+  it('skips json_encode with variable argument', () => {
+    const content = `echo json_encode($data, JSON_UNESCAPED_UNICODE);`;
+    const shapes = extractPHPResponseShapes(content);
+    expect(shapes.responseKeys).toBeUndefined();
+    expect(shapes.errorKeys).toBeUndefined();
+  });
+
+  it('extracts only top-level keys from nested arrays', () => {
+    const content = `echo json_encode(['data' => ['nested' => true], 'total' => $count]);`;
+    const shapes = extractPHPResponseShapes(content);
+    expect(shapes.responseKeys).toEqual(['data', 'total']);
+  });
+
+  it('handles json_encode with flags after array', () => {
+    const content = `echo json_encode(['export' => $data], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);`;
+    const shapes = extractPHPResponseShapes(content);
+    expect(shapes.responseKeys).toEqual(['export']);
   });
 });

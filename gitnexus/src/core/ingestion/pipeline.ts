@@ -11,7 +11,7 @@ import { EMPTY_INDEX } from './import-resolvers/utils.js';
 import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracted, processRoutesFromExtracted, processNextjsFetchRoutes, extractFetchCallsFromFiles, seedCrossFileReceiverTypes, buildImportedReturnTypes, buildImportedRawReturnTypes, type ExportedTypeMap, buildExportedTypeMapFromGraph } from './call-processor.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from './route-extractors/nextjs.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';
-import { extractResponseShapes } from './route-extractors/response-shapes.js';
+import { extractResponseShapes, extractPHPResponseShapes } from './route-extractors/response-shapes.js';
 import { extractMiddlewareChain } from './route-extractors/middleware.js';
 import { generateId } from '../../lib/utils.js';
 import type { ExtractedFetchCall, ExtractedRoute, ExtractedDecoratorRoute, ExtractedToolDef } from './workers/parse-worker.js';
@@ -1113,7 +1113,7 @@ export const runPipelineFromRepo = async (
         const content = handlerContents.get(handlerPath);
 
         const { responseKeys, errorKeys } = content
-          ? extractResponseShapes(content)
+          ? (handlerPath.endsWith(".php") ? extractPHPResponseShapes(content) : extractResponseShapes(content))
           : { responseKeys: undefined, errorKeys: undefined };
 
         const mwResult = content ? extractMiddlewareChain(content) : undefined;
