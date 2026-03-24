@@ -15,7 +15,7 @@
  *    framework-detection.ts            | AST_FRAMEWORK_PATTERNS entry             | []
  *    type-extractors/<lang>.ts         | New file + index.ts import               | (required)
  *    resolvers/<lang>.ts               | Resolver file (if non-standard)          | (only if resolveStandard insufficient)
- *    named-binding-extraction.ts       | Extractor (if named imports)             | (only if language has named imports)
+ *    named-bindings/<lang>.ts          | Extractor (if named imports)             | (only if language has named imports)
  *
  * 4. Also check these files for language-specific if-checks (no compile-time guard):
  *    - mro-processor.ts (MRO strategy selection)

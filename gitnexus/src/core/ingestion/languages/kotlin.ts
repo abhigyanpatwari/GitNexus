@@ -13,7 +13,7 @@ import { kotlinTypeConfig } from '../type-extractors/jvm.js';
 import { noRouting } from '../call-routing.js';
 import { kotlinExportChecker } from '../export-detection.js';
 import { resolveKotlinImport } from '../import-resolution.js';
-import { extractKotlinNamedBindings } from '../named-binding-extraction.js';
+import { extractKotlinNamedBindings } from '../named-bindings/kotlin.js';
 import { appendKotlinWildcard } from '../import-resolvers/jvm.js';
 import { KOTLIN_QUERIES } from '../tree-sitter-queries.js';
 import { isKotlinClassMethod } from '../utils/ast-helpers.js';

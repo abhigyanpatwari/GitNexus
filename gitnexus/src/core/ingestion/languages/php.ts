@@ -12,7 +12,7 @@ import { typeConfig as phpConfig } from '../type-extractors/php.js';
 import { noRouting } from '../call-routing.js';
 import { phpExportChecker } from '../export-detection.js';
 import { resolvePhpImport } from '../import-resolution.js';
-import { extractPhpNamedBindings } from '../named-binding-extraction.js';
+import { extractPhpNamedBindings } from '../named-bindings/php.js';
 import { PHP_QUERIES } from '../tree-sitter-queries.js';
 import { phpDescriptionExtractor, isPhpRouteFile } from '../helpers/php.js';
 

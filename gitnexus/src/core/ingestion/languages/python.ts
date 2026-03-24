@@ -17,7 +17,7 @@ import { typeConfig as pythonConfig } from '../type-extractors/python.js';
 import { noRouting } from '../call-routing.js';
 import { pythonExportChecker } from '../export-detection.js';
 import { resolvePythonImport } from '../import-resolution.js';
-import { extractPythonNamedBindings } from '../named-binding-extraction.js';
+import { extractPythonNamedBindings } from '../named-bindings/python.js';
 import { PYTHON_QUERIES } from '../tree-sitter-queries.js';
 
 export const pythonProvider = defineLanguage({

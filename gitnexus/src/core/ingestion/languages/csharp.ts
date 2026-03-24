@@ -12,7 +12,7 @@ import { typeConfig as csharpConfig } from '../type-extractors/csharp.js';
 import { noRouting } from '../call-routing.js';
 import { csharpExportChecker } from '../export-detection.js';
 import { resolveCSharpImport } from '../import-resolution.js';
-import { extractCsharpNamedBindings } from '../named-binding-extraction.js';
+import { extractCsharpNamedBindings } from '../named-bindings/csharp.js';
 import { CSHARP_QUERIES } from '../tree-sitter-queries.js';
 
 export const csharpProvider = defineLanguage({
