@@ -62,6 +62,16 @@ jobs:
           echo "$QUALITY"    > pr-meta/quality_result
           echo "$TESTS"      > pr-meta/tests_result
           echo "$E2E"        > pr-meta/e2e_result
+          # TODO(post-merge): remove backward-compat copies once ci-report.yml
+          # on main reads underscore names.
+          # Backward-compat: ci-report.yml on main still reads hyphenated
+          # names.  workflow_run always executes from the default branch, so
+          # the main-branch reader won't find the underscore variants until
+          # this PR is merged.  Write both until then.
+          cp pr-meta/pr_number       pr-meta/pr-number
+          cp pr-meta/quality_result  pr-meta/quality-result
+          cp pr-meta/tests_result    pr-meta/tests-result
+          cp pr-meta/e2e_result      pr-meta/e2e-result
 
       - name: Upload PR metadata
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

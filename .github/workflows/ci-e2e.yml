@@ -52,12 +52,11 @@ jobs:
 
       - name: Analyze repository (index for backend)
         run: |
-          node dist/cli/index.js analyze || true
+          node gitnexus/dist/cli/index.js analyze || true
           if [ ! -d ".gitnexus" ]; then
             echo "::error::No .gitnexus index created"
             exit 1
           fi
-        working-directory: gitnexus
 
       - name: Start backend server
         run: node dist/cli/index.js serve &

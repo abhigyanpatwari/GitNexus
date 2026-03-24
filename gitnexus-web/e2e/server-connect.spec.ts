@@ -20,10 +20,14 @@ test.beforeAll(async () => {
       fetch(`${BACKEND_URL}/api/repos`),
       fetch(FRONTEND_URL),
     ]);
-    if (backendRes.status === 'rejected' || (backendRes.status === 'fulfilled' && !backendRes.value.ok))
+    if (backendRes.status === 'rejected' || (backendRes.status === 'fulfilled' && !backendRes.value.ok)) {
       test.skip(true, 'gitnexus serve not available on :4747');
-    if (frontendRes.status === 'rejected')
+      return;
+    }
+    if (frontendRes.status === 'rejected' || (frontendRes.status === 'fulfilled' && !frontendRes.value.ok)) {
       test.skip(true, 'Vite dev server not available on :5173');
+      return;
+    }
   } catch {
     test.skip(true, 'servers not available');
   }
@@ -103,9 +107,9 @@ test.describe('Processes Panel', () => {
 
     const viewBtn = processRow.locator('[data-testid="process-view-button"]');
     await viewBtn.waitFor({ state: 'visible', timeout: 5_000 });
-    await viewBtn.click({ force: true });
+    await viewBtn.click();
     // Wait for modal to appear
-    await expect(page.locator('.fixed.inset-0.z-50')).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('[data-testid="process-modal"]')).toBeVisible({ timeout: 5_000 });
     await page.screenshot({ path: testInfo.outputPath('process-view-clicked.png'), fullPage: true });
   });
 
@@ -125,11 +129,9 @@ test.describe('Processes Panel', () => {
 
     const lightbulb = processRow.locator('[data-testid="process-highlight-button"]');
     await lightbulb.waitFor({ state: 'visible', timeout: 5_000 });
-    await lightbulb.click({ force: true });
-    // Wait for highlight animation to apply
-    await expect(async () => {
-      await expect(page.locator('canvas').first()).toBeVisible();
-    }).toPass({ timeout: 2000 });
+    await lightbulb.click();
+    // Wait for highlight to apply — the process row gets amber styling when focused
+    await expect(processRow).toHaveClass(/bg-amber-950/, { timeout: 5_000 });
     await page.screenshot({ path: testInfo.outputPath('after-highlight.png'), fullPage: true });
   });
 });
@@ -145,25 +147,19 @@ test.describe('Turn Off All Highlights', () => {
 
     // Click a file in the file tree to select a node
     const fileItem = page.getByText('package.json').first();
-    if (await fileItem.isVisible()) {
-      await fileItem.click();
-      // Wait for node selection to take effect
-      await expect(async () => {
-        await expect(page.locator('canvas').first()).toBeVisible();
-      }).toPass({ timeout: 2000 });
-      await page.screenshot({ path: testInfo.outputPath('node-selected.png'), fullPage: true });
+    await expect(fileItem).toBeVisible({ timeout: 10_000 });
+    await fileItem.click();
 
-      // Click "Turn off all highlights" button (top-right lightbulb)
-      const highlightBtn = page.locator('button[title*="Turn off"]');
-      await expect(highlightBtn).toBeVisible({ timeout: 5_000 });
-      await highlightBtn.click();
-      // Wait for highlights to clear
-      await expect(async () => {
-        await expect(page.locator('canvas').first()).toBeVisible();
-      }).toPass({ timeout: 2000 });
-      await page.screenshot({ path: testInfo.outputPath('highlights-cleared.png'), fullPage: true });
-    } else {
-      await page.screenshot({ path: testInfo.outputPath('start-sh-not-found.png'), fullPage: true });
-    }
+    // Wait for highlight toggle to show "Turn off" (indicates highlights are active)
+    const highlightToggle = page.locator('[data-testid="ai-highlights-toggle"]');
+    await expect(highlightToggle).toHaveAttribute('title', 'Turn off all highlights', { timeout: 5_000 });
+    await page.screenshot({ path: testInfo.outputPath('node-selected.png'), fullPage: true });
+
+    // Click the toggle to clear all highlights
+    await highlightToggle.click();
+
+    // Verify highlights are now off — button title changes to "Turn on"
+    await expect(highlightToggle).toHaveAttribute('title', 'Turn on AI highlights', { timeout: 5_000 });
+    await page.screenshot({ path: testInfo.outputPath('highlights-cleared.png'), fullPage: true });
   });
 });

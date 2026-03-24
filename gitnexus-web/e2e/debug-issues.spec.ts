@@ -5,6 +5,7 @@ import { test, expect, type TestInfo } from '@playwright/test';
  * Excluded from `npm run test:e2e` via testIgnore in playwright.config.ts.
  * Run directly: DEBUG_E2E=1 npx playwright test e2e/debug-issues.spec.ts
  */
+const BACKEND_URL = process.env.BACKEND_URL ?? 'http://localhost:4747';
 const debugTest = process.env.DEBUG_E2E ? test : test.skip;
 
 async function connectToServer(page: import('@playwright/test').Page) {
@@ -15,7 +16,7 @@ async function connectToServer(page: import('@playwright/test').Page) {
   await page.goto('/');
   await page.getByText('Server').click();
   const serverInput = page.locator('input[name="server-url-input"]');
-  await serverInput.fill('http://localhost:4747');
+  await serverInput.fill(BACKEND_URL);
   await page.getByRole('button', { name: /Connect/ }).click();
   await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
   // Wait for LadybugDB to finish loading — poll isDatabaseReady via process list visibility
@@ -48,7 +49,7 @@ debugTest('debug: process view Reset View button', async ({ page }, testInfo) =>
   });
 
   // Wait for modal to appear
-  const modal = page.locator('.fixed.inset-0.z-50');
+  const modal = page.locator('[data-testid="process-modal"]');
   await expect(modal).toBeVisible({ timeout: 5_000 });
 
   // Screenshot: modal should be open with flowchart
@@ -103,7 +104,7 @@ debugTest('debug: lightbulb clears node selection dimming', async ({ page }, tes
   // Click a file in the tree to select a node (causes dimming)
   const fileItem = page.getByText('start.sh');
   await fileItem.click();
-  await page.waitForLoadState('networkidle');
+  await page.waitForTimeout(500);
   await page.screenshot({ path: testInfo.outputPath('debug-node-selected.png'), fullPage: true });
 
   // Check the lightbulb button state
@@ -113,7 +114,7 @@ debugTest('debug: lightbulb clears node selection dimming', async ({ page }, tes
 
   // Click the lightbulb
   await lightbulbBtn.click();
-  await page.waitForLoadState('networkidle');
+  await page.waitForTimeout(500);
 
   const titleAfter = await lightbulbBtn.getAttribute('title');
   console.log('Lightbulb title after click:', titleAfter);
@@ -121,6 +122,6 @@ debugTest('debug: lightbulb clears node selection dimming', async ({ page }, tes
 
   // Click it again to toggle back on
   await lightbulbBtn.click();
-  await page.waitForLoadState('networkidle');
+  await page.waitForTimeout(500);
   await page.screenshot({ path: testInfo.outputPath('debug-after-lightbulb-toggle-back.png'), fullPage: true });
 });

@@ -176,6 +176,7 @@ jobs:
         shell: bash
         run: |
           cd "${{ steps.base-coverage.outputs.dir }}"
+          mkdir -p base
           unzip -o base.zip -d base
 
       - name: Build report
@@ -241,17 +242,26 @@ jobs:
 
           # ── Locate test results ──
           RESULTS_FILE=$(find "$DIR/test-reports" -name "test-results.json" -type f 2>/dev/null | head -1)
+          WEB_RESULTS_FILE=$(find "$DIR/test-reports" -name "web-test-results.json" -type f 2>/dev/null | head -1)
 
-          if [ -n "$RESULTS_FILE" ]; then
-            TOTAL=$(jq -r '.numTotalTests' "$RESULTS_FILE" 2>/dev/null || echo 0)
-            PASSED=$(jq -r '.numPassedTests' "$RESULTS_FILE" 2>/dev/null || echo 0)
-            FAILED=$(jq -r '.numFailedTests' "$RESULTS_FILE" 2>/dev/null || echo 0)
-            SKIPPED=$(jq -r '.numPendingTests' "$RESULTS_FILE" 2>/dev/null || echo 0)
-            SUITES=$(jq -r '.numTotalTestSuites' "$RESULTS_FILE" 2>/dev/null || echo 0)
-            DURATION=$(jq -r '((.testResults | map(.endTime) | max) - (.startTime)) / 1000 | floor' "$RESULTS_FILE" 2>/dev/null || echo 0)
-          else
-            TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0; SUITES=0; DURATION=0
-          fi
+          sum_results() {
+            local file=$1
+            if [ -n "$file" ] && [ -f "$file" ]; then
+              jq -r '"\(.numTotalTests) \(.numPassedTests) \(.numFailedTests) \(.numPendingTests) \(.numTotalTestSuites) \(((.testResults | map(.endTime) | max) - (.startTime)) / 1000 | floor)"' "$file" 2>/dev/null || echo "0 0 0 0 0 0"
+            else
+              echo "0 0 0 0 0 0"
+            fi
+          }
+
+          read CLI_T CLI_P CLI_F CLI_S CLI_SU CLI_D <<< "$(sum_results "$RESULTS_FILE")"
+          read WEB_T WEB_P WEB_F WEB_S WEB_SU WEB_D <<< "$(sum_results "$WEB_RESULTS_FILE")"
+
+          TOTAL=$((CLI_T + WEB_T))
+          PASSED=$((CLI_P + WEB_P))
+          FAILED=$((CLI_F + WEB_F))
+          SKIPPED=$((CLI_S + WEB_S))
+          SUITES=$((CLI_SU + WEB_SU))
+          DURATION=$((CLI_D > WEB_D ? CLI_D : WEB_D))
 
           # ── Status helpers ──
           status_icon() {
@@ -263,14 +273,20 @@ jobs:
             esac
           }
 
+          # Validate a value looks like a number (integer or decimal, optional
+          # leading minus).  Returns 1 for anything else — guards against awk
+          # injection when artifact values come from untrusted fork code.
+          is_numeric() { [[ "$1" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; }
+
           cov_delta() {
             local pct=$1 base=$2
             if [ "$pct" = "N/A" ] || [ "$base" = "N/A" ]; then echo "—"; return; fi
+            if ! is_numeric "$pct" || ! is_numeric "$base"; then echo "—"; return; fi
             local diff
-            diff=$(awk "BEGIN { printf \"%.1f\", $pct - $base }")
-            if [ "$(awk "BEGIN { print ($pct > $base) ? 1 : 0 }")" = "1" ]; then
+            diff=$(awk -v p="$pct" -v b="$base" 'BEGIN { printf "%.1f", p - b }')
+            if [ "$(awk -v p="$pct" -v b="$base" 'BEGIN { print (p > b) ? 1 : 0 }')" = "1" ]; then
               echo "📈 +${diff}"
-            elif [ "$(awk "BEGIN { print ($pct < $base) ? 1 : 0 }")" = "1" ]; then
+            elif [ "$(awk -v p="$pct" -v b="$base" 'BEGIN { print (p < b) ? 1 : 0 }')" = "1" ]; then
               echo "📉 ${diff}"
             else
               echo "＝ ${diff}"
@@ -279,9 +295,9 @@ jobs:
 
           cov_bar() {
             local pct=$1 base=$2
-            if [ "$pct" = "N/A" ]; then echo "—"; return; fi
+            if [ "$pct" = "N/A" ] || ! is_numeric "$pct"; then echo "—"; return; fi
             local filled
-            filled=$(awk "BEGIN { printf \"%d\", $pct / 5 }")
+            filled=$(awk -v p="$pct" 'BEGIN { printf "%d", p / 5 }')
             (( filled < 0 )) && filled=0
             (( filled > 20 )) && filled=20
             local empty=$((20 - filled))
@@ -289,7 +305,7 @@ jobs:
             for ((i=0; i<filled; i++)); do bar+="█"; done
             for ((i=0; i<empty; i++)); do bar+="░"; done
             # Green if >= base (or base unavailable), red if dropped
-            if [ "$base" = "N/A" ] || [ "$(awk "BEGIN { print ($pct >= $base) ? 1 : 0 }")" = "1" ]; then
+            if [ "$base" = "N/A" ] || ! is_numeric "$base" || [ "$(awk -v p="$pct" -v b="$base" 'BEGIN { print (p >= b) ? 1 : 0 }')" = "1" ]; then
               echo "🟢 ${bar}"
             else
               echo "🔴 ${bar}"
@@ -337,14 +353,16 @@ jobs:
                 echo "<details>"
                 echo "<summary>${SKIPPED} test(s) skipped — expand for details</summary>"
                 echo ""
-                if [ -n "$RESULTS_FILE" ]; then
-                  jq -r '
-                    .testResults[]
-                    | .assertionResults[]?
-                    | select(.status == "pending" or .status == "skipped")
-                    | "- \(.ancestorTitles | join(" > ")) > \(.title)"
-                  ' "$RESULTS_FILE" 2>/dev/null || echo "- _(unable to parse skipped test details)_"
-                fi
+                for rf in "$RESULTS_FILE" "$WEB_RESULTS_FILE"; do
+                  if [ -n "$rf" ] && [ -f "$rf" ]; then
+                    jq -r '
+                      .testResults[]
+                      | .assertionResults[]?
+                      | select(.status == "pending" or .status == "skipped")
+                      | "- \(.ancestorTitles | join(" > ")) > \(.title)"
+                    ' "$rf" 2>/dev/null || true
+                  fi
+                done
                 echo ""
                 echo "</details>"
               fi
