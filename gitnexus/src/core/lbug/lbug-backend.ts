@@ -81,15 +81,31 @@ export async function getLbugBackend(): Promise<LbugBackend> {
   const mod = esmRequire('@ladybugdb/wasm-core/nodejs') as any;
   await mod.init();
 
-  // Shim: WASM QueryResult has getAllRows() but not getAll().
-  // Native has getAll() but not getAllRows(). GitNexus code calls getAll(),
-  // so we alias it on the WASM QueryResult prototype.
+  // Shim: WASM QueryResult has getAllRows()/getAllObjects() but not getAll().
+  // Native getAll() returns objects keyed by column name, so we alias
+  // getAllObjects (not getAllRows which returns tuples) to match native format.
   const qrPath = esmRequire.resolve('@ladybugdb/wasm-core/nodejs').replace(/index\.js$/, 'query_result.js');
   const QR = esmRequire(qrPath);
   const QRProto = (QR.default || QR).prototype;
-  if (QRProto && !QRProto.getAll && QRProto.getAllRows) {
-    QRProto.getAll = QRProto.getAllRows;
+  if (QRProto && !QRProto.getAll && QRProto.getAllObjects) {
+    QRProto.getAll = QRProto.getAllObjects;
   }
+
+  // Shim: Database constructor signature differs between native and WASM.
+  //   Native: (path, bufferManagerSize, enableCompression, readOnly)
+  //   WASM:   (path, bufferPoolSize, maxNumThreads, enableCompression, readOnly, ...)
+  // All GitNexus call sites use the native convention. This wrapper remaps
+  // the positional args so callers don't need to know which backend is active.
+  const OrigDatabase = mod.Database;
+  const WasmDatabaseShim = function (path: string, ...nativeArgs: any[]) {
+    if (nativeArgs.length === 0) {
+      return new OrigDatabase(path);
+    }
+    const [bufferSize = 0, enableCompression = false, readOnly = false] = nativeArgs;
+    return new OrigDatabase(path, bufferSize, 0, enableCompression, readOnly);
+  } as unknown as typeof OrigDatabase;
+  WasmDatabaseShim.prototype = OrigDatabase.prototype;
+  mod.Database = WasmDatabaseShim;
 
   _backend = mod as LbugBackend;
   _isWasm = true;
