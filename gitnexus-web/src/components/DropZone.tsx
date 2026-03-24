@@ -1,6 +1,12 @@
 import { useState, useCallback, useRef, DragEvent } from 'react';
 import { Upload, FileArchive, GitBranch, Loader2, ArrowRight, Key, Eye, EyeOff, Globe, X } from 'lucide-react';
-import { cloneRepository, parseRepositoryUrl, type GitAuthMode } from '../services/git-clone';
+import { canUseHostedGitProxy } from '../../api/proxy-utils';
+import {
+  cloneRepository,
+  isSshRepositoryUrl,
+  parseRepositoryUrl,
+  type GitAuthMode,
+} from '../services/git-clone';
 import { connectToServer, type ConnectToServerResult } from '../services/server-connection';
 import { FileEntry } from '../services/zip';
 
@@ -87,6 +93,11 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
   const handleGitClone = async () => {
     if (!repoUrl.trim()) {
       setError('Please enter a repository URL');
+      return;
+    }
+
+    if (isSshRepositoryUrl(repoUrl)) {
+      setError('SSH URLs are not supported. Use the HTTPS clone URL.');
       return;
     }
 
@@ -200,6 +211,12 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
   const serverProgressPercent = serverProgress.total
     ? Math.round((serverProgress.downloaded / serverProgress.total) * 100)
     : null;
+  const parsedRepoUrl = parseRepositoryUrl(repoUrl);
+  const usesHostedProxyInLocalDev =
+    Boolean(accessToken) &&
+    typeof window !== 'undefined' &&
+    window.location.hostname === 'localhost' &&
+    Boolean(parsedRepoUrl && canUseHostedGitProxy(parsedRepoUrl.cloneUrl));
 
   return (
     <div className="flex items-center justify-center min-h-screen p-8 bg-void">
@@ -383,11 +400,11 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
                 >
                   <option value="auto">Auto detect</option>
                   <option value="github">GitHub token</option>
-                  <option value="gitlab">GitLab token</option>
+                  <option value="gitlab">GitLab token (PAT/OAuth)</option>
                   <option value="basic">Username + password or token</option>
                 </select>
                 <p className="text-xs text-text-muted">
-                  Choose GitLab for self-hosted GitLab instances that do not use a gitlab hostname. Use username + password or token when your company Git server expects regular HTTP Basic auth.
+                  Choose GitLab for personal, group, project, or OAuth access tokens. Use username + password or token for deploy tokens and other HTTP Basic auth flows, including self-hosted GitLab hosts that do not use a gitlab hostname.
                 </p>
               </div>
 
@@ -403,7 +420,7 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
                   placeholder={
                     gitAuthMode === 'basic'
                       ? 'Required for username + password/token auth'
-                      : 'Leave empty to use oauth2 for GitLab PATs'
+                      : 'Leave empty to use oauth2 for GitLab PATs/OAuth tokens'
                   }
                   disabled={isCloning}
                   autoComplete="off"
@@ -420,7 +437,7 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
                   "
                 />
                 <p className="text-xs text-text-muted">
-                  For GitLab PATs, empty usually means `oauth2`. For passwords, deploy tokens, or some corporate GitLab setups, enter the actual username.
+                  For GitLab personal, group, project, or OAuth tokens, empty usually means `oauth2`. For deploy tokens, passwords, or some corporate GitLab setups, enter the actual username and use basic mode.
                 </p>
               </div>
 
@@ -508,7 +525,9 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
             {/* Security note */}
             {accessToken && (
               <p className="mt-3 text-xs text-text-muted text-center">
-                Credential is used only for clone authentication and is not stored.
+                {usesHostedProxyInLocalDev
+                  ? 'Local dev uses the hosted proxy for github.com and gitlab.com, so this credential passes through that proxy during clone authentication.'
+                  : 'Credential is used only for clone authentication and is not stored.'}
               </p>
             )}
 

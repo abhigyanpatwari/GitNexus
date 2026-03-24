@@ -1,5 +1,25 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getConfiguredGitHostPatterns, isGitHostAllowed } from './proxy-utils';
+import {
+  getConfiguredGitHostPatterns,
+  isGitHostAllowed,
+  MAX_PROXY_REQUEST_BODY_BYTES,
+} from './proxy-utils';
+
+const readRequestBody = async (req: AsyncIterable<Buffer | string>): Promise<Buffer> => {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  for await (const chunk of req) {
+    const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+    totalBytes += buffer.byteLength;
+    if (totalBytes > MAX_PROXY_REQUEST_BODY_BYTES) {
+      throw new Error('Request body too large');
+    }
+    chunks.push(buffer);
+  }
+
+  return Buffer.concat(chunks);
+};
 
 /**
  * CORS Proxy for isomorphic-git
@@ -64,11 +84,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Get request body for POST requests
     let body: Buffer | undefined;
     if (req.method === 'POST') {
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) {
-        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
-      }
-      body = Buffer.concat(chunks);
+      body = await readRequestBody(req);
     }
 
     const response = await fetch(url, {
@@ -100,6 +116,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.send(Buffer.from(buffer));
     
   } catch (error) {
+    if (error instanceof Error && error.message === 'Request body too large') {
+      res.status(413).json({ error: 'Proxy request body exceeds 256 MB limit' });
+      return;
+    }
+
     console.error('Proxy error:', error);
     res.status(500).json({ error: 'Proxy request failed', details: String(error) });
   }

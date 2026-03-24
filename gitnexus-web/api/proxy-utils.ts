@@ -1,4 +1,5 @@
 const DEFAULT_GIT_HOST_PATTERNS = ['github.com', 'raw.githubusercontent.com', 'gitlab.com'];
+export const MAX_PROXY_REQUEST_BODY_BYTES = 256 * 1024 * 1024;
 
 const normalizeHostPattern = (value: string): string | null => {
   const trimmed = value.trim().toLowerCase();

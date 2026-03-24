@@ -30,6 +30,23 @@ interface ParsedRepositoryUrl {
   inferredAuthMode: Exclude<GitAuthMode, 'auto'> | null;
 }
 
+const SSH_REPOSITORY_URL_PATTERN = /^(?:ssh:\/\/|git@[^:]+:)/i;
+const GITLAB_REPOSITORY_PAGE_SEGMENTS = new Set([
+  'tree',
+  'blob',
+  'commit',
+  'commits',
+  'compare',
+  'merge_requests',
+  'issues',
+  'wikis',
+  'snippets',
+  'pipelines',
+  'tags',
+  'branches',
+  'releases',
+]);
+
 const inferGitAuthMode = (host: string): Exclude<GitAuthMode, 'auto'> | null => {
   const normalizedHost = host.toLowerCase();
 
@@ -40,12 +57,50 @@ const inferGitAuthMode = (host: string): Exclude<GitAuthMode, 'auto'> | null => 
   if (
     normalizedHost === 'gitlab.com' ||
     normalizedHost.endsWith('.gitlab.com') ||
-    normalizedHost.includes('gitlab')
+    normalizedHost.startsWith('gitlab.')
   ) {
     return 'gitlab';
   }
 
   return null;
+};
+
+export const isSshRepositoryUrl = (url: string): boolean =>
+  SSH_REPOSITORY_URL_PATTERN.test(url.trim());
+
+const getRepositoryPathSegments = (parsedUrl: URL): string[] | null => {
+  const segments = parsedUrl.pathname.split('/').filter(Boolean);
+  if (segments.length < 2) {
+    return null;
+  }
+
+  const gitSuffixIndex = segments.findIndex((segment) => segment.toLowerCase().endsWith('.git'));
+  if (gitSuffixIndex >= 1) {
+    return segments.slice(0, gitSuffixIndex + 1);
+  }
+
+  const inferredAuthMode = inferGitAuthMode(parsedUrl.hostname);
+  if (inferredAuthMode === 'github') {
+    return segments.slice(0, 2);
+  }
+
+  const gitLabRouteSeparatorIndex = segments.indexOf('-');
+  if (gitLabRouteSeparatorIndex >= 2) {
+    return segments.slice(0, gitLabRouteSeparatorIndex);
+  }
+
+  if (inferredAuthMode === 'gitlab') {
+    const pageSegmentIndex = segments.findIndex(
+      (segment, index) =>
+        index >= 2 && GITLAB_REPOSITORY_PAGE_SEGMENTS.has(segment.toLowerCase())
+    );
+
+    if (pageSegmentIndex >= 2) {
+      return segments.slice(0, pageSegmentIndex);
+    }
+  }
+
+  return segments;
 };
 
 const selectProxyBase = (targetUrl: string): string => {
@@ -59,10 +114,11 @@ const selectProxyBase = (targetUrl: string): string => {
  * - In development (localhost): uses the hosted Vercel proxy for reliability
  * - In production: uses the local /api/proxy endpoint
  */
-const createProxiedHttp = (): typeof http => {
+const createProxiedHttp = (targetUrl: string): typeof http => {
+  const proxyBase = selectProxyBase(targetUrl);
+
   return {
     request: async (config) => {
-      const proxyBase = selectProxyBase(config.url);
       const proxyUrl = `${proxyBase}?url=${encodeURIComponent(config.url)}`;
       
       // Call the original http.request with the proxied URL
@@ -85,6 +141,7 @@ const createProxiedHttp = (): typeof http => {
 export const parseRepositoryUrl = (url: string): ParsedRepositoryUrl | null => {
   const trimmed = url.trim();
   if (!trimmed) return null;
+  if (isSshRepositoryUrl(trimmed)) return null;
 
   const candidate = /^[a-z][a-z\d+\-.]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 
@@ -99,8 +156,8 @@ export const parseRepositoryUrl = (url: string): ParsedRepositoryUrl | null => {
     return null;
   }
 
-  const segments = parsedUrl.pathname.split('/').filter(Boolean);
-  if (segments.length < 2) {
+  const segments = getRepositoryPathSegments(parsedUrl);
+  if (!segments) {
     return null;
   }
 
@@ -175,6 +232,10 @@ export const cloneRepository = async (
   authMode: GitAuthMode = 'auto',
   username?: string
 ): Promise<FileEntry[]> => {
+  if (isSshRepositoryUrl(url)) {
+    throw new Error('SSH URLs are not supported. Use the HTTPS clone URL.');
+  }
+
   const parsed = parseRepositoryUrl(url);
   if (!parsed) {
     throw new Error('Invalid repository URL. Use an HTTPS GitHub, GitLab, or self-hosted GitLab URL.');
@@ -189,7 +250,7 @@ export const cloneRepository = async (
   try {
     onProgress?.('cloning', 0);
 
-    const httpClient = createProxiedHttp();
+    const httpClient = createProxiedHttp(parsed.cloneUrl);
     
     // Clone with shallow depth for speed
     await git.clone({

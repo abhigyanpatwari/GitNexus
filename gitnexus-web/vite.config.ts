@@ -5,7 +5,11 @@ import wasm from 'vite-plugin-wasm';
 import topLevelAwait from 'vite-plugin-top-level-await';
 import { viteStaticCopy } from 'vite-plugin-static-copy';
 import path from 'path';
-import { getConfiguredGitHostPatterns, isGitHostAllowed } from './api/proxy-utils';
+import {
+  getConfiguredGitHostPatterns,
+  isGitHostAllowed,
+  MAX_PROXY_REQUEST_BODY_BYTES,
+} from './api/proxy-utils';
 
 const gitProxyCorsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -13,15 +17,16 @@ const gitProxyCorsHeaders = {
   'Access-Control-Allow-Headers': 'Content-Type, Authorization, Git-Protocol, Accept',
 };
 
-const isLocalDevAllowedGitHost = (url: URL): boolean => {
+const isAllowedGitProxyTarget = (
+  url: URL,
+  env: Record<string, string | undefined> = process.env
+): boolean => {
   if (url.protocol !== 'https:') return false;
 
   const configuredHosts = getConfiguredGitHostPatterns();
   if (isGitHostAllowed(url.hostname, configuredHosts)) return true;
 
-  // Local dev should be able to talk to corporate/self-hosted Git servers
-  // without forcing environment configuration first.
-  return true;
+  return env.GITNEXUS_DEV_ALLOW_ALL_HOSTS === '1';
 };
 
 const writeJson = (
@@ -34,7 +39,25 @@ const writeJson = (
   res.end(JSON.stringify(payload));
 };
 
-const createDevGitProxyMiddleware = () => async (
+const readRequestBody = async (
+  req: AsyncIterable<Buffer | string>
+): Promise<Buffer> => {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  for await (const chunk of req) {
+    const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+    totalBytes += buffer.byteLength;
+    if (totalBytes > MAX_PROXY_REQUEST_BODY_BYTES) {
+      throw new Error('Request body too large');
+    }
+    chunks.push(buffer);
+  }
+
+  return Buffer.concat(chunks);
+};
+
+const createGitProxyMiddleware = () => async (
   req: {
     url?: string;
     method?: string;
@@ -77,9 +100,9 @@ const createDevGitProxyMiddleware = () => async (
     return;
   }
 
-  if (!isLocalDevAllowedGitHost(parsedUrl)) {
+  if (!isAllowedGitProxyTarget(parsedUrl)) {
     writeJson(res, 403, {
-      error: `Git host "${parsedUrl.hostname}" is not allowed in local dev. Use an HTTPS Git host.`,
+      error: `Git host "${parsedUrl.hostname}" is not allowed. Set GITNEXUS_ALLOWED_GIT_HOSTS or GITNEXUS_DEV_ALLOW_ALL_HOSTS=1 for local dev.`,
     });
     return;
   }
@@ -104,12 +127,7 @@ const createDevGitProxyMiddleware = () => async (
 
     let body: Buffer | undefined;
     if (req.method === 'POST' && req[Symbol.asyncIterator]) {
-      const requestStream = req as AsyncIterable<Buffer | string>;
-      const chunks: Buffer[] = [];
-      for await (const chunk of requestStream) {
-        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
-      }
-      body = Buffer.concat(chunks);
+      body = await readRequestBody(req as AsyncIterable<Buffer | string>);
     }
 
     const response = await fetch(targetUrl, {
@@ -131,8 +149,19 @@ const createDevGitProxyMiddleware = () => async (
     res.statusCode = response.status;
     res.end(Buffer.from(await response.arrayBuffer()));
   } catch (error) {
+    if (error instanceof Error && error.message === 'Request body too large') {
+      writeJson(res, 413, { error: 'Proxy request body exceeds 256 MB limit' });
+      return;
+    }
+
     writeJson(res, 500, { error: 'Proxy request failed', details: String(error) });
   }
+};
+
+const attachGitProxy = (
+  server: { middlewares: { use: (handler: ReturnType<typeof createGitProxyMiddleware>) => void } }
+) => {
+  server.middlewares.use(createGitProxyMiddleware());
 };
 
 export default defineConfig({
@@ -151,9 +180,12 @@ export default defineConfig({
       ]
     }),
     {
-      name: 'gitnexus-dev-git-proxy',
+      name: 'gitnexus-git-proxy',
       configureServer(server) {
-        server.middlewares.use(createDevGitProxyMiddleware());
+        attachGitProxy(server);
+      },
+      configurePreviewServer(server) {
+        attachGitProxy(server);
       },
     },
   ],
