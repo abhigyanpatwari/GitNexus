@@ -8,14 +8,9 @@ import { suffixResolve } from './utils.js';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import type { ImportResult, ResolveCtx } from './types.js';
 import { resolveStandard } from './standard.js';
+import type { CSharpProjectConfig } from '../language-config.js';
 
-/** C# project config parsed from .csproj files */
-export interface CSharpProjectConfig {
-  /** Root namespace from <RootNamespace> or assembly name (default: project directory name) */
-  rootNamespace: string;
-  /** Directory containing the .csproj file */
-  projectDir: string;
-}
+export type { CSharpProjectConfig };
 
 /**
  * Resolve a C# using-directive import path to matching .cs files (low-level helper).

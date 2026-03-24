@@ -64,6 +64,7 @@ export function getProviderForFile(filePath: string): LanguageProvider | null {
 /** Pre-computed list of providers that have implicit import wiring (e.g., Swift).
  *  Built once at module load — avoids iterating all 13 providers per call. */
 export const providersWithImplicitWiring = Object.values(providers)
-  .filter(p => p.implicitImportWirer != null);
+  .filter((p): p is LanguageProvider & { implicitImportWirer: NonNullable<LanguageProvider['implicitImportWirer']> } =>
+    p.implicitImportWirer != null
+  );
 
-export type { LanguageProvider } from '../language-provider.js';

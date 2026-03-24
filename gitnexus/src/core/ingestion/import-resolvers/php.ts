@@ -6,15 +6,9 @@
 import type { SuffixIndex } from './utils.js';
 import { suffixResolve } from './utils.js';
 import type { ImportResult, ResolveCtx } from './types.js';
+import type { ComposerConfig } from '../language-config.js';
 
-/** PHP Composer PSR-4 autoload config */
-export interface ComposerConfig {
-  /** Map of namespace prefix -> directory (e.g., "App\\" -> "app/") */
-  psr4: Map<string, string>;
-  /** PSR-4 entries sorted by namespace length descending (longest match wins).
-   *  Cached once at config load time to avoid re-sorting on every import. */
-  psr4Sorted?: readonly [string, string][];
-}
+export type { ComposerConfig };
 
 /** Get or compute the sorted PSR-4 entries (cached after first call). */
 function getSortedPsr4(config: ComposerConfig): readonly [string, string][] {

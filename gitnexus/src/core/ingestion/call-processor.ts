@@ -24,7 +24,6 @@ import {
 import { buildTypeEnv, isSubclassOf } from './type-env.js';
 import type { ConstructorBinding } from './type-env.js';
 import { getTreeSitterBufferSize } from './constants.js';
-import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import type { ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, ExtractedFetchCall, FileConstructorBindings } from './workers/parse-worker.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
@@ -1539,7 +1538,7 @@ export const extractFetchCallsFromFiles = async (
     if (!language) continue;
     if (!isLanguageAvailable(language)) continue;
 
-    const queryStr = LANGUAGE_QUERIES[language];
+    const queryStr = getProvider(language).treeSitterQueries;
     if (!queryStr) continue;
 
     await loadLanguage(language, file.path);

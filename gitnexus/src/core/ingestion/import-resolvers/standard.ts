@@ -9,14 +9,9 @@ import { tryResolveWithExtensions, suffixResolve } from './utils.js';
 import { resolveRustImportInternal } from './rust.js';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import type { ImportResult, ImportResolverFn, ResolveCtx } from './types.js';
+import type { TsconfigPaths } from '../language-config.js';
 
-/** TypeScript path alias config parsed from tsconfig.json */
-export interface TsconfigPaths {
-  /** Map of alias prefix -> target prefix (e.g., "@/" -> "src/") */
-  aliases: Map<string, string>;
-  /** Base URL for path resolution (relative to repo root) */
-  baseUrl: string;
-}
+export type { TsconfigPaths };
 
 /** Max entries in the resolve cache. Beyond this, entries are evicted.
  *  100K entries ≈ 15MB — covers the most common import patterns. */

@@ -4,9 +4,9 @@
  * Extracted from import-resolution.ts to co-locate types with their consumers.
  */
 
-import type { TsconfigPaths, GoModuleConfig, CSharpProjectConfig, ComposerConfig } from './index.js';
+import type { TsconfigPaths, GoModuleConfig, CSharpProjectConfig, ComposerConfig } from '../language-config.js';
 import type { SwiftPackageConfig } from '../language-config.js';
-import type { ImportResolutionContext } from '../import-processor.js';
+import type { SuffixIndex } from './utils.js';
 
 /**
  * Result of resolving an import via language-specific dispatch.
@@ -26,6 +26,15 @@ export interface ImportConfigs {
   composerConfig: ComposerConfig | null;
   swiftPackageConfig: SwiftPackageConfig | null;
   csharpConfigs: CSharpProjectConfig[];
+}
+
+/** Pre-built lookup structures for import resolution. Build once, reuse across chunks. */
+export interface ImportResolutionContext {
+  allFilePaths: Set<string>;
+  allFileList: string[];
+  normalizedFileList: string[];
+  index: SuffixIndex;
+  resolveCache: Map<string, string | null>;
 }
 
 /** Full context for import resolution: file lookups + language configs. */

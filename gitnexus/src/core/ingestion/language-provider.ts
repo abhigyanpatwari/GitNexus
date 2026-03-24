@@ -18,6 +18,11 @@ import type { NamedBindingExtractorFn } from './named-bindings/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { NodeLabel } from '../graph/types.js';
 
+// ── Shared type aliases ────────────────────────────────────────────────────
+/** Tree-sitter query captures: capture name → AST node. Uses `any` because
+ *  SyntaxNode comes from an optional native module not available in all contexts. */
+export type CaptureMap = Record<string, SyntaxNode | undefined>;
+
 // ── Strategy tag types ─────────────────────────────────────────────────────
 /** MRO strategy for multiple inheritance resolution. */
 export type MroStrategy = 'first-wins' | 'c3' | 'leftmost-base' | 'implements-split' | 'qualified-syntax';
@@ -100,7 +105,7 @@ interface LanguageProviderConfig {
   readonly descriptionExtractor?: (
     nodeLabel: NodeLabel,
     nodeName: string,
-    captureMap: Record<string, any>,
+    captureMap: CaptureMap,
   ) => string | undefined;
   /** Detect if a file contains framework route definitions (e.g., Laravel routes.php).
    *  When true, the worker extracts routes via the language's route extraction logic.

@@ -8,7 +8,6 @@
  */
 
 import { findSiblingChild, type SyntaxNode } from './utils/ast-helpers.js';
-import { SupportedLanguages } from '../../config/supported-languages.js';
 
 /** Handler type: given a node and symbol name, return true if the symbol is exported/public. */
 export type ExportChecker = (node: SyntaxNode, name: string) => boolean;
@@ -215,37 +214,6 @@ export const swiftExportChecker: ExportChecker = (node, _name) => {
   return true;
 };
 
-// ============================================================================
-// Public API
-// ============================================================================
+/** Ruby: all top-level definitions are public (no export syntax). */
+export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 
-/** Internal lookup for isNodeExported — uses the now-exported checker functions directly.
- *  No circular dependency since all checkers are defined in this file. */
-const checkersByLanguage: Record<string, ExportChecker> = {
-  [SupportedLanguages.JavaScript]: tsExportChecker,
-  [SupportedLanguages.TypeScript]: tsExportChecker,
-  [SupportedLanguages.Python]: pythonExportChecker,
-  [SupportedLanguages.Java]: javaExportChecker,
-  [SupportedLanguages.CSharp]: csharpExportChecker,
-  [SupportedLanguages.Go]: goExportChecker,
-  [SupportedLanguages.Rust]: rustExportChecker,
-  [SupportedLanguages.Kotlin]: kotlinExportChecker,
-  [SupportedLanguages.C]: cCppExportChecker,
-  [SupportedLanguages.CPlusPlus]: cCppExportChecker,
-  [SupportedLanguages.PHP]: phpExportChecker,
-  [SupportedLanguages.Swift]: swiftExportChecker,
-  [SupportedLanguages.Ruby]: (_node, _name) => true,
-};
-
-/**
- * Check if a tree-sitter node is exported/public in its language.
- * @param node - The tree-sitter AST node
- * @param name - The symbol name
- * @param language - The programming language
- * @returns true if the symbol is exported/public
- */
-export const isNodeExported = (node: SyntaxNode, name: string, language: SupportedLanguages): boolean => {
-  const checker = checkersByLanguage[language];
-  if (!checker) return false;
-  return checker(node, name);
-};

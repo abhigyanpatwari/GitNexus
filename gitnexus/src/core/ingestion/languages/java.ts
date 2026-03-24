@@ -10,7 +10,6 @@
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
 import { javaTypeConfig } from '../type-extractors/jvm.js';
-import { noRouting } from '../call-routing.js';
 import { javaExportChecker } from '../export-detection.js';
 import { resolveJavaImport } from '../import-resolvers/jvm.js';
 import { extractJavaNamedBindings } from '../named-bindings/java.js';
@@ -23,7 +22,6 @@ export const javaProvider = defineLanguage({
   typeConfig: javaTypeConfig,
   exportChecker: javaExportChecker,
   importResolver: resolveJavaImport,
-  callRouter: noRouting,
   namedBindingExtractor: extractJavaNamedBindings,
   interfaceNamePattern: /^I[A-Z]/,
   mroStrategy: 'implements-split',

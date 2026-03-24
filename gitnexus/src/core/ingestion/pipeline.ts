@@ -7,7 +7,7 @@ import {
   processImportsFromExtracted,
   buildImportResolutionContext
 } from './import-processor.js';
-import { EMPTY_INDEX } from './import-resolvers/index.js';
+import { EMPTY_INDEX } from './import-resolvers/utils.js';
 import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracted, processRoutesFromExtracted, processNextjsFetchRoutes, extractFetchCallsFromFiles, seedCrossFileReceiverTypes, buildImportedReturnTypes, buildImportedRawReturnTypes, type ExportedTypeMap, buildExportedTypeMapFromGraph } from './call-processor.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from './route-extractors/nextjs.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';
@@ -99,13 +99,6 @@ const CHUNK_BYTE_BUDGET = 20 * 1024 * 1024; // 20MB
 /** Max AST trees to keep in LRU cache */
 const AST_CACHE_CAP = 50;
 
-// MIDDLEWARE_STOP_KEYWORDS and extractMiddlewareChain moved to ./route-extractors/middleware.ts
-// Re-export for backward compatibility
-export { extractMiddlewareChain, MIDDLEWARE_STOP_KEYWORDS } from './route-extractors/middleware.js';
-
-// detectStatusCode and extractResponseShapes moved to ./route-extractors/response-shapes.ts
-// Re-export for backward compatibility
-export { detectStatusCode, extractResponseShapes } from './route-extractors/response-shapes.js';
 
 /** Minimum percentage of files that must benefit from cross-file seeding to justify the re-resolution pass. */
 const CROSS_FILE_SKIP_THRESHOLD = 0.03;

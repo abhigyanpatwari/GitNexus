@@ -1,7 +1,7 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import type { NamedBinding } from './types.js';
 
-export function extractCsharpNamedBindings(importNode: SyntaxNode): NamedBinding[] | undefined {
+export function extractCSharpNamedBindings(importNode: SyntaxNode): NamedBinding[] | undefined {
   // using_directive — three forms:
   //   using Alias = NS.Type;          → aliasIdent + qualifiedName
   //   using static NS.Type;           → static + qualifiedName (no alias)

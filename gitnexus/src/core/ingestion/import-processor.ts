@@ -3,7 +3,7 @@ import { ASTCache } from './ast-cache.js';
 import Parser from 'tree-sitter';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { getProvider, getProviderForFile, providersWithImplicitWiring } from './languages/index.js';
-import type { LanguageProvider } from './languages/index.js';
+import type { LanguageProvider } from './language-provider.js';
 import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename } from './utils/language-detection.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
@@ -11,21 +11,13 @@ import { yieldToEventLoop } from './utils/event-loop.js';
 import type { ExtractedImport } from './workers/parse-worker.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import { loadImportConfigs } from './language-config.js';
-import { buildSuffixIndex } from './import-resolvers/index.js';
+import { buildSuffixIndex } from './import-resolvers/utils.js';
 import type { ResolutionContext, ModuleAliasMap } from './resolution-context.js';
-import type { SuffixIndex } from './import-resolvers/index.js';
-import type { ImportResult, ResolveCtx } from './import-resolvers/types.js';
+import type { SuffixIndex } from './import-resolvers/utils.js';
+import type { ImportResult, ResolveCtx, ImportResolutionContext } from './import-resolvers/types.js';
 import type { NamedBinding } from './named-bindings/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 
-// Re-export resolver types for consumers
-export type {
-  SuffixIndex,
-  TsconfigPaths,
-  GoModuleConfig,
-  CSharpProjectConfig,
-  ComposerConfig
-} from './import-resolvers/index.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -54,7 +46,7 @@ function wireImplicitImports(
 
   for (const [provider, langFiles] of grouped) {
     if (langFiles.length > 1) {
-      provider.implicitImportWirer!(langFiles, importMap, addImportEdge, projectConfig);
+      provider.implicitImportWirer(langFiles, importMap, addImportEdge, projectConfig);
     }
   }
 }
@@ -85,14 +77,7 @@ export function isFileInPackageDir(filePath: string, dirSuffix: string): boolean
   return !afterDir.includes('/');
 }
 
-/** Pre-built lookup structures for import resolution. Build once, reuse across chunks. */
-export interface ImportResolutionContext {
-  allFilePaths: Set<string>;
-  allFileList: string[];
-  normalizedFileList: string[];
-  index: SuffixIndex;
-  resolveCache: Map<string, string | null>;
-}
+// ImportResolutionContext is defined in ./import-resolvers/types.ts — re-exported here for consumers.
 
 export function buildImportResolutionContext(allPaths: string[]): ImportResolutionContext {
   const allFileList = allPaths;

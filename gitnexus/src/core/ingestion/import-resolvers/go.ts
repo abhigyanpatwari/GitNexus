@@ -6,12 +6,9 @@
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import type { ImportResult, ResolveCtx } from './types.js';
 import { resolveStandard } from './standard.js';
+import type { GoModuleConfig } from '../language-config.js';
 
-/** Go module config parsed from go.mod */
-export interface GoModuleConfig {
-  /** Module path (e.g., "github.com/user/repo") */
-  modulePath: string;
-}
+export type { GoModuleConfig };
 
 /**
  * Extract the package directory suffix from a Go import path.

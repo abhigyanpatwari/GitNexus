@@ -10,7 +10,6 @@
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
 import { kotlinTypeConfig } from '../type-extractors/jvm.js';
-import { noRouting } from '../call-routing.js';
 import { kotlinExportChecker } from '../export-detection.js';
 import { resolveKotlinImport } from '../import-resolvers/jvm.js';
 import { extractKotlinNamedBindings } from '../named-bindings/kotlin.js';
@@ -25,7 +24,6 @@ export const kotlinProvider = defineLanguage({
   typeConfig: kotlinTypeConfig,
   exportChecker: kotlinExportChecker,
   importResolver: resolveKotlinImport,
-  callRouter: noRouting,
   namedBindingExtractor: extractKotlinNamedBindings,
   importPathPreprocessor: appendKotlinWildcard,
   mroStrategy: 'implements-split',

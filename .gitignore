@@ -82,3 +82,15 @@ GitNexus.sln
 .worktrees/
 
 /github/scripts/triage/__pycache__/
+
+.claude-flow/
+
+.claude/agents/
+.claude/commands/
+.claude/helpers
+.claude/skills/
+!.claude/skills/gitnexus/
+
+.history/
+
+.swarm/

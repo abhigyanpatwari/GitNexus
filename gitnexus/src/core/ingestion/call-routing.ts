@@ -11,6 +11,8 @@
  * Keep both copies in sync until a shared package is introduced.
  */
 
+import type { SyntaxNode } from './utils/ast-helpers.js';
+
 // ── Call routing dispatch table ─────────────────────────────────────────────
 
 /** null = this call was not routed; fall through to default call handling */
@@ -24,11 +26,8 @@ export type CallRoutingResult = RubyCallRouting | null;
  */
 export type CallRouter = (
   calledName: string,
-  callNode: any,
+  callNode: SyntaxNode,
 ) => CallRoutingResult;
-
-/** No-op router: returns null for every call (passthrough to normal processing) */
-export const noRouting: CallRouter = () => null;
 
 // ── Result types ────────────────────────────────────────────────────────────
 
@@ -72,7 +71,7 @@ const MAX_PARENT_DEPTH = 50;
  * @param callNode   - The tree-sitter `call` AST node
  * @returns A discriminated union describing the call's semantic role
  */
-export function routeRubyCall(calledName: string, callNode: any): RubyCallRouting {
+export function routeRubyCall(calledName: string, callNode: SyntaxNode): RubyCallRouting {
   // ── require / require_relative → import ─────────────────────────────────
   if (calledName === 'require' || calledName === 'require_relative') {
     const argList = callNode.childForFieldName?.('arguments');

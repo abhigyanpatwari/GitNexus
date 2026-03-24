@@ -11,7 +11,6 @@
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as cCppConfig } from '../type-extractors/c-cpp.js';
-import { noRouting } from '../call-routing.js';
 import { cCppExportChecker } from '../export-detection.js';
 import { resolveCImport, resolveCppImport } from '../import-resolvers/standard.js';
 import { C_QUERIES, CPP_QUERIES } from '../tree-sitter-queries.js';
@@ -33,7 +32,6 @@ export const cProvider = defineLanguage({
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
   importResolver: resolveCImport,
-  callRouter: noRouting,
   importSemantics: 'wildcard',
   labelOverride: cppLabelOverride,
 });
@@ -45,7 +43,6 @@ export const cppProvider = defineLanguage({
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
   importResolver: resolveCppImport,
-  callRouter: noRouting,
   importSemantics: 'wildcard',
   mroStrategy: 'leftmost-base',
   labelOverride: cppLabelOverride,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { routeRubyCall, noRouting } from '../../../src/core/ingestion/call-routing.js';
+import { routeRubyCall } from '../../../src/core/ingestion/call-routing.js';
 
 // ── Mock AST node helpers ────────────────────────────────────────────────────
 
@@ -648,16 +648,9 @@ describe('routeRubyCall — default (unknown method name)', () => {
   });
 });
 
-// ── noRouting passthrough ─────────────────────────────────────────────────────
+// ── routeRubyCall passthrough ────────────────────────────────────────────────
 
-describe('noRouting passthrough', () => {
-  it('returns null for every call', () => {
-    const dummyNode = { type: 'call', text: '' };
-    expect(noRouting('require', dummyNode)).toBeNull();
-    expect(noRouting('include', dummyNode)).toBeNull();
-    expect(noRouting('render', dummyNode)).toBeNull();
-  });
-
+describe('routeRubyCall passthrough', () => {
   it('routeRubyCall delegates correctly for require', () => {
     const node = makeRequireCallNode('json');
     const result = routeRubyCall('require', node);
