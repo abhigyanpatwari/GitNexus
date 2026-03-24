@@ -8,14 +8,14 @@
  */
 
 import { SupportedLanguages } from '../../../config/supported-languages.js';
-import { createLanguageProvider } from '../language-provider.js';
+import { defineLanguage } from '../language-provider.js';
 import { typeConfigs } from '../type-extractors/index.js';
 import { callRouters } from '../call-routing.js';
 import { exportCheckers } from '../export-detection.js';
-import { importResolvers, namedBindingExtractors } from '../import-resolution.js';
+import { importResolvers } from '../import-resolution.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 
-export const rubyProvider = createLanguageProvider({
+export const rubyProvider = defineLanguage({
   id: SupportedLanguages.Ruby,
   extensions: ['.rb', '.rake', '.gemspec'],
   treeSitterQueries: LANGUAGE_QUERIES[SupportedLanguages.Ruby],
@@ -23,6 +23,5 @@ export const rubyProvider = createLanguageProvider({
   exportChecker: exportCheckers[SupportedLanguages.Ruby],
   importResolver: importResolvers[SupportedLanguages.Ruby],
   callRouter: callRouters[SupportedLanguages.Ruby],
-  namedBindingExtractor: namedBindingExtractors[SupportedLanguages.Ruby],
   importSemantics: 'wildcard',
 });

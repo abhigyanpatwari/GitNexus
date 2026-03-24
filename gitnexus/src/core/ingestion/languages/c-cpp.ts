@@ -9,27 +9,24 @@
  */
 
 import { SupportedLanguages } from '../../../config/supported-languages.js';
-import { createLanguageProvider } from '../language-provider.js';
+import { defineLanguage } from '../language-provider.js';
 import { typeConfigs } from '../type-extractors/index.js';
 import { callRouters } from '../call-routing.js';
 import { exportCheckers } from '../export-detection.js';
 import { importResolvers } from '../import-resolution.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 
-/** Walk up the AST to check if a function_definition is inside a class/struct body.
- *  Shared by both C and C++ providers — C structs cannot have methods but the
- *  check is harmless and keeps the two providers symmetric. */
-function cppLabelOverride(functionNode: any, defaultLabel: string): string | null {
-  if (defaultLabel !== 'Function') return defaultLabel;
-  let ancestor = functionNode?.parent;
-  while (ancestor) {
-    if (ancestor.type === 'class_specifier' || ancestor.type === 'struct_specifier') return null;
-    ancestor = ancestor.parent;
-  }
-  return defaultLabel;
-}
+import { isCppInsideClassOrStruct } from '../ast-helpers.js';
+import type { LanguageProvider } from '../language-provider.js';
 
-export const cProvider = createLanguageProvider({
+/** Label override shared by C and C++: skip function_definition captures inside class/struct
+ *  bodies (they're duplicates of definition.method captures). */
+const cppLabelOverride: NonNullable<LanguageProvider['labelOverride']> = (functionNode, defaultLabel) => {
+  if (defaultLabel !== 'Function') return defaultLabel;
+  return isCppInsideClassOrStruct(functionNode) ? null : defaultLabel;
+};
+
+export const cProvider = defineLanguage({
   id: SupportedLanguages.C,
   extensions: ['.c'],
   treeSitterQueries: LANGUAGE_QUERIES[SupportedLanguages.C],
@@ -41,7 +38,7 @@ export const cProvider = createLanguageProvider({
   labelOverride: cppLabelOverride,
 });
 
-export const cppProvider = createLanguageProvider({
+export const cppProvider = defineLanguage({
   id: SupportedLanguages.CPlusPlus,
   extensions: ['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh'],
   treeSitterQueries: LANGUAGE_QUERIES[SupportedLanguages.CPlusPlus],

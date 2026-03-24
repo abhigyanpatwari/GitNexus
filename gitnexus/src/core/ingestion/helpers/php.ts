@@ -8,6 +8,9 @@
  * Extracted from parse-worker.ts to sit behind the LanguageProvider abstraction.
  */
 
+import { findDescendant, extractStringContent } from '../ast-helpers.js';
+import type { NodeLabel } from '../../graph/types.js';
+
 /** Eloquent model properties whose array values are worth indexing. */
 const ELOQUENT_ARRAY_PROPS = new Set(['fillable', 'casts', 'hidden', 'guarded', 'with', 'appends']);
 
@@ -17,23 +20,6 @@ const ELOQUENT_RELATIONS = new Set([
   'morphTo', 'morphMany', 'morphOne', 'morphToMany', 'morphedByMany',
   'hasManyThrough', 'hasOneThrough',
 ]);
-
-export function findDescendant(node: any, type: string): any {
-  if (node.type === type) return node;
-  for (const child of (node.children ?? [])) {
-    const found = findDescendant(child, type);
-    if (found) return found;
-  }
-  return null;
-}
-
-export function extractStringContent(node: any): string | null {
-  if (!node) return null;
-  const content = node.children?.find((c: any) => c.type === 'string_content');
-  if (content) return content.text;
-  if (node.type === 'string_content') return node.text;
-  return null;
-}
 
 /**
  * For a PHP property_declaration node, extract array values as a description string.
@@ -110,7 +96,7 @@ function extractEloquentRelationDescription(methodNode: any): string | null {
  * Extracts Eloquent model property metadata and relationship descriptions.
  */
 export function phpDescriptionExtractor(
-  nodeLabel: string,
+  nodeLabel: NodeLabel,
   nodeName: string,
   captureMap: Record<string, any>,
 ): string | undefined {
@@ -121,4 +107,10 @@ export function phpDescriptionExtractor(
     return extractEloquentRelationDescription(captureMap['definition.method']) ?? undefined;
   }
   return undefined;
+}
+
+/** Detect Laravel route files by path convention. */
+export function isPhpRouteFile(filePath: string): boolean {
+  return filePath.endsWith('.php') &&
+    (filePath.includes('/routes/') || filePath.startsWith('routes/'));
 }

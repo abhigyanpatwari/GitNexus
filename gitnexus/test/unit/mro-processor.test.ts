@@ -102,7 +102,7 @@ describe('computeMRO', () => {
 
       // Leftmost base (B) wins
       expect(fooAmbiguity!.resolvedTo).toBe(bFoo);
-      expect(fooAmbiguity!.reason).toContain('C++ leftmost');
+      expect(fooAmbiguity!.reason).toContain('leftmost base');
       expect(fooAmbiguity!.reason).toContain('B');
 
       // OVERRIDES edge emitted
@@ -218,7 +218,7 @@ describe('computeMRO', () => {
       expect(fooAmbiguity).toBeDefined();
       // C3 linearization for D(B, C): B comes first
       expect(fooAmbiguity!.resolvedTo).toBe(bFoo);
-      expect(fooAmbiguity!.reason).toContain('Python C3');
+      expect(fooAmbiguity!.reason).toContain('C3 MRO');
     });
   });
 

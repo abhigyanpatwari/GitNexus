@@ -248,5 +248,6 @@ export const exportCheckers = {
  */
 export const isNodeExported = (node: SyntaxNode, name: string, language: SupportedLanguages): boolean => {
   const checker = exportCheckers[language];
+  if (!checker) return false;
   return checker(node, name);
 };

@@ -9,14 +9,14 @@
  */
 
 import { SupportedLanguages } from '../../../config/supported-languages.js';
-import { createLanguageProvider } from '../language-provider.js';
+import { defineLanguage } from '../language-provider.js';
 import { typeConfigs } from '../type-extractors/index.js';
 import { callRouters } from '../call-routing.js';
 import { exportCheckers } from '../export-detection.js';
 import { importResolvers, namedBindingExtractors } from '../import-resolution.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 
-export const typescriptProvider = createLanguageProvider({
+export const typescriptProvider = defineLanguage({
   id: SupportedLanguages.TypeScript,
   extensions: ['.ts', '.tsx'],
   treeSitterQueries: LANGUAGE_QUERIES[SupportedLanguages.TypeScript],
@@ -27,7 +27,7 @@ export const typescriptProvider = createLanguageProvider({
   namedBindingExtractor: namedBindingExtractors[SupportedLanguages.TypeScript],
 });
 
-export const javascriptProvider = createLanguageProvider({
+export const javascriptProvider = defineLanguage({
   id: SupportedLanguages.JavaScript,
   extensions: ['.js', '.jsx'],
   treeSitterQueries: LANGUAGE_QUERIES[SupportedLanguages.JavaScript],

@@ -190,7 +190,8 @@ const TYPE_PRESERVING_METHODS = new Set([
 const findEnclosingFunction = (
   node: SyntaxNode,
   filePath: string,
-  ctx: ResolutionContext
+  ctx: ResolutionContext,
+  provider: import('./language-provider.js').LanguageProvider,
 ): string | null => {
   let current = node.parent;
 
@@ -204,7 +205,13 @@ const findEnclosingFunction = (
           return resolved.candidates[0].nodeId;
         }
 
-        return generateId(label, `${filePath}:${funcName}`);
+        // Apply labelOverride so label matches the definition phase (single source of truth).
+        let finalLabel = label;
+        if (provider.labelOverride) {
+          const override = provider.labelOverride(current, label);
+          if (override !== null) finalLabel = override;
+        }
+        return generateId(finalLabel, `${filePath}:${funcName}`);
       }
     }
     current = current.parent;
@@ -402,7 +409,7 @@ export const processCalls = async (
         }
         // Fall back to verified constructor bindings (mirrors CALLS resolution tier 2)
         if (!receiverTypeName && receiverText && receiverIndex.size > 0) {
-          const enclosing = findEnclosingFunction(captureMap['assignment'], file.path, ctx);
+          const enclosing = findEnclosingFunction(captureMap['assignment'], file.path, ctx, provider);
           const funcName = enclosing ? extractFuncNameFromSourceId(enclosing) : '';
           receiverTypeName = lookupReceiverType(receiverIndex, funcName, receiverText);
         }
@@ -416,7 +423,7 @@ export const processCalls = async (
           }
         }
         if (receiverTypeName) {
-          const enclosing = findEnclosingFunction(captureMap['assignment'], file.path, ctx);
+          const enclosing = findEnclosingFunction(captureMap['assignment'], file.path, ctx, provider);
           const srcId = enclosing || generateId('File', file.path);
           // Defer resolution: Ruby attr_accessor properties are registered during
           // this same loop, so cross-file lookups fail if the declaring file hasn't
@@ -536,7 +543,7 @@ export const processCalls = async (
       }
       // Fall back to verified constructor bindings for return type inference
       if (!receiverTypeName && receiverName && receiverIndex.size > 0) {
-        const enclosingFunc = findEnclosingFunction(callNode, file.path, ctx);
+        const enclosingFunc = findEnclosingFunction(callNode, file.path, ctx, provider);
         const funcName = enclosingFunc ? extractFuncNameFromSourceId(enclosingFunc) : '';
         receiverTypeName = lookupReceiverType(receiverIndex, funcName, receiverName);
       }
@@ -552,7 +559,7 @@ export const processCalls = async (
         }
       }
       // Hoist sourceId so it's available for ACCESSES edge emission during chain walk.
-      const enclosingFuncId = findEnclosingFunction(callNode, file.path, ctx);
+      const enclosingFuncId = findEnclosingFunction(callNode, file.path, ctx, provider);
       const sourceId = enclosingFuncId || generateId('File', file.path);
 
       // Fall back to mixed chain resolution when the receiver is a complex expression

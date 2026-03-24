@@ -8,7 +8,7 @@
  */
 
 import { SupportedLanguages } from '../../../config/supported-languages.js';
-import { createLanguageProvider } from '../language-provider.js';
+import { defineLanguage } from '../language-provider.js';
 import { typeConfigs } from '../type-extractors/index.js';
 import { callRouters } from '../call-routing.js';
 import { exportCheckers } from '../export-detection.js';
@@ -17,7 +17,7 @@ import { appendKotlinWildcard } from '../resolvers/jvm.js';
 import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
 import { isKotlinClassMethod } from '../ast-helpers.js';
 
-export const kotlinProvider = createLanguageProvider({
+export const kotlinProvider = defineLanguage({
   id: SupportedLanguages.Kotlin,
   extensions: ['.kt', '.kts'],
   treeSitterQueries: LANGUAGE_QUERIES[SupportedLanguages.Kotlin],
@@ -28,7 +28,7 @@ export const kotlinProvider = createLanguageProvider({
   namedBindingExtractor: namedBindingExtractors[SupportedLanguages.Kotlin],
   importPathPreprocessor: (cleaned, importNode) => appendKotlinWildcard(cleaned, importNode),
   mroStrategy: 'implements-split',
-  labelOverride: (functionNode: any, defaultLabel: string): string | null => {
+  labelOverride: (functionNode, defaultLabel) => {
     if (defaultLabel !== 'Function') return defaultLabel;
     if (isKotlinClassMethod(functionNode)) return 'Method';
     return defaultLabel;

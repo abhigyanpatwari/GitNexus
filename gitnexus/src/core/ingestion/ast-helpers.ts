@@ -162,7 +162,7 @@ export function getLabelFromCaptures(
   if (captureMap['definition.function']) {
     if (provider.labelOverride) {
       const override = provider.labelOverride(captureMap['definition.function'], 'Function');
-      if (override !== 'Function') return override as NodeLabel | null;
+      if (override !== 'Function') return override;
     }
     return 'Function';
   }
@@ -278,9 +278,9 @@ export const findSiblingChild = (parent: any, siblingType: string, childType: st
  * Extract function name and label from a function_definition or similar AST node.
  * Handles C/C++ qualified_identifier (ClassName::MethodName) and other language patterns.
  */
-export const extractFunctionName = (node: SyntaxNode): { funcName: string | null; label: string } => {
+export const extractFunctionName = (node: SyntaxNode): { funcName: string | null; label: NodeLabel } => {
   let funcName: string | null = null;
-  let label = 'Function';
+  let label: NodeLabel = 'Function';
 
   // Swift init/deinit
   if (node.type === 'init_declaration' || node.type === 'deinit_declaration') {
@@ -370,12 +370,6 @@ export const extractFunctionName = (node: SyntaxNode): { funcName: string | null
         }
       }
       funcName = nameNode?.text;
-
-      // Kotlin: function_declaration inside a class_body is a method, not a top-level function.
-      // Must match the label assigned in parse-worker.ts for consistent generateId() output.
-      if (funcName && node.type === 'function_declaration' && isKotlinClassMethod(node)) {
-        label = 'Method';
-      }
     }
   } else if (node.type === 'impl_item') {
     let funcItem: SyntaxNode | null = null;
@@ -690,4 +684,39 @@ export const extractMethodSignature = (node: SyntaxNode | null | undefined): Met
     ? requiredCount : undefined;
   return { parameterCount, requiredParameterCount, parameterTypes: hasTypes ? paramTypes : undefined, returnType };
 };
+
+// ============================================================================
+// Generic AST traversal helpers (shared by parse-worker + php-helpers)
+// ============================================================================
+
+/** Walk an AST node depth-first, returning the first descendant with the given type. */
+export function findDescendant(node: any, type: string): any {
+  if (node.type === type) return node;
+  for (const child of (node.children ?? [])) {
+    const found = findDescendant(child, type);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Extract the text content from a string or encapsed_string AST node. */
+export function extractStringContent(node: any): string | null {
+  if (!node) return null;
+  const content = node.children?.find((c: any) => c.type === 'string_content');
+  if (content) return content.text;
+  if (node.type === 'string_content') return node.text;
+  return null;
+}
+
+/** Check if a C/C++ function_definition is inside a class or struct body.
+ *  Used by the C/C++ labelOverride to skip duplicate function captures
+ *  that are already covered by definition.method queries. */
+export function isCppInsideClassOrStruct(functionNode: SyntaxNode): boolean {
+  let ancestor: SyntaxNode | null = functionNode?.parent ?? null;
+  while (ancestor) {
+    if (ancestor.type === 'class_specifier' || ancestor.type === 'struct_specifier') return true;
+    ancestor = ancestor.parent;
+  }
+  return false;
+}
 

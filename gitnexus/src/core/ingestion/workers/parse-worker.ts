@@ -38,6 +38,8 @@ import {
   extractReceiverName,
   extractReceiverNode,
   extractMixedChain,
+  findDescendant,
+  extractStringContent,
   type MixedChainStep,
 } from '../utils.js';
 import { buildTypeEnv } from '../type-env.js';
@@ -260,22 +262,71 @@ const setLanguage = (language: SupportedLanguages, filePath: string): void => {
 };
 
 // ============================================================================
-// Enclosing function detection (for call extraction)
+// Per-file O(1) memoization — avoids repeated parent-chain walks per symbol.
+// Three bare Maps cleared at file boundaries. Map.get() returns undefined for
+// missing keys, so `cached !== undefined` distinguishes "not computed" from
+// a stored null (enclosing class/function not found = top-level).
 // ============================================================================
 
-/** Walk up AST to find enclosing function, return its generateId or null for top-level */
-const findEnclosingFunctionId = (node: any, filePath: string): string | null => {
+const classIdCache = new Map<any, string | null>();
+const functionIdCache = new Map<any, string | null>();
+const exportCache = new Map<any, boolean>();
+
+const clearCaches = (): void => { classIdCache.clear(); functionIdCache.clear(); exportCache.clear(); };
+
+// ============================================================================
+// Enclosing function detection (for call extraction) — cached
+// ============================================================================
+
+import type { LanguageProvider } from '../language-provider.js';
+
+/** Walk up AST to find enclosing function, return its generateId or null for top-level.
+ *  Applies provider.labelOverride so the label matches the definition phase (single source of truth). */
+const findEnclosingFunctionId = (node: any, filePath: string, provider: LanguageProvider): string | null => {
+  const cached = functionIdCache.get(node);
+  if (cached !== undefined) return cached;
+
   let current = node.parent;
   while (current) {
     if (FUNCTION_NODE_TYPES.has(current.type)) {
       const { funcName, label } = extractFunctionName(current);
       if (funcName) {
-        return generateId(label, `${filePath}:${funcName}`);
+        // Apply labelOverride so label matches definition phase (e.g., Kotlin Function→Method).
+        // null means "skip as definition" — keep original label for scope identification.
+        let finalLabel = label;
+        if (provider.labelOverride) {
+          const override = provider.labelOverride(current, label);
+          if (override !== null) finalLabel = override;
+        }
+        const result = generateId(finalLabel, `${filePath}:${funcName}`);
+        functionIdCache.set(node, result);
+        return result;
       }
     }
     current = current.parent;
   }
+  functionIdCache.set(node, null);
   return null;
+};
+
+/** Cached wrapper for findEnclosingClassId — avoids repeated parent walks. */
+const cachedFindEnclosingClassId = (node: any, filePath: string): string | null => {
+  const cached = classIdCache.get(node);
+  if (cached !== undefined) return cached;
+
+  const result = findEnclosingClassId(node, filePath);
+  classIdCache.set(node, result);
+  return result;
+};
+
+/** Cached wrapper for export checking — avoids repeated parent walks per symbol. */
+const cachedExportCheck = (checker: (node: any, name: string) => boolean, node: any, name: string): boolean => {
+  const cached = exportCache.get(node);
+  if (cached !== undefined) return cached;
+
+  const result = checker(node, name);
+  exportCache.set(node, result);
+  return result;
 };
 
 // Label detection moved to shared getLabelFromCaptures in utils.ts
@@ -386,25 +437,6 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
 // ============================================================================
 // Laravel Route Extraction (procedural AST walk)
 // ============================================================================
-
-/** Walk an AST node depth-first, returning the first descendant with the given type. */
-function findDescendant(node: any, type: string): any {
-  if (node.type === type) return node;
-  for (const child of (node.children ?? [])) {
-    const found = findDescendant(child, type);
-    if (found) return found;
-  }
-  return null;
-}
-
-/** Extract the text content from a string or encapsed_string AST node. */
-function extractStringContent(node: any): string | null {
-  if (!node) return null;
-  const content = node.children?.find((c: any) => c.type === 'string_content');
-  if (content) return content.text;
-  if (node.type === 'string_content') return node.text;
-  return null;
-}
 
 interface RouteGroupContext {
   middleware: string[];
@@ -815,6 +847,8 @@ const processFileGroup = (
     // Skip files larger than the max tree-sitter buffer (32 MB)
     if (file.content.length > TREE_SITTER_MAX_BUFFER) continue;
 
+    clearCaches(); // Reset memoization before each new file
+
     let tree;
     try {
       tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
@@ -907,7 +941,7 @@ const processFileGroup = (
         const receiverText = captureMap['assignment.receiver'].text;
         const propertyName = captureMap['assignment.property'].text;
         if (receiverText && propertyName) {
-          const srcId = findEnclosingFunctionId(captureMap['assignment'], file.path)
+          const srcId = findEnclosingFunctionId(captureMap['assignment'], file.path, provider)
             || generateId('File', file.path);
           let receiverTypeName: string | undefined;
           if (typeEnv) {
@@ -1031,7 +1065,7 @@ const processFileGroup = (
             }
 
             if (routed.kind === 'properties') {
-              const propEnclosingClassId = findEnclosingClassId(captureMap['call'], file.path);
+              const propEnclosingClassId = cachedFindEnclosingClassId(captureMap['call'], file.path);
               for (const item of routed.items) {
                 const nodeId = generateId('Property', `${file.path}:${item.propName}`);
                 result.nodes.push({
@@ -1084,7 +1118,7 @@ const processFileGroup = (
 
           if (!isBuiltInOrNoise(calledName)) {
             const callNode = captureMap['call'];
-            const sourceId = findEnclosingFunctionId(callNode, file.path)
+            const sourceId = findEnclosingFunctionId(callNode, file.path, provider)
               || generateId('File', file.path);
             const callForm = inferCallForm(callNode, callNameNode);
             let receiverName = callForm === 'member' ? extractReceiverName(callNameNode) : undefined;
@@ -1248,7 +1282,7 @@ const processFileGroup = (
           startLine: definitionNode ? definitionNode.startPosition.row : startLine,
           endLine: definitionNode ? definitionNode.endPosition.row : startLine,
           language: language,
-          isExported: provider.exportChecker(nameNode || definitionNode, nodeName),
+          isExported: cachedExportCheck(provider.exportChecker, nameNode || definitionNode, nodeName),
           ...(frameworkHint ? {
             astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
             astFrameworkReason: frameworkHint.reason,
@@ -1264,7 +1298,7 @@ const processFileGroup = (
       // Compute enclosing class for Method/Constructor/Property/Function — used for both ownerId and HAS_METHOD
       // Function is included because Kotlin/Rust/Python capture class methods as Function nodes
       const needsOwner = nodeLabel === 'Method' || nodeLabel === 'Constructor' || nodeLabel === 'Property' || nodeLabel === 'Function';
-      const enclosingClassId = needsOwner ? findEnclosingClassId(nameNode || definitionNode, file.path) : null;
+      const enclosingClassId = needsOwner ? cachedFindEnclosingClassId(nameNode || definitionNode, file.path) : null;
 
       result.symbols.push({
         filePath: file.path,
