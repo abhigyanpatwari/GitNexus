@@ -42,6 +42,14 @@ Add the GitNexus MCP server to your Bob configuration.
 
 **Project-level** (`.bob/mcp_config.json`) — same format, scoped to one project.
 
+Once configured, open Bob and navigate to **MCP Servers** to verify the connection:
+
+![Bob welcome screen showing MCP Servers menu](image-1.png)
+
+The MCP settings page should list all GitNexus resources:
+
+![Bob MCP settings showing GitNexus resources](image.png)
+
 ## Step 3: Install Skills & Rules
 
 Skills teach Bob how to use GitNexus effectively. Rules provide core behavioral guidelines.
