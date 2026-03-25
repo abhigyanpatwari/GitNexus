@@ -2,7 +2,7 @@
  * Built-in name filtering — identifies standard library functions and common noise
  * that should not be tracked as call targets in the knowledge graph.
  *
- * Covers: JS/TS, Python, Kotlin, C/C++, C#, PHP, Swift, Rust, Ruby standard libraries.
+ * Covers: JS/TS, Python, Kotlin, C/C++, C#, PHP, Swift, Rust, Ruby, Dart/Flutter standard libraries.
  */
 
 export const BUILT_IN_NAMES = new Set([
@@ -155,6 +155,15 @@ export const BUILT_IN_NAMES = new Set([
   'lambda', 'proc', 'block_given?',
   'nil?', 'is_a?', 'kind_of?', 'instance_of?', 'respond_to?',
   'freeze', 'frozen?', 'dup', 'tap', 'yield_self',
+  // Dart / Flutter
+  'setState', 'mounted', 'debugPrint',
+  'runApp', 'showDialog', 'showModalBottomSheet',
+  'Navigator', 'push', 'pushNamed', 'pushReplacement', 'pop', 'maybePop',
+  'ScaffoldMessenger', 'showSnackBar',
+  'context', 'of',
+  // Dart async
+  'then', 'catchError', 'whenComplete', 'listen',
+  'add', 'close', 'emit',
   // Ruby enumerables
   'each', 'select', 'reject', 'detect', 'collect',
   'inject', 'flat_map', 'each_with_object', 'each_with_index',

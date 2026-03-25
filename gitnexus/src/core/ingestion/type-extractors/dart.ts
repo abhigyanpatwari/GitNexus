@@ -48,9 +48,16 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   if (!nameNode || nameNode.type !== 'identifier') return undefined;
   const value = node.childForFieldName('value');
   if (!value) return undefined;
-  const funcName = value.type === 'identifier' ? value : null;
-  if (!funcName) return undefined;
-  const calleeName = extractSimpleTypeName(funcName);
+  // Dart constructor calls: User(), User.named(), const User()
+  // AST shapes: identifier (bare call), selector_expression (qualified call)
+  let calleeName: string | undefined;
+  if (value.type === 'identifier') {
+    calleeName = extractSimpleTypeName(value);
+  } else if (value.type === 'selector_expression') {
+    // User.named() — first child is the class identifier
+    const first = value.firstNamedChild;
+    if (first) calleeName = extractSimpleTypeName(first);
+  }
   if (!calleeName) return undefined;
   return { varName: nameNode.text, calleeName };
 };
