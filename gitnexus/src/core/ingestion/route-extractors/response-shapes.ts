@@ -87,20 +87,43 @@ export function extractResponseShapes(content: string): { responseKeys?: string[
   };
 }
 
+/**
+ * Find the last exit/die boundary in a string.
+ * Matches: exit; exit(N); exit(0); die; die('msg'); die($var);
+ * Returns the index AFTER the boundary (i.e., the start of the next statement).
+ */
+function findLastExitBoundary(text: string): number {
+  const pattern = /\b(exit|die)\s*(\([^)]*\))?\s*;/g;
+  let lastEnd = -1;
+  let m;
+  while ((m = pattern.exec(text)) !== null) {
+    lastEnd = m.index + m[0].length;
+  }
+  return lastEnd;
+}
+
 function detectPHPStatusCode(content: string, jsonEncodePos: number): number | undefined {
   const lookbackStart = Math.max(0, jsonEncodePos - 300);
   let before = content.slice(lookbackStart, jsonEncodePos);
-  const exitIdx = Math.max(before.lastIndexOf('exit;'), before.lastIndexOf('die;'));
-  if (exitIdx !== -1) {
-    before = before.slice(exitIdx + 5);
+  // Truncate at last exit/die boundary to prevent cross-block status leaking
+  const boundaryEnd = findLastExitBoundary(before);
+  if (boundaryEnd !== -1) {
+    before = before.slice(boundaryEnd);
   }
+  // http_response_code(NNN)
   const matches = [...before.matchAll(/http_response_code\s*\(\s*(\d{3})\s*\)/g)];
   if (matches.length > 0) {
     return parseInt(matches[matches.length - 1][1], 10);
   }
+  // header('HTTP/x.y NNN ...')
   const headerMatches = [...before.matchAll(/header\s*\(\s*['"]HTTP\/[\d.]+\s+(\d{3})/g)];
   if (headerMatches.length > 0) {
     return parseInt(headerMatches[headerMatches.length - 1][1], 10);
+  }
+  // header('Status: NNN ...') — CGI/FastCGI format
+  const statusHeaderMatches = [...before.matchAll(/header\s*\(\s*['"]Status:\s*(\d{3})/g)];
+  if (statusHeaderMatches.length > 0) {
+    return parseInt(statusHeaderMatches[statusHeaderMatches.length - 1][1], 10);
   }
   return undefined;
 }
