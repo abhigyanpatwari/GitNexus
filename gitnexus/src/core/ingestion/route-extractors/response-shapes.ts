@@ -4,6 +4,24 @@
  * extracts top-level keys, and classifies by HTTP status code.
  */
 
+/** Return the status code (group 1) from the last match, or undefined. */
+function lastMatchGroup(text: string, pattern: RegExp): number | undefined {
+  const matches = [...text.matchAll(pattern)];
+  if (matches.length === 0) return undefined;
+  return parseInt(matches[matches.length - 1][1], 10);
+}
+
+/** Build the {responseKeys, errorKeys} result, deduplicating and omitting empty. */
+function buildShapeResult(
+  successKeys: string[],
+  errKeys: string[],
+): { responseKeys?: string[]; errorKeys?: string[] } {
+  return {
+    ...(successKeys.length > 0 ? { responseKeys: [...new Set(successKeys)] } : {}),
+    ...(errKeys.length > 0 ? { errorKeys: [...new Set(errKeys)] } : {}),
+  };
+}
+
 /**
  * Detect an HTTP status code associated with a .json() call.
  */
@@ -81,16 +99,13 @@ export function extractResponseShapes(content: string): { responseKeys?: string[
       successKeys.push(...callKeys);
     }
   }
-  return {
-    ...(successKeys.length > 0 ? { responseKeys: [...new Set(successKeys)] } : {}),
-    ...(errKeys.length > 0 ? { errorKeys: [...new Set(errKeys)] } : {}),
-  };
+  return buildShapeResult(successKeys, errKeys);
 }
 
 /**
  * Find the last exit/die boundary in a string.
- * Matches: exit; exit(N); exit(0); die; die('msg'); die($var);
- * Returns the index AFTER the boundary (i.e., the start of the next statement).
+ * Matches: exit; exit(N); die; die('msg'); die($var);
+ * Returns the index AFTER the boundary.
  */
 function findLastExitBoundary(text: string): number {
   const pattern = /\b(exit|die)\s*(\([^)]*\))?\s*;/g;
@@ -105,27 +120,14 @@ function findLastExitBoundary(text: string): number {
 function detectPHPStatusCode(content: string, jsonEncodePos: number): number | undefined {
   const lookbackStart = Math.max(0, jsonEncodePos - 300);
   let before = content.slice(lookbackStart, jsonEncodePos);
-  // Truncate at last exit/die boundary to prevent cross-block status leaking
   const boundaryEnd = findLastExitBoundary(before);
   if (boundaryEnd !== -1) {
     before = before.slice(boundaryEnd);
   }
-  // http_response_code(NNN)
-  const matches = [...before.matchAll(/http_response_code\s*\(\s*(\d{3})\s*\)/g)];
-  if (matches.length > 0) {
-    return parseInt(matches[matches.length - 1][1], 10);
-  }
-  // header('HTTP/x.y NNN ...')
-  const headerMatches = [...before.matchAll(/header\s*\(\s*['"]HTTP\/[\d.]+\s+(\d{3})/g)];
-  if (headerMatches.length > 0) {
-    return parseInt(headerMatches[headerMatches.length - 1][1], 10);
-  }
-  // header('Status: NNN ...') — CGI/FastCGI format
-  const statusHeaderMatches = [...before.matchAll(/header\s*\(\s*['"]Status:\s*(\d{3})/g)];
-  if (statusHeaderMatches.length > 0) {
-    return parseInt(statusHeaderMatches[statusHeaderMatches.length - 1][1], 10);
-  }
-  return undefined;
+  return lastMatchGroup(before, /http_response_code\s*\(\s*(\d{3})\s*\)/g)
+    ?? lastMatchGroup(before, /header\s*\(\s*['"]HTTP\/[\d.]+\s+(\d{3})/g)
+    // CGI/FastCGI format
+    ?? lastMatchGroup(before, /header\s*\(\s*['"]Status:\s*(\d{3})/g);
 }
 
 function findMatchingBracket(content: string, openPos: number, open: string, close: string): number {
@@ -211,8 +213,5 @@ export function extractPHPResponseShapes(content: string): { responseKeys?: stri
       successKeys.push(...callKeys);
     }
   }
-  return {
-    ...(successKeys.length > 0 ? { responseKeys: [...new Set(successKeys)] } : {}),
-    ...(errKeys.length > 0 ? { errorKeys: [...new Set(errKeys)] } : {}),
-  };
+  return buildShapeResult(successKeys, errKeys);
 }
