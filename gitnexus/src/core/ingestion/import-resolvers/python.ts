@@ -18,7 +18,7 @@ import { resolveStandard } from './standard.js';
  *    Checks package (__init__.py) before module (.py), matching CPython's finder order (PEP 451 §4).
  *    Coexistence of both is physically impossible (same name = file vs directory), so the order
  *    only matters for spec compliance.
- *    Note: namespace packages (PEP 420, directory without __init__.py) are not handled.
+ *    Note: implicit namespace packages (Python 3.3+, directory without __init__.py) are not handled.
  *
  * Returns null to let the caller fall through to suffixResolve.
  */
@@ -84,7 +84,12 @@ export function resolvePythonImport(
   ctx: ResolveCtx,
 ): ImportResult {
   const resolved = resolvePythonImportInternal(filePath, rawImportPath, ctx.allFilePaths);
-  if (resolved) return { kind: 'files', files: [resolved] };
+  if (resolved) {
+    // Store in resolveCache so other files importing the same module skip the
+    // ancestor walk. The cache key matches resolveStandard's convention.
+    ctx.resolveCache.set(`${filePath}::${rawImportPath}`, resolved);
+    return { kind: 'files', files: [resolved] };
+  }
   if (rawImportPath.startsWith('.')) return null; // relative but unresolved -- don't suffix-match
   return resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Python);
 }

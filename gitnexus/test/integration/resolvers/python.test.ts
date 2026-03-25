@@ -404,6 +404,24 @@ describe('Python ancestor directory import resolution (Issue #417)', () => {
     expect(canonicalCall!.target).toBe('get_remaining_slots');
     expect(canonicalCall!.targetFilePath).toBe('backend/middleware.py');
   });
+
+  it('resolves depth-2 ancestor import: a/b/c/deep.py → a/utils.py (not suffix match)', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const utilsImport = imports.find(
+      i => i.sourceFilePath === 'a/b/c/deep.py' && i.targetFilePath.includes('utils'),
+    );
+    expect(utilsImport).toBeDefined();
+    expect(utilsImport!.targetFilePath).toBe('a/utils.py');
+  });
+
+  it('resolves format_currency() call across depth-2 ancestor import', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fmtCall = calls.find(
+      c => c.source === 'render_price' && c.target === 'format_currency',
+    );
+    expect(fmtCall).toBeDefined();
+    expect(fmtCall!.targetFilePath).toBe('a/utils.py');
+  });
 });
 
 // ---------------------------------------------------------------------------
