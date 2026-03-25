@@ -62,10 +62,25 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
   }
   
   // Next.js - Layout files (moderate - they're entry-ish but not the main entry)
-  if (p.includes('/app/') && (p.endsWith('layout.tsx') || p.endsWith('layout.ts'))) {
+  if (p.includes('/app/') && !p.includes('_layout') && (p.endsWith('layout.tsx') || p.endsWith('layout.ts'))) {
     return { framework: 'nextjs-app', entryPointMultiplier: 2.0, reason: 'nextjs-layout' };
   }
   
+  // Expo Router - screen/layout/api files in app/ directory
+  if (p.includes('/app/') && (p.endsWith('.tsx') || p.endsWith('.ts') || p.endsWith('.jsx') || p.endsWith('.js'))) {
+    const fn = p.split('/').pop() || '';
+    if (fn.startsWith('_layout')) {
+      return { framework: 'expo-router', entryPointMultiplier: 2.0, reason: 'expo-layout' };
+    }
+    if (fn.startsWith('+') && !fn.startsWith('+api')) {
+      return { framework: 'expo-router', entryPointMultiplier: 1.5, reason: 'expo-special-route' };
+    }
+    if (fn.endsWith('+api.ts') || fn.endsWith('+api.tsx')) {
+      return { framework: 'expo-router', entryPointMultiplier: 3.0, reason: 'expo-api-route' };
+    }
+    return { framework: 'expo-router', entryPointMultiplier: 2.5, reason: 'expo-screen' };
+  }
+
   // Express / Node.js routes
   if (p.includes('/routes/') && (p.endsWith('.ts') || p.endsWith('.js'))) {
     return { framework: 'express', entryPointMultiplier: 2.5, reason: 'routes-folder' };
@@ -416,6 +431,7 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
 export const FRAMEWORK_AST_PATTERNS = {
   // JavaScript/TypeScript decorators
   'nestjs': ['@Controller', '@Get', '@Post', '@Put', '@Delete', '@Patch'],
+  'expo-router': ['router.push', 'router.replace', 'router.navigate', 'useRouter', 'useLocalSearchParams', 'useSegments', 'expo-router'],
   'express': ['app.get', 'app.post', 'app.put', 'app.delete', 'router.get', 'router.post'],
   
   // Python decorators
@@ -474,9 +490,11 @@ interface AstFrameworkPatternConfig {
 export const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE = {
   [SupportedLanguages.JavaScript]: [
     { framework: 'nestjs', entryPointMultiplier: 3.2, reason: 'nestjs-decorator', patterns: FRAMEWORK_AST_PATTERNS.nestjs },
+    { framework: 'expo-router', entryPointMultiplier: 2.5, reason: 'expo-router-navigation', patterns: FRAMEWORK_AST_PATTERNS['expo-router'] },
   ],
   [SupportedLanguages.TypeScript]: [
     { framework: 'nestjs', entryPointMultiplier: 3.2, reason: 'nestjs-decorator', patterns: FRAMEWORK_AST_PATTERNS.nestjs },
+    { framework: 'expo-router', entryPointMultiplier: 2.5, reason: 'expo-router-navigation', patterns: FRAMEWORK_AST_PATTERNS['expo-router'] },
   ],
   [SupportedLanguages.Python]: [
     { framework: 'fastapi', entryPointMultiplier: 3.0, reason: 'fastapi-decorator', patterns: FRAMEWORK_AST_PATTERNS.fastapi },

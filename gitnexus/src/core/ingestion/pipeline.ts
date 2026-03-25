@@ -10,6 +10,7 @@ import {
 import { EMPTY_INDEX } from './import-resolvers/utils.js';
 import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracted, processRoutesFromExtracted, processNextjsFetchRoutes, extractFetchCallsFromFiles, seedCrossFileReceiverTypes, buildImportedReturnTypes, buildImportedRawReturnTypes, type ExportedTypeMap, buildExportedTypeMapFromGraph } from './call-processor.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from './route-extractors/nextjs.js';
+import { expoFileToRouteURL } from './route-extractors/expo.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';
 import { extractResponseShapes } from './route-extractors/response-shapes.js';
 import { extractMiddlewareChain } from './route-extractors/middleware.js';
@@ -33,6 +34,11 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const isDev = process.env.NODE_ENV === 'development';
+
+const EXPO_NAV_PATTERNS = [
+  /router\.(push|replace|navigate)\(\s*['"`]([^'"`]+)['"`]/g,
+  /<Link\s+[^>]*href=\s*['"`]([^'"`]+)['"`]/g,
+];
 
 /** A group of files with no mutual dependencies, safe to process in parallel. */
 type IndependentFileGroup = readonly string[];
@@ -1076,7 +1082,36 @@ export const runPipelineFromRepo = async (
     // ── Phase 3.5: Route Registry (Next.js + PHP + Laravel + decorators) ──
     type RouteEntry = { filePath: string; source: string };
     const routeRegistry = new Map<string, RouteEntry>();
+
+    // Detect Expo Router app/ roots vs Next.js app/ roots (monorepo-safe).
+    const expoAppRoots = new Set<string>();
+    const nextjsAppRoots = new Set<string>();
+    const expoAppPaths = new Set<string>();
     for (const p of allPaths) {
+      const norm = p.replace(/\\/g, '/');
+      const appIdx = norm.lastIndexOf('app/');
+      if (appIdx < 0) continue;
+      const root = norm.slice(0, appIdx + 4);
+      if (/\/_layout\.(tsx?|jsx?)$/.test(norm)) expoAppRoots.add(root);
+      if (/\/page\.(tsx?|jsx?)$/.test(norm)) nextjsAppRoots.add(root);
+    }
+    for (const root of nextjsAppRoots) expoAppRoots.delete(root);
+    if (expoAppRoots.size > 0) {
+      for (const p of allPaths) {
+        const norm = p.replace(/\\/g, '/');
+        const appIdx = norm.lastIndexOf('app/');
+        if (appIdx >= 0 && expoAppRoots.has(norm.slice(0, appIdx + 4))) expoAppPaths.add(p);
+      }
+    }
+
+    for (const p of allPaths) {
+      if (expoAppPaths.has(p)) {
+        const expoURL = expoFileToRouteURL(p);
+        if (expoURL && !routeRegistry.has(expoURL)) {
+          routeRegistry.set(expoURL, { filePath: p, source: 'expo-filesystem-route' });
+          continue;
+        }
+      }
       const nextjsURL = nextjsFileToRouteURL(p);
       if (nextjsURL && !routeRegistry.has(nextjsURL)) {
         routeRegistry.set(nextjsURL, { filePath: p, source: 'nextjs-filesystem-route' });
@@ -1104,9 +1139,10 @@ export const runPipelineFromRepo = async (
       addRoute(ensureSlash(dr.routePath), { filePath: dr.filePath, source: `decorator-${dr.decoratorName}` });
     }
 
+    let handlerContents: Map<string, string> | undefined;
     if (routeRegistry.size > 0) {
       const handlerPaths = [...routeRegistry.values()].map(e => e.filePath);
-      const handlerContents = await readFileContents(repoPath, handlerPaths);
+      handlerContents = await readFileContents(repoPath, handlerPaths);
 
       for (const [routeURL, entry] of routeRegistry) {
         const { filePath: handlerPath, source: routeSource } = entry;
@@ -1166,6 +1202,26 @@ export const runPipelineFromRepo = async (
             const normalized = normalizeFetchURL(match[1]);
             if (normalized) {
               allFetchCalls.push({ filePath, fetchURL: normalized, lineNumber: 0 });
+            }
+          }
+        }
+      }
+    }
+
+    // ── Phase 3.5c: Extract Expo Router navigation patterns ──
+    if (expoAppPaths.size > 0 && routeRegistry.size > 0) {
+      const unreadExpoPaths = [...expoAppPaths].filter(p => !handlerContents?.has(p));
+      const extraContents = unreadExpoPaths.length > 0 ? await readFileContents(repoPath, unreadExpoPaths) : new Map<string, string>();
+      const allExpoContents = new Map([...(handlerContents ?? new Map()), ...extraContents]);
+      for (const [filePath, content] of allExpoContents) {
+        if (!expoAppPaths.has(filePath)) continue;
+        for (const pattern of EXPO_NAV_PATTERNS) {
+          pattern.lastIndex = 0;
+          let match;
+          while ((match = pattern.exec(content)) !== null) {
+            const url = match[2] ?? match[1];
+            if (url && url.startsWith('/')) {
+              allFetchCalls.push({ filePath, fetchURL: url, lineNumber: 0 });
             }
           }
         }
