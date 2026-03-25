@@ -1001,4 +1001,98 @@ export const SWIFT_QUERIES = `
 
 `;
 
- 
+// Dart queries - works with tree-sitter-dart (UserNobody14)
+export const DART_QUERIES = `
+; ── Classes ──────────────────────────────────────────────────────────────────
+(class_definition
+  name: (identifier) @name) @definition.class
+
+; ── Mixins ───────────────────────────────────────────────────────────────────
+(mixin_declaration
+  (identifier) @name) @definition.class
+
+; ── Enums ────────────────────────────────────────────────────────────────────
+(enum_declaration
+  name: (identifier) @name) @definition.enum
+
+; ── Extensions ───────────────────────────────────────────────────────────────
+(extension_declaration
+  name: (identifier) @name) @definition.class
+
+; ── Type aliases ─────────────────────────────────────────────────────────────
+(type_alias
+  (type_identifier) @name) @definition.type
+
+; ── Top-level functions ──────────────────────────────────────────────────────
+(program
+  (function_signature
+    name: (identifier) @name)) @definition.function
+
+; ── Methods (in classes) ─────────────────────────────────────────────────────
+(class_body
+  (method_signature
+    (function_signature
+      name: (identifier) @name))) @definition.method
+
+; ── Methods (in extensions) ──────────────────────────────────────────────────
+(extension_body
+  (method_signature
+    (function_signature
+      name: (identifier) @name))) @definition.method
+
+; ── Imports ──────────────────────────────────────────────────────────────────
+(import_or_export
+  (library_import
+    (import_specification
+      (configurable_uri
+        (uri
+          (string_literal) @import.source))))) @import
+
+; ── Exports (re-exports create dependency edges too) ─────────────────────────
+(import_or_export
+  (library_export
+    (configurable_uri
+      (uri
+        (string_literal) @import.source)))) @import
+
+; ── Function calls: direct calls like foo(args) ──────────────────────────────
+(expression_statement
+  (identifier) @call.name
+  (selector
+    (argument_part))) @call
+
+; ── Method calls: obj.method(args), ClassName.staticMethod(args) ─────────────
+(unconditional_assignable_selector
+  (identifier) @call.name)
+
+; ── Calls in return statements: return foo(args) ─────────────────────────────
+(return_statement
+  (identifier) @call.name
+  (selector
+    (argument_part))) @call
+
+; ── Calls in variable assignments: var x = foo(args) ─────────────────────────
+(initialized_variable_definition
+  value: (identifier) @call.name
+  value: (selector
+    (argument_part))) @call
+
+; ── Heritage: extends ────────────────────────────────────────────────────────
+(class_definition
+  name: (identifier) @heritage.class
+  superclass: (superclass
+    (type_identifier) @heritage.extends)) @heritage
+
+; ── Heritage: implements ─────────────────────────────────────────────────────
+(class_definition
+  name: (identifier) @heritage.class
+  interfaces: (interfaces
+    (type_identifier) @heritage.implements)) @heritage.impl
+
+; ── Heritage: with (mixins) ──────────────────────────────────────────────────
+(class_definition
+  name: (identifier) @heritage.class
+  superclass: (superclass
+    (mixins
+      (type_identifier) @heritage.implements))) @heritage.mixin
+`;

@@ -161,6 +161,10 @@ export const BUILT_IN_NAMES = new Set([
   'any?', 'all?', 'none?', 'count', 'first', 'last',
   'sort_by', 'min_by', 'max_by',
   'group_by', 'partition', 'compact', 'flatten', 'uniq',
+  // Dart/Flutter built-ins
+  'print', 'debugPrint', 'setState', 'initState', 'dispose', 'didChangeDependencies',
+  'didUpdateWidget', 'deactivate', 'reassemble',
+  'runApp', 'debugDumpApp', 'debugDumpRenderTree',
 ]);
 
 /** Check if a name is a built-in function or common noise that should be filtered out */

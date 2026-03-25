@@ -144,7 +144,7 @@ function needsSynthesis(lang: SupportedLanguages): boolean {
 }
 
 /** Synthesize namedImportMap entries for languages with whole-module imports.
- *  These languages (Go, Ruby, C/C++, Swift, Python) import all exported symbols from a
+ *  These languages (Go, Ruby, C/C++, Swift, Dart, Python) import all exported symbols from a
  *  file, not specific named symbols. After parsing, we know which symbols each file
  *  exports (via graph isExported), so we can expand ImportMap edges into per-symbol
  *  bindings that Phase 14 can use for cross-file type propagation. */
@@ -215,7 +215,7 @@ function synthesizeWildcardImportBindings(
     }
   };
 
-  // Process files from ctx.importMap (Ruby, C/C++, Swift file-based imports)
+  // Process files from ctx.importMap (Ruby, C/C++, Swift, Dart file-based imports)
   for (const [filePath, importedFiles] of ctx.importMap) {
     const lang = getLanguageFromFilename(filePath);
     if (!lang || !isWildcardImportLanguage(lang)) continue;
@@ -487,7 +487,7 @@ async function runScanAndStructure(
  * Reads source in byte-budget chunks (~20MB each). For each chunk:
  * 1. Parse via worker pool (or sequential fallback)
  * 2. Resolve imports from extracted data
- * 3. Synthesize wildcard import bindings (Go/Ruby/C++/Swift/Python)
+ * 3. Synthesize wildcard import bindings (Go/Ruby/C++/Swift/Dart/Python)
  * 4. Resolve calls, heritage, routes concurrently (Promise.all)
  * 5. Collect TypeEnv bindings for cross-file propagation
  *
@@ -675,7 +675,7 @@ async function runChunkedParseAndResolve(
             stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
           });
         }, repoPath, importCtx);
-        // ── Wildcard-import synthesis (Ruby / C/C++ / Swift / Go) + Python module aliases ─
+        // ── Wildcard-import synthesis (Ruby / C/C++ / Swift / Go / Dart) + Python module aliases ─
         // Synthesize namedImportMap entries for wildcard-import languages and build
         // moduleAliasMap for Python namespace imports. Must run after imports are resolved
         // (importMap is populated) but BEFORE call resolution.
@@ -843,7 +843,7 @@ async function runChunkedParseAndResolve(
   // and that Phase 14 type propagation has complete namedImportMap data.
   const synthesized = synthesizeWildcardImportBindings(graph, ctx);
   if (isDev && synthesized > 0) {
-    console.log(`🔗 Synthesized ${synthesized} additional wildcard import bindings (Go/Ruby/C++/Swift/Python)`);
+    console.log(`🔗 Synthesized ${synthesized} additional wildcard import bindings (Go/Ruby/C++/Swift/Dart/Python)`);
   }
 
   // Free import resolution context — suffix index + resolve cache no longer needed

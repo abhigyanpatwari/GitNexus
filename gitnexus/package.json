@@ -46,7 +46,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "prepare": "npm run build",
-    "postinstall": "node scripts/patch-tree-sitter-swift.cjs",
+    "postinstall": "node scripts/patch-tree-sitter-swift.cjs && node scripts/patch-tree-sitter-dart.cjs",
     "prepack": "npm run build && chmod +x dist/cli/index.js"
   },
   "dependencies": {
@@ -81,6 +81,7 @@
     "uuid": "^13.0.0"
   },
   "optionalDependencies": {
+    "tree-sitter-dart": "^1.0.0",
     "tree-sitter-kotlin": "^0.3.8",
     "tree-sitter-swift": "0.7.1"
   },

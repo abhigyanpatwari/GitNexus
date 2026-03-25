@@ -212,6 +212,21 @@ export const ENTRY_POINT_PATTERNS = {
     /^perform$/,              // Background jobs (Sidekiq, ActiveJob)
     /^execute$/,              // Command pattern
   ],
+
+  // Dart / Flutter
+  [SupportedLanguages.Dart]: [
+    /^main$/,                 // THE entry point
+    /^build$/,                // Widget.build() method
+    /^initState$/,            // StatefulWidget lifecycle
+    /^dispose$/,              // Cleanup lifecycle
+    /^createState$/,          // StatefulWidget.createState()
+    /Widget$/,                // Custom widget classes
+    /Page$/,                  // Page classes
+    /Screen$/,                // Screen classes
+    /Controller$/,            // Controllers
+    /Notifier$/,              // Riverpod notifiers
+    /Provider$/,              // Provider pattern
+  ],
 } satisfies Record<SupportedLanguages, RegExp[]>;
 
 /** Pre-computed merged patterns (universal + language-specific) to avoid per-call array allocation. */
@@ -378,6 +393,8 @@ export function isTestFile(filePath: string): boolean {
     p.includes('.integrationtests/') ||
     p.includes('.unittests/') ||
     p.includes('/testproject/') ||
+    // Dart/Flutter test patterns
+    p.endsWith('_test.dart') ||
     // PHP/Laravel test patterns
     p.endsWith('test.php') ||
     p.endsWith('spec.php') ||

@@ -54,5 +54,7 @@ export const getLanguageFromFilename = (filename: string): SupportedLanguages | 
   }
   // Swift (extensions)
   if (filename.endsWith('.swift')) return SupportedLanguages.Swift;
+  // Dart
+  if (filename.endsWith('.dart')) return SupportedLanguages.Dart;
   return null;
 };

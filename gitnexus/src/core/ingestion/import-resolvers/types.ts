@@ -19,6 +19,11 @@ export type ImportResult =
   | { kind: 'package'; files: string[]; dirSuffix: string }
   | null;
 
+/** Dart pubspec.yaml config for package: import resolution */
+export interface DartPubspecConfig {
+  packageName: string;
+}
+
 /** Bundled language-specific configs loaded once per ingestion run. */
 export interface ImportConfigs {
   tsconfigPaths: TsconfigPaths | null;
@@ -26,6 +31,7 @@ export interface ImportConfigs {
   composerConfig: ComposerConfig | null;
   swiftPackageConfig: SwiftPackageConfig | null;
   csharpConfigs: CSharpProjectConfig[];
+  dartPubspec: DartPubspecConfig | null;
 }
 
 /** Pre-built lookup structures for import resolution. Build once, reuse across chunks. */

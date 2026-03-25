@@ -218,6 +218,24 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
   return null;
 }
 
+/** Dart pubspec.yaml config for package: import resolution */
+export async function loadDartPubspec(repoRoot: string): Promise<{ packageName: string } | null> {
+  try {
+    const pubspecPath = path.join(repoRoot, 'pubspec.yaml');
+    const content = await fs.readFile(pubspecPath, 'utf-8');
+    const match = content.match(/^name:\s*(\S+)/m);
+    if (match) {
+      if (isDev) {
+        console.log(`📦 Loaded Dart package name: ${match[1]}`);
+      }
+      return { packageName: match[1] };
+    }
+  } catch {
+    // No pubspec.yaml
+  }
+  return null;
+}
+
 // ============================================================================
 // BUNDLED CONFIG LOADER
 // ============================================================================
@@ -230,5 +248,6 @@ export async function loadImportConfigs(repoRoot: string): Promise<ImportConfigs
     composerConfig: await loadComposerConfig(repoRoot),
     swiftPackageConfig: await loadSwiftPackageConfig(repoRoot),
     csharpConfigs: await loadCSharpProjectConfig(repoRoot),
+    dartPubspec: await loadDartPubspec(repoRoot),
   };
 }

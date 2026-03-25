@@ -82,6 +82,9 @@ export const FUNCTION_NODE_TYPES = new Set([
   // Ruby
   'method',           // def foo
   'singleton_method', // def self.foo
+  // Dart
+  'function_signature',
+  'method_signature',
 ]);
 
 /**
@@ -111,6 +114,9 @@ export const CLASS_CONTAINER_TYPES = new Set([
   // Kotlin
   'object_declaration',
   'companion_object',
+  // Dart
+  'mixin_declaration',
+  'extension_declaration',
 ]);
 
 export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
@@ -132,6 +138,9 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   module: 'Module',
   object_declaration: 'Class',
   companion_object: 'Class',
+  // Dart
+  mixin_declaration: 'Mixin',
+  extension_declaration: 'Class',
 };
 
 /** Check if a Kotlin function_declaration capture is inside a class_body (i.e., a method).

@@ -60,7 +60,7 @@ interface LanguageProviderConfig {
   readonly namedBindingExtractor?: NamedBindingExtractorFn;
   /** How this language handles imports.
    *  - 'named': per-symbol imports (JS/TS, Java, C#, Rust, PHP, Kotlin)
-   *  - 'wildcard': whole-module imports, needs synthesis (Go, Ruby, C/C++, Swift)
+   *  - 'wildcard': whole-module imports, needs synthesis (Go, Ruby, C/C++, Swift, Dart)
    *  - 'namespace': namespace imports, needs moduleAliasMap (Python)
    *  Default: 'named'. */
   readonly importSemantics?: ImportSemantics;

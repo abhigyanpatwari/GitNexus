@@ -22,6 +22,10 @@ try { Swift = _require('tree-sitter-swift'); } catch {}
 let Kotlin: any = null;
 try { Kotlin = _require('tree-sitter-kotlin'); } catch {}
 
+// tree-sitter-dart is an optionalDependency — may not be installed
+let Dart: any = null;
+try { Dart = _require('tree-sitter-dart'); } catch {}
+
 let parser: Parser | null = null;
 
 const languageMap: Record<string, any> = {
@@ -39,6 +43,7 @@ const languageMap: Record<string, any> = {
   [SupportedLanguages.PHP]: PHP.php_only,
   [SupportedLanguages.Ruby]: Ruby,
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
+  ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
 };
 
 export const isLanguageAvailable = (language: SupportedLanguages): boolean =>
