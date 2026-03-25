@@ -93,6 +93,7 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 | **Claude Code** | Yes | Yes    | Yes (PreToolUse + PostToolUse) | **Full** |
 | **Cursor**      | Yes | Yes    | —                   | MCP + Skills   |
 | **Codex**       | Yes | Yes    | —                   | MCP + Skills   |
+| **Bob (IBM)**   | Yes | Yes    | —                   | MCP + Skills   |
 | **Windsurf**    | Yes | —     | —                   | MCP            |
 | **OpenCode**    | Yes | Yes    | —                   | MCP + Skills   |
 | **Codex**       | Yes | —     | —                   | MCP            |
@@ -127,6 +128,21 @@ claude mcp add gitnexus -- cmd /c npx -y gitnexus@latest mcp
 ```bash
 codex mcp add gitnexus -- npx -y gitnexus@latest mcp
 ```
+
+**Bob (IBM)** (`~/.bob/mcp_config.json` — global, works for all projects):
+
+```json
+{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "npx",
+      "args": ["-y", "gitnexus@latest", "mcp"]
+    }
+  }
+}
+```
+
+Skills and rules are available in [`.bob/`](.bob/) — see [`.bob/README.md`](.bob/README.md) for full setup instructions.
 
 **Cursor** (`~/.cursor/mcp.json` — global, works for all projects):
 
