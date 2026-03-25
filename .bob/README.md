@@ -74,7 +74,11 @@ If you're working inside this repo, the skills and rules in `.bob/` are already 
 | `gitnexus-pr-review` | Review pull requests with graph-aware context |
 | `gitnexus-refactoring` | Rename, extract, split, or move code safely |
 
-## Step 4: Verify
+## Step 4: Restart Bob
+
+After changing MCP config, skills, or rules, **restart Bob** for the changes to take effect. Bob loads MCP server connections and skill definitions at startup.
+
+## Step 5: Verify
 
 1. **Test MCP server starts:**
    ```bash
