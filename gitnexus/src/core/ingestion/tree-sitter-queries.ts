@@ -1014,7 +1014,7 @@ export const DART_QUERIES = `
 
 ; ── Mixins ───────────────────────────────────────────────────────────────────
 (mixin_declaration
-  name: (identifier) @name) @definition.trait
+  (identifier) @name) @definition.trait
 
 ; ── Extensions ───────────────────────────────────────────────────────────────
 (extension_declaration
@@ -1081,6 +1081,21 @@ export const DART_QUERIES = `
   (selector
     (unconditional_assignable_selector
       (identifier) @call.name))) @call
+
+; ── Calls: in return statements (return User()) ─────────────────────────────
+(return_statement
+  (identifier) @call.name
+  (selector (argument_part))) @call
+
+; ── Calls: in variable assignments (var x = getUser()) ──────────────────────
+(initialized_variable_definition
+  value: (identifier) @call.name
+  (selector (argument_part))) @call
+
+; ── Re-exports (export 'foo.dart') ───────────────────────────────────────────
+(import_or_export
+  (library_export
+    (configurable_uri) @import.source)) @import
 
 ; ── Heritage: extends ────────────────────────────────────────────────────────
 (class_definition

@@ -215,7 +215,9 @@ export const ENTRY_POINT_PATTERNS = {
 
   // Dart / Flutter
   [SupportedLanguages.Dart]: [
+    /^main$/,             // App entry
     /^build$/,            // Widget.build — fundamental Flutter render entry point
+    /^createState$/,      // StatefulWidget.createState
     /^initState$/,        // State lifecycle initialization
     /^dispose$/,          // State lifecycle teardown
     /^didChangeDependencies$/,  // State lifecycle — InheritedWidget changes
@@ -223,6 +225,12 @@ export const ENTRY_POINT_PATTERNS = {
     /^runApp$/,           // App entry point
     /^onEvent$/,          // BLoC event handler
     /^mapEventToState$/,  // Legacy BLoC pattern
+    /Widget$/,            // Class suffix — widget definitions
+    /Page$/,              // Class suffix — page screens
+    /Screen$/,            // Class suffix — screen views
+    /Controller$/,        // Class suffix — state controllers
+    /Notifier$/,          // Class suffix — Riverpod/ChangeNotifier
+    /Provider$/,          // Class suffix — provider definitions
   ],
 } satisfies Record<SupportedLanguages, RegExp[]>;
 

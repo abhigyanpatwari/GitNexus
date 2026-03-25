@@ -491,7 +491,7 @@ export const DART_QUERIES = `
 
 ; ── Mixins ───────────────────────────────────────────────────────────────────
 (mixin_declaration
-  name: (identifier) @name) @definition.trait
+  (identifier) @name) @definition.trait
 
 ; ── Extensions ───────────────────────────────────────────────────────────────
 (extension_declaration

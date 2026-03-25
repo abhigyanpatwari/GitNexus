@@ -431,7 +431,7 @@ describe('Tree-sitter multi-language parsing', () => {
         return;
       }
       const content = readFixture('simple.dart');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Dart]);
+      const { matches } = parseAndQuery(parser, content, getProvider(SupportedLanguages.Dart).treeSitterQueries);
       const defs = extractDefinitions(matches);
 
       expect(defs.length).toBeGreaterThan(0);
@@ -464,7 +464,7 @@ describe('Tree-sitter multi-language parsing', () => {
         return;
       }
       const content = readFixture('simple.dart');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Dart]);
+      const { matches } = parseAndQuery(parser, content, getProvider(SupportedLanguages.Dart).treeSitterQueries);
 
       const imports: string[] = [];
       for (const match of matches) {
@@ -485,7 +485,7 @@ describe('Tree-sitter multi-language parsing', () => {
         return;
       }
       const content = readFixture('simple.dart');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Dart]);
+      const { matches } = parseAndQuery(parser, content, getProvider(SupportedLanguages.Dart).treeSitterQueries);
 
       const heritage: { class: string; parent: string }[] = [];
       for (const match of matches) {

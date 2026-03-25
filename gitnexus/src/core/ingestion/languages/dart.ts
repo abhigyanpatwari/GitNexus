@@ -2,7 +2,7 @@
  * Dart Language Provider
  *
  * Dart traits:
- *   - importSemantics: 'named' (Dart uses explicit import statements)
+ *   - importSemantics: 'wildcard' (Dart imports bring everything public into scope)
  *   - exportChecker: public if no leading underscore
  *   - Dart SDK imports (dart:*) and external packages are skipped
  */
@@ -21,4 +21,5 @@ export const dartProvider = defineLanguage({
   typeConfig: dartConfig,
   exportChecker: dartExportChecker,
   importResolver: resolveDartImport,
+  importSemantics: 'wildcard',
 });

@@ -408,28 +408,33 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
 
   // ========== DART / FLUTTER ==========
 
-  // Flutter main entry point
-  if (p.endsWith('/main.dart')) {
+  // Flutter main/app entry points
+  if (p.endsWith('/main.dart') || p.endsWith('/app.dart')) {
     return { framework: 'flutter', entryPointMultiplier: 3.0, reason: 'flutter-main' };
   }
 
-  // Flutter screens/pages (high priority - route entry points)
-  if ((p.includes('/lib/screens/') || p.includes('/lib/pages/')) && p.endsWith('.dart')) {
+  // Flutter screens/pages/views (high priority - route entry points)
+  if ((p.includes('/screens/') || p.includes('/pages/') || p.includes('/views/')) && p.endsWith('.dart')) {
     return { framework: 'flutter', entryPointMultiplier: 2.5, reason: 'flutter-screen' };
   }
 
-  // Flutter BLoC / controllers (state management entry points)
-  if ((p.includes('/lib/bloc/') || p.includes('/lib/controllers/') || p.includes('/lib/cubit/')) && p.endsWith('.dart')) {
+  // Flutter routes
+  if (p.includes('/routes/') && p.endsWith('.dart')) {
+    return { framework: 'flutter', entryPointMultiplier: 2.5, reason: 'flutter-routes' };
+  }
+
+  // Flutter BLoC / controllers / presentation (state management entry points)
+  if ((p.includes('/bloc/') || p.includes('/controllers/') || p.includes('/cubit/') || p.includes('/presentation/')) && p.endsWith('.dart')) {
     return { framework: 'flutter', entryPointMultiplier: 2.0, reason: 'flutter-state-management' };
   }
 
-  // Flutter services
-  if (p.includes('/lib/services/') && p.endsWith('.dart')) {
+  // Flutter services / domain
+  if ((p.includes('/services/') || p.includes('/domain/')) && p.endsWith('.dart')) {
     return { framework: 'flutter', entryPointMultiplier: 1.8, reason: 'flutter-service' };
   }
 
   // Flutter widgets (reusable components)
-  if (p.includes('/lib/widgets/') && p.endsWith('.dart')) {
+  if (p.includes('/widgets/') && p.endsWith('.dart')) {
     return { framework: 'flutter', entryPointMultiplier: 1.5, reason: 'flutter-widget' };
   }
 
@@ -508,7 +513,8 @@ export const FRAMEWORK_AST_PATTERNS = {
 
   // Dart/Flutter
   'flutter': ['StatelessWidget', 'StatefulWidget', 'BuildContext', 'Widget build',
-              'ChangeNotifier', 'GetxController', 'Cubit<', 'Bloc<'],
+              'ChangeNotifier', 'GetxController', 'Cubit<', 'Bloc<', 'ConsumerWidget'],
+  'riverpod': ['@riverpod', 'ref.watch', 'ref.read', 'AsyncNotifier', 'Notifier'],
 };
 
 interface AstFrameworkPatternConfig {
@@ -578,6 +584,7 @@ export const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE = {
   ],
   [SupportedLanguages.Dart]: [
     { framework: 'flutter', entryPointMultiplier: 2.5, reason: 'flutter-widget', patterns: FRAMEWORK_AST_PATTERNS.flutter },
+    { framework: 'riverpod', entryPointMultiplier: 2.8, reason: 'riverpod-pattern', patterns: FRAMEWORK_AST_PATTERNS.riverpod },
   ],
 } satisfies Record<SupportedLanguages, AstFrameworkPatternConfig[]>;
 

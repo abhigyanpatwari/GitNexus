@@ -161,6 +161,7 @@ export const BUILT_IN_NAMES = new Set([
   'Navigator', 'push', 'pushNamed', 'pushReplacement', 'pop', 'maybePop',
   'ScaffoldMessenger', 'showSnackBar',
   'context', 'of',
+  'deactivate', 'reassemble', 'debugDumpApp', 'debugDumpRenderTree',
   // Dart async
   'then', 'catchError', 'whenComplete', 'listen',
   'add', 'close', 'emit',
