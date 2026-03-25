@@ -5,20 +5,16 @@
 
 import type { SuffixIndex } from './utils.js';
 import { suffixResolve } from './utils.js';
-
-/** C# project config parsed from .csproj files */
-export interface CSharpProjectConfig {
-  /** Root namespace from <RootNamespace> or assembly name (default: project directory name) */
-  rootNamespace: string;
-  /** Directory containing the .csproj file */
-  projectDir: string;
-}
+import { SupportedLanguages } from '../../../config/supported-languages.js';
+import type { ImportResult, ResolveCtx } from './types.js';
+import { resolveStandard } from './standard.js';
+import type { CSharpProjectConfig } from '../language-config.js';
 
 /**
- * Resolve a C# using-directive import path to matching .cs files.
+ * Resolve a C# using-directive import path to matching .cs files (low-level helper).
  * Tries single-file match first, then directory match for namespace imports.
  */
-export function resolveCSharpImport(
+export function resolveCSharpImportInternal(
   importPath: string,
   csharpConfigs: CSharpProjectConfig[],
   normalizedFileList: string[],
@@ -125,4 +121,24 @@ export function resolveCSharpNamespaceDir(
   }
 
   return null;
+}
+
+/** C#: namespace-based resolution via .csproj configs, with suffix-match fallback. */
+export function resolveCSharpImport(
+  rawImportPath: string,
+  filePath: string,
+  ctx: ResolveCtx,
+): ImportResult {
+  const csharpConfigs = ctx.configs.csharpConfigs;
+  if (csharpConfigs.length > 0) {
+    const resolvedFiles = resolveCSharpImportInternal(rawImportPath, csharpConfigs, ctx.normalizedFileList, ctx.allFileList, ctx.index);
+    if (resolvedFiles.length > 1) {
+      const dirSuffix = resolveCSharpNamespaceDir(rawImportPath, csharpConfigs);
+      if (dirSuffix) {
+        return { kind: 'package', files: resolvedFiles, dirSuffix };
+      }
+    }
+    if (resolvedFiles.length > 0) return { kind: 'files', files: resolvedFiles };
+  }
+  return resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.CSharp);
 }

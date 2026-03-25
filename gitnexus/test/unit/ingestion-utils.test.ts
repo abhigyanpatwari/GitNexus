@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { getLanguageFromFilename, isBuiltInOrNoise, extractFunctionName } from '../../src/core/ingestion/utils.js';
+import { getLanguageFromFilename } from '../../src/core/ingestion/utils/language-detection.js';
+import { isBuiltInOrNoise } from '../../src/core/ingestion/utils/noise-filter.js';
+import { extractFunctionName } from '../../src/core/ingestion/utils/ast-helpers.js';
 import { getTreeSitterBufferSize, TREE_SITTER_BUFFER_SIZE, TREE_SITTER_MAX_BUFFER } from '../../src/core/ingestion/constants.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import Parser from 'tree-sitter';

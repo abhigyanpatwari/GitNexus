@@ -1,4 +1,4 @@
-import type { SyntaxNode } from '../utils.js';
+import type { SyntaxNode } from '../utils/ast-helpers.js';
 import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, ReturnTypeExtractor, PendingAssignmentExtractor, PendingAssignment, ForLoopExtractor, PatternBindingExtractor, LiteralTypeInferrer } from './types.js';
 import { extractSimpleTypeName, extractVarName, hasTypeAnnotation, unwrapAwait, extractCalleeName, extractElementTypeFromString, extractGenericTypeArgs, resolveIterableElementType, methodToTypeArgPosition, type TypeArgPosition } from './shared.js';
 

@@ -7,7 +7,7 @@ import CPP from 'tree-sitter-cpp';
 import Rust from 'tree-sitter-rust';
 import CSharp from 'tree-sitter-c-sharp';
 import Go from 'tree-sitter-go';
-import { findEnclosingClassId, CLASS_CONTAINER_TYPES, CONTAINER_TYPE_TO_LABEL } from '../../src/core/ingestion/utils.js';
+import { findEnclosingClassId, CLASS_CONTAINER_TYPES, CONTAINER_TYPE_TO_LABEL } from '../../src/core/ingestion/utils/ast-helpers.js';
 
 function parseCode(language: any, code: string): Parser.Tree {
   const parser = new Parser();

@@ -7,7 +7,7 @@ import {
   processImportsFromExtracted,
   buildImportResolutionContext
 } from './import-processor.js';
-import { EMPTY_INDEX } from './resolvers/index.js';
+import { EMPTY_INDEX } from './import-resolvers/utils.js';
 import { processCalls, processCallsFromExtracted, processAssignmentsFromExtracted, processRoutesFromExtracted, processNextjsFetchRoutes, extractFetchCallsFromFiles, seedCrossFileReceiverTypes, buildImportedReturnTypes, buildImportedRawReturnTypes, type ExportedTypeMap, buildExportedTypeMapFromGraph } from './call-processor.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from './route-extractors/nextjs.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';
@@ -23,9 +23,10 @@ import { createResolutionContext } from './resolution-context.js';
 import { createASTCache } from './ast-cache.js';
 import { PipelineProgress, PipelineResult } from '../../types/pipeline.js';
 import { walkRepositoryPaths, readFileContents } from './filesystem-walker.js';
-import { getLanguageFromFilename } from './utils.js';
+import { getLanguageFromFilename } from './utils/language-detection.js';
 import { isLanguageAvailable } from '../tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
+import { providers, getProvider, getProviderForFile } from './languages/index.js';
 import { createWorkerPool, WorkerPool } from './workers/worker-pool.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -98,13 +99,6 @@ const CHUNK_BYTE_BUDGET = 20 * 1024 * 1024; // 20MB
 /** Max AST trees to keep in LRU cache */
 const AST_CACHE_CAP = 50;
 
-// MIDDLEWARE_STOP_KEYWORDS and extractMiddlewareChain moved to ./route-extractors/middleware.ts
-// Re-export for backward compatibility
-export { extractMiddlewareChain, MIDDLEWARE_STOP_KEYWORDS } from './route-extractors/middleware.js';
-
-// detectStatusCode and extractResponseShapes moved to ./route-extractors/response-shapes.ts
-// Re-export for backward compatibility
-export { detectStatusCode, extractResponseShapes } from './route-extractors/response-shapes.js';
 
 /** Minimum percentage of files that must benefit from cross-file seeding to justify the re-resolution pass. */
 const CROSS_FILE_SKIP_THRESHOLD = 0.03;
@@ -123,25 +117,25 @@ const IMPORTABLE_SYMBOL_LABELS = new Set([
  *  C/C++ files that include many large headers. */
 const MAX_SYNTHETIC_BINDINGS_PER_FILE = 1000;
 
-/** Languages with whole-module import semantics (no per-symbol named imports).
- *  For these languages, namedImportMap entries are synthesized from graph-exported
- *  symbols after parsing, enabling Phase 14 cross-file binding propagation.
- *
- *  Note: Python is intentionally excluded here. `import models` is a namespace import
- *  (not wildcard symbol expansion) — expanding all exported symbols produces ambiguous
- *  bindings when multiple modules export the same name (e.g. models.User vs auth.User).
- *  Python module aliases are built in synthesizeWildcardImportBindings via moduleAliasMap. */
-const WILDCARD_IMPORT_LANGUAGES = new Set([
-  SupportedLanguages.Go,
-  SupportedLanguages.Ruby,
-  SupportedLanguages.C,
-  SupportedLanguages.CPlusPlus,
-  SupportedLanguages.Swift,
-]);
+/** Pre-computed language sets derived from providers at module load. */
+const WILDCARD_LANGUAGES = new Set(
+  Object.values(providers).filter(p => p.importSemantics === 'wildcard').map(p => p.id)
+);
+const SYNTHESIS_LANGUAGES = new Set(
+  Object.values(providers).filter(p => p.importSemantics !== 'named').map(p => p.id)
+);
 
-/** Languages that require synthesizeWildcardImportBindings to run before call resolution.
- *  Superset of WILDCARD_IMPORT_LANGUAGES — includes Python for moduleAliasMap building. */
-const SYNTHESIS_LANGUAGES = new Set([...WILDCARD_IMPORT_LANGUAGES, SupportedLanguages.Python]);
+/** Check if a language uses wildcard (whole-module) import semantics.
+ *  Derived from LanguageProvider.importSemantics — no hardcoded set needed. */
+function isWildcardImportLanguage(lang: SupportedLanguages): boolean {
+  return WILDCARD_LANGUAGES.has(lang);
+}
+
+/** Check if a language needs synthesis before call resolution.
+ *  True for wildcard-import languages AND namespace-import languages (Python). */
+function needsSynthesis(lang: SupportedLanguages): boolean {
+  return SYNTHESIS_LANGUAGES.has(lang);
+}
 
 /** Synthesize namedImportMap entries for languages with whole-module imports.
  *  These languages (Go, Ruby, C/C++, Swift, Python) import all exported symbols from a
@@ -178,7 +172,7 @@ function synthesizeWildcardImportBindings(
     const srcFile = rel.sourceId.slice(FILE_PREFIX.length);
     const tgtFile = rel.targetId.slice(FILE_PREFIX.length);
     const lang = getLanguageFromFilename(srcFile);
-    if (!lang || !WILDCARD_IMPORT_LANGUAGES.has(lang)) return;
+    if (!lang || !isWildcardImportLanguage(lang)) return;
     // Only add if not already in ctx.importMap (avoid duplicates)
     if (ctx.importMap.get(srcFile)?.has(tgtFile)) return;
     let set = graphImports.get(srcFile);
@@ -218,7 +212,7 @@ function synthesizeWildcardImportBindings(
   // Process files from ctx.importMap (Ruby, C/C++, Swift file-based imports)
   for (const [filePath, importedFiles] of ctx.importMap) {
     const lang = getLanguageFromFilename(filePath);
-    if (!lang || !WILDCARD_IMPORT_LANGUAGES.has(lang)) continue;
+    if (!lang || !isWildcardImportLanguage(lang)) continue;
     synthesizeForFile(filePath, importedFiles);
   }
 
@@ -248,7 +242,8 @@ function synthesizeWildcardImportBindings(
   };
 
   for (const [filePath, importedFiles] of ctx.importMap) {
-    if (getLanguageFromFilename(filePath) !== SupportedLanguages.Python) continue;
+    const provider = getProviderForFile(filePath);
+    if (!provider || provider.importSemantics !== 'namespace') continue;
     buildPythonModuleAliasForFile(filePath, importedFiles);
   }
 
@@ -400,6 +395,666 @@ export interface PipelineOptions {
   skipGraphPhases?: boolean;
 }
 
+// ── Extracted pipeline phases ──────────────────────────────────────────────
+// Each function represents a natural phase boundary in the ingestion pipeline.
+// Data flow is explicit through parameters and return values.
+
+type ProgressFn = (progress: PipelineProgress) => void;
+type ScannedFile = { path: string; size: number };
+
+/**
+ * Phase 1+2: Scan repository paths, build file/folder structure, process markdown.
+ *
+ * @reads  repoPath (filesystem)
+ * @writes graph (File, Folder nodes + CONTAINS edges; Markdown sections + cross-links)
+ */
+async function runScanAndStructure(
+  repoPath: string,
+  graph: ReturnType<typeof createKnowledgeGraph>,
+  onProgress: ProgressFn,
+): Promise<{ scannedFiles: ScannedFile[]; allPaths: string[]; totalFiles: number }> {
+  // ── Phase 1: Scan paths only (no content read) ─────────────────────
+  onProgress({
+    phase: 'extracting',
+    percent: 0,
+    message: 'Scanning repository...',
+  });
+
+  const scannedFiles = await walkRepositoryPaths(repoPath, (current, total, filePath) => {
+    const scanProgress = Math.round((current / total) * 15);
+    onProgress({
+      phase: 'extracting',
+      percent: scanProgress,
+      message: 'Scanning repository...',
+      detail: filePath,
+      stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
+    });
+  });
+
+  const totalFiles = scannedFiles.length;
+
+  onProgress({
+    phase: 'extracting',
+    percent: 15,
+    message: 'Repository scanned successfully',
+    stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
+  });
+
+  // ── Phase 2: Structure (paths only — no content needed) ────────────
+  onProgress({
+    phase: 'structure',
+    percent: 15,
+    message: 'Analyzing project structure...',
+    stats: { filesProcessed: 0, totalFiles, nodesCreated: graph.nodeCount },
+  });
+
+  const allPaths = scannedFiles.map(f => f.path);
+  processStructure(graph, allPaths);
+
+  onProgress({
+    phase: 'structure',
+    percent: 20,
+    message: 'Project structure analyzed',
+    stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
+  });
+
+  // ── Phase 2.5: Markdown processing (headings + cross-links) ────────
+  const mdScanned = scannedFiles.filter(f => f.path.endsWith('.md') || f.path.endsWith('.mdx'));
+  if (mdScanned.length > 0) {
+    const mdContents = await readFileContents(repoPath, mdScanned.map(f => f.path));
+    const mdFiles = mdScanned
+      .filter(f => mdContents.has(f.path))
+      .map(f => ({ path: f.path, content: mdContents.get(f.path)! }));
+    const allPathSet = new Set(allPaths);
+    const mdResult = processMarkdown(graph, mdFiles, allPathSet);
+    if (isDev) {
+      console.log(`  Markdown: ${mdResult.sections} sections, ${mdResult.links} cross-links from ${mdFiles.length} files`);
+    }
+  }
+
+  return { scannedFiles, allPaths, totalFiles };
+}
+
+/**
+ * Phase 3+4: Chunked parse + resolve loop.
+ *
+ * Reads source in byte-budget chunks (~20MB each). For each chunk:
+ * 1. Parse via worker pool (or sequential fallback)
+ * 2. Resolve imports from extracted data
+ * 3. Synthesize wildcard import bindings (Go/Ruby/C++/Swift/Python)
+ * 4. Resolve calls, heritage, routes concurrently (Promise.all)
+ * 5. Collect TypeEnv bindings for cross-file propagation
+ *
+ * State accumulated across chunks: symbolTable, importMap, namedImportMap,
+ * moduleAliasMap (all via ResolutionContext), exportedTypeMap, workerTypeEnvBindings.
+ *
+ * @reads  graph (structure nodes from Phase 1+2)
+ * @reads  allPaths (from scan phase)
+ * @writes graph (Symbol nodes, IMPORTS/CALLS/EXTENDS/IMPLEMENTS/ACCESSES edges)
+ * @writes ctx.symbolTable, ctx.importMap, ctx.namedImportMap, ctx.moduleAliasMap
+ */
+async function runChunkedParseAndResolve(
+  graph: ReturnType<typeof createKnowledgeGraph>,
+  ctx: ReturnType<typeof createResolutionContext>,
+  scannedFiles: ScannedFile[],
+  allPaths: string[],
+  totalFiles: number,
+  repoPath: string,
+  pipelineStart: number,
+  onProgress: ProgressFn,
+): Promise<{
+  exportedTypeMap: ExportedTypeMap;
+  allFetchCalls: ExtractedFetchCall[];
+  allExtractedRoutes: ExtractedRoute[];
+  allDecoratorRoutes: ExtractedDecoratorRoute[];
+  allToolDefs: ExtractedToolDef[];
+}> {
+  const symbolTable = ctx.symbols;
+
+  const parseableScanned = scannedFiles.filter(f => {
+    const lang = getLanguageFromFilename(f.path);
+    return lang && isLanguageAvailable(lang);
+  });
+
+  // Warn about files skipped due to unavailable parsers
+  const skippedByLang = new Map<string, number>();
+  for (const f of scannedFiles) {
+    const lang = getLanguageFromFilename(f.path);
+    if (lang && !isLanguageAvailable(lang)) {
+      skippedByLang.set(lang, (skippedByLang.get(lang) || 0) + 1);
+    }
+  }
+  for (const [lang, count] of skippedByLang) {
+    console.warn(`Skipping ${count} ${lang} file(s) — ${lang} parser not available (native binding may not have built). Try: npm rebuild tree-sitter-${lang}`);
+  }
+
+  const totalParseable = parseableScanned.length;
+
+  if (totalParseable === 0) {
+    onProgress({
+      phase: 'parsing',
+      percent: 82,
+      message: 'No parseable files found — skipping parsing phase',
+      stats: { filesProcessed: 0, totalFiles: 0, nodesCreated: graph.nodeCount },
+    });
+  }
+
+  // Build byte-budget chunks
+  const chunks: string[][] = [];
+  let currentChunk: string[] = [];
+  let currentBytes = 0;
+  for (const file of parseableScanned) {
+    if (currentChunk.length > 0 && currentBytes + file.size > CHUNK_BYTE_BUDGET) {
+      chunks.push(currentChunk);
+      currentChunk = [];
+      currentBytes = 0;
+    }
+    currentChunk.push(file.path);
+    currentBytes += file.size;
+  }
+  if (currentChunk.length > 0) chunks.push(currentChunk);
+
+  const numChunks = chunks.length;
+
+  if (isDev) {
+    const totalMB = parseableScanned.reduce((s, f) => s + f.size, 0) / (1024 * 1024);
+    console.log(`📂 Scan: ${totalFiles} paths, ${totalParseable} parseable (${totalMB.toFixed(0)}MB), ${numChunks} chunks @ ${CHUNK_BYTE_BUDGET / (1024 * 1024)}MB budget`);
+  }
+
+  onProgress({
+    phase: 'parsing',
+    percent: 20,
+    message: `Parsing ${totalParseable} files in ${numChunks} chunk${numChunks !== 1 ? 's' : ''}...`,
+    stats: { filesProcessed: 0, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
+  });
+
+  // Don't spawn workers for tiny repos — overhead exceeds benefit
+  const MIN_FILES_FOR_WORKERS = 15;
+  const MIN_BYTES_FOR_WORKERS = 512 * 1024;
+  const totalBytes = parseableScanned.reduce((s, f) => s + f.size, 0);
+
+  // Create worker pool once, reuse across chunks
+  let workerPool: WorkerPool | undefined;
+  if (totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS) {
+    try {
+      let workerUrl = new URL('./workers/parse-worker.js', import.meta.url);
+      // When running under vitest, import.meta.url points to src/ where no .js exists.
+      // Fall back to the compiled dist/ worker so the pool can spawn real worker threads.
+      const thisDir = fileURLToPath(new URL('.', import.meta.url));
+      if (!fs.existsSync(fileURLToPath(workerUrl))) {
+        const distWorker = path.resolve(thisDir, '..', '..', '..', 'dist', 'core', 'ingestion', 'workers', 'parse-worker.js');
+        if (fs.existsSync(distWorker)) {
+          workerUrl = pathToFileURL(distWorker) as URL;
+        }
+      }
+      workerPool = createWorkerPool(workerUrl);
+    } catch (err) {
+      if (isDev) console.warn('Worker pool creation failed, using sequential fallback:', (err as Error).message);
+    }
+  }
+
+  let filesParsedSoFar = 0;
+
+  // AST cache sized for one chunk (sequential fallback uses it for import/call/heritage)
+  const maxChunkFiles = chunks.reduce((max, c) => Math.max(max, c.length), 0);
+  let astCache = createASTCache(maxChunkFiles);
+
+  // Build import resolution context once — suffix index, file lists, resolve cache.
+  // Reused across all chunks to avoid rebuilding O(files × path_depth) structures.
+  const importCtx = buildImportResolutionContext(allPaths);
+  const allPathObjects = allPaths.map(p => ({ path: p }));
+
+  // Single-pass: parse + resolve imports/calls/heritage per chunk.
+  // Calls/heritage use the symbol table built so far (symbols from earlier chunks
+  // are already registered). This trades ~5% cross-chunk resolution accuracy for
+  // 200-400MB less memory — critical for Linux-kernel-scale repos.
+  const sequentialChunkPaths: string[][] = [];
+  // Pre-compute which chunks need synthesis — O(1) lookup per chunk.
+  const chunkNeedsSynthesis = chunks.map(paths =>
+    paths.some(p => {
+      const lang = getLanguageFromFilename(p);
+      return lang != null && needsSynthesis(lang);
+    }),
+  );
+  // Phase 14: Collect exported type bindings for cross-file propagation
+  const exportedTypeMap: ExportedTypeMap = new Map();
+  // Accumulate file-scope TypeEnv bindings from workers (closes worker/sequential quality gap)
+  const workerTypeEnvBindings: { filePath: string; bindings: [string, string][] }[] = [];
+  // Accumulate fetch() calls from workers for Next.js route matching
+  const allFetchCalls: ExtractedFetchCall[] = [];
+  // Accumulate framework-extracted routes (Laravel, etc.) for Route node creation
+  const allExtractedRoutes: ExtractedRoute[] = [];
+  // Accumulate decorator-based routes (@Get, @Post, @app.route, etc.)
+  const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
+  // Accumulate MCP/RPC tool definitions (@mcp.tool(), @app.tool(), etc.)
+  const allToolDefs: ExtractedToolDef[] = [];
+
+  try {
+    for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
+      const chunkPaths = chunks[chunkIdx];
+
+      // Read content for this chunk only
+      const chunkContents = await readFileContents(repoPath, chunkPaths);
+      const chunkFiles = chunkPaths
+        .filter(p => chunkContents.has(p))
+        .map(p => ({ path: p, content: chunkContents.get(p)! }));
+
+      // Parse this chunk (workers or sequential fallback)
+      const chunkWorkerData = await processParsing(
+        graph, chunkFiles, symbolTable, astCache,
+        (current, _total, filePath) => {
+          const globalCurrent = filesParsedSoFar + current;
+          const parsingProgress = 20 + ((globalCurrent / totalParseable) * 62);
+          onProgress({
+            phase: 'parsing',
+            percent: Math.round(parsingProgress),
+            message: `Parsing chunk ${chunkIdx + 1}/${numChunks}...`,
+            detail: filePath,
+            stats: { filesProcessed: globalCurrent, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
+          });
+        },
+        workerPool,
+      );
+
+      const chunkBasePercent = 20 + ((filesParsedSoFar / totalParseable) * 62);
+
+      if (chunkWorkerData) {
+        // Imports
+        await processImportsFromExtracted(graph, allPathObjects, chunkWorkerData.imports, ctx, (current, total) => {
+          onProgress({
+            phase: 'parsing',
+            percent: Math.round(chunkBasePercent),
+            message: `Resolving imports (chunk ${chunkIdx + 1}/${numChunks})...`,
+            detail: `${current}/${total} files`,
+            stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
+          });
+        }, repoPath, importCtx);
+        // ── Wildcard-import synthesis (Ruby / C/C++ / Swift / Go) + Python module aliases ─
+        // Synthesize namedImportMap entries for wildcard-import languages and build
+        // moduleAliasMap for Python namespace imports. Must run after imports are resolved
+        // (importMap is populated) but BEFORE call resolution.
+        if (chunkNeedsSynthesis[chunkIdx]) synthesizeWildcardImportBindings(graph, ctx);
+        // Phase 14 E1: Seed cross-file receiver types from ExportedTypeMap
+        // before call resolution — eliminates re-parse for single-hop imported receivers.
+        // NOTE: In the worker path, exportedTypeMap is empty during chunk processing
+        // (populated later in runCrossFileBindingPropagation). This block is latent —
+        // it activates only if incremental export collection is added per-chunk.
+        if (exportedTypeMap.size > 0 && ctx.namedImportMap.size > 0) {
+          const { enrichedCount } = seedCrossFileReceiverTypes(
+            chunkWorkerData.calls, ctx.namedImportMap, exportedTypeMap,
+          );
+          if (isDev && enrichedCount > 0) {
+            console.log(`🔗 E1: Seeded ${enrichedCount} cross-file receiver types (chunk ${chunkIdx + 1})`);
+          }
+        }
+        // Calls + Heritage + Routes — resolve in parallel (no shared mutable state between them)
+        // This is safe because each writes disjoint relationship types into idempotent id-keyed Maps,
+        // and the single-threaded event loop prevents races between synchronous addRelationship calls.
+        await Promise.all([
+          processCallsFromExtracted(
+            graph,
+            chunkWorkerData.calls,
+            ctx,
+            (current, total) => {
+              onProgress({
+                phase: 'parsing',
+                percent: Math.round(chunkBasePercent),
+                message: `Resolving calls (chunk ${chunkIdx + 1}/${numChunks})...`,
+                detail: `${current}/${total} files`,
+                stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
+              });
+            },
+            chunkWorkerData.constructorBindings,
+          ),
+          processHeritageFromExtracted(
+            graph,
+            chunkWorkerData.heritage,
+            ctx,
+            (current, total) => {
+              onProgress({
+                phase: 'parsing',
+                percent: Math.round(chunkBasePercent),
+                message: `Resolving heritage (chunk ${chunkIdx + 1}/${numChunks})...`,
+                detail: `${current}/${total} records`,
+                stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
+              });
+            },
+          ),
+          processRoutesFromExtracted(
+            graph,
+            chunkWorkerData.routes ?? [],
+            ctx,
+            (current, total) => {
+              onProgress({
+                phase: 'parsing',
+                percent: Math.round(chunkBasePercent),
+                message: `Resolving routes (chunk ${chunkIdx + 1}/${numChunks})...`,
+                detail: `${current}/${total} routes`,
+                stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
+              });
+            },
+          ),
+        ]);
+        // Process field write assignments (synchronous, runs after calls resolve)
+        if (chunkWorkerData.assignments?.length) {
+          processAssignmentsFromExtracted(graph, chunkWorkerData.assignments, ctx, chunkWorkerData.constructorBindings);
+        }
+        // Collect TypeEnv file-scope bindings for exported type enrichment
+        if (chunkWorkerData.typeEnvBindings?.length) {
+          workerTypeEnvBindings.push(...chunkWorkerData.typeEnvBindings);
+        }
+        // Collect fetch() calls for Next.js route matching
+        if (chunkWorkerData.fetchCalls?.length) {
+          allFetchCalls.push(...chunkWorkerData.fetchCalls);
+        }
+        if (chunkWorkerData.routes?.length) {
+          allExtractedRoutes.push(...chunkWorkerData.routes);
+        }
+        if (chunkWorkerData.decoratorRoutes?.length) {
+          allDecoratorRoutes.push(...chunkWorkerData.decoratorRoutes);
+        }
+        if (chunkWorkerData.toolDefs?.length) {
+          allToolDefs.push(...chunkWorkerData.toolDefs);
+        }
+      } else {
+        await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
+        sequentialChunkPaths.push(chunkPaths);
+      }
+
+      filesParsedSoFar += chunkFiles.length;
+
+      // Clear AST cache between chunks to free memory
+      astCache.clear();
+      // chunkContents + chunkFiles + chunkWorkerData go out of scope → GC reclaims
+    }
+  } finally {
+    await workerPool?.terminate();
+  }
+
+  // Sequential fallback chunks: re-read source for call/heritage resolution
+  // Synthesize wildcard import bindings once after ALL imports are processed,
+  // before any call resolution — same rationale as the worker-path inline synthesis.
+  if (sequentialChunkPaths.length > 0) synthesizeWildcardImportBindings(graph, ctx);
+  for (const chunkPaths of sequentialChunkPaths) {
+    const chunkContents = await readFileContents(repoPath, chunkPaths);
+    const chunkFiles = chunkPaths
+      .filter(p => chunkContents.has(p))
+      .map(p => ({ path: p, content: chunkContents.get(p)! }));
+    astCache = createASTCache(chunkFiles.length);
+    const rubyHeritage = await processCalls(graph, chunkFiles, astCache, ctx, undefined, exportedTypeMap);
+    await processHeritage(graph, chunkFiles, astCache, ctx);
+    if (rubyHeritage.length > 0) {
+      await processHeritageFromExtracted(graph, rubyHeritage, ctx);
+    }
+    // Extract fetch() calls for Next.js route matching (sequential path)
+    const chunkFetchCalls = await extractFetchCallsFromFiles(chunkFiles, astCache);
+    if (chunkFetchCalls.length > 0) {
+      allFetchCalls.push(...chunkFetchCalls);
+    }
+    astCache.clear();
+  }
+
+  // Log resolution cache stats
+  if (isDev) {
+    const rcStats = ctx.getStats();
+    const total = rcStats.cacheHits + rcStats.cacheMisses;
+    const hitRate = total > 0 ? ((rcStats.cacheHits / total) * 100).toFixed(1) : '0';
+    console.log(`🔍 Resolution cache: ${rcStats.cacheHits} hits, ${rcStats.cacheMisses} misses (${hitRate}% hit rate)`);
+  }
+
+  // ── Worker path quality enrichment: merge TypeEnv file-scope bindings into ExportedTypeMap ──
+  // Workers return file-scope bindings from their TypeEnv fixpoint (includes inferred types
+  // like `const config = getConfig()` → Config). Filter by graph isExported to match
+  // the sequential path's collectExportedBindings behavior.
+  if (workerTypeEnvBindings.length > 0) {
+    let enriched = 0;
+    for (const { filePath, bindings } of workerTypeEnvBindings) {
+      for (const [name, type] of bindings) {
+        // Verify the symbol is exported via graph node
+        const nodeId = `Function:${filePath}:${name}`;
+        const varNodeId = `Variable:${filePath}:${name}`;
+        const constNodeId = `Const:${filePath}:${name}`;
+        const node = graph.getNode(nodeId) ?? graph.getNode(varNodeId) ?? graph.getNode(constNodeId);
+        if (!node?.properties?.isExported) continue;
+
+        let fileExports = exportedTypeMap.get(filePath);
+        if (!fileExports) { fileExports = new Map(); exportedTypeMap.set(filePath, fileExports); }
+        // Don't overwrite existing entries (Tier 0 from SymbolTable is authoritative)
+        if (!fileExports.has(name)) {
+          fileExports.set(name, type);
+          enriched++;
+        }
+      }
+    }
+    if (isDev && enriched > 0) {
+      console.log(`🔗 Worker TypeEnv enrichment: ${enriched} fixpoint-inferred exports added to ExportedTypeMap`);
+    }
+  }
+
+  // ── Final synthesis pass for whole-module-import languages ──
+  // Per-chunk synthesis (above) already ran incrementally. This final pass ensures
+  // any remaining files whose imports were not covered inline are also synthesized,
+  // and that Phase 14 type propagation has complete namedImportMap data.
+  const synthesized = synthesizeWildcardImportBindings(graph, ctx);
+  if (isDev && synthesized > 0) {
+    console.log(`🔗 Synthesized ${synthesized} additional wildcard import bindings (Go/Ruby/C++/Swift/Python)`);
+  }
+
+  // Free import resolution context — suffix index + resolve cache no longer needed
+  // (allPathObjects and importCtx hold ~94MB+ for large repos)
+  allPathObjects.length = 0;
+  importCtx.resolveCache.clear();
+  importCtx.index = EMPTY_INDEX; // Release suffix index memory (~30MB for large repos)
+  importCtx.normalizedFileList = [];
+
+  return { exportedTypeMap, allFetchCalls, allExtractedRoutes, allDecoratorRoutes, allToolDefs };
+}
+
+/**
+ * Post-parse graph analysis: MRO, community detection, process extraction.
+ *
+ * @reads  graph (all nodes and relationships from parse + resolve phases)
+ * @writes graph (Community nodes, Process nodes, MEMBER_OF edges, STEP_IN_PROCESS edges, OVERRIDES edges)
+ */
+async function runGraphAnalysisPhases(
+  graph: ReturnType<typeof createKnowledgeGraph>,
+  totalFiles: number,
+  onProgress: ProgressFn,
+  routeRegistry?: Map<string, { filePath: string; source: string }>,
+  toolDefs?: { name: string; filePath: string; description: string }[],
+): Promise<{
+  communityResult: Awaited<ReturnType<typeof processCommunities>>;
+  processResult: Awaited<ReturnType<typeof processProcesses>>;
+}> {
+  // ── Phase 4.5: Method Resolution Order ──────────────────────────────
+  onProgress({
+    phase: 'parsing',
+    percent: 81,
+    message: 'Computing method resolution order...',
+    stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
+  });
+
+  const mroResult = computeMRO(graph);
+  if (isDev && mroResult.entries.length > 0) {
+    console.log(`🔀 MRO: ${mroResult.entries.length} classes analyzed, ${mroResult.ambiguityCount} ambiguities found, ${mroResult.overrideEdges} OVERRIDES edges`);
+  }
+
+  // ── Phase 5: Communities ───────────────────────────────────────────
+  onProgress({
+    phase: 'communities',
+    percent: 82,
+    message: 'Detecting code communities...',
+    stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
+  });
+
+  const communityResult = await processCommunities(graph, (message, progress) => {
+    const communityProgress = 82 + (progress * 0.10);
+    onProgress({
+      phase: 'communities',
+      percent: Math.round(communityProgress),
+      message,
+      stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
+    });
+  });
+
+  if (isDev) {
+    console.log(`🏘️ Community detection: ${communityResult.stats.totalCommunities} communities found (modularity: ${communityResult.stats.modularity.toFixed(3)})`);
+  }
+
+  communityResult.communities.forEach(comm => {
+    graph.addNode({
+      id: comm.id,
+      label: 'Community' as const,
+      properties: {
+        name: comm.label,
+        filePath: '',
+        heuristicLabel: comm.heuristicLabel,
+        cohesion: comm.cohesion,
+        symbolCount: comm.symbolCount,
+      }
+    });
+  });
+
+  communityResult.memberships.forEach(membership => {
+    graph.addRelationship({
+      id: `${membership.nodeId}_member_of_${membership.communityId}`,
+      type: 'MEMBER_OF',
+      sourceId: membership.nodeId,
+      targetId: membership.communityId,
+      confidence: 1.0,
+      reason: 'leiden-algorithm',
+    });
+  });
+
+  // ── Phase 6: Processes ─────────────────────────────────────────────
+  onProgress({
+    phase: 'processes',
+    percent: 94,
+    message: 'Detecting execution flows...',
+    stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
+  });
+
+  let symbolCount = 0;
+  graph.forEachNode(n => { if (n.label !== 'File') symbolCount++; });
+  const dynamicMaxProcesses = Math.max(20, Math.min(300, Math.round(symbolCount / 10)));
+
+  const processResult = await processProcesses(
+    graph,
+    communityResult.memberships,
+    (message, progress) => {
+      const processProgress = 94 + (progress * 0.05);
+      onProgress({
+        phase: 'processes',
+        percent: Math.round(processProgress),
+        message,
+        stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
+      });
+    },
+    { maxProcesses: dynamicMaxProcesses, minSteps: 3 }
+  );
+
+  if (isDev) {
+    console.log(`🔄 Process detection: ${processResult.stats.totalProcesses} processes found (${processResult.stats.crossCommunityCount} cross-community)`);
+  }
+
+  processResult.processes.forEach(proc => {
+    graph.addNode({
+      id: proc.id,
+      label: 'Process' as const,
+      properties: {
+        name: proc.label,
+        filePath: '',
+        heuristicLabel: proc.heuristicLabel,
+        processType: proc.processType,
+        stepCount: proc.stepCount,
+        communities: proc.communities,
+        entryPointId: proc.entryPointId,
+        terminalId: proc.terminalId,
+      }
+    });
+  });
+
+  processResult.steps.forEach(step => {
+    graph.addRelationship({
+      id: `${step.nodeId}_step_${step.step}_${step.processId}`,
+      type: 'STEP_IN_PROCESS',
+      sourceId: step.nodeId,
+      targetId: step.processId,
+      confidence: 1.0,
+      reason: 'trace-detection',
+      step: step.step,
+    });
+  });
+
+  // Link Route and Tool nodes to Processes via reverse index (file → node id)
+  if ((routeRegistry?.size ?? 0) > 0 || (toolDefs?.length ?? 0) > 0) {
+    // Reverse indexes: file → all route URLs / tool names (handles multi-route files)
+    const routesByFile = new Map<string, string[]>();
+    if (routeRegistry) {
+      for (const [url, entry] of routeRegistry) {
+        let list = routesByFile.get(entry.filePath);
+        if (!list) { list = []; routesByFile.set(entry.filePath, list); }
+        list.push(url);
+      }
+    }
+    const toolsByFile = new Map<string, string[]>();
+    if (toolDefs) {
+      for (const td of toolDefs) {
+        let list = toolsByFile.get(td.filePath);
+        if (!list) { list = []; toolsByFile.set(td.filePath, list); }
+        list.push(td.name);
+      }
+    }
+
+    let linked = 0;
+    for (const proc of processResult.processes) {
+      if (!proc.entryPointId) continue;
+      const entryNode = graph.getNode(proc.entryPointId);
+      if (!entryNode) continue;
+      const entryFile = entryNode.properties.filePath;
+      if (!entryFile) continue;
+
+      const routeURLs = routesByFile.get(entryFile);
+      if (routeURLs) {
+        for (const routeURL of routeURLs) {
+          const routeNodeId = generateId('Route', routeURL);
+          graph.addRelationship({
+            id: generateId('ENTRY_POINT_OF', `${routeNodeId}->${proc.id}`),
+            sourceId: routeNodeId,
+            targetId: proc.id,
+            type: 'ENTRY_POINT_OF',
+            confidence: 0.85,
+            reason: 'route-handler-entry-point',
+          });
+          linked++;
+        }
+      }
+      const toolNames = toolsByFile.get(entryFile);
+      if (toolNames) {
+        for (const toolName of toolNames) {
+          const toolNodeId = generateId('Tool', toolName);
+          graph.addRelationship({
+            id: generateId('ENTRY_POINT_OF', `${toolNodeId}->${proc.id}`),
+            sourceId: toolNodeId,
+            targetId: proc.id,
+            type: 'ENTRY_POINT_OF',
+            confidence: 0.85,
+            reason: 'tool-handler-entry-point',
+          });
+          linked++;
+        }
+      }
+    }
+    if (isDev && linked > 0) {
+      console.log(`🔗 Linked ${linked} Route/Tool nodes to execution flows`);
+    }
+  }
+
+  return { communityResult, processResult };
+}
+
+// ── Pipeline orchestrator ─────────────────────────────────────────────────
+
 export const runPipelineFromRepo = async (
   repoPath: string,
   onProgress: (progress: PipelineProgress) => void,
@@ -407,362 +1062,16 @@ export const runPipelineFromRepo = async (
 ): Promise<PipelineResult> => {
   const graph = createKnowledgeGraph();
   const ctx = createResolutionContext();
-  const symbolTable = ctx.symbols;
-  let astCache = createASTCache(AST_CACHE_CAP);
   const pipelineStart = Date.now();
 
-  const cleanup = () => {
-    astCache.clear();
-    ctx.clear();
-  };
-
   try {
-    // ── Phase 1: Scan paths only (no content read) ─────────────────────
-    onProgress({
-      phase: 'extracting',
-      percent: 0,
-      message: 'Scanning repository...',
-    });
+    // Phase 1+2: Scan paths, build structure, process markdown
+    const { scannedFiles, allPaths, totalFiles } = await runScanAndStructure(repoPath, graph, onProgress);
 
-    const scannedFiles = await walkRepositoryPaths(repoPath, (current, total, filePath) => {
-      const scanProgress = Math.round((current / total) * 15);
-      onProgress({
-        phase: 'extracting',
-        percent: scanProgress,
-        message: 'Scanning repository...',
-        detail: filePath,
-        stats: { filesProcessed: current, totalFiles: total, nodesCreated: graph.nodeCount },
-      });
-    });
-
-    const totalFiles = scannedFiles.length;
-
-    onProgress({
-      phase: 'extracting',
-      percent: 15,
-      message: 'Repository scanned successfully',
-      stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
-    });
-
-    // ── Phase 2: Structure (paths only — no content needed) ────────────
-    onProgress({
-      phase: 'structure',
-      percent: 15,
-      message: 'Analyzing project structure...',
-      stats: { filesProcessed: 0, totalFiles, nodesCreated: graph.nodeCount },
-    });
-
-    const allPaths = scannedFiles.map(f => f.path);
-    processStructure(graph, allPaths);
-
-    onProgress({
-      phase: 'structure',
-      percent: 20,
-      message: 'Project structure analyzed',
-      stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
-    });
-
-
-    // ── Phase 2.5: Markdown processing (headings + cross-links) ────────
-    const mdScanned = scannedFiles.filter(f => f.path.endsWith('.md') || f.path.endsWith('.mdx'));
-    if (mdScanned.length > 0) {
-      const mdContents = await readFileContents(repoPath, mdScanned.map(f => f.path));
-      const mdFiles = mdScanned
-        .filter(f => mdContents.has(f.path))
-        .map(f => ({ path: f.path, content: mdContents.get(f.path)! }));
-      const allPathSet = new Set(allPaths);
-      const mdResult = processMarkdown(graph, mdFiles, allPathSet);
-      if (isDev) {
-        console.log(`  Markdown: ${mdResult.sections} sections, ${mdResult.links} cross-links from ${mdFiles.length} files`);
-      }
-    }
-
-    // ── Phase 3+4: Chunked read + parse ────────────────────────────────
-    // Group parseable files into byte-budget chunks so only ~20MB of source
-    // is in memory at a time. Each chunk is: read → parse → extract → free.
-
-    const parseableScanned = scannedFiles.filter(f => {
-      const lang = getLanguageFromFilename(f.path);
-      return lang && isLanguageAvailable(lang);
-    });
-
-    // Warn about files skipped due to unavailable parsers
-    const skippedByLang = new Map<string, number>();
-    for (const f of scannedFiles) {
-      const lang = getLanguageFromFilename(f.path);
-      if (lang && !isLanguageAvailable(lang)) {
-        skippedByLang.set(lang, (skippedByLang.get(lang) || 0) + 1);
-      }
-    }
-    for (const [lang, count] of skippedByLang) {
-      console.warn(`Skipping ${count} ${lang} file(s) — ${lang} parser not available (native binding may not have built). Try: npm rebuild tree-sitter-${lang}`);
-    }
-
-    const totalParseable = parseableScanned.length;
-
-    if (totalParseable === 0) {
-      onProgress({
-        phase: 'parsing',
-        percent: 82,
-        message: 'No parseable files found — skipping parsing phase',
-        stats: { filesProcessed: 0, totalFiles: 0, nodesCreated: graph.nodeCount },
-      });
-    }
-
-    // Build byte-budget chunks
-    const chunks: string[][] = [];
-    let currentChunk: string[] = [];
-    let currentBytes = 0;
-    for (const file of parseableScanned) {
-      if (currentChunk.length > 0 && currentBytes + file.size > CHUNK_BYTE_BUDGET) {
-        chunks.push(currentChunk);
-        currentChunk = [];
-        currentBytes = 0;
-      }
-      currentChunk.push(file.path);
-      currentBytes += file.size;
-    }
-    if (currentChunk.length > 0) chunks.push(currentChunk);
-
-    const numChunks = chunks.length;
-
-    if (isDev) {
-      const totalMB = parseableScanned.reduce((s, f) => s + f.size, 0) / (1024 * 1024);
-      console.log(`📂 Scan: ${totalFiles} paths, ${totalParseable} parseable (${totalMB.toFixed(0)}MB), ${numChunks} chunks @ ${CHUNK_BYTE_BUDGET / (1024 * 1024)}MB budget`);
-    }
-
-    onProgress({
-      phase: 'parsing',
-      percent: 20,
-      message: `Parsing ${totalParseable} files in ${numChunks} chunk${numChunks !== 1 ? 's' : ''}...`,
-      stats: { filesProcessed: 0, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
-    });
-
-    // Don't spawn workers for tiny repos — overhead exceeds benefit
-    const MIN_FILES_FOR_WORKERS = 15;
-    const MIN_BYTES_FOR_WORKERS = 512 * 1024;
-    const totalBytes = parseableScanned.reduce((s, f) => s + f.size, 0);
-
-    // Create worker pool once, reuse across chunks
-    let workerPool: WorkerPool | undefined;
-    if (totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS) {
-      try {
-        let workerUrl = new URL('./workers/parse-worker.js', import.meta.url);
-        // When running under vitest, import.meta.url points to src/ where no .js exists.
-        // Fall back to the compiled dist/ worker so the pool can spawn real worker threads.
-        const thisDir = fileURLToPath(new URL('.', import.meta.url));
-        if (!fs.existsSync(fileURLToPath(workerUrl))) {
-          const distWorker = path.resolve(thisDir, '..', '..', '..', 'dist', 'core', 'ingestion', 'workers', 'parse-worker.js');
-          if (fs.existsSync(distWorker)) {
-            workerUrl = pathToFileURL(distWorker) as URL;
-          }
-        }
-        workerPool = createWorkerPool(workerUrl);
-      } catch (err) {
-        if (isDev) console.warn('Worker pool creation failed, using sequential fallback:', (err as Error).message);
-      }
-    }
-
-    let filesParsedSoFar = 0;
-
-    // AST cache sized for one chunk (sequential fallback uses it for import/call/heritage)
-    const maxChunkFiles = chunks.reduce((max, c) => Math.max(max, c.length), 0);
-    astCache = createASTCache(maxChunkFiles);
-
-    // Build import resolution context once — suffix index, file lists, resolve cache.
-    // Reused across all chunks to avoid rebuilding O(files × path_depth) structures.
-    const importCtx = buildImportResolutionContext(allPaths);
-    const allPathObjects = allPaths.map(p => ({ path: p }));
-
-    // Single-pass: parse + resolve imports/calls/heritage per chunk.
-    // Calls/heritage use the symbol table built so far (symbols from earlier chunks
-    // are already registered). This trades ~5% cross-chunk resolution accuracy for
-    // 200-400MB less memory — critical for Linux-kernel-scale repos.
-    const sequentialChunkPaths: string[][] = [];
-    // Pre-compute which chunks need synthesis — O(1) lookup per chunk.
-    const chunkNeedsSynthesis = chunks.map(paths =>
-      paths.some(p => { 
-        const lang = getLanguageFromFilename(p); 
-        return lang != null && SYNTHESIS_LANGUAGES.has(lang); 
-      }),
+    // Phase 3+4: Chunked parse + resolve (imports, calls, heritage, routes)
+    const { exportedTypeMap, allFetchCalls, allExtractedRoutes, allDecoratorRoutes, allToolDefs } = await runChunkedParseAndResolve(
+      graph, ctx, scannedFiles, allPaths, totalFiles, repoPath, pipelineStart, onProgress,
     );
-    // Phase 14: Collect exported type bindings for cross-file propagation
-    const exportedTypeMap: ExportedTypeMap = new Map();
-    // Accumulate file-scope TypeEnv bindings from workers (closes worker/sequential quality gap)
-    const workerTypeEnvBindings: { filePath: string; bindings: [string, string][] }[] = [];
-    // Accumulate fetch() calls from workers for Next.js route matching
-    const allFetchCalls: ExtractedFetchCall[] = [];
-    // Accumulate framework-extracted routes (Laravel, etc.) for Route node creation
-    const allExtractedRoutes: ExtractedRoute[] = [];
-    // Accumulate decorator-based routes (@Get, @Post, @app.route, etc.)
-    const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
-    // Accumulate MCP/RPC tool definitions (@mcp.tool(), @app.tool(), etc.)
-    const allToolDefs: ExtractedToolDef[] = [];
-
-    try {
-      for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
-        const chunkPaths = chunks[chunkIdx];
-
-        // Read content for this chunk only
-        const chunkContents = await readFileContents(repoPath, chunkPaths);
-        const chunkFiles = chunkPaths
-          .filter(p => chunkContents.has(p))
-          .map(p => ({ path: p, content: chunkContents.get(p)! }));
-
-        // Parse this chunk (workers or sequential fallback)
-        const chunkWorkerData = await processParsing(
-          graph, chunkFiles, symbolTable, astCache,
-          (current, _total, filePath) => {
-            const globalCurrent = filesParsedSoFar + current;
-            const parsingProgress = 20 + ((globalCurrent / totalParseable) * 62);
-            onProgress({
-              phase: 'parsing',
-              percent: Math.round(parsingProgress),
-              message: `Parsing chunk ${chunkIdx + 1}/${numChunks}...`,
-              detail: filePath,
-              stats: { filesProcessed: globalCurrent, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
-            });
-          },
-          workerPool,
-        );
-
-        const chunkBasePercent = 20 + ((filesParsedSoFar / totalParseable) * 62);
-
-        if (chunkWorkerData) {
-          // Imports
-          await processImportsFromExtracted(graph, allPathObjects, chunkWorkerData.imports, ctx, (current, total) => {
-            onProgress({
-              phase: 'parsing',
-              percent: Math.round(chunkBasePercent),
-              message: `Resolving imports (chunk ${chunkIdx + 1}/${numChunks})...`,
-              detail: `${current}/${total} files`,
-              stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
-            });
-          }, repoPath, importCtx);
-          // ── Wildcard-import synthesis (Ruby / C/C++ / Swift / Go) + Python module aliases ─
-          // Synthesize namedImportMap entries for wildcard-import languages and build
-          // moduleAliasMap for Python namespace imports. Must run after imports are resolved
-          // (importMap is populated) but BEFORE call resolution.
-          if (chunkNeedsSynthesis[chunkIdx]) synthesizeWildcardImportBindings(graph, ctx);
-          // Phase 14 E1: Seed cross-file receiver types from ExportedTypeMap
-          // before call resolution — eliminates re-parse for single-hop imported receivers.
-          // NOTE: In the worker path, exportedTypeMap is empty during chunk processing
-          // (populated later in runCrossFileBindingPropagation). This block is latent —
-          // it activates only if incremental export collection is added per-chunk.
-          if (exportedTypeMap.size > 0 && ctx.namedImportMap.size > 0) {
-            const { enrichedCount } = seedCrossFileReceiverTypes(
-              chunkWorkerData.calls, ctx.namedImportMap, exportedTypeMap,
-            );
-            if (isDev && enrichedCount > 0) {
-              console.log(`🔗 E1: Seeded ${enrichedCount} cross-file receiver types (chunk ${chunkIdx + 1})`);
-            }
-          }
-          // Calls + Heritage + Routes — resolve in parallel (no shared mutable state between them)
-          // This is safe because each writes disjoint relationship types into idempotent id-keyed Maps,
-          // and the single-threaded event loop prevents races between synchronous addRelationship calls.
-          await Promise.all([
-            processCallsFromExtracted(
-              graph,
-              chunkWorkerData.calls,
-              ctx,
-              (current, total) => {
-                onProgress({
-                  phase: 'parsing',
-                  percent: Math.round(chunkBasePercent),
-                  message: `Resolving calls (chunk ${chunkIdx + 1}/${numChunks})...`,
-                  detail: `${current}/${total} files`,
-                  stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
-                });
-              },
-              chunkWorkerData.constructorBindings,
-            ),
-            processHeritageFromExtracted(
-              graph,
-              chunkWorkerData.heritage,
-              ctx,
-              (current, total) => {
-                onProgress({
-                  phase: 'parsing',
-                  percent: Math.round(chunkBasePercent),
-                  message: `Resolving heritage (chunk ${chunkIdx + 1}/${numChunks})...`,
-                  detail: `${current}/${total} records`,
-                  stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
-                });
-              },
-            ),
-            processRoutesFromExtracted(
-              graph,
-              chunkWorkerData.routes ?? [],
-              ctx,
-              (current, total) => {
-                onProgress({
-                  phase: 'parsing',
-                  percent: Math.round(chunkBasePercent),
-                  message: `Resolving routes (chunk ${chunkIdx + 1}/${numChunks})...`,
-                  detail: `${current}/${total} routes`,
-                  stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
-                });
-              },
-            ),
-          ]);
-          // Process field write assignments (synchronous, runs after calls resolve)
-          if (chunkWorkerData.assignments?.length) {
-            processAssignmentsFromExtracted(graph, chunkWorkerData.assignments, ctx, chunkWorkerData.constructorBindings);
-          }
-          // Collect TypeEnv file-scope bindings for exported type enrichment
-          if (chunkWorkerData.typeEnvBindings?.length) {
-            workerTypeEnvBindings.push(...chunkWorkerData.typeEnvBindings);
-          }
-          // Collect fetch() calls for Next.js route matching
-          if (chunkWorkerData.fetchCalls?.length) {
-            allFetchCalls.push(...chunkWorkerData.fetchCalls);
-          }
-          if (chunkWorkerData.routes?.length) {
-            allExtractedRoutes.push(...chunkWorkerData.routes);
-          }
-          if (chunkWorkerData.decoratorRoutes?.length) {
-            allDecoratorRoutes.push(...chunkWorkerData.decoratorRoutes);
-          }
-          if (chunkWorkerData.toolDefs?.length) {
-            allToolDefs.push(...chunkWorkerData.toolDefs);
-          }
-        } else {
-          await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
-          sequentialChunkPaths.push(chunkPaths);
-        }
-
-        filesParsedSoFar += chunkFiles.length;
-
-        // Clear AST cache between chunks to free memory
-        astCache.clear();
-        // chunkContents + chunkFiles + chunkWorkerData go out of scope → GC reclaims
-      }
-    } finally {
-      await workerPool?.terminate();
-    }
-
-    // Sequential fallback chunks: re-read source for call/heritage resolution
-    // Synthesize wildcard import bindings once after ALL imports are processed,
-    // before any call resolution — same rationale as the worker-path inline synthesis.
-    if (sequentialChunkPaths.length > 0) synthesizeWildcardImportBindings(graph, ctx);
-    for (const chunkPaths of sequentialChunkPaths) {
-      const chunkContents = await readFileContents(repoPath, chunkPaths);
-      const chunkFiles = chunkPaths
-        .filter(p => chunkContents.has(p))
-        .map(p => ({ path: p, content: chunkContents.get(p)! }));
-      astCache = createASTCache(chunkFiles.length);
-      const rubyHeritage = await processCalls(graph, chunkFiles, astCache, ctx, undefined, exportedTypeMap);
-      await processHeritage(graph, chunkFiles, astCache, ctx);
-      if (rubyHeritage.length > 0) {
-        await processHeritageFromExtracted(graph, rubyHeritage, ctx);
-      }
-      // Extract fetch() calls for Next.js route matching (sequential path)
-      const chunkFetchCalls = await extractFetchCallsFromFiles(chunkFiles, astCache);
-      if (chunkFetchCalls.length > 0) {
-        allFetchCalls.push(...chunkFetchCalls);
-      }
-      astCache.clear();
-    }
 
     // ── Phase 3.5: Route Registry (Next.js + PHP + Laravel + decorators) ──
     type RouteEntry = { filePath: string; source: string };
@@ -934,247 +1243,19 @@ export const runPipelineFromRepo = async (
       }
     }
 
-    // Log resolution cache stats
-    if (isDev) {
-      const rcStats = ctx.getStats();
-      const total = rcStats.cacheHits + rcStats.cacheMisses;
-      const hitRate = total > 0 ? ((rcStats.cacheHits / total) * 100).toFixed(1) : '0';
-      console.log(`🔍 Resolution cache: ${rcStats.cacheHits} hits, ${rcStats.cacheMisses} misses (${hitRate}% hit rate)`);
-    }
-
-    // ── Worker path quality enrichment: merge TypeEnv file-scope bindings into ExportedTypeMap ──
-    // Workers return file-scope bindings from their TypeEnv fixpoint (includes inferred types
-    // like `const config = getConfig()` → Config). Filter by graph isExported to match
-    // the sequential path's collectExportedBindings behavior.
-    if (workerTypeEnvBindings.length > 0) {
-      let enriched = 0;
-      for (const { filePath, bindings } of workerTypeEnvBindings) {
-        for (const [name, type] of bindings) {
-          // Verify the symbol is exported via graph node
-          const nodeId = `Function:${filePath}:${name}`;
-          const varNodeId = `Variable:${filePath}:${name}`;
-          const constNodeId = `Const:${filePath}:${name}`;
-          const node = graph.getNode(nodeId) ?? graph.getNode(varNodeId) ?? graph.getNode(constNodeId);
-          if (!node?.properties?.isExported) continue;
-
-          let fileExports = exportedTypeMap.get(filePath);
-          if (!fileExports) { fileExports = new Map(); exportedTypeMap.set(filePath, fileExports); }
-          // Don't overwrite existing entries (Tier 0 from SymbolTable is authoritative)
-          if (!fileExports.has(name)) {
-            fileExports.set(name, type);
-            enriched++;
-          }
-        }
-      }
-      if (isDev && enriched > 0) {
-        console.log(`🔗 Worker TypeEnv enrichment: ${enriched} fixpoint-inferred exports added to ExportedTypeMap`);
-      }
-    }
-
-    // ── Phase 14 pre-pass: Final synthesis pass for whole-module-import languages ──
-    // Per-chunk synthesis (above) already ran incrementally. This final pass ensures
-    // any remaining files whose imports were not covered inline are also synthesized,
-    // and that Phase 14 type propagation has complete namedImportMap data.
-    const synthesized = synthesizeWildcardImportBindings(graph, ctx);
-    if (isDev && synthesized > 0) {
-      console.log(`🔗 Synthesized ${synthesized} additional wildcard import bindings (Go/Ruby/C++/Swift/Python)`);
-    }
-
-    // ── Phase 14: Cross-file binding propagation ──────────────────────
+    // ── Phase 14: Cross-file binding propagation (topological level sort) ──
     await runCrossFileBindingPropagation(
       graph, ctx, exportedTypeMap, allPaths, totalFiles, repoPath, pipelineStart, onProgress,
     );
 
-    // Free import resolution context — suffix index + resolve cache no longer needed
-    // (allPathObjects and importCtx hold ~94MB+ for large repos)
-    allPathObjects.length = 0;
-    importCtx.resolveCache.clear();
-    importCtx.index = EMPTY_INDEX; // Release suffix index memory (~30MB for large repos)
-    importCtx.normalizedFileList = [];
-
+    // Post-parse graph analysis (MRO, communities, processes)
     let communityResult: Awaited<ReturnType<typeof processCommunities>> | undefined;
     let processResult: Awaited<ReturnType<typeof processProcesses>> | undefined;
 
     if (!options?.skipGraphPhases) {
-      // ── Phase 4.5: Method Resolution Order ──────────────────────────────
-      onProgress({
-        phase: 'parsing',
-        percent: 81,
-        message: 'Computing method resolution order...',
-        stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
-      });
-
-      const mroResult = computeMRO(graph);
-      if (isDev && mroResult.entries.length > 0) {
-        console.log(`🔀 MRO: ${mroResult.entries.length} classes analyzed, ${mroResult.ambiguityCount} ambiguities found, ${mroResult.overrideEdges} OVERRIDES edges`);
-      }
-
-      // ── Phase 5: Communities ───────────────────────────────────────────
-      onProgress({
-        phase: 'communities',
-        percent: 82,
-        message: 'Detecting code communities...',
-        stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
-      });
-
-      communityResult = await processCommunities(graph, (message, progress) => {
-        const communityProgress = 82 + (progress * 0.10);
-        onProgress({
-          phase: 'communities',
-          percent: Math.round(communityProgress),
-          message,
-          stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
-        });
-      });
-
-      if (isDev) {
-        console.log(`🏘️ Community detection: ${communityResult.stats.totalCommunities} communities found (modularity: ${communityResult.stats.modularity.toFixed(3)})`);
-      }
-
-      communityResult.communities.forEach(comm => {
-        graph.addNode({
-          id: comm.id,
-          label: 'Community' as const,
-          properties: {
-            name: comm.label,
-            filePath: '',
-            heuristicLabel: comm.heuristicLabel,
-            cohesion: comm.cohesion,
-            symbolCount: comm.symbolCount,
-          }
-        });
-      });
-
-      communityResult.memberships.forEach(membership => {
-        graph.addRelationship({
-          id: `${membership.nodeId}_member_of_${membership.communityId}`,
-          type: 'MEMBER_OF',
-          sourceId: membership.nodeId,
-          targetId: membership.communityId,
-          confidence: 1.0,
-          reason: 'leiden-algorithm',
-        });
-      });
-
-      // ── Phase 6: Processes ─────────────────────────────────────────────
-      onProgress({
-        phase: 'processes',
-        percent: 94,
-        message: 'Detecting execution flows...',
-        stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
-      });
-
-      let symbolCount = 0;
-      graph.forEachNode(n => { if (n.label !== 'File') symbolCount++; });
-      const dynamicMaxProcesses = Math.max(20, Math.min(300, Math.round(symbolCount / 10)));
-
-      processResult = await processProcesses(
-        graph,
-        communityResult.memberships,
-        (message, progress) => {
-          const processProgress = 94 + (progress * 0.05);
-          onProgress({
-            phase: 'processes',
-            percent: Math.round(processProgress),
-            message,
-            stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: graph.nodeCount },
-          });
-        },
-        { maxProcesses: dynamicMaxProcesses, minSteps: 3 }
-      );
-
-      if (isDev) {
-        console.log(`🔄 Process detection: ${processResult.stats.totalProcesses} processes found (${processResult.stats.crossCommunityCount} cross-community)`);
-      }
-
-      processResult.processes.forEach(proc => {
-        graph.addNode({
-          id: proc.id,
-          label: 'Process' as const,
-          properties: {
-            name: proc.label,
-            filePath: '',
-            heuristicLabel: proc.heuristicLabel,
-            processType: proc.processType,
-            stepCount: proc.stepCount,
-            communities: proc.communities,
-            entryPointId: proc.entryPointId,
-            terminalId: proc.terminalId,
-          }
-        });
-      });
-
-      processResult.steps.forEach(step => {
-        graph.addRelationship({
-          id: `${step.nodeId}_step_${step.step}_${step.processId}`,
-          type: 'STEP_IN_PROCESS',
-          sourceId: step.nodeId,
-          targetId: step.processId,
-          confidence: 1.0,
-          reason: 'trace-detection',
-          step: step.step,
-        });
-      });
-
-      // Link Route and Tool nodes to Processes via reverse index (file → node id)
-      if (routeRegistry.size > 0 || toolDefs.length > 0) {
-        // Reverse indexes: file → all route URLs / tool names (handles multi-route files)
-        const routesByFile = new Map<string, string[]>();
-        for (const [url, entry] of routeRegistry) {
-          let list = routesByFile.get(entry.filePath);
-          if (!list) { list = []; routesByFile.set(entry.filePath, list); }
-          list.push(url);
-        }
-        const toolsByFile = new Map<string, string[]>();
-        for (const td of toolDefs) {
-          let list = toolsByFile.get(td.filePath);
-          if (!list) { list = []; toolsByFile.set(td.filePath, list); }
-          list.push(td.name);
-        }
-
-        let linked = 0;
-        for (const proc of processResult.processes) {
-          if (!proc.entryPointId) continue;
-          const entryNode = graph.getNode(proc.entryPointId);
-          if (!entryNode) continue;
-          const entryFile = entryNode.properties.filePath;
-          if (!entryFile) continue;
-
-          const routeURLs = routesByFile.get(entryFile);
-          if (routeURLs) {
-            for (const routeURL of routeURLs) {
-              const routeNodeId = generateId('Route', routeURL);
-              graph.addRelationship({
-                id: generateId('ENTRY_POINT_OF', `${routeNodeId}->${proc.id}`),
-                sourceId: routeNodeId,
-                targetId: proc.id,
-                type: 'ENTRY_POINT_OF',
-                confidence: 0.85,
-                reason: 'route-handler-entry-point',
-              });
-              linked++;
-            }
-          }
-          const toolNames = toolsByFile.get(entryFile);
-          if (toolNames) {
-            for (const toolName of toolNames) {
-              const toolNodeId = generateId('Tool', toolName);
-              graph.addRelationship({
-                id: generateId('ENTRY_POINT_OF', `${toolNodeId}->${proc.id}`),
-                sourceId: toolNodeId,
-                targetId: proc.id,
-                type: 'ENTRY_POINT_OF',
-                confidence: 0.85,
-                reason: 'tool-handler-entry-point',
-              });
-              linked++;
-            }
-          }
-        }
-        if (isDev && linked > 0) {
-          console.log(`🔗 Linked ${linked} Route/Tool nodes to execution flows`);
-        }
-      }
+      const graphResults = await runGraphAnalysisPhases(graph, totalFiles, onProgress, routeRegistry, toolDefs);
+      communityResult = graphResults.communityResult;
+      processResult = graphResults.processResult;
     }
 
     onProgress({
@@ -1190,11 +1271,9 @@ export const runPipelineFromRepo = async (
       },
     });
 
-    astCache.clear();
-
     return { graph, repoPath, totalFileCount: totalFiles, communityResult, processResult };
   } catch (error) {
-    cleanup();
+    ctx.clear();
     throw error;
   }
 };

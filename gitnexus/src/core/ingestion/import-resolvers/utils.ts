@@ -3,7 +3,7 @@
  * Extracted from import-processor.ts to reduce file size.
  */
 
-import type { SyntaxNode } from '../utils.js';
+import type { SyntaxNode } from '../utils/ast-helpers.js';
 
 /** All file extensions to try during resolution */
 export const EXTENSIONS = [
@@ -168,11 +168,3 @@ export function suffixResolve(
   return null;
 }
 
-/** Find the first direct named child of a tree-sitter node matching the given type. */
-export function findChild(node: SyntaxNode, type: string): SyntaxNode | null {
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child?.type === type) return child;
-  }
-  return null;
-}

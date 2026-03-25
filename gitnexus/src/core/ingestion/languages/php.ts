@@ -1,0 +1,133 @@
+/**
+ * PHP language provider.
+ *
+ * PHP uses named imports (use statements for classes/functions/constants),
+ * and standard export/import resolution. PHP files can use a variety of
+ * extensions from legacy versions through modern PHP 8.
+ */
+
+import { SupportedLanguages } from '../../../config/supported-languages.js';
+import { defineLanguage } from '../language-provider.js';
+import { typeConfig as phpConfig } from '../type-extractors/php.js';
+import { phpExportChecker } from '../export-detection.js';
+import { resolvePhpImport } from '../import-resolvers/php.js';
+import { extractPhpNamedBindings } from '../named-bindings/php.js';
+import { PHP_QUERIES } from '../tree-sitter-queries.js';
+import { findDescendant, extractStringContent } from '../utils/ast-helpers.js';
+import type { NodeLabel } from '../../graph/types.js';
+
+/** Eloquent model properties whose array values are worth indexing. */
+const ELOQUENT_ARRAY_PROPS = new Set(['fillable', 'casts', 'hidden', 'guarded', 'with', 'appends']);
+
+/** Eloquent relationship method names. */
+const ELOQUENT_RELATIONS = new Set([
+  'hasMany', 'hasOne', 'belongsTo', 'belongsToMany',
+  'morphTo', 'morphMany', 'morphOne', 'morphToMany', 'morphedByMany',
+  'hasManyThrough', 'hasOneThrough',
+]);
+
+/**
+ * For a PHP property_declaration node, extract array values as a description string.
+ * Returns null if not an Eloquent model property or no array values found.
+ */
+function extractPhpPropertyDescription(propName: string, propDeclNode: any): string | null {
+  if (!ELOQUENT_ARRAY_PROPS.has(propName)) return null;
+
+  const arrayNode = findDescendant(propDeclNode, 'array_creation_expression');
+  if (!arrayNode) return null;
+
+  const items: string[] = [];
+  for (const child of (arrayNode.children ?? [])) {
+    if (child.type !== 'array_element_initializer') continue;
+    const children = child.children ?? [];
+    const arrowIdx = children.findIndex((c: any) => c.type === '=>');
+    if (arrowIdx !== -1) {
+      const key = extractStringContent(children[arrowIdx - 1]);
+      const val = extractStringContent(children[arrowIdx + 1]);
+      if (key && val) items.push(`${key}:${val}`);
+    } else {
+      const val = extractStringContent(children[0]);
+      if (val) items.push(val);
+    }
+  }
+
+  return items.length > 0 ? items.join(', ') : null;
+}
+
+/**
+ * For a PHP method_declaration node, detect if it defines an Eloquent relationship.
+ * Returns description like "hasMany(Post)" or null.
+ */
+function extractEloquentRelationDescription(methodNode: any): string | null {
+  function findRelationCall(node: any): any {
+    if (node.type === 'member_call_expression') {
+      const children = node.children ?? [];
+      const objectNode = children.find((c: any) => c.type === 'variable_name' && c.text === '$this');
+      const nameNode = children.find((c: any) => c.type === 'name');
+      if (objectNode && nameNode && ELOQUENT_RELATIONS.has(nameNode.text)) return node;
+    }
+    for (const child of (node.children ?? [])) {
+      const found = findRelationCall(child);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  const callNode = findRelationCall(methodNode);
+  if (!callNode) return null;
+
+  const relType = callNode.children?.find((c: any) => c.type === 'name')?.text;
+  const argsNode = callNode.children?.find((c: any) => c.type === 'arguments');
+  let targetModel: string | null = null;
+  if (argsNode) {
+    const firstArg = argsNode.children?.find((c: any) => c.type === 'argument');
+    if (firstArg) {
+      const classConstant = firstArg.children?.find((c: any) =>
+        c.type === 'class_constant_access_expression'
+      );
+      if (classConstant) {
+        targetModel = classConstant.children?.find((c: any) => c.type === 'name')?.text ?? null;
+      }
+    }
+  }
+
+  if (relType && targetModel) return `${relType}(${targetModel})`;
+  if (relType) return relType;
+  return null;
+}
+
+/**
+ * LanguageProvider.descriptionExtractor implementation for PHP.
+ * Extracts Eloquent model property metadata and relationship descriptions.
+ */
+function phpDescriptionExtractor(
+  nodeLabel: NodeLabel,
+  nodeName: string,
+  captureMap: Record<string, any>,
+): string | undefined {
+  if (nodeLabel === 'Property' && captureMap['definition.property']) {
+    return extractPhpPropertyDescription(nodeName, captureMap['definition.property']) ?? undefined;
+  }
+  if (nodeLabel === 'Method' && captureMap['definition.method']) {
+    return extractEloquentRelationDescription(captureMap['definition.method']) ?? undefined;
+  }
+  return undefined;
+}
+
+/** Detect Laravel route files by path convention. */
+function isPhpRouteFile(filePath: string): boolean {
+  return filePath.endsWith('.php') &&
+    (filePath.includes('/routes/') || filePath.startsWith('routes/'));
+}
+
+export const phpProvider = defineLanguage({
+  id: SupportedLanguages.PHP,
+  extensions: ['.php', '.phtml', '.php3', '.php4', '.php5', '.php8'],
+  treeSitterQueries: PHP_QUERIES,
+  typeConfig: phpConfig,
+  exportChecker: phpExportChecker,
+  importResolver: resolvePhpImport,
+  namedBindingExtractor: extractPhpNamedBindings,
+  descriptionExtractor: phpDescriptionExtractor,
+  isRouteFile: isPhpRouteFile,
+});

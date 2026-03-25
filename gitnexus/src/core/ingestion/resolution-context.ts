@@ -17,7 +17,7 @@ import type { SymbolTable, SymbolDefinition } from './symbol-table.js';
 import { createSymbolTable } from './symbol-table.js';
 import type { NamedImportBinding } from './import-processor.js';
 import { isFileInPackageDir } from './import-processor.js';
-import { walkBindingChain } from './named-binding-extraction.js';
+import { walkBindingChain } from './named-binding-processor.js';
 
 /** Resolution tier for tracking, logging, and test assertions. */
 export type ResolutionTier = 'same-file' | 'import-scoped' | 'global';

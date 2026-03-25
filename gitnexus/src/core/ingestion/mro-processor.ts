@@ -22,6 +22,7 @@
 import { KnowledgeGraph, GraphRelationship } from '../graph/types.js';
 import { generateId } from '../../lib/utils.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
+import { getProvider } from './languages/index.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -298,9 +299,10 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
     if (!language) continue;
     const className = classNode.properties.name;
 
-    // Compute linearized MRO depending on language
+    // Compute linearized MRO depending on language strategy
+    const provider = getProvider(language);
     let mroOrder: string[];
-    if (language === SupportedLanguages.Python) {
+    if (provider.mroStrategy === 'c3') {
       const c3Result = c3Linearize(classId, parentMap, c3Cache);
       mroOrder = c3Result ?? gatherAncestors(classId, parentMap);
     } else {
@@ -345,8 +347,8 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
     // Detect collisions: methods defined in 2+ different ancestors
     const ambiguities: MethodAmbiguity[] = [];
 
-    // Compute transitive edge types once per class (only needed for C#/Java)
-    const needsEdgeTypes = language === SupportedLanguages.CSharp || language === SupportedLanguages.Java || language === SupportedLanguages.Kotlin;
+    // Compute transitive edge types once per class (only needed for implements-split languages)
+    const needsEdgeTypes = provider.mroStrategy === 'implements-split';
     const classEdgeTypes = needsEdgeTypes
       ? buildTransitiveEdgeTypes(classId, parentMap, parentEdgeType)
       : undefined;
@@ -364,22 +366,20 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
 
       let resolution: Resolution;
 
-      switch (language) {
-        case SupportedLanguages.CPlusPlus:
-          resolution = resolveByMroOrder(methodName, defs, mroOrder, 'C++ leftmost base');
+      switch (provider.mroStrategy) {
+        case 'leftmost-base':
+          resolution = resolveByMroOrder(methodName, defs, mroOrder, 'leftmost base');
           break;
-        case SupportedLanguages.CSharp:
-        case SupportedLanguages.Java:
-        case SupportedLanguages.Kotlin:
+        case 'implements-split':
           resolution = resolveCsharpJava(methodName, defs, classEdgeTypes);
           break;
-        case SupportedLanguages.Python:
-          resolution = resolveByMroOrder(methodName, defs, mroOrder, 'Python C3 MRO');
+        case 'c3':
+          resolution = resolveByMroOrder(methodName, defs, mroOrder, 'C3 MRO');
           break;
-        case SupportedLanguages.Rust:
+        case 'qualified-syntax':
           resolution = {
             resolvedTo: null,
-            reason: `Rust requires qualified syntax: <Type as Trait>::${methodName}()`,
+            reason: `requires qualified syntax: <Type as Trait>::${methodName}()`,
             confidence: 0.5,
           };
           break;

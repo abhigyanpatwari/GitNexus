@@ -3,11 +3,10 @@
  * Handles Go module path-based package imports.
  */
 
-/** Go module config parsed from go.mod */
-export interface GoModuleConfig {
-  /** Module path (e.g., "github.com/user/repo") */
-  modulePath: string;
-}
+import { SupportedLanguages } from '../../../config/supported-languages.js';
+import type { ImportResult, ResolveCtx } from './types.js';
+import { resolveStandard } from './standard.js';
+import type { GoModuleConfig } from '../language-config.js';
 
 /**
  * Extract the package directory suffix from a Go import path.
@@ -55,4 +54,24 @@ export function resolveGoPackage(
   }
 
   return matches;
+}
+
+/** Go: package-level imports via go.mod module path. */
+export function resolveGoImport(
+  rawImportPath: string,
+  filePath: string,
+  ctx: ResolveCtx,
+): ImportResult {
+  const goModule = ctx.configs.goModule;
+  if (goModule && rawImportPath.startsWith(goModule.modulePath)) {
+    const pkgSuffix = resolveGoPackageDir(rawImportPath, goModule);
+    if (pkgSuffix) {
+      const pkgFiles = resolveGoPackage(rawImportPath, goModule, ctx.normalizedFileList, ctx.allFileList);
+      if (pkgFiles.length > 0) {
+        return { kind: 'package', files: pkgFiles, dirSuffix: pkgSuffix };
+      }
+    }
+    // Fall through if no files found (package might be external)
+  }
+  return resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Go);
 }

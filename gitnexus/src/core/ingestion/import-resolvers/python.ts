@@ -4,9 +4,12 @@
  */
 
 import { tryResolveWithExtensions } from './utils.js';
+import { SupportedLanguages } from '../../../config/supported-languages.js';
+import type { ImportResult, ResolveCtx } from './types.js';
+import { resolveStandard } from './standard.js';
 
 /**
- * Resolve a Python import to a file path.
+ * Resolve a Python import to a file path (low-level helper).
  *
  * 1. Relative (PEP 328): `.module`, `..module` — 1 dot = current package, each extra dot goes up one level.
  * 2. Proximity bare import: static heuristic — checks the importer's own directory first.
@@ -19,7 +22,7 @@ import { tryResolveWithExtensions } from './utils.js';
  *
  * Returns null to let the caller fall through to suffixResolve.
  */
-export function resolvePythonImport(
+export function resolvePythonImportInternal(
   currentFile: string,
   importPath: string,
   allFiles: Set<string>,
@@ -56,4 +59,19 @@ export function resolvePythonImport(
   if (allFiles.has(`${importerDir}/${pathLike}.py`)) return `${importerDir}/${pathLike}.py`;
 
   return null;
+}
+
+/**
+ * Python: relative imports (PEP 328) + proximity-based bare imports.
+ * Falls through to standard suffix resolution when proximity finds no match.
+ */
+export function resolvePythonImport(
+  rawImportPath: string,
+  filePath: string,
+  ctx: ResolveCtx,
+): ImportResult {
+  const resolved = resolvePythonImportInternal(filePath, rawImportPath, ctx.allFilePaths);
+  if (resolved) return { kind: 'files', files: [resolved] };
+  if (rawImportPath.startsWith('.')) return null; // relative but unresolved -- don't suffix-match
+  return resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Python);
 }

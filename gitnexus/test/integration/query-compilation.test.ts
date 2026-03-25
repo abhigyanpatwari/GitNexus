@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { loadParser, loadLanguage, isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
-import { LANGUAGE_QUERIES } from '../../src/core/ingestion/tree-sitter-queries.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { getProvider } from '../../src/core/ingestion/languages/index.js';
 import Parser from 'tree-sitter';
 
 /**
- * Smoke test: verify that every LANGUAGE_QUERIES entry compiles against
- * its tree-sitter grammar without throwing.  A silent Query compilation
+ * Smoke test: verify that every language provider's treeSitterQueries compiles
+ * against its tree-sitter grammar without throwing.  A silent Query compilation
  * failure is the #1 cause of "0 nodes extracted for language X" bugs.
  */
 describe('Query compilation smoke tests', () => {
@@ -43,7 +43,8 @@ describe('Query compilation smoke tests', () => {
       }
 
       await loadLanguage(lang as SupportedLanguages, filename);
-      const queryStr = LANGUAGE_QUERIES[lang as SupportedLanguages];
+      const provider = getProvider(lang as SupportedLanguages);
+      const queryStr = provider.treeSitterQueries;
       expect(queryStr).toBeTruthy();
 
       const grammar = parser.getLanguage();

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractCsharpNamedBindings } from '../../src/core/ingestion/named-binding-extraction.js';
+import { extractCSharpNamedBindings } from '../../../src/core/ingestion/named-bindings/csharp.js';
 import Parser from 'tree-sitter';
 import CSharp from 'tree-sitter-c-sharp';
 
@@ -20,7 +20,7 @@ const parse = (code: string) => {
   return parser.parse(code);
 };
 
-describe('extractCsharpNamedBindings', () => {
+describe('extractCSharpNamedBindings', () => {
   describe('non-aliased namespace imports (known limitation)', () => {
     it('returns undefined for non-aliased namespace imports (known limitation)', () => {
       // C# using Namespace imports can't be reduced to per-symbol bindings without type
@@ -29,7 +29,7 @@ describe('extractCsharpNamedBindings', () => {
       const usingNode = findFirst(tree.rootNode, 'using_directive');
       expect(usingNode).toBeDefined();
 
-      const result = extractCsharpNamedBindings(usingNode);
+      const result = extractCSharpNamedBindings(usingNode);
 
       expect(result).toBeUndefined();
     });
@@ -41,7 +41,7 @@ describe('extractCsharpNamedBindings', () => {
       const usingNode = findFirst(tree.rootNode, 'using_directive');
       expect(usingNode).toBeDefined();
 
-      const result = extractCsharpNamedBindings(usingNode);
+      const result = extractCSharpNamedBindings(usingNode);
 
       expect(result).toBeUndefined();
     });
@@ -53,7 +53,7 @@ describe('extractCsharpNamedBindings', () => {
       const usingNode = findFirst(tree.rootNode, 'using_directive');
       expect(usingNode).toBeDefined();
 
-      const result = extractCsharpNamedBindings(usingNode);
+      const result = extractCSharpNamedBindings(usingNode);
 
       expect(result).toEqual([{ local: 'Mod', exported: 'Models' }]);
     });
@@ -63,7 +63,7 @@ describe('extractCsharpNamedBindings', () => {
       const usingNode = findFirst(tree.rootNode, 'using_directive');
       expect(usingNode).toBeDefined();
 
-      const result = extractCsharpNamedBindings(usingNode);
+      const result = extractCSharpNamedBindings(usingNode);
 
       expect(result).toEqual([{ local: 'Svc', exported: 'UserService' }]);
     });
@@ -74,7 +74,7 @@ describe('extractCsharpNamedBindings', () => {
       // Passing a synthetic object that is not a using_directive node.
       const fakeNode = { type: 'import_declaration', namedChildCount: 0 };
 
-      const result = extractCsharpNamedBindings(fakeNode);
+      const result = extractCSharpNamedBindings(fakeNode);
 
       expect(result).toBeUndefined();
     });

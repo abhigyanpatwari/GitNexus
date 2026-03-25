@@ -40,7 +40,7 @@ const UNIVERSAL_ENTRY_POINT_PATTERNS: RegExp[] = [
   /^emit[A-Z]/,             // emitEvent
 ];
 
-const ENTRY_POINT_PATTERNS = {
+export const ENTRY_POINT_PATTERNS = {
   // JavaScript/TypeScript
   [SupportedLanguages.JavaScript]: [
     /^use[A-Z]/,              // React hooks (useEffect, etc.)
@@ -216,9 +216,9 @@ const ENTRY_POINT_PATTERNS = {
 
 /** Pre-computed merged patterns (universal + language-specific) to avoid per-call array allocation. */
 const MERGED_ENTRY_POINT_PATTERNS = Object.fromEntries(
-  (Object.keys(ENTRY_POINT_PATTERNS) as SupportedLanguages[]).map(lang => [
+  Object.values(SupportedLanguages).map(lang => [
     lang,
-    [...UNIVERSAL_ENTRY_POINT_PATTERNS, ...ENTRY_POINT_PATTERNS[lang]],
+    [...UNIVERSAL_ENTRY_POINT_PATTERNS, ...(ENTRY_POINT_PATTERNS[lang] ?? [])],
   ])
 ) as Record<SupportedLanguages, RegExp[]>;
 

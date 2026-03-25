@@ -1,8 +1,8 @@
 import type Parser from 'tree-sitter';
-import { SupportedLanguages } from '../../config/supported-languages.js';
-import type { NodeLabel } from '../graph/types.js';
-import { generateId } from '../../lib/utils.js';
-import { extractSimpleTypeName } from './type-extractors/shared.js';
+import type { NodeLabel } from '../../graph/types.js';
+import type { LanguageProvider } from '../language-provider.js';
+import { generateId } from '../../../lib/utils.js';
+import { extractSimpleTypeName } from '../type-extractors/shared.js';
 
 /** Tree-sitter AST node. Re-exported for use across ingestion modules. */
 export type SyntaxNode = Parser.SyntaxNode;
@@ -147,40 +147,23 @@ export function isKotlinClassMethod(captureNode: { parent?: any } | null | undef
 }
 
 /**
- * C/C++: check if a Function capture is inside a class/struct body.
- * If true, the function is already captured by @definition.method and should be skipped
- * to prevent double-indexing in globalIndex.
- */
-export function isCppDuplicateClassFunction(
-  functionNode: { parent?: any } | null | undefined,
-  nodeLabel: string,
-  language: SupportedLanguages,
-): boolean {
-  if (nodeLabel !== 'Function') return false;
-  if (language !== SupportedLanguages.CPlusPlus && language !== SupportedLanguages.C) return false;
-  let ancestor = functionNode?.parent;
-  while (ancestor) {
-    if (ancestor.type === 'class_specifier' || ancestor.type === 'struct_specifier') return true;
-    ancestor = ancestor.parent;
-  }
-  return false;
-}
-
-/**
  * Determine the graph node label from a tree-sitter capture map.
- * Handles language-specific reclassification (C/C++ duplicate skipping, Kotlin Method promotion).
+ * Handles language-specific reclassification via the provider's labelOverride hook
+ * (e.g. C/C++ duplicate skipping, Kotlin Method promotion).
  * Returns null if the capture should be skipped (import, call, C/C++ duplicate, missing name).
  */
 export function getLabelFromCaptures(
   captureMap: Record<string, any>,
-  language: SupportedLanguages,
+  provider: LanguageProvider,
 ): NodeLabel | null {
   if (captureMap['import'] || captureMap['call']) return null;
   if (!captureMap['name'] && !captureMap['definition.constructor']) return null;
 
   if (captureMap['definition.function']) {
-    if (isCppDuplicateClassFunction(captureMap['definition.function'], 'Function', language)) return null;
-    if (language === SupportedLanguages.Kotlin && isKotlinClassMethod(captureMap['definition.function'])) return 'Method';
+    if (provider.labelOverride) {
+      const override = provider.labelOverride(captureMap['definition.function'], 'Function');
+      if (override !== 'Function') return override;
+    }
     return 'Function';
   }
   if (captureMap['definition.class']) return 'Class';
@@ -295,9 +278,9 @@ export const findSiblingChild = (parent: any, siblingType: string, childType: st
  * Extract function name and label from a function_definition or similar AST node.
  * Handles C/C++ qualified_identifier (ClassName::MethodName) and other language patterns.
  */
-export const extractFunctionName = (node: SyntaxNode): { funcName: string | null; label: string } => {
+export const extractFunctionName = (node: SyntaxNode): { funcName: string | null; label: NodeLabel } => {
   let funcName: string | null = null;
-  let label = 'Function';
+  let label: NodeLabel = 'Function';
 
   // Swift init/deinit
   if (node.type === 'init_declaration' || node.type === 'deinit_declaration') {
@@ -387,12 +370,6 @@ export const extractFunctionName = (node: SyntaxNode): { funcName: string | null
         }
       }
       funcName = nameNode?.text;
-
-      // Kotlin: function_declaration inside a class_body is a method, not a top-level function.
-      // Must match the label assigned in parse-worker.ts for consistent generateId() output.
-      if (funcName && node.type === 'function_declaration' && isKotlinClassMethod(node)) {
-        label = 'Method';
-      }
     }
   } else if (node.type === 'impl_item') {
     let funcItem: SyntaxNode | null = null;
@@ -707,4 +684,48 @@ export const extractMethodSignature = (node: SyntaxNode | null | undefined): Met
     ? requiredCount : undefined;
   return { parameterCount, requiredParameterCount, parameterTypes: hasTypes ? paramTypes : undefined, returnType };
 };
+
+// ============================================================================
+// Generic AST traversal helpers (shared by parse-worker + php-helpers)
+// ============================================================================
+
+/** Walk an AST node depth-first, returning the first descendant with the given type. */
+export function findDescendant(node: any, type: string): any {
+  if (node.type === type) return node;
+  for (const child of (node.children ?? [])) {
+    const found = findDescendant(child, type);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Extract the text content from a string or encapsed_string AST node. */
+export function extractStringContent(node: any): string | null {
+  if (!node) return null;
+  const content = node.children?.find((c: any) => c.type === 'string_content');
+  if (content) return content.text;
+  if (node.type === 'string_content') return node.text;
+  return null;
+}
+
+/** Check if a C/C++ function_definition is inside a class or struct body.
+ *  Used by the C/C++ labelOverride to skip duplicate function captures
+ *  that are already covered by definition.method queries. */
+export function isCppInsideClassOrStruct(functionNode: SyntaxNode): boolean {
+  let ancestor: SyntaxNode | null = functionNode?.parent ?? null;
+  while (ancestor) {
+    if (ancestor.type === 'class_specifier' || ancestor.type === 'struct_specifier') return true;
+    ancestor = ancestor.parent;
+  }
+  return false;
+}
+
+/** Find the first direct named child of a tree-sitter node matching the given type. */
+export function findChild(node: SyntaxNode, type: string): SyntaxNode | null {
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child?.type === type) return child;
+  }
+  return null;
+}
 

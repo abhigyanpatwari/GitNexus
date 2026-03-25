@@ -1,6 +1,6 @@
 import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, ReturnTypeExtractor, PendingAssignmentExtractor, ForLoopExtractor } from './types.js';
 import { extractRubyConstructorAssignment, extractSimpleTypeName, extractElementTypeFromString, extractVarName, resolveIterableElementType } from './shared.js';
-import type { SyntaxNode } from '../utils.js';
+import type { SyntaxNode } from '../utils/ast-helpers.js';
 
 /**
  * Ruby type extractor — YARD annotation parsing.

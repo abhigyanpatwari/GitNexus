@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import type { ImportConfigs } from './import-resolution.js';
+import type { ImportConfigs } from './import-resolvers/types.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -26,6 +26,9 @@ export interface GoModuleConfig {
 export interface ComposerConfig {
   /** Map of namespace prefix -> directory (e.g., "App\\" -> "app/") */
   psr4: Map<string, string>;
+  /** PSR-4 entries sorted by namespace length descending (longest match wins).
+   *  Cached once at config load time to avoid re-sorting on every import. */
+  psr4Sorted?: readonly [string, string][];
 }
 
 /** C# project config parsed from .csproj files */

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractMethodSignature } from '../../src/core/ingestion/utils.js';
+import { extractMethodSignature } from '../../src/core/ingestion/utils/ast-helpers.js';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';

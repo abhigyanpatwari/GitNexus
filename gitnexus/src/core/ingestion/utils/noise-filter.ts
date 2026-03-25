@@ -1,9 +1,10 @@
-import { SupportedLanguages } from '../../config/supported-languages.js';
-
 /**
- * Built-in function/method names that should not be tracked as call targets.
- * Covers JS/TS, Python, Kotlin, C/C++, PHP, Swift standard library functions.
+ * Built-in name filtering — identifies standard library functions and common noise
+ * that should not be tracked as call targets in the knowledge graph.
+ *
+ * Covers: JS/TS, Python, Kotlin, C/C++, C#, PHP, Swift, Rust, Ruby standard libraries.
  */
+
 export const BUILT_IN_NAMES = new Set([
   // JavaScript/TypeScript
   'console', 'log', 'warn', 'error', 'info', 'debug',
@@ -164,72 +165,3 @@ export const BUILT_IN_NAMES = new Set([
 
 /** Check if a name is a built-in function or common noise that should be filtered out */
 export const isBuiltInOrNoise = (name: string): boolean => BUILT_IN_NAMES.has(name);
-
-/**
- * Yield control to the event loop so spinners/progress can render.
- * Call periodically in hot loops to prevent UI freezes.
- */
-export const yieldToEventLoop = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
-
-/** Ruby extensionless filenames recognised as Ruby source */
-const RUBY_EXTENSIONLESS_FILES = new Set(['Rakefile', 'Gemfile', 'Guardfile', 'Vagrantfile', 'Brewfile']);
-
-/**
- * Map file extension to SupportedLanguage enum
- */
-export const getLanguageFromFilename = (filename: string): SupportedLanguages | null => {
-  // TypeScript (including TSX)
-  if (filename.endsWith('.tsx')) return SupportedLanguages.TypeScript;
-  if (filename.endsWith('.ts')) return SupportedLanguages.TypeScript;
-  // JavaScript (including JSX)
-  if (filename.endsWith('.jsx')) return SupportedLanguages.JavaScript;
-  if (filename.endsWith('.js')) return SupportedLanguages.JavaScript;
-  // Python
-  if (filename.endsWith('.py')) return SupportedLanguages.Python;
-  // Java
-  if (filename.endsWith('.java')) return SupportedLanguages.Java;
-  // C source files
-  if (filename.endsWith('.c')) return SupportedLanguages.C;
-  // C++ (all common extensions, including .h)
-  // .h is parsed as C++ because tree-sitter-cpp is a strict superset of C, so pure-C
-  // headers parse correctly, and C++ headers (classes, templates) are handled properly.
-  if (filename.endsWith('.cpp') || filename.endsWith('.cc') || filename.endsWith('.cxx') ||
-      filename.endsWith('.h') || filename.endsWith('.hpp') || filename.endsWith('.hxx') || filename.endsWith('.hh')) return SupportedLanguages.CPlusPlus;
-  // C#
-  if (filename.endsWith('.cs')) return SupportedLanguages.CSharp;
-  // Go
-  if (filename.endsWith('.go')) return SupportedLanguages.Go;
-  // Rust
-  if (filename.endsWith('.rs')) return SupportedLanguages.Rust;
-  // Kotlin
-  if (filename.endsWith('.kt') || filename.endsWith('.kts')) return SupportedLanguages.Kotlin;
-  // PHP (all common extensions)
-  if (filename.endsWith('.php') || filename.endsWith('.phtml') ||
-      filename.endsWith('.php3') || filename.endsWith('.php4') ||
-      filename.endsWith('.php5') || filename.endsWith('.php8')) {
-    return SupportedLanguages.PHP;
-  }
-  // Ruby (extensions)
-  if (filename.endsWith('.rb') || filename.endsWith('.rake') || filename.endsWith('.gemspec')) {
-    return SupportedLanguages.Ruby;
-  }
-  // Ruby (extensionless files)
-  const basename = filename.split('/').pop() || filename;
-  if (RUBY_EXTENSIONLESS_FILES.has(basename)) {
-    return SupportedLanguages.Ruby;
-  }
-  // Swift (extensions)
-  if (filename.endsWith('.swift')) return SupportedLanguages.Swift;
-  return null;
-};
-
-export const isVerboseIngestionEnabled = (): boolean => {
-  const raw = process.env.GITNEXUS_VERBOSE;
-  if (!raw) return false;
-  const value = raw.toLowerCase();
-  return value === '1' || value === 'true' || value === 'yes';
-};
-
-// Re-exports for backward compatibility
-export * from './ast-helpers.js';
-export * from './call-analysis.js';

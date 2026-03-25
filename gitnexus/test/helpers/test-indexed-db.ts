@@ -162,7 +162,11 @@ export function withTestLbugDB(
   // collisions when multiple withTestLbugDB calls share the same file.
   describe(`withTestLbugDB(${prefix})`, () => {
     beforeAll(setup, timeout);
-    afterAll(async () => { if (ref.handle) await ref.handle.cleanup(); });
+    // Explicit timeout: KuzuDB's C++ destructor can hang on Windows during
+    // native resource cleanup.  The vitest hookTimeout (120s) should apply
+    // automatically, but some vitest versions fall back to testTimeout (30s)
+    // for afterAll.  Pass 120s explicitly to avoid CI flakes on Windows.
+    afterAll(async () => { if (ref.handle) await ref.handle.cleanup(); }, 120_000);
     fn(lazyHandle);
   });
 }
