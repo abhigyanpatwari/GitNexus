@@ -143,7 +143,7 @@ cd /path/to/repo2 && npx gitnexus analyze --embeddings
 ## Resources
 
 - [GitNexus](https://github.com/abhigyanpatwari/GitNexus)
-- [Bob Documentation](https://bob.build)
+- [Bob IDE Documentation](https://bob.ibm.com/docs/ide)
 - [MCP Protocol](https://modelcontextprotocol.io)
 - [Skills Reference](skills/)
 - [Rules Reference](rules/)
