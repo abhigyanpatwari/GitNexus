@@ -19,13 +19,14 @@ RUN npm ci && npm run build
 
 # --- Runtime ---
 FROM node:20-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends nginx && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends nginx git && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY --from=cli-builder /app/dist ./dist
 COPY --from=cli-builder /app/node_modules ./node_modules
 COPY --from=cli-builder /app/package.json .
 COPY --from=cli-builder /app/scripts ./scripts
+COPY --from=cli-builder /app/vendor ./vendor
 COPY --from=web-builder /app/dist /usr/share/nginx/html
 
 RUN printf 'server {\n    listen 8080;\n    root /usr/share/nginx/html;\n    index index.html;\n    add_header Cross-Origin-Opener-Policy same-origin;\n    add_header Cross-Origin-Embedder-Policy require-corp;\n    location / { try_files $uri $uri/ /index.html; }\n}\n' \
