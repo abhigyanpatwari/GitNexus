@@ -309,8 +309,12 @@ const RE_USE_AFTER = /\bUSE\s+(?:AFTER\s+)?(?:STANDARD\s+)?(?:EXCEPTION|ERROR)\s
 const RE_SET_TO_TRUE = /\bSET\s+((?:[A-Z][A-Z0-9-]+(?:\s+OF\s+[A-Z][A-Z0-9-]+)?\s+)+)TO\s+TRUE\b/i;
 const RE_SET_INDEX = /\bSET\s+((?:[A-Z][A-Z0-9-]+\s+)+)(TO|UP\s+BY|DOWN\s+BY)\s+(\d+|[A-Z][A-Z0-9-]+)/i;
 
-// INITIALIZE statement — data reset
-const RE_INITIALIZE = /\bINITIALIZE\s+([A-Z][A-Z0-9-]+)/i;
+// INITIALIZE statement — data reset (captures targets before REPLACING/WITH clause)
+const RE_INITIALIZE = /\bINITIALIZE\s+([\s\S]*?)(?=\bREPLACING\b|\bWITH\b|\.\s*$|$)/i;
+const INITIALIZE_CLAUSE_KEYWORDS = new Set([
+  'REPLACING', 'WITH', 'ALL', 'ALPHABETIC', 'ALPHANUMERIC',
+  'NUMERIC', 'NATIONAL', 'DBCS', 'EGCS', 'FILLER',
+]);
 
 // EXEC DLI (IMS/DB)
 const RE_EXEC_DLI_START = /\bEXEC\s+DLI\b/i;
@@ -1754,10 +1758,14 @@ export function extractCobolSymbolsWithRegex(
       }
     }
 
-    // INITIALIZE — data reset
+    // INITIALIZE — data reset (multi-target: INITIALIZE WS-A WS-B WS-C.)
     const initMatch = line.match(RE_INITIALIZE);
     if (initMatch) {
-      result.initializes.push({ target: initMatch[1], line: lineNum, caller: currentParagraph });
+      const targets = initMatch[1].trim().split(/\s+/)
+        .filter(t => /^[A-Z][A-Z0-9-]+$/i.test(t) && !INITIALIZE_CLAUSE_KEYWORDS.has(t.toUpperCase()));
+      for (const target of targets) {
+        result.initializes.push({ target, line: lineNum, caller: currentParagraph });
+      }
     }
   }
 }

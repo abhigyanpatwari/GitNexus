@@ -2071,6 +2071,32 @@ describe('extractCobolSymbolsWithRegex', () => {
       expect(r.initializes[0].target).toBe('WS-CUSTOMER-REC');
       expect(r.initializes[0].caller).toBe('MAIN-PARA');
     });
+
+    it('INITIALIZE multi-target extracts all targets', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           INITIALIZE WS-CUSTOMER WS-ORDER WS-LINE-ITEM.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.initializes).toHaveLength(3);
+      expect(r.initializes.map(i => i.target)).toEqual(['WS-CUSTOMER', 'WS-ORDER', 'WS-LINE-ITEM']);
+    });
+
+    it('INITIALIZE with REPLACING clause does not capture keywords as targets', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           INITIALIZE WS-RECORD REPLACING NUMERIC BY ZEROS.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.initializes).toHaveLength(1);
+      expect(r.initializes[0].target).toBe('WS-RECORD');
+    });
   });
 
   // -------------------------------------------------------------------------
