@@ -132,8 +132,6 @@ interface AppState {
   runQuery: (cypher: string) => Promise<any[]>;
   isDatabaseReady: () => Promise<boolean>;
   loadServerGraph: (nodes: GraphNode[], relationships: GraphRelationship[], fileContents: Record<string, string>) => Promise<void>;
-  setBackendMode: (url: string, repo: string) => void;
-  clearBackendMode: () => void;
 
   // Embedding state
   embeddingStatus: EmbeddingStatus;
@@ -483,18 +481,6 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     const api = apiRef.current;
     if (!api) throw new Error('Worker not initialized');
     await api.loadServerGraph(nodes, relationships, fileContents);
-  }, []);
-
-  const setBackendMode = useCallback((url: string, repo: string): void => {
-    const api = apiRef.current;
-    if (!api) return;
-    api.setBackendMode(url, repo);
-  }, []);
-
-  const clearBackendMode = useCallback((): void => {
-    const api = apiRef.current;
-    if (!api) return;
-    api.clearBackendMode();
   }, []);
 
   // Embedding methods
@@ -1065,7 +1051,6 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       // Load graph into LadybugDB for Nexus AI queries, then init agent
       try {
         await loadServerGraph(result.nodes, result.relationships, result.fileContents);
-        setBackendMode(serverBaseUrl, pName);
         if (getActiveProviderConfig()) {
           await initializeAgent(pName);
         }
@@ -1091,7 +1076,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       await apiRef.current?.disposeAgent();
       setTimeout(() => { setViewMode('exploring'); setProgress(null); }, ERROR_RESET_DELAY_MS);
     }
-  }, [serverBaseUrl, setProgress, setViewMode, setProjectName, setGraph, setFileContents, setBackendMode, loadServerGraph, initializeAgent, startEmbeddingsWithFallback, setHighlightedNodeIds, clearAIToolHighlights, clearAICitationHighlights, clearBlastRadius, setSelectedNode, setQueryResult, setCodeReferences, setCodePanelOpen, setCodeReferenceFocus]);
+  }, [serverBaseUrl, setProgress, setViewMode, setProjectName, setGraph, setFileContents, loadServerGraph, initializeAgent, startEmbeddingsWithFallback, setHighlightedNodeIds, clearAIToolHighlights, clearAICitationHighlights, clearBlastRadius, setSelectedNode, setQueryResult, setCodeReferences, setCodePanelOpen, setCodeReferenceFocus]);
 
   const removeCodeReference = useCallback((id: string) => {
     setCodeReferences(prev => {
@@ -1180,8 +1165,6 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     runQuery,
     isDatabaseReady,
     loadServerGraph,
-    setBackendMode,
-    clearBackendMode,
     // Embedding state and methods
     embeddingStatus,
     embeddingProgress,

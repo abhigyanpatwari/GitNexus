@@ -42,7 +42,6 @@ const AppContent = () => {
     setAvailableRepos,
     switchRepo,
     loadServerGraph,
-    setBackendMode,
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
@@ -205,13 +204,9 @@ const AppContent = () => {
       await handleServerConnect(result);
       setProgress(null);
       setServerBaseUrl(baseUrl);
-      setBackendMode(baseUrl, result.repoInfo.name);
-      try {
-        const repos = await fetchRepos(baseUrl);
-        setAvailableRepos(repos);
-      } catch (e) {
-        console.warn('Failed to fetch repo list:', e);
-      }
+      fetchRepos(baseUrl)
+        .then((repos) => setAvailableRepos(repos))
+        .catch((e) => console.warn('Failed to fetch repo list:', e));
     }).catch((err) => {
       console.error('Auto-connect failed:', err);
       setProgress({
@@ -225,7 +220,7 @@ const AppContent = () => {
         setProgress(null);
       }, ERROR_RESET_DELAY_MS);
     });
-  }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos, setBackendMode]);
+  }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos]);
 
   const handleFocusNode = useCallback((nodeId: string) => {
     graphCanvasRef.current?.focusNode(nodeId);
@@ -250,13 +245,9 @@ const AppContent = () => {
           if (serverUrl) {
             const baseUrl = normalizeServerUrl(serverUrl);
             setServerBaseUrl(baseUrl);
-            setBackendMode(baseUrl, result.repoInfo.name);
-            try {
-              const repos = await fetchRepos(baseUrl);
-              setAvailableRepos(repos);
-            } catch (e) {
-              console.warn('Failed to fetch repo list:', e);
-            }
+            fetchRepos(baseUrl)
+              .then((repos) => setAvailableRepos(repos))
+              .catch((e) => console.warn('Failed to fetch repo list:', e));
           }
         }}
       />

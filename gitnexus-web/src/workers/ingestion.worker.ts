@@ -111,9 +111,6 @@ let enrichmentCancelled = false;
 // Chat cancellation flag
 let chatCancelled = false;
 
-// Backend mode state - when connected to a gitnexus serve instance
-let backendMode: { url: string; repo: string; executeQuery: (cypher: string) => Promise<any[]> } | null = null;
-
 // ============================================================
 // HTTP helpers for backend mode
 // ============================================================
@@ -133,10 +130,8 @@ const httpFetchWithTimeout = async (
 };
 
 const createHttpExecuteQuery = (backendUrl: string, repo: string) => {
-  // backendUrl may already end with /api (from normalizeServerUrl), so handle both cases
-  const baseUrl = backendUrl.endsWith('/api') ? backendUrl : `${backendUrl}/api`;
   return async (cypher: string): Promise<any[]> => {
-    const response = await httpFetchWithTimeout(`${baseUrl}/query`, {
+    const response = await httpFetchWithTimeout(`${backendUrl}/api/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cypher, repo }),
@@ -273,16 +268,11 @@ const workerApi = {
   },
 
   /**
-   * Execute a Cypher query against the LadybugDB database (or backend server in backend mode)
+   * Execute a Cypher query against the LadybugDB database
    * @param cypher - The Cypher query string
    * @returns Query results as an array of objects
    */
   async runQuery(cypher: string): Promise<any[]> {
-    // Use backend HTTP API if in backend mode
-    if (backendMode) {
-      return backendMode.executeQuery(cypher);
-    }
-    
     const lbug = await getLbugAdapter();
     if (!lbug.isLbugReady()) {
       throw new Error('Database not ready. Please load a repository first.');
@@ -294,50 +284,12 @@ const workerApi = {
    * Check if the database is ready for queries
    */
   async isReady(): Promise<boolean> {
-    // Backend mode is always ready (server handles the database)
-    if (backendMode) {
-      return true;
-    }
-    
     try {
       const lbug = await getLbugAdapter();
       return lbug.isLbugReady();
     } catch {
       return false;
     }
-  },
-
-  /**
-   * Enable backend mode - routes queries through HTTP to a gitnexus serve instance
-   * @param url - Base URL of the backend (e.g., "http://127.0.0.1:4747")
-   * @param repo - Repository name on the backend
-   */
-  setBackendMode(url: string, repo: string): void {
-    backendMode = {
-      url,
-      repo,
-      executeQuery: createHttpExecuteQuery(url, repo),
-    };
-    if (import.meta.env.DEV) {
-      console.log('🌐 Worker backend mode enabled:', { url, repo });
-    }
-  },
-
-  /**
-   * Disable backend mode - returns to local WASM database
-   */
-  clearBackendMode(): void {
-    backendMode = null;
-    if (import.meta.env.DEV) {
-      console.log('🔌 Worker backend mode disabled');
-    }
-  },
-
-  /**
-   * Check if currently in backend mode
-   */
-  isBackendMode(): boolean {
-    return backendMode !== null;
   },
 
   /**
