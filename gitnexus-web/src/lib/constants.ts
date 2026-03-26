@@ -112,15 +112,18 @@ export const DEFAULT_VISIBLE_LABELS: NodeLabel[] = [
   'Type',
 ];
 
-// All filterable labels
+// All filterable labels (in display order)
 export const FILTERABLE_LABELS: NodeLabel[] = [
   'Folder',
   'File',
   'Class',
+  'Interface',
+  'Enum',
+  'Type',
   'Function',
   'Method',
   'Variable',
-  'Interface',
+  'Decorator',
   'Import',
 ];
 

@@ -14,6 +14,9 @@ import {
   Variable,
   Hash,
   Target,
+  List,
+  AtSign,
+  Type,
 } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
 import { FILTERABLE_LABELS, NODE_COLORS, ALL_EDGE_TYPES, EDGE_INFO, type EdgeType } from '../lib/constants';
@@ -187,7 +190,11 @@ const getNodeTypeIcon = (label: NodeLabel) => {
     case 'Function': return Braces;
     case 'Method': return Braces;
     case 'Interface': return Hash;
+    case 'Enum': return List;
+    case 'Type': return Type;
+    case 'Decorator': return AtSign;
     case 'Import': return FileCode;
+    case 'Variable': return Variable;
     default: return Variable;
   }
 };
@@ -501,7 +508,7 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
               Color Legend
             </h3>
             <div className="grid grid-cols-2 gap-2">
-              {(['Folder', 'File', 'Class', 'Function', 'Interface', 'Method'] as NodeLabel[]).map(label => (
+              {(['Folder', 'File', 'Class', 'Interface', 'Enum', 'Type', 'Function', 'Method', 'Variable', 'Decorator'] as NodeLabel[]).map(label => (
                 <div key={label} className="flex items-center gap-1.5">
                   <div
                     className="w-2.5 h-2.5 rounded-full"
