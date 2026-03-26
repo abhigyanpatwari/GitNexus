@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef, memo } from 'react';
 import {
   ChevronRight,
   ChevronDown,
@@ -15,7 +15,7 @@ import {
   Hash,
   Target,
 } from 'lucide-react';
-import { useAppState } from '../hooks/useAppState';
+import { useAppUI } from '../hooks/useAppState';
 import { FILTERABLE_LABELS, NODE_COLORS, ALL_EDGE_TYPES, EDGE_INFO, type EdgeType } from '../lib/constants';
 import { GraphNode, NodeLabel } from '../core/graph/types';
 
@@ -85,7 +85,7 @@ interface TreeItemProps {
   selectedPath: string | null;
 }
 
-const TreeItem = ({
+const TreeItem = memo(({
   node,
   depth,
   searchQuery,
@@ -174,7 +174,8 @@ const TreeItem = ({
       )}
     </div>
   );
-};
+});
+TreeItem.displayName = 'TreeItem';
 
 // Icon for node types
 const getNodeTypeIcon = (label: NodeLabel) => {
@@ -195,12 +196,25 @@ interface FileTreePanelProps {
 }
 
 export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
-  const { graph, visibleLabels, toggleLabelVisibility, visibleEdgeTypes, toggleEdgeVisibility, selectedNode, setSelectedNode, openCodePanel, depthFilter, setDepthFilter } = useAppState();
+  const { graph, visibleLabels, toggleLabelVisibility, visibleEdgeTypes, toggleEdgeVisibility, selectedNode, setSelectedNode, openCodePanel, depthFilter, setDepthFilter } = useAppUI();
 
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<'files' | 'filters'>('files');
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Debounce search — 200ms delay prevents re-filtering on every keystroke
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchInput(value);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => setSearchQuery(value), 200);
+  }, []);
+
+  useEffect(() => {
+    return () => { if (searchTimerRef.current) clearTimeout(searchTimerRef.current); };
+  }, []);
 
   // Build file tree from graph
   const fileTree = useMemo(() => {
@@ -338,8 +352,8 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
               <input
                 type="text"
                 placeholder="Search files..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                value={searchInput}
+                onChange={(e) => handleSearchChange(e.target.value)}
                 className="w-full pl-8 pr-3 py-1.5 bg-elevated border border-border-subtle rounded text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent"
               />
             </div>

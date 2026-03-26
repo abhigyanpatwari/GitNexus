@@ -32,7 +32,7 @@ interface MarkdownRendererProps {
     showCopyButton?: boolean;
 }
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = React.memo(({
     content,
     onLinkClick,
     toolCalls,
@@ -204,6 +204,5 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
             )}
         </div>
     );
-};
-
-
+});
+MarkdownRenderer.displayName = 'MarkdownRenderer';

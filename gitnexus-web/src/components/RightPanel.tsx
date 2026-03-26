@@ -1,9 +1,9 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Send, Square, Sparkles, User,
   PanelRightClose, Loader2, AlertTriangle, GitBranch
 } from 'lucide-react';
-import { useAppState } from '../hooks/useAppState';
+import { useAppUI, useChatDisplay, useCodeRefs } from '../hooks/useAppState';
 import { ToolCallCard } from './ToolCallCard';
 import { isProviderConfigured } from '../core/llm/settings-service';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -14,18 +14,20 @@ export const RightPanel = () => {
     setRightPanelOpen,
     fileContents,
     graph,
-    addCodeReference,
-    // LLM / chat state
-    chatMessages,
-    isChatLoading,
-    currentToolCalls,
+    // LLM / agent state (non-chat)
     agentError,
     isAgentReady,
     isAgentInitializing,
+  } = useAppUI();
+  const { addCodeReference } = useCodeRefs();
+  const {
+    chatMessages,
+    isChatLoading,
+    currentToolCalls,
     sendChatMessage,
     stopChatResponse,
     clearChat,
-  } = useAppState();
+  } = useChatDisplay();
 
   const [chatInput, setChatInput] = useState('');
   const [activeTab, setActiveTab] = useState<'chat' | 'processes'>('chat');
@@ -61,14 +63,23 @@ export const RightPanel = () => {
     return best?.path ?? null;
   }, [fileContents]);
 
-  const findFileNodeIdForUI = useCallback((filePath: string): string | undefined => {
-    if (!graph) return undefined;
-    const target = filePath.replace(/\\/g, '/').replace(/^\.?\//, '');
-    const node = graph.nodes.find(
-      (n) => n.label === 'File' && n.properties.filePath.replace(/\\/g, '/').replace(/^\.?\//, '') === target
-    );
-    return node?.id;
+  // Pre-built file node index for O(1) lookups
+  const fileNodeIndex = useMemo(() => {
+    if (!graph) return new Map<string, string>();
+    const idx = new Map<string, string>();
+    for (const n of graph.nodes) {
+      if (n.label === 'File') {
+        const norm = n.properties.filePath.replace(/\\/g, '/').replace(/^\.?\//, '');
+        idx.set(norm, n.id);
+      }
+    }
+    return idx;
   }, [graph]);
+
+  const findFileNodeIdForUI = useCallback((filePath: string): string | undefined => {
+    const target = filePath.replace(/\\/g, '/').replace(/^\.?\//, '');
+    return fileNodeIndex.get(target);
+  }, [fileNodeIndex]);
 
   const handleGroundingClick = useCallback((inner: string) => {
     const raw = inner.trim();
@@ -102,6 +113,16 @@ export const RightPanel = () => {
     });
   }, [addCodeReference, findFileNodeIdForUI, resolveFilePathForUI]);
 
+  // Pre-built type:name lookup index for grounding clicks
+  const nodeByTypeName = useMemo(() => {
+    if (!graph) return new Map();
+    const idx = new Map();
+    for (const n of graph.nodes) {
+      idx.set(`${n.label}:${n.properties.name}`, n);
+    }
+    return idx;
+  }, [graph]);
+
   // Handler for node grounding: [[Class:View]], [[Function:trigger]], etc.
   const handleNodeGroundingClick = useCallback((nodeTypeAndName: string) => {
     const raw = nodeTypeAndName.trim();
@@ -114,11 +135,8 @@ export const RightPanel = () => {
     const [, nodeType, nodeName] = match;
     const trimmedName = nodeName.trim();
 
-    // Find node in graph by type + name
-    const node = graph.nodes.find(n =>
-      n.label === nodeType &&
-      n.properties.name === trimmedName
-    );
+    // O(1) lookup via pre-built index
+    const node = nodeByTypeName.get(`${nodeType}:${trimmedName}`);
 
     if (!node) {
       console.warn(`Node not found: ${nodeType}:${trimmedName}`);

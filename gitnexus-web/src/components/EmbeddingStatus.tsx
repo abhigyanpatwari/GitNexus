@@ -1,5 +1,5 @@
 import { Brain, Loader2, Check, AlertCircle, Zap, FlaskConical } from 'lucide-react';
-import { useAppState } from '../hooks/useAppState';
+import { useAppUI } from '../hooks/useAppState';
 import { useState } from 'react';
 import { WebGPUFallbackDialog } from './WebGPUFallbackDialog';
 
@@ -16,7 +16,7 @@ export const EmbeddingStatus = () => {
     viewMode,
     serverBaseUrl,
     testArrayParams,
-  } = useAppState();
+  } = useAppUI();
 
   const [testResult, setTestResult] = useState<string | null>(null);
   const [showFallbackDialog, setShowFallbackDialog] = useState(false);

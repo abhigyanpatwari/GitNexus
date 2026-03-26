@@ -1,8 +1,8 @@
 import { Heart } from 'lucide-react';
-import { useAppState } from '../hooks/useAppState';
+import { useAppUI } from '../hooks/useAppState';
 
 export const StatusBar = () => {
-  const { graph, progress } = useAppState();
+  const { graph, progress } = useAppUI();
 
   const nodeCount = graph?.nodes.length ?? 0;
   const edgeCount = graph?.relationships.length ?? 0;

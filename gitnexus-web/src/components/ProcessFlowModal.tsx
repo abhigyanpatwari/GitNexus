@@ -6,7 +6,6 @@
 
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { X, GitBranch, Copy, Focus, Layers, ZoomIn, ZoomOut } from 'lucide-react';
-import mermaid from 'mermaid';
 import { ProcessData, generateProcessMermaid } from '../lib/mermaid-generator';
 
 interface ProcessFlowModalProps {
@@ -16,40 +15,49 @@ interface ProcessFlowModalProps {
     isFullScreen?: boolean;
 }
 
-// Initialize mermaid with cyan/purple theme matching GitNexus
-// Initialize mermaid with cyan/purple theme matching GitNexus
-mermaid.initialize({
-    startOnLoad: false,
-    suppressErrorRendering: true, // Try to suppress if supported
-    maxTextSize: 900000, // Increase from default 50000 to handle large combined diagrams
-    theme: 'base',
-    themeVariables: {
-        primaryColor: '#1e293b', // node bg
-        primaryTextColor: '#f1f5f9',
-        primaryBorderColor: '#22d3ee',
-        lineColor: '#94a3b8',
-        secondaryColor: '#1e293b',
-        tertiaryColor: '#0f172a',
-        mainBkg: '#1e293b', // background
-        nodeBorder: '#22d3ee',
-        clusterBkg: '#1e293b',
-        clusterBorder: '#475569',
-        titleColor: '#f1f5f9',
-        edgeLabelBackground: '#0f172a',
-    },
-    flowchart: {
-        curve: 'basis',
-        padding: 50,
-        nodeSpacing: 120,
-        rankSpacing: 140,
-        htmlLabels: true,
-    },
-});
+// Lazy-load mermaid (~480KB) — shared singleton with MermaidDiagram
+let mermaidInstance: typeof import('mermaid').default | null = null;
+let mermaidInitPromise: Promise<typeof import('mermaid').default> | null = null;
 
-// Suppress distinct syntax error overlay
-mermaid.parseError = (err) => {
-    // Suppress visual error - we handle errors in the render try/catch
-    console.debug('Mermaid parse error (suppressed):', err);
+const getMermaid = (): Promise<typeof import('mermaid').default> => {
+    if (mermaidInstance) return Promise.resolve(mermaidInstance);
+    if (mermaidInitPromise) return mermaidInitPromise;
+
+    mermaidInitPromise = import('mermaid').then(mod => {
+        const m = mod.default;
+        m.initialize({
+            startOnLoad: false,
+            suppressErrorRendering: true,
+            maxTextSize: 900000,
+            theme: 'base',
+            themeVariables: {
+                primaryColor: '#1e293b',
+                primaryTextColor: '#f1f5f9',
+                primaryBorderColor: '#22d3ee',
+                lineColor: '#94a3b8',
+                secondaryColor: '#1e293b',
+                tertiaryColor: '#0f172a',
+                mainBkg: '#1e293b',
+                nodeBorder: '#22d3ee',
+                clusterBkg: '#1e293b',
+                clusterBorder: '#475569',
+                titleColor: '#f1f5f9',
+                edgeLabelBackground: '#0f172a',
+            },
+            flowchart: {
+                curve: 'basis',
+                padding: 50,
+                nodeSpacing: 120,
+                rankSpacing: 140,
+                htmlLabels: true,
+            },
+        });
+        m.parseError = () => {};
+        mermaidInstance = m;
+        return m;
+    });
+
+    return mermaidInitPromise;
 };
 
 export const ProcessFlowModal = ({ process, onClose, onFocusInGraph, isFullScreen = false }: ProcessFlowModalProps) => {
@@ -135,6 +143,7 @@ export const ProcessFlowModal = ({ process, onClose, onFocusInGraph, isFullScree
 
         const renderDiagram = async () => {
             try {
+                const mermaid = await getMermaid();
                 // Check if we have raw mermaid code (from AI chat) or need to generate it
                 const mermaidCode = (process as any).rawMermaid
                     ? (process as any).rawMermaid

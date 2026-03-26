@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useRef, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useRef, useEffect, useMemo, useTransition, ReactNode } from 'react';
 import * as Comlink from 'comlink';
 import { KnowledgeGraph, GraphNode, NodeLabel } from '../core/graph/types';
 import { PipelineProgress, PipelineResult, deserializePipelineResult } from '../types/pipeline';
@@ -174,6 +174,38 @@ interface AppState {
 
 const AppStateContext = createContext<AppState | null>(null);
 
+// --- Performance: split fast-changing chat state into a separate context ---
+// During chat streaming, chatMessages updates ~100x per response.
+// By isolating it, GraphCanvas / FileTreePanel / Header / StatusBar skip those re-renders.
+
+interface ChatDisplayState {
+  chatMessages: ChatMessage[];
+  isChatLoading: boolean;
+  currentToolCalls: ToolCallInfo[];
+  sendChatMessage: (message: string) => Promise<void>;
+  stopChatResponse: () => void;
+  clearChat: () => void;
+}
+
+// Code References: changes rapidly during AI streaming (citations).
+// Isolated so GraphCanvas, FileTreePanel, Header skip re-renders.
+interface CodeRefsState {
+  codeReferences: CodeReference[];
+  isCodePanelOpen: boolean;
+  setCodePanelOpen: (open: boolean) => void;
+  addCodeReference: (ref: Omit<CodeReference, 'id'>) => void;
+  removeCodeReference: (id: string) => void;
+  clearAICodeReferences: () => void;
+  clearCodeReferences: () => void;
+  codeReferenceFocus: CodeReferenceFocus | null;
+}
+
+type AppUIState = Omit<AppState, keyof ChatDisplayState | keyof CodeRefsState>;
+
+const AppUIContext = createContext<AppUIState | null>(null);
+const ChatDisplayContext = createContext<ChatDisplayState | null>(null);
+const CodeRefsContext = createContext<CodeRefsState | null>(null);
+
 export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   // View state
   const [viewMode, setViewMode] = useState<ViewMode>('onboarding');
@@ -305,25 +337,49 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const [isCodePanelOpen, setCodePanelOpen] = useState(false);
   const [codeReferenceFocus, setCodeReferenceFocus] = useState<CodeReferenceFocus | null>(null);
 
+  // Ref for stabilizing callbacks — avoids re-creating sendChatMessage / stopChatResponse
+  // on every chatMessages tick, which would cascade into ChatDisplayContext value changes.
+  const latestRef = useRef({ chatMessages, isAgentReady, isChatLoading, embeddingStatus });
+  latestRef.current = { chatMessages, isAgentReady, isChatLoading, embeddingStatus };
+
     const normalizePath = useCallback((p: string) => {
     return p.replace(/\\/g, '/').replace(/^\.?\//, '');
   }, []);
+
+  // Pre-built indexes for O(1) lookups — rebuilt when graph/fileContents change
+  const nodeById = useMemo(() => {
+    if (!graph) return new Map<string, GraphNode>();
+    return new Map(graph.nodes.map(n => [n.id, n]));
+  }, [graph]);
+
+  const nodeIdSet = useMemo(() => {
+    if (!graph) return new Set<string>();
+    return new Set(graph.nodes.map(n => n.id));
+  }, [graph]);
+
+  // Pre-built file path lookup index
+  const filePathIndex = useMemo(() => {
+    const index = new Map<string, string>(); // normalized lowercase -> original key
+    for (const key of fileContents.keys()) {
+      const norm = key.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase();
+      index.set(norm, key);
+    }
+    return index;
+  }, [fileContents]);
 
   const resolveFilePath = useCallback((requestedPath: string): string | null => {
     const req = normalizePath(requestedPath).toLowerCase();
     if (!req) return null;
 
-    // Exact match first
-    for (const key of fileContents.keys()) {
-      if (normalizePath(key).toLowerCase() === req) return key;
-    }
+    // Exact match first (O(1) via index)
+    const exact = filePathIndex.get(req);
+    if (exact) return exact;
 
     // Ends-with match (best for partial paths like "src/foo.ts")
     let best: { path: string; score: number } | null = null;
-    for (const key of fileContents.keys()) {
-      const norm = normalizePath(key).toLowerCase();
+    for (const [norm, key] of filePathIndex) {
       if (norm.endsWith(req)) {
-        const score = 1000 - norm.length; // shorter is better
+        const score = 1000 - norm.length;
         if (!best || score > best.score) best = { path: key, score };
       }
     }
@@ -331,7 +387,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
     // Segment match fallback
     const segs = req.split('/').filter(Boolean);
-    for (const key of fileContents.keys()) {
+    for (const [, key] of filePathIndex) {
       const normSegs = normalizePath(key).toLowerCase().split('/').filter(Boolean);
       let idx = 0;
       for (const s of segs) {
@@ -343,16 +399,25 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     }
 
     return null;
-  }, [fileContents, normalizePath]);
+  }, [filePathIndex, normalizePath]);
+
+  // File node lookup index — O(1) instead of O(n) graph.nodes.find()
+  const fileNodeIndex = useMemo(() => {
+    if (!graph) return new Map<string, string>();
+    const idx = new Map<string, string>();
+    for (const n of graph.nodes) {
+      if (n.label === 'File') {
+        const norm = n.properties.filePath.replace(/\\/g, '/').replace(/^\.?\//, '');
+        idx.set(norm, n.id);
+      }
+    }
+    return idx;
+  }, [graph]);
 
   const findFileNodeId = useCallback((filePath: string): string | undefined => {
-    if (!graph) return undefined;
     const target = normalizePath(filePath);
-    const fileNode = graph.nodes.find(
-      (n) => n.label === 'File' && normalizePath(n.properties.filePath) === target
-    );
-    return fileNode?.id;
-  }, [graph, normalizePath]);
+    return fileNodeIndex.get(target);
+  }, [fileNodeIndex, normalizePath]);
 
   // Code References methods
   const addCodeReference = useCallback((ref: Omit<CodeReference, 'id'>) => {
@@ -627,7 +692,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     // Also clear previous tool-driven AI highlights (highlight_in_graph)
     clearAIToolHighlights();
 
-    if (!isAgentReady) {
+    if (!latestRef.current.isAgentReady) {
       // Try to initialize first
       await initializeAgent();
       if (!apiRef.current) return;
@@ -644,7 +709,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
     // If embeddings are running and we're currently creating the vector index,
     // avoid a confusing "Embeddings not ready" error and give a clear wait message.
-    if (embeddingStatus === 'indexing') {
+    if (latestRef.current.embeddingStatus === 'indexing') {
       const assistantMessage: ChatMessage = {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
@@ -662,7 +727,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setCurrentToolCalls([]);
 
     // Prepare message history for agent (convert our format to AgentMessage format)
-    const history: AgentMessage[] = [...chatMessages, userMessage].map(m => ({
+    const history: AgentMessage[] = [...latestRef.current.chatMessages, userMessage].map(m => ({
       role: m.role === 'tool' ? 'assistant' : m.role,
       content: m.content,
     }));
@@ -789,12 +854,16 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
                 const nodeType = nodeMatch[1];
                 const nodeName = nodeMatch[2].trim();
 
-                // Find node in graph
+                // Find node in graph using pre-built index
                 if (!graph) continue;
-                const node = graph.nodes.find(n =>
-                  n.label === nodeType &&
-                  n.properties.name === nodeName
-                );
+                // Use nodeById values for faster iteration than graph.nodes.find
+                let node: GraphNode | undefined;
+                for (const n of nodeById.values()) {
+                  if (n.label === nodeType && n.properties.name === nodeName) {
+                    node = n;
+                    break;
+                  }
+                }
                 if (!node || !node.properties.filePath) continue;
 
                 const resolvedPath = resolveFilePath(node.properties.filePath);
@@ -887,58 +956,42 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
               // Parse highlight marker from tool results
               if (tc.result) {
+                // Helper: resolve raw IDs to graph node IDs using pre-built index (O(1) per ID)
+                const resolveNodeIds = (rawIds: string[]): Set<string> => {
+                  const matchedIds = new Set<string>();
+                  for (const rawId of rawIds) {
+                    if (nodeIdSet.has(rawId)) {
+                      matchedIds.add(rawId);
+                    } else {
+                      // Suffix match fallback — only needed for partial IDs
+                      for (const gid of nodeIdSet) {
+                        if (gid.endsWith(rawId) || gid.endsWith(':' + rawId)) {
+                          matchedIds.add(gid);
+                          break;
+                        }
+                      }
+                    }
+                  }
+                  return matchedIds;
+                };
+
                 const highlightMatch = tc.result.match(/\[HIGHLIGHT_NODES:([^\]]+)\]/);
                 if (highlightMatch) {
                   const rawIds = highlightMatch[1].split(',').map((id: string) => id.trim()).filter(Boolean);
                   if (rawIds.length > 0 && graph) {
-                    const matchedIds = new Set<string>();
-                    const graphNodeIds = graph.nodes.map(n => n.id);
-
-                    for (const rawId of rawIds) {
-                      if (graphNodeIds.includes(rawId)) {
-                        matchedIds.add(rawId);
-                      } else {
-                        const found = graphNodeIds.find(gid =>
-                          gid.endsWith(rawId) || gid.endsWith(':' + rawId)
-                        );
-                        if (found) {
-                          matchedIds.add(found);
-                        }
-                      }
-                    }
-
-                    if (matchedIds.size > 0) {
-                      setAIToolHighlightedNodeIds(matchedIds);
-                    }
+                    const matchedIds = resolveNodeIds(rawIds);
+                    if (matchedIds.size > 0) setAIToolHighlightedNodeIds(matchedIds);
                   } else if (rawIds.length > 0) {
                     setAIToolHighlightedNodeIds(new Set(rawIds));
                   }
                 }
 
-                // Parse impact marker from tool results
                 const impactMatch = tc.result.match(/\[IMPACT:([^\]]+)\]/);
                 if (impactMatch) {
                   const rawIds = impactMatch[1].split(',').map((id: string) => id.trim()).filter(Boolean);
                   if (rawIds.length > 0 && graph) {
-                    const matchedIds = new Set<string>();
-                    const graphNodeIds = graph.nodes.map(n => n.id);
-
-                    for (const rawId of rawIds) {
-                      if (graphNodeIds.includes(rawId)) {
-                        matchedIds.add(rawId);
-                      } else {
-                        const found = graphNodeIds.find(gid =>
-                          gid.endsWith(rawId) || gid.endsWith(':' + rawId)
-                        );
-                        if (found) {
-                          matchedIds.add(found);
-                        }
-                      }
-                    }
-
-                    if (matchedIds.size > 0) {
-                      setBlastRadiusNodeIds(matchedIds);
-                    }
+                    const matchedIds = resolveNodeIds(rawIds);
+                    if (matchedIds.size > 0) setBlastRadiusNodeIds(matchedIds);
                   } else if (rawIds.length > 0) {
                     setBlastRadiusNodeIds(new Set(rawIds));
                   }
@@ -966,16 +1019,16 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       setIsChatLoading(false);
       setCurrentToolCalls([]);
     }
-  }, [chatMessages, isAgentReady, initializeAgent, resolveFilePath, findFileNodeId, addCodeReference, clearAICodeReferences, clearAIToolHighlights, graph, embeddingStatus]);
+  }, [initializeAgent, resolveFilePath, findFileNodeId, addCodeReference, clearAICodeReferences, clearAIToolHighlights, graph, nodeIdSet, nodeById]);
 
   const stopChatResponse = useCallback(() => {
     const api = apiRef.current;
-    if (api && isChatLoading) {
+    if (api && latestRef.current.isChatLoading) {
       api.stopChat();
       setIsChatLoading(false);
       setCurrentToolCalls([]);
     }
-  }, [isChatLoading]);
+  }, []);
 
   const clearChat = useCallback(() => {
     setChatMessages([]);
@@ -1090,127 +1143,150 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setCodeReferenceFocus(null);
   }, []);
 
+  // useTransition keeps the UI responsive during heavy filter operations
+  const [, startTransition] = useTransition();
+
   const toggleLabelVisibility = useCallback((label: NodeLabel) => {
-    setVisibleLabels(prev => {
-      if (prev.includes(label)) {
-        return prev.filter(l => l !== label);
-      } else {
-        return [...prev, label];
-      }
+    startTransition(() => {
+      setVisibleLabels(prev => {
+        if (prev.includes(label)) {
+          return prev.filter(l => l !== label);
+        } else {
+          return [...prev, label];
+        }
+      });
     });
   }, []);
 
   const toggleEdgeVisibility = useCallback((edgeType: EdgeType) => {
-    setVisibleEdgeTypes(prev => {
-      if (prev.includes(edgeType)) {
-        return prev.filter(t => t !== edgeType);
-      } else {
-        return [...prev, edgeType];
-      }
+    startTransition(() => {
+      setVisibleEdgeTypes(prev => {
+        if (prev.includes(edgeType)) {
+          return prev.filter(t => t !== edgeType);
+        } else {
+          return [...prev, edgeType];
+        }
+      });
     });
   }, []);
 
-  const value: AppState = {
-    viewMode,
-    setViewMode,
-    graph,
-    setGraph,
-    fileContents,
-    setFileContents,
-    selectedNode,
-    setSelectedNode,
-    isRightPanelOpen,
-    setRightPanelOpen,
-    rightPanelTab,
-    setRightPanelTab,
-    openCodePanel,
-    openChatPanel,
-    visibleLabels,
-    toggleLabelVisibility,
-    visibleEdgeTypes,
-    toggleEdgeVisibility,
-    depthFilter,
-    setDepthFilter,
-    highlightedNodeIds,
-    setHighlightedNodeIds,
-    aiCitationHighlightedNodeIds,
-    aiToolHighlightedNodeIds,
-    blastRadiusNodeIds,
-    isAIHighlightsEnabled,
-    toggleAIHighlights,
-    clearAIToolHighlights,
-    clearBlastRadius,
-    queryResult,
-    setQueryResult,
-    clearQueryHighlights,
-    // Node animations
-    animatedNodes,
-    triggerNodeAnimation,
-    clearAnimations,
-    progress,
-    setProgress,
-    projectName,
-    setProjectName,
-    // Multi-repo switching
-    serverBaseUrl,
-    setServerBaseUrl,
-    availableRepos,
-    setAvailableRepos,
-    switchRepo,
-    runPipeline,
-    runPipelineFromFiles,
-    runQuery,
-    isDatabaseReady,
-    hydrateWorkerFromServer,
-    // Embedding state and methods
-    embeddingStatus,
-    embeddingProgress,
-    startEmbeddings,
-    semanticSearch,
-    semanticSearchWithContext,
-    isEmbeddingReady: embeddingStatus === 'ready',
-    // Debug
-    testArrayParams,
-    // LLM/Agent state
-    llmSettings,
-    updateLLMSettings,
-    isSettingsPanelOpen,
-    setSettingsPanelOpen,
-    isAgentReady,
-    isAgentInitializing,
-    agentError,
-    // Chat state
+  // ---- Split context values (memoized) ----
+
+  // ChatDisplay: only changes when chat-specific state changes
+  const chatDisplayValue = useMemo<ChatDisplayState>(() => ({
     chatMessages,
     isChatLoading,
     currentToolCalls,
-    // LLM methods
-    refreshLLMSettings,
-    initializeAgent,
     sendChatMessage,
     stopChatResponse,
     clearChat,
-    // Code References Panel
-    codeReferences,
-    isCodePanelOpen,
-    setCodePanelOpen,
-    addCodeReference,
-    removeCodeReference,
-    clearAICodeReferences,
-    clearCodeReferences,
+  }), [chatMessages, isChatLoading, currentToolCalls, sendChatMessage, stopChatResponse, clearChat]);
+
+  // CodeRefs: changes rapidly during AI streaming (citations added per-chunk).
+  // Isolated so GraphCanvas, FileTreePanel, Header skip these re-renders.
+  const codeRefsValue = useMemo<CodeRefsState>(() => ({
+    codeReferences, isCodePanelOpen, setCodePanelOpen,
+    addCodeReference, removeCodeReference, clearAICodeReferences, clearCodeReferences,
     codeReferenceFocus,
-  };
+  }), [codeReferences, isCodePanelOpen, codeReferenceFocus]);
+
+  // AppUI: everything except chat display AND code references.
+  // Stable during chat streaming & AI citation additions.
+  const isEmbeddingReady = embeddingStatus === 'ready';
+  const appUIValue = useMemo<AppUIState>(() => ({
+    viewMode, setViewMode,
+    graph, setGraph, fileContents, setFileContents,
+    selectedNode, setSelectedNode,
+    isRightPanelOpen, setRightPanelOpen, rightPanelTab, setRightPanelTab,
+    openCodePanel, openChatPanel,
+    visibleLabels, toggleLabelVisibility, visibleEdgeTypes, toggleEdgeVisibility,
+    depthFilter, setDepthFilter,
+    highlightedNodeIds, setHighlightedNodeIds,
+    aiCitationHighlightedNodeIds, aiToolHighlightedNodeIds, blastRadiusNodeIds,
+    isAIHighlightsEnabled, toggleAIHighlights, clearAIToolHighlights, clearBlastRadius,
+    queryResult, setQueryResult, clearQueryHighlights,
+    animatedNodes, triggerNodeAnimation, clearAnimations,
+    progress, setProgress, projectName, setProjectName,
+    serverBaseUrl, setServerBaseUrl, availableRepos, setAvailableRepos, switchRepo,
+    runPipeline, runPipelineFromFiles, runQuery, isDatabaseReady, hydrateWorkerFromServer,
+    embeddingStatus, embeddingProgress, startEmbeddings,
+    semanticSearch, semanticSearchWithContext, isEmbeddingReady,
+    testArrayParams,
+    llmSettings, updateLLMSettings, isSettingsPanelOpen, setSettingsPanelOpen,
+    isAgentReady, isAgentInitializing, agentError,
+    refreshLLMSettings, initializeAgent,
+  }), [
+    viewMode, graph, fileContents, selectedNode,
+    isRightPanelOpen, rightPanelTab,
+    visibleLabels, visibleEdgeTypes, depthFilter,
+    highlightedNodeIds, aiCitationHighlightedNodeIds, aiToolHighlightedNodeIds,
+    blastRadiusNodeIds, isAIHighlightsEnabled,
+    queryResult, animatedNodes,
+    progress, projectName,
+    serverBaseUrl, availableRepos, switchRepo,
+    embeddingStatus, embeddingProgress, isEmbeddingReady,
+    llmSettings, isSettingsPanelOpen,
+    isAgentReady, isAgentInitializing, agentError,
+    initializeAgent,
+    // stable callbacks omitted from deps (useCallback with [] or stable deps)
+  ]);
+
+  // Legacy merged value for backwards-compat useAppState() hook
+  const fullValue = useMemo<AppState>(
+    () => ({ ...appUIValue, ...chatDisplayValue, ...codeRefsValue }),
+    [appUIValue, chatDisplayValue, codeRefsValue],
+  );
 
   return (
-    <AppStateContext.Provider value={value}>
-      {children}
+    <AppStateContext.Provider value={fullValue}>
+      <AppUIContext.Provider value={appUIValue}>
+        <CodeRefsContext.Provider value={codeRefsValue}>
+          <ChatDisplayContext.Provider value={chatDisplayValue}>
+            {children}
+          </ChatDisplayContext.Provider>
+        </CodeRefsContext.Provider>
+      </AppUIContext.Provider>
     </AppStateContext.Provider>
   );
 };
 
+// ---- Hooks ----
+
+/** Backwards-compatible hook — subscribes to ALL state (both contexts). */
 export const useAppState = (): AppState => {
   const context = useContext(AppStateContext);
   if (!context) {
     throw new Error('useAppState must be used within AppStateProvider');
+  }
+  return context;
+};
+
+/** Graph, filters, highlights, panels — everything EXCEPT chat display.
+ *  Stable during chat streaming. Use this in GraphCanvas, FileTreePanel, Header, etc. */
+export const useAppUI = (): AppUIState => {
+  const context = useContext(AppUIContext);
+  if (!context) {
+    throw new Error('useAppUI must be used within AppStateProvider');
+  }
+  return context;
+};
+
+/** Fast-changing chat state (messages, loading, tool calls, chat methods).
+ *  Only subscribe to this in components that render chat. */
+export const useChatDisplay = (): ChatDisplayState => {
+  const context = useContext(ChatDisplayContext);
+  if (!context) {
+    throw new Error('useChatDisplay must be used within AppStateProvider');
+  }
+  return context;
+};
+
+/** Code references — changes rapidly during AI streaming.
+ *  Only subscribe to this in CodeReferencesPanel and App (for conditional rendering). */
+export const useCodeRefs = (): CodeRefsState => {
+  const context = useContext(CodeRefsContext);
+  if (!context) {
+    throw new Error('useCodeRefs must be used within AppStateProvider');
   }
   return context;
 };

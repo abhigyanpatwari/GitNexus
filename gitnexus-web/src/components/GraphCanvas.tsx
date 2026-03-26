@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useMemo, useState, forwardRef, useImperativeHandle } from 'react';
 import { ZoomIn, ZoomOut, Maximize2, Focus, RotateCcw, Play, Pause, Lightbulb, LightbulbOff } from 'lucide-react';
 import { useSigma } from '../hooks/useSigma';
-import { useAppState } from '../hooks/useAppState';
+import { useAppUI } from '../hooks/useAppState';
 import { knowledgeGraphToGraphology, filterGraphByDepth, SigmaNodeAttributes, SigmaEdgeAttributes } from '../lib/graph-adapter';
 import { QueryFAB } from './QueryFAB';
 import Graph from 'graphology';
@@ -27,15 +27,40 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     isAIHighlightsEnabled,
     toggleAIHighlights,
     animatedNodes,
-  } = useAppState();
+  } = useAppUI();
   const [hoveredNodeName, setHoveredNodeName] = useState<string | null>(null);
+
+  // FPS counter
+  const [fps, setFps] = useState(0);
+  useEffect(() => {
+    let frameCount = 0;
+    let lastTime = performance.now();
+    let rafId: number;
+    const tick = () => {
+      frameCount++;
+      const now = performance.now();
+      if (now - lastTime >= 500) {
+        setFps(Math.round(frameCount / ((now - lastTime) / 1000)));
+        frameCount = 0;
+        lastTime = now;
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, []);
+
+  // O(1) node lookup map — replaces O(n) graph.nodes.find() calls
+  const nodeMap = useMemo(() => {
+    if (!graph) return new Map();
+    return new Map(graph.nodes.map(n => [n.id, n]));
+  }, [graph]);
 
   const effectiveHighlightedNodeIds = useMemo(() => {
     if (!isAIHighlightsEnabled) return highlightedNodeIds;
     const next = new Set(highlightedNodeIds);
     for (const id of aiCitationHighlightedNodeIds) next.add(id);
     for (const id of aiToolHighlightedNodeIds) next.add(id);
-    // Note: blast radius nodes are handled separately with red color
     return next;
   }, [highlightedNodeIds, aiCitationHighlightedNodeIds, aiToolHighlightedNodeIds, isAIHighlightsEnabled]);
 
@@ -52,24 +77,23 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
   }, [animatedNodes, isAIHighlightsEnabled]);
 
   const handleNodeClick = useCallback((nodeId: string) => {
-    if (!graph) return;
-    const node = graph.nodes.find(n => n.id === nodeId);
+    const node = nodeMap.get(nodeId);
     if (node) {
       setSelectedNode(node);
       openCodePanel();
     }
-  }, [graph, setSelectedNode, openCodePanel]);
+  }, [nodeMap, setSelectedNode, openCodePanel]);
 
   const handleNodeHover = useCallback((nodeId: string | null) => {
-    if (!nodeId || !graph) {
+    if (!nodeId) {
       setHoveredNodeName(null);
       return;
     }
-    const node = graph.nodes.find(n => n.id === nodeId);
+    const node = nodeMap.get(nodeId);
     if (node) {
       setHoveredNodeName(node.properties.name);
     }
-  }, [graph]);
+  }, [nodeMap]);
 
   const handleStageClick = useCallback(() => {
     setSelectedNode(null);
@@ -101,31 +125,25 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
   // Expose focusNode to parent via ref
   useImperativeHandle(ref, () => ({
     focusNode: (nodeId: string) => {
-      // Also update app state so the selection syncs properly
-      if (graph) {
-        const node = graph.nodes.find(n => n.id === nodeId);
-        if (node) {
-          setSelectedNode(node);
-          openCodePanel();
-        }
+      const node = nodeMap.get(nodeId);
+      if (node) {
+        setSelectedNode(node);
+        openCodePanel();
       }
       focusNode(nodeId);
     }
-  }), [focusNode, graph, setSelectedNode, openCodePanel]);
+  }), [focusNode, nodeMap, setSelectedNode, openCodePanel]);
 
   // Update Sigma graph when KnowledgeGraph changes
   useEffect(() => {
     if (!graph) return;
 
     // Build communityMemberships map from MEMBER_OF relationships
-    // MEMBER_OF edges: nodeId -> communityId (stored as targetId)
     const communityMemberships = new Map<string, number>();
     graph.relationships.forEach(rel => {
       if (rel.type === 'MEMBER_OF') {
-        // Find the community node to get its index
-        const communityNode = graph.nodes.find(n => n.id === rel.targetId && n.label === 'Community');
-        if (communityNode) {
-          // Extract community index from id (e.g., "comm_5" -> 5)
+        const communityNode = nodeMap.get(rel.targetId);
+        if (communityNode && communityNode.label === 'Community') {
           const communityIdx = parseInt(rel.targetId.replace('comm_', ''), 10) || 0;
           communityMemberships.set(rel.sourceId, communityIdx);
         }
@@ -134,7 +152,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
 
     const sigmaGraph = knowledgeGraphToGraphology(graph, communityMemberships);
     setSigmaGraph(sigmaGraph);
-  }, [graph, setSigmaGraph]);
+  }, [graph, nodeMap, setSigmaGraph]);
 
   // Update node visibility when filters change
   useEffect(() => {
@@ -142,7 +160,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     if (!sigma) return;
 
     const sigmaGraph = sigma.getGraph() as Graph<SigmaNodeAttributes, SigmaEdgeAttributes>;
-    if (sigmaGraph.order === 0) return; // Don't filter empty graph
+    if (sigmaGraph.order === 0) return;
 
     filterGraphByDepth(sigmaGraph, appSelectedNode?.id || null, depthFilter, visibleLabels);
     sigma.refresh();
@@ -300,6 +318,15 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
 
       {/* Query FAB */}
       <QueryFAB />
+
+      {/* FPS Counter */}
+      <div className={`absolute top-4 right-16 z-20 px-2 py-1 rounded-md text-xs font-mono font-bold backdrop-blur-sm border ${
+        fps > 45 ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300' :
+        fps > 20 ? 'bg-amber-500/20 border-amber-500/40 text-amber-300' :
+        'bg-red-500/20 border-red-500/40 text-red-300'
+      }`}>
+        {fps} FPS
+      </div>
 
       {/* AI Highlights toggle - Top Right */}
       <div className="absolute top-4 right-4 z-20">

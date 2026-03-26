@@ -5,16 +5,29 @@
  * Clicking a process opens the ProcessFlowModal with a flowchart.
  */
 
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { GitBranch, Search, Eye, Zap, Home, ChevronDown, ChevronRight, Sparkles, Lightbulb, Layers } from 'lucide-react';
-import { useAppState } from '../hooks/useAppState';
+import { useAppUI } from '../hooks/useAppState';
 import { ProcessFlowModal } from './ProcessFlowModal';
 import type { ProcessData, ProcessStep } from '../lib/mermaid-generator';
 
 export const ProcessesPanel = () => {
-    const { graph, runQuery, setHighlightedNodeIds, highlightedNodeIds } = useAppState();
+    const { graph, runQuery, setHighlightedNodeIds, highlightedNodeIds } = useAppUI();
+    const [searchInput, setSearchInput] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
+    const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [selectedProcess, setSelectedProcess] = useState<ProcessData | null>(null);
+
+    // Debounce search — 200ms
+    const handleSearchChange = useCallback((value: string) => {
+        setSearchInput(value);
+        if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+        searchTimerRef.current = setTimeout(() => setSearchQuery(value), 200);
+    }, []);
+
+    useEffect(() => {
+        return () => { if (searchTimerRef.current) clearTimeout(searchTimerRef.current); };
+    }, []);
     const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['cross', 'intra']));
     const [loadingProcess, setLoadingProcess] = useState<string | null>(null);
     const [focusedProcessId, setFocusedProcessId] = useState<string | null>(null);
@@ -314,8 +327,8 @@ export const ProcessesPanel = () => {
                         <Search className="w-4 h-4 text-text-muted" />
                         <input
                             type="text"
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
+                            value={searchInput}
+                            onChange={(e) => handleSearchChange(e.target.value)}
                             placeholder="Filter processes..."
                             className="flex-1 bg-transparent border-none outline-none text-sm text-text-primary placeholder:text-text-muted"
                         />

@@ -5,7 +5,7 @@
  * Shows the tool name, status, and when expanded, the query/args and result.
  */
 
-import { useState } from 'react';
+import { useState, memo } from 'react';
 import { ChevronDown, ChevronRight, Sparkles, Check, Loader2, AlertCircle } from 'lucide-react';
 import type { ToolCallInfo } from '../core/llm/types';
 
@@ -95,7 +95,7 @@ const getToolDisplayName = (name: string): string => {
   return names[name] || name;
 };
 
-export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCardProps) => {
+export const ToolCallCard = memo(({ toolCall, defaultExpanded = false }: ToolCallCardProps) => {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const status = getStatusDisplay(toolCall.status);
   const formattedArgs = formatArgs(toolCall.args);
@@ -170,6 +170,7 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
       )}
     </div>
   );
-};
+});
+ToolCallCard.displayName = 'ToolCallCard';
 
 export default ToolCallCard;

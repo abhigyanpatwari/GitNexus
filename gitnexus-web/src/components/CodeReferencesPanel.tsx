@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Code, PanelLeftClose, PanelLeft, Trash2, X, Target, FileCode, Sparkles, MousePointerClick } from 'lucide-react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { useAppState } from '../hooks/useAppState';
+import { useAppUI, useCodeRefs } from '../hooks/useAppState';
 import { NODE_COLORS } from '../lib/constants';
 
 /** Map file extension to Prism syntax highlighter language identifier */
@@ -68,12 +68,20 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     graph,
     fileContents,
     selectedNode,
+    setSelectedNode,
+  } = useAppUI();
+  const {
     codeReferences,
     removeCodeReference,
     clearCodeReferences,
-    setSelectedNode,
     codeReferenceFocus,
-  } = useAppState();
+  } = useCodeRefs();
+
+  // O(1) node lookup
+  const nodeMap = useMemo(() => {
+    if (!graph) return new Map();
+    return new Map(graph.nodes.map(n => [n.id, n]));
+  }, [graph]);
 
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [glowRefId, setGlowRefId] = useState<string | null>(null);
@@ -211,10 +219,36 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
   }, [aiReferences, fileContents]);
 
   const selectedFilePath = selectedNode?.properties?.filePath;
-  const selectedFileContent = selectedFilePath ? fileContents.get(selectedFilePath) : undefined;
+  const rawSelectedFileContent = selectedFilePath ? fileContents.get(selectedFilePath) : undefined;
   const selectedIsFile = selectedNode?.label === 'File' && !!selectedFilePath;
   const showSelectedViewer = !!selectedNode && !!selectedFilePath;
   const showCitations = aiReferences.length > 0;
+
+  // Limit selected file viewer to a window around the symbol (avoids rendering 5000+ line DOM)
+  const { selectedFileContent, selectedFileStartLine } = useMemo(() => {
+    if (!rawSelectedFileContent || !selectedNode) {
+      return { selectedFileContent: rawSelectedFileContent, selectedFileStartLine: 1 };
+    }
+    const startLine = selectedNode.properties?.startLine;
+    const endLine = selectedNode.properties?.endLine ?? startLine;
+    // If it's a File node (no line range) or very large, show first 500 lines
+    if (typeof startLine !== 'number') {
+      const lines = rawSelectedFileContent.split('\n');
+      if (lines.length > 500) {
+        return { selectedFileContent: lines.slice(0, 500).join('\n'), selectedFileStartLine: 1 };
+      }
+      return { selectedFileContent: rawSelectedFileContent, selectedFileStartLine: 1 };
+    }
+    const lines = rawSelectedFileContent.split('\n');
+    const contextBefore = 20;
+    const contextAfter = 50;
+    const sliceStart = Math.max(0, startLine - contextBefore);
+    const sliceEnd = Math.min(lines.length, (endLine ?? startLine) + contextAfter);
+    return {
+      selectedFileContent: lines.slice(sliceStart, sliceEnd).join('\n'),
+      selectedFileStartLine: sliceStart + 1,
+    };
+  }, [rawSelectedFileContent, selectedNode]);
 
   if (isCollapsed) {
     return (
@@ -306,7 +340,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                   language={getSyntaxLanguage(selectedFilePath)}
                   style={customTheme as any}
                   showLineNumbers
-                  startingLineNumber={1}
+                  startingLineNumber={selectedFileStartLine}
                   lineNumberStyle={{
                     minWidth: '3em',
                     paddingRight: '1em',
@@ -315,12 +349,12 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                     userSelect: 'none',
                   }}
                   lineProps={(lineNumber) => {
-                    const startLine = selectedNode?.properties?.startLine;
-                    const endLine = selectedNode?.properties?.endLine ?? startLine;
+                    const symStartLine = selectedNode?.properties?.startLine;
+                    const symEndLine = selectedNode?.properties?.endLine ?? symStartLine;
                     const isHighlighted =
-                      typeof startLine === 'number' &&
-                      lineNumber >= startLine + 1 &&
-                      lineNumber <= (endLine ?? startLine) + 1;
+                      typeof symStartLine === 'number' &&
+                      lineNumber >= symStartLine + 1 &&
+                      lineNumber <= (symEndLine ?? symStartLine) + 1;
                     return {
                       style: {
                         display: 'block',
@@ -412,11 +446,9 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                     <button
                       onClick={() => {
                         const nodeId = ref.nodeId!;
-                        // Sync selection + focus graph
-                        if (graph) {
-                          const node = graph.nodes.find((n) => n.id === nodeId);
-                          if (node) setSelectedNode(node);
-                        }
+                        // Sync selection + focus graph (O(1) lookup)
+                        const node = nodeMap.get(nodeId);
+                        if (node) setSelectedNode(node);
                         onFocusNode(nodeId);
                       }}
                       className="p-1.5 text-text-muted hover:text-text-primary hover:bg-hover rounded transition-colors"

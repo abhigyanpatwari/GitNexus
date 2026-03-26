@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Terminal, Play, X, ChevronDown, ChevronUp, Loader2, Sparkles, Table } from 'lucide-react';
-import { useAppState } from '../hooks/useAppState';
+import { useAppUI } from '../hooks/useAppState';
 
 const EXAMPLE_QUERIES = [
   {
@@ -26,7 +26,7 @@ const EXAMPLE_QUERIES = [
 ];
 
 export const QueryFAB = () => {
-  const { setHighlightedNodeIds, setQueryResult, queryResult, clearQueryHighlights, graph, runQuery, isDatabaseReady } = useAppState();
+  const { setHighlightedNodeIds, setQueryResult, queryResult, clearQueryHighlights, graph, runQuery, isDatabaseReady } = useAppUI();
 
   const [isExpanded, setIsExpanded] = useState(false);
   const [query, setQuery] = useState('');

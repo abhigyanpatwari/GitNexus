@@ -1,5 +1,5 @@
 import { Search, Settings, HelpCircle, Sparkles, Github, Star, ChevronDown } from 'lucide-react';
-import { useAppState } from '../hooks/useAppState';
+import { useAppUI } from '../hooks/useAppState';
 import type { RepoSummary } from '../services/server-connection';
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { GraphNode } from '../core/graph/types';
@@ -32,7 +32,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
     isRightPanelOpen,
     rightPanelTab,
     setSettingsPanelOpen,
-  } = useAppState();
+  } = useAppUI();
   const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
   const repoDropdownRef = useRef<HTMLDivElement>(null);
   const [searchQuery, setSearchQuery] = useState('');

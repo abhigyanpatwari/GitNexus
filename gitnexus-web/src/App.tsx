@@ -1,18 +1,22 @@
-import { useCallback, useEffect, useRef } from 'react';
-import { AppStateProvider, useAppState } from './hooks/useAppState';
+import { useCallback, useEffect, useRef, lazy, Suspense } from 'react';
+import { AppStateProvider, useAppState, useCodeRefs } from './hooks/useAppState';
 import { DropZone } from './components/DropZone';
 import { LoadingOverlay } from './components/LoadingOverlay';
-import { Header } from './components/Header';
-import { GraphCanvas, GraphCanvasHandle } from './components/GraphCanvas';
-import { RightPanel } from './components/RightPanel';
-import { SettingsPanel } from './components/SettingsPanel';
-import { StatusBar } from './components/StatusBar';
-import { FileTreePanel } from './components/FileTreePanel';
-import { CodeReferencesPanel } from './components/CodeReferencesPanel';
 import { FileEntry } from './services/zip';
 import { getActiveProviderConfig } from './core/llm/settings-service';
 import { createKnowledgeGraph } from './core/graph/graph';
 import { connectToServer, fetchRepos, normalizeServerUrl, type ConnectToServerResult } from './services/server-connection';
+
+// Lazy-loaded — these heavy components (sigma, syntax-highlighter, mermaid, etc.)
+// are only fetched when the user transitions from onboarding to exploring view.
+const Header = lazy(() => import('./components/Header').then(m => ({ default: m.Header })));
+const GraphCanvas = lazy(() => import('./components/GraphCanvas').then(m => ({ default: m.GraphCanvas })));
+import type { GraphCanvasHandle } from './components/GraphCanvas';
+const RightPanel = lazy(() => import('./components/RightPanel').then(m => ({ default: m.RightPanel })));
+const StatusBar = lazy(() => import('./components/StatusBar').then(m => ({ default: m.StatusBar })));
+const FileTreePanel = lazy(() => import('./components/FileTreePanel').then(m => ({ default: m.FileTreePanel })));
+const CodeReferencesPanel = lazy(() => import('./components/CodeReferencesPanel').then(m => ({ default: m.CodeReferencesPanel })));
+const SettingsPanel = lazy(() => import('./components/SettingsPanel').then(m => ({ default: m.SettingsPanel })));
 
 const AppContent = () => {
   const {
@@ -32,9 +36,7 @@ const AppContent = () => {
     initializeAgent,
     startEmbeddings,
     embeddingStatus,
-    codeReferences,
     selectedNode,
-    isCodePanelOpen,
     serverBaseUrl,
     setServerBaseUrl,
     availableRepos,
@@ -42,6 +44,8 @@ const AppContent = () => {
     switchRepo,
     hydrateWorkerFromServer,
   } = useAppState();
+
+  const { codeReferences, isCodePanelOpen } = useCodeRefs();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
 
@@ -277,41 +281,47 @@ const AppContent = () => {
     return <LoadingOverlay progress={progress} />;
   }
 
-  // Exploring view
+  // Exploring view — all components are lazy-loaded (fetched on first explore)
   return (
-    <div className="flex flex-col h-screen bg-void overflow-hidden">
-      <Header onFocusNode={handleFocusNode} availableRepos={availableRepos} onSwitchRepo={switchRepo} />
+    <Suspense fallback={<LoadingOverlay progress={{ phase: 'extracting', percent: 99, message: 'Loading UI...', detail: '' }} />}>
+      <div className="flex flex-col h-screen bg-void overflow-hidden">
+        <Header onFocusNode={handleFocusNode} availableRepos={availableRepos} onSwitchRepo={switchRepo} />
 
-      <main className="flex-1 flex min-h-0">
-        {/* Left Panel - File Tree */}
-        <FileTreePanel onFocusNode={handleFocusNode} />
+        <main className="flex-1 flex min-h-0">
+          {/* Left Panel - File Tree */}
+          <FileTreePanel onFocusNode={handleFocusNode} />
 
-        {/* Graph area - takes remaining space */}
-        <div className="flex-1 relative min-w-0">
-          <GraphCanvas ref={graphCanvasRef} />
+          {/* Graph area - takes remaining space */}
+          <div className="flex-1 relative min-w-0">
+            <GraphCanvas ref={graphCanvasRef} />
 
-          {/* Code References Panel (overlay) - does NOT resize the graph, it overlaps on top */}
-          {isCodePanelOpen && (codeReferences.length > 0 || !!selectedNode) && (
-            <div className="absolute inset-y-0 left-0 z-30 pointer-events-auto">
-              <CodeReferencesPanel onFocusNode={handleFocusNode} />
-            </div>
-          )}
-        </div>
+            {/* Code References Panel (overlay) - does NOT resize the graph, it overlaps on top */}
+            {isCodePanelOpen && (codeReferences.length > 0 || !!selectedNode) && (
+              <div className="absolute inset-y-0 left-0 z-30 pointer-events-auto">
+                <CodeReferencesPanel onFocusNode={handleFocusNode} />
+              </div>
+            )}
+          </div>
 
-        {/* Right Panel - Code & Chat (tabbed) */}
-        {isRightPanelOpen && <RightPanel />}
-      </main>
+          {/* Right Panel - Code & Chat (tabbed) */}
+          {isRightPanelOpen && <RightPanel />}
+        </main>
 
-      <StatusBar />
+        <StatusBar />
 
-      {/* Settings Panel (modal) */}
-      <SettingsPanel
-        isOpen={isSettingsPanelOpen}
-        onClose={() => setSettingsPanelOpen(false)}
-        onSettingsSaved={handleSettingsSaved}
-      />
+        {/* Settings Panel (modal) — lazy loaded */}
+        {isSettingsPanelOpen && (
+          <Suspense fallback={null}>
+            <SettingsPanel
+              isOpen={isSettingsPanelOpen}
+              onClose={() => setSettingsPanelOpen(false)}
+              onSettingsSaved={handleSettingsSaved}
+            />
+          </Suspense>
+        )}
 
-    </div>
+      </div>
+    </Suspense>
   );
 };
 

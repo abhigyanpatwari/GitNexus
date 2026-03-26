@@ -58,6 +58,48 @@ export default defineConfig({
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
   },
+  // Production build — split heavy vendor chunks so the initial bundle stays small
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // LLM / LangChain (~500 KB) — only loaded when agent initializes
+          'vendor-langchain': [
+            'langchain',
+            '@langchain/core',
+            '@langchain/anthropic',
+            '@langchain/openai',
+            '@langchain/google-genai',
+            '@langchain/ollama',
+            '@langchain/langgraph',
+          ],
+          // Graph rendering (~400 KB)
+          'vendor-graph': [
+            'sigma',
+            'graphology',
+            'graphology-layout-forceatlas2',
+            'graphology-layout-noverlap',
+            'graphology-layout-force',
+            '@sigma/edge-curve',
+          ],
+          // Mermaid diagrams (~300 KB) — lazy-loaded on first diagram render
+          'vendor-mermaid': ['mermaid'],
+          // Syntax highlighting (~150 KB)
+          'vendor-syntax': [
+            'react-syntax-highlighter',
+          ],
+          // Isomorphic-git + FS (~300 KB) — only used during git clone
+          'vendor-git': ['isomorphic-git', '@isomorphic-git/lightning-fs'],
+          // HuggingFace Transformers (~600 KB) — only used for embeddings
+          'vendor-ml': ['@huggingface/transformers'],
+          // Markdown rendering stack
+          'vendor-markdown': ['react-markdown', 'remark-gfm'],
+          // React core
+          'vendor-react': ['react', 'react-dom'],
+        },
+      },
+    },
+  },
   // Worker configuration
   worker: {
     format: 'es',

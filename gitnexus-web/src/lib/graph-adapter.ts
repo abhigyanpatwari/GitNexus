@@ -82,7 +82,7 @@ const getNodeMass = (nodeType: NodeLabel, nodeCount: number): number => {
  */
 export const knowledgeGraphToGraphology = (
   knowledgeGraph: KnowledgeGraph,
-  communityMemberships?: Map<string, number>
+  communityMemberships?: Map<string, number>,
 ): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> => {
   const graph = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
   const nodeCount = knowledgeGraph.nodes.length;
@@ -117,26 +117,25 @@ export const knowledgeGraphToGraphology = (
   const structuralTypes = new Set(['Project', 'Package', 'Module', 'Folder']);
   const structuralNodes = knowledgeGraph.nodes.filter(n => structuralTypes.has(n.label));
   
-  // Much wider spread for structural nodes - this is the key!
-  const structuralSpread = Math.sqrt(nodeCount) * 40;
-  // Small jitter for children around their parent
-  const childJitter = Math.sqrt(nodeCount) * 3;
+  // Spread distance
+  const spreadBase = Math.sqrt(nodeCount);
+  const spreadMultiplier = 40;
+  const structuralSpread = spreadBase * spreadMultiplier;
+  const childJitter = spreadBase * (nodeCount > 5000 ? 10 : 3);
 
   // === CLUSTER-BASED POSITIONING ===
-  // Calculate cluster centers - each cluster gets a region of the graph
+  // Each community gets its own far-apart region so only a few are on-screen at once
   const clusterCenters = new Map<number, { x: number; y: number }>();
   if (communityMemberships && communityMemberships.size > 0) {
-    // Find unique community IDs
     const communities = new Set(communityMemberships.values());
     const communityCount = communities.size;
-    const clusterSpread = structuralSpread * 0.8; // Clusters spread across 80% of graph
-    
-    // Position cluster centers using golden angle for even distribution
     const goldenAngle = Math.PI * (3 - Math.sqrt(5));
     let idx = 0;
     communities.forEach(communityId => {
       const angle = idx * goldenAngle;
-      const radius = clusterSpread * Math.sqrt((idx + 1) / communityCount);
+      // Minimum radius so nothing sits at the center
+      const minRadius = structuralSpread * 0.4;
+      const radius = minRadius + structuralSpread * Math.sqrt((idx + 1) / communityCount);
       clusterCenters.set(communityId, {
         x: radius * Math.cos(angle),
         y: radius * Math.sin(angle),
@@ -144,8 +143,7 @@ export const knowledgeGraphToGraphology = (
       idx++;
     });
   }
-  // Jitter within cluster (tighter than childJitter)
-  const clusterJitter = Math.sqrt(nodeCount) * 1.5;
+  const communityJitter = spreadBase * (nodeCount > 5000 ? 6 : 1.5);
 
   // Store positions for parent lookup
   const nodePositions = new Map<string, { x: number; y: number }>();
@@ -200,8 +198,8 @@ export const knowledgeGraphToGraphology = (
     
     if (clusterCenter && symbolTypes.has(node.label)) {
       // CLUSTER-BASED POSITIONING: Position near cluster center with tight jitter
-      x = clusterCenter.x + (Math.random() - 0.5) * clusterJitter;
-      y = clusterCenter.y + (Math.random() - 0.5) * clusterJitter;
+      x = clusterCenter.x + (Math.random() - 0.5) * communityJitter;
+      y = clusterCenter.y + (Math.random() - 0.5) * communityJitter;
     } else {
       // HIERARCHY-BASED POSITIONING: Position near parent
       const parentId = childToParent.get(nodeId);
@@ -275,57 +273,98 @@ export const knowledgeGraphToGraphology = (
 
   // Add edges with distinct colors per relationship type
   const edgeBaseSize = nodeCount > 20000 ? 0.4 : nodeCount > 5000 ? 0.6 : 1.0;
-  
+
   // Edge styles - each relationship type has a DISTINCT color for clarity
   // Using varied hues so relationships are easily distinguishable
   const EDGE_STYLES: Record<string, { color: string; sizeMultiplier: number }> = {
     // STRUCTURAL - Greens (folder/file hierarchy)
     CONTAINS: { color: '#2d5a3d', sizeMultiplier: 0.4 },    // Forest green - folder contains
-    
+
     // DEFINITIONS - Cyan/Teal (code definitions)
     DEFINES: { color: '#0e7490', sizeMultiplier: 0.5 },     // Cyan - file defines function/class
-    
-    // DEPENDENCIES - Blue (imports between files)  
+
+    // DEPENDENCIES - Blue (imports between files)
     IMPORTS: { color: '#1d4ed8', sizeMultiplier: 0.6 },     // Blue - file imports file
-    
+
     // FUNCTION FLOW - Purple (call graph)
     CALLS: { color: '#7c3aed', sizeMultiplier: 0.8 },       // Violet - function calls
-    
+
     // TYPE RELATIONSHIPS - Warm colors (OOP)
     EXTENDS: { color: '#c2410c', sizeMultiplier: 1.0 },     // Orange - extension
     IMPLEMENTS: { color: '#be185d', sizeMultiplier: 0.9 },  // Pink - interface implementation
   };
-  
+
+  // For large graphs (5000+), skip structural edges (CONTAINS/DEFINES/IMPORTS)
+  // to dramatically reduce edge count and improve rendering perf.
+  // These edges mainly show hierarchy which is already visible from positioning.
+  const skipStructuralEdges = nodeCount > 5000;
+  const structuralEdgeTypes = new Set(['CONTAINS', 'DEFINES', 'IMPORTS']);
+
+  // Edge limits: for large graphs, cap edges per node to prevent dense clusters
+  const edgeCountPerNode = new Map<string, number>();
+  const MAX_EDGES_PER_NODE = nodeCount > 5000 ? 8 : nodeCount > 2000 ? 15 : Infinity;
+
+  // Use straight lines for very large graphs — curved edges are much more expensive to render
+  const useSimpleEdges = nodeCount > 5000;
+
   knowledgeGraph.relationships.forEach((rel) => {
+    // Skip structural edges on large graphs
+    if (skipStructuralEdges && structuralEdgeTypes.has(rel.type)) return;
+
     if (graph.hasNode(rel.sourceId) && graph.hasNode(rel.targetId)) {
       if (!graph.hasEdge(rel.sourceId, rel.targetId)) {
+        // Enforce edge limits per node for large graphs
+        const sourceEdges = edgeCountPerNode.get(rel.sourceId) || 0;
+        const targetEdges = edgeCountPerNode.get(rel.targetId) || 0;
+        if (sourceEdges >= MAX_EDGES_PER_NODE || targetEdges >= MAX_EDGES_PER_NODE) return;
+
         const style = EDGE_STYLES[rel.type] || { color: '#4a4a5a', sizeMultiplier: 0.5 };
-        const curvature = 0.12 + (Math.random() * 0.08);
-        
+        const curvature = useSimpleEdges ? undefined : 0.12 + (Math.random() * 0.08);
+
         graph.addEdge(rel.sourceId, rel.targetId, {
           size: edgeBaseSize * style.sizeMultiplier,
           color: style.color,
           relationType: rel.type,
-          type: 'curved',
+          type: useSimpleEdges ? 'line' : 'curved',
           curvature: curvature,
         });
+
+        // Track edge counts per node
+        edgeCountPerNode.set(rel.sourceId, sourceEdges + 1);
+        edgeCountPerNode.set(rel.targetId, targetEdges + 1);
       }
     }
   });
+
+  // Progressive loading: for large graphs, start with only structural + class/interface nodes visible
+  // Functions, methods, variables, imports etc. start hidden — user can reveal via filters
+  if (nodeCount > 2000) {
+    const initiallyVisible = new Set(['Project', 'Package', 'Module', 'Folder', 'File', 'Class', 'Interface']);
+    graph.forEachNode((_nodeId, attrs) => {
+      if (!initiallyVisible.has(attrs.nodeType)) {
+        graph.setNodeAttribute(_nodeId, 'hidden', true);
+      }
+    });
+  }
 
   return graph;
 };
 
 /**
  * Filter nodes by visibility - sets hidden attribute
+ * Optimized: only updates nodes whose visibility actually changed
  */
 export const filterGraphByLabels = (
   graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>,
   visibleLabels: NodeLabel[]
 ): void => {
+  const visibleSet = new Set(visibleLabels);
   graph.forEachNode((nodeId, attributes) => {
-    const isVisible = visibleLabels.includes(attributes.nodeType);
-    graph.setNodeAttribute(nodeId, 'hidden', !isVisible);
+    const shouldHide = !visibleSet.has(attributes.nodeType);
+    // Only update if changed — avoids triggering Sigma's internal events
+    if (attributes.hidden !== shouldHide) {
+      graph.setNodeAttribute(nodeId, 'hidden', shouldHide);
+    }
   });
 };
 
@@ -379,9 +418,11 @@ export const filterGraphByDepth = (
   
   const nodesInRange = getNodesWithinHops(graph, selectedNodeId, maxHops);
   
+  const visibleSet = new Set(visibleLabels);
   graph.forEachNode((nodeId, attributes) => {
-    const isLabelVisible = visibleLabels.includes(attributes.nodeType);
-    const isInRange = nodesInRange.has(nodeId);
-    graph.setNodeAttribute(nodeId, 'hidden', !isLabelVisible || !isInRange);
+    const shouldHide = !visibleSet.has(attributes.nodeType) || !nodesInRange.has(nodeId);
+    if (attributes.hidden !== shouldHide) {
+      graph.setNodeAttribute(nodeId, 'hidden', shouldHide);
+    }
   });
 };

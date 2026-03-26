@@ -1,57 +1,70 @@
-import { useEffect, useRef, useState } from 'react';
-import mermaid from 'mermaid';
+import { useEffect, useRef, useState, memo } from 'react';
 import { AlertTriangle, Maximize2 } from 'lucide-react';
 import { ProcessFlowModal } from './ProcessFlowModal';
 import type { ProcessData } from '../lib/mermaid-generator';
 
-// Initialize mermaid with cyan theme matching ProcessFlowModal
-mermaid.initialize({
-  startOnLoad: false,
-  maxTextSize: 900000,
-  theme: 'base',
-  themeVariables: {
-    primaryColor: '#1e293b', // node bg - slate
-    primaryTextColor: '#f1f5f9',
-    primaryBorderColor: '#22d3ee', // cyan
-    lineColor: '#94a3b8',
-    secondaryColor: '#1e293b',
-    tertiaryColor: '#0f172a',
-    mainBkg: '#1e293b',
-    nodeBorder: '#22d3ee', // cyan
-    clusterBkg: '#1e293b',
-    clusterBorder: '#475569',
-    titleColor: '#f1f5f9',
-    edgeLabelBackground: '#0f172a',
-  },
-  flowchart: {
-    curve: 'basis',
-    padding: 15,
-    nodeSpacing: 50,
-    rankSpacing: 50,
-    htmlLabels: true,
-  },
-  sequence: {
-    actorMargin: 50,
-    boxMargin: 10,
-    boxTextMargin: 5,
-    noteMargin: 10,
-    messageMargin: 35,
-  },
-  fontFamily: '"JetBrains Mono", "Fira Code", monospace',
-  fontSize: 13,
-  suppressErrorRendering: true,
-});
+// Lazy-load mermaid (~480KB) — only fetched when first diagram renders
+let mermaidInstance: typeof import('mermaid').default | null = null;
+let mermaidInitPromise: Promise<typeof import('mermaid').default> | null = null;
 
-// Override the default error handler to prevent it from logging to UI
-mermaid.parseError = (_err) => {
-  // Silent catch
+const getMermaid = (): Promise<typeof import('mermaid').default> => {
+  if (mermaidInstance) return Promise.resolve(mermaidInstance);
+  if (mermaidInitPromise) return mermaidInitPromise;
+
+  mermaidInitPromise = import('mermaid').then(mod => {
+    const m = mod.default;
+    m.initialize({
+      startOnLoad: false,
+      maxTextSize: 900000,
+      theme: 'base',
+      themeVariables: {
+        primaryColor: '#1e293b',
+        primaryTextColor: '#f1f5f9',
+        primaryBorderColor: '#22d3ee',
+        lineColor: '#94a3b8',
+        secondaryColor: '#1e293b',
+        tertiaryColor: '#0f172a',
+        mainBkg: '#1e293b',
+        nodeBorder: '#22d3ee',
+        clusterBkg: '#1e293b',
+        clusterBorder: '#475569',
+        titleColor: '#f1f5f9',
+        edgeLabelBackground: '#0f172a',
+      },
+      flowchart: {
+        curve: 'basis',
+        padding: 15,
+        nodeSpacing: 50,
+        rankSpacing: 50,
+        htmlLabels: true,
+      },
+      sequence: {
+        actorMargin: 50,
+        boxMargin: 10,
+        boxTextMargin: 5,
+        noteMargin: 10,
+        messageMargin: 35,
+      },
+      fontFamily: '"JetBrains Mono", "Fira Code", monospace',
+      fontSize: 13,
+      suppressErrorRendering: true,
+    });
+    m.parseError = () => {};
+    mermaidInstance = m;
+    return m;
+  });
+
+  return mermaidInitPromise;
 };
+
+// SVG cache — avoid re-rendering identical diagrams
+const svgCache = new Map<string, string>();
 
 interface MermaidDiagramProps {
   code: string;
 }
 
-export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
+export const MermaidDiagram = memo(({ code }: MermaidDiagramProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
@@ -61,20 +74,24 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
     const renderDiagram = async () => {
       if (!containerRef.current) return;
 
-      try {
-        // Generate unique ID for this diagram
-        const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const trimmed = code.trim();
 
-        // Render the diagram
-        const { svg: renderedSvg } = await mermaid.render(id, code.trim());
+      // Check cache first — avoids expensive re-render of identical diagrams
+      const cached = svgCache.get(trimmed);
+      if (cached) {
+        setSvg(cached);
+        setError(null);
+        return;
+      }
+
+      try {
+        const mermaid = await getMermaid();
+        const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const { svg: renderedSvg } = await mermaid.render(id, trimmed);
+        svgCache.set(trimmed, renderedSvg);
         setSvg(renderedSvg);
         setError(null);
       } catch (err) {
-        // Silent catch for streaming: 
-        // If render fails (common during partial streaming), we:
-        // 1. Log to console for debugging
-        // 2. Do NOT set error state (avoids flashing red box)
-        // 3. Do NOT clear existing SVG (keeps last valid state visible)
         console.debug('Mermaid render skipped (incomplete):', err);
       }
     };
@@ -154,4 +171,5 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
       )}
     </>
   );
-};
+});
+MermaidDiagram.displayName = 'MermaidDiagram';

@@ -28,25 +28,44 @@ const rgbToHex = (r: number, g: number, b: number): string => {
   }).join('');
 };
 
+// LRU color caches — avoid re-computing hex→rgb→hex on every reducer call
+const dimCache = new Map<string, string>();
+const brightenCache = new Map<string, string>();
+const COLOR_CACHE_MAX = 500;
+
 // Dim a color by mixing with dark background (keeps color hint)
 const dimColor = (hex: string, amount: number): string => {
+  const key = `${hex}:${amount}`;
+  const cached = dimCache.get(key);
+  if (cached) return cached;
+
   const rgb = hexToRgb(hex);
-  const darkBg = { r: 18, g: 18, b: 28 }; // #12121c - dark background
-  return rgbToHex(
+  const darkBg = { r: 18, g: 18, b: 28 };
+  const result = rgbToHex(
     darkBg.r + (rgb.r - darkBg.r) * amount,
     darkBg.g + (rgb.g - darkBg.g) * amount,
     darkBg.b + (rgb.b - darkBg.b) * amount
   );
+  if (dimCache.size >= COLOR_CACHE_MAX) dimCache.clear();
+  dimCache.set(key, result);
+  return result;
 };
 
 // Brighten a color (increase luminosity)
 const brightenColor = (hex: string, factor: number): string => {
+  const key = `${hex}:${factor}`;
+  const cached = brightenCache.get(key);
+  if (cached) return cached;
+
   const rgb = hexToRgb(hex);
-  return rgbToHex(
+  const result = rgbToHex(
     rgb.r + (255 - rgb.r) * (factor - 1) / factor,
     rgb.g + (255 - rgb.g) * (factor - 1) / factor,
     rgb.b + (255 - rgb.b) * (factor - 1) / factor
   );
+  if (brightenCache.size >= COLOR_CACHE_MAX) brightenCache.clear();
+  brightenCache.set(key, result);
+  return result;
 };
 
 interface UseSigmaOptions {
@@ -88,21 +107,21 @@ const getFA2Settings = (nodeCount: number) => {
   const isSmall = nodeCount < 500;
   const isMedium = nodeCount >= 500 && nodeCount < 2000;
   const isLarge = nodeCount >= 2000 && nodeCount < 10000;
-  
+
   return {
-    // Lower gravity allows folders to stay spread out
-    gravity: isSmall ? 0.8 : isMedium ? 0.5 : isLarge ? 0.3 : 0.15,
-    
-    // Higher scaling ratio = more spread out overall
-    scalingRatio: isSmall ? 15 : isMedium ? 30 : isLarge ? 60 : 100,
-    
+    // Very low gravity for large graphs keeps clusters far apart
+    gravity: isSmall ? 0.8 : isMedium ? 0.5 : isLarge ? 0.15 : 0.03,
+
+    // High scaling ratio preserves the wide spread during layout
+    scalingRatio: isSmall ? 15 : isMedium ? 30 : isLarge ? 100 : 300,
+
     // LOW slowDown = FASTER movement (converges quicker)
     slowDown: isSmall ? 1 : isMedium ? 2 : isLarge ? 3 : 5,
-    
+
     // Barnes-Hut for performance - use it even on smaller graphs
     barnesHutOptimize: nodeCount > 200,
     barnesHutTheta: isLarge ? 0.8 : 0.6,  // Higher = faster but less accurate
-    
+
     // These help with clustering while keeping spread
     strongGravityMode: false,
     outboundAttractionDistribution: true,
@@ -112,15 +131,15 @@ const getFA2Settings = (nodeCount: number) => {
   };
 };
 
-// Layout duration - let it run longer for better results
-// Web Worker + WebGL means minimal system impact
+// Layout duration — shorter for responsive UI, longer for quality
+// The graph starts with good hierarchical positions, so FA2 converges fast
 const getLayoutDuration = (nodeCount: number): number => {
-  if (nodeCount > 10000) return 45000;  // 45s for huge graphs
-  if (nodeCount > 5000) return 35000;   // 35s
-  if (nodeCount > 2000) return 30000;   // 30s
-  if (nodeCount > 1000) return 30000;   // 30s
-  if (nodeCount > 500) return 25000;    // 25s
-  return 20000;                         // 20s for small graphs
+  if (nodeCount > 10000) return 20000;  // 20s for huge graphs
+  if (nodeCount > 5000) return 15000;   // 15s
+  if (nodeCount > 2000) return 12000;   // 12s
+  if (nodeCount > 1000) return 10000;   // 10s
+  if (nodeCount > 500) return 8000;     // 8s
+  return 5000;                          // 5s for small graphs
 };
 
 export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
@@ -135,6 +154,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const visibleEdgeTypesRef = useRef<EdgeType[] | null>(null);
   const layoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const nodeCountRef = useRef<number>(0); // Track graph size for perf decisions
   const [isLayoutRunning, setIsLayoutRunning] = useState(false);
   const [selectedNode, setSelectedNodeState] = useState<string | null>(null);
 
@@ -146,7 +166,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     sigmaRef.current?.refresh();
   }, [options.highlightedNodeIds, options.blastRadiusNodeIds, options.animatedNodes, options.visibleEdgeTypes]);
 
-  // Animation loop for node effects
+  // Animation loop for node effects — throttled to ~30fps to halve reducer calls
   useEffect(() => {
     if (!options.animatedNodes || options.animatedNodes.size === 0) {
       if (animationFrameRef.current) {
@@ -156,12 +176,18 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       return;
     }
 
-    const animate = () => {
-      sigmaRef.current?.refresh();
+    let lastFrame = 0;
+    const FRAME_INTERVAL = 33; // ~30fps instead of 60fps
+
+    const animate = (timestamp: number) => {
+      if (timestamp - lastFrame >= FRAME_INTERVAL) {
+        sigmaRef.current?.refresh();
+        lastFrame = timestamp;
+      }
       animationFrameRef.current = requestAnimationFrame(animate);
     };
 
-    animate();
+    animationFrameRef.current = requestAnimationFrame(animate);
 
     return () => {
       if (animationFrameRef.current) {
@@ -174,19 +200,21 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const setSelectedNode = useCallback((nodeId: string | null) => {
     selectedNodeRef.current = nodeId;
     setSelectedNodeState(nodeId);
-    
+
     const sigma = sigmaRef.current;
     if (!sigma) return;
-    
-    // Tiny camera nudge to force edge refresh (workaround for Sigma edge caching)
-    const camera = sigma.getCamera();
-    const currentRatio = camera.ratio;
-    // Imperceptible zoom change that triggers re-render
-    camera.animate(
-      { ratio: currentRatio * 1.0001 },
-      { duration: 50 }
-    );
-    
+
+    // Only do camera nudge for small graphs (avoids full refresh on large ones)
+    if (nodeCountRef.current < 2000) {
+      const camera = sigma.getCamera();
+      const currentRatio = camera.ratio;
+      // Imperceptible zoom change that triggers re-render
+      camera.animate(
+        { ratio: currentRatio * 1.0001 },
+        { duration: 50 }
+      );
+    }
+
     sigma.refresh();
   }, []);
 
@@ -203,17 +231,21 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       labelSize: 11,
       labelWeight: '500',
       labelColor: { color: '#e4e4ed' },
+      // Higher threshold = fewer labels rendered = faster for large graphs
       labelRenderedSizeThreshold: 8,
-      labelDensity: 0.1,
-      labelGridCellSize: 70,
-      
+      labelDensity: 0.07,
+      labelGridCellSize: 100,
+
       defaultNodeColor: '#6b7280',
       defaultEdgeColor: '#2a2a3a',
-      
+
       defaultEdgeType: 'curved',
       edgeProgramClasses: {
         curved: EdgeCurveProgram,
       },
+
+      // Perf: skip edge click/hover detection entirely — saves CPU on large graphs
+      enableEdgeEvents: false,
       
       // Custom hover renderer - dark background instead of white
       defaultDrawNodeHover: (context, data, settings) => {
@@ -269,189 +301,159 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       zIndex: true,
       
       nodeReducer: (node, data) => {
-        const res = { ...data };
-        
-        if (data.hidden) {
-          res.hidden = true;
-          return res;
-        }
-        
+        if (data.hidden) return data;
+
         const currentSelected = selectedNodeRef.current;
         const highlighted = highlightedRef.current;
         const blastRadius = blastRadiusRef.current;
         const animatedNodes = animatedNodesRef.current;
         const hasHighlights = highlighted.size > 0;
         const hasBlastRadius = blastRadius.size > 0;
+
+        // Fast path: nothing active — return original data (no allocation)
+        if (!currentSelected && !hasHighlights && !hasBlastRadius && animatedNodes.size === 0) {
+          return data;
+        }
+
+        // For large graphs (2000+), skip per-node dimming of non-active nodes.
+        // Only modify nodes that ARE selected/highlighted/animated — leave the rest untouched.
+        // This turns O(N) object allocations into O(k) where k = active nodes (typically < 50).
+        const isLargeGraph = nodeCountRef.current > 2000;
+
         const isQueryHighlighted = highlighted.has(node);
         const isBlastRadiusNode = blastRadius.has(node);
-        
-        // Apply animation effects FIRST (before other highlighting)
+
+        // Apply animation effects FIRST
         const animation = animatedNodes.get(node);
         if (animation) {
+          const res = { ...data };
           const now = Date.now();
           const elapsed = now - animation.startTime;
           const progress = Math.min(elapsed / animation.duration, 1);
-          
-          // Calculate animation phase (0-1-0-1... oscillation)
           const phase = (Math.sin(progress * Math.PI * 4) + 1) / 2;
-          
+
           if (animation.type === 'pulse') {
-            // Cyan pulse for search results
-            const sizeMultiplier = 1.5 + phase * 0.8;
-            res.size = (data.size || 8) * sizeMultiplier;
+            res.size = (data.size || 8) * (1.5 + phase * 0.8);
             res.color = phase > 0.5 ? '#06b6d4' : brightenColor('#06b6d4', 1.3);
-            res.zIndex = 5;
-            res.highlighted = true;
           } else if (animation.type === 'ripple') {
-            // Red ripple for blast radius
-            const sizeMultiplier = 1.3 + phase * 1.2;
-            res.size = (data.size || 8) * sizeMultiplier;
+            res.size = (data.size || 8) * (1.3 + phase * 1.2);
             res.color = phase > 0.5 ? '#ef4444' : '#f87171';
-            res.zIndex = 5;
-            res.highlighted = true;
           } else if (animation.type === 'glow') {
-            // Purple glow for highlight
-            const sizeMultiplier = 1.4 + phase * 0.6;
-            res.size = (data.size || 8) * sizeMultiplier;
+            res.size = (data.size || 8) * (1.4 + phase * 0.6);
             res.color = phase > 0.5 ? '#a855f7' : '#c084fc';
-            res.zIndex = 5;
-            res.highlighted = true;
           }
-          
+          res.zIndex = 5;
+          res.highlighted = true;
           return res;
         }
-        
-        // Blast radius takes priority (red highlighting)
+
+        // Blast radius
         if (hasBlastRadius && !currentSelected) {
           if (isBlastRadiusNode) {
-            res.color = '#ef4444'; // Red for blast radius
-            res.size = (data.size || 8) * 1.8;
-            res.zIndex = 3;
-            res.highlighted = true;
-          } else if (isQueryHighlighted) {
-            // Regular cyan highlight for non-blast-radius nodes
-            res.color = '#06b6d4';
-            res.size = (data.size || 8) * 1.4;
-            res.zIndex = 2;
-            res.highlighted = true;
-          } else {
-            res.color = dimColor(data.color, 0.15);
-            res.size = (data.size || 8) * 0.4;
-            res.zIndex = 0;
+            return { ...data, color: '#ef4444', size: (data.size || 8) * 1.8, zIndex: 3, highlighted: true };
           }
-          return res;
+          if (isQueryHighlighted) {
+            return { ...data, color: '#06b6d4', size: (data.size || 8) * 1.4, zIndex: 2, highlighted: true };
+          }
+          // Large graph: skip dimming non-active nodes (huge perf win)
+          if (isLargeGraph) return data;
+          return { ...data, color: dimColor(data.color, 0.15), size: (data.size || 8) * 0.4, zIndex: 0 };
         }
-        
+
+        // Query highlights
         if (hasHighlights && !currentSelected) {
           if (isQueryHighlighted) {
-            res.color = '#06b6d4';
-            res.size = (data.size || 8) * 1.6;
-            res.zIndex = 2;
-            res.highlighted = true;
-          } else {
-            res.color = dimColor(data.color, 0.2);
-            res.size = (data.size || 8) * 0.5;
-            res.zIndex = 0;
+            return { ...data, color: '#06b6d4', size: (data.size || 8) * 1.6, zIndex: 2, highlighted: true };
           }
-          return res;
+          if (isLargeGraph) return data;
+          return { ...data, color: dimColor(data.color, 0.2), size: (data.size || 8) * 0.5, zIndex: 0 };
         }
-        
+
+        // Selection
         if (currentSelected) {
           const graph = graphRef.current;
           if (graph) {
             const isSelected = node === currentSelected;
-            const isNeighbor = graph.hasEdge(node, currentSelected) || graph.hasEdge(currentSelected, node);
-            
             if (isSelected) {
-              res.color = data.color;
-              res.size = (data.size || 8) * 1.8;
-              res.zIndex = 2;
-              res.highlighted = true;
-            } else if (isNeighbor) {
-              res.color = data.color;
-              res.size = (data.size || 8) * 1.3;
-              res.zIndex = 1;
-            } else {
-              res.color = dimColor(data.color, 0.25);
-              res.size = (data.size || 8) * 0.6;
-              res.zIndex = 0;
+              return { ...data, size: (data.size || 8) * 1.8, zIndex: 2, highlighted: true };
             }
+            const isNeighbor = graph.hasEdge(node, currentSelected) || graph.hasEdge(currentSelected, node);
+            if (isNeighbor) {
+              return { ...data, size: (data.size || 8) * 1.3, zIndex: 1 };
+            }
+            // Large graph: skip dimming thousands of non-neighbor nodes
+            if (isLargeGraph) return data;
+            return { ...data, color: dimColor(data.color, 0.25), size: (data.size || 8) * 0.6, zIndex: 0 };
           }
         }
-        
-        return res;
+
+        return data;
       },
       
       edgeReducer: (edge, data) => {
-        const res = { ...data };
-        
         // Check edge type visibility first
         const visibleTypes = visibleEdgeTypesRef.current;
         if (visibleTypes && data.relationType) {
           if (!visibleTypes.includes(data.relationType as EdgeType)) {
-            res.hidden = true;
-            return res;
+            return { ...data, hidden: true };
           }
         }
-        
+
         const currentSelected = selectedNodeRef.current;
         const highlighted = highlightedRef.current;
         const blastRadius = blastRadiusRef.current;
-        const hasHighlights = highlighted.size > 0 || blastRadius.size > 0; // Check BOTH sets
-        
+        const hasHighlights = highlighted.size > 0 || blastRadius.size > 0;
+        const isLargeGraph = nodeCountRef.current > 2000;
+
+        // Fast path: nothing active — return original data (no allocation)
+        if (!hasHighlights && !currentSelected) return data;
+
         if (hasHighlights && !currentSelected) {
           const graph = graphRef.current;
           if (graph) {
             const [source, target] = graph.extremities(edge);
-            
-            // Check if nodes are in EITHER set
             const isSourceActive = highlighted.has(source) || blastRadius.has(source);
             const isTargetActive = highlighted.has(target) || blastRadius.has(target);
-            
-            const bothHighlighted = isSourceActive && isTargetActive;
-            const oneHighlighted = isSourceActive || isTargetActive;
-            
-            if (bothHighlighted) {
-              // If both nodes are in blast radius, use red edge
-              if (blastRadius.has(source) && blastRadius.has(target)) {
-                res.color = '#ef4444';
-              } else {
-                res.color = '#06b6d4';
-              }
-              res.size = Math.max(2, (data.size || 1) * 3);
-              res.zIndex = 2;
-            } else if (oneHighlighted) {
-              res.color = dimColor('#06b6d4', 0.4);
-              res.size = 1;
-              res.zIndex = 1;
-            } else {
-              res.color = dimColor(data.color, 0.08);
-              res.size = 0.2;
-              res.zIndex = 0;
+
+            if (isSourceActive && isTargetActive) {
+              return {
+                ...data,
+                color: (blastRadius.has(source) && blastRadius.has(target)) ? '#ef4444' : '#06b6d4',
+                size: Math.max(2, (data.size || 1) * 3),
+                zIndex: 2,
+              };
             }
+            if (isSourceActive || isTargetActive) {
+              return { ...data, color: dimColor('#06b6d4', 0.4), size: 1, zIndex: 1 };
+            }
+            // Large graph: skip dimming non-active edges
+            if (isLargeGraph) return data;
+            return { ...data, color: dimColor(data.color, 0.08), size: 0.2, zIndex: 0 };
           }
-          return res;
+          return data;
         }
-        
+
         if (currentSelected) {
           const graph = graphRef.current;
           if (graph) {
             const [source, target] = graph.extremities(edge);
             const isConnected = source === currentSelected || target === currentSelected;
-            
+
             if (isConnected) {
-              res.color = brightenColor(data.color, 1.5);
-              res.size = Math.max(3, (data.size || 1) * 4);
-              res.zIndex = 2;
-            } else {
-              res.color = dimColor(data.color, 0.1);
-              res.size = 0.3;
-              res.zIndex = 0;
+              return {
+                ...data,
+                color: brightenColor(data.color, 1.5),
+                size: Math.max(3, (data.size || 1) * 4),
+                zIndex: 2,
+              };
             }
+            // Large graph: skip dimming non-connected edges
+            if (isLargeGraph) return data;
+            return { ...data, color: dimColor(data.color, 0.1), size: 0.3, zIndex: 0 };
           }
         }
-        
-        return res;
+
+        return data;
       },
     });
 
@@ -524,11 +526,25 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       if (layoutRef.current) {
         layoutRef.current.stop();
         layoutRef.current = null;
-        
+
         // Light noverlap cleanup
         noverlap.assign(graph, NOVERLAP_SETTINGS);
         sigmaRef.current?.refresh();
-        
+
+        // Cache positions after layout completes
+        try {
+          const positions: Record<string, { x: number; y: number }> = {};
+          graph.forEachNode((nodeId, attrs) => {
+            positions[nodeId] = { x: attrs.x, y: attrs.y };
+          });
+          sessionStorage.setItem('gitnexus-layout-cache', JSON.stringify({
+            nodeCount: graph.order,
+            positions,
+          }));
+        } catch {
+          // Ignore cache errors (e.g. storage full)
+        }
+
         setIsLayoutRunning(false);
       }
     }, duration);
@@ -548,8 +564,60 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     }
 
     graphRef.current = newGraph;
+    nodeCountRef.current = newGraph.order;
     sigma.setGraph(newGraph);
     setSelectedNode(null);
+
+    // For large graphs, adjust Sigma settings for performance
+    if (newGraph.order > 2000) {
+      sigma.setSetting('labelRenderedSizeThreshold', 14);
+      sigma.setSetting('labelDensity', 0.04);
+      sigma.setSetting('labelGridCellSize', 150);
+    }
+
+    // Use straight lines for very large graphs — curved edges are expensive
+    if (newGraph.order > 5000) {
+      sigma.setSetting('defaultEdgeType', 'line');
+    }
+
+    // Disable hover renderer and edge events for large graphs — saves CPU
+    if (newGraph.order > 5000) {
+      sigma.setSetting('defaultDrawNodeHover', () => {});
+      sigma.setSetting('enableEdgeEvents', false);
+    }
+
+    // Try to restore cached layout positions
+    try {
+      const cached = sessionStorage.getItem('gitnexus-layout-cache');
+      if (cached) {
+        const { nodeCount: cachedCount, positions } = JSON.parse(cached);
+        if (cachedCount === newGraph.order) {
+          newGraph.forEachNode((nodeId) => {
+            const pos = positions[nodeId];
+            if (pos) {
+              newGraph.setNodeAttribute(nodeId, 'x', pos.x);
+              newGraph.setNodeAttribute(nodeId, 'y', pos.y);
+            }
+          });
+          sigma.refresh();
+          // Skip layout entirely — use cached positions
+          sigma.getCamera().animatedReset({ duration: 500 });
+          return; // early return, skip runLayout
+        }
+      }
+    } catch {
+      // Ignore cache errors
+    }
+
+    // Skip FA2 layout for very large graphs — hierarchical positioning is sufficient
+    if (newGraph.order > 10000) {
+      // Just do a quick noverlap pass to prevent overlaps
+      noverlap.assign(newGraph, { ...NOVERLAP_SETTINGS, maxIterations: 5 });
+      sigma.refresh();
+      sigma.getCamera().animatedReset({ duration: 500 });
+      // Don't call runLayout
+      return;
+    }
 
     runLayout(newGraph);
     sigma.getCamera().animatedReset({ duration: 500 });
