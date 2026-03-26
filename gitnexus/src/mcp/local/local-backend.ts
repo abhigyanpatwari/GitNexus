@@ -1732,6 +1732,11 @@ export class LocalBackend {
         earliest_broken_step: number;
       }>();
 
+      // Map process id -> entryPointId to allow fixing missing minStep values later
+      const processToEntryPoint = new Map<string, string>();
+      // Collect process ids where MIN(r.step) returned null so we can retry in batch
+      const processesMissingMinStep = new Set<string>();
+
       let chunksProcessed = 0;
       for (let i = 0; i < impacted.length && chunksProcessed < MAX_CHUNKS; i += CHUNK_SIZE, chunksProcessed++) {
         const chunk = impacted.slice(i, i + CHUNK_SIZE);
@@ -1743,41 +1748,87 @@ export class LocalBackend {
             MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
             WHERE s.id IN $ids
             WITH p, COUNT(DISTINCT s.id) AS hits, MIN(r.step) AS minStep
-            // NOTE: Avoid unlabeled node lookup 'OPTIONAL MATCH (ep {id: p.entryPointId})'
-            // which scans all node labels unless there is a global index on 'id'.
-            // Prefer per-label indexed lookups. We restrict to the most likely labels
-            // (Function, Method, Class) to prevent a sequential scan on large graphs.
-            OPTIONAL MATCH (ep)
-            WHERE ep.id = p.entryPointId AND (ep:Function OR ep:Method OR ep:Class)
+            OPTIONAL MATCH (ep {id: p.entryPointId})
             RETURN p.id AS pId, p.heuristicLabel AS name, p.processType AS processType,
                    p.entryPointId AS entryPointId, hits, minStep, p.stepCount AS stepCount,
                    ep.name AS epName, labels(ep)[0] AS epType, ep.filePath AS epFilePath
           `, { ids }).catch(() => []);
 
           for (const row of rows) {
+            const pId = row.pId ?? row[0];
             const epId = row.entryPointId ?? row[3] ?? row.pId ?? row[0];
-            const epName = row.epName ?? row[7] ?? row.name ?? row[1] ?? 'unknown';
-            const epType = row.epType ?? row[8] ?? 'Function';
-            const epFilePath = row.epFilePath ?? row[9] ?? '';
-            const hits = row.hits ?? row[4] ?? 0;
-            const minStep = row.minStep ?? row[5];
-            if (!entryPointMap.has(epId)) {
-              entryPointMap.set(epId, {
-                name: epName,
-                type: epType,
-                filePath: epFilePath,
-                affected_process_count: 0,
-                total_hits: 0,
-                earliest_broken_step: Infinity,
-              });
+            // Track mapping from process -> entryPoint so we can backfill missing minStep
+            if (pId) processToEntryPoint.set(String(pId), String(epId));
+
+             // Normalize epName: prefer epName, fall back to other columns, and
+             // ensure we don't keep an empty string (labels(...) can return "").
+             const epNameRaw = row.epName ?? row[7] ?? row.name ?? row[1] ?? 'unknown';
+             const epName = (typeof epNameRaw === 'string' && epNameRaw.trim().length > 0) ? epNameRaw.trim() : 'unknown';
+
+             // Normalize epType: labels(ep)[0] can return an empty string in
+             // some DBs (LadybugDB). Using nullish coalescing (??) preserves
+             // empty strings, which results in empty `type` values being
+             // propagated. Treat empty-string labels as missing and fall back
+             // to the next candidate or a sensible default.
+             const epTypeRaw = row.epType ?? row[8] ?? '';
+             const epType = (typeof epTypeRaw === 'string' && epTypeRaw.trim().length > 0)
+               ? epTypeRaw.trim()
+               : 'Function';
+
+             const epFilePath = row.epFilePath ?? row[9] ?? '';
+             const hits = row.hits ?? row[4] ?? 0;
+             const minStep = row.minStep ?? row[5];
+             // If the DB returned null for minStep, note the process id so we
+             // can run a follow-up query using a different aggregation strategy.
+             if (minStep === null || minStep === undefined) {
+               if (pId) processesMissingMinStep.add(String(pId));
+             }
+             if (!entryPointMap.has(epId)) {
+               entryPointMap.set(epId, {
+                 name: epName,
+                 type: epType,
+                 filePath: epFilePath,
+                 affected_process_count: 0,
+                 total_hits: 0,
+                 earliest_broken_step: Infinity,
+               });
+             }
+             const ep = entryPointMap.get(epId)!;
+             ep.affected_process_count += 1;
+             ep.total_hits += hits;
+             ep.earliest_broken_step = Math.min(ep.earliest_broken_step, minStep ?? Infinity);
+           }
+         } catch (e) {
+           logQueryError('impact:process-chunk', e);
+         }
+       }
+
+      // If some processes returned null minStep, try a batched follow-up query
+      // using the full impacted id set. This handles older indexes or DBs
+      // where MIN(r.step) can come back null even when step properties exist.
+      if (processesMissingMinStep.size > 0) {
+        try {
+          const pIds = Array.from(processesMissingMinStep);
+          const allImpactedIds = impacted.map(it => String(it.id ?? ''));
+          const missingRows = await executeParameterized(repo.id, `
+            MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+            WHERE p.id IN $pIds AND s.id IN $ids
+            RETURN p.id AS pid, MIN(r.step) AS minStep
+          `, { pIds, ids: allImpactedIds }).catch(() => []);
+
+          for (const mr of missingRows) {
+            const pid = mr.pid ?? mr[0];
+            const minStep = mr.minStep ?? mr[1];
+            const epId = processToEntryPoint.get(String(pid));
+            if (!epId) continue;
+            const ep = entryPointMap.get(epId);
+            if (!ep) continue;
+            if (typeof minStep === 'number') {
+              ep.earliest_broken_step = Math.min(ep.earliest_broken_step, minStep);
             }
-            const ep = entryPointMap.get(epId)!;
-            ep.affected_process_count += 1;
-            ep.total_hits += hits;
-            ep.earliest_broken_step = Math.min(ep.earliest_broken_step, minStep ?? Infinity);
           }
         } catch (e) {
-          logQueryError('impact:process-chunk', e);
+          logQueryError('impact:process-chunk-backfill', e);
         }
       }
 
