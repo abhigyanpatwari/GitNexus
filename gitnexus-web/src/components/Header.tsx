@@ -189,7 +189,7 @@ export const Header = ({
             </button>
 
             {isRepoDropdownOpen && (
-              <div className="absolute top-full left-0 z-50 mt-1.5 w-80 animate-slide-up overflow-hidden rounded-xl border border-border-subtle bg-surface shadow-xl">
+              <div className="absolute top-full left-0 z-50 mt-1.5 w-80 animate-slide-up max-h-[80vh] overflow-y-auto rounded-xl border border-border-subtle bg-surface shadow-xl">
                 {showAnalyzer ? (
                   <div className="p-4">
                     <RepoAnalyzer
