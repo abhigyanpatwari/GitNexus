@@ -1749,7 +1749,12 @@ export class LocalBackend {
             MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
             WHERE s.id IN $ids
             WITH p, COUNT(DISTINCT s.id) AS hits, MIN(r.step) AS minStep
-            OPTIONAL MATCH (ep {id: p.entryPointId})
+            // NOTE: Avoid unlabeled node lookup 'OPTIONAL MATCH (ep {id: p.entryPointId})'
+            // which scans all node labels unless there is a global index on 'id'.
+            // Prefer per-label indexed lookups. We restrict to the most likely labels
+            // (Function, Method, Class) to prevent a sequential scan on large graphs.
+            OPTIONAL MATCH (ep)
+            WHERE ep.id = p.entryPointId AND (ep:Function OR ep:Method OR ep:Class)
             RETURN p.id AS pId, p.heuristicLabel AS name, p.processType AS processType,
                    p.entryPointId AS entryPointId, hits, minStep, p.stepCount AS stepCount,
                    ep.name AS epName, labels(ep)[0] AS epType, ep.filePath AS epFilePath
