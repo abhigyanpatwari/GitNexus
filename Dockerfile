@@ -17,9 +17,13 @@ WORKDIR /app
 COPY gitnexus-web/ .
 RUN npm ci && npm run build
 
-# --- Runtime ---
-FROM node:20-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends nginx git && rm -rf /var/lib/apt/lists/*
+# --- Runtime (Trixie for glibc 2.41, needed by @ladybugdb/core) ---
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends nginx git ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=cli-builder /usr/local/bin/node /usr/local/bin/node
+COPY --from=cli-builder /usr/local/include/node /usr/local/include/node
+COPY --from=cli-builder /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
 
 WORKDIR /app
 COPY --from=cli-builder /app/dist ./dist
