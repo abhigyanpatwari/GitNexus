@@ -110,6 +110,11 @@ interface LanguageProviderConfig {
    *  When true, the worker extracts routes via the language's route extraction logic.
    *  Default: undefined (no route files). */
   readonly isRouteFile?: (filePath: string) => boolean;
+
+  // ── Noise filtering ────────────────────────────────────────────────
+  /** Built-in/stdlib names that should be filtered from the call graph for this language.
+   *  Default: undefined (no language-specific filtering). */
+  readonly builtInNames?: ReadonlySet<string>;
 }
 
 /** Runtime type — same as LanguageProviderConfig but with defaults guaranteed present. */

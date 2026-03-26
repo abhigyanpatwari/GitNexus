@@ -497,7 +497,7 @@ export const processCalls = async (
         }
       }
 
-      if (isBuiltInOrNoise(calledName)) return;
+      if (isBuiltInOrNoise(calledName, provider)) return;
 
       const callNode = captureMap['call'];
       const callForm = inferCallForm(callNode, nameNode);

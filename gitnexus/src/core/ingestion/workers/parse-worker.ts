@@ -1124,7 +1124,7 @@ const processFileGroup = (
             // kind === 'call' — fall through to normal call processing below
           }
 
-          if (!isBuiltInOrNoise(calledName)) {
+          if (!isBuiltInOrNoise(calledName, provider)) {
             const callNode = captureMap['call'];
             const sourceId = findEnclosingFunctionId(callNode, file.path, provider)
               || generateId('File', file.path);
