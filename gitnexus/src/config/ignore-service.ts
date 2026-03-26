@@ -25,9 +25,6 @@ const DEFAULT_IGNORE_LIST = new Set([
     'jspm_packages',
     'vendor',           // PHP/Go
     // 'packages' removed - commonly used for monorepo source code (lerna, pnpm, yarn workspaces)
-    '.mvn',             // Maven wrapper support
-    '.gradle',          // Gradle caches & wrapper support
-    'gradle',           // Gradle wrapper JAR directory
     'venv',
     '.venv',
     'env',
@@ -165,11 +162,6 @@ const IGNORED_FILES = new Set([
     'poetry.lock',
     'Cargo.lock',
     'go.sum',
-    // Build wrapper scripts
-    'mvnw',
-    'mvnw.cmd',
-    'gradlew',
-    'gradlew.bat',
     '.gitignore',
     '.gitattributes',
     '.npmrc',
