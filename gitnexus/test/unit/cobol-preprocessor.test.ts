@@ -4,6 +4,7 @@ import {
   extractCobolSymbolsWithRegex,
 } from '../../src/core/ingestion/cobol/cobol-preprocessor.js';
 import type { CobolRegexResults } from '../../src/core/ingestion/cobol/cobol-preprocessor.js';
+import { parseReplacingClause } from '../../src/core/ingestion/cobol/cobol-copy-expander.js';
 
 // ---------------------------------------------------------------------------
 // Helper: build COBOL source from an array of lines.
@@ -1637,6 +1638,549 @@ describe('extractCobolSymbolsWithRegex', () => {
       expect(r.fileDeclarations).toHaveLength(1);
       expect(r.fileDeclarations[0].selectName).toBe('BACKUP-FILE');
       expect(r.fileDeclarations[0].isOptional).toBe(true);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: EXEC DLI edge cases
+  // -------------------------------------------------------------------------
+  describe('EXEC DLI edge cases', () => {
+    it('EXEC DLI without SEGMENT clause (DLET/REPL)', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           EXEC DLI DLET USING PCB(2) END-EXEC.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.execDliBlocks).toHaveLength(1);
+      expect(r.execDliBlocks[0].verb).toBe('DLET');
+      expect(r.execDliBlocks[0].segmentName).toBeUndefined();
+    });
+
+    it('multi-line EXEC DLI accumulates correctly', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           EXEC DLI GN',
+        '               USING PCB(1)',
+        '               SEGMENT(ORDER)',
+        '               INTO(ORDER-IO)',
+        '           END-EXEC.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.execDliBlocks).toHaveLength(1);
+      expect(r.execDliBlocks[0].verb).toBe('GN');
+      expect(r.execDliBlocks[0].segmentName).toBe('ORDER');
+      expect(r.execDliBlocks[0].intoField).toBe('ORDER-IO');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: SET statement edge cases
+  // -------------------------------------------------------------------------
+  describe('SET statement edge cases', () => {
+    it('SET multiple conditions TO TRUE', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           SET COND-A COND-B COND-C TO TRUE.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.sets).toHaveLength(1);
+      expect(r.sets[0].targets).toEqual(['COND-A', 'COND-B', 'COND-C']);
+      expect(r.sets[0].form).toBe('to-true');
+    });
+
+    it('SET index DOWN BY identifier', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           SET IDX-1 DOWN BY WS-DECREMENT.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.sets).toHaveLength(1);
+      expect(r.sets[0].form).toBe('down-by');
+      expect(r.sets[0].value).toBe('WS-DECREMENT');
+    });
+
+    it('SET index TO numeric value', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           SET IDX-1 TO 5.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.sets).toHaveLength(1);
+      expect(r.sets[0].form).toBe('to-value');
+      expect(r.sets[0].value).toBe('5');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: INSPECT multi-line edge cases
+  // -------------------------------------------------------------------------
+  describe('INSPECT multi-line edge cases', () => {
+    it('INSPECT CONVERTING on single line', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           INSPECT WS-FIELD CONVERTING 'abc' TO 'ABC'.",
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.inspects).toHaveLength(1);
+      expect(r.inspects[0].form).toBe('converting');
+      expect(r.inspects[0].inspectedField).toBe('WS-FIELD');
+    });
+
+    it('INSPECT TALLYING with multiple counters', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           INSPECT WS-STRING TALLYING',
+        "               WS-CNT-A FOR ALL 'A'",
+        "               WS-CNT-B FOR ALL 'B'.",
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.inspects).toHaveLength(1);
+      expect(r.inspects[0].counters).toEqual(['WS-CNT-A', 'WS-CNT-B']);
+    });
+
+    it('INSPECT combined TALLYING and REPLACING', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           INSPECT WS-DATA',
+        "               TALLYING WS-COUNT FOR ALL 'X'",
+        "               REPLACING ALL 'X' BY 'Y'.",
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.inspects).toHaveLength(1);
+      expect(r.inspects[0].form).toBe('tallying-replacing');
+    });
+
+    it('real paragraph header during INSPECT flushes accumulator', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           INSPECT WS-FIELD REPLACING ALL 'A' BY 'B'",
+        '       NEXT-PARA.',
+        '           STOP RUN.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      // INSPECT should be flushed, NEXT-PARA should be detected
+      expect(r.inspects).toHaveLength(1);
+      expect(r.paragraphs.map(p => p.name)).toContain('NEXT-PARA');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: DECLARATIVES edge cases
+  // -------------------------------------------------------------------------
+  describe('DECLARATIVES edge cases', () => {
+    it('USE AFTER without STANDARD keyword (IBM extension)', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '      DECLARATIVES.',
+        '      FILE-ERR SECTION.',
+        '          USE AFTER EXCEPTION ON MASTER-FILE.',
+        '       FILE-ERR-PARA.',
+        '           DISPLAY "ERROR".',
+        '      END DECLARATIVES.',
+        '       MAIN-PARA.',
+        '           STOP RUN.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.declaratives).toHaveLength(1);
+      expect(r.declaratives[0].target).toBe('MASTER-FILE');
+    });
+
+    it('USE AFTER on I-O mode (catch-all handler)', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '      DECLARATIVES.',
+        '      IO-ERR SECTION.',
+        '          USE AFTER STANDARD ERROR ON I-O.',
+        '       IO-ERR-PARA.',
+        '           DISPLAY "I-O ERROR".',
+        '      END DECLARATIVES.',
+        '       MAIN-PARA.',
+        '           STOP RUN.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.declaratives).toHaveLength(1);
+      expect(r.declaratives[0].target).toBe('I-O');
+    });
+
+    it('paragraphs after END DECLARATIVES are normal paragraphs', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '      DECLARATIVES.',
+        '      ERR SECTION.',
+        '          USE AFTER STANDARD ERROR ON INPUT.',
+        '       ERR-PARA.',
+        '           DISPLAY "E".',
+        '      END DECLARATIVES.',
+        '       MAIN-PARA.',
+        '           PERFORM PROCESS-DATA.',
+        '       PROCESS-DATA.',
+        '           STOP RUN.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      const paraNames = r.paragraphs.map(p => p.name);
+      expect(paraNames).toContain('ERR-PARA');
+      expect(paraNames).toContain('MAIN-PARA');
+      expect(paraNames).toContain('PROCESS-DATA');
+      expect(r.performs).toHaveLength(1);
+      expect(r.performs[0].target).toBe('PROCESS-DATA');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: COPY REPLACING edge cases
+  // -------------------------------------------------------------------------
+  describe('COPY REPLACING edge cases', () => {
+    it('pseudotext replacement with empty target (deletion)', () => {
+      const replacings = parseReplacingClause('==OLD-TEXT== BY ====');
+      expect(replacings).toHaveLength(1);
+      expect(replacings[0].from).toBe('OLD-TEXT');
+      expect(replacings[0].to).toBe('');
+      expect(replacings[0].isPseudotext).toBe(true);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: Value clause edge cases
+  // -------------------------------------------------------------------------
+  describe('Value clause edge cases', () => {
+    it('VALUE with hex literal', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      DATA DIVISION.',
+        '      WORKING-STORAGE SECTION.',
+        "       01 WS-HEX PIC X(4) VALUE X'F1F2F3F4'.",
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      const hex = r.dataItems.find(d => d.name === 'WS-HEX');
+      expect(hex).toBeDefined();
+      expect(hex!.values).toBeDefined();
+      expect(hex!.values![0]).toContain('F1F2F3F4');
+    });
+
+    it('VALUE with negative numeric', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      DATA DIVISION.',
+        '      WORKING-STORAGE SECTION.',
+        '       01 WS-NEG PIC S9(4) VALUE -1.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.dataItems.find(d => d.name === 'WS-NEG')?.values).toEqual(['-1']);
+    });
+
+    it('VALUE with ALL literal', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      DATA DIVISION.',
+        '      WORKING-STORAGE SECTION.',
+        "       01 WS-STARS PIC X(80) VALUE ALL '*'.",
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      const stars = r.dataItems.find(d => d.name === 'WS-STARS');
+      expect(stars?.values).toBeDefined();
+      expect(stars!.values![0]).toContain('*');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: OCCURS DEPENDING ON edge cases
+  // -------------------------------------------------------------------------
+  describe('OCCURS DEPENDING ON edge cases', () => {
+    it('OCCURS with TO range', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      DATA DIVISION.',
+        '      WORKING-STORAGE SECTION.',
+        '       01 WS-CNT PIC 9(4).',
+        '       01 WS-TBL OCCURS 1 TO 50 DEPENDING ON WS-CNT.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      const tbl = r.dataItems.find(d => d.name === 'WS-TBL');
+      expect(tbl?.occurs).toBe(1);
+      expect(tbl?.dependingOn).toBe('WS-CNT');
+    });
+
+    it('OCCURS without DEPENDING ON (fixed-size)', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      DATA DIVISION.',
+        '      WORKING-STORAGE SECTION.',
+        '       01 WS-ARR OCCURS 10.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.dataItems.find(d => d.name === 'WS-ARR')?.occurs).toBe(10);
+      expect(r.dataItems.find(d => d.name === 'WS-ARR')?.dependingOn).toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: Dynamic CALL edge cases
+  // -------------------------------------------------------------------------
+  describe('Dynamic CALL edge cases', () => {
+    it('dynamic CALL at end of line (no trailing space or period)', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           CALL WS-PROGRAM',
+        '               USING WS-DATA.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].target).toBe('WS-PROGRAM');
+      expect(r.calls[0].isQuoted).toBe(false);
+    });
+
+    it('CANCEL at end of line', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           CANCEL WS-OLD-PROG.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.cancels).toHaveLength(1);
+      expect(r.cancels[0].target).toBe('WS-OLD-PROG');
+      expect(r.cancels[0].isQuoted).toBe(false);
+    });
+
+    it('multiple CANCELs on same line', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CANCEL 'PROG-A' CANCEL 'PROG-B'.",
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.cancels).toHaveLength(2);
+      expect(r.cancels[0].target).toBe('PROG-A');
+      expect(r.cancels[1].target).toBe('PROG-B');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: EXEC SQL edge cases
+  // -------------------------------------------------------------------------
+  describe('EXEC SQL edge cases', () => {
+    it('EXEC SQL INCLUDE does not extract tables', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      DATA DIVISION.',
+        '      WORKING-STORAGE SECTION.',
+        '           EXEC SQL INCLUDE SQLCA END-EXEC.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.execSqlBlocks).toHaveLength(1);
+      expect(r.execSqlBlocks[0].includeMember).toBe('SQLCA');
+      expect(r.execSqlBlocks[0].tables).toHaveLength(0);
+    });
+
+    it('EXEC SQL SELECT INTO host variable does not capture as table', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           EXEC SQL',
+        '               SELECT CUST_NAME INTO :WS-NAME',
+        '               FROM CUSTOMER',
+        '               WHERE CUST_ID = :WS-ID',
+        '           END-EXEC.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.execSqlBlocks).toHaveLength(1);
+      // CUSTOMER should be a table, :WS-NAME should NOT
+      expect(r.execSqlBlocks[0].tables).toContain('CUSTOMER');
+      expect(r.execSqlBlocks[0].tables).not.toContain('WS-NAME');
+    });
+
+    it('EXEC SQL with host variables extracted', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           EXEC SQL',
+        '               UPDATE CUSTOMER SET BALANCE = :WS-AMT',
+        '               WHERE CUST_ID = :WS-ID',
+        '           END-EXEC.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.execSqlBlocks[0].hostVariables).toContain('WS-AMT');
+      expect(r.execSqlBlocks[0].hostVariables).toContain('WS-ID');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: INITIALIZE extraction
+  // -------------------------------------------------------------------------
+  describe('INITIALIZE extraction', () => {
+    it('INITIALIZE extracts target field', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           INITIALIZE WS-CUSTOMER-REC.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.initializes).toHaveLength(1);
+      expect(r.initializes[0].target).toBe('WS-CUSTOMER-REC');
+      expect(r.initializes[0].caller).toBe('MAIN-PARA');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: Nested program boundary tracking
+  // -------------------------------------------------------------------------
+  describe('Nested program boundary tracking', () => {
+    it('sibling programs after END PROGRAM are correctly scoped', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. OUTER.',
+        '      PROCEDURE DIVISION.',
+        '       OUTER-MAIN.',
+        '           STOP RUN.',
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. INNER-A.',
+        '      PROCEDURE DIVISION.',
+        '       A-MAIN.',
+        '           STOP RUN.',
+        '       END PROGRAM INNER-A.',
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. INNER-B.',
+        '      PROCEDURE DIVISION.',
+        '       B-MAIN.',
+        '           STOP RUN.',
+        '       END PROGRAM INNER-B.',
+        '       END PROGRAM OUTER.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.programs).toHaveLength(3);
+      expect(r.programs.map(p => p.name).sort()).toEqual(['INNER-A', 'INNER-B', 'OUTER']);
+      const innerA = r.programs.find(p => p.name === 'INNER-A')!;
+      const innerB = r.programs.find(p => p.name === 'INNER-B')!;
+      expect(innerA.endLine).toBeLessThan(innerB.startLine);
+    });
+
+    it('PROGRAM-ID without IDENTIFICATION DIVISION header detected', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. OUTER.',
+        '      PROCEDURE DIVISION.',
+        '       OUTER-MAIN.',
+        '           STOP RUN.',
+        '       PROGRAM-ID. SIBLING.',
+        '      PROCEDURE DIVISION.',
+        '       SIB-MAIN.',
+        '           STOP RUN.',
+        '       END PROGRAM SIBLING.',
+        '       END PROGRAM OUTER.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      const names = r.programs.map(p => p.name);
+      expect(names).toContain('SIBLING');
+      expect(names).toContain('OUTER');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: EXEC block EOF flush
+  // -------------------------------------------------------------------------
+  describe('EXEC block EOF flush', () => {
+    it('unclosed EXEC SQL is flushed at EOF', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           EXEC SQL',
+        '               SELECT * FROM CUSTOMER',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      // Should still extract even without END-EXEC
+      expect(r.execSqlBlocks).toHaveLength(1);
+      expect(r.execSqlBlocks[0].tables).toContain('CUSTOMER');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: Multi-PERFORM on same line
+  // -------------------------------------------------------------------------
+  describe('Multi-PERFORM on same line', () => {
+    it('captures both PERFORMs in IF/ELSE on single line', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           IF WS-FLAG = 1 PERFORM PARA-A ELSE PERFORM PARA-B END-IF.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      const targets = r.performs.map(p => p.target).sort();
+      expect(targets).toEqual(['PARA-A', 'PARA-B']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: Data item IS EXTERNAL / IS GLOBAL
+  // -------------------------------------------------------------------------
+  describe('Data item IS EXTERNAL / IS GLOBAL', () => {
+    it('IS EXTERNAL does not pollute usage string', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      DATA DIVISION.',
+        '      WORKING-STORAGE SECTION.',
+        '       01 WS-SHARED PIC X(10) USAGE DISPLAY IS EXTERNAL.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      const item = r.dataItems.find(d => d.name === 'WS-SHARED');
+      expect(item?.isExternal).toBe(true);
+      // usage should NOT contain 'external' as a string suffix
+      expect(item?.usage).toBe('DISPLAY');
     });
   });
 });
