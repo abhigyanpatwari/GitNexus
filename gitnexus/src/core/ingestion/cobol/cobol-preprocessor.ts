@@ -1083,8 +1083,11 @@ export function extractCobolSymbolsWithRegex(
     // --- Division transitions ---
     const divMatch = line.match(RE_DIVISION);
     if (divMatch) {
-      // Flush SELECT if transitioning out of environment
+      // Flush any pending accumulators on division boundary
       flushSelect();
+      flushCallAccum();
+      flushSort();
+      flushInspect();
 
       const divName = divMatch[1].toUpperCase();
       switch (divName) {
@@ -1155,7 +1158,7 @@ export function extractCobolSymbolsWithRegex(
       const trimmedLine = line.trimStart();
       const leadingSpaces = (line.match(/^(\s*)/)?.[1].length ?? 0);
       const isAreaAParagraph = RE_PROC_PARAGRAPH.test(line) && (!isFreeFormat ? leadingSpaces <= 7 : false);
-      if (/^(?:GO\s+TO|PERFORM|MOVE|DISPLAY|ACCEPT|INSPECT|SEARCH|SORT|MERGE|IF|EVALUATE|SET|INITIALIZE|STOP|EXIT|GOBACK|CONTINUE|READ|WRITE|REWRITE|DELETE|OPEN|CLOSE|START)(?:\s|$)/i.test(trimmedLine)
+      if (/^(?:GO\s+TO|PERFORM|MOVE|DISPLAY|ACCEPT|INSPECT|SEARCH|SORT|MERGE|IF|EVALUATE|SET|INITIALIZE|STOP|EXIT|GOBACK|CONTINUE|READ|WRITE|REWRITE|DELETE|OPEN|CLOSE|START|CANCEL)(?:\s|$)/i.test(trimmedLine)
         || RE_PROC_SECTION.test(line) || isAreaAParagraph) {
         flushCallAccum(); // Flush CALL without this line's content
         // Fall through to process this line normally
@@ -1177,6 +1180,7 @@ export function extractCobolSymbolsWithRegex(
         // Multi-line CALL — start accumulating
         callAccum = line;
         callAccumLine = lineNum;
+        return; // prevent CALL start line from feeding sortAccum/inspectAccum
       }
     }
 
@@ -1358,7 +1362,7 @@ export function extractCobolSymbolsWithRegex(
     for (const callMatch of text.matchAll(RE_CALL)) {
       const callTarget = callMatch[1] ?? callMatch[2];
       const afterCall = text.substring(callMatch.index! + callMatch[0].length);
-      const usingMatch = afterCall.match(/\bUSING\s+([\s\S]*?)(?=\bRETURNING\b|\bON\s+(?:EXCEPTION|OVERFLOW)\b|\bNOT\s+ON\b|\bEND-CALL\b|\bINSPECT(?=\s|$)|\bSEARCH(?=\s|$)|\bSORT(?=\s|$)|\bMERGE(?=\s|$)|\bDISPLAY(?=\s|$)|\bACCEPT(?=\s|$)|\bMOVE(?=\s|$)|\bPERFORM(?=\s|$)|\bGO\s+TO\b|\bCALL(?=\s|$)|\bIF(?=\s|$)|\bEVALUATE(?=\s|$)|\.\s*$|$)/i);
+      const usingMatch = afterCall.match(/\bUSING\s+([\s\S]*?)(?=\bRETURNING\b|\bON\s+(?:EXCEPTION|OVERFLOW)\b|\bNOT\s+ON\b|\bEND-CALL\b|\bINSPECT(?=\s|$)|\bSEARCH(?=\s|$)|\bSORT(?=\s|$)|\bMERGE(?=\s|$)|\bDISPLAY(?=\s|$)|\bACCEPT(?=\s|$)|\bMOVE(?=\s|$)|\bPERFORM(?=\s|$)|\bGO\s+TO\b|\bCALL(?=\s|$)|\bIF(?=\s|$)|\bEVALUATE(?=\s|$)|\bCANCEL(?=\s|$)|\.\s*$|$)/i);
       const parameters = usingMatch
         ? usingMatch[1].split(/\bRETURNING\b/i)[0].trim().split(/\s+/)
             .filter(s => s.length > 0 && !CALL_USING_FILTER.has(s.toUpperCase()) && /^[A-Z][A-Z0-9-]+$/i.test(s))
@@ -1371,7 +1375,7 @@ export function extractCobolSymbolsWithRegex(
     // Extract dynamic CALLs from the full statement
     for (const dynCallMatch of text.matchAll(RE_CALL_DYNAMIC)) {
       const afterDynCall = text.substring(dynCallMatch.index! + dynCallMatch[0].length);
-      const dynUsingMatch = afterDynCall.match(/\bUSING\s+([\s\S]*?)(?=\bRETURNING\b|\bON\s+(?:EXCEPTION|OVERFLOW)\b|\bNOT\s+ON\b|\bEND-CALL\b|\bINSPECT(?=\s|$)|\bSEARCH(?=\s|$)|\bSORT(?=\s|$)|\bMERGE(?=\s|$)|\bDISPLAY(?=\s|$)|\bACCEPT(?=\s|$)|\bMOVE(?=\s|$)|\bPERFORM(?=\s|$)|\bGO\s+TO\b|\bCALL(?=\s|$)|\bIF(?=\s|$)|\bEVALUATE(?=\s|$)|\.\s*$|$)/i);
+      const dynUsingMatch = afterDynCall.match(/\bUSING\s+([\s\S]*?)(?=\bRETURNING\b|\bON\s+(?:EXCEPTION|OVERFLOW)\b|\bNOT\s+ON\b|\bEND-CALL\b|\bINSPECT(?=\s|$)|\bSEARCH(?=\s|$)|\bSORT(?=\s|$)|\bMERGE(?=\s|$)|\bDISPLAY(?=\s|$)|\bACCEPT(?=\s|$)|\bMOVE(?=\s|$)|\bPERFORM(?=\s|$)|\bGO\s+TO\b|\bCALL(?=\s|$)|\bIF(?=\s|$)|\bEVALUATE(?=\s|$)|\bCANCEL(?=\s|$)|\.\s*$|$)/i);
       const dynParameters = dynUsingMatch
         ? dynUsingMatch[1].split(/\bRETURNING\b/i)[0].trim().split(/\s+/)
             .filter(s => s.length > 0 && !CALL_USING_FILTER.has(s.toUpperCase()) && /^[A-Z][A-Z0-9-]+$/i.test(s))
@@ -1379,6 +1383,14 @@ export function extractCobolSymbolsWithRegex(
       const dynRetMatch = afterDynCall.match(/\bRETURNING\s+([A-Z][A-Z0-9-]+)/i);
       const dynReturning = dynRetMatch ? dynRetMatch[1] : undefined;
       result.calls.push({ target: dynCallMatch[1], line: callAccumLine, isQuoted: false, parameters: dynParameters, returning: dynReturning });
+    }
+
+    // Extract CANCELs from within the CALL block (common in ON EXCEPTION handlers)
+    for (const cancelMatch of text.matchAll(RE_CANCEL)) {
+      result.cancels.push({ target: cancelMatch[1] ?? cancelMatch[2], line: callAccumLine, isQuoted: true });
+    }
+    for (const dynCancelMatch of text.matchAll(RE_CANCEL_DYNAMIC)) {
+      result.cancels.push({ target: dynCancelMatch[1], line: callAccumLine, isQuoted: false });
     }
 
     callAccum = null;
