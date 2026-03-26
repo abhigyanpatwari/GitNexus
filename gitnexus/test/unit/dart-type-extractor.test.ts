@@ -234,5 +234,160 @@ describe('Dart type extractor', () => {
       const result = typeConfig.extractPendingAssignment!(nodes[0], scope);
       expect(result).toBeUndefined();
     });
+
+    it('extracts call result from await expression', async () => {
+      if (!(await loadDartOrSkip())) return;
+      const nodes = parseAndFindNodes(parser, 'void f() async { var user = await getUser(); }', 'initialized_variable_definition');
+      expect(nodes.length).toBeGreaterThan(0);
+      const result = typeConfig.extractPendingAssignment!(nodes[0], new Map());
+      expect(result).toEqual({ kind: 'callResult', lhs: 'user', callee: 'getUser' });
+    });
+
+    it('extracts method call result from await expression', async () => {
+      if (!(await loadDartOrSkip())) return;
+      const nodes = parseAndFindNodes(parser, 'void f() async { var user = await svc.fetch(); }', 'initialized_variable_definition');
+      expect(nodes.length).toBeGreaterThan(0);
+      const result = typeConfig.extractPendingAssignment!(nodes[0], new Map());
+      expect(result).toEqual({ kind: 'methodCallResult', lhs: 'user', receiver: 'svc', method: 'fetch' });
+    });
+  });
+
+  describe('for-loop element type resolution', () => {
+    it('extracts type from explicit for-loop annotation', async () => {
+      if (!(await loadDartOrSkip())) return;
+      const nodes = parseAndFindNodes(parser, 'void f(List<User> users) { for (User u in users) {} }', 'for_statement');
+      expect(nodes.length).toBeGreaterThan(0);
+      const scopeEnv = new Map<string, string>();
+      const ctx = {
+        scopeEnv,
+        declarationTypeNodes: new Map(),
+        scope: 'test@0',
+        returnTypeLookup: {
+          lookupReturnType: () => undefined,
+          lookupRawReturnType: () => undefined,
+        },
+      };
+      typeConfig.extractForLoopBinding!(nodes[0], ctx);
+      expect(scopeEnv.get('u')).toBe('User');
+    });
+
+    it('infers element type from call iterable return type', async () => {
+      if (!(await loadDartOrSkip())) return;
+      const nodes = parseAndFindNodes(parser, 'void f() { for (var u in getUsers()) {} }', 'for_statement');
+      expect(nodes.length).toBeGreaterThan(0);
+      const scopeEnv = new Map<string, string>();
+      const ctx = {
+        scopeEnv,
+        declarationTypeNodes: new Map(),
+        scope: 'test@0',
+        returnTypeLookup: {
+          lookupReturnType: (name: string) => name === 'getUsers' ? 'User' : undefined,
+          lookupRawReturnType: (name: string) => name === 'getUsers' ? 'List<User>' : undefined,
+        },
+      };
+      typeConfig.extractForLoopBinding!(nodes[0], ctx);
+      expect(scopeEnv.get('u')).toBe('User');
+    });
+
+    it('skips non-for_statement nodes', async () => {
+      if (!(await loadDartOrSkip())) return;
+      const nodes = parseAndFindNodes(parser, 'void f() { var x = 1; }', 'initialized_variable_definition');
+      expect(nodes.length).toBeGreaterThan(0);
+      const scopeEnv = new Map<string, string>();
+      const ctx = {
+        scopeEnv,
+        declarationTypeNodes: new Map(),
+        scope: 'test@0',
+        returnTypeLookup: { lookupReturnType: () => undefined, lookupRawReturnType: () => undefined },
+      };
+      typeConfig.extractForLoopBinding!(nodes[0], ctx);
+      expect(scopeEnv.size).toBe(0);
+    });
+  });
+
+  describe('virtual dispatch — named constructor', () => {
+    it('detects constructor type for named constructor', async () => {
+      if (!(await loadDartOrSkip())) return;
+      const classNames = new Set(['Dog']);
+      const nodes = parseAndFindNodes(parser, 'void f() { var d = Dog.unknown(); }', 'initialized_variable_definition');
+      expect(nodes.length).toBeGreaterThan(0);
+      const result = typeConfig.detectConstructorType!(nodes[0], classNames);
+      expect(result).toBe('Dog');
+    });
+
+    it('returns undefined when callee is not a known class', async () => {
+      if (!(await loadDartOrSkip())) return;
+      const classNames = new Set<string>();
+      const nodes = parseAndFindNodes(parser, 'void f() { var x = getUser(); }', 'initialized_variable_definition');
+      expect(nodes.length).toBeGreaterThan(0);
+      const result = typeConfig.detectConstructorType!(nodes[0], classNames);
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('literal type inference — full coverage', () => {
+    it('infers double literal', async () => {
+      if (!(await loadDartOrSkip())) return;
+      const tree = parser.parse('void f() { var x = 3.14; }');
+      const nodes: any[] = [];
+      function walk(n: any) { if (n.type.includes('floating_point')) nodes.push(n); for (let i = 0; i < n.namedChildCount; i++) walk(n.namedChild(i)); }
+      walk(tree.rootNode);
+      if (nodes.length > 0) expect(typeConfig.inferLiteralType!(nodes[0])).toBe('double');
+    });
+
+    it('infers false literal', async () => {
+      if (!(await loadDartOrSkip())) return;
+      const tree = parser.parse('void f() { var x = false; }');
+      const nodes: any[] = [];
+      function walk(n: any) { if (n.type === 'false') nodes.push(n); for (let i = 0; i < n.childCount; i++) { const c = n.child(i); if (c) walk(c); } }
+      walk(tree.rootNode);
+      if (nodes.length > 0) expect(typeConfig.inferLiteralType!(nodes[0])).toBe('bool');
+    });
+
+    it('infers null literal', async () => {
+      if (!(await loadDartOrSkip())) return;
+      const tree = parser.parse('void f() { var x = null; }');
+      const nodes: any[] = [];
+      function walk(n: any) { if (n.type === 'null_literal') nodes.push(n); for (let i = 0; i < n.namedChildCount; i++) walk(n.namedChild(i)); }
+      walk(tree.rootNode);
+      if (nodes.length > 0) expect(typeConfig.inferLiteralType!(nodes[0])).toBe('null');
+    });
+
+    it('returns undefined for unknown node type', async () => {
+      if (!(await loadDartOrSkip())) return;
+      expect(typeConfig.inferLiteralType!({ type: 'identifier' } as any)).toBeUndefined();
+    });
+  });
+
+  describe('generic and const declarations', () => {
+    it('extracts outer type from generic declaration', async () => {
+      if (!(await loadDartOrSkip())) return;
+      const env = new Map<string, string>();
+      const nodes = parseAndFindNodes(parser, 'void f() { List<String> names = []; }', 'initialized_variable_definition');
+      expect(nodes.length).toBeGreaterThan(0);
+      typeConfig.extractDeclaration(nodes[0], env);
+      expect(env.get('names')).toBe('List');
+    });
+
+    it('infers type from generic constructor call', async () => {
+      if (!(await loadDartOrSkip())) return;
+      const env = new Map<string, string>();
+      const classNames = new Set(['Repository']);
+      const nodes = parseAndFindNodes(parser, 'void f() { var repo = Repository(); }', 'initialized_variable_definition');
+      expect(nodes.length).toBeGreaterThan(0);
+      typeConfig.extractInitializer!(nodes[0], env, classNames);
+      expect(env.get('repo')).toBe('Repository');
+    });
+
+    it('infers type from const constructor call', async () => {
+      if (!(await loadDartOrSkip())) return;
+      const env = new Map<string, string>();
+      const classNames = new Set(['Config']);
+      const nodes = parseAndFindNodes(parser, 'void f() { const config = Config(); }', 'initialized_variable_definition');
+      if (nodes.length > 0) {
+        typeConfig.extractInitializer!(nodes[0], env, classNames);
+        expect(env.get('config')).toBe('Config');
+      }
+    });
   });
 });
