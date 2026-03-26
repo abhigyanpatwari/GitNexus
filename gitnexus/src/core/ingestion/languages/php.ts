@@ -16,6 +16,25 @@ import { PHP_QUERIES } from '../tree-sitter-queries.js';
 import { findDescendant, extractStringContent } from '../utils/ast-helpers.js';
 import type { NodeLabel } from '../../graph/types.js';
 
+const BUILT_INS: ReadonlySet<string> = new Set([
+  'echo', 'isset', 'empty', 'unset', 'list', 'array', 'compact', 'extract',
+  'count', 'strlen', 'strpos', 'strrpos', 'substr', 'strtolower', 'strtoupper', 'trim',
+  'ltrim', 'rtrim', 'str_replace', 'str_contains', 'str_starts_with', 'str_ends_with',
+  'sprintf', 'vsprintf', 'printf', 'number_format',
+  'array_map', 'array_filter', 'array_reduce', 'array_push', 'array_pop', 'array_shift',
+  'array_unshift', 'array_slice', 'array_splice', 'array_merge', 'array_keys', 'array_values',
+  'array_key_exists', 'in_array', 'array_search', 'array_unique', 'usort', 'rsort',
+  'json_encode', 'json_decode', 'serialize', 'unserialize',
+  'intval', 'floatval', 'strval', 'boolval', 'is_null', 'is_string', 'is_int', 'is_array',
+  'is_object', 'is_numeric', 'is_bool', 'is_float',
+  'var_dump', 'print_r', 'var_export',
+  'date', 'time', 'strtotime', 'mktime', 'microtime',
+  'file_exists', 'file_get_contents', 'file_put_contents', 'is_file', 'is_dir',
+  'preg_match', 'preg_match_all', 'preg_replace', 'preg_split',
+  'header', 'session_start', 'session_destroy', 'ob_start', 'ob_end_clean', 'ob_get_clean',
+  'dd', 'dump',
+]);
+
 /** Eloquent model properties whose array values are worth indexing. */
 const ELOQUENT_ARRAY_PROPS = new Set(['fillable', 'casts', 'hidden', 'guarded', 'with', 'appends']);
 
@@ -130,4 +149,5 @@ export const phpProvider = defineLanguage({
   namedBindingExtractor: extractPhpNamedBindings,
   descriptionExtractor: phpDescriptionExtractor,
   isRouteFile: isPhpRouteFile,
+  builtInNames: BUILT_INS,
 });

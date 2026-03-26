@@ -11,7 +11,6 @@ import { getLanguageFromFilename } from './utils/language-detection.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import { FUNCTION_NODE_TYPES, extractFunctionName, findEnclosingClassId } from './utils/ast-helpers.js';
-import { isBuiltInOrNoise } from './utils/noise-filter.js';
 import {
   countCallArguments,
   inferCallForm,
@@ -517,7 +516,7 @@ export const processCalls = async (
         }
       }
 
-      if (isBuiltInOrNoise(calledName)) return;
+      if (provider.isBuiltInName(calledName)) return;
 
       const callNode = captureMap['call'];
       const callForm = inferCallForm(callNode, nameNode);

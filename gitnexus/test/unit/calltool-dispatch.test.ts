@@ -10,13 +10,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // We need to mock the LadybugDB adapter and repo-manager BEFORE importing LocalBackend
-vi.mock('../../src/mcp/core/lbug-adapter.js', () => ({
-  initLbug: vi.fn().mockResolvedValue(undefined),
-  executeQuery: vi.fn().mockResolvedValue([]),
-  executeParameterized: vi.fn().mockResolvedValue([]),
-  closeLbug: vi.fn().mockResolvedValue(undefined),
-  isLbugReady: vi.fn().mockReturnValue(true),
-}));
+vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    initLbug: vi.fn().mockResolvedValue(undefined),
+    executeQuery: vi.fn().mockResolvedValue([]),
+    executeParameterized: vi.fn().mockResolvedValue([]),
+    closeLbug: vi.fn().mockResolvedValue(undefined),
+    isLbugReady: vi.fn().mockReturnValue(true),
+  };
+});
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn().mockResolvedValue([]),

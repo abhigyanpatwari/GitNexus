@@ -18,6 +18,13 @@ import { resolvePythonImport } from '../import-resolvers/python.js';
 import { extractPythonNamedBindings } from '../named-bindings/python.js';
 import { PYTHON_QUERIES } from '../tree-sitter-queries.js';
 
+const BUILT_INS: ReadonlySet<string> = new Set([
+  'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple',
+  'append', 'extend', 'update',
+  'type', 'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr',
+  'enumerate', 'zip', 'sorted', 'reversed', 'min', 'max', 'sum', 'abs',
+]);
+
 export const pythonProvider = defineLanguage({
   id: SupportedLanguages.Python,
   extensions: ['.py'],
@@ -28,4 +35,5 @@ export const pythonProvider = defineLanguage({
   namedBindingExtractor: extractPythonNamedBindings,
   importSemantics: 'namespace',
   mroStrategy: 'c3',
+  builtInNames: BUILT_INS,
 });

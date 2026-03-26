@@ -121,6 +121,11 @@ interface LanguageProviderConfig {
    *  When true, the worker extracts routes via the language's route extraction logic.
    *  Default: undefined (no route files). */
   readonly isRouteFile?: (filePath: string) => boolean;
+
+  // ── Noise filtering ────────────────────────────────────────────────
+  /** Built-in/stdlib names that should be filtered from the call graph for this language.
+   *  Default: undefined (no language-specific filtering). */
+  readonly builtInNames?: ReadonlySet<string>;
 }
 
 /** Runtime type — same as LanguageProviderConfig but with defaults guaranteed present. */
@@ -130,6 +135,8 @@ export interface LanguageProvider extends Omit<LanguageProviderConfig,
   readonly importSemantics: ImportSemantics;
   readonly heritageDefaultEdge: 'EXTENDS' | 'IMPLEMENTS';
   readonly mroStrategy: MroStrategy;
+  /** Check if a name is a built-in/stdlib function that should be filtered from the call graph. */
+  readonly isBuiltInName: (name: string) => boolean;
 }
 
 const DEFAULTS: Pick<LanguageProvider, 'importSemantics' | 'heritageDefaultEdge' | 'mroStrategy'> = {
@@ -140,5 +147,10 @@ const DEFAULTS: Pick<LanguageProvider, 'importSemantics' | 'heritageDefaultEdge'
 
 /** Define a language provider — required fields must be supplied, optional fields get sensible defaults. */
 export function defineLanguage(config: LanguageProviderConfig): LanguageProvider {
-  return { ...DEFAULTS, ...config };
+  const builtIns = config.builtInNames;
+  return {
+    ...DEFAULTS,
+    ...config,
+    isBuiltInName: builtIns ? (name: string) => builtIns.has(name) : () => false,
+  };
 }

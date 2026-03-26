@@ -101,6 +101,34 @@ function wireSwiftImplicitImports(
   }
 }
 
+const BUILT_INS: ReadonlySet<string> = new Set([
+  'print', 'debugPrint', 'dump', 'fatalError', 'precondition', 'preconditionFailure',
+  'assert', 'assertionFailure', 'NSLog',
+  'abs', 'min', 'max', 'zip', 'stride', 'sequence', 'repeatElement',
+  'swap', 'withUnsafePointer', 'withUnsafeMutablePointer', 'withUnsafeBytes',
+  'autoreleasepool', 'unsafeBitCast', 'unsafeDowncast', 'numericCast',
+  'type', 'MemoryLayout',
+  'map', 'flatMap', 'compactMap', 'filter', 'reduce', 'forEach', 'contains',
+  'first', 'last', 'prefix', 'suffix', 'dropFirst', 'dropLast',
+  'sorted', 'reversed', 'enumerated', 'joined', 'split',
+  'append', 'insert', 'remove', 'removeAll', 'removeFirst', 'removeLast',
+  'isEmpty', 'count', 'index', 'startIndex', 'endIndex',
+  'addSubview', 'removeFromSuperview', 'layoutSubviews', 'setNeedsLayout',
+  'layoutIfNeeded', 'setNeedsDisplay', 'invalidateIntrinsicContentSize',
+  'addTarget', 'removeTarget', 'addGestureRecognizer',
+  'addConstraint', 'addConstraints', 'removeConstraint', 'removeConstraints',
+  'NSLocalizedString', 'Bundle',
+  'reloadData', 'reloadSections', 'reloadRows', 'performBatchUpdates',
+  'register', 'dequeueReusableCell', 'dequeueReusableSupplementaryView',
+  'beginUpdates', 'endUpdates', 'insertRows', 'deleteRows', 'insertSections', 'deleteSections',
+  'present', 'dismiss', 'pushViewController', 'popViewController', 'popToRootViewController',
+  'performSegue', 'prepare',
+  'DispatchQueue', 'async', 'sync', 'asyncAfter',
+  'Task', 'withCheckedContinuation', 'withCheckedThrowingContinuation',
+  'sink', 'store', 'assign', 'receive', 'subscribe',
+  'addObserver', 'removeObserver', 'post', 'NotificationCenter',
+]);
+
 export const swiftProvider = defineLanguage({
   id: SupportedLanguages.Swift,
   extensions: ['.swift'],
@@ -111,4 +139,5 @@ export const swiftProvider = defineLanguage({
   importSemantics: 'wildcard',
   heritageDefaultEdge: 'IMPLEMENTS',
   implicitImportWirer: wireSwiftImplicitImports,
+  builtInNames: BUILT_INS,
 });

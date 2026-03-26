@@ -37,6 +37,15 @@ const dartEnclosingFunctionFinder = (node: SyntaxNode): { funcName: string; labe
   return funcName ? { funcName, label } : null;
 };
 
+const BUILT_INS: ReadonlySet<string> = new Set([
+  'setState', 'mounted', 'debugPrint',
+  'runApp', 'showDialog', 'showModalBottomSheet',
+  'Navigator', 'push', 'pushNamed', 'pushReplacement', 'pop', 'maybePop',
+  'ScaffoldMessenger', 'showSnackBar',
+  'deactivate', 'reassemble', 'debugDumpApp', 'debugDumpRenderTree',
+  'then', 'catchError', 'whenComplete', 'listen',
+]);
+
 export const dartProvider = defineLanguage({
   id: SupportedLanguages.Dart,
   extensions: ['.dart'],
@@ -46,4 +55,5 @@ export const dartProvider = defineLanguage({
   importResolver: resolveDartImport,
   importSemantics: 'wildcard',
   enclosingFunctionFinder: dartEnclosingFunctionFinder,
+  builtInNames: BUILT_INS,
 });

@@ -8,7 +8,8 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { initLbug, executeQuery, executeParameterized, closeLbug, isLbugReady } from '../core/lbug-adapter.js';
+import { initLbug, executeQuery, executeParameterized, closeLbug, isLbugReady, isWriteQuery } from '../core/lbug-adapter.js';
+export { isWriteQuery };
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
@@ -89,13 +90,6 @@ export const IMPACT_RELATION_CONFIDENCE: Readonly<Record<string, number>> = {
 const confidenceForRelType = (relType: string | undefined): number =>
   IMPACT_RELATION_CONFIDENCE[relType ?? ''] ?? 0.5;
 
-/** Regex to detect write operations in user-supplied Cypher queries */
-export const CYPHER_WRITE_RE = /\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH)\b/i;
-
-/** Check if a Cypher query contains write operations */
-export function isWriteQuery(query: string): boolean {
-  return CYPHER_WRITE_RE.test(query);
-}
 
 /** Structured error logging for query failures — replaces empty catch blocks */
 function logQueryError(context: string, err: unknown): void {
@@ -777,7 +771,7 @@ export class LocalBackend {
     }
 
     // Block write operations (defense-in-depth — DB is already read-only)
-    if (CYPHER_WRITE_RE.test(params.query)) {
+    if (isWriteQuery(params.query)) {
       return { error: 'Write operations (CREATE, DELETE, SET, MERGE, REMOVE, DROP, ALTER, COPY, DETACH) are not allowed. The knowledge graph is read-only.' };
     }
 
@@ -1722,69 +1716,219 @@ export class LocalBackend {
     let affectedModules: any[] = [];
 
     if (impacted.length > 0) {
-      // Cap IN-clause to 100 IDs to prevent oversized queries that crash
-      // the native DB engine on arm64 macOS (#292)
-      const cappedImpacted = impacted.slice(0, 100);
-      const allIds = cappedImpacted.map(i => `'${String(i.id ?? '').replace(/'/g, "''")}'`).join(', ');
-      const d1Items = (grouped[1] || []).slice(0, 100);
-      const d1Ids = d1Items.map((i: any) => `'${String(i.id ?? '').replace(/'/g, "''")}'`).join(', ');
+      const CHUNK_SIZE = 100;
+      // Max number of chunks to process to avoid unbounded DB round-trips.
+      // Configurable via env IMPACT_MAX_CHUNKS, default 10 => max items = 1000
+      const MAX_CHUNKS = parseInt(process.env.IMPACT_MAX_CHUNKS || '10', 10);
 
-      // Enrichment queries: sequential on arm64 macOS to avoid SIGSEGV from
-      // concurrent native DB access (#285, #290, #292); parallel elsewhere
-      // to preserve performance on unaffected platforms.
-      const isArm64Mac = process.platform === 'darwin' && process.arch === 'arm64';
+      // ── Process enrichment: batched chunking (bounded by MAX_CHUNKS) ─
+      // Uses merged Cypher query (WITH + OPTIONAL MATCH) to fetch
+      // process + entry point info in 1 round-trip per chunk. Converted to
+      // parameterized queries to avoid manual string escaping and long query strings.
+      const entryPointMap = new Map<string, {
+        name: string; type: string; filePath: string;
+        affected_process_count: number;
+        total_hits: number;
+        earliest_broken_step: number;
+      }>();
 
-      const processQuery = executeQuery(repo.id, `
-        MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-        WHERE s.id IN [${allIds}]
-        RETURN p.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits, MIN(r.step) AS minStep, p.stepCount AS stepCount
-        ORDER BY hits DESC
-        LIMIT 20
-      `).catch(() => []);
-      const moduleQuery = () => executeQuery(repo.id, `
-        MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-        WHERE s.id IN [${allIds}]
-        RETURN c.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits
-        ORDER BY hits DESC
-        LIMIT 20
-      `).catch(() => []);
-      const directModuleQuery = () => d1Ids
-        ? executeQuery(repo.id, `
-            MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-            WHERE s.id IN [${d1Ids}]
-            RETURN DISTINCT c.heuristicLabel AS name
-          `).catch(() => [])
-        : Promise.resolve([]);
+      // Map process id -> entryPointId to allow fixing missing minStep values later
+      const processToEntryPoint = new Map<string, string>();
+      // Collect process ids where MIN(r.step) returned null so we can retry in batch
+      const processesMissingMinStep = new Set<string>();
 
-      let processRows: any[], moduleRows: any[], directModuleRows: any[];
-      if (isArm64Mac) {
-        // Sequential: avoid concurrent native DB access
-        processRows = await processQuery;
-        moduleRows = await moduleQuery();
-        directModuleRows = await directModuleQuery();
-      } else {
-        // Parallel: safe on non-arm64 platforms
-        processRows = await processQuery;
-        [moduleRows, directModuleRows] = await Promise.all([moduleQuery(), directModuleQuery()]);
+      let chunksProcessed = 0;
+      for (let i = 0; i < impacted.length && chunksProcessed < MAX_CHUNKS; i += CHUNK_SIZE, chunksProcessed++) {
+        const chunk = impacted.slice(i, i + CHUNK_SIZE);
+        const ids = chunk.map(item => String(item.id ?? ''));
+
+        try {
+          // Use parameterized list to avoid building long query strings
+          const rows = await executeParameterized(repo.id, `
+            MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+            WHERE s.id IN $ids
+            WITH p, COUNT(DISTINCT s.id) AS hits, MIN(r.step) AS minStep
+            OPTIONAL MATCH (ep {id: p.entryPointId})
+            RETURN p.id AS pId, p.heuristicLabel AS name, p.processType AS processType,
+                   p.entryPointId AS entryPointId, hits, minStep, p.stepCount AS stepCount,
+                   ep.name AS epName, labels(ep)[0] AS epType, ep.filePath AS epFilePath
+          `, { ids }).catch(() => []);
+
+          for (const row of rows) {
+            const pId = row.pId ?? row[0];
+            const epId = row.entryPointId ?? row[3] ?? row.pId ?? row[0];
+            // Track mapping from process -> entryPoint so we can backfill missing minStep
+            if (pId) processToEntryPoint.set(String(pId), String(epId));
+
+             // Normalize epName: prefer epName, fall back to other columns, and
+             // ensure we don't keep an empty string (labels(...) can return "").
+             const epNameRaw = row.epName ?? row[7] ?? row.name ?? row[1] ?? 'unknown';
+             const epName = (typeof epNameRaw === 'string' && epNameRaw.trim().length > 0) ? epNameRaw.trim() : 'unknown';
+
+             // Normalize epType: labels(ep)[0] can return an empty string in
+             // some DBs (LadybugDB). Using nullish coalescing (??) preserves
+             // empty strings, which results in empty `type` values being
+             // propagated. Treat empty-string labels as missing and fall back
+             // to the next candidate or a sensible default.
+             const epTypeRaw = row.epType ?? row[8] ?? '';
+             const epType = (typeof epTypeRaw === 'string' && epTypeRaw.trim().length > 0)
+               ? epTypeRaw.trim()
+               : 'Function';
+
+             const epFilePath = row.epFilePath ?? row[9] ?? '';
+             const hits = row.hits ?? row[4] ?? 0;
+             const minStep = row.minStep ?? row[5];
+             // If the DB returned null for minStep, note the process id so we
+             // can run a follow-up query using a different aggregation strategy.
+             if (minStep === null || minStep === undefined) {
+               if (pId) processesMissingMinStep.add(String(pId));
+             }
+             if (!entryPointMap.has(epId)) {
+               entryPointMap.set(epId, {
+                 name: epName,
+                 type: epType,
+                 filePath: epFilePath,
+                 affected_process_count: 0,
+                 total_hits: 0,
+                 earliest_broken_step: Infinity,
+               });
+             }
+             const ep = entryPointMap.get(epId)!;
+             ep.affected_process_count += 1;
+             ep.total_hits += hits;
+             ep.earliest_broken_step = Math.min(ep.earliest_broken_step, minStep ?? Infinity);
+           }
+         } catch (e) {
+           logQueryError('impact:process-chunk', e);
+         }
+       }
+
+      // If some processes returned null minStep, try a batched follow-up query
+      // using the full impacted id set. This handles older indexes or DBs
+      // where MIN(r.step) can come back null even when step properties exist.
+      if (processesMissingMinStep.size > 0) {
+        try {
+          const pIds = Array.from(processesMissingMinStep);
+          const allImpactedIds = impacted.map(it => String(it.id ?? ''));
+          const missingRows = await executeParameterized(repo.id, `
+            MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+            WHERE p.id IN $pIds AND s.id IN $ids
+            RETURN p.id AS pid, MIN(r.step) AS minStep
+          `, { pIds, ids: allImpactedIds }).catch(() => []);
+
+          for (const mr of missingRows) {
+            const pid = mr.pid ?? mr[0];
+            const minStep = mr.minStep ?? mr[1];
+            const epId = processToEntryPoint.get(String(pid));
+            if (!epId) continue;
+            const ep = entryPointMap.get(epId);
+            if (!ep) continue;
+            if (typeof minStep === 'number') {
+              ep.earliest_broken_step = Math.min(ep.earliest_broken_step, minStep);
+            }
+          }
+        } catch (e) {
+          logQueryError('impact:process-chunk-backfill', e);
+        }
       }
 
-      affectedProcesses = processRows.map((r: any) => ({
-        name: r.name || r[0],
-        hits: r.hits || r[1],
-        broken_at_step: r.minStep ?? r[2],
-        step_count: r.stepCount ?? r[3],
-      }));
+      // If we capped chunks, mark traversal incomplete so caller knows results are partial
+      if (chunksProcessed * CHUNK_SIZE < impacted.length) {
+        traversalComplete = false;
+      }
 
-      const directModuleSet = new Set(directModuleRows.map((r: any) => r.name || r[0]));
+       affectedProcesses = Array.from(entryPointMap.values())
+         .map(ep => ({
+           ...ep,
+           earliest_broken_step: ep.earliest_broken_step === Infinity ? null : ep.earliest_broken_step,
+         }))
+         .sort((a, b) => b.total_hits - a.total_hits);
+
+      // ── Module enrichment: use same cap as process enrichment and parameterized queries
+      const maxItems = Math.min(impacted.length, MAX_CHUNKS * CHUNK_SIZE);
+      const cappedImpacted = impacted.slice(0, maxItems);
+      const allIdsArr = cappedImpacted.map((i: any) => String(i.id ?? ''));
+      const d1Items = (grouped[1] || []).slice(0, maxItems);
+      const d1IdsArr = d1Items.map((i: any) => String(i.id ?? ''));
+
+      // Chunked module enrichment: run the MEMBER_OF queries in chunks
+      // to avoid large single queries or concurrent Kuzu calls that can
+      // crash (SIGSEGV) on arm64 macOS; behavior preserves existing maxItems cap and returns equivalent aggregated results.
+      const moduleHitsMap = new Map<string, number>();
+      const directModuleSet = new Set<string>();
+
+      // Helper to run a single module chunk and accumulate hits by name
+      const runModuleChunk = async (idsChunk: string[]) => {
+        if (!idsChunk || idsChunk.length === 0) return;
+        try {
+          const rows = await executeParameterized(repo.id, `
+            MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+            WHERE s.id IN $ids
+            RETURN c.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits
+            ORDER BY hits DESC
+            LIMIT 20
+          `, { ids: idsChunk }).catch(() => []);
+
+          for (const r of rows) {
+            const name = r.name ?? r[0] ?? null;
+            const hits = (r.hits ?? r[1]) || 0;
+            if (!name) continue;
+            moduleHitsMap.set(name, (moduleHitsMap.get(name) || 0) + hits);
+          }
+        } catch (e) {
+          logQueryError('impact:module-chunk', e);
+        }
+      };
+
+      // Run module query chunks sequentially (safe on arm64 macOS)
+      for (let i = 0; i < allIdsArr.length; i += CHUNK_SIZE) {
+        const chunkIds = allIdsArr.slice(i, i + CHUNK_SIZE);
+        await runModuleChunk(chunkIds);
+      }
+
+      // Run direct module query similarly (distinct heuristic labels for depth-1 items)
+      const runDirectModuleChunk = async (idsChunk: string[]) => {
+        if (!idsChunk || idsChunk.length === 0) return;
+        try {
+          const rows = await executeParameterized(repo.id, `
+            MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+            WHERE s.id IN $ids
+            RETURN DISTINCT c.heuristicLabel AS name
+          `, { ids: idsChunk }).catch(() => []);
+          for (const r of rows) {
+            const name = r.name ?? r[0] ?? null;
+            if (name) directModuleSet.add(name);
+          }
+        } catch (e) {
+          logQueryError('impact:direct-module-chunk', e);
+        }
+      };
+
+      for (let i = 0; i < d1IdsArr.length; i += CHUNK_SIZE) {
+        const chunkIds = d1IdsArr.slice(i, i + CHUNK_SIZE);
+        await runDirectModuleChunk(chunkIds);
+      }
+
+      // Build final moduleRows array from aggregated hits map, sorted & limited
+      const moduleRows = Array.from(moduleHitsMap.entries())
+        .map(([name, hits]) => ({ name, hits }))
+        .sort((a, b) => b.hits - a.hits)
+        .slice(0, 20);
+
+      const directModuleRows = Array.from(directModuleSet).map(name => ({ name }));
+
+      // Build affectedModules in the same shape as original implementation
+      const directModuleNameSet = new Set(directModuleRows.map((r: any) => r.name || r[0]));
       affectedModules = moduleRows.map((r: any) => {
-        const name = r.name || r[0];
+        const name = r.name ?? r[0];
+        const hits = r.hits ?? r[1] ?? 0;
         return {
           name,
-          hits: r.hits || r[1],
-          impact: directModuleSet.has(name) ? 'direct' : 'indirect',
+          hits,
+          impact: directModuleNameSet.has(name) ? 'direct' : 'indirect',
         };
       });
-    }
+     }
 
     // Risk scoring
     const processCount = affectedProcesses.length;
