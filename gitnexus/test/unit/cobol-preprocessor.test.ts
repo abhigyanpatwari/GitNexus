@@ -1306,4 +1306,337 @@ describe('extractCobolSymbolsWithRegex', () => {
       expect(r.programMetadata.installation).toBe('MAINFRAME-01');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Reviews 9-15: Multi-line CALL USING accumulation
+  // -------------------------------------------------------------------------
+  describe('Multi-line CALL USING accumulation', () => {
+
+    it('captures USING parameters on separate lines (IBM mainframe style)', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CALL 'CUSTUPDT'",
+        '               USING BY REFERENCE WS-CUST-ID',
+        '                                  WS-CUST-NAME',
+        '                                  WS-CUST-ADDR.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].target).toBe('CUSTUPDT');
+      expect(r.calls[0].parameters).toEqual(['WS-CUST-ID', 'WS-CUST-NAME', 'WS-CUST-ADDR']);
+    });
+
+    it('does NOT absorb next statement as USING parameter (no END-CALL)', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CALL 'CUSTUPDT'",
+        '               USING WS-PARM.',
+        '           INSPECT WS-STATUS TALLYING WS-CNT FOR ALL SPACES.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].parameters).toEqual(['WS-PARM']);
+      // INSPECT should be extracted separately, not absorbed
+      expect(r.inspects).toHaveLength(1);
+      expect(r.inspects[0].inspectedField).toBe('WS-STATUS');
+    });
+
+    it('does NOT absorb GO TO on next line', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CALL 'CUSTUPDT'",
+        '               USING WS-PARM.',
+        '           GO TO EXIT-PARAGRAPH.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].target).toBe('CUSTUPDT');
+      expect(r.gotos).toHaveLength(1);
+      expect(r.gotos[0].target).toBe('EXIT-PARAGRAPH');
+    });
+
+    it('does NOT create false paragraph from last USING parameter on own line', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CALL 'PGM'",
+        '               USING WS-A',
+        '                     WS-B.',
+        '           PERFORM NEXT-PARA.',
+        '       NEXT-PARA.',
+        '           STOP RUN.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      // WS-B should NOT be a paragraph
+      const paraNames = r.paragraphs.map(p => p.name);
+      expect(paraNames).toContain('MAIN-PARA');
+      expect(paraNames).toContain('NEXT-PARA');
+      expect(paraNames).not.toContain('WS-B');
+      // WS-B should be captured as USING parameter
+      expect(r.calls[0].parameters).toContain('WS-B');
+    });
+
+    it('handles CALL with END-CALL scope terminator', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CALL 'PGM' USING WS-A",
+        '               ON EXCEPTION',
+        '                   DISPLAY "ERROR"',
+        '           END-CALL',
+        '           PERFORM NEXT-STEP.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].parameters).toEqual(['WS-A']);
+      expect(r.performs).toHaveLength(1);
+      expect(r.performs[0].target).toBe('NEXT-STEP');
+    });
+
+    it('does NOT false-flush on hyphenated identifiers like MOVE-COUNT', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CALL 'PGM'",
+        '               USING MOVE-COUNT',
+        '                     PERFORM-LIMIT',
+        '                     READ-STATUS.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls[0].parameters).toEqual(['MOVE-COUNT', 'PERFORM-LIMIT', 'READ-STATUS']);
+    });
+
+    it('captures both quoted and dynamic CALL on same line (ON EXCEPTION)', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CALL 'PRIMARY' ON EXCEPTION CALL WS-FALLBACK.",
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(2);
+      expect(r.calls[0].target).toBe('PRIMARY');
+      expect(r.calls[0].isQuoted).toBe(true);
+      expect(r.calls[1].target).toBe('WS-FALLBACK');
+      expect(r.calls[1].isQuoted).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Reviews 9-15: Nested program edge attribution
+  // -------------------------------------------------------------------------
+  describe('Nested program edge attribution', () => {
+
+    it('CALL in inner nested program attributed to inner module (not outer)', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. OUTER-PGM.',
+        '      PROCEDURE DIVISION.',
+        '       OUTER-MAIN.',
+        '           STOP RUN.',
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. INNER-PGM.',
+        '      PROCEDURE DIVISION.',
+        '       INNER-MAIN.',
+        "           CALL 'SUBPROG'.",
+        '       END PROGRAM INNER-PGM.',
+        '       END PROGRAM OUTER-PGM.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      // The CALL should have line number within INNER-PGM's range
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].target).toBe('SUBPROG');
+      const innerProg = r.programs.find(p => p.name === 'INNER-PGM');
+      expect(innerProg).toBeDefined();
+      expect(r.calls[0].line).toBeGreaterThanOrEqual(innerProg!.startLine);
+      expect(r.calls[0].line).toBeLessThanOrEqual(innerProg!.endLine);
+    });
+
+    it('PERFORM before first paragraph in nested program has correct caller', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. OUTER-PGM.',
+        '      PROCEDURE DIVISION.',
+        '       OUTER-MAIN.',
+        '           STOP RUN.',
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. INNER-PGM.',
+        '      PROCEDURE DIVISION.',
+        '           PERFORM INNER-INIT.',
+        '       INNER-INIT.',
+        '           STOP RUN.',
+        '       END PROGRAM INNER-PGM.',
+        '       END PROGRAM OUTER-PGM.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      // PERFORM before first paragraph — caller should be null (module-level)
+      const innerPerform = r.performs.find(p => p.target === 'INNER-INIT');
+      expect(innerPerform).toBeDefined();
+      expect(innerPerform!.caller).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Reviews 9-15: CRLF / Windows line ending compatibility
+  // -------------------------------------------------------------------------
+  describe('CRLF / Windows line ending compatibility', () => {
+
+    it('GO TO DEPENDING ON works with CRLF line endings', () => {
+      // Simulate CRLF by using \r\n
+      const src = [
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           GO TO PARA-A PARA-B PARA-C',
+        '               DEPENDING ON WS-SWITCH.',
+      ].join('\r\n');
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.gotos).toHaveLength(3);
+      expect(r.gotos.map(g => g.target).sort()).toEqual(['PARA-A', 'PARA-B', 'PARA-C']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Reviews 9-15: Fixed-format Area A paragraph detection
+  // -------------------------------------------------------------------------
+  describe('Fixed-format Area A paragraph detection', () => {
+
+    it('rejects deeply-indented identifiers as paragraphs (Area B)', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '               WS-CUST-ADDR.',  // Area B (>7 spaces) — NOT a paragraph
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      const paraNames = r.paragraphs.map(p => p.name);
+      expect(paraNames).toContain('MAIN-PARA');
+      expect(paraNames).not.toContain('WS-CUST-ADDR');
+    });
+
+    it('accepts Area A indented paragraphs (7 spaces)', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       REAL-PARA.',  // 7 spaces — Area A, valid paragraph
+        '           STOP RUN.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.paragraphs.map(p => p.name)).toContain('REAL-PARA');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Reviews 9-15: SORT/MERGE edge cases
+  // -------------------------------------------------------------------------
+  describe('SORT/MERGE edge cases', () => {
+
+    it('captures SORT GIVING without spurious COLLATING SEQUENCE keywords', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           SORT SORT-FILE ON ASCENDING KEY SORT-KEY',
+        '               COLLATING SEQUENCE IS NATL',
+        '               USING INPUT-FILE',
+        '               GIVING OUTPUT-FILE.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.sorts).toHaveLength(1);
+      expect(r.sorts[0].usingFiles).toEqual(['INPUT-FILE']);
+      // COLLATING, SEQUENCE, IS, NATL should NOT appear as giving files
+      expect(r.sorts[0].givingFiles).toEqual(['OUTPUT-FILE']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Reviews 9-15: PROCEDURE DIVISION USING edge cases
+  // -------------------------------------------------------------------------
+  describe('PROCEDURE DIVISION USING edge cases', () => {
+
+    it('excludes RETURNING value from USING parameter list', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION USING WS-INPUT RETURNING WS-RESULT.',
+        '       MAIN-PARA.',
+        '           STOP RUN.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.procedureUsing).toEqual(['WS-INPUT']);
+    });
+
+    it('pendingProcUsing not set for period-terminated PROCEDURE DIVISION', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           STOP RUN.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.procedureUsing).toEqual([]);
+      // No spurious parameters from the first procedure line
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Reviews 9-15: Comment stripping edge cases
+  // -------------------------------------------------------------------------
+  describe('Comment stripping edge cases', () => {
+
+    it('pipe character inside quoted string is preserved (not treated as comment)', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      DATA DIVISION.',
+        '      WORKING-STORAGE SECTION.',
+        "       01 WS-SEP PIC X VALUE '|'.",
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      // The data item should be extracted (not truncated by pipe)
+      expect(r.dataItems.find(d => d.name === 'WS-SEP')).toBeDefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Reviews 9-15: SELECT OPTIONAL and ALTERNATE KEY
+  // -------------------------------------------------------------------------
+  describe('SELECT OPTIONAL and ALTERNATE KEY', () => {
+
+    it('SELECT OPTIONAL captures correct file name (not OPTIONAL keyword)', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      ENVIRONMENT DIVISION.',
+        '      INPUT-OUTPUT SECTION.',
+        '      FILE-CONTROL.',
+        "          SELECT OPTIONAL BACKUP-FILE ASSIGN TO 'BACKUP'.",
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.fileDeclarations).toHaveLength(1);
+      expect(r.fileDeclarations[0].selectName).toBe('BACKUP-FILE');
+      expect(r.fileDeclarations[0].isOptional).toBe(true);
+    });
+  });
 });
