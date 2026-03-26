@@ -271,6 +271,86 @@ withTestLbugDB('api-impact-e2e', (handle) => {
     });
   });
 
+  // ─── Test 7: shape_check state-layer extension ───────────────────
+
+  describe('shape_check state-layer extension', () => {
+    it('includes stateSlots section when StateSlot nodes exist', async () => {
+      const result = await backend.callTool('shape_check', {});
+
+      expect(result.stateSlots).toBeDefined();
+      expect(result.stateSlots.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('returns grantsCache slot with suspicious verdict', async () => {
+      const result = await backend.callTool('shape_check', {});
+
+      const grantsSlot = result.stateSlots.find((s: any) => s.name === 'grantsCache');
+      expect(grantsSlot).toBeDefined();
+      expect(grantsSlot!.slotKind).toBe('react-query');
+      expect(grantsSlot!.cacheKey).toBe('/api/grants');
+      expect(grantsSlot!.verdict).toBe('suspicious');
+      expect(grantsSlot!.verdictReason).toContain('pagination');
+    });
+
+    it('includes producers and consumers on each stateSlot', async () => {
+      const result = await backend.callTool('shape_check', {});
+
+      const grantsSlot = result.stateSlots.find((s: any) => s.name === 'grantsCache');
+      expect(grantsSlot!.producers.length).toBe(1);
+      expect(grantsSlot!.producers[0].name).toBe('useGrants');
+      expect(grantsSlot!.consumers.length).toBe(1);
+      expect(grantsSlot!.consumers[0].name).toBe('GrantsList');
+    });
+
+    it('reports stateConflicts and stateSuspicious counts', async () => {
+      const result = await backend.callTool('shape_check', {});
+
+      expect(result.stateSuspicious).toBeGreaterThanOrEqual(1);
+      expect(typeof result.stateConflicts).toBe('number');
+    });
+  });
+
+  // ─── Test 8: api_impact state-layer extension ──────────────────
+
+  describe('api_impact state-layer extension', () => {
+    it('includes stateLayer section when route consumer produces to a slot', async () => {
+      const result = await backend.callTool('api_impact', { route: '/api/grants' });
+
+      // useGrants fetches /api/grants AND produces to grantsCache StateSlot
+      expect(result.stateLayer).toBeDefined();
+      expect(result.stateLayer.slotsAffected).toBeGreaterThanOrEqual(1);
+    });
+
+    it('reports grantsCache slot with suspicious verdict in stateLayer', async () => {
+      const result = await backend.callTool('api_impact', { route: '/api/grants' });
+
+      const slot = result.stateLayer.slots.find((s: any) => s.name === 'grantsCache');
+      expect(slot).toBeDefined();
+      expect(slot!.verdict).toBe('suspicious');
+      expect(slot!.slotKind).toBe('react-query');
+    });
+
+    it('counts state-layer conflicts', async () => {
+      const result = await backend.callTool('api_impact', { route: '/api/grants' });
+
+      expect(result.stateLayer.conflicts).toBeGreaterThanOrEqual(1);
+    });
+
+    it('bumps risk level when state-layer conflicts exist', async () => {
+      const result = await backend.callTool('api_impact', { route: '/api/grants' });
+
+      // Base: 3 consumers (LOW) + mismatches → MEDIUM, + state conflicts → HIGH
+      expect(result.impactSummary.riskLevel).toBe('HIGH');
+    });
+
+    it('does not include stateLayer when route has no state-connected consumers', async () => {
+      const result = await backend.callTool('api_impact', { route: '/api/secure' });
+
+      // /api/secure's consumer (useMulti) does not PRODUCES to any StateSlot
+      expect(result.stateLayer).toBeUndefined();
+    });
+  });
+
   // ─── Edge cases ────────────────────────────────────────────────────
 
   describe('api_impact edge cases', () => {

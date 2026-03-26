@@ -1266,7 +1266,7 @@ export const runPipelineFromRepo = async (
       const slotResult = processStateSlots(allStateSlots, graph);
 
       if (isDev) {
-        console.log(`🗄️ State slots: ${slotResult.slotsCreated} created, ${slotResult.producesEdges} PRODUCES, ${slotResult.consumesEdges} CONSUMES, ${slotResult.overlapWarnings.length} overlap warnings`);
+        console.log(`🗄️ State slots: ${slotResult.slotsCreated} created, ${slotResult.producesEdges} PRODUCES, ${slotResult.consumesEdges} CONSUMES, ${slotResult.overlapWarnings.length} overlap warnings, ${slotResult.routeChainsApplied} route-chains, ${slotResult.wrapperHooksResolved} wrapper-hooks`);
       }
     }
 

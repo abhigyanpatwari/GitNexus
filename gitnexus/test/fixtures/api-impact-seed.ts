@@ -55,6 +55,19 @@ export const API_IMPACT_SEED_DATA = [
    CREATE (fn)-[:CodeRelation {type: 'HANDLES_ROUTE', confidence: 1.0, reason: 'nextjs-app-router', step: 0}]->(r)`,
   `MATCH (fn:Function), (r:Route) WHERE fn.id = 'func:secure-POST' AND r.id = 'Route:/api/secure'
    CREATE (fn)-[:CodeRelation {type: 'HANDLES_ROUTE', confidence: 1.0, reason: 'nextjs-app-router', step: 0}]->(r)`,
+
+  // ─── StateSlot nodes ────────────────────────────────────────────────
+  // grantsCache: useGrants PRODUCES to this slot, GrantsList CONSUMES from it.
+  // useGrants writes keys [data, items] but GrantsList reads [data, pagination] → 'suspicious' (pagination not produced)
+  `CREATE (s:StateSlot {id: 'StateSlot:grantsCache', name: 'grantsCache', filePath: 'hooks/useGrants.ts', slotKind: 'react-query', cacheKey: '/api/grants'})`,
+
+  // ─── PRODUCES edges (function → StateSlot) ─────────────────────────
+  `MATCH (fn:Function), (s:StateSlot) WHERE fn.id = 'func:useGrants' AND s.id = 'StateSlot:grantsCache'
+   CREATE (fn)-[:CodeRelation {type: 'PRODUCES', confidence: 1.0, reason: 'shape-ast-literal|keys:data,items|type:GrantsResponse', step: 0}]->(s)`,
+
+  // ─── CONSUMES edges (function → StateSlot) ─────────────────────────
+  `MATCH (fn:Function), (s:StateSlot) WHERE fn.id = 'func:GrantsList' AND s.id = 'StateSlot:grantsCache'
+   CREATE (fn)-[:CodeRelation {type: 'CONSUMES', confidence: 1.0, reason: 'shape-ast-literal|keys:data,pagination', step: 0}]->(s)`,
 ];
 
 export const API_IMPACT_FTS_INDEXES: FTSIndexDef[] = [

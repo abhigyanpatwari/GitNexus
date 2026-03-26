@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { detectSwrSlots } from '../../src/core/ingestion/state-slot-detectors/swr.js';
 import { detectReactQuerySlots } from '../../src/core/ingestion/state-slot-detectors/react-query.js';
+import { detectQueryClientSlots } from '../../src/core/ingestion/state-slot-detectors/query-client.js';
 
 describe('state-slot-detectors', () => {
   describe('detectSwrSlots', () => {
@@ -245,6 +246,77 @@ describe('state-slot-detectors', () => {
       const consumer = slots[0].consumers[0];
       expect(consumer).toBeDefined();
       expect(consumer.accessedKeys).toContain('name');
+    });
+  });
+
+  describe('detectQueryClientSlots', () => {
+    it('detects setQueryData with array key', () => {
+      const code = `
+        function invalidateVendors(queryClient, newData) {
+          queryClient.setQueryData(['vendor-patterns', slug], newData);
+        }
+      `;
+      const slots = detectQueryClientSlots(code, 'utils/cache.ts');
+      expect(slots).toHaveLength(1);
+      expect(slots[0].slotKind).toBe('react-query');
+      expect(slots[0].cacheKey).toContain('vendor-patterns');
+      expect(slots[0].producers).toHaveLength(1);
+    });
+
+    it('detects setQueryData with object literal data', () => {
+      const code = `
+        queryClient.setQueryData(['stats'], { total: 42, updated: true });
+      `;
+      const slots = detectQueryClientSlots(code, 'utils/cache.ts');
+      expect(slots).toHaveLength(1);
+      expect(slots[0].producers[0].keys).toEqual(expect.arrayContaining(['total', 'updated']));
+    });
+
+    it('detects setQueriesData', () => {
+      const code = `
+        queryClient.setQueriesData({ queryKey: ['vendors'] }, (old) => [...old, newVendor]);
+      `;
+      const slots = detectQueryClientSlots(code, 'utils/cache.ts');
+      expect(slots).toHaveLength(1);
+      expect(slots[0].cacheKey).toContain('vendors');
+    });
+
+    it('returns empty for files without queryClient calls', () => {
+      expect(detectQueryClientSlots('const x = 1;', 'utils.ts')).toEqual([]);
+    });
+
+    it('detects setQueryData with updater function as second arg', () => {
+      const code = `
+        queryClient.setQueryData(['key'], (old) => ({ ...old, count: old.count + 1 }));
+      `;
+      const slots = detectQueryClientSlots(code, 'utils/cache.ts');
+      expect(slots).toHaveLength(1);
+      expect(slots[0].cacheKey).toBe("['key']");
+    });
+
+    it('detects multiple setQueryData calls in same file', () => {
+      const code = `
+        function updateCache(queryClient) {
+          queryClient.setQueryData(['users'], newUsers);
+          queryClient.setQueryData(['posts', id], newPost);
+        }
+      `;
+      const slots = detectQueryClientSlots(code, 'utils/cache.ts');
+      expect(slots).toHaveLength(2);
+      const keys = slots.map(s => s.cacheKey);
+      expect(keys).toContain("['users']");
+      expect(keys).toContain("['posts', id]");
+    });
+
+    it('sets producer functionName from enclosing function', () => {
+      const code = `
+        function updateVendorCache(queryClient, newData) {
+          queryClient.setQueryData(['vendors'], newData);
+        }
+      `;
+      const slots = detectQueryClientSlots(code, 'utils/cache.ts');
+      expect(slots).toHaveLength(1);
+      expect(slots[0].producers[0].functionName).toBe('updateVendorCache');
     });
   });
 });

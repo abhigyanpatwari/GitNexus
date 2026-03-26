@@ -12,6 +12,12 @@ const ACCESS_BLOCKLIST = new Set([
   'reduce', 'forEach', 'find', 'findIndex', 'includes', 'indexOf',
   'keys', 'values', 'entries', 'then', 'catch', 'finally',
   'json', 'text', 'blob', 'arrayBuffer', 'formData', 'clone', 'ok', 'status',
+  // DOM API noise
+  'appendChild', 'removeChild', 'insertBefore', 'replaceChild', 'querySelector',
+  'querySelectorAll', 'getAttribute', 'setAttribute', 'addEventListener',
+  'removeEventListener', 'classList', 'style', 'className', 'innerHTML',
+  'textContent', 'parentNode', 'childNodes', 'firstChild', 'lastChild',
+  'nextSibling', 'previousSibling', 'nodeName', 'nodeType', 'ownerDocument',
 ]);
 
 /**

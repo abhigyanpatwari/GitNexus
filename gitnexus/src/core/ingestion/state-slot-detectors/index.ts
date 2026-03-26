@@ -8,6 +8,7 @@
 import type { ExtractedStateSlot } from './types.js';
 import { detectReactQuerySlots } from './react-query.js';
 import { detectSwrSlots } from './swr.js';
+import { detectQueryClientSlots } from './query-client.js';
 
 export type { ExtractedStateSlot, SlotKind, ShapeConfidence, ExtractedStateSlotProducer, ExtractedStateSlotConsumer } from './types.js';
 
@@ -16,6 +17,7 @@ type Detector = (code: string, filePath: string) => ExtractedStateSlot[];
 const DETECTORS: Detector[] = [
   detectReactQuerySlots,
   detectSwrSlots,
+  detectQueryClientSlots,
   // Phase 3: detectReactContextSlots, detectReduxSlots, detectZustandSlots
   // Phase 4: detectTRPCSlots, detectGraphQLSlots
 ];

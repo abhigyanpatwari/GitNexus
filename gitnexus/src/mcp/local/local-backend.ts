@@ -1859,8 +1859,24 @@ export class LocalBackend {
 
     const mismatchCount = results.filter(r => r.status === 'MISMATCH').length;
 
+    // State-layer: query all StateSlots and append to output
+    let stateSlots: any[] = [];
+    let stateConflicts = 0;
+    let stateSuspicious = 0;
+    try {
+      const stateResult = await this.fetchStateSlotsWithEdges(repo.id, '', {});
+      stateConflicts = stateResult.conflicts;
+      stateSuspicious = stateResult.suspicious;
+      stateSlots = stateResult.slots.map(({ id: _id, filePath: _fp, ...rest }) => rest);
+    } catch { /* no StateSlot nodes — graceful degradation */ }
+
     return {
       routes: results,
+      ...(stateSlots.length > 0 ? {
+        stateSlots,
+        stateConflicts,
+        stateSuspicious,
+      } : {}),
       total: results.length,
       routesWithShapes: results.length,
       ...(mismatchCount > 0 ? { mismatches: mismatchCount } : {}),
@@ -1933,6 +1949,24 @@ export class LocalBackend {
 
     const flowMap = await this.fetchLinkedFlowsBatch(repo.id, routes.map(r => r.id));
 
+    // Fetch all state slots for state-layer awareness
+    let allStateSlots: Awaited<ReturnType<typeof this.fetchStateSlotsWithEdges>>['slots'] = [];
+    try {
+      const stateResult = await this.fetchStateSlotsWithEdges(repo.id, '', {});
+      allStateSlots = stateResult.slots;
+    } catch { /* no StateSlot nodes — graceful degradation */ }
+
+    // Build a map: producer function name → slots they produce to
+    // This lets us find slots affected when a route's consumer also produces to a slot
+    const slotsByProducerFn = new Map<string, typeof allStateSlots>();
+    for (const slot of allStateSlots) {
+      for (const p of slot.producers) {
+        let list = slotsByProducerFn.get(p.name);
+        if (!list) { list = []; slotsByProducerFn.set(p.name, list); }
+        list.push(slot);
+      }
+    }
+
     // Count how many routes share the same handler file (for middleware partial detection)
     const routeCountByHandler = new Map<string, number>();
     for (const r of routes) {
@@ -1991,6 +2025,35 @@ export class LocalBackend {
         else if (riskLevel === 'MEDIUM') riskLevel = 'HIGH';
       }
 
+      // State-layer: find slots affected by this route's consumers
+      // A consumer that FETCHES this route may also PRODUCES to a StateSlot
+      const affectedSlotIds = new Set<string>();
+      const affectedSlots: Array<{
+        name: string; slotKind: string; verdict: string;
+        producers: any[]; consumers: any[];
+      }> = [];
+      for (const c of r.consumers) {
+        const slots = slotsByProducerFn.get(c.name) ?? [];
+        for (const slot of slots) {
+          if (affectedSlotIds.has(slot.id)) continue;
+          affectedSlotIds.add(slot.id);
+          affectedSlots.push({
+            name: slot.name,
+            slotKind: slot.slotKind,
+            verdict: slot.verdict,
+            producers: slot.producers,
+            consumers: slot.consumers,
+          });
+        }
+      }
+      const stateLayerConflicts = affectedSlots.filter(s => s.verdict !== 'ok').length;
+
+      // Bump risk level if state-layer conflicts exist
+      if (stateLayerConflicts > 0) {
+        if (riskLevel === 'LOW') riskLevel = 'MEDIUM';
+        else if (riskLevel === 'MEDIUM') riskLevel = 'HIGH';
+      }
+
       const warning = consumerCount > 0
         ? `Changing response shape will affect ${consumerCount} component${consumerCount === 1 ? '' : 's'}`
         : undefined;
@@ -2016,6 +2079,13 @@ export class LocalBackend {
         consumers,
         ...(mismatches.length > 0 ? { mismatches } : {}),
         executionFlows: flows,
+        ...(affectedSlots.length > 0 ? {
+          stateLayer: {
+            slotsAffected: affectedSlots.length,
+            conflicts: stateLayerConflicts,
+            slots: affectedSlots,
+          },
+        } : {}),
         impactSummary: {
           directConsumers: consumerCount,
           affectedFlows: flows.length,
@@ -2177,51 +2247,54 @@ export class LocalBackend {
     };
   }
 
-  private async dataFlow(repo: RepoHandle, params: { query?: string; slotKind?: string; mismatchesOnly?: string | boolean }): Promise<any> {
-    await this.ensureInitialized(repo.id);
-
-    // Build optional filters
-    let slotFilter = '';
-    const queryParams: Record<string, string> = {};
-    if (params.query) {
-      slotFilter += ` AND n.name CONTAINS $query`;
-      queryParams.query = params.query;
-    }
-    if (params.slotKind) {
-      slotFilter += ` AND n.slotKind = $slotKind`;
-      queryParams.slotKind = params.slotKind;
-    }
-
-    // 1. Fetch all StateSlot nodes
-    const slotRows = await executeParameterized(repo.id, `
+  /**
+   * Shared helper: fetch StateSlot nodes with their PRODUCES/CONSUMES edges.
+   * Returns enriched slot objects with verdict, producers, and consumers.
+   * Used by dataFlow(), shapeCheck(), and apiImpact().
+   */
+  private async fetchStateSlotsWithEdges(
+    repoId: string,
+    slotFilter: string,
+    queryParams: Record<string, any>,
+  ): Promise<{
+    slots: Array<{
+      id: string; name: string; filePath: string; slotKind: string; cacheKey: string | null;
+      verdict: 'ok' | 'suspicious' | 'conflict'; verdictReason: string;
+      producers: Array<{ name: string; filePath: string; keys?: string[]; typeName?: string; confidence?: number }>;
+      consumers: Array<{ name: string; filePath: string; accessedKeys?: string[]; confidence?: number }>;
+    }>;
+    conflicts: number;
+    suspicious: number;
+    producerFnNames: Set<string>;
+  }> {
+    const slotRows = await executeParameterized(repoId, `
       MATCH (n:StateSlot)
       ${slotFilter ? `WHERE ${slotFilter.replace(/^\s*AND\s*/, '')}` : ''}
       RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.slotKind AS slotKind, n.cacheKey AS cacheKey
     `, queryParams);
 
     if (slotRows.length === 0) {
-      return { slots: [], total: 0, conflicts: 0, suspicious: 0, message: params.query ? `No state slots matching "${params.query}"` : 'No state slots found in this project.' };
+      return { slots: [], conflicts: 0, suspicious: 0, producerFnNames: new Set() };
     }
 
-    // 2. Batch-fetch PRODUCES and CONSUMES edges for all slots
     const slotIds = slotRows.map((r: any) => r.id ?? r[0]);
 
     const [producerRows, consumerRows] = await Promise.all([
-      executeParameterized(repo.id, `
+      executeParameterized(repoId, `
         MATCH (fn)-[r:CodeRelation]->(s:StateSlot)
         WHERE r.type = 'PRODUCES' AND list_contains($slotIds, s.id)
         RETURN s.id AS slotId, fn.name AS name, fn.filePath AS filePath, r.reason AS reason
       `, { slotIds }),
-      executeParameterized(repo.id, `
+      executeParameterized(repoId, `
         MATCH (fn)-[r:CodeRelation]->(s:StateSlot)
         WHERE r.type = 'CONSUMES' AND list_contains($slotIds, s.id)
         RETURN s.id AS slotId, fn.name AS name, fn.filePath AS filePath, r.reason AS reason
       `, { slotIds }),
     ]);
 
-    // Group producers and consumers by slot ID
     const producersBySlot = new Map<string, Array<{ name: string; filePath: string; keys: string[]; typeName: string | null; confidence: number }>>();
     const consumersBySlot = new Map<string, Array<{ name: string; filePath: string; keys: string[]; confidence: number }>>();
+    const producerFnNames = new Set<string>();
 
     for (const row of producerRows) {
       const slotId = row.slotId ?? row[0];
@@ -2229,6 +2302,7 @@ export class LocalBackend {
       const filePath = row.filePath ?? row[2];
       const reason: string | null = row.reason ?? row[3] ?? null;
       const shape = parseShapeReason(reason);
+      producerFnNames.add(name);
       let list = producersBySlot.get(slotId);
       if (!list) { list = []; producersBySlot.set(slotId, list); }
       list.push({ name, filePath, keys: shape.keys, typeName: shape.typeName, confidence: shape.confidence });
@@ -2245,7 +2319,6 @@ export class LocalBackend {
       list.push({ name, filePath, keys: shape.keys, confidence: shape.confidence });
     }
 
-    // 3. Build result slots with verdict
     let conflictCount = 0;
     let suspiciousCount = 0;
 
@@ -2254,21 +2327,33 @@ export class LocalBackend {
       const name = row.name ?? row[1];
       const filePath = row.filePath ?? row[2];
       const slotKind = row.slotKind ?? row[3];
-      const cacheKey = row.cacheKey ?? row[4];
+      const cacheKey = row.cacheKey ?? row[4] ?? null;
 
       const producers = producersBySlot.get(id) || [];
       const consumers = consumersBySlot.get(id) || [];
       const verdict = computeShapeVerdict(producers, consumers);
 
-      if (verdict === 'conflict') conflictCount++;
-      if (verdict === 'suspicious') suspiciousCount++;
+      let verdictReason = '';
+      if (verdict === 'conflict') {
+        conflictCount++;
+        verdictReason = 'Multiple producers write different shapes to this slot.';
+      } else if (verdict === 'suspicious') {
+        suspiciousCount++;
+        const allProducedKeys = new Set<string>();
+        for (const p of producers) for (const k of p.keys) allProducedKeys.add(k);
+        const missingKeys: string[] = [];
+        for (const c of consumers) for (const k of c.keys) if (!allProducedKeys.has(k)) missingKeys.push(k);
+        verdictReason = `Consumer accesses keys not found in any producer: ${[...new Set(missingKeys)].join(', ')}`;
+      }
 
       return {
+        id,
         name,
         filePath,
         slotKind,
-        ...(cacheKey ? { cacheKey } : {}),
+        cacheKey,
         verdict,
+        verdictReason,
         producers: producers.map(p => ({
           name: p.name,
           filePath: p.filePath,
@@ -2285,7 +2370,37 @@ export class LocalBackend {
       };
     });
 
-    // 4. Filter if mismatchesOnly (MCP sends strings, so check both)
+    return { slots, conflicts: conflictCount, suspicious: suspiciousCount, producerFnNames };
+  }
+
+  private async dataFlow(repo: RepoHandle, params: { query?: string; slotKind?: string; mismatchesOnly?: string | boolean }): Promise<any> {
+    await this.ensureInitialized(repo.id);
+
+    // Build optional filters
+    let slotFilter = '';
+    const queryParams: Record<string, string> = {};
+    if (params.query) {
+      slotFilter += ` AND n.name CONTAINS $query`;
+      queryParams.query = params.query;
+    }
+    if (params.slotKind) {
+      slotFilter += ` AND n.slotKind = $slotKind`;
+      queryParams.slotKind = params.slotKind;
+    }
+
+    const result = await this.fetchStateSlotsWithEdges(repo.id, slotFilter, queryParams);
+
+    if (result.slots.length === 0) {
+      return { slots: [], total: 0, conflicts: 0, suspicious: 0, message: params.query ? `No state slots matching "${params.query}"` : 'No state slots found in this project.' };
+    }
+
+    // Strip internal id and verdictReason fields for data_flow output (matches original format)
+    const slots = result.slots.map(({ id: _id, verdictReason: _vr, cacheKey, ...rest }) => ({
+      ...rest,
+      ...(cacheKey ? { cacheKey } : {}),
+    }));
+
+    // Filter if mismatchesOnly (MCP sends strings, so check both)
     const filterMismatches = params.mismatchesOnly === true || params.mismatchesOnly === 'true';
     const filtered = filterMismatches
       ? slots.filter((s: any) => s.verdict !== 'ok')
@@ -2294,8 +2409,8 @@ export class LocalBackend {
     return {
       slots: filtered,
       total: filtered.length,
-      conflicts: conflictCount,
-      suspicious: suspiciousCount,
+      conflicts: result.conflicts,
+      suspicious: result.suspicious,
     };
   }
 
