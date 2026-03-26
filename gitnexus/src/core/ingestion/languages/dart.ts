@@ -14,6 +14,15 @@ import { dartExportChecker } from '../export-detection.js';
 import { resolveDartImport } from '../import-resolvers/dart.js';
 import { DART_QUERIES } from '../tree-sitter-queries.js';
 
+const BUILT_INS: ReadonlySet<string> = new Set([
+  'setState', 'mounted', 'debugPrint',
+  'runApp', 'showDialog', 'showModalBottomSheet',
+  'Navigator', 'push', 'pushNamed', 'pushReplacement', 'pop', 'maybePop',
+  'ScaffoldMessenger', 'showSnackBar',
+  'deactivate', 'reassemble', 'debugDumpApp', 'debugDumpRenderTree',
+  'then', 'catchError', 'whenComplete', 'listen',
+]);
+
 export const dartProvider = defineLanguage({
   id: SupportedLanguages.Dart,
   extensions: ['.dart'],
@@ -22,4 +31,5 @@ export const dartProvider = defineLanguage({
   exportChecker: dartExportChecker,
   importResolver: resolveDartImport,
   importSemantics: 'wildcard',
+  builtInNames: BUILT_INS,
 });
