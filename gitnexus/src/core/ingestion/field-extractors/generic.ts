@@ -12,7 +12,7 @@ import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { BaseFieldExtractor } from '../field-extractor.js';
 import type { FieldExtractor } from '../field-extractor.js';
-import type { FieldExtractorContext, ExtractedFields, FieldInfo } from '../field-types.js';
+import type { FieldExtractorContext, ExtractedFields, FieldInfo, FieldVisibility } from '../field-types.js';
 
 // ---------------------------------------------------------------------------
 // Config interface
@@ -27,13 +27,23 @@ export interface FieldExtractionConfig {
   /** AST node type(s) for the class body container (e.g., 'class_body', 'declaration_list') */
   bodyNodeTypes: string[];
   /** Default visibility when no modifier is present */
-  defaultVisibility: string;
-  /** Extract field name from a field declaration node */
+  defaultVisibility: FieldVisibility;
+  /**
+   * Extract field name from a field declaration node.
+   * Use this for nodes that declare exactly one field.
+   */
   extractName: (node: SyntaxNode) => string | undefined;
+  /**
+   * Extract multiple field names from a single declaration node.
+   * Optional override for languages where one AST node can declare
+   * several fields (e.g. Ruby `attr_accessor :foo, :bar`).
+   * When present, the factory uses this instead of `extractName`.
+   */
+  extractNames?: (node: SyntaxNode) => string[];
   /** Extract type annotation from a field declaration node */
   extractType: (node: SyntaxNode) => string | undefined;
   /** Extract visibility from a field declaration node */
-  extractVisibility: (node: SyntaxNode) => string;
+  extractVisibility: (node: SyntaxNode) => FieldVisibility;
   /** Check if a field is static */
   isStatic: (node: SyntaxNode) => boolean;
   /** Check if a field is readonly/final/const */
@@ -59,7 +69,7 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
       return typeDeclarationSet.has(node.type);
     }
 
-    protected extractVisibility(node: SyntaxNode): string {
+    protected extractVisibility(node: SyntaxNode): FieldVisibility {
       return config.extractVisibility(node);
     }
 
@@ -117,8 +127,17 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
         if (!child) continue;
 
         if (fieldNodeSet.has(child.type)) {
-          const field = this.extractSingleField(child, context);
-          if (field) out.push(field);
+          if (config.extractNames) {
+            // Multi-name path: one node may declare several fields (e.g. Ruby attr_accessor)
+            const names = config.extractNames(child);
+            for (const name of names) {
+              const field = this.buildField(child, name, context);
+              if (field) out.push(field);
+            }
+          } else {
+            const field = this.extractSingleField(child, context);
+            if (field) out.push(field);
+          }
         }
       }
     }
@@ -128,6 +147,15 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
       context: FieldExtractorContext,
     ): FieldInfo | null {
       const name = config.extractName(node);
+      if (!name) return null;
+      return this.buildField(node, name, context);
+    }
+
+    private buildField(
+      node: SyntaxNode,
+      name: string,
+      context: FieldExtractorContext,
+    ): FieldInfo | null {
       if (!name) return null;
 
       let type: string | null = config.extractType(node) ?? null;

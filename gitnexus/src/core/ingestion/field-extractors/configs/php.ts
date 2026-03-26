@@ -4,8 +4,9 @@ import { SupportedLanguages } from '../../../../config/supported-languages.js';
 import type { FieldExtractionConfig } from '../generic.js';
 import { findVisibility, hasKeyword } from './helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
+import type { FieldVisibility } from '../../field-types.js';
 
-const PHP_VIS = new Set(['public', 'private', 'protected']);
+const PHP_VIS = new Set<FieldVisibility>(['public', 'private', 'protected']);
 
 /**
  * PHP field extraction config.

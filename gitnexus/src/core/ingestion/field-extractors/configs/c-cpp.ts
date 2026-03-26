@@ -5,12 +5,13 @@ import type { FieldExtractionConfig } from '../generic.js';
 import { hasKeyword } from './helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import type { FieldVisibility } from '../../field-types.js';
 
 /**
  * Detect C++ access specifier (public:/private:/protected:) by walking
  * backwards from the field node through siblings.
  */
-function cppAccessSpecifier(node: SyntaxNode): string | undefined {
+function cppAccessSpecifier(node: SyntaxNode): FieldVisibility | undefined {
   let sibling = node.previousNamedSibling;
   while (sibling) {
     if (sibling.type === 'access_specifier') {

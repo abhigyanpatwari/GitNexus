@@ -85,8 +85,8 @@ export const pythonConfig: FieldExtractionConfig = {
   },
 
   isStatic(_node) {
-    // Class-level variables in Python are effectively static;
-    // instance variables (self.x) live in __init__ and are not extracted here.
+    // Reports syntactic static keyword — Python class variables don't use explicit static keyword.
+    // Instance variables (self.x) live in __init__ and are not extracted here.
     return false;
   },
 

@@ -38,6 +38,7 @@ import {
   extractMethodSignature,
   findDescendant,
   extractStringContent,
+  type SyntaxNode,
 } from '../utils/ast-helpers.js';
 import {
   countCallArguments,
@@ -309,7 +310,7 @@ const fieldInfoCache = new Map<number, Map<string, FieldInfo>>();
  * Walk up from a definition node to find the nearest enclosing class/struct/interface
  * AST node. Returns the SyntaxNode itself (not an ID) for passing to FieldExtractor.
  */
-function findEnclosingClassNode(node: any): any | null {
+function findEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
   let current = node.parent;
   while (current) {
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
@@ -337,13 +338,13 @@ const NOOP_SYMBOL_TABLE: any = {
  * or the class yielded no fields.
  */
 function getFieldInfo(
-  classNode: any,
+  classNode: SyntaxNode,
   provider: LanguageProvider,
   context: FieldExtractorContext,
 ): Map<string, FieldInfo> | undefined {
   if (!provider.fieldExtractor) return undefined;
 
-  const cacheKey = classNode.startIndex as number;
+  const cacheKey = classNode.startIndex;
   let cached = fieldInfoCache.get(cacheKey);
   if (cached) return cached;
 

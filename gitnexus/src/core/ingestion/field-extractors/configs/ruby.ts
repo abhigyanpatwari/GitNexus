@@ -2,6 +2,33 @@
 
 import { SupportedLanguages } from '../../../../config/supported-languages.js';
 import type { FieldExtractionConfig } from '../generic.js';
+import type { SyntaxNode } from '../../utils/ast-helpers.js';
+
+/**
+ * Collect all field names declared by an `attr_accessor`, `attr_reader`, or
+ * `attr_writer` call node.  A single call may list multiple symbols:
+ *   attr_accessor :foo, :bar, :baz
+ */
+function extractAttrNames(node: SyntaxNode): string[] {
+  const method = node.childForFieldName('method');
+  if (!method) return [];
+  const methodName = method.text;
+  if (methodName !== 'attr_accessor' && methodName !== 'attr_reader'
+    && methodName !== 'attr_writer') {
+    return [];
+  }
+  const args = node.childForFieldName('arguments');
+  if (!args) return [];
+  const names: string[] = [];
+  for (let i = 0; i < args.namedChildCount; i++) {
+    const arg = args.namedChild(i);
+    if (!arg) continue;
+    // simple_symbol text is :name — strip the leading colon
+    const text = arg.text;
+    names.push(text.startsWith(':') ? text.slice(1) : text);
+  }
+  return names;
+}
 
 /**
  * Ruby field extraction config.
@@ -25,22 +52,13 @@ export const rubyConfig: FieldExtractionConfig = {
   defaultVisibility: 'public',
 
   extractName(node) {
-    // call node: method = attr_accessor / attr_reader / attr_writer
-    const method = node.childForFieldName('method');
-    if (!method) return undefined;
-    const methodName = method.text;
-    if (methodName !== 'attr_accessor' && methodName !== 'attr_reader'
-      && methodName !== 'attr_writer') {
-      return undefined;
-    }
-    // arguments: argument_list > simple_symbol (:name)
-    const args = node.childForFieldName('arguments');
-    if (!args) return undefined;
-    const firstArg = args.firstNamedChild;
-    if (!firstArg) return undefined;
-    // simple_symbol text is :name — strip the colon
-    const text = firstArg.text;
-    return text.startsWith(':') ? text.slice(1) : text;
+    // Returns the first symbol name for interface compatibility.
+    // Use extractNames to obtain all names from a single attr_* call.
+    return extractAttrNames(node)[0];
+  },
+
+  extractNames(node) {
+    return extractAttrNames(node);
   },
 
   extractType(_node) {
@@ -48,7 +66,7 @@ export const rubyConfig: FieldExtractionConfig = {
     return undefined;
   },
 
-  extractVisibility(node) {
+  extractVisibility(_node) {
     // attr_accessor/attr_writer fields are effectively public
     // attr_reader fields are read-only from outside but still public
     return 'public';

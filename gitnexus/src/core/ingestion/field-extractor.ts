@@ -2,9 +2,10 @@
 
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
-import type { 
-  FieldExtractorContext, 
-  ExtractedFields
+import type {
+  FieldExtractorContext,
+  ExtractedFields,
+  FieldVisibility,
 } from './field-types.js';
 
 /**
@@ -56,5 +57,5 @@ export abstract class BaseFieldExtractor implements FieldExtractor {
     return typeName;
   }
   
-  protected abstract extractVisibility(node: SyntaxNode): string;
+  protected abstract extractVisibility(node: SyntaxNode): FieldVisibility;
 }

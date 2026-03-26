@@ -7,6 +7,7 @@
 
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
+import type { FieldVisibility } from '../../field-types.js';
 
 // ---------------------------------------------------------------------------
 // Modifier scanning
@@ -48,14 +49,15 @@ export function hasModifier(node: SyntaxNode, modifierType: string, keyword: str
  */
 export function findVisibility(
   node: SyntaxNode,
-  keywords: ReadonlySet<string>,
-  defaultVis: string,
+  keywords: ReadonlySet<FieldVisibility>,
+  defaultVis: FieldVisibility,
   modifierNodeType?: string,
-): string {
+): FieldVisibility {
   // Direct keyword children
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
-    if (child && keywords.has(child.text.trim())) return child.text.trim();
+    const text = child?.text.trim() as FieldVisibility | undefined;
+    if (text && (keywords as ReadonlySet<string>).has(text)) return text;
   }
   // Modifier wrapper
   if (modifierNodeType) {
@@ -64,7 +66,8 @@ export function findVisibility(
       if (child && child.type === modifierNodeType) {
         for (let j = 0; j < child.childCount; j++) {
           const mod = child.child(j);
-          if (mod && keywords.has(mod.text.trim())) return mod.text.trim();
+          const modText = mod?.text.trim() as FieldVisibility | undefined;
+          if (modText && (keywords as ReadonlySet<string>).has(modText)) return modText;
         }
       }
     }

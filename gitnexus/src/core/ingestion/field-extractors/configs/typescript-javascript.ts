@@ -3,8 +3,9 @@
 import { SupportedLanguages } from '../../../../config/supported-languages.js';
 import type { FieldExtractionConfig } from '../generic.js';
 import { hasKeyword, findVisibility, typeFromAnnotation } from './helpers.js';
+import type { FieldVisibility } from '../../field-types.js';
 
-const VISIBILITY_KEYWORDS = new Set(['public', 'private', 'protected']);
+const VISIBILITY_KEYWORDS = new Set<FieldVisibility>(['public', 'private', 'protected']);
 
 const shared: Omit<FieldExtractionConfig, 'language'> = {
   typeDeclarationNodes: [
@@ -43,7 +44,7 @@ const shared: Omit<FieldExtractionConfig, 'language'> = {
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
       if (child && child.type === 'accessibility_modifier') {
-        const t = child.text.trim();
+        const t = child.text.trim() as FieldVisibility;
         if (VISIBILITY_KEYWORDS.has(t)) return t;
       }
     }

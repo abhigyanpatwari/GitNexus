@@ -7,7 +7,7 @@ import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
 import { getLanguageFromFilename } from './utils/language-detection.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
-import { getDefinitionNodeFromCaptures, findEnclosingClassId, extractMethodSignature, getLabelFromCaptures, CLASS_CONTAINER_TYPES } from './utils/ast-helpers.js';
+import { getDefinitionNodeFromCaptures, findEnclosingClassId, extractMethodSignature, getLabelFromCaptures, CLASS_CONTAINER_TYPES, type SyntaxNode } from './utils/ast-helpers.js';
 import { detectFrameworkFromAST } from './framework-detection.js';
 import { buildTypeEnv } from './type-env.js';
 import type { FieldInfo, FieldExtractorContext } from './field-types.js';
@@ -177,12 +177,12 @@ const NOOP_SYMBOL_TABLE_SEQ: any = {
 };
 
 function seqGetFieldInfo(
-  classNode: any,
+  classNode: SyntaxNode,
   provider: LanguageProvider,
   context: FieldExtractorContext,
 ): Map<string, FieldInfo> | undefined {
   if (!provider.fieldExtractor) return undefined;
-  const cacheKey = classNode.startIndex as number;
+  const cacheKey = classNode.startIndex;
   let cached = seqFieldInfoCache.get(cacheKey);
   if (cached) return cached;
   const extracted = provider.fieldExtractor.extract(classNode, context);

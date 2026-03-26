@@ -4,12 +4,13 @@ import { SupportedLanguages } from '../../../../config/supported-languages.js';
 import type { FieldExtractionConfig } from '../generic.js';
 import { findVisibility, hasKeyword, hasModifier, typeFromField } from './helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
+import type { FieldVisibility } from '../../field-types.js';
 
 // ---------------------------------------------------------------------------
 // Java
 // ---------------------------------------------------------------------------
 
-const JAVA_VIS = new Set(['public', 'private', 'protected']);
+const JAVA_VIS = new Set<FieldVisibility>(['public', 'private', 'protected']);
 
 export const javaConfig: FieldExtractionConfig = {
   language: SupportedLanguages.Java,
@@ -70,7 +71,7 @@ export const javaConfig: FieldExtractionConfig = {
 // Kotlin
 // ---------------------------------------------------------------------------
 
-const KOTLIN_VIS = new Set(['public', 'private', 'protected', 'internal']);
+const KOTLIN_VIS = new Set<FieldVisibility>(['public', 'private', 'protected', 'internal']);
 
 export const kotlinConfig: FieldExtractionConfig = {
   language: SupportedLanguages.Kotlin,

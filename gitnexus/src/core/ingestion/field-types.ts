@@ -5,6 +5,23 @@ import type { SymbolTable } from './symbol-table.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
 
 /**
+ * Visibility levels used across all supported languages.
+ * - public / private / protected: universal modifiers
+ * - internal: C#, Kotlin (assembly/module scope)
+ * - package: Java (package-private, no keyword)
+ * - fileprivate: Swift (file scope)
+ * - open: Swift (subclassable across modules)
+ */
+export type FieldVisibility =
+  | 'public'
+  | 'private'
+  | 'protected'
+  | 'internal'
+  | 'package'
+  | 'fileprivate'
+  | 'open';
+
+/**
  * Represents a field or property within a class/struct/interface
  */
 export interface FieldInfo {
@@ -12,8 +29,8 @@ export interface FieldInfo {
   name: string;
   /** Resolved type (may be primitive, FQN, or generic) */
   type: string | null;
-  /** Visibility: public, private, protected, internal */
-  visibility: string;
+  /** Visibility modifier */
+  visibility: FieldVisibility;
   /** Is this a static member? */
   isStatic: boolean;
   /** Is this readonly/const? */

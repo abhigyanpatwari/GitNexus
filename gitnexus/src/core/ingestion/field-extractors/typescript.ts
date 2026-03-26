@@ -3,17 +3,19 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import { BaseFieldExtractor } from '../field-extractor.js';
-import type { FieldExtractorContext, ExtractedFields, FieldInfo } from '../field-types.js';
+import type { FieldExtractorContext, ExtractedFields, FieldInfo, FieldVisibility } from '../field-types.js';
 
 /**
- * TypeScript field extractor for class and interface declarations.
- * 
- * Handles:
- * - Class fields with visibility modifiers (public/private/protected)
- * - Interface properties with optional markers (?:)
- * - Static and readonly modifiers
- * - Complex generic types
- * - Property signatures in interface bodies
+ * Hand-written TypeScript field extractor.
+ *
+ * This exists alongside the config-based extractor in configs/typescript-javascript.ts
+ * (used for JavaScript) because TypeScript has unique requirements:
+ * 1. type_alias_declaration with object type literals (e.g., type Config = { key: string })
+ * 2. Optional property detection appending '| undefined' to types
+ * 3. Nested type discovery within class/interface bodies
+ *
+ * The config-based extractor cannot express these TS-specific capabilities.
+ * JavaScript uses the config-based version since it lacks type syntax.
  */
 export class TypeScriptFieldExtractor extends BaseFieldExtractor {
   language = SupportedLanguages.TypeScript;
@@ -40,7 +42,7 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
   /**
    * Visibility modifiers in TypeScript
    */
-  private static readonly VISIBILITY_MODIFIERS = new Set([
+  private static readonly VISIBILITY_MODIFIERS = new Set<FieldVisibility>([
     'public',
     'private',
     'protected',
@@ -56,12 +58,12 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
   /**
    * Extract visibility modifier from a field node
    */
-  protected extractVisibility(node: SyntaxNode): string {
+  protected extractVisibility(node: SyntaxNode): FieldVisibility {
     // Check for accessibility_modifier named child (tree-sitter typescript)
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
       if (child && child.type === 'accessibility_modifier') {
-        const text = child.text.trim();
+        const text = child.text.trim() as FieldVisibility;
         if (TypeScriptFieldExtractor.VISIBILITY_MODIFIERS.has(text)) {
           return text;
         }
@@ -72,7 +74,7 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
     for (let i = 0; i < node.childCount; i++) {
       const child = node.child(i);
       if (child && !child.isNamed) {
-        const text = child.text.trim();
+        const text = child.text.trim() as FieldVisibility;
         if (TypeScriptFieldExtractor.VISIBILITY_MODIFIERS.has(text)) {
           return text;
         }
@@ -84,8 +86,9 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
     if (modifiers) {
       for (let i = 0; i < modifiers.childCount; i++) {
         const modifier = modifiers.child(i);
-        if (modifier && TypeScriptFieldExtractor.VISIBILITY_MODIFIERS.has(modifier.text)) {
-          return modifier.text;
+        const modText = modifier?.text.trim() as FieldVisibility | undefined;
+        if (modText && TypeScriptFieldExtractor.VISIBILITY_MODIFIERS.has(modText)) {
+          return modText;
         }
       }
     }
@@ -164,65 +167,19 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
   }
 
   /**
-   * Extract the full type text, handling complex generic types
+   * Extract the full type text, handling complex generic types.
+   *
+   * type_annotation nodes wrap the literal ': SomeType' — only that branch
+   * needs special handling to unwrap the inner child and skip the colon.
+   * All other node kinds are already the type text itself, so normalizeType
+   * is applied directly.
    */
   private extractFullType(typeNode: SyntaxNode | null): string | null {
     if (!typeNode) return null;
-
-    // For type_annotation, get the inner type (skip the ':')
     if (typeNode.type === 'type_annotation') {
       const innerType = typeNode.firstNamedChild;
-      if (innerType) {
-        return this.normalizeType(innerType.text);
-      }
+      return innerType ? this.normalizeType(innerType.text) : null;
     }
-
-    // Handle predefined_type (string, number, boolean, etc.)
-    if (typeNode.type === 'predefined_type') {
-      return typeNode.text;
-    }
-
-    // Handle type_identifier (custom types)
-    if (typeNode.type === 'type_identifier') {
-      return typeNode.text;
-    }
-
-    // Handle generic_type (Array<User>, Map<string, User>, etc.)
-    if (typeNode.type === 'generic_type') {
-      return this.normalizeType(typeNode.text);
-    }
-
-    // Handle array_type (User[])
-    if (typeNode.type === 'array_type') {
-      return this.normalizeType(typeNode.text);
-    }
-
-    // Handle union_type (User | null)
-    if (typeNode.type === 'union_type') {
-      return this.normalizeType(typeNode.text);
-    }
-
-    // Handle intersection_type (A & B)
-    if (typeNode.type === 'intersection_type') {
-      return this.normalizeType(typeNode.text);
-    }
-
-    // Handle object_type ({ name: string; age: number })
-    if (typeNode.type === 'object_type') {
-      return this.normalizeType(typeNode.text);
-    }
-
-    // Handle literal types
-    if (typeNode.type === 'literal_type') {
-      return this.normalizeType(typeNode.text);
-    }
-
-    // Handle nullable_type (string | null shorthand)
-    if (typeNode.type === 'nullable_type') {
-      return this.normalizeType(typeNode.text);
-    }
-
-    // Fallback: use the full text and normalize
     return this.normalizeType(typeNode.text);
   }
 
