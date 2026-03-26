@@ -36,9 +36,9 @@ COPY --from=web-builder /app/dist /usr/share/nginx/html
 RUN printf 'server {\n    listen 8080;\n    root /usr/share/nginx/html;\n    index index.html;\n    add_header Cross-Origin-Opener-Policy same-origin;\n    add_header Cross-Origin-Embedder-Policy require-corp;\n    location / { try_files $uri $uri/ /index.html; }\n}\n' \
     > /etc/nginx/sites-available/default
 
-RUN printf '#!/bin/sh\nif [ "$1" = "web" ]; then\n  exec nginx -g "daemon off;"\nelse\n  exec node /app/dist/cli/index.js "$@"\nfi\n' \
+RUN printf '#!/bin/sh\nif [ "$1" = "web" ]; then\n  exec nginx -g "daemon off;"\nelif [ "$1" = "both" ]; then\n  node /app/dist/cli/index.js serve --host 0.0.0.0 &\n  exec nginx -g "daemon off;"\nelse\n  exec node /app/dist/cli/index.js "$@"\nfi\n' \
     > /entrypoint.sh && chmod +x /entrypoint.sh
 
-EXPOSE 8080
+EXPOSE 8080 4747
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["--help"]
