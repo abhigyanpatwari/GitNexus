@@ -11,7 +11,7 @@
  * Keep both copies in sync until a shared package is introduced.
  */
 
-import { SupportedLanguages } from '../../config/supported-languages.js';
+import type { SyntaxNode } from './utils/ast-helpers.js';
 
 // ── Call routing dispatch table ─────────────────────────────────────────────
 
@@ -26,28 +26,8 @@ export type CallRoutingResult = RubyCallRouting | null;
  */
 export type CallRouter = (
   calledName: string,
-  callNode: any,
+  callNode: SyntaxNode,
 ) => CallRoutingResult;
-
-/** No-op router: returns null for every call (passthrough to normal processing) */
-const noRouting: CallRouter = () => null;
-
-/** Per-language call routing. noRouting = no special routing (normal call processing) */
-export const callRouters = {
-  [SupportedLanguages.JavaScript]: noRouting,
-  [SupportedLanguages.TypeScript]: noRouting,
-  [SupportedLanguages.Python]: noRouting,
-  [SupportedLanguages.Java]: noRouting,
-  [SupportedLanguages.Kotlin]: noRouting,
-  [SupportedLanguages.Go]: noRouting,
-  [SupportedLanguages.Rust]: noRouting,
-  [SupportedLanguages.CSharp]: noRouting,
-  [SupportedLanguages.PHP]: noRouting,
-  [SupportedLanguages.Swift]: noRouting,
-  [SupportedLanguages.CPlusPlus]: noRouting,
-  [SupportedLanguages.C]: noRouting,
-  [SupportedLanguages.Ruby]: routeRubyCall,
-} satisfies Record<SupportedLanguages, CallRouter>;
 
 // ── Result types ────────────────────────────────────────────────────────────
 
@@ -91,7 +71,7 @@ const MAX_PARENT_DEPTH = 50;
  * @param callNode   - The tree-sitter `call` AST node
  * @returns A discriminated union describing the call's semantic role
  */
-export function routeRubyCall(calledName: string, callNode: any): RubyCallRouting {
+export function routeRubyCall(calledName: string, callNode: SyntaxNode): RubyCallRouting {
   // ── require / require_relative → import ─────────────────────────────────
   if (calledName === 'require' || calledName === 'require_relative') {
     const argList = callNode.childForFieldName?.('arguments');

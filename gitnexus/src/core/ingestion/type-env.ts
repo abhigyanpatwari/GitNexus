@@ -1,7 +1,9 @@
-import type { SyntaxNode } from './utils.js';
-import { FUNCTION_NODE_TYPES, extractFunctionName, CLASS_CONTAINER_TYPES, CALL_EXPRESSION_TYPES, isBuiltInOrNoise } from './utils.js';
+import { type SyntaxNode, FUNCTION_NODE_TYPES, extractFunctionName, CLASS_CONTAINER_TYPES } from './utils/ast-helpers.js';
+import { CALL_EXPRESSION_TYPES } from './utils/call-analysis.js';
+import { isBuiltInOrNoise } from './utils/noise-filter.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
-import { typeConfigs, TYPED_PARAMETER_TYPES } from './type-extractors/index.js';
+import { TYPED_PARAMETER_TYPES } from './type-extractors/shared.js';
+import { getProvider } from './languages/index.js';
 import type { ClassNameLookup, ReturnTypeLookup, ForLoopExtractorContext, PendingAssignment } from './type-extractors/types.js';
 import { extractSimpleTypeName, extractVarName, stripNullable, extractReturnTypeName } from './type-extractors/shared.js';
 import type { SymbolTable } from './symbol-table.js';
@@ -19,10 +21,13 @@ import type { SymbolTable } from './symbol-table.js';
  * - Conservative: complex/generic types extract the base name only
  * - Per-file: built once, used for receiver resolution, then discarded
  */
-export type TypeEnv = Map<string, Map<string, string>>;
+type TypeEnv = Map<string, Map<string, string>>;
 
 /** File-level scope key */
 const FILE_SCOPE = '';
+
+/** Shared empty map for files with no file-scope bindings. */
+const EMPTY_FILE_SCOPE: ReadonlyMap<string, string> = new Map();
 
 /** Fallback for languages where class names aren't in a 'name' field (e.g. Kotlin uses type_identifier). */
 const findTypeIdentifierChild = (node: SyntaxNode): SyntaxNode | null => {
@@ -44,8 +49,11 @@ export interface TypeEnvironment {
   lookup(varName: string, callNode: SyntaxNode): string | undefined;
   /** Unverified cross-file constructor bindings for SymbolTable verification. */
   readonly constructorBindings: readonly ConstructorBinding[];
-  /** Raw per-scope type bindings — for testing and debugging. */
-  readonly env: TypeEnv;
+  /** Get all file-scope bindings (scope key = '') as a read-only map. */
+  fileScope(): ReadonlyMap<string, string>;
+  /** All scoped bindings as a read-only nested map (scope → varName → type).
+   *  Use for diagnostics/testing. Prefer lookup() for production call resolution. */
+  allScopes(): ReadonlyMap<string, ReadonlyMap<string, string>>;
   /** Maps `scope\0varName` → constructor type for virtual dispatch override.
    *  Populated when a variable has BOTH a declared base type AND a more specific
    *  constructor type (e.g., `Animal a = new Dog()` → key maps to 'Dog'). */
@@ -152,21 +160,31 @@ const lookupInEnv = (
   return raw ? fastStripNullable(raw) : undefined;
 };
 
+/** Per-file memoization caches for expensive parent-walk functions.
+ *  Cleared at the start of each buildTypeEnv call (one call per file). */
+const enclosingClassNameCache = new Map<SyntaxNode, string | undefined>();
+const enclosingParentClassNameCache = new Map<SyntaxNode, string | undefined>();
 
 /**
  * Walk up the AST from a node to find the enclosing class/module name.
  * Used to resolve `self`/`this` receivers to their containing type.
+ * Memoized per-file: cache is cleared at buildTypeEnv entry.
  */
 const findEnclosingClassName = (node: SyntaxNode): string | undefined => {
+  if (enclosingClassNameCache.has(node)) return enclosingClassNameCache.get(node);
   let current = node.parent;
   while (current) {
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
       const nameNode = current.childForFieldName('name')
         ?? findTypeIdentifierChild(current);
-      if (nameNode) return nameNode.text;
+      if (nameNode) {
+        enclosingClassNameCache.set(node, nameNode.text);
+        return nameNode.text;
+      }
     }
     current = current.parent;
   }
+  enclosingClassNameCache.set(node, undefined);
   return undefined;
 };
 
@@ -202,13 +220,17 @@ const substituteThisReceiver = (item: PendingAssignment, node: SyntaxNode): Pend
  * - Swift: unnamed `inheritance_specifier` child → user_type → type_identifier
  */
 const findEnclosingParentClassName = (node: SyntaxNode): string | undefined => {
+  if (enclosingParentClassNameCache.has(node)) return enclosingParentClassNameCache.get(node);
   let current = node.parent;
   while (current) {
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
-      return extractParentClassFromNode(current);
+      const result = extractParentClassFromNode(current);
+      enclosingParentClassNameCache.set(node, result);
+      return result;
     }
     current = current.parent;
   }
+  enclosingParentClassNameCache.set(node, undefined);
   return undefined;
 };
 
@@ -682,6 +704,10 @@ export const buildTypeEnv = (
   language: SupportedLanguages,
   options?: BuildTypeEnvOptions,
 ): TypeEnvironment => {
+  // Clear per-file memoization caches from the previous file.
+  enclosingClassNameCache.clear();
+  enclosingParentClassNameCache.clear();
+
   const symbolTable = options?.symbolTable;
   const parentMap = options?.parentMap;
   const env: TypeEnv = new Map();
@@ -692,7 +718,8 @@ export const buildTypeEnv = (
   const constructorTypeMap = new Map<string, string>();
   const localClassNames = new Set<string>();
   const classNames = createClassNameLookup(localClassNames, symbolTable);
-  const config = typeConfigs[language];
+  const provider = getProvider(language);
+  const config = provider.typeConfig;
   const bindings: ConstructorBinding[] = [];
 
   // Build ReturnTypeLookup: SymbolTable is authoritative when it has an unambiguous match.
@@ -1083,7 +1110,8 @@ export const buildTypeEnv = (
   return {
     lookup: (varName, callNode) => lookupInEnv(env, varName, callNode, patternOverrides),
     constructorBindings: bindings,
-    env,
+    fileScope: () => env.get(FILE_SCOPE) ?? EMPTY_FILE_SCOPE,
+    allScopes: () => env as ReadonlyMap<string, ReadonlyMap<string, string>>,
     constructorTypeMap,
   };
 };

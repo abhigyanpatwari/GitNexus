@@ -1,4 +1,4 @@
-import type { SyntaxNode } from '../utils.js';
+import type { SyntaxNode } from '../utils/ast-helpers.js';
 
 /** Which type argument to extract from a multi-arg generic container.
  *  - 'first': key type (e.g., K from Map<K,V>) — used for .keys(), .keySet()

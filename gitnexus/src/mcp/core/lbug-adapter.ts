@@ -81,6 +81,17 @@ function ensureIdleTimer(): void {
 }
 
 /**
+ * Touch a repo to reset its idle timeout.
+ * Call this during long-running operations to prevent the connection from being closed.
+ */
+export const touchRepo = (repoId: string): void => {
+  const entry = pool.get(repoId);
+  if (entry) {
+    entry.lastUsed = Date.now();
+  }
+};
+
+/**
  * Evict the least-recently-used repo if pool is at capacity
  */
 function evictLRU(): void {

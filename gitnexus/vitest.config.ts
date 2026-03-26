@@ -32,7 +32,6 @@ export default defineConfig({
         branches: 23,
         functions: 28,
         lines: 27,
-        autoUpdate: true,
       },
     },
 
@@ -62,6 +61,7 @@ export default defineConfig({
             'test/integration/staleness-and-stability.test.ts',
             'test/integration/lbug-lock-retry.test.ts',
             'test/integration/api-impact-e2e.test.ts',
+            'test/integration/shape-check-regression.test.ts',
           ],
           fileParallelism: false,
           sequence: { groupOrder: 1 },
@@ -86,9 +86,11 @@ export default defineConfig({
             'test/integration/lbug-lock-retry.test.ts',
             'test/integration/lbug-lock-retry.test.ts',
             'test/integration/api-impact-e2e.test.ts',
+            'test/integration/shape-check-regression.test.ts',
           ],
         },
       },
     ],
   },
 });
+

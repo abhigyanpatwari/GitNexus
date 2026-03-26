@@ -331,6 +331,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
               : 'w-10 h-10 flex items-center justify-center bg-elevated border border-border-subtle rounded-lg text-text-muted hover:bg-hover hover:text-text-primary transition-colors'
           }
           title={isAIHighlightsEnabled ? 'Turn off all highlights' : 'Turn on AI highlights'}
+          data-testid="ai-highlights-toggle"
         >
           {isAIHighlightsEnabled ? <Lightbulb className="w-4 h-4" /> : <LightbulbOff className="w-4 h-4" />}
         </button>

@@ -10,13 +10,13 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import Parser from 'tree-sitter';
 import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
-import { LANGUAGE_QUERIES } from '../../src/core/ingestion/tree-sitter-queries.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { getProvider } from '../../src/core/ingestion/languages/index.js';
 import {
   findEnclosingClassId,
   DEFINITION_CAPTURE_KEYS,
   getDefinitionNodeFromCaptures,
-} from '../../src/core/ingestion/utils.js';
+} from '../../src/core/ingestion/utils/ast-helpers.js';
 
 let parser: Parser;
 
@@ -31,7 +31,8 @@ function parseAndExtractMethods(
   filePath: string,
 ): { name: string; defType: string; enclosingClassId: string | null }[] {
   const tree = parser.parse(code);
-  const query = new Parser.Query(parser.getLanguage(), LANGUAGE_QUERIES[lang]);
+  const provider = getProvider(lang);
+  const query = new Parser.Query(parser.getLanguage(), provider.treeSitterQueries);
   const matches = query.matches(tree.rootNode);
 
   const results: { name: string; defType: string; enclosingClassId: string | null }[] = [];

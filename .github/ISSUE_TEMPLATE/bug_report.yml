@@ -1,0 +1,86 @@
+name: Bug report
+description: Report unexpected behavior or a regression
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Goal:** capture enough context to reproduce and fix the issue quickly.
+        Use **one issue per bug**; split unrelated problems.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Where does the problem show up?
+      options:
+        - gitnexus (CLI / core / indexing / MCP server)
+        - gitnexus-web (browser UI / WASM / workers)
+        - CI / GitHub Actions
+        - Documentation / developer experience
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One sentence — what went wrong?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What were you trying to do? Any relevant links, PRs, or commits?
+    validations:
+      required: false
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Ordered steps, sample repo or minimal case, commands run.
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node version, browser (if web), GitNexus version or commit SHA.
+      placeholder: |
+        - OS:
+        - Node:
+        - Browser (if applicable):
+        - Commit / version:
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      description: Paste errors, stack traces, or attach screenshots (redact secrets).
+    validations:
+      required: false

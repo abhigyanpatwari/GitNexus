@@ -7,18 +7,17 @@
  * Shared between parse-worker.ts (worker pool) and parsing-processor.ts (sequential fallback).
  */
 
-import { findSiblingChild, SyntaxNode } from './utils.js';
-import { SupportedLanguages } from '../../config/supported-languages.js';
+import { findSiblingChild, type SyntaxNode } from './utils/ast-helpers.js';
 
 /** Handler type: given a node and symbol name, return true if the symbol is exported/public. */
-type ExportChecker = (node: SyntaxNode, name: string) => boolean;
+export type ExportChecker = (node: SyntaxNode, name: string) => boolean;
 
 // ============================================================================
 // Per-language export checkers
 // ============================================================================
 
 /** JS/TS: walk ancestors looking for export_statement or export_specifier. */
-const tsExportChecker: ExportChecker = (node, _name) => {
+export const tsExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
   while (current) {
     const type = current.type;
@@ -37,10 +36,10 @@ const tsExportChecker: ExportChecker = (node, _name) => {
 };
 
 /** Python: public if no leading underscore (convention). */
-const pythonExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
+export const pythonExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
 
 /** Java: check for 'public' modifier — modifiers are siblings of the name node, not parents. */
-const javaExportChecker: ExportChecker = (node, _name) => {
+export const javaExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
   while (current) {
     if (current.parent) {
@@ -76,7 +75,7 @@ const CSHARP_DECL_TYPES = new Set([
  * C#: modifier nodes are SIBLINGS of the name node inside the declaration.
  * Walk up to the declaration node, then scan its direct children.
  */
-const csharpExportChecker: ExportChecker = (node, _name) => {
+export const csharpExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
   while (current) {
     if (CSHARP_DECL_TYPES.has(current.type)) {
@@ -92,7 +91,7 @@ const csharpExportChecker: ExportChecker = (node, _name) => {
 };
 
 /** Go: uppercase first letter = exported. */
-const goExportChecker: ExportChecker = (_node, name) => {
+export const goExportChecker: ExportChecker = (_node, name) => {
   if (name.length === 0) return false;
   const first = name[0];
   return first === first.toUpperCase() && first !== first.toLowerCase();
@@ -110,7 +109,7 @@ const RUST_DECL_TYPES = new Set([
  * (function_item, struct_item, etc.), not a parent. Walk up to the declaration node,
  * then scan its direct children.
  */
-const rustExportChecker: ExportChecker = (node, _name) => {
+export const rustExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
   while (current) {
     if (RUST_DECL_TYPES.has(current.type)) {
@@ -129,7 +128,7 @@ const rustExportChecker: ExportChecker = (node, _name) => {
  * Kotlin: default visibility is public (unlike Java).
  * visibility_modifier is inside modifiers, a sibling of the name node within the declaration.
  */
-const kotlinExportChecker: ExportChecker = (node, _name) => {
+export const kotlinExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
   while (current) {
     if (current.parent) {
@@ -152,7 +151,7 @@ const kotlinExportChecker: ExportChecker = (node, _name) => {
  * marked 'static' are file-scoped (not exported). C++ anonymous namespaces
  * (namespace { ... }) also give internal linkage.
  */
-const cCppExportChecker: ExportChecker = (node, _name) => {
+export const cCppExportChecker: ExportChecker = (node, _name) => {
   let cur: SyntaxNode | null = node;
   while (cur) {
     if (cur.type === 'function_definition' || cur.type === 'declaration') {
@@ -174,7 +173,7 @@ const cCppExportChecker: ExportChecker = (node, _name) => {
 };
 
 /** PHP: check for visibility modifier or top-level scope. */
-const phpExportChecker: ExportChecker = (node, _name) => {
+export const phpExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
   while (current) {
     if (current.type === 'class_declaration' ||
@@ -200,7 +199,7 @@ const phpExportChecker: ExportChecker = (node, _name) => {
  * `internal` symbols should be treated as exported (cross-file visible).
  * Only `private` and `fileprivate` symbols are truly file-scoped.
  */
-const swiftExportChecker: ExportChecker = (node, _name) => {
+export const swiftExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
   while (current) {
     if (current.type === 'modifiers' || current.type === 'visibility_modifier') {
@@ -215,39 +214,6 @@ const swiftExportChecker: ExportChecker = (node, _name) => {
   return true;
 };
 
-// ============================================================================
-// Exhaustive dispatch table — satisfies enforces all SupportedLanguages are covered
-// ============================================================================
+/** Ruby: all top-level definitions are public (no export syntax). */
+export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 
-const exportCheckers = {
-  [SupportedLanguages.JavaScript]: tsExportChecker,
-  [SupportedLanguages.TypeScript]: tsExportChecker,
-  [SupportedLanguages.Python]: pythonExportChecker,
-  [SupportedLanguages.Java]: javaExportChecker,
-  [SupportedLanguages.CSharp]: csharpExportChecker,
-  [SupportedLanguages.Go]: goExportChecker,
-  [SupportedLanguages.Rust]: rustExportChecker,
-  [SupportedLanguages.Kotlin]: kotlinExportChecker,
-  [SupportedLanguages.C]: cCppExportChecker,
-  [SupportedLanguages.CPlusPlus]: cCppExportChecker,
-  [SupportedLanguages.PHP]: phpExportChecker,
-  [SupportedLanguages.Swift]: swiftExportChecker,
-  [SupportedLanguages.Ruby]: (_node, _name) => true,
-} satisfies Record<SupportedLanguages, ExportChecker>;
-
-// ============================================================================
-// Public API
-// ============================================================================
-
-/**
- * Check if a tree-sitter node is exported/public in its language.
- * @param node - The tree-sitter AST node
- * @param name - The symbol name
- * @param language - The programming language
- * @returns true if the symbol is exported/public
- */
-export const isNodeExported = (node: SyntaxNode, name: string, language: SupportedLanguages): boolean => {
-  const checker = exportCheckers[language];
-  if (!checker) return false;
-  return checker(node, name);
-};

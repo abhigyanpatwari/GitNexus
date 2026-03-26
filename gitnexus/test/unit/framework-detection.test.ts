@@ -39,6 +39,28 @@ describe('detectFrameworkFromPath', () => {
     });
   });
 
+  describe('Expo Router', () => {
+    it('detects _layout files', () => {
+      const result = detectFrameworkFromPath('app/_layout.tsx');
+      expect(result).not.toBeNull();
+      expect(result!.framework).toBe('expo-router');
+      expect(result!.reason).toBe('expo-layout');
+    });
+    it('detects +api routes', () => {
+      const result = detectFrameworkFromPath('app/users+api.ts');
+      expect(result).not.toBeNull();
+      expect(result!.framework).toBe('expo-router');
+      expect(result!.reason).toBe('expo-api-route');
+    });
+    it('detects screen files', () => {
+      const result = detectFrameworkFromPath('app/(tabs)/settings.tsx');
+      expect(result).not.toBeNull();
+      expect(result!.framework).toBe('expo-router');
+      expect(result!.reason).toBe('expo-screen');
+      expect(result!.entryPointMultiplier).toBe(2.5);
+    });
+  });
+
   describe('Express / Node.js', () => {
     it('detects route files', () => {
       const result = detectFrameworkFromPath('routes/auth.ts');
@@ -318,12 +340,23 @@ describe('detectFrameworkFromAST', () => {
     const result = detectFrameworkFromAST('TypeScript', '@controller("/")');
     expect(result).not.toBeNull();
   });
+
+  it('detects Expo Router useRouter hook', () => {
+    const result = detectFrameworkFromAST('typescript', 'const router = useRouter()');
+    expect(result).not.toBeNull();
+    expect(result!.framework).toBe('expo-router');
+  });
+  it('detects Expo Router router.push', () => {
+    const result = detectFrameworkFromAST('javascript', "router.push('/settings')");
+    expect(result).not.toBeNull();
+    expect(result!.framework).toBe('expo-router');
+  });
 });
 
 describe('FRAMEWORK_AST_PATTERNS', () => {
   it('has patterns for all expected frameworks', () => {
     const expectedFrameworks = [
-      'nestjs', 'express', 'fastapi', 'flask', 'spring', 'jaxrs',
+      'nestjs', 'expo-router', 'express', 'fastapi', 'flask', 'spring', 'jaxrs',
       'aspnet', 'go-http', 'gin', 'echo', 'fiber', 'go-grpc',
       'laravel', 'actix', 'axum', 'rocket', 'tokio', 'qt',
       'uikit', 'swiftui', 'vapor', 'rails', 'sinatra',

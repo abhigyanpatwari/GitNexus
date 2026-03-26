@@ -17,6 +17,7 @@ import { execSync, execFileSync } from 'child_process';
 import {
   initWikiDb,
   closeWikiDb,
+  touchWikiDb,
   getFilesWithExports,
   getAllFiles,
   getInterFileCallEdges,
@@ -34,7 +35,13 @@ import {
   estimateTokens,
   type LLMConfig,
   type CallLLMOptions,
+  type LLMResponse,
 } from './llm-client.js';
+
+import {
+  callCursorLLM,
+  resolveCursorConfig,
+} from './cursor-client.js';
 
 import {
   GROUPING_SYSTEM_PROMPT,
@@ -58,11 +65,10 @@ import { shouldIgnorePath } from '../../config/ignore-service.js';
 
 export interface WikiOptions {
   force?: boolean;
-  model?: string;
-  baseUrl?: string;
-  apiKey?: string;
   maxTokensPerModule?: number;
   concurrency?: number;
+  /** If true, stop after building module tree for user review */
+  reviewOnly?: boolean;
 }
 
 export interface WikiMeta {
@@ -81,6 +87,13 @@ export interface ModuleTreeNode {
 }
 
 export type ProgressCallback = (phase: string, percent: number, detail?: string) => void;
+
+export interface WikiRunResult {
+  pagesGenerated: number;
+  mode: 'full' | 'incremental' | 'up-to-date';
+  failedModules: string[];
+  moduleTree?: ModuleTreeNode[];
+}
 
 // ─── Constants ────────────────────────────────────────────────────────
 
@@ -128,22 +141,67 @@ export class WikiGenerator {
 
   /**
    * Create streaming options that report LLM progress to the progress bar.
-   * Uses the last known percent so streaming doesn't reset the bar backwards.
+   * 
+   * Progress calculation:
+   * - If fixedPercent is provided, we show incremental progress within that phase
+   *   based on token generation (e.g., grouping at 15% → 15-28%)
+   * - If fixedPercent is NOT provided, we only update the label with token count
+   *   but keep the current percentage (avoids fluctuation during module generation)
+   * 
+   * Also touches the DB connection periodically to prevent idle timeout.
    */
-  private streamOpts(label: string, fixedPercent?: number): CallLLMOptions {
+  private streamOpts(label: string, fixedPercent?: number, percentRange = 10): CallLLMOptions {
+    const hasFixedStart = fixedPercent !== undefined;
+    const startPercent = fixedPercent ?? this.lastPercent;
+    const expectedTokens = 2000;
+    let lastTouch = Date.now();
+    
     return {
       onChunk: (chars: number) => {
         const tokens = Math.round(chars / 4);
-        const pct = fixedPercent ?? this.lastPercent;
-        this.onProgress('stream', pct, `${label} (${tokens} tok)`);
+        
+        if (hasFixedStart) {
+          // For fixed phases (like grouping), show incremental progress
+          const progress = Math.min(1, tokens / expectedTokens);
+          const pct = Math.round(startPercent + (progress * percentRange));
+          this.onProgress('stream', pct, `${label} (${tokens} tok)`);
+        } else {
+          // For module generation, only update the label, keep current percent
+          this.onProgress('stream', this.lastPercent, `${label} (${tokens} tok)`);
+        }
+        
+        // Touch DB every 60s to prevent idle timeout during long LLM calls
+        const now = Date.now();
+        if (now - lastTouch > 60_000) {
+          touchWikiDb();
+          lastTouch = now;
+        }
       },
     };
   }
 
   /**
+   * Route LLM call to the appropriate provider (OpenAI-compatible or Cursor CLI).
+   */
+  private async invokeLLM(
+    prompt: string,
+    systemPrompt: string,
+    options?: CallLLMOptions,
+  ): Promise<LLMResponse> {
+    if (this.llmConfig.provider === 'cursor') {
+      const cursorConfig = resolveCursorConfig({
+        model: this.llmConfig.model,
+        workingDirectory: this.repoPath,
+      });
+      return callCursorLLM(prompt, cursorConfig, systemPrompt, options);
+    }
+    return callLLM(prompt, this.llmConfig, systemPrompt, options);
+  }
+
+  /**
    * Main entry point. Runs the full pipeline or incremental update.
    */
-  async run(): Promise<{ pagesGenerated: number; mode: 'full' | 'incremental' | 'up-to-date'; failedModules: string[] }> {
+  async run(): Promise<WikiRunResult> {
     await fs.mkdir(this.wikiDir, { recursive: true });
 
     const existingMeta = await this.loadWikiMeta();
@@ -173,7 +231,7 @@ export class WikiGenerator {
     this.onProgress('init', 2, 'Connecting to knowledge graph...');
     await initWikiDb(this.lbugPath);
 
-    let result: { pagesGenerated: number; mode: 'full' | 'incremental' | 'up-to-date'; failedModules: string[] };
+    let result: WikiRunResult;
     try {
       if (!forceMode && existingMeta && existingMeta.fromCommit) {
         result = await this.incrementalUpdate(existingMeta, currentCommit);
@@ -205,7 +263,7 @@ export class WikiGenerator {
 
   // ─── Full Generation ────────────────────────────────────────────────
 
-  private async fullGeneration(currentCommit: string): Promise<{ pagesGenerated: number; mode: 'full'; failedModules: string[] }> {
+  private async fullGeneration(currentCommit: string): Promise<WikiRunResult> {
     let pagesGenerated = 0;
 
     // Phase 0: Gather structure
@@ -230,6 +288,14 @@ export class WikiGenerator {
     // Phase 1: Build module tree
     const moduleTree = await this.buildModuleTree(enrichedFiles);
     pagesGenerated = 0;
+
+    // If reviewOnly mode, save tree and stop for user to review/edit
+    if (this.options.reviewOnly) {
+      await this.saveModuleTree(moduleTree);
+      this.onProgress('review', 30, 'Module tree ready for review');
+      const reviewResult: WikiRunResult = { pagesGenerated: 0, mode: 'full', failedModules: [], moduleTree };
+      return reviewResult;
+    }
 
     // Phase 2: Generate module pages (parallel with concurrency limit)
     const totalModules = this.countModules(moduleTree);
@@ -307,6 +373,19 @@ export class WikiGenerator {
   // ─── Phase 1: Build Module Tree ────────────────────────────────────
 
   private async buildModuleTree(files: FileWithExports[]): Promise<ModuleTreeNode[]> {
+    // First, check for user-edited module_tree.json (from --review workflow)
+    const editablePath = path.join(this.wikiDir, 'module_tree.json');
+    try {
+      const edited = await fs.readFile(editablePath, 'utf-8');
+      const parsed = JSON.parse(edited);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        this.onProgress('grouping', 25, 'Using edited module tree');
+        return parsed;
+      }
+    } catch {
+      // No edited tree, check for original snapshot
+    }
+
     // Check for existing immutable snapshot (resumability)
     const snapshotPath = path.join(this.wikiDir, 'first_module_tree.json');
     try {
@@ -330,9 +409,9 @@ export class WikiGenerator {
       DIRECTORY_TREE: dirTree,
     });
 
-    const response = await callLLM(
-      prompt, this.llmConfig, GROUPING_SYSTEM_PROMPT,
-      this.streamOpts('Grouping files', 15),
+    const response = await this.invokeLLM(
+      prompt, GROUPING_SYSTEM_PROMPT,
+      this.streamOpts('Grouping files', 15, 13),
     );
     const grouping = this.parseGroupingResponse(response.content, files);
 
@@ -345,8 +424,14 @@ export class WikiGenerator {
       // Token budget check — split if too large
       const totalTokens = await this.estimateModuleTokens(modulePaths);
       if (totalTokens > this.maxTokensPerModule && modulePaths.length > 3) {
-        node.children = this.splitBySubdirectory(moduleName, modulePaths);
-        node.files = []; // Parent doesn't own files directly when split
+        const children = this.splitBySubdirectory(moduleName, modulePaths);
+        // Only create hierarchy if we actually got multiple children
+        // If splitting results in 1 child, keep files flat (avoid redundant nesting)
+        if (children.length > 1) {
+          node.children = children;
+          node.files = []; // Parent doesn't own files directly when split
+        }
+        // If only 1 child, keep original flat structure (files stay in node.files)
       }
 
       tree.push(node);
@@ -434,23 +519,31 @@ export class WikiGenerator {
 
   /**
    * Split a large module into sub-modules by subdirectory.
+   * Uses the full subDir path for naming to avoid slug collisions
+   * (e.g., "synapse-screen/src" vs "synapse-core/src").
    */
   private splitBySubdirectory(moduleName: string, files: string[]): ModuleTreeNode[] {
     const subGroups = new Map<string, string[]>();
     for (const fp of files) {
       const parts = fp.replace(/\\/g, '/').split('/');
-      // Use the deepest common-ish directory
       const subDir = parts.length > 2 ? parts.slice(0, 2).join('/') : parts[0];
       let group = subGroups.get(subDir);
       if (!group) { group = []; subGroups.set(subDir, group); }
       group.push(fp);
     }
 
-    return Array.from(subGroups.entries()).map(([subDir, subFiles]) => ({
-      name: `${moduleName} — ${path.basename(subDir)}`,
-      slug: this.slugify(`${moduleName}-${path.basename(subDir)}`),
-      files: subFiles,
-    }));
+    // Check if basenames are unique; if not, use the full subDir path
+    const basenames = Array.from(subGroups.keys()).map(s => path.basename(s));
+    const hasCollisions = new Set(basenames).size < basenames.length;
+
+    return Array.from(subGroups.entries()).map(([subDir, subFiles]) => {
+      const label = hasCollisions ? subDir.replace(/\//g, '-') : path.basename(subDir);
+      return {
+        name: `${moduleName} — ${label}`,
+        slug: this.slugify(`${moduleName}-${label}`),
+        files: subFiles,
+      };
+    });
   }
 
   // ─── Phase 2: Generate Module Pages ─────────────────────────────────
@@ -487,8 +580,8 @@ export class WikiGenerator {
       PROCESSES: formatProcesses(processes),
     });
 
-    const response = await callLLM(
-      prompt, this.llmConfig, MODULE_SYSTEM_PROMPT,
+    const response = await this.invokeLLM(
+      prompt, MODULE_SYSTEM_PROMPT,
       this.streamOpts(node.name),
     );
 
@@ -530,8 +623,8 @@ export class WikiGenerator {
       CROSS_PROCESSES: formatProcesses(processes),
     });
 
-    const response = await callLLM(
-      prompt, this.llmConfig, PARENT_SYSTEM_PROMPT,
+    const response = await this.invokeLLM(
+      prompt, PARENT_SYSTEM_PROMPT,
       this.streamOpts(node.name),
     );
 
@@ -577,8 +670,8 @@ export class WikiGenerator {
       TOP_PROCESSES: formatProcesses(topProcesses),
     });
 
-    const response = await callLLM(
-      prompt, this.llmConfig, OVERVIEW_SYSTEM_PROMPT,
+    const response = await this.invokeLLM(
+      prompt, OVERVIEW_SYSTEM_PROMPT,
       this.streamOpts('Generating overview', 88),
     );
 
@@ -591,11 +684,20 @@ export class WikiGenerator {
   private async incrementalUpdate(
     existingMeta: WikiMeta,
     currentCommit: string,
-  ): Promise<{ pagesGenerated: number; mode: 'incremental'; failedModules: string[] }> {
+  ): Promise<WikiRunResult> {
     this.onProgress('incremental', 5, 'Detecting changes...');
 
     // Get changed files since last generation
     const changedFiles = this.getChangedFiles(existingMeta.fromCommit, currentCommit);
+    
+    // If null, commits are on divergent branches (e.g., wiki generated on feature branch,
+    // now running on main). Fall back to full generation.
+    if (changedFiles === null) {
+      this.onProgress('incremental', 10, 'Branch diverged, running full generation...');
+      const fullResult = await this.fullGeneration(currentCommit);
+      return { ...fullResult, mode: 'incremental' };
+    }
+
     if (changedFiles.length === 0) {
       // No file changes but commit differs (e.g. merge commit)
       await this.saveWikiMeta({
@@ -710,7 +812,29 @@ export class WikiGenerator {
     }
   }
 
-  private getChangedFiles(fromCommit: string, toCommit: string): string[] {
+  /**
+   * Check if fromCommit is an ancestor of toCommit (reachable in git history).
+   * Returns false if commits are on divergent branches or fromCommit doesn't exist.
+   */
+  private isCommitReachable(fromCommit: string, toCommit: string): boolean {
+    try {
+      execFileSync(
+        'git', ['merge-base', '--is-ancestor', fromCommit, toCommit],
+        { cwd: this.repoPath, stdio: 'ignore' },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private getChangedFiles(fromCommit: string, toCommit: string): string[] | null {
+    // First check if fromCommit is reachable from toCommit
+    // This handles the case where wiki was generated on a different branch
+    if (!this.isCommitReachable(fromCommit, toCommit)) {
+      return null; // Signal that we can't compute diff (divergent branches)
+    }
+
     try {
       const output = execFileSync(
         'git', ['diff', `${fromCommit}..${toCommit}`, '--name-only'],
@@ -718,7 +842,7 @@ export class WikiGenerator {
       ).toString().trim();
       return output ? output.split('\n').filter(Boolean) : [];
     } catch {
-      return [];
+      return null; // Treat git errors as needing full regen
     }
   }
 

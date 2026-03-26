@@ -8,9 +8,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildSuffixIndex, suffixResolve } from '../../src/core/ingestion/resolvers/utils.js';
-import { resolvePythonImport } from '../../src/core/ingestion/resolvers/python.js';
-import { resolveImportPath } from '../../src/core/ingestion/resolvers/standard.js';
+import { buildSuffixIndex, suffixResolve } from '../../src/core/ingestion/import-resolvers/utils.js';
+import { resolvePythonImportInternal } from '../../src/core/ingestion/import-resolvers/python.js';
+import { resolveImportPath } from '../../src/core/ingestion/import-resolvers/standard.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
 // ---------------------------------------------------------------------------
@@ -31,7 +31,7 @@ function resolvePython(
   importPath: string,
   ctx: ReturnType<typeof makeCtx>,
 ): string | null {
-  const proximity = resolvePythonImport(currentFile, importPath, ctx.allFilesSet);
+  const proximity = resolvePythonImportInternal(currentFile, importPath, ctx.allFilesSet);
   if (proximity) return proximity;
   if (importPath.startsWith('.')) return null;
   const pathLike = importPath.replace(/\./g, '/');

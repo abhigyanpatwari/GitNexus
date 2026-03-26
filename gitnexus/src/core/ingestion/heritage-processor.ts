@@ -18,24 +18,23 @@ import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
 import Parser from 'tree-sitter';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
-import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
 import { generateId } from '../../lib/utils.js';
-import { getLanguageFromFilename, isVerboseIngestionEnabled, yieldToEventLoop } from './utils.js';
+import { getLanguageFromFilename } from './utils/language-detection.js';
+import { isVerboseIngestionEnabled } from './utils/verbose.js';
+import { yieldToEventLoop } from './utils/event-loop.js';
 import { SupportedLanguages } from '../../config/supported-languages.js';
+import { getProvider } from './languages/index.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type { ExtractedHeritage } from './workers/parse-worker.js';
 import type { ResolutionContext } from './resolution-context.js';
 import { TIER_CONFIDENCE } from './resolution-context.js';
 
-/** C#/Java convention: interfaces start with I followed by an uppercase letter */
-const INTERFACE_NAME_RE = /^I[A-Z]/;
-
 /**
  * Determine whether a heritage.extends capture is actually an IMPLEMENTS relationship.
- * Uses the symbol table first (authoritative — Tier 1); falls back to a language-gated
- * heuristic for external symbols not present in the graph:
- *   - C# / Java: `I[A-Z]` naming convention
- *   - Swift: default IMPLEMENTS (protocol conformance is the norm)
+ * Uses the symbol table first (authoritative — Tier 1); falls back to provider-defined
+ * heuristics for external symbols not present in the graph:
+ *   - interfaceNamePattern: matched against parent name (e.g., /^I[A-Z]/ for C#/Java)
+ *   - heritageDefaultEdge: 'IMPLEMENTS' causes all unresolved parents to map to IMPLEMENTS
  *   - All others: default EXTENDS
  */
 const resolveExtendsType = (
@@ -51,13 +50,12 @@ const resolveExtendsType = (
       ? { type: 'IMPLEMENTS', idPrefix: 'Interface' }
       : { type: 'EXTENDS', idPrefix: 'Class' };
   }
-  // Unresolved symbol — fall back to language-specific heuristic
-  if (language === SupportedLanguages.CSharp || language === SupportedLanguages.Java) {
-    if (INTERFACE_NAME_RE.test(parentName)) {
-      return { type: 'IMPLEMENTS', idPrefix: 'Interface' };
-    }
-  } else if (language === SupportedLanguages.Swift) {
-    // Protocol conformance is far more common than class inheritance in Swift
+  // Unresolved symbol — fall back to provider-defined heuristics
+  const provider = getProvider(language);
+  if (provider.interfaceNamePattern?.test(parentName)) {
+    return { type: 'IMPLEMENTS', idPrefix: 'Interface' };
+  }
+  if (provider.heritageDefaultEdge === 'IMPLEMENTS') {
     return { type: 'IMPLEMENTS', idPrefix: 'Interface' };
   }
   return { type: 'EXTENDS', idPrefix: 'Class' };
@@ -117,7 +115,8 @@ export const processHeritage = async (
       continue;
     }
 
-    const queryStr = LANGUAGE_QUERIES[language];
+    const provider = getProvider(language);
+    const queryStr = provider.treeSitterQueries;
     if (!queryStr) continue;
 
     // 2. Load the language

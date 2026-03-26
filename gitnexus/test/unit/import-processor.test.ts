@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { buildImportResolutionContext, type ImportResolutionContext } from '../../src/core/ingestion/import-processor.js';
+import { buildImportResolutionContext } from '../../src/core/ingestion/import-processor.js';
+import type { ImportResolutionContext } from '../../src/core/ingestion/import-resolvers/types.js';
 import { createResolutionContext } from '../../src/core/ingestion/resolution-context.js';
 
 describe('ResolutionContext.importMap', () => {

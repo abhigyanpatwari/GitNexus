@@ -318,10 +318,14 @@ export const listRegisteredRepos = async (opts?: { validate?: boolean }): Promis
 
 // ─── Global CLI Config (~/.gitnexus/config.json) ─────────────────────────
 
+export type LLMProvider = 'openai' | 'cursor';
+
 export interface CLIConfig {
   apiKey?: string;
   model?: string;
   baseUrl?: string;
+  provider?: LLMProvider;
+  cursorModel?: string;
 }
 
 /**

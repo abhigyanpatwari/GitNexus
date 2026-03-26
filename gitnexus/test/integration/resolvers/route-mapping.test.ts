@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, getRelationships, getNodesByLabel, edgeSet,
+  FIXTURES, getRelationships, getNodesByLabel, getNodesByLabelFull, edgeSet,
   runPipelineFromRepo, type PipelineResult,
 } from './helpers.js';
 
@@ -50,5 +50,34 @@ describe('Next.js route mapping', () => {
     );
     expect(dynamicFetch).toBeDefined();
     expect(dynamicFetch!.target).toBe('/api/organizations/[slug]/grants');
+  });
+
+  it('links project-level middleware.ts to matching API routes', () => {
+    const routes = getNodesByLabelFull(result, 'Route');
+    const grants = routes.find(r => r.name === '/api/grants');
+    expect(grants).toBeDefined();
+    expect(grants!.properties.middleware).toBeDefined();
+    expect(grants!.properties.middleware).toContain('middleware');
+  });
+
+  it('links middleware to all routes matching the matcher pattern', () => {
+    const routes = getNodesByLabelFull(result, 'Route');
+    const apiRoutes = routes.filter(r => (r.name as string).startsWith('/api/'));
+    expect(apiRoutes.length).toBeGreaterThanOrEqual(2);
+    for (const route of apiRoutes) {
+      expect(route.properties.middleware).toBeDefined();
+      expect((route.properties.middleware as string[]).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('does not link middleware to routes outside the matcher pattern', () => {
+    const routes = getNodesByLabelFull(result, 'Route');
+    const nonApiRoutes = routes.filter(r => !(r.name as string).startsWith('/api'));
+    for (const route of nonApiRoutes) {
+      const mw = route.properties.middleware as string[] | undefined;
+      if (mw) {
+        expect(mw).not.toContain('middleware');
+      }
+    }
   });
 });

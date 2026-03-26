@@ -7,12 +7,15 @@
  * Config priority: CLI flags > env vars > defaults
  */
 
+export type LLMProvider = 'openai' | 'cursor';
+
 export interface LLMConfig {
   apiKey: string;
   baseUrl: string;
   model: string;
   maxTokens: number;
   temperature: number;
+  provider?: LLMProvider;
 }
 
 export interface LLMResponse {
@@ -31,11 +34,19 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
   const { loadCLIConfig } = await import('../../storage/repo-manager.js');
   const savedConfig = await loadCLIConfig();
 
+  const provider = overrides?.provider || savedConfig.provider || 'openai';
+
   const apiKey = overrides?.apiKey
     || process.env.GITNEXUS_API_KEY
     || process.env.OPENAI_API_KEY
     || savedConfig.apiKey
     || '';
+
+  // For cursor provider, only use model if explicitly provided (default is 'auto' handled by CLI)
+  // For openai provider, use model with fallback to default
+  const model = provider === 'cursor'
+    ? (overrides?.model || savedConfig.cursorModel || '')
+    : (overrides?.model || process.env.GITNEXUS_MODEL || savedConfig.model || 'minimax/minimax-m2.5');
 
   return {
     apiKey,
@@ -43,12 +54,10 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
       || process.env.GITNEXUS_LLM_BASE_URL
       || savedConfig.baseUrl
       || 'https://openrouter.ai/api/v1',
-    model: overrides?.model
-      || process.env.GITNEXUS_MODEL
-      || savedConfig.model
-      || 'minimax/minimax-m2.5',
+    model,
     maxTokens: overrides?.maxTokens ?? 16_384,
     temperature: overrides?.temperature ?? 0,
+    provider,
   };
 }
 

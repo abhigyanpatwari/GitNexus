@@ -1,7 +1,6 @@
-import type { SyntaxNode } from '../utils.js';
+import { findChild, type SyntaxNode } from '../utils/ast-helpers.js';
 import type { ConstructorBindingScanner, ForLoopExtractor, LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, PendingAssignmentExtractor, PatternBindingExtractor, LiteralTypeInferrer } from './types.js';
 import { extractSimpleTypeName, extractVarName, unwrapAwait, resolveIterableElementType, methodToTypeArgPosition, extractElementTypeFromString, type TypeArgPosition } from './shared.js';
-import { findChild } from '../resolvers/utils.js';
 
 /** Known container property accessors that operate on the container itself (e.g., dict.Keys, dict.Values) */
 const KNOWN_CONTAINER_PROPS: ReadonlySet<string> = new Set(['Keys', 'Values']);

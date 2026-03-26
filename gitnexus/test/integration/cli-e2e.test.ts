@@ -232,6 +232,88 @@ describe('CLI end-to-end', () => {
 
   });
 
+  // ─── wiki command flags ─────────────────────────────────────────────
+
+  describe('wiki command flags', () => {
+    it('wiki --help shows --provider, --review, --verbose flags', () => {
+      const result = runCliRaw(['wiki', '--help'], repoRoot);
+      if (result.status === null) return;
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('--provider <provider>');
+      expect(result.stdout).toContain('--review');
+      expect(result.stdout).toContain('-v, --verbose');
+      expect(result.stdout).toContain('--model <model>');
+      expect(result.stdout).toContain('--gist');
+      expect(result.stdout).toContain('--concurrency <n>');
+    });
+
+    it('wiki on non-git directory fails with exit code 1', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-nogit-'));
+      try {
+        const result = runCliRaw(['wiki', tmpDir], repoRoot);
+        if (result.status === null) return;
+
+        expect(result.status).toBe(1);
+        expect(result.stdout).toMatch(/not.*git repository/i);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('wiki on non-indexed repo fails with "No GitNexus index"', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-noindex-'));
+      try {
+        spawnSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
+        spawnSync('git', ['commit', '--allow-empty', '-m', 'init'], {
+          cwd: tmpDir, stdio: 'pipe',
+          env: { ...process.env, GIT_AUTHOR_NAME: 'test', GIT_AUTHOR_EMAIL: 'test@test', GIT_COMMITTER_NAME: 'test', GIT_COMMITTER_EMAIL: 'test@test' },
+        });
+
+        // Must spawn outside project tree so it doesn't find parent .gitnexus
+        const result = spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, 'wiki', tmpDir], {
+          cwd: tmpDir,
+          encoding: 'utf8',
+          timeout: 15000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: {
+            ...process.env,
+            NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+          },
+        });
+        if (result.status === null) return;
+
+        expect(result.status).toBe(1);
+        expect(result.stdout).toMatch(/No GitNexus index found/);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('wiki --provider cursor without API key does not prompt for key in non-TTY', () => {
+      // In non-TTY (piped stdin), --provider cursor should skip the API key prompt
+      // and proceed (or fail gracefully with Cursor CLI not found)
+      const result = runCliRaw(
+        ['wiki', MINI_REPO, '--provider', 'cursor'],
+        repoRoot,
+        15000,
+      );
+      if (result.status === null) return;
+
+      const combined = result.stdout + result.stderr;
+      // Should NOT ask for API key — cursor provider doesn't need one
+      expect(combined).not.toMatch(/API key:/);
+    });
+
+    it('wiki --help includes --verbose flag description', () => {
+      const result = runCliRaw(['wiki', '--help'], repoRoot);
+      if (result.status === null) return;
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/verbose/i);
+    });
+  });
+
   // ─── stdout fd 1 tests (#324) ───────────────────────────────────────
   // These tests verify that tool output goes to stdout (fd 1), not stderr.
   // Requires analyze to have run first (the analyze test above populates .gitnexus/).

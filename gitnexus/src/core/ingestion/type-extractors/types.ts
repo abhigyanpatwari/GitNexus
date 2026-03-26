@@ -1,4 +1,4 @@
-import type { SyntaxNode } from '../utils.js';
+import type { SyntaxNode } from '../utils/ast-helpers.js';
 
 /** Extracts type bindings from a declaration node into the env map */
 export type TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>) => void;

@@ -1,0 +1,21 @@
+---
+alwaysApply: true
+---
+
+# GitNexus — Cursor project rules
+
+Last reviewed: 2026-03-24
+
+Canonical agent instructions: **[AGENTS.md](../AGENTS.md)** (GitNexus MCP rules, monorepo commands, Cursor Cloud notes). **[CLAUDE.md](../CLAUDE.md)** adds Claude Code-specific notes and points back to AGENTS.md for GitNexus.
+
+## Non-negotiables (always apply)
+
+- NEVER edit a function/class/method without running `gitnexus_impact` first.
+- NEVER rename symbols with find-and-replace — use `gitnexus_rename`.
+- NEVER commit without running `gitnexus_detect_changes()`.
+- NEVER ignore HIGH/CRITICAL risk warnings from impact analysis.
+- NEVER run `npx gitnexus analyze` without `--embeddings` if `.gitnexus/meta.json` shows stored embeddings.
+
+Full rules: **[AGENTS.md](../AGENTS.md)** (`gitnexus:start` block, Cursor Cloud section).
+
+**Rule architecture:** Prefer this file plus optional `.cursor/rules/*.mdc` globs (YAML `globs` in frontmatter). Legacy `.cursorrules` is deprecated; content lives here.

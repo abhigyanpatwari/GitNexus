@@ -5,9 +5,16 @@
  * Uses the MCP-style pooled lbug-adapter for connection management.
  */
 
-import { initLbug, executeQuery, closeLbug } from '../../mcp/core/lbug-adapter.js';
+import { initLbug, executeQuery, closeLbug, touchRepo } from '../../mcp/core/lbug-adapter.js';
 
 const REPO_ID = '__wiki__';
+
+/**
+ * Touch the wiki DB connection to prevent idle timeout during long LLM calls.
+ */
+export function touchWikiDb(): void {
+  touchRepo(REPO_ID);
+}
 
 export interface FileWithExports {
   filePath: string;

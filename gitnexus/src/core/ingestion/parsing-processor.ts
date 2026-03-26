@@ -1,15 +1,15 @@
 import { KnowledgeGraph, GraphNode, GraphRelationship, type NodeLabel } from '../graph/types.js';
 import Parser from 'tree-sitter';
 import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/parser-loader.js';
-import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
+import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
 import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
-import { getLanguageFromFilename, yieldToEventLoop, getDefinitionNodeFromCaptures, findEnclosingClassId, extractMethodSignature, getLabelFromCaptures } from './utils.js';
+import { getLanguageFromFilename } from './utils/language-detection.js';
+import { yieldToEventLoop } from './utils/event-loop.js';
+import { getDefinitionNodeFromCaptures, findEnclosingClassId, extractMethodSignature, getLabelFromCaptures } from './utils/ast-helpers.js';
 import { extractPropertyDeclaredType } from './type-extractors/shared.js';
-import { isNodeExported } from './export-detection.js';
 import { detectFrameworkFromAST } from './framework-detection.js';
-import { typeConfigs } from './type-extractors/index.js';
 import { WorkerPool } from './workers/worker-pool.js';
 import type { ParseWorkerResult, ParseWorkerInput, ExtractedImport, ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, ExtractedFetchCall, ExtractedDecoratorRoute, ExtractedToolDef, FileConstructorBindings, FileTypeEnvBindings } from './workers/parse-worker.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
@@ -130,6 +130,27 @@ const processParsingWithWorkers = async (
 // Sequential fallback (original implementation)
 // ============================================================================
 
+// Inline caches to avoid repeated parent-walks per node (same pattern as parse-worker.ts).
+// Keyed by tree-sitter node reference — cleared at the start of each file.
+const classIdCache = new Map<any, string | null>();
+const exportCache = new Map<any, boolean>();
+
+const cachedFindEnclosingClassId = (node: any, filePath: string): string | null => {
+  const cached = classIdCache.get(node);
+  if (cached !== undefined) return cached;
+  const result = findEnclosingClassId(node, filePath);
+  classIdCache.set(node, result);
+  return result;
+};
+
+const cachedExportCheck = (checker: (node: any, name: string) => boolean, node: any, name: string): boolean => {
+  const cached = exportCache.get(node);
+  if (cached !== undefined) return cached;
+  const result = checker(node, name);
+  exportCache.set(node, result);
+  return result;
+};
+
 const processParsingSequential = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
@@ -143,6 +164,10 @@ const processParsingSequential = async (
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
+
+    // Reset memoization before each new file (node refs are per-tree)
+    classIdCache.clear();
+    exportCache.clear();
 
     onFileProgress?.(i + 1, total, file.path);
 
@@ -177,7 +202,8 @@ const processParsingSequential = async (
 
     astCache.set(file.path, tree);
 
-    const queryString = LANGUAGE_QUERIES[language];
+    const provider = getProvider(language);
+    const queryString = provider.treeSitterQueries;
     if (!queryString) {
       continue;
     }
@@ -200,7 +226,7 @@ const processParsingSequential = async (
         captureMap[c.name] = c.node;
       });
 
-      const nodeLabel = getLabelFromCaptures(captureMap, language);
+      const nodeLabel = getLabelFromCaptures(captureMap, provider);
       if (!nodeLabel) return;
 
       const nameNode = captureMap['name'];
@@ -225,7 +251,7 @@ const processParsingSequential = async (
       // Language-specific return type fallback (e.g. Ruby YARD @return [Type])
       // Also upgrades uninformative AST types like PHP `array` with PHPDoc `@return User[]`
       if (methodSig && (!methodSig.returnType || methodSig.returnType === 'array' || methodSig.returnType === 'iterable') && definitionNode) {
-        const tc = typeConfigs[language as keyof typeof typeConfigs];
+        const tc = provider.typeConfig;
         if (tc?.extractReturnType) {
           const docReturn = tc.extractReturnType(definitionNode);
           if (docReturn) methodSig.returnType = docReturn;
@@ -241,7 +267,7 @@ const processParsingSequential = async (
           startLine: definitionNodeForRange ? definitionNodeForRange.startPosition.row : startLine,
           endLine: definitionNodeForRange ? definitionNodeForRange.endPosition.row : startLine,
           language: language,
-          isExported: isNodeExported(nameNode || definitionNodeForRange, nodeName, language),
+          isExported: cachedExportCheck(provider.exportChecker, nameNode || definitionNodeForRange, nodeName),
           ...(frameworkHint ? {
             astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
             astFrameworkReason: frameworkHint.reason,
@@ -260,7 +286,7 @@ const processParsingSequential = async (
       // Compute enclosing class for Method/Constructor/Property/Function — used for both ownerId and HAS_METHOD
       // Function is included because Kotlin/Rust/Python capture class methods as Function nodes
       const needsOwner = nodeLabel === 'Method' || nodeLabel === 'Constructor' || nodeLabel === 'Property' || nodeLabel === 'Function';
-      const enclosingClassId = needsOwner ? findEnclosingClassId(nameNode || definitionNodeForRange, file.path) : null;
+      const enclosingClassId = needsOwner ? cachedFindEnclosingClassId(nameNode || definitionNodeForRange, file.path) : null;
 
       // Extract declared type for Property nodes (field/property type annotations)
       const declaredType = (nodeLabel === 'Property' && definitionNode)

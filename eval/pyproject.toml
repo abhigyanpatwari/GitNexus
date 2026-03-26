@@ -20,6 +20,8 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "ruff>=0.5.0",
+    "hypothesis>=6.88.0",
+    "coverage>=7.6.0",
 ]
 
 [project.scripts]
@@ -31,8 +33,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["agents", "environments", "analysis", "bridge"]
-extra-files = ["run_eval.py"]
+packages = ["agents", "environments", "analysis", "bridge", "utils"]
+extra-files = ["run_eval.py", "tool_registry.py", "constants.py"]
 
 [tool.ruff]
 line-length = 120

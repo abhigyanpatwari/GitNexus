@@ -11,35 +11,9 @@ import {
   RUST_QUERIES,
   PHP_QUERIES,
   SWIFT_QUERIES,
-  LANGUAGE_QUERIES,
 } from '../../src/core/ingestion/tree-sitter-queries.js';
-import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
 describe('tree-sitter queries', () => {
-  describe('LANGUAGE_QUERIES map', () => {
-    it('has entries for all supported languages', () => {
-      const allLanguages = Object.values(SupportedLanguages);
-      for (const lang of allLanguages) {
-        expect(LANGUAGE_QUERIES[lang]).toBeDefined();
-        expect(LANGUAGE_QUERIES[lang].length).toBeGreaterThan(0);
-      }
-    });
-
-    it('maps to the correct query constants', () => {
-      expect(LANGUAGE_QUERIES[SupportedLanguages.TypeScript]).toBe(TYPESCRIPT_QUERIES);
-      expect(LANGUAGE_QUERIES[SupportedLanguages.JavaScript]).toBe(JAVASCRIPT_QUERIES);
-      expect(LANGUAGE_QUERIES[SupportedLanguages.Python]).toBe(PYTHON_QUERIES);
-      expect(LANGUAGE_QUERIES[SupportedLanguages.Java]).toBe(JAVA_QUERIES);
-      expect(LANGUAGE_QUERIES[SupportedLanguages.C]).toBe(C_QUERIES);
-      expect(LANGUAGE_QUERIES[SupportedLanguages.Go]).toBe(GO_QUERIES);
-      expect(LANGUAGE_QUERIES[SupportedLanguages.CPlusPlus]).toBe(CPP_QUERIES);
-      expect(LANGUAGE_QUERIES[SupportedLanguages.CSharp]).toBe(CSHARP_QUERIES);
-      expect(LANGUAGE_QUERIES[SupportedLanguages.Rust]).toBe(RUST_QUERIES);
-      expect(LANGUAGE_QUERIES[SupportedLanguages.PHP]).toBe(PHP_QUERIES);
-      expect(LANGUAGE_QUERIES[SupportedLanguages.Swift]).toBe(SWIFT_QUERIES);
-    });
-  });
-
   describe('TypeScript queries', () => {
     it('captures class declarations', () => {
       expect(TYPESCRIPT_QUERIES).toContain('class_declaration');

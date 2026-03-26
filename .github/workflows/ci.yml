@@ -16,8 +16,10 @@ concurrency:
 # ── Reusable workflow orchestration ─────────────────────────────────
 # Each concern lives in its own workflow file for maintainability:
 #   ci-quality.yml       — typecheck (tsc --noEmit)
-#   ci-tests.yml         — all tests with coverage (ubuntu) + cross-platform
-#   ci-report.yml        — PR comment (workflow_run trigger for fork write access)
+#   ci-tests.yml         — unit + integration tests with coverage + cross-platform
+#   ci-e2e.yml           — E2E tests (only when gitnexus-web/ changes)
+#
+# Shared setup is DRY via .github/actions/setup-gitnexus composite action.
 
 jobs:
   quality:
@@ -30,11 +32,59 @@ jobs:
     permissions:
       contents: read
 
+  e2e:
+    uses: ./.github/workflows/ci-e2e.yml
+    permissions:
+      contents: read
+
+  # ── Save PR metadata for the reporting workflow ─────────────────
+  # The ci-report.yml workflow (triggered by workflow_run) needs the
+  # PR number and job results to post a comment.  We save them as an
+  # artifact because workflow_run context doesn't reliably carry PR
+  # info for fork PRs.
+  save-pr-meta:
+    name: Save PR Metadata
+    if: always() && github.event_name == 'pull_request'
+    needs: [quality, tests, e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Write metadata
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.number }}
+          QUALITY: ${{ needs.quality.result }}
+          TESTS: ${{ needs.tests.result }}
+          E2E: ${{ needs.e2e.result }}
+        run: |
+          mkdir -p pr-meta
+          echo "$PR_NUMBER"  > pr-meta/pr_number
+          echo "$QUALITY"    > pr-meta/quality_result
+          echo "$TESTS"      > pr-meta/tests_result
+          echo "$E2E"        > pr-meta/e2e_result
+          # TODO(post-merge): remove backward-compat copies once ci-report.yml
+          # on main reads underscore names.
+          # Backward-compat: ci-report.yml on main still reads hyphenated
+          # names.  workflow_run always executes from the default branch, so
+          # the main-branch reader won't find the underscore variants until
+          # this PR is merged.  Write both until then.
+          cp pr-meta/pr_number       pr-meta/pr-number
+          cp pr-meta/quality_result  pr-meta/quality-result
+          cp pr-meta/tests_result    pr-meta/tests-result
+          cp pr-meta/e2e_result      pr-meta/e2e-result
+
+      - name: Upload PR metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-meta
+          path: pr-meta/
+          retention-days: 1
+
   # ── Unified CI gate ──────────────────────────────────────────────
   # Single required check for branch protection.
   ci-status:
     name: CI Gate
-    needs: [quality, tests]
+    needs: [quality, tests, e2e]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -44,40 +94,17 @@ jobs:
         env:
           QUALITY: ${{ needs.quality.result }}
           TESTS: ${{ needs.tests.result }}
+          E2E: ${{ needs.e2e.result }}
         run: |
-          echo "Quality:  $QUALITY"
-          echo "Tests:    $TESTS"
+          echo "Quality:     $QUALITY"
+          echo "Tests:       $TESTS"
+          echo "E2E:         $E2E"
           if [[ "$QUALITY" != "success" ]] ||
              [[ "$TESTS" != "success" ]]; then
-            echo "::error::One or more CI jobs failed"
+            echo "::error::Quality or test jobs failed"
             exit 1
           fi
-
-  # ── PR metadata for ci-report.yml ────────────────────────────────
-  # Saves PR number and job results so the workflow_run-triggered
-  # report can post comments with a write token (works for forks).
-  save-pr-meta:
-    name: Save PR Metadata
-    if: always() && github.event_name == 'pull_request'
-    needs: [quality, tests]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Write PR metadata
-        shell: bash
-        env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          QUALITY: ${{ needs.quality.result }}
-          TESTS: ${{ needs.tests.result }}
-        run: |
-          mkdir -p pr-meta
-          echo "$PR_NUMBER" > pr-meta/pr-number
-          echo "$QUALITY"   > pr-meta/quality-result
-          echo "$TESTS"     > pr-meta/tests-result
-
-      - name: Upload PR metadata
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: pr-meta
-          path: pr-meta/
-          retention-days: 1
+          if [[ "$E2E" != "success" && "$E2E" != "skipped" ]]; then
+            echo "::error::E2E job failed"
+            exit 1
+          fi

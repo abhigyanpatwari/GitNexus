@@ -42,4 +42,15 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('--include-tests');
     expect(result.stdout).toContain('--repo <name>');
   });
+
+  it('wiki help shows provider, review, and verbose flags', () => {
+    const result = runHelp('wiki');
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('--provider <provider>');
+    expect(result.stdout).toContain('--review');
+    expect(result.stdout).toContain('-v, --verbose');
+    expect(result.stdout).toContain('--model <model>');
+    expect(result.stdout).toContain('--gist');
+  });
 });

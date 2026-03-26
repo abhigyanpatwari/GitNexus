@@ -34,6 +34,13 @@ program
    .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
 
 program
+  .command('index [path...]')
+  .description('Register an existing .gitnexus/ folder into the global registry (no re-analysis needed)')
+  .option('-f, --force', 'Register even if meta.json is missing (stats will be empty)')
+  .option('--allow-non-git', 'Allow registering folders that are not Git repositories')
+  .action(createLazyAction(() => import('./index-repo.js'), 'indexCommand'));
+
+program
   .command('serve')
   .description('Start local HTTP server for web UI connection')
   .option('-p, --port <port>', 'Port number', '4747')
@@ -66,11 +73,14 @@ program
   .command('wiki [path]')
   .description('Generate repository wiki from knowledge graph')
   .option('-f, --force', 'Force full regeneration even if up to date')
-  .option('--model <model>', 'LLM model name (default: minimax/minimax-m2.5)')
-  .option('--base-url <url>', 'LLM API base URL (default: OpenAI)')
+  .option('--provider <provider>', 'LLM provider: openai or cursor (default: openai)')
+  .option('--model <model>', 'LLM model name (default depends on provider)')
+  .option('--base-url <url>', 'LLM API base URL (for openai provider)')
   .option('--api-key <key>', 'LLM API key (saved to ~/.gitnexus/config.json)')
   .option('--concurrency <n>', 'Parallel LLM calls (default: 3)', '3')
   .option('--gist', 'Publish wiki as a public GitHub Gist after generation')
+  .option('-v, --verbose', 'Enable verbose output (show LLM commands and responses)')
+  .option('--review', 'Stop after grouping to review module structure before generating pages')
   .action(createLazyAction(() => import('./wiki.js'), 'wikiCommand'));
 
 program

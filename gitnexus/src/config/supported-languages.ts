@@ -9,14 +9,13 @@
  *    ----------------------------------|------------------------------------------|---------------------------
  *    tree-sitter-queries.ts            | Query string + LANGUAGE_QUERIES entry    | (required)
  *    export-detection.ts               | ExportChecker function + table entry     | (required)
- *    import-resolution.ts              | Resolver in importResolvers              | resolveStandard(...)
- *    import-resolution.ts              | namedBindingExtractors entry             | undefined
- *    call-routing.ts                   | callRouters entry                        | noRouting
+ *    import-resolvers/<lang>.ts        | Exported resolve<Lang>Import function    | resolveStandard(...)
+ *    call-routing.ts                   | CallRouter function (or noRouting)       | noRouting
  *    entry-point-scoring.ts            | ENTRY_POINT_PATTERNS entry               | []
  *    framework-detection.ts            | AST_FRAMEWORK_PATTERNS entry             | []
  *    type-extractors/<lang>.ts         | New file + index.ts import               | (required)
  *    resolvers/<lang>.ts               | Resolver file (if non-standard)          | (only if resolveStandard insufficient)
- *    named-binding-extraction.ts       | Extractor (if named imports)             | (only if language has named imports)
+ *    named-bindings/<lang>.ts          | Extractor (if named imports)             | (only if language has named imports)
  *
  * 4. Also check these files for language-specific if-checks (no compile-time guard):
  *    - mro-processor.ts (MRO strategy selection)

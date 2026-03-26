@@ -13,7 +13,7 @@ import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
 import { createRequire } from 'node:module';
 import { SupportedLanguages } from '../../../config/supported-languages.js';
-import { LANGUAGE_QUERIES } from '../tree-sitter-queries.js';
+import { getProvider } from '../languages/index.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from '../constants.js';
 
 // tree-sitter-swift is an optionalDependency — may not be installed
@@ -24,31 +24,32 @@ try { Swift = _require('tree-sitter-swift'); } catch {}
 // tree-sitter-kotlin is an optionalDependency — may not be installed
 let Kotlin: any = null;
 try { Kotlin = _require('tree-sitter-kotlin'); } catch {}
+import { getLanguageFromFilename } from '../utils/language-detection.js';
+import { isBuiltInOrNoise } from '../utils/noise-filter.js';
 import {
-  getLanguageFromFilename,
   FUNCTION_NODE_TYPES,
   extractFunctionName,
-  isBuiltInOrNoise,
   getDefinitionNodeFromCaptures,
   findEnclosingClassId,
   getLabelFromCaptures,
   extractMethodSignature,
+  findDescendant,
+  extractStringContent,
+} from '../utils/ast-helpers.js';
+import {
   countCallArguments,
   inferCallForm,
   extractReceiverName,
   extractReceiverNode,
   extractMixedChain,
   type MixedChainStep,
-} from '../utils.js';
+} from '../utils/call-analysis.js';
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
-import { isNodeExported } from '../export-detection.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
-import { typeConfigs } from '../type-extractors/index.js';
 import { generateId } from '../../../lib/utils.js';
-import { namedBindingExtractors, preprocessImportPath } from '../import-resolution.js';
-import type { NamedBinding } from '../import-resolution.js';
-import { callRouters } from '../call-routing.js';
+import { preprocessImportPath } from '../import-processor.js';
+import type { NamedBinding } from '../named-bindings/types.js';
 import { extractPropertyDeclaredType } from '../type-extractors/shared.js';
 import type { NodeLabel } from '../../graph/types.js';
 
@@ -262,25 +263,72 @@ const setLanguage = (language: SupportedLanguages, filePath: string): void => {
   parser.setLanguage(lang);
 };
 
-// isNodeExported imported from ../export-detection.js (shared module)
+// ============================================================================
+// Per-file O(1) memoization — avoids repeated parent-chain walks per symbol.
+// Three bare Maps cleared at file boundaries. Map.get() returns undefined for
+// missing keys, so `cached !== undefined` distinguishes "not computed" from
+// a stored null (enclosing class/function not found = top-level).
+// ============================================================================
+
+const classIdCache = new Map<any, string | null>();
+const functionIdCache = new Map<any, string | null>();
+const exportCache = new Map<any, boolean>();
+
+const clearCaches = (): void => { classIdCache.clear(); functionIdCache.clear(); exportCache.clear(); };
 
 // ============================================================================
-// Enclosing function detection (for call extraction)
+// Enclosing function detection (for call extraction) — cached
 // ============================================================================
 
-/** Walk up AST to find enclosing function, return its generateId or null for top-level */
-const findEnclosingFunctionId = (node: any, filePath: string): string | null => {
+import type { LanguageProvider } from '../language-provider.js';
+
+/** Walk up AST to find enclosing function, return its generateId or null for top-level.
+ *  Applies provider.labelOverride so the label matches the definition phase (single source of truth). */
+const findEnclosingFunctionId = (node: any, filePath: string, provider: LanguageProvider): string | null => {
+  const cached = functionIdCache.get(node);
+  if (cached !== undefined) return cached;
+
   let current = node.parent;
   while (current) {
     if (FUNCTION_NODE_TYPES.has(current.type)) {
       const { funcName, label } = extractFunctionName(current);
       if (funcName) {
-        return generateId(label, `${filePath}:${funcName}`);
+        // Apply labelOverride so label matches definition phase (e.g., Kotlin Function→Method).
+        // null means "skip as definition" — keep original label for scope identification.
+        let finalLabel = label;
+        if (provider.labelOverride) {
+          const override = provider.labelOverride(current, label);
+          if (override !== null) finalLabel = override;
+        }
+        const result = generateId(finalLabel, `${filePath}:${funcName}`);
+        functionIdCache.set(node, result);
+        return result;
       }
     }
     current = current.parent;
   }
+  functionIdCache.set(node, null);
   return null;
+};
+
+/** Cached wrapper for findEnclosingClassId — avoids repeated parent walks. */
+const cachedFindEnclosingClassId = (node: any, filePath: string): string | null => {
+  const cached = classIdCache.get(node);
+  if (cached !== undefined) return cached;
+
+  const result = findEnclosingClassId(node, filePath);
+  classIdCache.set(node, result);
+  return result;
+};
+
+/** Cached wrapper for export checking — avoids repeated parent walks per symbol. */
+const cachedExportCheck = (checker: (node: any, name: string) => boolean, node: any, name: string): boolean => {
+  const cached = exportCache.get(node);
+  if (cached !== undefined) return cached;
+
+  const result = checker(node, name);
+  exportCache.set(node, result);
+  return result;
 };
 
 // Label detection moved to shared getLabelFromCaptures in utils.ts
@@ -337,7 +385,8 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
   } : undefined;
 
   for (const [language, langFiles] of byLanguage) {
-    const queryString = LANGUAGE_QUERIES[language];
+    const provider = getProvider(language);
+    const queryString = provider.treeSitterQueries;
     if (!queryString) continue;
 
     // Track if we need to handle tsx separately
@@ -387,109 +436,6 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
 
   return result;
 };
-
-// ============================================================================
-// PHP Eloquent metadata extraction
-// ============================================================================
-
-/** Eloquent model properties whose array values are worth indexing */
-const ELOQUENT_ARRAY_PROPS = new Set(['fillable', 'casts', 'hidden', 'guarded', 'with', 'appends']);
-
-/** Eloquent relationship method names */
-const ELOQUENT_RELATIONS = new Set([
-  'hasMany', 'hasOne', 'belongsTo', 'belongsToMany',
-  'morphTo', 'morphMany', 'morphOne', 'morphToMany', 'morphedByMany',
-  'hasManyThrough', 'hasOneThrough',
-]);
-
-function findDescendant(node: any, type: string): any {
-  if (node.type === type) return node;
-  for (const child of (node.children ?? [])) {
-    const found = findDescendant(child, type);
-    if (found) return found;
-  }
-  return null;
-}
-
-function extractStringContent(node: any): string | null {
-  if (!node) return null;
-  const content = node.children?.find((c: any) => c.type === 'string_content');
-  if (content) return content.text;
-  if (node.type === 'string_content') return node.text;
-  return null;
-}
-
-/**
- * For a PHP property_declaration node, extract array values as a description string.
- * Returns null if not an Eloquent model property or no array values found.
- */
-function extractPhpPropertyDescription(propName: string, propDeclNode: any): string | null {
-  if (!ELOQUENT_ARRAY_PROPS.has(propName)) return null;
-
-  const arrayNode = findDescendant(propDeclNode, 'array_creation_expression');
-  if (!arrayNode) return null;
-
-  const items: string[] = [];
-  for (const child of (arrayNode.children ?? [])) {
-    if (child.type !== 'array_element_initializer') continue;
-    const children = child.children ?? [];
-    const arrowIdx = children.findIndex((c: any) => c.type === '=>');
-    if (arrowIdx !== -1) {
-      // key => value pair (used in $casts)
-      const key = extractStringContent(children[arrowIdx - 1]);
-      const val = extractStringContent(children[arrowIdx + 1]);
-      if (key && val) items.push(`${key}:${val}`);
-    } else {
-      // Simple value (used in $fillable, $hidden, etc.)
-      const val = extractStringContent(children[0]);
-      if (val) items.push(val);
-    }
-  }
-
-  return items.length > 0 ? items.join(', ') : null;
-}
-
-/**
- * For a PHP method_declaration node, detect if it defines an Eloquent relationship.
- * Returns description like "hasMany(Post)" or null.
- */
-function extractEloquentRelationDescription(methodNode: any): string | null {
-  function findRelationCall(node: any): any {
-    if (node.type === 'member_call_expression') {
-      const children = node.children ?? [];
-      const objectNode = children.find((c: any) => c.type === 'variable_name' && c.text === '$this');
-      const nameNode = children.find((c: any) => c.type === 'name');
-      if (objectNode && nameNode && ELOQUENT_RELATIONS.has(nameNode.text)) return node;
-    }
-    for (const child of (node.children ?? [])) {
-      const found = findRelationCall(child);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  const callNode = findRelationCall(methodNode);
-  if (!callNode) return null;
-
-  const relType = callNode.children?.find((c: any) => c.type === 'name')?.text;
-  const argsNode = callNode.children?.find((c: any) => c.type === 'arguments');
-  let targetModel: string | null = null;
-  if (argsNode) {
-    const firstArg = argsNode.children?.find((c: any) => c.type === 'argument');
-    if (firstArg) {
-      const classConstant = firstArg.children?.find((c: any) =>
-        c.type === 'class_constant_access_expression'
-      );
-      if (classConstant) {
-        targetModel = classConstant.children?.find((c: any) => c.type === 'name')?.text ?? null;
-      }
-    }
-  }
-
-  if (relType && targetModel) return `${relType}(${targetModel})`;
-  if (relType) return relType;
-  return null;
-}
 
 // ============================================================================
 // Laravel Route Extraction (procedural AST walk)
@@ -904,6 +850,8 @@ const processFileGroup = (
     // Skip files larger than the max tree-sitter buffer (32 MB)
     if (file.content.length > TREE_SITTER_MAX_BUFFER) continue;
 
+    clearCaches(); // Reset memoization before each new file
+
     let tree;
     try {
       tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
@@ -950,7 +898,8 @@ const processFileGroup = (
     // Constructor bindings are verified against the SymbolTable in processCallsFromExtracted.
     const parentMap: ReadonlyMap<string, readonly string[]> = fileParentMap;
     const typeEnv = buildTypeEnv(tree, language, { parentMap });
-    const callRouter = callRouters[language];
+    const provider = getProvider(language);
+    const callRouter = provider.callRouter;
 
     if (typeEnv.constructorBindings.length > 0) {
       result.constructorBindings.push({ filePath: file.path, bindings: [...typeEnv.constructorBindings] });
@@ -959,8 +908,8 @@ const processFileGroup = (
     // Extract file-scope bindings for ExportedTypeMap (closes worker/sequential quality gap).
     // Sequential path uses collectExportedBindings(typeEnv) directly; worker path serializes
     // these bindings so the main thread can merge them into ExportedTypeMap.
-    const fileScope = typeEnv.env.get('');
-    if (fileScope && fileScope.size > 0) {
+    const fileScope = typeEnv.fileScope();
+    if (fileScope.size > 0) {
       const bindings: [string, string][] = [];
       for (const [name, type] of fileScope) bindings.push([name, type]);
       result.typeEnvBindings.push({ filePath: file.path, bindings });
@@ -977,9 +926,9 @@ const processFileGroup = (
 
       // Extract import paths before skipping
       if (captureMap['import'] && captureMap['import.source']) {
-        const rawImportPath = preprocessImportPath(captureMap['import.source'].text, captureMap['import'], language);
+        const rawImportPath = preprocessImportPath(captureMap['import.source'].text, captureMap['import'], provider);
         if (!rawImportPath) continue;
-        const extractor = namedBindingExtractors[language];
+        const extractor = provider.namedBindingExtractor;
         const namedBindings = extractor ? extractor(captureMap['import']) : undefined;
         result.imports.push({
           filePath: file.path,
@@ -995,7 +944,7 @@ const processFileGroup = (
         const receiverText = captureMap['assignment.receiver'].text;
         const propertyName = captureMap['assignment.property'].text;
         if (receiverText && propertyName) {
-          const srcId = findEnclosingFunctionId(captureMap['assignment'], file.path)
+          const srcId = findEnclosingFunctionId(captureMap['assignment'], file.path, provider)
             || generateId('File', file.path);
           let receiverTypeName: string | undefined;
           if (typeEnv) {
@@ -1093,7 +1042,7 @@ const processFileGroup = (
           const calledName = callNameNode.text;
 
           // Dispatch: route language-specific calls (heritage, properties, imports)
-          const routed = callRouter(calledName, captureMap['call']);
+          const routed = callRouter?.(calledName, captureMap['call']);
           if (routed) {
             if (routed.kind === 'skip') continue;
 
@@ -1119,7 +1068,7 @@ const processFileGroup = (
             }
 
             if (routed.kind === 'properties') {
-              const propEnclosingClassId = findEnclosingClassId(captureMap['call'], file.path);
+              const propEnclosingClassId = cachedFindEnclosingClassId(captureMap['call'], file.path);
               for (const item of routed.items) {
                 const nodeId = generateId('Property', `${file.path}:${item.propName}`);
                 result.nodes.push({
@@ -1172,7 +1121,7 @@ const processFileGroup = (
 
           if (!isBuiltInOrNoise(calledName)) {
             const callNode = captureMap['call'];
-            const sourceId = findEnclosingFunctionId(callNode, file.path)
+            const sourceId = findEnclosingFunctionId(callNode, file.path, provider)
               || generateId('File', file.path);
             const callForm = inferCallForm(callNode, callNameNode);
             let receiverName = callForm === 'member' ? extractReceiverName(callNameNode) : undefined;
@@ -1253,7 +1202,7 @@ const processFileGroup = (
         }
       }
 
-      const nodeLabel = getLabelFromCaptures(captureMap, language);
+      const nodeLabel = getLabelFromCaptures(captureMap, provider);
       if (!nodeLabel) continue;
 
       const nameNode = captureMap['name'];
@@ -1264,14 +1213,7 @@ const processFileGroup = (
       const startLine = definitionNode ? definitionNode.startPosition.row : (nameNode ? nameNode.startPosition.row : 0);
       const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}`);
 
-      let description: string | undefined;
-      if (language === SupportedLanguages.PHP) {
-        if (nodeLabel === 'Property' && captureMap['definition.property']) {
-          description = extractPhpPropertyDescription(nodeName, captureMap['definition.property']) ?? undefined;
-        } else if (nodeLabel === 'Method' && captureMap['definition.method']) {
-          description = extractEloquentRelationDescription(captureMap['definition.method']) ?? undefined;
-        }
-      }
+      const description = provider.descriptionExtractor?.(nodeLabel, nodeName, captureMap);
 
       let frameworkHint = definitionNode
         ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
@@ -1322,7 +1264,7 @@ const processFileGroup = (
         // Language-specific return type fallback (e.g. Ruby YARD @return [Type])
         // Also upgrades uninformative AST types like PHP `array` with PHPDoc `@return User[]`
         if ((!returnType || returnType === 'array' || returnType === 'iterable') && definitionNode) {
-          const tc = typeConfigs[language as keyof typeof typeConfigs];
+          const tc = provider.typeConfig;
           if (tc?.extractReturnType) {
             const docReturn = tc.extractReturnType(definitionNode);
             if (docReturn) returnType = docReturn;
@@ -1343,7 +1285,7 @@ const processFileGroup = (
           startLine: definitionNode ? definitionNode.startPosition.row : startLine,
           endLine: definitionNode ? definitionNode.endPosition.row : startLine,
           language: language,
-          isExported: isNodeExported(nameNode || definitionNode, nodeName, language),
+          isExported: cachedExportCheck(provider.exportChecker, nameNode || definitionNode, nodeName),
           ...(frameworkHint ? {
             astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
             astFrameworkReason: frameworkHint.reason,
@@ -1359,7 +1301,7 @@ const processFileGroup = (
       // Compute enclosing class for Method/Constructor/Property/Function — used for both ownerId and HAS_METHOD
       // Function is included because Kotlin/Rust/Python capture class methods as Function nodes
       const needsOwner = nodeLabel === 'Method' || nodeLabel === 'Constructor' || nodeLabel === 'Property' || nodeLabel === 'Function';
-      const enclosingClassId = needsOwner ? findEnclosingClassId(nameNode || definitionNode, file.path) : null;
+      const enclosingClassId = needsOwner ? cachedFindEnclosingClassId(nameNode || definitionNode, file.path) : null;
 
       result.symbols.push({
         filePath: file.path,
@@ -1399,8 +1341,8 @@ const processFileGroup = (
       }
     }
 
-    // Extract Laravel routes from route files via procedural AST walk
-    if (language === SupportedLanguages.PHP && (file.path.includes('/routes/') || file.path.startsWith('routes/')) && file.path.endsWith('.php')) {
+    // Extract framework routes via provider detection (e.g., Laravel routes.php)
+    if (provider.isRouteFile?.(file.path)) {
       const extractedRoutes = extractLaravelRoutes(tree, file.path);
       result.routes.push(...extractedRoutes);
     }

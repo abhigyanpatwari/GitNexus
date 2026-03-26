@@ -326,7 +326,7 @@ export const ProcessesPanel = () => {
                         />
                     </div>
                 </div>
-                <div className="flex items-center gap-2 text-xs text-text-muted">
+                <div className="flex items-center gap-2 text-xs text-text-muted" data-testid="process-list-loaded">
                     <span>{totalCount} processes detected</span>
                 </div>
             </div>
@@ -462,7 +462,7 @@ const ProcessItem = ({ process, isLoading, isSelected, isFocused, onView, onTogg
             : '';
 
     return (
-        <div className={`flex items-center gap-2 px-4 py-2 mx-2 rounded-lg hover:bg-hover group transition-all ${rowClass}`}>
+        <div data-testid="process-row" className={`flex items-center gap-2 px-4 py-2 mx-2 rounded-lg hover:bg-hover group transition-all ${rowClass}`}>
             <GitBranch className="w-4 h-4 text-text-muted flex-shrink-0" />
             <div className="flex-1 min-w-0">
                 <div className="text-sm text-text-primary truncate">{process.label}</div>
@@ -484,12 +484,14 @@ const ProcessItem = ({ process, isLoading, isSelected, isFocused, onView, onTogg
                     : 'text-text-muted hover:text-cyan-400 bg-white/5 hover:bg-cyan-500/20 border border-white/10 hover:border-cyan-400/40 opacity-0 group-hover:opacity-100'
                     }`}
                 title={isFocused ? 'Click to remove highlight from graph' : 'Click to highlight in graph'}
+                data-testid="process-highlight-button"
             >
                 <Lightbulb className="w-4 h-4" />
             </button>
             <button
                 onClick={onView}
                 disabled={isLoading}
+                data-testid="process-view-button"
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-all disabled:opacity-50 shadow-sm ${isSelected
                     ? 'text-cyan-300 bg-cyan-900/60 border border-cyan-400/60 opacity-100'
                     : 'text-cyan-400 hover:text-cyan-300 bg-cyan-950/30 hover:bg-cyan-900/50 border border-cyan-500/30 hover:border-cyan-400/50 opacity-0 group-hover:opacity-100 shadow-cyan-900/20'

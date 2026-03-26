@@ -25,7 +25,6 @@ import logging
 import os
 import threading
 import time
-import traceback
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -35,6 +34,8 @@ import yaml
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
+
+from utils.errors import is_debug_enabled, log_safe_exception
 
 # Load .env file from eval/ directory
 _env_file = Path(__file__).parent / ".env"
@@ -138,6 +139,65 @@ def get_swebench_docker_image(instance: dict) -> str:
     return image_name
 
 
+def _build_model(config: dict):
+    """Construct the model from config."""
+    from minisweagent.models import get_model
+
+    return get_model(config=config.get("model", {}))
+
+
+def _build_environment(config: dict, instance: dict):
+    """Construct the environment for the instance."""
+    env_config = dict(config.get("environment", {}))
+    env_class_name = env_config.pop("environment_class", "docker")
+
+    if env_class_name == "eval.environments.gitnexus_docker.GitNexusDockerEnvironment":
+        from environments.gitnexus_docker import GitNexusDockerEnvironment
+
+        env_config["image"] = get_swebench_docker_image(instance)
+        return GitNexusDockerEnvironment(**env_config)
+
+    from minisweagent.environments.docker import DockerEnvironment
+
+    return DockerEnvironment(image=get_swebench_docker_image(instance), **env_config)
+
+
+def _build_agent(config: dict, model, env, instance_dir: Path, instance_id: str):
+    """Construct the GitNexus agent with trajectory output configured."""
+    from agents.gitnexus_agent import GitNexusAgent
+
+    agent_config = dict(config.get("agent", {}))
+    agent_config.pop("agent_class", "eval.agents.gitnexus_agent.GitNexusAgent")
+    traj_path = instance_dir / f"{instance_id}.traj.json"
+    agent_config["output_path"] = traj_path
+    return GitNexusAgent(model, env, **agent_config)
+
+
+def _extract_submission(env, info: dict, run_id: str) -> str:
+    """Pull the git diff patch from the container, falling back to the agent submission."""
+    try:
+        patch_output = env.execute({"command": "cd /testbed && git diff"})
+        return patch_output.get("output", "").strip()
+    except Exception as patch_err:
+        logger.warning(f"[{run_id}] Failed to extract patch: {patch_err}")
+        return info.get("submission", "")
+
+
+def _record_failure(run_id: str, instance_id: str, result: dict, error: Exception):
+    sanitized = log_safe_exception(
+        logger,
+        f"[{run_id}] Error on {instance_id}",
+        error,
+        include_debug=is_debug_enabled(),
+    )
+    result["exit_status"] = sanitized["error_type"]
+    result["error_type"] = sanitized["error_type"]
+    result["error_message"] = sanitized["error_message"]
+    result["error"] = sanitized["error_message"]
+    if "error_detail_debug" in sanitized:
+        result["error_detail_debug"] = sanitized["error_detail_debug"]
+
+
 def process_instance(
     instance: dict,
     config: dict,
@@ -149,8 +209,6 @@ def process_instance(
     Process a single SWE-bench instance with the given config.
     Returns result dict with instance_id, exit_status, submission, metrics.
     """
-    from minisweagent.models import get_model
-
     instance_id = instance["instance_id"]
     run_id = f"{model_name}_{mode_name}"
     instance_dir = output_dir / run_id / instance_id
@@ -168,31 +226,12 @@ def process_instance(
     }
 
     agent = None
+    env = None
 
     try:
-        # Build model
-        model = get_model(config=config.get("model", {}))
-
-        # Build environment
-        env_config = dict(config.get("environment", {}))
-        env_class_name = env_config.pop("environment_class", "docker")
-
-        if env_class_name == "eval.environments.gitnexus_docker.GitNexusDockerEnvironment":
-            from environments.gitnexus_docker import GitNexusDockerEnvironment
-            env_config["image"] = get_swebench_docker_image(instance)
-            env = GitNexusDockerEnvironment(**env_config)
-        else:
-            from minisweagent.environments.docker import DockerEnvironment
-            env = DockerEnvironment(image=get_swebench_docker_image(instance), **env_config)
-
-        # Build agent
-        agent_config = dict(config.get("agent", {}))
-        agent_class_name = agent_config.pop("agent_class", "eval.agents.gitnexus_agent.GitNexusAgent")
-
-        from agents.gitnexus_agent import GitNexusAgent
-        traj_path = instance_dir / f"{instance_id}.traj.json"
-        agent_config["output_path"] = traj_path
-        agent = GitNexusAgent(model, env, **agent_config)
+        model = _build_model(config)
+        env = _build_environment(config, instance)
+        agent = _build_agent(config, model, env, instance_dir, instance_id)
 
         # Run
         logger.info(f"[{run_id}] Starting {instance_id}")
@@ -204,18 +243,10 @@ def process_instance(
         result["gitnexus_metrics"] = agent.gitnexus_metrics.to_dict()
 
         # Extract git diff patch from the container (SWE-bench needs the model_patch)
-        try:
-            patch_output = env.execute({"command": "cd /testbed && git diff"})
-            result["submission"] = patch_output.get("output", "").strip()
-        except Exception as patch_err:
-            logger.warning(f"[{run_id}] Failed to extract patch: {patch_err}")
-            result["submission"] = info.get("submission", "")
+        result["submission"] = _extract_submission(env, info, run_id)
 
     except Exception as e:
-        logger.error(f"[{run_id}] Error on {instance_id}: {e}")
-        result["exit_status"] = type(e).__name__
-        result["error"] = str(e)
-        result["traceback"] = traceback.format_exc()
+        _record_failure(run_id, instance_id, result, e)
 
     finally:
         if agent:
@@ -287,7 +318,12 @@ def run_configuration(
                     results.append(future.result())
                 except Exception as e:
                     iid = futures[future]
-                    logger.error(f"[{run_id}] Uncaught error for {iid}: {e}")
+                    log_safe_exception(
+                        logger,
+                        f"[{run_id}] Uncaught error for {iid}",
+                        e,
+                        include_debug=is_debug_enabled(),
+                    )
 
     # Save run summary
     summary = {

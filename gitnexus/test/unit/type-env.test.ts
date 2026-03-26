@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildTypeEnv, type TypeEnv, type TypeEnvironment } from '../../src/core/ingestion/type-env.js';
+import { buildTypeEnv, type TypeEnvironment } from '../../src/core/ingestion/type-env.js';
 import { stripNullable, extractSimpleTypeName } from '../../src/core/ingestion/type-extractors/shared.js';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
@@ -20,9 +20,9 @@ const parse = (code: string, lang: any) => {
   return parser.parse(code);
 };
 
-/** Flatten a scoped TypeEnv into a simple name→type map (for simple test assertions). */
-function flatGet(env: TypeEnv, varName: string): string | undefined {
-  for (const [, scopeMap] of env) {
+/** Flatten a scoped TypeEnvironment into a simple name→type map (for simple test assertions). */
+function flatGet(typeEnv: TypeEnvironment, varName: string): string | undefined {
+  for (const [, scopeMap] of typeEnv.allScopes()) {
     const val = scopeMap.get(varName);
     if (val) return val;
   }
@@ -30,9 +30,9 @@ function flatGet(env: TypeEnv, varName: string): string | undefined {
 }
 
 /** Count all bindings across all scopes. */
-function flatSize(env: TypeEnv): number {
+function flatSize(typeEnv: TypeEnvironment): number {
   let count = 0;
-  for (const [, scopeMap] of env) count += scopeMap.size;
+  for (const [, scopeMap] of typeEnv.allScopes()) count += scopeMap.size;
   return count;
 }
 
@@ -40,57 +40,57 @@ describe('buildTypeEnv', () => {
   describe('TypeScript', () => {
     it('extracts type from const declaration', () => {
       const tree = parse('const user: User = getUser();', TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from let declaration', () => {
       const tree = parse('let repo: Repository;', TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'repo')).toBe('Repository');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'repo')).toBe('Repository');
     });
 
     it('extracts type from function parameters', () => {
       const tree = parse('function save(user: User, repo: Repository) {}', TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBe('User');
-      expect(flatGet(env, 'repo')).toBe('Repository');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
+      expect(flatGet(typeEnv, 'repo')).toBe('Repository');
     });
 
     it('extracts type from arrow function parameters', () => {
       const tree = parse('const fn = (user: User) => user.save();', TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('ignores variables without type annotations', () => {
       const tree = parse('const x = 5; let y = "hello";', TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatSize(env)).toBe(0);
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatSize(typeEnv)).toBe(0);
     });
 
     it('extracts type from nullable union User | null', () => {
       const tree = parse('const user: User | null = getUser();', TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from optional union User | undefined', () => {
       const tree = parse('let user: User | undefined;', TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from triple nullable union User | null | undefined', () => {
       const tree = parse('const user: User | null | undefined = getUser();', TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('ignores non-nullable unions like User | Repo', () => {
       const tree = parse('const entity: User | Repo = getEntity();', TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'entity')).toBeUndefined();
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'entity')).toBeUndefined();
     });
   });
 
@@ -104,9 +104,9 @@ describe('buildTypeEnv', () => {
           }
         }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'user')).toBe('User');
-      expect(flatGet(env, 'repo')).toBe('Repository');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
+      expect(flatGet(typeEnv, 'repo')).toBe('Repository');
     });
 
     it('extracts type from method parameters', () => {
@@ -115,9 +115,9 @@ describe('buildTypeEnv', () => {
           void process(User user, Repository repo) {}
         }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'user')).toBe('User');
-      expect(flatGet(env, 'repo')).toBe('Repository');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
+      expect(flatGet(typeEnv, 'repo')).toBe('Repository');
     });
 
     it('extracts type from field declaration', () => {
@@ -126,8 +126,8 @@ describe('buildTypeEnv', () => {
           private User user;
         }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
 
@@ -140,8 +140,8 @@ describe('buildTypeEnv', () => {
           }
         }
       `, CSharp);
-      const { env } = buildTypeEnv(tree, 'csharp');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from var with new expression', () => {
@@ -152,8 +152,8 @@ describe('buildTypeEnv', () => {
           }
         }
       `, CSharp);
-      const { env } = buildTypeEnv(tree, 'csharp');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from method parameters', () => {
@@ -162,9 +162,9 @@ describe('buildTypeEnv', () => {
           void Process(User user, Repository repo) {}
         }
       `, CSharp);
-      const { env } = buildTypeEnv(tree, 'csharp');
-      expect(flatGet(env, 'user')).toBe('User');
-      expect(flatGet(env, 'repo')).toBe('Repository');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
+      expect(flatGet(typeEnv, 'repo')).toBe('Repository');
     });
 
     it('extracts type from is pattern matching (obj is User user)', () => {
@@ -178,8 +178,8 @@ describe('buildTypeEnv', () => {
           }
         }
       `, CSharp);
-      const { env } = buildTypeEnv(tree, 'csharp');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
 
@@ -191,8 +191,8 @@ describe('buildTypeEnv', () => {
           var user User
         }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'go');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from short var with composite literal', () => {
@@ -202,8 +202,8 @@ describe('buildTypeEnv', () => {
           user := User{Name: "Alice"}
         }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'go');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from address-of composite literal (&User{})', () => {
@@ -213,8 +213,8 @@ describe('buildTypeEnv', () => {
           user := &User{Name: "Alice"}
         }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'go');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from address-of in multi-assignment', () => {
@@ -224,9 +224,9 @@ describe('buildTypeEnv', () => {
           user, repo := &User{}, &Repo{}
         }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
-      expect(flatGet(env, 'user')).toBe('User');
-      expect(flatGet(env, 'repo')).toBe('Repo');
+      const typeEnv = buildTypeEnv(tree, 'go');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
+      expect(flatGet(typeEnv, 'repo')).toBe('Repo');
     });
 
     it('infers type from new(User) built-in', () => {
@@ -236,8 +236,8 @@ describe('buildTypeEnv', () => {
           user := new(User)
         }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'go');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('does not infer from non-new function calls', () => {
@@ -247,8 +247,8 @@ describe('buildTypeEnv', () => {
           user := getUser()
         }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
-      expect(flatGet(env, 'user')).toBeUndefined();
+      const typeEnv = buildTypeEnv(tree, 'go');
+      expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
 
     it('infers element type from make([]User, 0) slice builtin', () => {
@@ -258,8 +258,8 @@ describe('buildTypeEnv', () => {
           sl := make([]User, 0)
         }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
-      expect(flatGet(env, 'sl')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'go');
+      expect(flatGet(typeEnv, 'sl')).toBe('User');
     });
 
     it('infers value type from make(map[string]User) map builtin', () => {
@@ -269,8 +269,8 @@ describe('buildTypeEnv', () => {
           m := make(map[string]User)
         }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
-      expect(flatGet(env, 'm')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'go');
+      expect(flatGet(typeEnv, 'm')).toBe('User');
     });
 
     it('infers type from type assertion: user := iface.(User)', () => {
@@ -281,8 +281,8 @@ describe('buildTypeEnv', () => {
           user := s.(User)
         }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'go');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('infers type from type assertion in multi-assignment: user, ok := iface.(User)', () => {
@@ -293,8 +293,8 @@ describe('buildTypeEnv', () => {
           user, ok := s.(User)
         }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'go');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from function parameters', () => {
@@ -302,7 +302,7 @@ describe('buildTypeEnv', () => {
         package main
         func process(user User, repo Repository) {}
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, 'go');
       // Go parameter extraction depends on tree-sitter grammar structure
       // Parameters may or may not have 'name'/'type' fields
     });
@@ -315,17 +315,17 @@ describe('buildTypeEnv', () => {
           let user: User = User::new();
         }
       `, Rust);
-      const { env } = buildTypeEnv(tree, 'rust');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'rust');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from function parameters', () => {
       const tree = parse(`
         fn process(user: User, repo: Repository) {}
       `, Rust);
-      const { env } = buildTypeEnv(tree, 'rust');
-      expect(flatGet(env, 'user')).toBe('User');
-      expect(flatGet(env, 'repo')).toBe('Repository');
+      const typeEnv = buildTypeEnv(tree, 'rust');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
+      expect(flatGet(typeEnv, 'repo')).toBe('Repository');
     });
 
     it('extracts type from let with reference', () => {
@@ -334,27 +334,27 @@ describe('buildTypeEnv', () => {
           let user: &User = &get_user();
         }
       `, Rust);
-      const { env } = buildTypeEnv(tree, 'rust');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'rust');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
 
   describe('Python', () => {
     it('extracts type from annotated assignment (PEP 484)', () => {
       const tree = parse('user: User = get_user()', Python);
-      const { env } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from standalone annotation without value (file scope)', () => {
       const tree = parse('active_user: User', Python);
-      const { env } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'active_user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'active_user')).toBe('User');
     });
 
     it('extracts type from function parameters', () => {
       const tree = parse('def process(user: User, repo: Repository): pass', Python);
-      const { env } = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, 'python');
       // Python uses typed_parameter nodes, check if they match
     });
 
@@ -363,17 +363,17 @@ describe('buildTypeEnv', () => {
     name: str = "default"
     age: int = 0
 `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'name')).toBe('str');
-      expect(flatGet(env, 'age')).toBe('int');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'name')).toBe('str');
+      expect(flatGet(typeEnv, 'age')).toBe('int');
     });
 
     it('extracts type from class-level annotation without default value', () => {
       const tree = parse(`class User:
     repo: UserRepo
 `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'repo')).toBe('UserRepo');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'repo')).toBe('UserRepo');
     });
 
     it('extracts types from mixed class-level annotations and methods', () => {
@@ -385,10 +385,10 @@ describe('buildTypeEnv', () => {
     def save(self):
         pass
 `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'name')).toBe('str');
-      expect(flatGet(env, 'age')).toBe('int');
-      expect(flatGet(env, 'repo')).toBe('UserRepo');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'name')).toBe('str');
+      expect(flatGet(typeEnv, 'age')).toBe('int');
+      expect(flatGet(typeEnv, 'repo')).toBe('UserRepo');
     });
 
     describe('Python match/case as_pattern binding (Phase 6)', () => {
@@ -403,8 +403,8 @@ def process(x):
         case User() as u:
             u.save()
 `, Python);
-        const { env } = buildTypeEnv(tree, 'python');
-        expect(flatGet(env, 'u')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'python');
+        expect(flatGet(typeEnv, 'u')).toBe('User');
       });
 
       it('does NOT overwrite an existing binding in scopeEnv', () => {
@@ -418,9 +418,9 @@ def process(x):
         case User() as u:
             u.save()
 `, Python);
-        const { env } = buildTypeEnv(tree, 'python');
+        const typeEnv = buildTypeEnv(tree, 'python');
         // u is already bound from the annotation, pattern binding should not overwrite
-        expect(flatGet(env, 'u')).toBe('User');
+        expect(flatGet(typeEnv, 'u')).toBe('User');
       });
 
       it('extracts type for each bound variable when multiple cases have as-patterns', () => {
@@ -438,9 +438,9 @@ def process(x):
         case Repo() as r:
             r.save()
 `, Python);
-        const { env } = buildTypeEnv(tree, 'python');
-        expect(flatGet(env, 'u')).toBe('User');
-        expect(flatGet(env, 'r')).toBe('Repo');
+        const typeEnv = buildTypeEnv(tree, 'python');
+        expect(flatGet(typeEnv, 'u')).toBe('User');
+        expect(flatGet(typeEnv, 'r')).toBe('Repo');
       });
 
       it('does NOT extract binding when the pattern is not a class_pattern', () => {
@@ -451,9 +451,9 @@ def process(x):
         case 42 as n:
             pass
 `, Python);
-        const { env } = buildTypeEnv(tree, 'python');
+        const typeEnv = buildTypeEnv(tree, 'python');
         // No class_pattern child — should return undefined
-        expect(flatGet(env, 'n')).toBeUndefined();
+        expect(flatGet(typeEnv, 'n')).toBeUndefined();
       });
     });
   });
@@ -465,8 +465,8 @@ def process(x):
           User user;
         }
       `, CPP);
-      const { env } = buildTypeEnv(tree, 'cpp');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'cpp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from initialized declaration', () => {
@@ -475,8 +475,8 @@ def process(x):
           User user = getUser();
         }
       `, CPP);
-      const { env } = buildTypeEnv(tree, 'cpp');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'cpp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from pointer declaration', () => {
@@ -485,17 +485,17 @@ def process(x):
           User* user = new User();
         }
       `, CPP);
-      const { env } = buildTypeEnv(tree, 'cpp');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'cpp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from function parameters', () => {
       const tree = parse(`
         void process(User user, Repository& repo) {}
       `, CPP);
-      const { env } = buildTypeEnv(tree, 'cpp');
-      expect(flatGet(env, 'user')).toBe('User');
-      expect(flatGet(env, 'repo')).toBe('Repository');
+      const typeEnv = buildTypeEnv(tree, 'cpp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
+      expect(flatGet(typeEnv, 'repo')).toBe('Repository');
     });
 
     it('extracts type from range-for with explicit type', () => {
@@ -507,8 +507,8 @@ def process(x):
           }
         }
       `, CPP);
-      const { env } = buildTypeEnv(tree, 'cpp');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'cpp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from range-for with const ref', () => {
@@ -520,8 +520,8 @@ def process(x):
           }
         }
       `, CPP);
-      const { env } = buildTypeEnv(tree, 'cpp');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'cpp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
 
@@ -530,10 +530,10 @@ def process(x):
       const tree = parse(`<?php
         function process(User $user, Repository $repo) {}
       `, PHP.php);
-      const { env } = buildTypeEnv(tree, 'php');
+      const typeEnv = buildTypeEnv(tree, 'php');
       // PHP parameter type extraction
-      expect(flatGet(env, '$user')).toBe('User');
-      expect(flatGet(env, '$repo')).toBe('Repository');
+      expect(flatGet(typeEnv, '$user')).toBe('User');
+      expect(flatGet(typeEnv, '$repo')).toBe('Repository');
     });
 
     it('resolves $this to enclosing class name', () => {
@@ -568,8 +568,8 @@ class User {
   ) {}
 }
       `, PHP.php);
-      const { env } = buildTypeEnv(tree, 'php');
-      expect(flatGet(env, '$repo')).toBe('UserRepo');
+      const typeEnv = buildTypeEnv(tree, 'php');
+      expect(flatGet(typeEnv, '$repo')).toBe('UserRepo');
     });
 
     it('extracts type from typed class property (PHP 7.4+)', () => {
@@ -578,8 +578,8 @@ class UserService {
   private UserRepo $repo;
 }
       `, PHP.php);
-      const { env } = buildTypeEnv(tree, 'php');
-      expect(flatGet(env, '$repo')).toBe('UserRepo');
+      const typeEnv = buildTypeEnv(tree, 'php');
+      expect(flatGet(typeEnv, '$repo')).toBe('UserRepo');
     });
 
     it('extracts type from typed class property with default value', () => {
@@ -588,8 +588,8 @@ class UserService {
   public string $name = "test";
 }
       `, PHP.php);
-      const { env } = buildTypeEnv(tree, 'php');
-      expect(flatGet(env, '$name')).toBe('string');
+      const typeEnv = buildTypeEnv(tree, 'php');
+      expect(flatGet(typeEnv, '$name')).toBe('string');
     });
 
     it('extracts PHPDoc @param with standard order: @param Type $name', () => {
@@ -602,9 +602,9 @@ function create($repo, $name) {
   $repo->save();
 }
       `, PHP.php);
-      const { env } = buildTypeEnv(tree, 'php');
-      expect(flatGet(env, '$repo')).toBe('UserRepo');
-      expect(flatGet(env, '$name')).toBe('string');
+      const typeEnv = buildTypeEnv(tree, 'php');
+      expect(flatGet(typeEnv, '$repo')).toBe('UserRepo');
+      expect(flatGet(typeEnv, '$name')).toBe('string');
     });
 
     it('extracts PHPDoc @param with alternate order: @param $name Type', () => {
@@ -617,9 +617,9 @@ function process($repo, $name) {
   $repo->save();
 }
       `, PHP.php);
-      const { env } = buildTypeEnv(tree, 'php');
-      expect(flatGet(env, '$repo')).toBe('UserRepo');
-      expect(flatGet(env, '$name')).toBe('string');
+      const typeEnv = buildTypeEnv(tree, 'php');
+      expect(flatGet(typeEnv, '$repo')).toBe('UserRepo');
+      expect(flatGet(typeEnv, '$name')).toBe('string');
     });
   });
 
@@ -634,9 +634,9 @@ class UserService
   end
 end
 `, Ruby);
-      const { env } = buildTypeEnv(tree, 'ruby');
-      expect(flatGet(env, 'repo')).toBe('UserRepo');
-      expect(flatGet(env, 'name')).toBe('String');
+      const typeEnv = buildTypeEnv(tree, 'ruby');
+      expect(flatGet(typeEnv, 'repo')).toBe('UserRepo');
+      expect(flatGet(typeEnv, 'name')).toBe('String');
     });
 
     it('handles qualified YARD types (Models::User → User)', () => {
@@ -645,8 +645,8 @@ end
 def process(user)
 end
 `, Ruby);
-      const { env } = buildTypeEnv(tree, 'ruby');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'ruby');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('handles nullable YARD types (String, nil → String)', () => {
@@ -655,8 +655,8 @@ end
 def greet(name)
 end
 `, Ruby);
-      const { env } = buildTypeEnv(tree, 'ruby');
-      expect(flatGet(env, 'name')).toBe('String');
+      const typeEnv = buildTypeEnv(tree, 'ruby');
+      expect(flatGet(typeEnv, 'name')).toBe('String');
     });
 
     it('skips ambiguous union YARD types (String, Integer → undefined)', () => {
@@ -665,8 +665,8 @@ end
 def process(value)
 end
 `, Ruby);
-      const { env } = buildTypeEnv(tree, 'ruby');
-      expect(flatGet(env, 'value')).toBeUndefined();
+      const typeEnv = buildTypeEnv(tree, 'ruby');
+      expect(flatGet(typeEnv, 'value')).toBeUndefined();
     });
 
     it('extracts no types when no YARD comments present', () => {
@@ -675,8 +675,8 @@ def create(repo, name)
   repo.save
 end
 `, Ruby);
-      const { env } = buildTypeEnv(tree, 'ruby');
-      expect(flatSize(env)).toBe(0);
+      const typeEnv = buildTypeEnv(tree, 'ruby');
+      expect(flatSize(typeEnv)).toBe(0);
     });
 
     it('extracts types from singleton method YARD comments', () => {
@@ -688,8 +688,8 @@ class UserService
   end
 end
 `, Ruby);
-      const { env } = buildTypeEnv(tree, 'ruby');
-      expect(flatGet(env, 'name')).toBe('String');
+      const typeEnv = buildTypeEnv(tree, 'ruby');
+      expect(flatGet(typeEnv, 'name')).toBe('String');
     });
 
     it('handles generic YARD types (Array<User> → Array)', () => {
@@ -698,8 +698,8 @@ end
 def process(users)
 end
 `, Ruby);
-      const { env } = buildTypeEnv(tree, 'ruby');
-      expect(flatGet(env, 'users')).toBe('Array');
+      const typeEnv = buildTypeEnv(tree, 'ruby');
+      expect(flatGet(typeEnv, 'users')).toBe('Array');
     });
   });
 
@@ -837,17 +837,17 @@ object AppConfig {
           user.save();
         }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
 
       // Each function has its own scope for 'user' (keyed by funcName@startIndex)
       // Find the scope keys that start with handleUser/handleRepo
-      const scopes = [...env.keys()];
+      const scopes = [...typeEnv.allScopes().keys()];
       const handleUserKey = scopes.find(k => k.startsWith('handleUser@'));
       const handleRepoKey = scopes.find(k => k.startsWith('handleRepo@'));
       expect(handleUserKey).toBeDefined();
       expect(handleRepoKey).toBeDefined();
-      expect(env.get(handleUserKey!)?.get('user')).toBe('User');
-      expect(env.get(handleRepoKey!)?.get('user')).toBe('Repo');
+      expect(typeEnv.allScopes().get(handleUserKey!)?.get('user')).toBe('User');
+      expect(typeEnv.allScopes().get(handleRepoKey!)?.get('user')).toBe('Repo');
     });
 
     it('lookup resolves from enclosing function scope', () => {
@@ -921,7 +921,7 @@ class RepoService {
       const typeEnv = buildTypeEnv(tree, 'typescript');
 
       // config is at file-level scope
-      const fileScope = typeEnv.env.get('');
+      const fileScope = typeEnv.fileScope();
       expect(fileScope?.get('config')).toBe('Config');
 
       // user is in process scope (key includes startIndex)
@@ -945,13 +945,13 @@ class RepoService {
         const user: User = getUser();
         const { name, email } = user;
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
       // The typed variable is captured
-      expect(flatGet(env, 'user')).toBe('User');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
       // Destructured bindings (name, email) would need type inference to resolve
       // — not extractable from annotations alone
-      expect(flatGet(env, 'name')).toBeUndefined();
-      expect(flatGet(env, 'email')).toBeUndefined();
+      expect(flatGet(typeEnv, 'name')).toBeUndefined();
+      expect(flatGet(typeEnv, 'email')).toBeUndefined();
     });
 
     it('does not extract from object-type-annotated destructuring', () => {
@@ -960,9 +960,9 @@ class RepoService {
       const tree = parse(`
         const { name }: { name: string } = getUser();
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
       // Complex type annotation (object type) — extractSimpleTypeName returns undefined
-      expect(flatSize(env)).toBe(0);
+      expect(flatSize(typeEnv)).toBe(0);
     });
   });
 
@@ -970,55 +970,55 @@ class RepoService {
     describe('TypeScript', () => {
       it('infers type from new expression when no annotation', () => {
         const tree = parse('const user = new User();', TypeScript.typescript);
-        const { env } = buildTypeEnv(tree, 'typescript');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'typescript');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('prefers explicit annotation over constructor inference', () => {
         const tree = parse('const user: BaseUser = new User();', TypeScript.typescript);
-        const { env } = buildTypeEnv(tree, 'typescript');
-        expect(flatGet(env, 'user')).toBe('BaseUser');
+        const typeEnv = buildTypeEnv(tree, 'typescript');
+        expect(flatGet(typeEnv, 'user')).toBe('BaseUser');
       });
 
       it('infers from namespaced constructor: new ns.Service()', () => {
         // extractSimpleTypeName handles member_expression via property_identifier
         const tree = parse('const svc = new ns.Service();', TypeScript.typescript);
-        const { env } = buildTypeEnv(tree, 'typescript');
-        expect(flatGet(env, 'svc')).toBe('Service');
+        const typeEnv = buildTypeEnv(tree, 'typescript');
+        expect(flatGet(typeEnv, 'svc')).toBe('Service');
       });
 
       it('infers type from new expression with as cast', () => {
         const tree = parse('const x = new User() as BaseUser;', TypeScript.typescript);
-        const { env } = buildTypeEnv(tree, 'typescript');
+        const typeEnv = buildTypeEnv(tree, 'typescript');
         // Unwraps as_expression to find the inner new_expression → User
-        expect(flatGet(env, 'x')).toBe('User');
+        expect(flatGet(typeEnv, 'x')).toBe('User');
       });
 
       it('infers type from new expression with non-null assertion', () => {
         const tree = parse('const x = new User()!;', TypeScript.typescript);
-        const { env } = buildTypeEnv(tree, 'typescript');
+        const typeEnv = buildTypeEnv(tree, 'typescript');
         // Unwraps non_null_expression to find the inner new_expression → User
-        expect(flatGet(env, 'x')).toBe('User');
+        expect(flatGet(typeEnv, 'x')).toBe('User');
       });
 
       it('infers type from double-cast (new X() as unknown as T)', () => {
         const tree = parse('const x = new User() as unknown as Admin;', TypeScript.typescript);
-        const { env } = buildTypeEnv(tree, 'typescript');
+        const typeEnv = buildTypeEnv(tree, 'typescript');
         // Unwraps nested as_expression to find inner new_expression → User
-        expect(flatGet(env, 'x')).toBe('User');
+        expect(flatGet(typeEnv, 'x')).toBe('User');
       });
 
       it('ignores non-new assignments', () => {
         const tree = parse('const x = getUser();', TypeScript.typescript);
-        const { env } = buildTypeEnv(tree, 'typescript');
-        expect(flatSize(env)).toBe(0);
+        const typeEnv = buildTypeEnv(tree, 'typescript');
+        expect(flatSize(typeEnv)).toBe(0);
       });
 
       it('handles mixed annotated + unannotated declarators', () => {
         const tree = parse('const a: A = getA(), b = new B();', TypeScript.typescript);
-        const { env } = buildTypeEnv(tree, 'typescript');
-        expect(flatGet(env, 'a')).toBe('A');
-        expect(flatGet(env, 'b')).toBe('B');
+        const typeEnv = buildTypeEnv(tree, 'typescript');
+        expect(flatGet(typeEnv, 'a')).toBe('A');
+        expect(flatGet(typeEnv, 'b')).toBe('B');
       });
     });
 
@@ -1031,8 +1031,8 @@ class RepoService {
             }
           }
         `, Java);
-        const { env } = buildTypeEnv(tree, 'java');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'java');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('prefers explicit type over constructor inference', () => {
@@ -1043,8 +1043,8 @@ class RepoService {
             }
           }
         `, Java);
-        const { env } = buildTypeEnv(tree, 'java');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'java');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('does not infer from var without new expression', () => {
@@ -1055,8 +1055,8 @@ class RepoService {
             }
           }
         `, Java);
-        const { env } = buildTypeEnv(tree, 'java');
-        expect(flatGet(env, 'x')).toBeUndefined();
+        const typeEnv = buildTypeEnv(tree, 'java');
+        expect(flatGet(typeEnv, 'x')).toBeUndefined();
       });
     });
 
@@ -1067,8 +1067,8 @@ class RepoService {
             let user = User::new();
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('infers type from Type::default()', () => {
@@ -1077,8 +1077,8 @@ class RepoService {
             let config = Config::default();
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'config')).toBe('Config');
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'config')).toBe('Config');
       });
 
       it('does NOT emit scanner binding for Type::default() (handled by extractInitializer)', () => {
@@ -1087,10 +1087,10 @@ class RepoService {
             let config = Config::default();
           }
         `, Rust);
-        const { constructorBindings } = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, 'rust');
         // ::default() should be excluded from scanConstructorBinding just like ::new()
         // extractInitializer already resolves it, so a scanner binding would be redundant
-        const defaultBinding = constructorBindings.find(b => b.calleeName === 'default');
+        const defaultBinding = typeEnv.constructorBindings.find(b => b.calleeName === 'default');
         expect(defaultBinding).toBeUndefined();
       });
 
@@ -1100,8 +1100,8 @@ class RepoService {
             let user = User::new();
           }
         `, Rust);
-        const { constructorBindings } = buildTypeEnv(tree, 'rust');
-        const newBinding = constructorBindings.find(b => b.calleeName === 'new');
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        const newBinding = typeEnv.constructorBindings.find(b => b.calleeName === 'new');
         expect(newBinding).toBeUndefined();
       });
 
@@ -1112,8 +1112,8 @@ class RepoService {
             let user: BaseUser = Admin::new();
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'user')).toBe('BaseUser');
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'user')).toBe('BaseUser');
       });
 
       it('infers type from let mut with ::new()', () => {
@@ -1122,8 +1122,8 @@ class RepoService {
             let mut user = User::new();
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('resolves Self::new() to enclosing impl type', () => {
@@ -1135,8 +1135,8 @@ class RepoService {
             }
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'instance')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'instance')).toBe('User');
       });
 
       it('resolves Self::default() to enclosing impl type', () => {
@@ -1148,8 +1148,8 @@ class RepoService {
             }
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'cfg')).toBe('Config');
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'cfg')).toBe('Config');
       });
 
       it('skips Self::new() outside impl block', () => {
@@ -1158,8 +1158,8 @@ class RepoService {
             let x = Self::new();
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'x')).toBeUndefined();
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'x')).toBeUndefined();
       });
 
       it('does not infer from Type::other_method()', () => {
@@ -1168,8 +1168,8 @@ class RepoService {
             let user = User::from_str("alice");
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'user')).toBeUndefined();
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'user')).toBeUndefined();
       });
 
       it('infers type from struct literal (User { ... })', () => {
@@ -1178,8 +1178,8 @@ class RepoService {
             let user = User { name: "alice", age: 30 };
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('infers type from empty struct literal (Config {})', () => {
@@ -1188,8 +1188,8 @@ class RepoService {
             let config = Config {};
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'config')).toBe('Config');
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'config')).toBe('Config');
       });
 
       it('prefers explicit annotation over struct literal inference', () => {
@@ -1198,8 +1198,8 @@ class RepoService {
             let user: BaseUser = Admin { name: "alice" };
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'user')).toBe('BaseUser');
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'user')).toBe('BaseUser');
       });
 
       it('resolves Self {} struct literal to enclosing impl type', () => {
@@ -1211,8 +1211,8 @@ class RepoService {
             }
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'fresh')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'fresh')).toBe('User');
       });
 
       it('skips Self {} outside impl block', () => {
@@ -1221,8 +1221,8 @@ class RepoService {
             let x = Self { name: String::new() };
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'x')).toBeUndefined();
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'x')).toBeUndefined();
       });
     });
 
@@ -1235,8 +1235,8 @@ class RepoService {
             }
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('extracts type from nested captured_pattern in if let Some(user @ User { .. })', () => {
@@ -1247,8 +1247,8 @@ class RepoService {
             }
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('extracts type from captured_pattern in while let', () => {
@@ -1259,8 +1259,8 @@ class RepoService {
             }
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
-        expect(flatGet(env, 'item')).toBe('Config');
+        const typeEnv = buildTypeEnv(tree, 'rust');
+        expect(flatGet(typeEnv, 'item')).toBe('Config');
       });
 
       it('extracts binding from if let Some(x) = opt via Phase 5.2 pattern binding', () => {
@@ -1271,10 +1271,10 @@ class RepoService {
             }
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, 'rust');
         // Option<User> is unwrapped to "User" in TypeEnv via NULLABLE_WRAPPER_TYPES.
         // extractPatternBinding maps `user` → "User" from the scopeEnv lookup for `opt`.
-        expect(flatGet(env, 'user')).toBe('User');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('does NOT extract field bindings from struct pattern destructuring', () => {
@@ -1285,11 +1285,11 @@ class RepoService {
             }
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, 'rust');
         // 'name' is a field of User — we don't know its type without field-type resolution
-        expect(flatGet(env, 'name')).toBeUndefined();
+        expect(flatGet(typeEnv, 'name')).toBeUndefined();
         // 'val' should still be extracted from the parameter annotation
-        expect(flatGet(env, 'val')).toBe('User');
+        expect(flatGet(typeEnv, 'val')).toBe('User');
       });
 
       it('extracts type from scoped struct pattern (Message::Data)', () => {
@@ -1300,9 +1300,9 @@ class RepoService {
             }
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, 'rust');
         // scoped_type_identifier: Message::Data — extractSimpleTypeName returns "Data"
-        expect(flatGet(env, 'msg')).toBe('Data');
+        expect(flatGet(typeEnv, 'msg')).toBe('Data');
       });
 
       it('still extracts parameter types alongside if-let bindings', () => {
@@ -1313,10 +1313,10 @@ class RepoService {
             }
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, 'rust');
         // Option<User> unwraps to User (nullable wrapper unwrapping)
-        expect(flatGet(env, 'opt')).toBe('User');
-        expect(flatGet(env, 'user')).toBe('User');
+        expect(flatGet(typeEnv, 'opt')).toBe('User');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('Phase 5.2: extracts binding from if let Some(x) = opt where opt: Option<User>', () => {
@@ -1327,10 +1327,10 @@ class RepoService {
             }
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, 'rust');
         // opt: Option<User> → scopeEnv stores "User" (NULLABLE_WRAPPER_TYPES unwrapping)
         // extractPatternBinding maps user → opt's type → "User"
-        expect(flatGet(env, 'user')).toBe('User');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('Phase 5.2: does NOT extract binding when source variable is unknown', () => {
@@ -1341,9 +1341,9 @@ class RepoService {
             }
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, 'rust');
         // unknown_var is not in scopeEnv — conservative, produces no binding
-        expect(flatGet(env, 'x')).toBeUndefined();
+        expect(flatGet(typeEnv, 'x')).toBeUndefined();
       });
 
       it('Phase 5.2: does NOT extract binding for non-Option/Result wrappers', () => {
@@ -1354,9 +1354,9 @@ class RepoService {
             }
           }
         `, Rust);
-        const { env } = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, 'rust');
         // SomeOtherVariant is not a known unwrap wrapper — no binding
-        expect(flatGet(env, 'x')).toBeUndefined();
+        expect(flatGet(typeEnv, 'x')).toBeUndefined();
       });
     });
 
@@ -1371,8 +1371,8 @@ class RepoService {
             }
           }
         `, Java);
-        const { env } = buildTypeEnv(tree, 'java');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'java');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('extracts boolean type from plain instanceof (no pattern variable)', () => {
@@ -1383,9 +1383,9 @@ class RepoService {
             }
           }
         `, Java);
-        const { env } = buildTypeEnv(tree, 'java');
+        const typeEnv = buildTypeEnv(tree, 'java');
         // No pattern variable — b gets its declared type 'boolean', not 'User'
-        expect(flatGet(env, 'b')).toBe('boolean');
+        expect(flatGet(typeEnv, 'b')).toBe('boolean');
       });
 
       it('extracts correct type when multiple instanceof patterns exist', () => {
@@ -1401,9 +1401,9 @@ class RepoService {
             }
           }
         `, Java);
-        const { env } = buildTypeEnv(tree, 'java');
-        expect(flatGet(env, 'user')).toBe('User');
-        expect(flatGet(env, 'repo')).toBe('Repo');
+        const typeEnv = buildTypeEnv(tree, 'java');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
+        expect(flatGet(typeEnv, 'repo')).toBe('Repo');
       });
     });
 
@@ -1412,8 +1412,8 @@ class RepoService {
         const tree = parse(`<?php
           $user = new User();
         `, PHP.php);
-        const { env } = buildTypeEnv(tree, 'php');
-        expect(flatGet(env, '$user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'php');
+        expect(flatGet(typeEnv, '$user')).toBe('User');
       });
 
       it('resolves new self() and new static() to enclosing class', () => {
@@ -1425,9 +1425,9 @@ class RepoService {
             }
           }
         `, PHP.php);
-        const { env } = buildTypeEnv(tree, 'php');
-        expect(flatGet(env, '$a')).toBe('Foo');
-        expect(flatGet(env, '$b')).toBe('Foo');
+        const typeEnv = buildTypeEnv(tree, 'php');
+        expect(flatGet(typeEnv, '$a')).toBe('Foo');
+        expect(flatGet(typeEnv, '$b')).toBe('Foo');
       });
 
       it('resolves new parent() to superclass', () => {
@@ -1439,24 +1439,24 @@ class RepoService {
             }
           }
         `, PHP.php);
-        const { env } = buildTypeEnv(tree, 'php');
-        expect(flatGet(env, '$p')).toBe('Bar');
+        const typeEnv = buildTypeEnv(tree, 'php');
+        expect(flatGet(typeEnv, '$p')).toBe('Bar');
       });
 
       it('skips self/static/parent outside class scope', () => {
         const tree = parse(`<?php
           $a = new self();
         `, PHP.php);
-        const { env } = buildTypeEnv(tree, 'php');
-        expect(flatGet(env, '$a')).toBeUndefined();
+        const typeEnv = buildTypeEnv(tree, 'php');
+        expect(flatGet(typeEnv, '$a')).toBeUndefined();
       });
 
       it('does not infer from non-new assignments', () => {
         const tree = parse(`<?php
           $user = getUser();
         `, PHP.php);
-        const { env } = buildTypeEnv(tree, 'php');
-        expect(flatGet(env, '$user')).toBeUndefined();
+        const typeEnv = buildTypeEnv(tree, 'php');
+        expect(flatGet(typeEnv, '$user')).toBeUndefined();
       });
     });
 
@@ -1467,8 +1467,8 @@ class RepoService {
             auto user = new User();
           }
         `, CPP);
-        const { env } = buildTypeEnv(tree, 'cpp');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'cpp');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('infers type from auto with direct construction when class is defined', () => {
@@ -1478,8 +1478,8 @@ class RepoService {
             auto user = User();
           }
         `, CPP);
-        const { env } = buildTypeEnv(tree, 'cpp');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'cpp');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('prefers explicit type over auto inference', () => {
@@ -1488,8 +1488,8 @@ class RepoService {
             User* user = new User();
           }
         `, CPP);
-        const { env } = buildTypeEnv(tree, 'cpp');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'cpp');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('does not infer from auto with function call (not a known class)', () => {
@@ -1500,9 +1500,9 @@ class RepoService {
             auto x = getUser();
           }
         `, CPP);
-        const { env } = buildTypeEnv(tree, 'cpp');
+        const typeEnv = buildTypeEnv(tree, 'cpp');
         // getUser is an identifier but NOT a known class — no inference
-        expect(flatGet(env, 'x')).toBeUndefined();
+        expect(flatGet(typeEnv, 'x')).toBeUndefined();
       });
 
       it('infers type from brace initialization (User{})', () => {
@@ -1512,8 +1512,8 @@ class RepoService {
             auto user = User{};
           }
         `, CPP);
-        const { env } = buildTypeEnv(tree, 'cpp');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'cpp');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('infers type from brace initialization with args (User{1,2})', () => {
@@ -1523,8 +1523,8 @@ class RepoService {
             auto cfg = Config{1, 2};
           }
         `, CPP);
-        const { env } = buildTypeEnv(tree, 'cpp');
-        expect(flatGet(env, 'cfg')).toBe('Config');
+        const typeEnv = buildTypeEnv(tree, 'cpp');
+        expect(flatGet(typeEnv, 'cfg')).toBe('Config');
       });
 
       it('infers type from namespaced brace-init (ns::User{})', () => {
@@ -1534,8 +1534,8 @@ class RepoService {
             auto user = ns::User{};
           }
         `, CPP);
-        const { env } = buildTypeEnv(tree, 'cpp');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'cpp');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
     });
 
@@ -1546,8 +1546,8 @@ class RepoService {
             val user: User = User()
           }
         `, Kotlin);
-        const { env } = buildTypeEnv(tree, 'kotlin');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'kotlin');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('infers type from constructor call when class is in same file', () => {
@@ -1557,8 +1557,8 @@ class RepoService {
             val user = User("Alice")
           }
         `, Kotlin);
-        const { env } = buildTypeEnv(tree, 'kotlin');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'kotlin');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('does NOT infer type from plain function call', () => {
@@ -1568,9 +1568,9 @@ class RepoService {
             val user = getUser()
           }
         `, Kotlin);
-        const { env } = buildTypeEnv(tree, 'kotlin');
+        const typeEnv = buildTypeEnv(tree, 'kotlin');
         // getUser is not a class name — should NOT produce a binding
-        expect(flatGet(env, 'user')).toBeUndefined();
+        expect(flatGet(typeEnv, 'user')).toBeUndefined();
       });
 
       it('infers type from constructor when class defined via SymbolTable', () => {
@@ -1589,8 +1589,8 @@ class RepoService {
           getStats: () => ({ fileCount: 0, globalSymbolCount: 0 }),
           clear: () => {},
         };
-        const { env } = buildTypeEnv(tree, 'kotlin', { symbolTable: mockSymbolTable as any });
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'kotlin', { symbolTable: mockSymbolTable as any });
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('does NOT infer when SymbolTable says callee is a Function', () => {
@@ -1610,8 +1610,8 @@ class RepoService {
           getStats: () => ({ fileCount: 0, globalSymbolCount: 0 }),
           clear: () => {},
         };
-        const { env } = buildTypeEnv(tree, 'kotlin', { symbolTable: mockSymbolTable as any });
-        expect(flatGet(env, 'result')).toBeUndefined();
+        const typeEnv = buildTypeEnv(tree, 'kotlin', { symbolTable: mockSymbolTable as any });
+        expect(flatGet(typeEnv, 'result')).toBeUndefined();
       });
 
       it('prefers explicit annotation over constructor inference', () => {
@@ -1621,9 +1621,9 @@ class RepoService {
             val user: BaseEntity = User("Alice")
           }
         `, Kotlin);
-        const { env } = buildTypeEnv(tree, 'kotlin');
+        const typeEnv = buildTypeEnv(tree, 'kotlin');
         // Tier 0 (explicit annotation) wins over Tier 1 (constructor inference)
-        expect(flatGet(env, 'user')).toBe('BaseEntity');
+        expect(flatGet(typeEnv, 'user')).toBe('BaseEntity');
       });
     });
 
@@ -1636,8 +1636,8 @@ class User:
 def main():
     user = User("alice")
 `, Python);
-        const { env } = buildTypeEnv(tree, 'python');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'python');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('infers type from qualified constructor call (models.User)', () => {
@@ -1648,9 +1648,9 @@ class User:
 def main():
     user = models.User("alice")
 `, Python);
-        const { env } = buildTypeEnv(tree, 'python');
+        const typeEnv = buildTypeEnv(tree, 'python');
         // extractSimpleTypeName extracts "User" from attribute node "models.User"
-        expect(flatGet(env, 'user')).toBe('User');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('does not infer from plain function call', () => {
@@ -1658,8 +1658,8 @@ def main():
 def main():
     user = get_user()
 `, Python);
-        const { env } = buildTypeEnv(tree, 'python');
-        expect(flatGet(env, 'user')).toBeUndefined();
+        const typeEnv = buildTypeEnv(tree, 'python');
+        expect(flatGet(typeEnv, 'user')).toBeUndefined();
       });
     });
 
@@ -1673,8 +1673,8 @@ def main():
     if (user := User("alice")):
         pass
 `, Python);
-        const { env } = buildTypeEnv(tree, 'python');
-        expect(flatGet(env, 'user')).toBe('User');
+        const typeEnv = buildTypeEnv(tree, 'python');
+        expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('does not infer type from walrus operator without known class', () => {
@@ -1683,8 +1683,8 @@ def main():
     if (data := get_data()):
         pass
 `, Python);
-        const { env } = buildTypeEnv(tree, 'python');
-        expect(flatGet(env, 'data')).toBeUndefined();
+        const typeEnv = buildTypeEnv(tree, 'python');
+        expect(flatGet(typeEnv, 'data')).toBeUndefined();
       });
     });
   });
@@ -1692,8 +1692,8 @@ def main():
   describe('edge cases', () => {
     it('returns empty map for code without type annotations', () => {
       const tree = parse('const x = 5;', TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatSize(env)).toBe(0);
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatSize(typeEnv)).toBe(0);
     });
 
     it('last-write-wins for same variable name in same scope', () => {
@@ -1701,9 +1701,9 @@ def main():
         let x: User = getUser();
         let x: Admin = getAdmin();
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
       // Both declarations are at file level; last one wins
-      expect(flatGet(env, 'x')).toBeDefined();
+      expect(flatGet(typeEnv, 'x')).toBeDefined();
     });
   });
 
@@ -1825,9 +1825,9 @@ class User : BaseModel<string> {
           auto client = ns::HttpClient();
         }
       `, CPP);
-      const { constructorBindings } = buildTypeEnv(tree, 'cpp');
+      const typeEnv = buildTypeEnv(tree, 'cpp');
       // Should extract "HttpClient" from the scoped_identifier ns::HttpClient
-      const binding = constructorBindings.find(b => b.varName === 'client');
+      const binding = typeEnv.constructorBindings.find(b => b.varName === 'client');
       expect(binding).toBeDefined();
       expect(binding!.calleeName).toBe('HttpClient');
     });
@@ -1839,11 +1839,11 @@ class User : BaseModel<string> {
           auto user = User();
         }
       `, CPP);
-      const { env, constructorBindings } = buildTypeEnv(tree, 'cpp');
+      const typeEnv = buildTypeEnv(tree, 'cpp');
       // User() with known class resolves via extractInitializer, not constructor bindings
-      expect(flatGet(env, 'user')).toBe('User');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
       // No unresolved bindings since User is locally known
-      expect(constructorBindings.find(b => b.varName === 'user')).toBeUndefined();
+      expect(typeEnv.constructorBindings.find(b => b.varName === 'user')).toBeUndefined();
     });
   });
 
@@ -1854,12 +1854,12 @@ class User : BaseModel<string> {
           val user = UnknownClass()
         }
       `, Kotlin);
-      const { env, constructorBindings } = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
       // UnknownClass is not defined locally — should appear as unverified binding
-      expect(flatGet(env, 'user')).toBeUndefined();
-      expect(constructorBindings.length).toBe(1);
-      expect(constructorBindings[0].varName).toBe('user');
-      expect(constructorBindings[0].calleeName).toBe('UnknownClass');
+      expect(flatGet(typeEnv, 'user')).toBeUndefined();
+      expect(typeEnv.constructorBindings.length).toBe(1);
+      expect(typeEnv.constructorBindings[0].varName).toBe('user');
+      expect(typeEnv.constructorBindings[0].calleeName).toBe('UnknownClass');
     });
 
     it('does NOT emit constructor binding when TypeEnv already resolved', () => {
@@ -1868,10 +1868,10 @@ class User : BaseModel<string> {
           val user: User = User()
         }
       `, Kotlin);
-      const { env, constructorBindings } = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
       // Explicit annotation resolves it — no unverified binding needed
-      expect(flatGet(env, 'user')).toBe('User');
-      expect(constructorBindings.find(b => b.varName === 'user')).toBeUndefined();
+      expect(flatGet(typeEnv, 'user')).toBe('User');
+      expect(typeEnv.constructorBindings.find(b => b.varName === 'user')).toBeUndefined();
     });
 
     it('returns constructor bindings for Python x = UnknownClass()', () => {
@@ -1879,11 +1879,11 @@ class User : BaseModel<string> {
 def main():
     user = SomeClass()
 `, Python);
-      const { env, constructorBindings } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'user')).toBeUndefined();
-      expect(constructorBindings.length).toBe(1);
-      expect(constructorBindings[0].varName).toBe('user');
-      expect(constructorBindings[0].calleeName).toBe('SomeClass');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'user')).toBeUndefined();
+      expect(typeEnv.constructorBindings.length).toBe(1);
+      expect(typeEnv.constructorBindings[0].varName).toBe('user');
+      expect(typeEnv.constructorBindings[0].calleeName).toBe('SomeClass');
     });
 
     it('returns constructor bindings for Python qualified call (models.User)', () => {
@@ -1891,10 +1891,10 @@ def main():
 def main():
     user = models.User("alice")
 `, Python);
-      const { constructorBindings } = buildTypeEnv(tree, 'python');
-      expect(constructorBindings.length).toBe(1);
-      expect(constructorBindings[0].varName).toBe('user');
-      expect(constructorBindings[0].calleeName).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(typeEnv.constructorBindings.length).toBe(1);
+      expect(typeEnv.constructorBindings[0].varName).toBe('user');
+      expect(typeEnv.constructorBindings[0].calleeName).toBe('User');
     });
 
     it('returns constructor bindings for Python walrus operator (user := SomeClass())', () => {
@@ -1903,11 +1903,11 @@ def main():
     if (user := SomeClass()):
         pass
 `, Python);
-      const { env, constructorBindings } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'user')).toBeUndefined();
-      expect(constructorBindings.length).toBe(1);
-      expect(constructorBindings[0].varName).toBe('user');
-      expect(constructorBindings[0].calleeName).toBe('SomeClass');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'user')).toBeUndefined();
+      expect(typeEnv.constructorBindings.length).toBe(1);
+      expect(typeEnv.constructorBindings[0].varName).toBe('user');
+      expect(typeEnv.constructorBindings[0].calleeName).toBe('SomeClass');
     });
 
     it('returns empty bindings for language without scanner (Go)', () => {
@@ -1917,38 +1917,38 @@ def main():
           var x int = 5
         }
       `, Go);
-      const { constructorBindings } = buildTypeEnv(tree, 'go');
-      expect(constructorBindings).toEqual([]);
+      const typeEnv = buildTypeEnv(tree, 'go');
+      expect(typeEnv.constructorBindings).toEqual([]);
     });
 
     it('returns constructor bindings for Ruby constant assignment (REPO = Repo.new)', () => {
       const tree = parse(`
 REPO = Repo.new
 `, Ruby);
-      const { constructorBindings } = buildTypeEnv(tree, 'ruby');
-      expect(constructorBindings.length).toBe(1);
-      expect(constructorBindings[0].varName).toBe('REPO');
-      expect(constructorBindings[0].calleeName).toBe('Repo');
+      const typeEnv = buildTypeEnv(tree, 'ruby');
+      expect(typeEnv.constructorBindings.length).toBe(1);
+      expect(typeEnv.constructorBindings[0].varName).toBe('REPO');
+      expect(typeEnv.constructorBindings[0].calleeName).toBe('Repo');
     });
 
     it('returns constructor bindings for Ruby namespaced constructor (service = Models::UserService.new)', () => {
       const tree = parse(`
 service = Models::UserService.new
 `, Ruby);
-      const { constructorBindings } = buildTypeEnv(tree, 'ruby');
-      expect(constructorBindings.length).toBe(1);
-      expect(constructorBindings[0].varName).toBe('service');
-      expect(constructorBindings[0].calleeName).toBe('UserService');
+      const typeEnv = buildTypeEnv(tree, 'ruby');
+      expect(typeEnv.constructorBindings.length).toBe(1);
+      expect(typeEnv.constructorBindings[0].varName).toBe('service');
+      expect(typeEnv.constructorBindings[0].calleeName).toBe('UserService');
     });
 
     it('returns constructor bindings for deeply namespaced Ruby constructor (svc = App::Models::Service.new)', () => {
       const tree = parse(`
 svc = App::Models::Service.new
 `, Ruby);
-      const { constructorBindings } = buildTypeEnv(tree, 'ruby');
-      expect(constructorBindings.length).toBe(1);
-      expect(constructorBindings[0].varName).toBe('svc');
-      expect(constructorBindings[0].calleeName).toBe('Service');
+      const typeEnv = buildTypeEnv(tree, 'ruby');
+      expect(typeEnv.constructorBindings.length).toBe(1);
+      expect(typeEnv.constructorBindings[0].varName).toBe('svc');
+      expect(typeEnv.constructorBindings[0].calleeName).toBe('Service');
     });
 
     it('includes scope key in constructor bindings', () => {
@@ -1957,60 +1957,60 @@ svc = App::Models::Service.new
           val user = RemoteUser()
         }
       `, Kotlin);
-      const { constructorBindings } = buildTypeEnv(tree, 'kotlin');
-      expect(constructorBindings.length).toBe(1);
-      expect(constructorBindings[0].scope).toMatch(/^process@\d+$/);
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      expect(typeEnv.constructorBindings.length).toBe(1);
+      expect(typeEnv.constructorBindings[0].scope).toMatch(/^process@\d+$/);
     });
 
     it('returns constructor bindings for TypeScript const user = getUser()', () => {
       const tree = parse('const user = getUser();', TypeScript.typescript);
-      const { env, constructorBindings } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBeUndefined();
-      expect(constructorBindings.length).toBe(1);
-      expect(constructorBindings[0].varName).toBe('user');
-      expect(constructorBindings[0].calleeName).toBe('getUser');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBeUndefined();
+      expect(typeEnv.constructorBindings.length).toBe(1);
+      expect(typeEnv.constructorBindings[0].varName).toBe('user');
+      expect(typeEnv.constructorBindings[0].calleeName).toBe('getUser');
     });
 
     it('does NOT emit constructor binding when TypeScript var has explicit type annotation', () => {
       const tree = parse('const user: User = getUser();', TypeScript.typescript);
-      const { env, constructorBindings } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBe('User');
-      expect(constructorBindings.find(b => b.varName === 'user')).toBeUndefined();
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
+      expect(typeEnv.constructorBindings.find(b => b.varName === 'user')).toBeUndefined();
     });
 
     it('skips destructuring patterns (array_pattern) for TypeScript', () => {
       const tree = parse('const [a, b] = getPair();', TypeScript.typescript);
-      const { constructorBindings } = buildTypeEnv(tree, 'typescript');
-      expect(constructorBindings).toEqual([]);
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(typeEnv.constructorBindings).toEqual([]);
     });
 
     it('skips destructuring patterns (object_pattern) for TypeScript', () => {
       const tree = parse('const { name, age } = getUser();', TypeScript.typescript);
-      const { constructorBindings } = buildTypeEnv(tree, 'typescript');
-      expect(constructorBindings).toEqual([]);
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(typeEnv.constructorBindings).toEqual([]);
     });
 
     it('unwraps await in TypeScript: const user = await fetchUser()', () => {
       const tree = parse('async function f() { const user = await fetchUser(); }', TypeScript.typescript);
-      const { constructorBindings } = buildTypeEnv(tree, 'typescript');
-      expect(constructorBindings.length).toBe(1);
-      expect(constructorBindings[0].varName).toBe('user');
-      expect(constructorBindings[0].calleeName).toBe('fetchUser');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(typeEnv.constructorBindings.length).toBe(1);
+      expect(typeEnv.constructorBindings[0].varName).toBe('user');
+      expect(typeEnv.constructorBindings[0].calleeName).toBe('fetchUser');
     });
 
     it('handles qualified callee in TypeScript: const user = repo.getUser()', () => {
       const tree = parse('const user = repo.getUser();', TypeScript.typescript);
-      const { constructorBindings } = buildTypeEnv(tree, 'typescript');
-      expect(constructorBindings.length).toBe(1);
-      expect(constructorBindings[0].varName).toBe('user');
-      expect(constructorBindings[0].calleeName).toBe('getUser');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(typeEnv.constructorBindings.length).toBe(1);
+      expect(typeEnv.constructorBindings[0].varName).toBe('user');
+      expect(typeEnv.constructorBindings[0].calleeName).toBe('getUser');
     });
 
     it('does not emit binding for TypeScript new expression (handled by extractInitializer)', () => {
       const tree = parse('const user = new User();', TypeScript.typescript);
-      const { env, constructorBindings } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBe('User');
-      expect(constructorBindings.find(b => b.varName === 'user')).toBeUndefined();
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
+      expect(typeEnv.constructorBindings.find(b => b.varName === 'user')).toBeUndefined();
     });
 
     it('returns constructor binding for C# var user = svc.GetUser()', () => {
@@ -2022,8 +2022,8 @@ svc = App::Models::Service.new
           }
         }
       `, CSharp);
-      const { constructorBindings } = buildTypeEnv(tree, 'csharp');
-      const binding = constructorBindings.find(b => b.varName === 'user');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const binding = typeEnv.constructorBindings.find(b => b.varName === 'user');
       expect(binding).toBeDefined();
       expect(binding!.calleeName).toBe('GetUser');
     });
@@ -2034,10 +2034,10 @@ svc = App::Models::Service.new
           let user = get_user().await;
         }
       `, Rust);
-      const { constructorBindings } = buildTypeEnv(tree, 'rust');
-      expect(constructorBindings.length).toBe(1);
-      expect(constructorBindings[0].varName).toBe('user');
-      expect(constructorBindings[0].calleeName).toBe('get_user');
+      const typeEnv = buildTypeEnv(tree, 'rust');
+      expect(typeEnv.constructorBindings.length).toBe(1);
+      expect(typeEnv.constructorBindings[0].varName).toBe('user');
+      expect(typeEnv.constructorBindings[0].calleeName).toBe('get_user');
     });
 
     it('unwraps await in C#: var user = await svc.GetUserAsync()', () => {
@@ -2049,8 +2049,8 @@ svc = App::Models::Service.new
           }
         }
       `, CSharp);
-      const { constructorBindings } = buildTypeEnv(tree, 'csharp');
-      const binding = constructorBindings.find(b => b.varName === 'user');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const binding = typeEnv.constructorBindings.find(b => b.varName === 'user');
       expect(binding).toBeDefined();
       expect(binding!.calleeName).toBe('GetUserAsync');
     });
@@ -2063,8 +2063,8 @@ svc = App::Models::Service.new
           }
         }
       `, CSharp);
-      const { constructorBindings } = buildTypeEnv(tree, 'csharp');
-      const binding = constructorBindings.find(b => b.varName === 'user');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const binding = typeEnv.constructorBindings.find(b => b.varName === 'user');
       expect(binding).toBeDefined();
       expect(binding!.calleeName).toBe('GetUser');
     });
@@ -2076,9 +2076,9 @@ svc = App::Models::Service.new
         const a: User = getUser();
         const b = a;
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'a')).toBe('User');
-      expect(flatGet(env, 'b')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'a')).toBe('User');
+      expect(flatGet(typeEnv, 'b')).toBe('User');
     });
 
     it('propagates constructor inference: const a = new User(); const b = a → b is User', () => {
@@ -2086,9 +2086,9 @@ svc = App::Models::Service.new
         const a = new User();
         const b = a;
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'a')).toBe('User');
-      expect(flatGet(env, 'b')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'a')).toBe('User');
+      expect(flatGet(typeEnv, 'b')).toBe('User');
     });
 
     it('depth-2 in declaration order resolves because single pass iterates sequentially', () => {
@@ -2100,10 +2100,10 @@ svc = App::Models::Service.new
         const b = a;
         const c = b;
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'a')).toBe('User');
-      expect(flatGet(env, 'b')).toBe('User');
-      expect(flatGet(env, 'c')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'a')).toBe('User');
+      expect(flatGet(typeEnv, 'b')).toBe('User');
+      expect(flatGet(typeEnv, 'c')).toBe('User');
     });
 
     it('propagates typed function parameter to local alias', () => {
@@ -2113,12 +2113,12 @@ svc = App::Models::Service.new
           alias.save();
         }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
       // 'alias' should get User from the parameter 'user'
-      const scopeKey = [...env.keys()].find(k => k.startsWith('process@'));
+      const scopeKey = [...typeEnv.allScopes().keys()].find(k => k.startsWith('process@'));
       expect(scopeKey).toBeDefined();
-      expect(env.get(scopeKey!)?.get('user')).toBe('User');
-      expect(env.get(scopeKey!)?.get('alias')).toBe('User');
+      expect(typeEnv.allScopes().get(scopeKey!)?.get('user')).toBe('User');
+      expect(typeEnv.allScopes().get(scopeKey!)?.get('alias')).toBe('User');
     });
 
     it('propagates file-level typed variable to local alias inside function', () => {
@@ -2128,20 +2128,20 @@ svc = App::Models::Service.new
           const cfg = config;
         }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
       // cfg in process scope picks up Config from the file-level config binding
-      const scopeKey = [...env.keys()].find(k => k.startsWith('process@'));
+      const scopeKey = [...typeEnv.allScopes().keys()].find(k => k.startsWith('process@'));
       expect(scopeKey).toBeDefined();
-      expect(env.get(scopeKey!)?.get('cfg')).toBe('Config');
+      expect(typeEnv.allScopes().get(scopeKey!)?.get('cfg')).toBe('Config');
     });
 
     it('does not propagate when RHS is a call expression (not a plain identifier)', () => {
       const tree = parse(`
         const x = getUser();
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
       // getUser() is a call_expression — should not create a binding
-      expect(flatGet(env, 'x')).toBeUndefined();
+      expect(flatGet(typeEnv, 'x')).toBeUndefined();
     });
   });
 
@@ -2236,11 +2236,11 @@ svc = App::Models::Service.new
           const a: User = getUser();
         }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      const scopeKey = [...env.keys()].find(k => k.startsWith('process@'));
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const scopeKey = [...typeEnv.allScopes().keys()].find(k => k.startsWith('process@'));
       expect(scopeKey).toBeDefined();
-      expect(env.get(scopeKey!)?.get('a')).toBe('User');
-      expect(env.get(scopeKey!)?.get('b')).toBe('User');
+      expect(typeEnv.allScopes().get(scopeKey!)?.get('a')).toBe('User');
+      expect(typeEnv.allScopes().get(scopeKey!)?.get('b')).toBe('User');
     });
 
     it('resolves reverse-ordered Tier 2 chains via fixpoint (b = a, a = c, c: User)', () => {
@@ -2255,13 +2255,13 @@ svc = App::Models::Service.new
           const c: User = getUser();
         }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      const scopeKey = [...env.keys()].find(k => k.startsWith('process@'));
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const scopeKey = [...typeEnv.allScopes().keys()].find(k => k.startsWith('process@'));
       expect(scopeKey).toBeDefined();
-      expect(env.get(scopeKey!)?.get('c')).toBe('User');
-      expect(env.get(scopeKey!)?.get('a')).toBe('User');
+      expect(typeEnv.allScopes().get(scopeKey!)?.get('c')).toBe('User');
+      expect(typeEnv.allScopes().get(scopeKey!)?.get('a')).toBe('User');
       // Fixpoint now resolves reverse-ordered chains
-      expect(env.get(scopeKey!)?.get('b')).toBe('User');
+      expect(typeEnv.allScopes().get(scopeKey!)?.get('b')).toBe('User');
     });
   });
 
@@ -2276,9 +2276,9 @@ svc = App::Models::Service.new
           var b = a
         }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
-      expect(flatGet(env, 'a')).toBe('User');
-      expect(flatGet(env, 'b')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'go');
+      expect(flatGet(typeEnv, 'a')).toBe('User');
+      expect(flatGet(typeEnv, 'b')).toBe('User');
     });
   });
 
@@ -2292,9 +2292,9 @@ svc = App::Models::Service.new
           }
         }
       `, CSharp);
-      const { env } = buildTypeEnv(tree, 'csharp');
-      expect(flatGet(env, 'u')).toBe('User');
-      expect(flatGet(env, 'alias')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(typeEnv, 'u')).toBe('User');
+      expect(flatGet(typeEnv, 'alias')).toBe('User');
     });
   });
 
@@ -2306,9 +2306,9 @@ svc = App::Models::Service.new
           val alias = u
         }
       `, Kotlin);
-      const { env } = buildTypeEnv(tree, 'kotlin');
-      expect(flatGet(env, 'u')).toBe('User');
-      expect(flatGet(env, 'alias')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      expect(flatGet(typeEnv, 'u')).toBe('User');
+      expect(flatGet(typeEnv, 'alias')).toBe('User');
     });
 
     it('propagates val alias = u inside a class method with explicit type', () => {
@@ -2320,9 +2320,9 @@ svc = App::Models::Service.new
           }
         }
       `, Kotlin);
-      const { env } = buildTypeEnv(tree, 'kotlin');
-      expect(flatGet(env, 'u')).toBe('User');
-      expect(flatGet(env, 'alias')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      expect(flatGet(typeEnv, 'u')).toBe('User');
+      expect(flatGet(typeEnv, 'alias')).toBe('User');
     });
   });
 
@@ -2336,9 +2336,9 @@ svc = App::Models::Service.new
           }
         }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'u')).toBe('User');
-      expect(flatGet(env, 'alias')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'u')).toBe('User');
+      expect(flatGet(typeEnv, 'alias')).toBe('User');
     });
   });
 
@@ -2349,9 +2349,9 @@ def process():
     u: User = get_user()
     alias = u
       `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'u')).toBe('User');
-      expect(flatGet(env, 'alias')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'u')).toBe('User');
+      expect(flatGet(typeEnv, 'alias')).toBe('User');
     });
 
     it('propagates walrus alias := u when u has a type annotation', () => {
@@ -2361,9 +2361,9 @@ def process():
     if (alias := u):
         pass
       `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'u')).toBe('User');
-      expect(flatGet(env, 'alias')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'u')).toBe('User');
+      expect(flatGet(typeEnv, 'alias')).toBe('User');
     });
   });
 
@@ -2375,9 +2375,9 @@ def process():
           let alias = u;
         }
       `, Rust);
-      const { env } = buildTypeEnv(tree, 'rust');
-      expect(flatGet(env, 'u')).toBe('User');
-      expect(flatGet(env, 'alias')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'rust');
+      expect(flatGet(typeEnv, 'u')).toBe('User');
+      expect(flatGet(typeEnv, 'alias')).toBe('User');
     });
   });
 
@@ -2389,9 +2389,9 @@ def process():
           $alias = $u;
         }
       `, PHP.php);
-      const { env } = buildTypeEnv(tree, 'php');
-      expect(flatGet(env, '$u')).toBe('User');
-      expect(flatGet(env, '$alias')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'php');
+      expect(flatGet(typeEnv, '$u')).toBe('User');
+      expect(flatGet(typeEnv, '$alias')).toBe('User');
     });
   });
 
@@ -2407,10 +2407,10 @@ def process(user)
   alias_user.save
 end
 `, Ruby);
-      const { env } = buildTypeEnv(tree, 'ruby');
+      const typeEnv = buildTypeEnv(tree, 'ruby');
       // Without a known type for 'user' (no annotation in Ruby), alias_user stays undefined.
       // This verifies the extractor doesn't crash or produce false bindings.
-      expect(flatGet(env, 'alias_user')).toBeUndefined();
+      expect(flatGet(typeEnv, 'alias_user')).toBeUndefined();
     });
 
     it('does not capture assignment from call expression (not a plain identifier)', () => {
@@ -2420,9 +2420,9 @@ def process
   alias_user = user
 end
 `, Ruby);
-      const { env } = buildTypeEnv(tree, 'ruby');
+      const typeEnv = buildTypeEnv(tree, 'ruby');
       // get_user() is a call — user has no resolved type, so alias_user should not resolve either
-      expect(flatGet(env, 'alias_user')).toBeUndefined();
+      expect(flatGet(typeEnv, 'alias_user')).toBeUndefined();
     });
   });
 
@@ -2437,11 +2437,10 @@ end
       `, TypeScript.typescript);
       const typeEnv = buildTypeEnv(tree, 'typescript');
       // Find the call node for .save()
-      const { env } = typeEnv;
-      const scopeKey = [...env.keys()].find(k => k.startsWith('process@'));
+      const scopeKey = [...typeEnv.allScopes().keys()].find(k => k.startsWith('process@'));
       expect(scopeKey).toBeDefined();
       // The raw env stores 'User' because extractSimpleTypeName already unwraps union_type
-      expect(env.get(scopeKey!)?.get('user')).toBe('User');
+      expect(typeEnv.allScopes().get(scopeKey!)?.get('user')).toBe('User');
     });
 
     it('Python: lookup strips User | None to User', () => {
@@ -2449,10 +2448,10 @@ end
 def process():
     user: User | None = get_user()
       `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, 'python');
       // Python 3.10+ union syntax is stored as raw text "User | None"
       // which stripNullable resolves at lookup time
-      const rawVal = flatGet(env, 'user');
+      const rawVal = flatGet(typeEnv, 'user');
       expect(rawVal).toBeDefined();
       // Either already unwrapped by AST, or stored as raw text for stripNullable
       expect(stripNullable(rawVal!)).toBe('User');
@@ -2470,8 +2469,8 @@ def process():
           }
         }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('unwraps Rust Option<User> → User', () => {
@@ -2480,8 +2479,8 @@ def process():
           let user: Option<User> = find_user();
         }
       `, Rust);
-      const { env } = buildTypeEnv(tree, 'rust');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'rust');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('does NOT unwrap List<User> — containers stay as List', () => {
@@ -2492,8 +2491,8 @@ def process():
           }
         }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'users')).toBe('List');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'users')).toBe('List');
     });
 
     it('does NOT unwrap Map<String, User> — containers stay as Map', () => {
@@ -2504,8 +2503,8 @@ def process():
           }
         }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'lookup')).toBe('Map');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'lookup')).toBe('Map');
     });
 
     it('does NOT unwrap CompletableFuture<User> — async wrappers stay', () => {
@@ -2516,8 +2515,8 @@ def process():
           }
         }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'future')).toBe('CompletableFuture');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'future')).toBe('CompletableFuture');
     });
 
     it('unwraps TypeScript extractSimpleTypeName directly for generic_type', () => {
@@ -2544,9 +2543,9 @@ def process():
           auto alias = u;
         }
       `, CPP);
-      const { env } = buildTypeEnv(tree, 'cpp');
-      expect(flatGet(env, 'u')).toBe('User');
-      expect(flatGet(env, 'alias')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'cpp');
+      expect(flatGet(typeEnv, 'u')).toBe('User');
+      expect(flatGet(typeEnv, 'alias')).toBe('User');
     });
   });
 
@@ -2561,8 +2560,8 @@ def process():
           }
         }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('infers loop variable type from Array<User> parameter annotation (for...of)', () => {
@@ -2573,8 +2572,8 @@ def process():
           }
         }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('does NOT bind loop variable for for...in (produces string keys, not elements)', () => {
@@ -2585,9 +2584,9 @@ def process():
           }
         }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
       // for...in yields string keys — extractor must NOT bind 'key' to User
-      expect(flatGet(env, 'key')).toBeUndefined();
+      expect(flatGet(typeEnv, 'key')).toBeUndefined();
     });
 
     it('does not infer type when iterable variable has no known type in scope', () => {
@@ -2598,8 +2597,8 @@ def process():
           }
         }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBeUndefined();
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
 
     it('infers loop variable from a locally declared const with User[] annotation', () => {
@@ -2611,10 +2610,10 @@ def process():
           }
         }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
       // Note: users itself is stored with no binding (extractSimpleTypeName returns undefined
       // for array_type), but the for-loop extractor uses AST walking to resolve the element type.
-      expect(flatGet(env, 'user')).toBe('User');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('infers loop variable from readonly User[] parameter', () => {
@@ -2625,8 +2624,8 @@ def process():
           }
         }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
 
@@ -2637,8 +2636,8 @@ def process(users: List[User]):
     for user in users:
         user.save()
       `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('infers loop variable type from Sequence[User] annotation style', () => {
@@ -2647,8 +2646,8 @@ def process(users: Sequence[User]):
     for user in users:
         user.save()
       `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('does not infer type when iterable parameter has no annotation', () => {
@@ -2657,8 +2656,8 @@ def process(users):
     for user in users:
         user.save()
       `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'user')).toBeUndefined();
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
 
     it('infers loop variable from a locally annotated variable', () => {
@@ -2668,13 +2667,13 @@ def process():
     for user in users:
         user.save()
       `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, 'python');
       // List[User] → extractSimpleTypeName returns 'List' (base name), stored as 'List'
       // extractElementTypeFromString('List') → undefined (no brackets in the string)
       // So user is unresolved unless users is stored as 'List[User]' raw.
       // The locally annotated var stores the base type 'List' via extractSimpleTypeName.
       // This test documents the actual behavior.
-      const usersType = flatGet(env, 'users');
+      const usersType = flatGet(typeEnv, 'users');
       expect(usersType).toBeDefined(); // users has a type annotation
     });
   });
@@ -2689,8 +2688,8 @@ func process(users []User) {
     }
 }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'go');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('does NOT infer element type for single-var slice range (yields index, not element)', () => {
@@ -2702,9 +2701,9 @@ func process(users []User) {
     }
 }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, 'go');
       // In Go, `for v := range slice` gives the INDEX (int), not the element.
-      expect(flatGet(env, 'user')).toBeUndefined();
+      expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
 
     it('infers loop variable from map range (_, v := range myMap)', () => {
@@ -2716,8 +2715,8 @@ func process(myMap map[string]User) {
     }
 }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
-      expect(flatGet(env, 'v')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'go');
+      expect(flatGet(typeEnv, 'v')).toBe('User');
     });
 
     it('does NOT infer element type for single-var map range (yields key, not value)', () => {
@@ -2729,9 +2728,9 @@ func process(myMap map[string]User) {
     }
 }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, 'go');
       // Single-var map range gives the KEY, not the value
-      expect(flatGet(env, 'k')).toBeUndefined();
+      expect(flatGet(typeEnv, 'k')).toBeUndefined();
     });
 
     it('does not infer type for C-style for loops (no range_clause)', () => {
@@ -2742,9 +2741,9 @@ func process() {
     }
 }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, 'go');
       // C-style for loop has no range_clause — extractor must return early
-      expect(flatGet(env, 'i')).toBeUndefined();
+      expect(flatGet(typeEnv, 'i')).toBeUndefined();
     });
 
     it('does not infer type when iterable has no annotation in scope', () => {
@@ -2757,10 +2756,10 @@ func process() {
     }
 }
       `, Go);
-      const { env } = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, 'go');
       // users has no type annotation — only a constructor binding candidate
       // Without a resolved type for users, user cannot be inferred
-      expect(flatGet(env, 'user')).toBeUndefined();
+      expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
   });
 
@@ -2773,8 +2772,8 @@ fn process(users: Vec<User>) {
     }
 }
       `, Rust);
-      const { env } = buildTypeEnv(tree, 'rust');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'rust');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('infers loop variable from &[User] slice parameter', () => {
@@ -2785,8 +2784,8 @@ fn process(users: &[User]) {
     }
 }
       `, Rust);
-      const { env } = buildTypeEnv(tree, 'rust');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'rust');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('does not infer type for range expression (0..10)', () => {
@@ -2797,8 +2796,8 @@ fn process() {
     }
 }
       `, Rust);
-      const { env } = buildTypeEnv(tree, 'rust');
-      expect(flatGet(env, 'i')).toBeUndefined();
+      const typeEnv = buildTypeEnv(tree, 'rust');
+      expect(flatGet(typeEnv, 'i')).toBeUndefined();
     });
 
     it('does not infer type when iterable has no annotation', () => {
@@ -2810,8 +2809,8 @@ fn process() {
     }
 }
       `, Rust);
-      const { env } = buildTypeEnv(tree, 'rust');
-      expect(flatGet(env, 'user')).toBeUndefined();
+      const typeEnv = buildTypeEnv(tree, 'rust');
+      expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
   });
 
@@ -2827,8 +2826,8 @@ class Foo {
   }
 }
       `, CSharp);
-      const { env } = buildTypeEnv(tree, 'csharp');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('still resolves explicit type foreach (regression)', () => {
@@ -2841,8 +2840,8 @@ class Foo {
   }
 }
       `, CSharp);
-      const { env } = buildTypeEnv(tree, 'csharp');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('does not infer type when iterable has no annotation', () => {
@@ -2856,8 +2855,8 @@ class Foo {
   }
 }
       `, CSharp);
-      const { env } = buildTypeEnv(tree, 'csharp');
-      expect(flatGet(env, 'user')).toBeUndefined();
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
   });
 
@@ -2870,8 +2869,8 @@ fun process(users: List<User>) {
     }
 }
       `, Kotlin);
-      const { env } = buildTypeEnv(tree, 'kotlin');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('still resolves explicit type annotation (regression)', () => {
@@ -2882,8 +2881,8 @@ fun process(users: List<User>) {
     }
 }
       `, Kotlin);
-      const { env } = buildTypeEnv(tree, 'kotlin');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('does not infer type when iterable has no annotation', () => {
@@ -2895,8 +2894,8 @@ fun process() {
     }
 }
       `, Kotlin);
-      const { env } = buildTypeEnv(tree, 'kotlin');
-      expect(flatGet(env, 'user')).toBeUndefined();
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
   });
 
@@ -2911,8 +2910,8 @@ class Foo {
   }
 }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('does not infer type when iterable has no annotation', () => {
@@ -2926,8 +2925,8 @@ class Foo {
   }
 }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'user')).toBeUndefined();
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
   });
 
@@ -2942,8 +2941,8 @@ function process(entries: Map<string, User>) {
   }
 }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('Python tuple unpacking: for key, value in dict.items() — call iterable + pattern_list', () => {
@@ -2955,8 +2954,8 @@ def process(data: dict[str, User]):
     for key, user in data.items():
         user.save()
       `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('Python enumerate(dict.items()): for i, k, v — skips int index, binds value var to User', () => {
@@ -2968,10 +2967,10 @@ def process(data: dict[str, User]):
     for i, k, v in enumerate(data.items()):
         v.save()
       `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'v')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'v')).toBe('User');
       // i is the int index from enumerate — must NOT be bound to User
-      expect(flatGet(env, 'i')).toBeUndefined();
+      expect(flatGet(typeEnv, 'i')).toBeUndefined();
     });
 
     it('Python enumerate(dict.items()) with nested tuple: for i, (k, v) — binds v to User', () => {
@@ -2983,9 +2982,9 @@ def process(data: dict[str, User]):
     for i, (k, v) in enumerate(data.items()):
         v.save()
       `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'v')).toBe('User');
-      expect(flatGet(env, 'i')).toBeUndefined();
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'v')).toBe('User');
+      expect(flatGet(typeEnv, 'i')).toBeUndefined();
     });
 
     it('Python enumerate with parenthesized tuple: for (k, v) in enumerate(users) — binds v to User', () => {
@@ -2997,10 +2996,10 @@ def process(users: List[User]):
     for (k, v) in enumerate(users):
         v.save()
       `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, 'python');
       // enumerate yields (index, element) — k is int (unbound), v is User
-      expect(flatGet(env, 'v')).toBe('User');
-      expect(flatGet(env, 'k')).toBeUndefined();
+      expect(flatGet(typeEnv, 'v')).toBe('User');
+      expect(flatGet(typeEnv, 'k')).toBeUndefined();
     });
 
     it('TS instanceof narrowing: if (x instanceof User) — first-writer-wins, not block-scoped', () => {
@@ -3014,8 +3013,8 @@ function process(x) {
   }
 }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'x')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'x')).toBe('User');
     });
 
     it('Rust for with .iter(): for user in users.iter() — call_expression iterable', () => {
@@ -3028,8 +3027,8 @@ fn process(users: Vec<User>) {
     }
 }
       `, Rust);
-      const { env } = buildTypeEnv(tree, 'rust');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'rust');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
 
@@ -3042,8 +3041,8 @@ function process(data: Map<string, User>) {
   }
 }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('TS for-of map.keys() resolves to key type (string)', () => {
@@ -3054,8 +3053,8 @@ function process(data: Map<string, User>) {
   }
 }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'key')).toBe('string');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'key')).toBe('string');
     });
 
     it('Python for key in data.keys() resolves to key type (str)', () => {
@@ -3064,8 +3063,8 @@ def process(data: dict[str, User]):
     for key in data.keys():
         key.strip()
       `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'key')).toBe('str');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'key')).toBe('str');
     });
 
     it('Python for user in data.values() resolves to value type (User)', () => {
@@ -3074,8 +3073,8 @@ def process(data: dict[str, User]):
     for user in data.values():
         user.save()
       `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('Rust for key in map.keys() resolves to key type (String)', () => {
@@ -3086,8 +3085,8 @@ fn process(data: HashMap<String, User>) {
     }
 }
       `, Rust);
-      const { env } = buildTypeEnv(tree, 'rust');
-      expect(flatGet(env, 'key')).toBe('String');
+      const typeEnv = buildTypeEnv(tree, 'rust');
+      expect(flatGet(typeEnv, 'key')).toBe('String');
     });
 
     it('Rust for user in map.values() resolves to value type (User)', () => {
@@ -3098,8 +3097,8 @@ fn process(data: HashMap<String, User>) {
     }
 }
       `, Rust);
-      const { env } = buildTypeEnv(tree, 'rust');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'rust');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
 
@@ -3112,8 +3111,8 @@ fn process(data: HashMap<String, User>) {
     }
 }
       `, Rust);
-      const { env } = buildTypeEnv(tree, 'rust');
-      expect(flatGet(env, 'key')).toBe('String');
+      const typeEnv = buildTypeEnv(tree, 'rust');
+      expect(flatGet(typeEnv, 'key')).toBe('String');
     });
 
     it('HashMap.values() resolves to value type (User) via descriptor', () => {
@@ -3124,8 +3123,8 @@ fn process(data: HashMap<String, User>) {
     }
 }
       `, Rust);
-      const { env } = buildTypeEnv(tree, 'rust');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'rust');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('Vec.iter() resolves to element type (User) — arity 1 always returns last', () => {
@@ -3136,8 +3135,8 @@ fn process(users: Vec<User>) {
     }
 }
       `, Rust);
-      const { env } = buildTypeEnv(tree, 'rust');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'rust');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('unknown container falls back to last-arg heuristic', () => {
@@ -3149,8 +3148,8 @@ function process(cache: MyCache<string, User>) {
   }
 }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'key')).toBe('string');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'key')).toBe('string');
     });
   });
 
@@ -3163,10 +3162,10 @@ function process(users: User[]) {
   }
 }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
       // Object destructuring should NOT produce bindings — field types are unknown
-      expect(flatGet(env, 'id')).toBeUndefined();
-      expect(flatGet(env, 'name')).toBeUndefined();
+      expect(flatGet(typeEnv, 'id')).toBeUndefined();
+      expect(flatGet(typeEnv, 'name')).toBeUndefined();
     });
 
     it('TS member access: for (const user of this.users) with users: User[] param — resolves', () => {
@@ -3177,8 +3176,8 @@ function process(users: User[]) {
   }
 }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('Python member access: for user in self.users with users: List[User] param — resolves', () => {
@@ -3187,8 +3186,8 @@ def process(users: List[User]):
     for user in self.users:
         user.save()
       `, Python);
-      const { env } = buildTypeEnv(tree, 'python');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'python');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('C++ structured bindings: for (auto& [key, value] : map) with map<string, User> param — binds value', () => {
@@ -3199,8 +3198,8 @@ void process(std::map<std::string, User>& map) {
   }
 }
       `, CPP);
-      const { env } = buildTypeEnv(tree, 'cpp');
-      expect(flatGet(env, 'value')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'cpp');
+      expect(flatGet(typeEnv, 'value')).toBe('User');
     });
 
     it('C++ structured bindings: exact App.cpp fixture — binds user and repo', () => {
@@ -3223,9 +3222,9 @@ void processRepoMap(std::map<std::string, Repo> repoMap) {
     }
 }
       `, CPP);
-      const { env } = buildTypeEnv(tree, 'cpp');
-      expect(flatGet(env, 'user')).toBe('User');
-      expect(flatGet(env, 'repo')).toBe('Repo');
+      const typeEnv = buildTypeEnv(tree, 'cpp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
+      expect(flatGet(typeEnv, 'repo')).toBe('Repo');
     });
   });
 
@@ -3239,8 +3238,8 @@ def process(users)
   users.each { |user| user.save }
 end
       `, Ruby);
-      const { env } = buildTypeEnv(tree, 'ruby');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'ruby');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
 
@@ -3253,8 +3252,8 @@ fun process(x: Any) {
     }
 }
       `, Kotlin);
-      const { env } = buildTypeEnv(tree, 'kotlin');
-      expect(flatGet(env, 'x')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      expect(flatGet(typeEnv, 'x')).toBe('User');
     });
 
     it('when (x) { is User -> ...; is Admin -> ... } — last arm overwrites (allowPatternBindingOverwrite)', () => {
@@ -3266,9 +3265,9 @@ fun process(x: Any) {
     }
 }
       `, Kotlin);
-      const { env } = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
       // allowPatternBindingOverwrite means each arm overwrites — last one wins
-      expect(flatGet(env, 'x')).toBe('Admin');
+      expect(flatGet(typeEnv, 'x')).toBe('Admin');
     });
 
     it('when (x) { else -> } — no type check, no pattern binding produced', () => {
@@ -3280,10 +3279,10 @@ fun process() {
     }
 }
       `, Kotlin);
-      const { env } = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
       // x has type String from its declaration — no pattern binding should narrow it
       // (else branch has no type_test node, so extractKotlinPatternBinding never fires)
-      expect(flatGet(env, 'x')).toBe('String');
+      expect(flatGet(typeEnv, 'x')).toBe('String');
     });
   });
 
@@ -3296,8 +3295,8 @@ fun processValues(data: HashMap<String, User>) {
     }
 }
       `, Kotlin);
-      const { env } = buildTypeEnv(tree, 'kotlin');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('for (user in users) binds user to User via List<User> param', () => {
@@ -3308,8 +3307,8 @@ fun processList(users: List<User>) {
     }
 }
       `, Kotlin);
-      const { env } = buildTypeEnv(tree, 'kotlin');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
 
@@ -3324,8 +3323,8 @@ class App {
     }
 }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'u')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'u')).toBe('User');
     });
 
     it('switch (obj) { case User u -> ...; case Admin a -> ... } — both bind', () => {
@@ -3339,9 +3338,9 @@ class App {
     }
 }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'u')).toBe('User');
-      expect(flatGet(env, 'a')).toBe('Admin');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'u')).toBe('User');
+      expect(flatGet(typeEnv, 'a')).toBe('Admin');
     });
 
     it('switch (x) { case 42 -> ... } — no pattern variable, no binding', () => {
@@ -3354,9 +3353,9 @@ class App {
     }
 }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, 'java');
       // Only the parameter x:Object should exist, no extra bindings from case 42
-      expect(flatGet(env, 'x')).toBe('Object');
+      expect(flatGet(typeEnv, 'x')).toBe('Object');
     });
 
     it('obj instanceof User user — regression: still works after type_pattern addition', () => {
@@ -3369,8 +3368,8 @@ class App {
     }
 }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
 
@@ -3386,8 +3385,8 @@ public class App {
     }
 }
       `, CSharp);
-      const { env } = buildTypeEnv(tree, 'csharp');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('MutableMap<String, User>.values() resolves to User via descriptor (arity 2)', () => {
@@ -3398,8 +3397,8 @@ fun process(data: MutableMap<String, User>) {
     }
 }
       `, Kotlin);
-      const { env } = buildTypeEnv(tree, 'kotlin');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('MutableList<User> resolves element type via descriptor', () => {
@@ -3410,8 +3409,8 @@ fun process(users: MutableList<User>) {
     }
 }
       `, Kotlin);
-      const { env } = buildTypeEnv(tree, 'kotlin');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('SortedSet<User> resolves element type via descriptor (C#)', () => {
@@ -3425,8 +3424,8 @@ public class App {
     }
 }
       `, CSharp);
-      const { env } = buildTypeEnv(tree, 'csharp');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('Stream<User> resolves element type via descriptor (Java)', () => {
@@ -3439,8 +3438,8 @@ class App {
     }
 }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
 
@@ -3455,8 +3454,8 @@ public class App {
     }
 }
       `, CSharp);
-      const { env } = buildTypeEnv(tree, 'csharp');
-      expect(flatGet(env, 'u')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(typeEnv, 'u')).toBe('User');
     });
 
     it('switch expression with recursive_pattern — binds r to Repo', () => {
@@ -3470,8 +3469,8 @@ public class App {
     }
 }
       `, CSharp);
-      const { env } = buildTypeEnv(tree, 'csharp');
-      expect(flatGet(env, 'r')).toBe('Repo');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(typeEnv, 'r')).toBe('Repo');
     });
 
     it('recursive_pattern without designation — no pattern binding produced', () => {
@@ -3483,10 +3482,10 @@ public class App {
     }
 }
       `, CSharp);
-      const { env } = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
       // obj → object from the parameter, but no pattern binding
-      expect(flatGet(env, 'obj')).toBe('object');
-      expect(flatSize(env)).toBe(1); // only the parameter binding
+      expect(flatGet(typeEnv, 'obj')).toBe('object');
+      expect(flatSize(typeEnv)).toBe(1); // only the parameter binding
     });
   });
 
@@ -3502,8 +3501,8 @@ public class App {
     }
 }
       `, CSharp);
-      const { env } = buildTypeEnv(tree, 'csharp');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('foreach (var user in this.data.Values) — nested member access with container property', () => {
@@ -3518,11 +3517,11 @@ public class App {
     }
 }
       `, CSharp);
-      const { env, lookup } = buildTypeEnv(tree, 'csharp');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
       // Verify lookup works from the call site (user.Save())
       const saveCall = tree.rootNode.descendantsOfType('invocation_expression')[0];
-      expect(lookup('user', saveCall)).toBe('User');
+      expect(typeEnv.lookup('user', saveCall)).toBe('User');
     });
   });
 
@@ -3538,11 +3537,11 @@ class UserService {
     }
 }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
       // User[] is an array_type — extractSimpleTypeName returns undefined (no simple base name).
       // But declarationTypeNodes captures the raw AST node, so for-loop resolution
       // uses Strategy 1 (extractTsElementTypeFromAnnotation) to resolve the element type.
-      expect(flatGet(env, 'user')).toBe('User');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('class field with generic type annotation — binds field name to base type', () => {
@@ -3551,8 +3550,8 @@ class RepoService {
     repos: Map<string, Repo> = new Map();
 }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'repos')).toBe('Map');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'repos')).toBe('Map');
     });
   });
 
@@ -3569,8 +3568,8 @@ class App {
     }
 }
       `, PHP.php);
-      const { env } = buildTypeEnv(tree, 'php');
-      expect(flatGet(env, '$user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'php');
+      expect(flatGet(typeEnv, '$user')).toBe('User');
     });
 
     it('does not bind from unknown $this->property (conservative)', () => {
@@ -3584,8 +3583,8 @@ class App {
     }
 }
       `, PHP.php);
-      const { env } = buildTypeEnv(tree, 'php');
-      expect(flatGet(env, '$item')).toBeUndefined();
+      const typeEnv = buildTypeEnv(tree, 'php');
+      expect(flatGet(typeEnv, '$item')).toBeUndefined();
     });
 
     it('multi-class file: resolves correct property for each class', () => {
@@ -3609,10 +3608,10 @@ class B {
     }
 }
       `, PHP.php);
-      const { env } = buildTypeEnv(tree, 'php');
+      const typeEnv = buildTypeEnv(tree, 'php');
       // Both $item bindings exist but may share the same key if scoped to method name
       // Conservative: just verify at least one resolves correctly
-      expect(flatGet(env, '$item')).toBeDefined();
+      expect(flatGet(typeEnv, '$item')).toBeDefined();
     });
   });
 
@@ -3626,10 +3625,10 @@ fn process(opt: Option<User>) {
     }
 }
       `, Rust);
-      const { env } = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, 'rust');
       // user should be typed from the first arm (Some unwrap)
       // Known limitation: binding leaks across arms (first-writer-wins)
-      expect(flatGet(env, 'user')).toBe('User');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
 
@@ -3676,8 +3675,8 @@ function f(user: User) {
     user.save();
 }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('interestingNodeTypes: non-declaration nodes skip extractTypeBinding', () => {
@@ -3689,8 +3688,8 @@ function calculate(service: Service) {
     if (a > b) { service.run(); }
 }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'service')).toBe('Service');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'service')).toBe('Service');
     });
   });
 
@@ -3793,8 +3792,8 @@ function process(x) {
   }
 }
       `, TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'x')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'x')).toBe('User');
     });
 
     it('Kotlin: if (x != null) narrows nullable type inside if-body', () => {
@@ -3818,8 +3817,8 @@ fun process(x: Any) {
     }
 }
       `, Kotlin);
-      const { env } = buildTypeEnv(tree, 'kotlin');
-      expect(flatGet(env, 'x')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      expect(flatGet(typeEnv, 'x')).toBe('User');
     });
 
     it('C#: if (x != null) narrows nullable type inside if-body', () => {
@@ -3847,8 +3846,8 @@ class App {
     }
 }
       `, CSharp);
-      const { env } = buildTypeEnv(tree, 'csharp');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
 
@@ -3863,9 +3862,9 @@ class App {
     }
 }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'a')).toBe('User');
-      expect(flatGet(env, 'b')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'a')).toBe('User');
+      expect(flatGet(typeEnv, 'b')).toBe('User');
     });
 
     it('Java: untyped declaration before typed does not get false type association', () => {
@@ -3880,10 +3879,10 @@ class App {
     }
 }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
       // x should NOT have a type binding (it's untyped via var)
-      expect(flatGet(env, 'x')).toBeUndefined();
+      expect(flatGet(typeEnv, 'x')).toBeUndefined();
     });
 
     it('C#: multi-declarator with shared type captures both variables', () => {
@@ -3896,9 +3895,9 @@ class App {
     }
 }
       `, CSharp);
-      const { env } = buildTypeEnv(tree, 'csharp');
-      expect(flatGet(env, 'a')).toBe('User');
-      expect(flatGet(env, 'b')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
+      expect(flatGet(typeEnv, 'a')).toBe('User');
+      expect(flatGet(typeEnv, 'b')).toBe('User');
     });
 
     it('Java: single declarator with type still works after optimization', () => {
@@ -3910,8 +3909,8 @@ class App {
     }
 }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('Java: for-loop resolves element type from multi-declarator typed iterable', () => {
@@ -3927,10 +3926,10 @@ class App {
     }
 }
       `, Java);
-      const { env } = buildTypeEnv(tree, 'java');
-      expect(flatGet(env, 'users')).toBe('List');
-      expect(flatGet(env, 'admins')).toBe('List');
-      expect(flatGet(env, 'u')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, 'java');
+      expect(flatGet(typeEnv, 'users')).toBe('List');
+      expect(flatGet(typeEnv, 'admins')).toBe('List');
+      expect(flatGet(typeEnv, 'u')).toBe('User');
     });
   });
 
@@ -3945,10 +3944,10 @@ class App {
     }
 }
       `, Java);
-      const { constructorTypeMap } = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, 'java');
       // Find the entry for variable 'a'
       let ctorType: string | undefined;
-      for (const [key, value] of constructorTypeMap) {
+      for (const [key, value] of typeEnv.constructorTypeMap) {
         if (key.endsWith('\0a')) { ctorType = value; break; }
       }
       expect(ctorType).toBe('Dog');
@@ -3963,9 +3962,9 @@ class App {
     }
 }
       `, Java);
-      const { constructorTypeMap } = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, 'java');
       let found = false;
-      for (const [key] of constructorTypeMap) {
+      for (const [key] of typeEnv.constructorTypeMap) {
         if (key.endsWith('\0u')) { found = true; break; }
       }
       expect(found).toBe(false);
@@ -3980,10 +3979,10 @@ class Animal {}
 class Dog extends Animal {}
 const a: Animal = new Dog();
       `, TypeScript.typescript);
-      const { env, constructorTypeMap } = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(env, 'a')).toBe('Animal');
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'a')).toBe('Animal');
       let found = false;
-      for (const [key] of constructorTypeMap) {
+      for (const [key] of typeEnv.constructorTypeMap) {
         if (key.endsWith('\0a')) { found = true; break; }
       }
       expect(found).toBe(false);
@@ -3997,9 +3996,9 @@ void run() {
     Animal* a = new Dog();
 }
       `, CPP);
-      const { constructorTypeMap } = buildTypeEnv(tree, 'cpp');
+      const typeEnv = buildTypeEnv(tree, 'cpp');
       let ctorType: string | undefined;
-      for (const [key, value] of constructorTypeMap) {
+      for (const [key, value] of typeEnv.constructorTypeMap) {
         if (key.endsWith('\0a')) { ctorType = value; break; }
       }
       expect(ctorType).toBe('Dog');
@@ -4015,9 +4014,9 @@ class App {
     }
 }
       `, CSharp);
-      const { constructorTypeMap } = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
       let ctorType: string | undefined;
-      for (const [key, value] of constructorTypeMap) {
+      for (const [key, value] of typeEnv.constructorTypeMap) {
         if (key.endsWith('\0a')) { ctorType = value; break; }
       }
       expect(ctorType).toBe('Dog');
@@ -4032,12 +4031,12 @@ class App {
     }
 }
       `, CSharp);
-      const { env, constructorTypeMap } = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, 'csharp');
       // d should be bound via declared type path
-      expect(flatGet(env, 'd')).toBe('Dog');
+      expect(flatGet(typeEnv, 'd')).toBe('Dog');
       // constructorTypeMap should NOT have an entry (same type, no override needed)
       let found = false;
-      for (const [key] of constructorTypeMap) {
+      for (const [key] of typeEnv.constructorTypeMap) {
         if (key.endsWith('\0d')) { found = true; break; }
       }
       expect(found).toBe(false);
@@ -4048,46 +4047,46 @@ class App {
     it('seeds imported bindings into file scope for unbound names', () => {
       // Source has no local declaration of 'config', so the imported binding wins
       const tree = parse('', TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, 'typescript', {
         importedBindings: new Map([['config', 'Config']]),
       });
-      const fileScope = env.get('');
+      const fileScope = typeEnv.fileScope();
       expect(fileScope?.get('config')).toBe('Config');
     });
 
     it('local declarations take precedence over imported bindings', () => {
       // Source declares config: AppConfig — imported binding for 'config' must not overwrite it
       const tree = parse('const config: AppConfig = getConfig();', TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, 'typescript', {
         importedBindings: new Map([['config', 'Config']]),
       });
-      const fileScope = env.get('');
+      const fileScope = typeEnv.fileScope();
       // AppConfig from the local annotation wins over the imported 'Config'
       expect(fileScope?.get('config')).toBe('AppConfig');
     });
 
     it('does nothing when importedBindings is empty', () => {
       const tree = parse('const user: User = getUser();', TypeScript.typescript);
-      const { env: envWithout } = buildTypeEnv(tree, 'typescript');
-      const { env: envWith } = buildTypeEnv(tree, 'typescript', {
+      const typeEnvWithout = buildTypeEnv(tree, 'typescript');
+      const typeEnvWith = buildTypeEnv(tree, 'typescript', {
         importedBindings: new Map(),
       });
       // Both envs should produce the same file-scope content
-      const scopeWithout = envWithout.get('');
-      const scopeWith = envWith.get('');
+      const scopeWithout = typeEnvWithout.fileScope();
+      const scopeWith = typeEnvWith.fileScope();
       expect(scopeWith?.get('user')).toBe(scopeWithout?.get('user'));
       expect(scopeWith?.size).toBe(scopeWithout?.size);
     });
 
     it('seeds multiple bindings', () => {
       const tree = parse('', TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, 'typescript', {
         importedBindings: new Map([
           ['user', 'User'],
           ['config', 'Config'],
         ]),
       });
-      const fileScope = env.get('');
+      const fileScope = typeEnv.fileScope();
       expect(fileScope?.get('user')).toBe('User');
       expect(fileScope?.get('config')).toBe('Config');
     });
@@ -4117,10 +4116,10 @@ function process() {
     it('seeds bindings with no conflict when local file has unrelated declarations', () => {
       // File has 'user' declared locally; 'config' comes from importedBindings
       const tree = parse('const user: User = getUser();', TypeScript.typescript);
-      const { env } = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, 'typescript', {
         importedBindings: new Map([['config', 'Config']]),
       });
-      const fileScope = env.get('');
+      const fileScope = typeEnv.fileScope();
       // Local binding preserved
       expect(fileScope?.get('user')).toBe('User');
       // Imported binding added for the name that had no local declaration
@@ -4155,7 +4154,7 @@ function process() {
         importedReturnTypes: new Map([['getConfig', 'WrongType']]),
       });
       // SymbolTable result (Config) wins over cross-file fallback (WrongType)
-      expect(flatGet(typeEnv.env, 'c')).toBe('Config');
+      expect(flatGet(typeEnv, 'c')).toBe('Config');
     });
 
     it('SymbolTable has no match (0 results) → falls back to cross-file', () => {
@@ -4167,7 +4166,7 @@ function process() {
         importedReturnTypes: new Map([['getConfig', 'Config']]),
       });
       // Cross-file fallback provides Config
-      expect(flatGet(typeEnv.env, 'c')).toBe('Config');
+      expect(flatGet(typeEnv, 'c')).toBe('Config');
     });
 
     it('SymbolTable has 2+ matches (ambiguous) → returns undefined, NO cross-file fallback', () => {
@@ -4182,7 +4181,7 @@ function process() {
         importedReturnTypes: new Map([['process', 'User']]),
       });
       // Ambiguous → conservative → no binding produced
-      expect(flatGet(typeEnv.env, 'r')).toBeUndefined();
+      expect(flatGet(typeEnv, 'r')).toBeUndefined();
     });
 
     it('no SymbolTable → uses cross-file return types directly', () => {
@@ -4190,7 +4189,7 @@ function process() {
       const typeEnv = buildTypeEnv(tree, 'typescript', {
         importedReturnTypes: new Map([['getConfig', 'Config']]),
       });
-      expect(flatGet(typeEnv.env, 'c')).toBe('Config');
+      expect(flatGet(typeEnv, 'c')).toBe('Config');
     });
 
     it('cross-file has entry but SymbolTable covers it → SymbolTable wins', () => {
@@ -4202,14 +4201,14 @@ function process() {
         importedReturnTypes: new Map([['getUser', 'CrossFileUser']]),
       });
       // SymbolTable result (User) wins
-      expect(flatGet(typeEnv.env, 'u')).toBe('User');
+      expect(flatGet(typeEnv, 'u')).toBe('User');
     });
 
     it('does nothing when importedReturnTypes is absent', () => {
       const tree = parse('const c = getConfig();', TypeScript.typescript);
       const typeEnv = buildTypeEnv(tree, 'typescript');
       // No annotation, no SymbolTable, no cross-file → no binding
-      expect(flatGet(typeEnv.env, 'c')).toBeUndefined();
+      expect(flatGet(typeEnv, 'c')).toBeUndefined();
     });
 
     it('resolved cross-file callee enables downstream call edges via lookup', () => {

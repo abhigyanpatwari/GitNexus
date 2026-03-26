@@ -10,15 +10,19 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import { isNodeExported } from '../../src/core/ingestion/export-detection.js';
 import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
-import { getLanguageFromFilename } from '../../src/core/ingestion/utils.js';
+import { getLanguageFromFilename } from '../../src/core/ingestion/utils/language-detection.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { getProvider } from '../../src/core/ingestion/languages/index.js';
 
 const FIXTURES_DIR = path.join(process.cwd(), 'test', 'fixtures', 'sample-code');
 
-// We test isNodeExported directly since it's a pure function
-// that only needs a mock AST node, name, and language string.
+// Test helper: replaces the removed isNodeExported wrapper using the provider pattern.
+function isNodeExported(node: any, name: string, language: string): boolean {
+  const provider = (getProvider as any)(language);
+  if (!provider) return false;
+  return provider.exportChecker(node, name);
+}
 
 /**
  * Minimal mock of a tree-sitter AST node.

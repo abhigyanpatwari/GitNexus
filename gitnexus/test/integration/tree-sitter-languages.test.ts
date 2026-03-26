@@ -2,9 +2,9 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
-import { LANGUAGE_QUERIES } from '../../src/core/ingestion/tree-sitter-queries.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
-import { getLanguageFromFilename } from '../../src/core/ingestion/utils.js';
+import { getProvider } from '../../src/core/ingestion/languages/index.js';
+import { getLanguageFromFilename } from '../../src/core/ingestion/utils/language-detection.js';
 import Parser from 'tree-sitter';
 
 const fixturesDir = path.resolve(__dirname, '..', 'fixtures', 'sample-code');
@@ -46,7 +46,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('parses functions, classes, interfaces, methods, and arrow functions', async () => {
       await loadLanguage(SupportedLanguages.TypeScript, 'simple.ts');
       const content = readFixture('simple.ts');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.TypeScript]);
+      const provider = getProvider(SupportedLanguages.TypeScript);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
 
       const defTypes = defs.map(d => d.type);
@@ -59,7 +60,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('parses JSX components with tsx grammar', async () => {
       await loadLanguage(SupportedLanguages.TypeScript, 'simple.tsx');
       const content = readFixture('simple.tsx');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.TypeScript]);
+      const provider = getProvider(SupportedLanguages.TypeScript);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
 
       expect(defs.length).toBeGreaterThan(0);
@@ -73,7 +75,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('parses class and function declarations', async () => {
       await loadLanguage(SupportedLanguages.JavaScript);
       const content = readFixture('simple.js');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.JavaScript]);
+      const provider = getProvider(SupportedLanguages.JavaScript);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
 
       expect(defs.length).toBeGreaterThan(0);
@@ -87,7 +90,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('parses class and function definitions', async () => {
       await loadLanguage(SupportedLanguages.Python);
       const content = readFixture('simple.py');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Python]);
+      const provider = getProvider(SupportedLanguages.Python);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
 
       const defTypes = defs.map(d => d.type);
@@ -100,7 +104,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('parses class, method, and constructor declarations', async () => {
       await loadLanguage(SupportedLanguages.Java);
       const content = readFixture('simple.java');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Java]);
+      const provider = getProvider(SupportedLanguages.Java);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
 
       expect(defs.length).toBeGreaterThan(0);
@@ -114,7 +119,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('parses function and type declarations', async () => {
       await loadLanguage(SupportedLanguages.Go);
       const content = readFixture('simple.go');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Go]);
+      const provider = getProvider(SupportedLanguages.Go);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
 
       expect(defs.length).toBeGreaterThan(0);
@@ -127,7 +133,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('parses function definitions and structs', async () => {
       await loadLanguage(SupportedLanguages.C);
       const content = readFixture('simple.c');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.C]);
+      const provider = getProvider(SupportedLanguages.C);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
 
       expect(defs.length).toBeGreaterThan(0);
@@ -142,7 +149,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('captures pointer-returning function definitions', async () => {
       await loadLanguage(SupportedLanguages.C);
       const code = `int* get_ptr() { return 0; }\nchar** get_strs() { return 0; }`;
-      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.C]);
+      const provider = getProvider(SupportedLanguages.C);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
       const names = defs.map(d => d.name);
       expect(names).toContain('get_ptr');
@@ -152,7 +160,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('captures macros and typedefs', async () => {
       await loadLanguage(SupportedLanguages.C);
       const code = `#define MAX_SIZE 100\ntypedef unsigned int uint;\nstruct Point { int x; int y; };`;
-      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.C]);
+      const provider = getProvider(SupportedLanguages.C);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
       const names = defs.map(d => d.name);
       expect(names).toContain('MAX_SIZE');
@@ -165,7 +174,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('parses class, function, and namespace declarations', async () => {
       await loadLanguage(SupportedLanguages.CPlusPlus);
       const content = readFixture('simple.cpp');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.CPlusPlus]);
+      const provider = getProvider(SupportedLanguages.CPlusPlus);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
 
       expect(defs.length).toBeGreaterThan(0);
@@ -179,7 +189,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('captures pointer-returning methods and functions', async () => {
       await loadLanguage(SupportedLanguages.CPlusPlus);
       const code = `int* Factory::create() { return nullptr; }\nchar** getNames() { return 0; }`;
-      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.CPlusPlus]);
+      const provider = getProvider(SupportedLanguages.CPlusPlus);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
       const names = defs.map(d => d.name);
       expect(names).toContain('create');
@@ -189,7 +200,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('captures reference-returning functions', async () => {
       await loadLanguage(SupportedLanguages.CPlusPlus);
       const code = `int& Container::at(int i) { static int x; return x; }`;
-      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.CPlusPlus]);
+      const provider = getProvider(SupportedLanguages.CPlusPlus);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
       const names = defs.map(d => d.name);
       expect(names).toContain('at');
@@ -198,7 +210,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('captures destructor definitions', async () => {
       await loadLanguage(SupportedLanguages.CPlusPlus);
       const code = `MyClass::~MyClass() { cleanup(); }`;
-      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.CPlusPlus]);
+      const provider = getProvider(SupportedLanguages.CPlusPlus);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
       const names = defs.map(d => d.name);
       expect(names).toContain('~MyClass');
@@ -207,7 +220,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('captures template declarations', async () => {
       await loadLanguage(SupportedLanguages.CPlusPlus);
       const code = `template<typename T> class Container { T value; };`;
-      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.CPlusPlus]);
+      const provider = getProvider(SupportedLanguages.CPlusPlus);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
       const names = defs.map(d => d.name);
       expect(names).toContain('Container');
@@ -216,7 +230,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('captures namespace definitions', async () => {
       await loadLanguage(SupportedLanguages.CPlusPlus);
       const code = `namespace utils { void helper() {} }`;
-      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.CPlusPlus]);
+      const provider = getProvider(SupportedLanguages.CPlusPlus);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
       const names = defs.map(d => d.name);
       expect(names).toContain('utils');
@@ -228,7 +243,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('parses class, method, and namespace declarations', async () => {
       await loadLanguage(SupportedLanguages.CSharp);
       const content = readFixture('simple.cs');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.CSharp]);
+      const provider = getProvider(SupportedLanguages.CSharp);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
 
       expect(defs.length).toBeGreaterThan(0);
@@ -244,7 +260,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('captures interfaces, enums, records, structs', async () => {
       await loadLanguage(SupportedLanguages.CSharp);
       const content = readFixture('simple.cs');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.CSharp]);
+      const provider = getProvider(SupportedLanguages.CSharp);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
       const names = defs.map(d => d.name);
       expect(names).toContain('ICalculator');
@@ -256,7 +273,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('captures file-scoped namespace declarations', async () => {
       await loadLanguage(SupportedLanguages.CSharp);
       const code = `namespace MyApp;\npublic class Program { }`;
-      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.CSharp]);
+      const provider = getProvider(SupportedLanguages.CSharp);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
       const names = defs.map(d => d.name);
       expect(names).toContain('MyApp');
@@ -266,7 +284,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('captures constructors and properties', async () => {
       await loadLanguage(SupportedLanguages.CSharp);
       const content = readFixture('simple.cs');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.CSharp]);
+      const provider = getProvider(SupportedLanguages.CSharp);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
       const defTypes = defs.map(d => d.type);
       expect(defTypes).toContain('definition.constructor');
@@ -278,7 +297,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('parses fn, struct, impl, trait, and enum', async () => {
       await loadLanguage(SupportedLanguages.Rust);
       const content = readFixture('simple.rs');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Rust]);
+      const provider = getProvider(SupportedLanguages.Rust);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
 
       expect(defs.length).toBeGreaterThan(0);
@@ -293,7 +313,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('captures impl blocks and methods', async () => {
       await loadLanguage(SupportedLanguages.Rust);
       const content = readFixture('simple.rs');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Rust]);
+      const provider = getProvider(SupportedLanguages.Rust);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
       const defTypes = defs.map(d => d.type);
       expect(defTypes).toContain('definition.impl');
@@ -304,7 +325,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('captures generic impl blocks', async () => {
       await loadLanguage(SupportedLanguages.Rust);
       const code = `struct Vec<T> { data: Vec<T> }\nimpl<T> Vec<T> { fn len(&self) -> usize { 0 } }`;
-      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.Rust]);
+      const provider = getProvider(SupportedLanguages.Rust);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
       const names = defs.map(d => d.name);
       expect(names).toContain('Vec');
@@ -313,7 +335,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('captures trait impl heritage', async () => {
       await loadLanguage(SupportedLanguages.Rust);
       const code = `trait Display { fn fmt(&self); }\nstruct Foo;\nimpl Display for Foo { fn fmt(&self) {} }`;
-      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.Rust]);
+      const provider = getProvider(SupportedLanguages.Rust);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
       // Look for heritage captures
       const heritageCaptures: string[] = [];
       for (const match of matches) {
@@ -330,7 +353,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('captures modules, consts, and statics', async () => {
       await loadLanguage(SupportedLanguages.Rust);
       const code = `mod utils { pub fn helper() {} }\npub const MAX: usize = 100;\nstatic INSTANCE: i32 = 0;`;
-      const { matches } = parseAndQuery(parser, code, LANGUAGE_QUERIES[SupportedLanguages.Rust]);
+      const provider = getProvider(SupportedLanguages.Rust);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
       const names = defs.map(d => d.name);
       expect(names).toContain('utils');
@@ -343,7 +367,8 @@ describe('Tree-sitter multi-language parsing', () => {
     it('parses class, function, and method declarations', async () => {
       await loadLanguage(SupportedLanguages.PHP);
       const content = readFixture('simple.php');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.PHP]);
+      const provider = getProvider(SupportedLanguages.PHP);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
 
       expect(defs.length).toBeGreaterThan(0);
@@ -362,7 +387,8 @@ describe('Tree-sitter multi-language parsing', () => {
       }
 
       const content = readFixture('simple.swift');
-      const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[SupportedLanguages.Swift]);
+      const provider = getProvider(SupportedLanguages.Swift);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
       const defs = extractDefinitions(matches);
 
       expect(defs.length).toBeGreaterThan(0);
@@ -414,7 +440,8 @@ describe('Tree-sitter multi-language parsing', () => {
       for (const [lang, fixture, filePath] of langFixtures) {
         await loadLanguage(lang, filePath || fixture);
         const content = readFixture(fixture);
-        const { matches } = parseAndQuery(parser, content, LANGUAGE_QUERIES[lang]);
+        const provider = getProvider(lang);
+        const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
         const defs = extractDefinitions(matches);
         expect(defs.length, `${lang} (${fixture}) should have definitions`).toBeGreaterThan(0);
       }
@@ -432,7 +459,8 @@ describe('Tree-sitter multi-language parsing', () => {
       expect(tree.rootNode).toBeDefined();
 
       const lang = parser.getLanguage();
-      const query = new Parser.Query(lang, LANGUAGE_QUERIES[SupportedLanguages.TypeScript]);
+      const tsProvider = getProvider(SupportedLanguages.TypeScript);
+      const query = new Parser.Query(lang, tsProvider.treeSitterQueries);
       const matches = query.matches(tree.rootNode);
       expect(matches).toEqual([]);
     });
