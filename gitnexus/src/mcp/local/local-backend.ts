@@ -8,7 +8,8 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { initLbug, executeQuery, executeParameterized, closeLbug, isLbugReady } from '../core/lbug-adapter.js';
+import { initLbug, executeQuery, executeParameterized, closeLbug, isLbugReady, isWriteQuery } from '../core/lbug-adapter.js';
+export { isWriteQuery };
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
@@ -89,13 +90,6 @@ export const IMPACT_RELATION_CONFIDENCE: Readonly<Record<string, number>> = {
 const confidenceForRelType = (relType: string | undefined): number =>
   IMPACT_RELATION_CONFIDENCE[relType ?? ''] ?? 0.5;
 
-/** Regex to detect write operations in user-supplied Cypher queries */
-export const CYPHER_WRITE_RE = /(?<!:)\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH)\b/i;
-
-/** Check if a Cypher query contains write operations */
-export function isWriteQuery(query: string): boolean {
-  return CYPHER_WRITE_RE.test(query);
-}
 
 /** Structured error logging for query failures — replaces empty catch blocks */
 function logQueryError(context: string, err: unknown): void {
@@ -777,7 +771,7 @@ export class LocalBackend {
     }
 
     // Block write operations (defense-in-depth — DB is already read-only)
-    if (CYPHER_WRITE_RE.test(params.query)) {
+    if (isWriteQuery(params.query)) {
       return { error: 'Write operations (CREATE, DELETE, SET, MERGE, REMOVE, DROP, ALTER, COPY, DETACH) are not allowed. The knowledge graph is read-only.' };
     }
 
@@ -1816,10 +1810,6 @@ export class LocalBackend {
       const runModuleChunk = async (idsChunk: string[]) => {
         if (!idsChunk || idsChunk.length === 0) return;
         try {
-          try {
-            // eslint-disable-next-line no-console
-            console.debug(`impact: runModuleChunk idsChunk.length=${idsChunk.length}`);
-          } catch (e) { /* noop */ }
           const rows = await executeParameterized(repo.id, `
             MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
             WHERE s.id IN $ids
@@ -1849,10 +1839,6 @@ export class LocalBackend {
       const runDirectModuleChunk = async (idsChunk: string[]) => {
         if (!idsChunk || idsChunk.length === 0) return;
         try {
-          try {
-            // eslint-disable-next-line no-console
-            console.debug(`impact: runDirectModuleChunk idsChunk.length=${idsChunk.length}`);
-          } catch (e) { /* noop */ }
           const rows = await executeParameterized(repo.id, `
             MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
             WHERE s.id IN $ids

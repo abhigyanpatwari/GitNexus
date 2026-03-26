@@ -6,13 +6,17 @@ const executeQueryMock = vi.fn();
 const executeParameterizedMock = vi.fn();
 
 // Use the exact import specifier including .js to match runtime imports
-vi.mock('../../src/mcp/core/lbug-adapter.js', () => ({
-  initLbug: vi.fn(),
-  executeQuery: (...args: any[]) => executeQueryMock(...args),
-  executeParameterized: (...args: any[]) => executeParameterizedMock(...args),
-  closeLbug: vi.fn(),
-  isLbugReady: vi.fn().mockReturnValue(true),
-}));
+vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    initLbug: vi.fn(),
+    executeQuery: (...args: any[]) => executeQueryMock(...args),
+    executeParameterized: (...args: any[]) => executeParameterizedMock(...args),
+    closeLbug: vi.fn(),
+    isLbugReady: vi.fn().mockReturnValue(true),
+  };
+});
 
 import { LocalBackend } from '../../src/mcp/local/local-backend';
 
