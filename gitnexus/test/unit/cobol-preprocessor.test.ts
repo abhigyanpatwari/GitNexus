@@ -2467,4 +2467,254 @@ describe('extractCobolSymbolsWithRegex', () => {
       expect(r.initializes).toHaveLength(1);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Accumulator flush at END PROGRAM boundary
+  // -------------------------------------------------------------------------
+  describe('Accumulator flush at END PROGRAM boundary', () => {
+
+    it('multi-line CALL flushed at END PROGRAM', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. OUTER.',
+        '      PROCEDURE DIVISION.',
+        '       OUTER-MAIN.',
+        "           CALL 'SUBPROG'",
+        '               USING WS-DATA',
+        '       END PROGRAM OUTER.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].target).toBe('SUBPROG');
+      expect(r.calls[0].parameters).toEqual(['WS-DATA']);
+    });
+
+    it('multi-line CALL flushed at END PROGRAM in nested programs', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. OUTER.',
+        '      PROCEDURE DIVISION.',
+        '       OUTER-MAIN.',
+        '           STOP RUN.',
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. INNER.',
+        '      PROCEDURE DIVISION.',
+        '       INNER-MAIN.',
+        "           CALL 'INNERSUB'",
+        '               USING WS-INNER-DATA',
+        '       END PROGRAM INNER.',
+        '       END PROGRAM OUTER.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].target).toBe('INNERSUB');
+      expect(r.calls[0].parameters).toEqual(['WS-INNER-DATA']);
+      expect(r.programs).toHaveLength(2);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Accumulator flush at PROGRAM-ID sibling boundary
+  // -------------------------------------------------------------------------
+  describe('Accumulator flush at PROGRAM-ID sibling boundary', () => {
+
+    it('multi-line CALL flushed when sibling PROGRAM-ID appears without ID DIVISION', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. OUTER.',
+        '      PROCEDURE DIVISION.',
+        '       OUTER-MAIN.',
+        "           CALL 'OUTERSUB'",
+        '               USING WS-OUTER',
+        '       PROGRAM-ID. SIBLING.',
+        '      PROCEDURE DIVISION.',
+        '       SIB-MAIN.',
+        '           STOP RUN.',
+        '       END PROGRAM SIBLING.',
+        '       END PROGRAM OUTER.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].target).toBe('OUTERSUB');
+      expect(r.calls[0].parameters).toEqual(['WS-OUTER']);
+      const names = r.programs.map(p => p.name);
+      expect(names).toContain('SIBLING');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Accumulator flush on arithmetic verb boundaries
+  // -------------------------------------------------------------------------
+  describe('Accumulator flush on arithmetic verb boundaries', () => {
+
+    it('COMPUTE terminates multi-line CALL accumulation', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CALL 'PGM'",
+        '               USING WS-INPUT',
+        '           COMPUTE WS-TOTAL = WS-A + WS-B.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].parameters).toEqual(['WS-INPUT']);
+    });
+
+    it('ADD terminates multi-line CALL accumulation', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CALL 'PGM'",
+        '               USING WS-AMT',
+        '           ADD WS-AMT TO WS-TOTAL.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].parameters).toEqual(['WS-AMT']);
+    });
+
+    it('SUBTRACT terminates multi-line CALL accumulation', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CALL 'PGM'",
+        '               USING WS-VAL',
+        '           SUBTRACT WS-DISCOUNT FROM WS-TOTAL.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].parameters).toEqual(['WS-VAL']);
+    });
+
+    it('MULTIPLY terminates multi-line CALL accumulation', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CALL 'PGM'",
+        '               USING WS-QTY',
+        '           MULTIPLY WS-PRICE BY WS-QTY.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].parameters).toEqual(['WS-QTY']);
+    });
+
+    it('DIVIDE terminates multi-line CALL accumulation', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CALL 'PGM'",
+        '               USING WS-TOTAL',
+        '           DIVIDE WS-TOTAL BY WS-COUNT GIVING WS-AVG.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].parameters).toEqual(['WS-TOTAL']);
+    });
+
+    it('STRING terminates multi-line CALL accumulation', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CALL 'PGM'",
+        '               USING WS-NAME',
+        "           STRING WS-FIRST DELIMITED BY SIZE INTO WS-FULL.",
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].parameters).toEqual(['WS-NAME']);
+    });
+
+    it('UNSTRING terminates multi-line CALL accumulation', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CALL 'PGM'",
+        '               USING WS-LINE',
+        "           UNSTRING WS-LINE DELIMITED BY ',' INTO WS-A WS-B.",
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].parameters).toEqual(['WS-LINE']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Arithmetic verbs not captured as false USING parameters
+  // -------------------------------------------------------------------------
+  describe('Arithmetic verbs not captured as false USING parameters', () => {
+
+    it('COMPUTE after CALL USING does not pollute parameters', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CALL 'PGM' USING WS-INPUT.",
+        '           COMPUTE WS-RESULT = WS-A * WS-B.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(1);
+      // Only WS-INPUT should be a parameter, not WS-RESULT/WS-A/WS-B
+      expect(r.calls[0].parameters).toEqual(['WS-INPUT']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // SORT accumulator flushed at program boundaries
+  // -------------------------------------------------------------------------
+  describe('SORT accumulator flushed at program boundaries', () => {
+
+    it('multi-line SORT flushed at END PROGRAM', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           SORT SORT-FILE',
+        '               USING INPUT-FILE',
+        '       END PROGRAM TESTPROG.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.sorts).toHaveLength(1);
+      expect(r.sorts[0].sortFile).toBe('SORT-FILE');
+      expect(r.sorts[0].usingFiles).toEqual(['INPUT-FILE']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // INSPECT accumulator flushed at program boundaries
+  // -------------------------------------------------------------------------
+  describe('INSPECT accumulator flushed at program boundaries', () => {
+
+    it('multi-line INSPECT flushed at END PROGRAM', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           INSPECT WS-DATA',
+        "               REPLACING ALL 'X' BY 'Y'",
+        '       END PROGRAM TESTPROG.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.inspects).toHaveLength(1);
+      expect(r.inspects[0].inspectedField).toBe('WS-DATA');
+      expect(r.inspects[0].form).toBe('replacing');
+    });
+  });
 });

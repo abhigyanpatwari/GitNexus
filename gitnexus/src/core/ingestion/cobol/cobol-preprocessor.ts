@@ -379,7 +379,8 @@ const COBOL_STATEMENT_VERBS = [
   'INSPECT', 'SEARCH', 'SORT', 'MERGE', 'IF', 'EVALUATE',
   'SET', 'INITIALIZE', 'STOP', 'EXIT', 'GOBACK', 'CONTINUE',
   'READ', 'WRITE', 'REWRITE', 'DELETE', 'OPEN', 'CLOSE', 'START',
-  'CANCEL',
+  'CANCEL', 'COMPUTE', 'ADD', 'SUBTRACT', 'MULTIPLY', 'DIVIDE',
+  'STRING', 'UNSTRING',
 ];
 
 /** Regex matching start of any COBOL statement verb (for accumulator flush triggers). */
@@ -1078,6 +1079,10 @@ export function extractCobolSymbolsWithRegex(
     // --- END PROGRAM boundary detection ---
     const endProgramMatch = line.match(RE_END_PROGRAM);
     if (endProgramMatch) {
+      // Flush any pending accumulators at program boundary
+      flushCallAccum();
+      flushSort();
+      flushInspect();
       const topProgram = programBoundaryStack.pop();
       if (topProgram) {
         result.programs.push({
@@ -1107,6 +1112,9 @@ export function extractCobolSymbolsWithRegex(
     if (currentDivision !== 'identification') {
       const pgmIdMatch = line.match(RE_PROGRAM_ID);
       if (pgmIdMatch) {
+        flushCallAccum();
+        flushSort();
+        flushInspect();
         extractIdentification(line, lineNum);
         return;
       }
