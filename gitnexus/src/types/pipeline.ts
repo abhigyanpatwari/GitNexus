@@ -2,7 +2,7 @@ import { GraphNode, GraphRelationship, KnowledgeGraph } from '../core/graph/type
 import { CommunityDetectionResult } from '../core/ingestion/community-processor.js';
 import { ProcessDetectionResult } from '../core/ingestion/process-processor.js';
 
-export type PipelinePhase = 'idle' | 'extracting' | 'structure' | 'parsing' | 'imports' | 'calls' | 'heritage' | 'communities' | 'processes' | 'enriching' | 'complete' | 'error';
+export type PipelinePhase = 'idle' | 'extracting' | 'structure' | 'parsing' | 'imports' | 'calls' | 'heritage' | 'state-slots' | 'communities' | 'processes' | 'enriching' | 'complete' | 'error';
 
 export interface PipelineProgress {
   phase: PipelinePhase;

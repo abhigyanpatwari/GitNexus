@@ -46,10 +46,11 @@ export const VALID_NODE_LABELS = new Set([
   'Record', 'Delegate', 'Annotation', 'Constructor', 'Template', 'Module',
   'Route',
   'Tool',
+  'StateSlot',
 ]);
 
 /** Valid relation types for impact analysis filtering */
-export const VALID_RELATION_TYPES = new Set(['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES', 'HANDLES_ROUTE', 'FETCHES', 'HANDLES_TOOL', 'ENTRY_POINT_OF', 'WRAPS']);
+export const VALID_RELATION_TYPES = new Set(['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES', 'HANDLES_ROUTE', 'FETCHES', 'HANDLES_TOOL', 'ENTRY_POINT_OF', 'WRAPS', 'PRODUCES', 'CONSUMES']);
 
 /**
  * Per-relation-type confidence floor for impact analysis.
@@ -101,6 +102,72 @@ export function isWriteQuery(query: string): boolean {
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`GitNexus [${context}]: ${msg}`);
+}
+
+/**
+ * Parse shape metadata from a PRODUCES/CONSUMES edge reason field.
+ * Format: "shape-{confidence}|keys:k1,k2|type:TypeName"
+ */
+export function parseShapeReason(reason: string | null | undefined): {
+  confidence: number;
+  keys: string[];
+  typeName: string | null;
+} {
+  if (!reason) return { confidence: 0, keys: [], typeName: null };
+  let confidence = 0;
+  let keys: string[] = [];
+  let typeName: string | null = null;
+
+  const confMatch = reason.match(/^shape-([a-z-]+|\d*\.?\d+)/);
+  if (confMatch) {
+    const raw = confMatch[1];
+    // Map string labels to numeric confidence (matches state-slot-processor.ts)
+    const LABEL_MAP: Record<string, number> = { 'type-checked': 1.0, 'ast-literal': 0.8, 'heuristic': 0.6 };
+    confidence = LABEL_MAP[raw] ?? (parseFloat(raw) || 0);
+  }
+
+  const keysMatch = reason.match(/\|keys:([^|]+)/);
+  if (keysMatch) keys = keysMatch[1].split(',').filter(k => k.length > 0);
+
+  const typeMatch = reason.match(/\|type:([^|]+)/);
+  if (typeMatch) typeName = typeMatch[1];
+
+  return { confidence, keys, typeName };
+}
+
+/**
+ * Compute shape mismatch verdict for a state slot.
+ * - 'conflict': Multiple producers write different shapes (key sets differ)
+ * - 'suspicious': Consumer accesses keys not found in any producer
+ * - 'ok': No mismatches detected
+ */
+export function computeShapeVerdict(
+  producers: Array<{ keys: string[]; typeName: string | null }>,
+  consumers: Array<{ keys: string[] }>,
+): 'conflict' | 'suspicious' | 'ok' {
+  // Check for producer conflicts: do producers agree on shape?
+  if (producers.length > 1) {
+    const keySignatures = producers.map(p => [...p.keys].sort().join(','));
+    const uniqueSignatures = new Set(keySignatures);
+    if (uniqueSignatures.size > 1) return 'conflict';
+  }
+
+  // Collect all keys produced
+  const allProducedKeys = new Set<string>();
+  for (const p of producers) {
+    for (const k of p.keys) allProducedKeys.add(k);
+  }
+
+  // Check if any consumer accesses keys not in any producer
+  if (allProducedKeys.size > 0) {
+    for (const c of consumers) {
+      for (const k of c.keys) {
+        if (!allProducedKeys.has(k)) return 'suspicious';
+      }
+    }
+  }
+
+  return 'ok';
 }
 
 export interface CodebaseContext {
@@ -414,6 +481,8 @@ export class LocalBackend {
         return this.toolMap(repo, params);
       case 'api_impact':
         return this.apiImpact(repo, params);
+      case 'data_flow':
+        return this.dataFlow(repo, params);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -2105,6 +2174,128 @@ export class LocalBackend {
       steps: steps.map((s: any) => ({
         step: s.step || s[3], name: s.name || s[0], type: s.type || s[1], filePath: s.filePath || s[2],
       })),
+    };
+  }
+
+  private async dataFlow(repo: RepoHandle, params: { query?: string; slotKind?: string; mismatchesOnly?: string | boolean }): Promise<any> {
+    await this.ensureInitialized(repo.id);
+
+    // Build optional filters
+    let slotFilter = '';
+    const queryParams: Record<string, string> = {};
+    if (params.query) {
+      slotFilter += ` AND n.name CONTAINS $query`;
+      queryParams.query = params.query;
+    }
+    if (params.slotKind) {
+      slotFilter += ` AND n.slotKind = $slotKind`;
+      queryParams.slotKind = params.slotKind;
+    }
+
+    // 1. Fetch all StateSlot nodes
+    const slotRows = await executeParameterized(repo.id, `
+      MATCH (n:StateSlot)
+      ${slotFilter ? `WHERE ${slotFilter.replace(/^\s*AND\s*/, '')}` : ''}
+      RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.slotKind AS slotKind, n.cacheKey AS cacheKey
+    `, queryParams);
+
+    if (slotRows.length === 0) {
+      return { slots: [], total: 0, conflicts: 0, suspicious: 0, message: params.query ? `No state slots matching "${params.query}"` : 'No state slots found in this project.' };
+    }
+
+    // 2. Batch-fetch PRODUCES and CONSUMES edges for all slots
+    const slotIds = slotRows.map((r: any) => r.id ?? r[0]);
+
+    const [producerRows, consumerRows] = await Promise.all([
+      executeParameterized(repo.id, `
+        MATCH (fn)-[r:CodeRelation]->(s:StateSlot)
+        WHERE r.type = 'PRODUCES' AND list_contains($slotIds, s.id)
+        RETURN s.id AS slotId, fn.name AS name, fn.filePath AS filePath, r.reason AS reason
+      `, { slotIds }),
+      executeParameterized(repo.id, `
+        MATCH (fn)-[r:CodeRelation]->(s:StateSlot)
+        WHERE r.type = 'CONSUMES' AND list_contains($slotIds, s.id)
+        RETURN s.id AS slotId, fn.name AS name, fn.filePath AS filePath, r.reason AS reason
+      `, { slotIds }),
+    ]);
+
+    // Group producers and consumers by slot ID
+    const producersBySlot = new Map<string, Array<{ name: string; filePath: string; keys: string[]; typeName: string | null; confidence: number }>>();
+    const consumersBySlot = new Map<string, Array<{ name: string; filePath: string; keys: string[]; confidence: number }>>();
+
+    for (const row of producerRows) {
+      const slotId = row.slotId ?? row[0];
+      const name = row.name ?? row[1];
+      const filePath = row.filePath ?? row[2];
+      const reason: string | null = row.reason ?? row[3] ?? null;
+      const shape = parseShapeReason(reason);
+      let list = producersBySlot.get(slotId);
+      if (!list) { list = []; producersBySlot.set(slotId, list); }
+      list.push({ name, filePath, keys: shape.keys, typeName: shape.typeName, confidence: shape.confidence });
+    }
+
+    for (const row of consumerRows) {
+      const slotId = row.slotId ?? row[0];
+      const name = row.name ?? row[1];
+      const filePath = row.filePath ?? row[2];
+      const reason: string | null = row.reason ?? row[3] ?? null;
+      const shape = parseShapeReason(reason);
+      let list = consumersBySlot.get(slotId);
+      if (!list) { list = []; consumersBySlot.set(slotId, list); }
+      list.push({ name, filePath, keys: shape.keys, confidence: shape.confidence });
+    }
+
+    // 3. Build result slots with verdict
+    let conflictCount = 0;
+    let suspiciousCount = 0;
+
+    const slots = slotRows.map((row: any) => {
+      const id = row.id ?? row[0];
+      const name = row.name ?? row[1];
+      const filePath = row.filePath ?? row[2];
+      const slotKind = row.slotKind ?? row[3];
+      const cacheKey = row.cacheKey ?? row[4];
+
+      const producers = producersBySlot.get(id) || [];
+      const consumers = consumersBySlot.get(id) || [];
+      const verdict = computeShapeVerdict(producers, consumers);
+
+      if (verdict === 'conflict') conflictCount++;
+      if (verdict === 'suspicious') suspiciousCount++;
+
+      return {
+        name,
+        filePath,
+        slotKind,
+        ...(cacheKey ? { cacheKey } : {}),
+        verdict,
+        producers: producers.map(p => ({
+          name: p.name,
+          filePath: p.filePath,
+          ...(p.keys.length > 0 ? { keys: p.keys } : {}),
+          ...(p.typeName ? { typeName: p.typeName } : {}),
+          ...(p.confidence > 0 ? { confidence: p.confidence } : {}),
+        })),
+        consumers: consumers.map(c => ({
+          name: c.name,
+          filePath: c.filePath,
+          ...(c.keys.length > 0 ? { accessedKeys: c.keys } : {}),
+          ...(c.confidence > 0 ? { confidence: c.confidence } : {}),
+        })),
+      };
+    });
+
+    // 4. Filter if mismatchesOnly (MCP sends strings, so check both)
+    const filterMismatches = params.mismatchesOnly === true || params.mismatchesOnly === 'true';
+    const filtered = filterMismatches
+      ? slots.filter((s: any) => s.verdict !== 'ok')
+      : slots;
+
+    return {
+      slots: filtered,
+      total: filtered.length,
+      conflicts: conflictCount,
+      suspicious: suspiciousCount,
     };
   }
 

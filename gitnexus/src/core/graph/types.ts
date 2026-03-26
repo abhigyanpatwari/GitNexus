@@ -35,7 +35,8 @@ export type NodeLabel =
   | 'Template'
   | 'Section'
   | 'Route'        // API route endpoint (e.g., /api/grants)
-  | 'Tool';        // MCP tool definition
+  | 'Tool'         // MCP tool definition
+  | 'StateSlot';   // Shared state: React Query cache, Context, Redux slice, etc.
 
 
 import { SupportedLanguages } from '../../config/supported-languages.js';
@@ -77,6 +78,9 @@ export type NodeProperties = {
   errorKeys?: string[],
   // Middleware wrapper chain (outermost first): ['withRateLimit', 'withCSRF', 'withAuth']
   middleware?: string[],
+  // StateSlot-specific
+  slotKind?: string;       // react-query | swr | react-context | redux | zustand | trpc | graphql | custom-hook
+  cacheKey?: string;        // Literal or pattern of cache/state key
 }
 
 export type RelationshipType =
@@ -100,6 +104,8 @@ export type RelationshipType =
   | 'HANDLES_TOOL'   // Function/File → Tool (handler implements this tool)
   | 'ENTRY_POINT_OF'  // Route/Tool → Process (this endpoint starts this execution flow)
   | 'WRAPS'           // Function → Function (middleware wrapper chain) — Reserved: future middleware graph traversal (not yet emitted)
+  | 'PRODUCES'        // Function/Method -> StateSlot (writes data into shared state)
+  | 'CONSUMES';       // Function/Method -> StateSlot (reads data from shared state)
 
 export interface GraphNode {
   id:  string,
