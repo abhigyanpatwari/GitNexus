@@ -60,11 +60,12 @@ describe('Java heritage resolution', () => {
     expect(extends_.some(e => e.target === 'Validatable')).toBe(false);
   });
 
-  it('emits exactly 2 CALLS edges', () => {
+  it('emits exactly 3 CALLS edges', () => {
     const calls = getRelationships(result, 'CALLS');
-    expect(calls.length).toBe(2);
+    expect(calls.length).toBe(3);
     expect(edgeSet(calls)).toEqual([
       'processUser → save',
+      'processUser → serialize',
       'processUser → validate',
     ]);
   });
