@@ -1722,7 +1722,6 @@ export class LocalBackend {
     let affectedModules: any[] = [];
 
     if (impacted.length > 0) {
-      const isArm64Mac = process.platform === 'darwin' && process.arch === 'arm64';
       const CHUNK_SIZE = 100;
       // Max number of chunks to process to avoid unbounded DB round-trips.
       // Configurable via env IMPACT_MAX_CHUNKS, default 10 => max items = 1000
@@ -1802,38 +1801,91 @@ export class LocalBackend {
       const d1Items = (grouped[1] || []).slice(0, maxItems);
       const d1IdsArr = d1Items.map((i: any) => String(i.id ?? ''));
 
-      const moduleQuery = () => executeParameterized(repo.id, `
-        MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-        WHERE s.id IN $ids
-        RETURN c.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits
-        ORDER BY hits DESC
-        LIMIT 20
-      `, { ids: allIdsArr }).catch(() => []);
-      const directModuleQuery = () => d1IdsArr.length
-        ? executeParameterized(repo.id, `
+      // Chunked module enrichment: run the MEMBER_OF queries in chunks
+      // to avoid large single queries or concurrent Kuzu calls that can
+      // crash (SIGSEGV) on arm64 macOS; behavior preserves existing maxItems cap and returns equivalent aggregated results.
+      const moduleHitsMap = new Map<string, number>();
+      const directModuleSet = new Set<string>();
+
+      // Helper to run a single module chunk and accumulate hits by name
+      const runModuleChunk = async (idsChunk: string[]) => {
+        if (!idsChunk || idsChunk.length === 0) return;
+        try {
+          try {
+            // eslint-disable-next-line no-console
+            console.debug(`impact: runModuleChunk idsChunk.length=${idsChunk.length}`);
+          } catch (e) { /* noop */ }
+          const rows = await executeParameterized(repo.id, `
+            MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+            WHERE s.id IN $ids
+            RETURN c.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits
+            ORDER BY hits DESC
+            LIMIT 20
+          `, { ids: idsChunk }).catch(() => []);
+
+          for (const r of rows) {
+            const name = r.name ?? r[0] ?? null;
+            const hits = (r.hits ?? r[1]) || 0;
+            if (!name) continue;
+            moduleHitsMap.set(name, (moduleHitsMap.get(name) || 0) + hits);
+          }
+        } catch (e) {
+          logQueryError('impact:module-chunk', e);
+        }
+      };
+
+      // Run module query chunks sequentially (safe on arm64 macOS)
+      for (let i = 0; i < allIdsArr.length; i += CHUNK_SIZE) {
+        const chunkIds = allIdsArr.slice(i, i + CHUNK_SIZE);
+        await runModuleChunk(chunkIds);
+      }
+
+      // Run direct module query similarly (distinct heuristic labels for depth-1 items)
+      const runDirectModuleChunk = async (idsChunk: string[]) => {
+        if (!idsChunk || idsChunk.length === 0) return;
+        try {
+          try {
+            // eslint-disable-next-line no-console
+            console.debug(`impact: runDirectModuleChunk idsChunk.length=${idsChunk.length}`);
+          } catch (e) { /* noop */ }
+          const rows = await executeParameterized(repo.id, `
             MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
             WHERE s.id IN $ids
             RETURN DISTINCT c.heuristicLabel AS name
-          `, { ids: d1IdsArr }).catch(() => [])
-        : Promise.resolve([]);
+          `, { ids: idsChunk }).catch(() => []);
+          for (const r of rows) {
+            const name = r.name ?? r[0] ?? null;
+            if (name) directModuleSet.add(name);
+          }
+        } catch (e) {
+          logQueryError('impact:direct-module-chunk', e);
+        }
+      };
 
-       let moduleRows: any[], directModuleRows: any[];
-       if (isArm64Mac) {
-         moduleRows = await moduleQuery();
-         directModuleRows = await directModuleQuery();
-       } else {
-         [moduleRows, directModuleRows] = await Promise.all([moduleQuery(), directModuleQuery()]);
-       }
+      for (let i = 0; i < d1IdsArr.length; i += CHUNK_SIZE) {
+        const chunkIds = d1IdsArr.slice(i, i + CHUNK_SIZE);
+        await runDirectModuleChunk(chunkIds);
+      }
 
-       const directModuleSet = new Set(directModuleRows.map((r: any) => r.name || r[0]));
-       affectedModules = moduleRows.map((r: any) => {
-         const name = r.name || r[0];
-         return {
-           name,
-           hits: r.hits || r[1],
-           impact: directModuleSet.has(name) ? 'direct' : 'indirect',
-         };
-       });
+      // Build final moduleRows array from aggregated hits map, sorted & limited
+      const moduleRows = Array.from(moduleHitsMap.entries())
+        .map(([name, hits]) => ({ name, hits }))
+        .sort((a, b) => b.hits - a.hits)
+        .slice(0, 20);
+
+      const directModuleRows = Array.from(directModuleSet).map(name => ({ name }));
+
+      // Build affectedModules in the same shape as original implementation
+      const directModuleNameSet = new Set(directModuleRows.map((r: any) => r.name || r[0]));
+      affectedModules = moduleRows.map((r: any) => {
+        const name = r.name ?? r[0];
+        const hits = r.hits ?? r[1] ?? 0;
+        return {
+          name,
+          hits,
+          impact: directModuleNameSet.has(name) ? 'direct' : 'indirect',
+        };
+      });
      }
 
     // Risk scoring

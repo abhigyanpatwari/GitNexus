@@ -200,15 +200,20 @@ describe('impact: batching and grouping', () => {
     // Because we capped enrichment, the result should include partial: true
     expect(res.partial).toBe(true);
 
-    // Module enrichment should have been called with ids length == 300
+    // Module enrichment should have been called in chunks (3 calls, totaling 300 ids)
     const memberCalls = (executeParameterizedMock.mock.calls || []).filter((c: any[]) => {
       const q = typeof c[1] === 'string' ? c[1] : String(c[0] ?? '');
-      return q.includes('COUNT(DISTINCT s.id)');
+      // Only count the module-hits query (which returns COUNT(DISTINCT s.id)).
+      // The process-chunk query also uses COUNT(DISTINCT s.id), so require MEMBER_OF
+      // to avoid double-counting process-chunk calls.
+      return q.includes('COUNT(DISTINCT s.id)') && q.includes('MEMBER_OF');
     });
-    expect(memberCalls.length).toBeGreaterThanOrEqual(1);
-    const memberParams = memberCalls[0][2] || {};
-    expect(Array.isArray(memberParams.ids)).toBe(true);
-    expect(memberParams.ids.length).toBe(300);
+    // MAX_CHUNKS = 3 in this test, so expect 3 module-enrichment chunk calls
+    // DEBUG: print memberCalls and their ids lengths
+    expect(memberCalls.length).toBe(3);
+    const totalModuleIds = memberCalls.reduce((sum: number, call: any[]) => sum + ((Array.isArray(call[2]?.ids) ? call[2].ids.length : 0)), 0);
+    // eslint-disable-next-line no-console
+    expect(totalModuleIds).toBe(300);
 
     // Affected modules should include ModuleA
     expect(Array.isArray(res.affected_modules)).toBe(true);
