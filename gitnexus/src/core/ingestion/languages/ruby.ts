@@ -15,6 +15,22 @@ import { rubyExportChecker } from '../export-detection.js';
 import { resolveRubyImport } from '../import-resolvers/ruby.js';
 import { RUBY_QUERIES } from '../tree-sitter-queries.js';
 
+const BUILT_INS: ReadonlySet<string> = new Set([
+  'puts', 'p', 'pp', 'raise', 'fail',
+  'require', 'require_relative', 'load', 'autoload',
+  'include', 'extend', 'prepend',
+  'attr_accessor', 'attr_reader', 'attr_writer',
+  'public', 'private', 'protected', 'module_function',
+  'lambda', 'proc', 'block_given?',
+  'nil?', 'is_a?', 'kind_of?', 'instance_of?', 'respond_to?',
+  'freeze', 'frozen?', 'dup', 'tap', 'yield_self',
+  'each', 'select', 'reject', 'detect', 'collect',
+  'inject', 'flat_map', 'each_with_object', 'each_with_index',
+  'any?', 'all?', 'none?', 'count', 'first', 'last',
+  'sort_by', 'min_by', 'max_by',
+  'group_by', 'partition', 'compact', 'flatten', 'uniq',
+]);
+
 export const rubyProvider = defineLanguage({
   id: SupportedLanguages.Ruby,
   extensions: ['.rb', '.rake', '.gemspec'],
@@ -24,4 +40,5 @@ export const rubyProvider = defineLanguage({
   importResolver: resolveRubyImport,
   callRouter: routeRubyCall,
   importSemantics: 'wildcard',
+  builtInNames: BUILT_INS,
 });
