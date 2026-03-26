@@ -225,12 +225,6 @@ export const ENTRY_POINT_PATTERNS = {
     /^runApp$/,           // App entry point
     /^onEvent$/,          // BLoC event handler
     /^mapEventToState$/,  // Legacy BLoC pattern
-    /Widget$/,            // Class suffix — widget definitions
-    /Page$/,              // Class suffix — page screens
-    /Screen$/,            // Class suffix — screen views
-    /Controller$/,        // Class suffix — state controllers
-    /Notifier$/,          // Class suffix — Riverpod/ChangeNotifier
-    /Provider$/,          // Class suffix — provider definitions
   ],
 } satisfies Record<SupportedLanguages, RegExp[]>;
 
