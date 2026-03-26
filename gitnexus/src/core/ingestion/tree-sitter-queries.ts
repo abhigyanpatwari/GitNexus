@@ -1049,10 +1049,10 @@ export const DART_QUERIES = `
 (constructor_signature
   name: (identifier) @name) @definition.constructor
 
-; ── Factory constructors ─────────────────────────────────────────────────────
+; ── Factory constructors (anchor before param list to capture variant name, not class) ──
 (method_signature
   (factory_constructor_signature
-    (identifier) @name)) @definition.constructor
+    (identifier) @name . (formal_parameter_list))) @definition.constructor
 
 ; ── Getters ──────────────────────────────────────────────────────────────────
 (method_signature

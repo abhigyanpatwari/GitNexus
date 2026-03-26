@@ -163,7 +163,6 @@ export const BUILT_IN_NAMES = new Set([
   'deactivate', 'reassemble', 'debugDumpApp', 'debugDumpRenderTree',
   // Dart async
   'then', 'catchError', 'whenComplete', 'listen',
-  'add', 'close', 'emit',
   // Ruby enumerables
   'each', 'select', 'reject', 'detect', 'collect',
   'inject', 'flat_map', 'each_with_object', 'each_with_index',

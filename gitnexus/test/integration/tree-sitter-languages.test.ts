@@ -456,12 +456,16 @@ describe('Tree-sitter multi-language parsing', () => {
       expect(defNames).toContain('StringExtension');
     });
 
-    it('captures factory constructor names', async () => {
+    it('captures factory constructor variant name (not class name)', async () => {
       if (!(await loadDartOrSkip())) return;
       const { matches } = parseAndQuery(parser, readFixture('simple.dart'), dartQueries());
       const defs = extractDefinitions(matches);
       const constructors = defs.filter(d => d.type === 'definition.constructor');
       expect(constructors.length).toBeGreaterThan(0);
+      // factory Dog.unknown() should capture 'unknown', not 'Dog'
+      const constructorNames = constructors.map(c => c.name);
+      expect(constructorNames).toContain('unknown');
+      expect(constructorNames).not.toContain('Dog');
     });
 
     it('captures getter and setter as definition.property', async () => {
