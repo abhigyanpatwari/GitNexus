@@ -369,6 +369,34 @@ const SORT_CLAUSE_NOISE = new Set([
   'INPUT', 'OUTPUT', 'PROCEDURE', 'USING', 'GIVING',
 ]);
 
+// COBOL statement verbs used as boundary detectors across accumulators.
+// Shared by: callAccum flush trigger, inspectAccum flush trigger, and USING lookahead.
+// Note: CALL is intentionally excluded — it's handled by the callAccum state machine.
+// Including CALL here would cause the flush trigger to consume the new CALL line
+// without re-detecting it as a CALL start.
+const COBOL_STATEMENT_VERBS = [
+  'GO\\s+TO', 'PERFORM', 'MOVE', 'DISPLAY', 'ACCEPT',
+  'INSPECT', 'SEARCH', 'SORT', 'MERGE', 'IF', 'EVALUATE',
+  'SET', 'INITIALIZE', 'STOP', 'EXIT', 'GOBACK', 'CONTINUE',
+  'READ', 'WRITE', 'REWRITE', 'DELETE', 'OPEN', 'CLOSE', 'START',
+  'CANCEL',
+];
+
+/** Regex matching start of any COBOL statement verb (for accumulator flush triggers). */
+const RE_STATEMENT_VERB_START = new RegExp(
+  `^(?:${COBOL_STATEMENT_VERBS.join('|')})(?:\\s|$)`, 'i',
+);
+
+/** Lookahead alternation for USING parameter extraction (stops before statement verbs).
+ *  Includes CALL (excluded from COBOL_STATEMENT_VERBS to avoid callAccum conflicts). */
+const USING_VERB_LOOKAHEAD = [...COBOL_STATEMENT_VERBS, 'CALL']
+  .filter(v => v !== 'GO\\s+TO') // GO TO handled separately with \bGO\s+TO\b
+  .map(v => `\\b${v}(?=\\s|$)`)
+  .join('|');
+const RE_USING_PARAMS = new RegExp(
+  `\\bUSING\\s+([\\s\\S]*?)(?=\\bRETURNING\\b|\\bON\\s+(?:EXCEPTION|OVERFLOW)\\b|\\bNOT\\s+ON\\b|\\bEND-CALL\\b|\\bGO\\s+TO\\b|${USING_VERB_LOOKAHEAD}|\\.\\s*$|$)`, 'i',
+);
+
 // ---------------------------------------------------------------------------
 // Private helper: strip Italian inline comments (| and everything after)
 // ---------------------------------------------------------------------------
@@ -1017,7 +1045,9 @@ export function extractCobolSymbolsWithRegex(
     }
 
     // Check for EXEC SQL / EXEC CICS start
+    // Flush any pending CALL accumulator before entering EXEC block
     if (RE_EXEC_SQL_START.test(line)) {
+      flushCallAccum();
       execAccum = { type: 'sql', lines: line, startLine: lineNum };
       // If END-EXEC is on the same line, finalize immediately
       if (RE_END_EXEC.test(line)) {
@@ -1027,6 +1057,7 @@ export function extractCobolSymbolsWithRegex(
       return;
     }
     if (RE_EXEC_CICS_START.test(line)) {
+      flushCallAccum();
       execAccum = { type: 'cics', lines: line, startLine: lineNum };
       if (RE_END_EXEC.test(line)) {
         result.execCicsBlocks.push(parseExecCicsBlock(execAccum.lines, execAccum.startLine));
@@ -1035,6 +1066,7 @@ export function extractCobolSymbolsWithRegex(
       return;
     }
     if (RE_EXEC_DLI_START.test(line)) {
+      flushCallAccum();
       execAccum = { type: 'dli', lines: line, startLine: lineNum };
       if (RE_END_EXEC.test(line)) {
         result.execDliBlocks.push(parseExecDliBlock(execAccum.lines, execAccum.startLine));
@@ -1158,7 +1190,7 @@ export function extractCobolSymbolsWithRegex(
       const trimmedLine = line.trimStart();
       const leadingSpaces = (line.match(/^(\s*)/)?.[1].length ?? 0);
       const isAreaAParagraph = RE_PROC_PARAGRAPH.test(line) && (!isFreeFormat ? leadingSpaces <= 7 : false);
-      if (/^(?:GO\s+TO|PERFORM|MOVE|DISPLAY|ACCEPT|INSPECT|SEARCH|SORT|MERGE|IF|EVALUATE|SET|INITIALIZE|STOP|EXIT|GOBACK|CONTINUE|READ|WRITE|REWRITE|DELETE|OPEN|CLOSE|START|CANCEL)(?:\s|$)/i.test(trimmedLine)
+      if (RE_STATEMENT_VERB_START.test(trimmedLine)
         || RE_PROC_SECTION.test(line) || isAreaAParagraph) {
         flushCallAccum(); // Flush CALL without this line's content
         // Fall through to process this line normally
@@ -1362,7 +1394,7 @@ export function extractCobolSymbolsWithRegex(
     for (const callMatch of text.matchAll(RE_CALL)) {
       const callTarget = callMatch[1] ?? callMatch[2];
       const afterCall = text.substring(callMatch.index! + callMatch[0].length);
-      const usingMatch = afterCall.match(/\bUSING\s+([\s\S]*?)(?=\bRETURNING\b|\bON\s+(?:EXCEPTION|OVERFLOW)\b|\bNOT\s+ON\b|\bEND-CALL\b|\bINSPECT(?=\s|$)|\bSEARCH(?=\s|$)|\bSORT(?=\s|$)|\bMERGE(?=\s|$)|\bDISPLAY(?=\s|$)|\bACCEPT(?=\s|$)|\bMOVE(?=\s|$)|\bPERFORM(?=\s|$)|\bGO\s+TO\b|\bCALL(?=\s|$)|\bIF(?=\s|$)|\bEVALUATE(?=\s|$)|\bCANCEL(?=\s|$)|\.\s*$|$)/i);
+      const usingMatch = afterCall.match(RE_USING_PARAMS);
       const parameters = usingMatch
         ? usingMatch[1].split(/\bRETURNING\b/i)[0].trim().split(/\s+/)
             .filter(s => s.length > 0 && !CALL_USING_FILTER.has(s.toUpperCase()) && /^[A-Z][A-Z0-9-]+$/i.test(s))
@@ -1375,7 +1407,7 @@ export function extractCobolSymbolsWithRegex(
     // Extract dynamic CALLs from the full statement
     for (const dynCallMatch of text.matchAll(RE_CALL_DYNAMIC)) {
       const afterDynCall = text.substring(dynCallMatch.index! + dynCallMatch[0].length);
-      const dynUsingMatch = afterDynCall.match(/\bUSING\s+([\s\S]*?)(?=\bRETURNING\b|\bON\s+(?:EXCEPTION|OVERFLOW)\b|\bNOT\s+ON\b|\bEND-CALL\b|\bINSPECT(?=\s|$)|\bSEARCH(?=\s|$)|\bSORT(?=\s|$)|\bMERGE(?=\s|$)|\bDISPLAY(?=\s|$)|\bACCEPT(?=\s|$)|\bMOVE(?=\s|$)|\bPERFORM(?=\s|$)|\bGO\s+TO\b|\bCALL(?=\s|$)|\bIF(?=\s|$)|\bEVALUATE(?=\s|$)|\bCANCEL(?=\s|$)|\.\s*$|$)/i);
+      const dynUsingMatch = afterDynCall.match(RE_USING_PARAMS);
       const dynParameters = dynUsingMatch
         ? dynUsingMatch[1].split(/\bRETURNING\b/i)[0].trim().split(/\s+/)
             .filter(s => s.length > 0 && !CALL_USING_FILTER.has(s.toUpperCase()) && /^[A-Z][A-Z0-9-]+$/i.test(s))
@@ -1657,7 +1689,8 @@ export function extractCobolSymbolsWithRegex(
       const inspLeading = (line.match(/^(\s*)/)?.[1].length ?? 0);
       const inspIsAreaAPara = RE_PROC_PARAGRAPH.test(line) && (!isFreeFormat ? inspLeading <= 7 : false);
       if (RE_PROC_SECTION.test(line) || inspIsAreaAPara
-        || /^(?:GO\s+TO|PERFORM|MOVE|DISPLAY|CALL|CANCEL|SET|INITIALIZE|STOP|EXIT|GOBACK)(?:\s|$)/i.test(inspTrimmed)) {
+        || RE_STATEMENT_VERB_START.test(inspTrimmed)
+        || /^CALL(?:\s|$)/i.test(inspTrimmed)) {
         flushInspect();
         // Fall through to process this line normally
       } else {
