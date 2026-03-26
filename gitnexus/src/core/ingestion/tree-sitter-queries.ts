@@ -808,7 +808,7 @@ export const RUBY_QUERIES = `
 ; NOTE: This may over-capture variable reads as calls (e.g. 'result' at
 ; statement level). Ruby's grammar makes bare identifiers ambiguous — they
 ; could be local variables or zero-arity method calls. Post-processing via
-; isBuiltInOrNoise and symbol resolution filtering suppresses most false
+; provider.isBuiltInName and symbol resolution filtering suppresses most false
 ; positives, but a variable name that coincidentally matches a method name
 ; elsewhere may produce a false CALLS edge.
 (body_statement

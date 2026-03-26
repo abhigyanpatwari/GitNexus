@@ -29,7 +29,6 @@ try { Dart = _require('tree-sitter-dart'); } catch {}
 let Kotlin: any = null;
 try { Kotlin = _require('tree-sitter-kotlin'); } catch {}
 import { getLanguageFromFilename } from '../utils/language-detection.js';
-import { isBuiltInOrNoise } from '../utils/noise-filter.js';
 import {
   FUNCTION_NODE_TYPES,
   extractFunctionName,
@@ -1124,7 +1123,7 @@ const processFileGroup = (
             // kind === 'call' — fall through to normal call processing below
           }
 
-          if (!isBuiltInOrNoise(calledName, provider)) {
+          if (!provider.isBuiltInName(calledName)) {
             const callNode = captureMap['call'];
             const sourceId = findEnclosingFunctionId(callNode, file.path, provider)
               || generateId('File', file.path);
