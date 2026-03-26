@@ -1144,14 +1144,25 @@ export function extractCobolSymbolsWithRegex(
     }
 
     // --- CALL (all divisions, typically procedure) ---
-    // Multi-line CALL accumulator: accumulate CALL statement until period or END-CALL
+    // Multi-line CALL accumulator: accumulate CALL statement until period or END-CALL.
+    // Continuation lines (not the start line) are consumed entirely — return after flush
+    // to prevent false paragraph detection on lines like "WS-ADDR." or "WS-CUST-CODE."
     if (callAccum !== null) {
-      callAccum += ' ' + line;
-      if (/\.\s*$/.test(callAccum) || /\bEND-CALL\b/i.test(callAccum)) {
-        flushCallAccum();
+      // Check if this continuation line starts a new COBOL statement (not a USING parameter).
+      // If so, flush the CALL as-is and let this line be processed normally.
+      const trimmedLine = line.trimStart();
+      if (/^(?:GO\s+TO|PERFORM|MOVE|DISPLAY|ACCEPT|INSPECT|SEARCH|SORT|MERGE|IF|EVALUATE|SET|INITIALIZE|STOP|EXIT|GOBACK|CONTINUE|READ|WRITE|REWRITE|DELETE|OPEN|CLOSE|START)\b/i.test(trimmedLine)
+        || RE_PROC_SECTION.test(line) || RE_PROC_PARAGRAPH.test(line)) {
+        flushCallAccum(); // Flush CALL without this line's content
+        // Fall through to process this line normally
+      } else {
+        callAccum += ' ' + line;
+        if (/\.\s*$/.test(callAccum) || /\bEND-CALL\b/i.test(callAccum)) {
+          flushCallAccum();
+        }
+        return; // continuation line consumed by CALL accumulator
       }
-      // Don't return — line may contain other extractable constructs after the period
-    } else if (/(?<![A-Z0-9-])\bCALL\s+(?:"[^"]+"|'[^']+'|[A-Z][A-Z0-9-]+)/i.test(line)) {
+    } else if (currentDivision === 'procedure' && /(?<![A-Z0-9-])\bCALL\s+(?:"[^"]+"|'[^']+'|[A-Z][A-Z0-9-]+)/i.test(line)) {
       // Check if this is a complete single-line CALL (ends with period or END-CALL)
       if (/\.\s*$/.test(line) || /\bEND-CALL\b/i.test(line)) {
         // Single-line CALL — extract immediately via flushCallAccum
@@ -1525,6 +1536,11 @@ export function extractCobolSymbolsWithRegex(
     const paraMatch = line.match(RE_PROC_PARAGRAPH);
     if (paraMatch) {
       const name = paraMatch[1];
+      // In fixed-format, paragraphs must start in Area A (col 8-11, max 7 leading spaces).
+      // Reject deeply-indented lines (Area B, 8+ spaces) to prevent false paragraphs from
+      // data items or CALL USING parameters on continuation lines.
+      const leadingSpaces = line.match(/^(\s*)/)?.[1].length ?? 0;
+      if (!isFreeFormat && leadingSpaces > 7) return; // Area B — not a paragraph
       if (!EXCLUDED_PARA_NAMES.has(name.toUpperCase()) && !name.toUpperCase().startsWith('END-') && name.toUpperCase() !== 'DIVISION' && name.toUpperCase() !== 'SECTION') {
         result.paragraphs.push({ name, line: lineNum });
         currentParagraph = name;
