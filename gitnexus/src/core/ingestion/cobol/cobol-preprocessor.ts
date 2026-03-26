@@ -1149,10 +1149,14 @@ export function extractCobolSymbolsWithRegex(
     // to prevent false paragraph detection on lines like "WS-ADDR." or "WS-CUST-CODE."
     if (callAccum !== null) {
       // Check if this continuation line starts a new COBOL statement (not a USING parameter).
-      // If so, flush the CALL as-is and let this line be processed normally.
+      // Use (?:\s|$) instead of \b to prevent matching hyphenated identifiers like MOVE-COUNT.
+      // Only use RE_PROC_PARAGRAPH as flush trigger when in Area A (≤7 leading spaces, fixed-format).
+      // In free-format, never use RE_PROC_PARAGRAPH (can't distinguish parameters from paragraphs).
       const trimmedLine = line.trimStart();
-      if (/^(?:GO\s+TO|PERFORM|MOVE|DISPLAY|ACCEPT|INSPECT|SEARCH|SORT|MERGE|IF|EVALUATE|SET|INITIALIZE|STOP|EXIT|GOBACK|CONTINUE|READ|WRITE|REWRITE|DELETE|OPEN|CLOSE|START)\b/i.test(trimmedLine)
-        || RE_PROC_SECTION.test(line) || RE_PROC_PARAGRAPH.test(line)) {
+      const leadingSpaces = (line.match(/^(\s*)/)?.[1].length ?? 0);
+      const isAreaAParagraph = RE_PROC_PARAGRAPH.test(line) && (!isFreeFormat ? leadingSpaces <= 7 : false);
+      if (/^(?:GO\s+TO|PERFORM|MOVE|DISPLAY|ACCEPT|INSPECT|SEARCH|SORT|MERGE|IF|EVALUATE|SET|INITIALIZE|STOP|EXIT|GOBACK|CONTINUE|READ|WRITE|REWRITE|DELETE|OPEN|CLOSE|START)(?:\s|$)/i.test(trimmedLine)
+        || RE_PROC_SECTION.test(line) || isAreaAParagraph) {
         flushCallAccum(); // Flush CALL without this line's content
         // Fall through to process this line normally
       } else {
@@ -1634,12 +1638,23 @@ export function extractCobolSymbolsWithRegex(
     }
 
     // INSPECT — multi-line accumulator (like SORT)
+    // If a real paragraph/section header or statement verb arrives during accumulation,
+    // flush the INSPECT as-is and process the line normally.
     if (inspectAccum !== null) {
-      inspectAccum += ' ' + line;
-      if (/\.\s*$/.test(inspectAccum)) {
+      const inspTrimmed = line.trimStart();
+      const inspLeading = (line.match(/^(\s*)/)?.[1].length ?? 0);
+      const inspIsAreaAPara = RE_PROC_PARAGRAPH.test(line) && (!isFreeFormat ? inspLeading <= 7 : false);
+      if (RE_PROC_SECTION.test(line) || inspIsAreaAPara
+        || /^(?:GO\s+TO|PERFORM|MOVE|DISPLAY|CALL|CANCEL|SET|INITIALIZE|STOP|EXIT|GOBACK)(?:\s|$)/i.test(inspTrimmed)) {
         flushInspect();
+        // Fall through to process this line normally
       } else {
-        return;
+        inspectAccum += ' ' + line;
+        if (/\.\s*$/.test(inspectAccum)) {
+          flushInspect();
+        } else {
+          return;
+        }
       }
     }
     const inspectMatch = line.match(/\bINSPECT\s+([A-Z][A-Z0-9-]+)/i);
