@@ -111,6 +111,25 @@ function hasDartTypeAnnotation(node: SyntaxNode): boolean {
 // ── Tier 0: Explicit Type Annotations ───────────────────────────────────
 
 const extractDartDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+  // initialized_identifier: comma-separated variable (String a, b, c) — type is on parent
+  if (node.type === 'initialized_identifier') {
+    const parent = node.parent;
+    if (!parent) return;
+    let typeNode = findChild(parent, 'type_identifier');
+    if (!typeNode) {
+      const nullable = findChild(parent, 'nullable_type');
+      if (nullable) typeNode = findChild(nullable, 'type_identifier');
+    }
+    if (!typeNode) return;
+    const typeName = extractSimpleTypeName(typeNode);
+    if (!typeName || typeName === 'dynamic') return;
+    const nameNode = findChild(node, 'identifier');
+    if (!nameNode) return;
+    const varName = extractVarName(nameNode);
+    if (varName) env.set(varName, typeName);
+    return;
+  }
+
   let typeNode = findChild(node, 'type_identifier');
   if (!typeNode) {
     const nullable = findChild(node, 'nullable_type');

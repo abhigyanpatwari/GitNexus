@@ -1097,6 +1097,22 @@ export const DART_QUERIES = `
   (library_export
     (configurable_uri) @import.source)) @import
 
+; ── Write access: obj.field = value ──────────────────────────────────────────
+(assignment_expression
+  left: (assignable_expression
+    (identifier) @assignment.receiver
+    (unconditional_assignable_selector
+      (identifier) @assignment.property))
+  right: (_)) @assignment
+
+; ── Write access: this.field = value ─────────────────────────────────────────
+(assignment_expression
+  left: (assignable_expression
+    (this) @assignment.receiver
+    (unconditional_assignable_selector
+      (identifier) @assignment.property))
+  right: (_)) @assignment
+
 ; ── Heritage: extends ────────────────────────────────────────────────────────
 (class_definition
   name: (identifier) @heritage.class
