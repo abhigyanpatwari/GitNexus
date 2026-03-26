@@ -1724,10 +1724,14 @@ export class LocalBackend {
     if (impacted.length > 0) {
       const isArm64Mac = process.platform === 'darwin' && process.arch === 'arm64';
       const CHUNK_SIZE = 100;
+      // Max number of chunks to process to avoid unbounded DB round-trips.
+      // Configurable via env IMPACT_MAX_CHUNKS, default 10 => max items = 1000
+      const MAX_CHUNKS = parseInt(process.env.IMPACT_MAX_CHUNKS || '10', 10);
 
-      // ── Process enrichment: batched chunking (full, no LIMIT) ────
+      // ── Process enrichment: batched chunking (bounded by MAX_CHUNKS) ─
       // Uses merged Cypher query (WITH + OPTIONAL MATCH) to fetch
-      // process + entry point info in 1 round-trip per chunk.
+      // process + entry point info in 1 round-trip per chunk. Converted to
+      // parameterized queries to avoid manual string escaping and long query strings.
       const entryPointMap = new Map<string, {
         name: string; type: string; filePath: string;
         affected_process_count: number;
@@ -1735,20 +1739,22 @@ export class LocalBackend {
         earliest_broken_step: number;
       }>();
 
-      for (let i = 0; i < impacted.length; i += CHUNK_SIZE) {
+      let chunksProcessed = 0;
+      for (let i = 0; i < impacted.length && chunksProcessed < MAX_CHUNKS; i += CHUNK_SIZE, chunksProcessed++) {
         const chunk = impacted.slice(i, i + CHUNK_SIZE);
-        const chunkIds = chunk.map(item => `'${String(item.id ?? '').replace(/'/g, "''")}'`).join(', ');
+        const ids = chunk.map(item => String(item.id ?? ''));
 
         try {
-          const rows = await executeQuery(repo.id, `
+          // Use parameterized list to avoid building long query strings
+          const rows = await executeParameterized(repo.id, `
             MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-            WHERE s.id IN [${chunkIds}]
+            WHERE s.id IN $ids
             WITH p, COUNT(DISTINCT s.id) AS hits, MIN(r.step) AS minStep
             OPTIONAL MATCH (ep {id: p.entryPointId})
             RETURN p.id AS pId, p.heuristicLabel AS name, p.processType AS processType,
                    p.entryPointId AS entryPointId, hits, minStep, p.stepCount AS stepCount,
                    ep.name AS epName, labels(ep)[0] AS epType, ep.filePath AS epFilePath
-          `);
+          `, { ids }).catch(() => []);
 
           for (const row of rows) {
             const epId = row.entryPointId ?? row[3] ?? row.pId ?? row[0];
@@ -1772,55 +1778,63 @@ export class LocalBackend {
             ep.total_hits += hits;
             ep.earliest_broken_step = Math.min(ep.earliest_broken_step, minStep ?? Infinity);
           }
-        } catch (e) { logQueryError('impact:process-chunk', e); }
+        } catch (e) {
+          logQueryError('impact:process-chunk', e);
+        }
       }
 
-      affectedProcesses = Array.from(entryPointMap.values())
-        .map(ep => ({
-          ...ep,
-          earliest_broken_step: ep.earliest_broken_step === Infinity ? null : ep.earliest_broken_step,
-        }))
-        .sort((a, b) => b.total_hits - a.total_hits);
+      // If we capped chunks, mark traversal incomplete so caller knows results are partial
+      if (chunksProcessed * CHUNK_SIZE < impacted.length) {
+        traversalComplete = false;
+      }
 
-      // ── Module enrichment: unchanged (slice 100, LIMIT 20) ───────
-      const cappedImpacted = impacted.slice(0, 100);
-      const allIds = cappedImpacted.map(i => `'${String(i.id ?? '').replace(/'/g, "''")}'`).join(', ');
-      const d1Items = (grouped[1] || []).slice(0, 100);
-      const d1Ids = d1Items.map((i: any) => `'${String(i.id ?? '').replace(/'/g, "''")}'`).join(', ');
+       affectedProcesses = Array.from(entryPointMap.values())
+         .map(ep => ({
+           ...ep,
+           earliest_broken_step: ep.earliest_broken_step === Infinity ? null : ep.earliest_broken_step,
+         }))
+         .sort((a, b) => b.total_hits - a.total_hits);
 
-      const moduleQuery = () => executeQuery(repo.id, `
+      // ── Module enrichment: use same cap as process enrichment and parameterized queries
+      const maxItems = Math.min(impacted.length, MAX_CHUNKS * CHUNK_SIZE);
+      const cappedImpacted = impacted.slice(0, maxItems);
+      const allIdsArr = cappedImpacted.map((i: any) => String(i.id ?? ''));
+      const d1Items = (grouped[1] || []).slice(0, maxItems);
+      const d1IdsArr = d1Items.map((i: any) => String(i.id ?? ''));
+
+      const moduleQuery = () => executeParameterized(repo.id, `
         MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-        WHERE s.id IN [${allIds}]
+        WHERE s.id IN $ids
         RETURN c.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits
         ORDER BY hits DESC
         LIMIT 20
-      `).catch(() => []);
-      const directModuleQuery = () => d1Ids
-        ? executeQuery(repo.id, `
+      `, { ids: allIdsArr }).catch(() => []);
+      const directModuleQuery = () => d1IdsArr.length
+        ? executeParameterized(repo.id, `
             MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-            WHERE s.id IN [${d1Ids}]
+            WHERE s.id IN $ids
             RETURN DISTINCT c.heuristicLabel AS name
-          `).catch(() => [])
+          `, { ids: d1IdsArr }).catch(() => [])
         : Promise.resolve([]);
 
-      let moduleRows: any[], directModuleRows: any[];
-      if (isArm64Mac) {
-        moduleRows = await moduleQuery();
-        directModuleRows = await directModuleQuery();
-      } else {
-        [moduleRows, directModuleRows] = await Promise.all([moduleQuery(), directModuleQuery()]);
-      }
+       let moduleRows: any[], directModuleRows: any[];
+       if (isArm64Mac) {
+         moduleRows = await moduleQuery();
+         directModuleRows = await directModuleQuery();
+       } else {
+         [moduleRows, directModuleRows] = await Promise.all([moduleQuery(), directModuleQuery()]);
+       }
 
-      const directModuleSet = new Set(directModuleRows.map((r: any) => r.name || r[0]));
-      affectedModules = moduleRows.map((r: any) => {
-        const name = r.name || r[0];
-        return {
-          name,
-          hits: r.hits || r[1],
-          impact: directModuleSet.has(name) ? 'direct' : 'indirect',
-        };
-      });
-    }
+       const directModuleSet = new Set(directModuleRows.map((r: any) => r.name || r[0]));
+       affectedModules = moduleRows.map((r: any) => {
+         const name = r.name || r[0];
+         return {
+           name,
+           hits: r.hits || r[1],
+           impact: directModuleSet.has(name) ? 'direct' : 'indirect',
+         };
+       });
+     }
 
     // Risk scoring
     const processCount = affectedProcesses.length;
