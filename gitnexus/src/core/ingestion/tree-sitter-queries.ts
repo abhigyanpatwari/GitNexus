@@ -1054,6 +1054,20 @@ export const DART_QUERIES = `
   (factory_constructor_signature
     (identifier) @name . (formal_parameter_list))) @definition.constructor
 
+; ── Field declarations (String name = '', Address address = Address()) ──────
+(declaration
+  (type_identifier)
+  (initialized_identifier_list
+    (initialized_identifier
+      (identifier) @name))) @definition.property
+
+; ── Nullable field declarations (String? name) ──────────────────────────────
+(declaration
+  (nullable_type)
+  (initialized_identifier_list
+    (initialized_identifier
+      (identifier) @name))) @definition.property
+
 ; ── Getters ──────────────────────────────────────────────────────────────────
 (method_signature
   (getter_signature

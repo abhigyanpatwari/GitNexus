@@ -39,6 +39,12 @@ export function resolveDartImport(
     return null;
   }
 
-  // Relative imports — use standard resolution
-  return resolveStandard(stripped, filePath, ctx, SupportedLanguages.Dart);
+  // Relative imports — use standard resolution.
+  // Dart relative imports don't require a leading "./" (e.g. `import 'models.dart'`).
+  // The standard resolver only recognises paths starting with "." as relative, so
+  // prepend "./" when the path doesn't already start with "." to ensure correct
+  // same-directory resolution (without this, "models.dart" would be mangled by the
+  // generic dot-to-slash conversion intended for Java-style package imports).
+  const relPath = stripped.startsWith('.') ? stripped : './' + stripped;
+  return resolveStandard(relPath, filePath, ctx, SupportedLanguages.Dart);
 }

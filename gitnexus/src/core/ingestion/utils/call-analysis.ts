@@ -64,6 +64,7 @@ const MEMBER_ACCESS_NODE_TYPES = new Set([
   'selector_expression',         // Go: obj.Method()
   'navigation_suffix',           // Kotlin/Swift: obj.method() — nameNode sits inside navigation_suffix
   'member_binding_expression',   // C#: user?.Method() — null-conditional access
+  'unconditional_assignable_selector', // Dart: obj.method() — nameNode inside selector > unconditional_assignable_selector
 ]);
 
 /**
@@ -208,6 +209,16 @@ export const extractReceiverName = (
     }
   }
 
+  // Dart: unconditional_assignable_selector is inside a `selector`, which is a sibling
+  // of the receiver in the expression_statement.  For `user.save()`, the previous named
+  // sibling of the `selector` is `identifier [user]`.
+  if (!receiver && parent.type === 'unconditional_assignable_selector') {
+    const selectorNode = parent.parent;  // selector [.save]
+    if (selectorNode) {
+      receiver = selectorNode.previousNamedSibling;
+    }
+  }
+
   // C# null-conditional: user?.Save() → conditional_access_expression wraps member_binding_expression
   if (!receiver && parent.type === 'member_binding_expression') {
     const condAccess = parent.parent;
@@ -288,6 +299,14 @@ export const extractReceiverNode = (
     receiver = scopedCall.childForFieldName('scope');
     if (receiver?.type === 'relative_scope') {
       receiver = receiver.firstChild;
+    }
+  }
+
+  // Dart: unconditional_assignable_selector — receiver is previous sibling of the selector
+  if (!receiver && parent.type === 'unconditional_assignable_selector') {
+    const selectorNode = parent.parent;
+    if (selectorNode) {
+      receiver = selectorNode.previousNamedSibling;
     }
   }
 
@@ -526,6 +545,27 @@ export function extractMixedChain(
         current = innerObject;
       } else {
         return { chain, baseReceiverName: innerObject.text || undefined };
+      }
+    } else if (current.type === 'selector') {
+      // ── Dart: flat selector siblings (user.address.save() uses selector nodes) ──
+      // Extract field name from unconditional_assignable_selector child
+      const uas = current.namedChildren?.find(
+        (c: SyntaxNode) => c.type === 'unconditional_assignable_selector',
+      );
+      const propertyName = uas?.namedChildren?.find(
+        (c: SyntaxNode) => c.type === 'identifier',
+      )?.text;
+      if (!propertyName) break;
+      chain.unshift({ kind: 'field', name: propertyName });
+
+      // Walk to previous sibling for the next step in the chain
+      const prev = current.previousNamedSibling;
+      if (!prev) break;
+      if (prev.type === 'selector') {
+        current = prev;
+      } else {
+        // Base receiver (identifier or other terminal)
+        return { chain, baseReceiverName: prev.text || undefined };
       }
     } else {
       // Simple identifier — this is the base receiver

@@ -79,6 +79,17 @@ interface LanguageProviderConfig {
     projectConfig: unknown,
   ) => void;
 
+  // ── Enclosing function resolution ───────────────────────────────
+  /** Resolve the enclosing function name + label from an AST ancestor node
+   *  that is NOT a standard FUNCTION_NODE_TYPE.  For languages where the
+   *  function body is a sibling of the signature (e.g. Dart: function_body ↔
+   *  function_signature are siblings under program/class_body), the default
+   *  parent walk cannot find the enclosing function.  This hook lets the
+   *  language provider inspect each ancestor and return the resolved result.
+   *  Return null to continue the default walk.
+   *  Default: undefined (standard parent walk only). */
+  readonly enclosingFunctionFinder?: (ancestorNode: SyntaxNode) => { funcName: string; label: NodeLabel } | null;
+
   // ── Labels ────────────────────────────────────────────────────────
   /** Override the default node label for definition.function captures.
    *  Return null to skip (C/C++ duplicate), a different label to reclassify

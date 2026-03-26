@@ -319,6 +319,23 @@ const findEnclosingFunctionId = (node: any, filePath: string, provider: Language
         return result;
       }
     }
+
+    // Language-specific enclosing function resolution (e.g., Dart where
+    // function_body is a sibling of function_signature, not a child).
+    if (provider.enclosingFunctionFinder) {
+      const customResult = provider.enclosingFunctionFinder(current);
+      if (customResult) {
+        let finalLabel: NodeLabel = customResult.label;
+        if (provider.labelOverride) {
+          const override = provider.labelOverride(current.previousSibling, finalLabel);
+          if (override !== null) finalLabel = override;
+        }
+        const result = generateId(finalLabel, `${filePath}:${customResult.funcName}`);
+        functionIdCache.set(node, result);
+        return result;
+      }
+    }
+
     current = current.parent;
   }
   functionIdCache.set(node, null);
