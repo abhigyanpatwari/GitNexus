@@ -76,6 +76,53 @@ export function mergeParseResult(
   accumulators.typeEnvBindings.push(...result.typeEnvBindings);
 }
 
+/** Index raw ParseWorkerResults into a per-file Map in O(n) total.
+ *  Replaces the O(n×m) filterRawResultsByFile approach. */
+export function indexResultsByFile(rawResults: ParseWorkerResult[]): Map<string, ParseWorkerResult> {
+  const byFile = new Map<string, ParseWorkerResult>();
+  const nodeFileMap = new Map<string, string>();
+
+  const emptyResult = (): ParseWorkerResult => ({
+    nodes: [], relationships: [], symbols: [],
+    imports: [], calls: [], assignments: [], heritage: [],
+    routes: [], fetchCalls: [], decoratorRoutes: [], toolDefs: [],
+    ormQueries: [], constructorBindings: [], typeEnvBindings: [],
+    skippedLanguages: {}, fileCount: 1,
+  });
+
+  const getEntry = (filePath: string): ParseWorkerResult => {
+    let entry = byFile.get(filePath);
+    if (!entry) { entry = emptyResult(); byFile.set(filePath, entry); }
+    return entry;
+  };
+
+  for (const raw of rawResults) {
+    for (const n of raw.nodes) {
+      const fp = n.properties.filePath;
+      nodeFileMap.set(n.id, fp);
+      getEntry(fp).nodes.push(n);
+    }
+    for (const r of raw.relationships) {
+      const fp = nodeFileMap.get(r.sourceId) ?? nodeFileMap.get(r.targetId);
+      if (fp) getEntry(fp).relationships.push(r);
+    }
+    for (const s of raw.symbols) getEntry(s.filePath).symbols.push(s);
+    for (const i of raw.imports) getEntry(i.filePath).imports.push(i);
+    for (const c of raw.calls) getEntry(c.filePath).calls.push(c);
+    for (const a of raw.assignments) getEntry(a.filePath).assignments.push(a);
+    for (const h of raw.heritage) getEntry(h.filePath).heritage.push(h);
+    for (const r of raw.routes) getEntry(r.filePath).routes.push(r);
+    for (const f of raw.fetchCalls) getEntry(f.filePath).fetchCalls.push(f);
+    for (const d of raw.decoratorRoutes) getEntry(d.filePath).decoratorRoutes.push(d);
+    for (const t of raw.toolDefs) getEntry(t.filePath).toolDefs.push(t);
+    for (const o of raw.ormQueries) getEntry(o.filePath).ormQueries.push(o);
+    for (const c of raw.constructorBindings) getEntry(c.filePath).constructorBindings.push(c);
+    for (const t of raw.typeEnvBindings) getEntry(t.filePath).typeEnvBindings.push(t);
+  }
+
+  return byFile;
+}
+
 // ============================================================================
 // Worker-based parallel parsing
 // ============================================================================

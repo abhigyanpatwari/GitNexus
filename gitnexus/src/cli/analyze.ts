@@ -16,7 +16,7 @@ import { initLbug, loadGraphToLbug, getLbugStats, executeQuery, executeWithReuse
 // disposeEmbedder intentionally not called — ONNX Runtime segfaults on cleanup (see #38)
 import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath, cleanupOldKuzuFiles } from '../storage/repo-manager.js';
 import { loadParseCache, saveParseCache, pruneCache } from '../storage/parse-cache.js';
-import { loadEmbeddingCache, saveEmbeddingCache, createEmptyEmbeddingCache } from '../storage/embedding-cache.js';
+import { loadEmbeddingCache, loadEmbeddingCacheMeta, validateEmbeddingCacheMeta, saveEmbeddingCache, createEmptyEmbeddingCache } from '../storage/embedding-cache.js';
 import { getCurrentCommit, getGitRoot, hasGitDir } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
 import { generateSkillFiles, type GeneratedSkillInfo } from './skill-gen.js';
@@ -271,13 +271,15 @@ export const analyzeCommand = async (
     updateBar(90, httpMode ? 'Connecting to embedding endpoint...' : 'Loading embedding model...');
     const t0Emb = Date.now();
 
-    // Load content-addressed embedding cache (survives --force)
-    const existingEmbCache = await loadEmbeddingCache(storagePath);
-    const embeddingCache = (existingEmbCache
-      && existingEmbCache.dimensions === DEFAULT_EMBEDDING_CONFIG.dimensions
-      && existingEmbCache.modelId === DEFAULT_EMBEDDING_CONFIG.modelId)
-      ? existingEmbCache
-      : createEmptyEmbeddingCache(DEFAULT_EMBEDDING_CONFIG.dimensions, DEFAULT_EMBEDDING_CONFIG.modelId);
+    // Check metadata first (tiny file) — only deserialize full cache if valid
+    const embMeta = await loadEmbeddingCacheMeta(storagePath);
+    let embeddingCache: import('../storage/embedding-cache.js').EmbeddingCache;
+    if (embMeta && validateEmbeddingCacheMeta(embMeta, DEFAULT_EMBEDDING_CONFIG.dimensions, DEFAULT_EMBEDDING_CONFIG.modelId)) {
+      const fullCache = await loadEmbeddingCache(storagePath);
+      embeddingCache = fullCache ?? createEmptyEmbeddingCache(DEFAULT_EMBEDDING_CONFIG.dimensions, DEFAULT_EMBEDDING_CONFIG.modelId);
+    } else {
+      embeddingCache = createEmptyEmbeddingCache(DEFAULT_EMBEDDING_CONFIG.dimensions, DEFAULT_EMBEDDING_CONFIG.modelId);
+    }
 
     const { runEmbeddingPipeline } = await import('../core/embeddings/embedding-pipeline.js');
     await runEmbeddingPipeline(

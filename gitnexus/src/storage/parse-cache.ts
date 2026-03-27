@@ -1,6 +1,8 @@
 /**
  * Parse Cache — content-addressed cache for per-file Tree-sitter parse results.
- * Keyed by SHA-256 of file content. Unchanged files skip re-parsing on subsequent runs.
+ * Keyed by file path. Unchanged files skip re-parsing on subsequent runs.
+ *
+ * Storage: single JSON file at .gitnexus/parse-cache.json with atomic tmp+rename writes.
  */
 
 import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.js';
@@ -26,14 +28,17 @@ export function createEmptyCache(): ParseCache {
 }
 
 export async function loadParseCache(storagePath: string): Promise<ParseCache> {
-  return (await loadJsonCache<ParseCache>(storagePath, FILENAME, PARSE_CACHE_VERSION)) ?? createEmptyCache();
+  const loaded = await loadJsonCache<ParseCache>(storagePath, FILENAME, PARSE_CACHE_VERSION);
+  return loaded ?? createEmptyCache();
 }
 
-export const saveParseCache = (storagePath: string, cache: ParseCache) =>
-  saveJsonCache(storagePath, FILENAME, cache);
+export async function saveParseCache(storagePath: string, cache: ParseCache): Promise<void> {
+  await saveJsonCache(storagePath, FILENAME, cache);
+}
 
-export const deleteParseCache = (storagePath: string) =>
-  deleteJsonCache(storagePath, FILENAME);
+export async function deleteParseCache(storagePath: string): Promise<void> {
+  await deleteJsonCache(storagePath, FILENAME);
+}
 
 export function pruneCache(cache: ParseCache, currentPaths: Set<string>): number {
   let removed = 0;

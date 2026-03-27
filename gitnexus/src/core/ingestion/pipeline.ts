@@ -2,7 +2,7 @@ import { createKnowledgeGraph } from '../graph/graph.js';
 import { processStructure } from './structure-processor.js';
 import { processMarkdown } from './markdown-processor.js';
 import { processCobol, isCobolFile, isJclFile } from './cobol-processor.js';
-import { processParsing, mergeParseResult, type WorkerExtractedData } from './parsing-processor.js';
+import { processParsing, mergeParseResult, indexResultsByFile, type WorkerExtractedData } from './parsing-processor.js';
 import { contentHash, pruneCache, type ParseCache } from '../../storage/parse-cache.js';
 import {
   processImports,
@@ -534,42 +534,7 @@ async function runScanAndStructure(
 
 /** Extract a single file's data from raw ParseWorkerResult arrays.
  *  Used to populate the parse cache with per-file entries after a fresh parse. */
-function filterRawResultsByFile(rawResults: import('./workers/parse-worker.js').ParseWorkerResult[], filePath: string): import('./workers/parse-worker.js').ParseWorkerResult {
-  const merged: import('./workers/parse-worker.js').ParseWorkerResult = {
-    nodes: [], relationships: [], symbols: [],
-    imports: [], calls: [], assignments: [], heritage: [],
-    routes: [], fetchCalls: [], decoratorRoutes: [], toolDefs: [],
-    ormQueries: [], constructorBindings: [], typeEnvBindings: [],
-    skippedLanguages: {}, fileCount: 1,
-  };
-  // IDs are formatted as "Label:filePath" or "Label:filePath:symbolName"
-  // Match relationships where source or target belongs to this file using exact boundary checks
-  const fileNodeId = `File:${filePath}`;
-  const filePathWithColon = `:${filePath}:`;
-  const filePathSuffix = `:${filePath}`;
-  const belongsToFile = (id: string) =>
-    id === fileNodeId || id.includes(filePathWithColon) || id.endsWith(filePathSuffix);
-
-  for (const raw of rawResults) {
-    for (const n of raw.nodes) { if (n.properties.filePath === filePath) merged.nodes.push(n); }
-    for (const r of raw.relationships) {
-      if (belongsToFile(r.sourceId) || belongsToFile(r.targetId)) merged.relationships.push(r);
-    }
-    for (const s of raw.symbols) { if (s.filePath === filePath) merged.symbols.push(s); }
-    for (const i of raw.imports) { if (i.filePath === filePath) merged.imports.push(i); }
-    for (const c of raw.calls) { if (c.filePath === filePath) merged.calls.push(c); }
-    for (const a of raw.assignments) { if (a.filePath === filePath) merged.assignments.push(a); }
-    for (const h of raw.heritage) { if (h.filePath === filePath) merged.heritage.push(h); }
-    for (const r of raw.routes) { if (r.filePath === filePath) merged.routes.push(r); }
-    for (const f of raw.fetchCalls) { if (f.filePath === filePath) merged.fetchCalls.push(f); }
-    for (const d of raw.decoratorRoutes) { if (d.filePath === filePath) merged.decoratorRoutes.push(d); }
-    for (const t of raw.toolDefs) { if (t.filePath === filePath) merged.toolDefs.push(t); }
-    for (const o of raw.ormQueries) { if (o.filePath === filePath) merged.ormQueries.push(o); }
-    for (const c of raw.constructorBindings) { if (c.filePath === filePath) merged.constructorBindings.push(c); }
-    for (const t of raw.typeEnvBindings) { if (t.filePath === filePath) merged.typeEnvBindings.push(t); }
-  }
-  return merged;
-}
+// filterRawResultsByFile removed — replaced by O(n) indexResultsByFile in parsing-processor.ts
 
 async function runChunkedParseAndResolve(
   graph: ReturnType<typeof createKnowledgeGraph>,
@@ -773,12 +738,15 @@ async function runChunkedParseAndResolve(
           )
         : null;
 
-      // Store freshly parsed results in cache for next run
+      // Store freshly parsed results in cache for next run (O(n) indexing)
       if (parseCache && chunkWorkerData?.rawResults) {
+        const perFileMap = indexResultsByFile(chunkWorkerData.rawResults);
         for (const file of filesToParse) {
           const hash = fileHashes.get(file.path) || contentHash(file.content);
-          const perFileResult = filterRawResultsByFile(chunkWorkerData.rawResults, file.path);
-          parseCache.entries[file.path] = { hash, result: perFileResult };
+          const perFileResult = perFileMap.get(file.path);
+          if (perFileResult) {
+            parseCache.entries[file.path] = { hash, result: perFileResult };
+          }
         }
       }
 

@@ -178,19 +178,29 @@ export const runEmbeddingPipeline = async (
       return;
     }
 
-    // Check how many nodes have cached embeddings — skip model load if all are cached
+    // Single-pass: hash all texts, split into cached/uncached, derive allCached
     const allTexts = generateBatchEmbeddingTexts(nodes, finalConfig);
-    let allCached = true;
-    if (embeddingCache) {
-      for (let i = 0; i < allTexts.length; i++) {
-        if (!embeddingCache.entries[embeddingTextHash(allTexts[i])]) {
-          allCached = false;
-          break;
-        }
+    const batchSize = finalConfig.batchSize;
+    let processedNodes = 0;
+    let cacheHits = 0;
+
+    const usedHashes = new Set<string>();
+    const uncachedIndices: number[] = [];
+    const cachedUpdates: Array<{ id: string; embedding: number[] }> = [];
+
+    for (let i = 0; i < nodes.length; i++) {
+      const hash = embeddingTextHash(allTexts[i]);
+      usedHashes.add(hash);
+      const cached = embeddingCache?.entries[hash];
+      if (cached) {
+        cachedUpdates.push({ id: nodes[i].id, embedding: cached.embedding });
+        cacheHits++;
+      } else {
+        uncachedIndices.push(i);
       }
-    } else {
-      allCached = false;
     }
+
+    const allCached = uncachedIndices.length === 0;
 
     // Phase 2: Load embedding model (only if we have uncached nodes)
     if (!allCached) {
@@ -216,28 +226,6 @@ export const runEmbeddingPipeline = async (
         percent: 20,
         modelDownloadPercent: 100,
       });
-    }
-
-    // Phase 3: Batch embed nodes (with content-addressed cache)
-    const batchSize = finalConfig.batchSize;
-    let processedNodes = 0;
-    let cacheHits = 0;
-
-    // allTexts already computed above for cache check
-    const usedHashes = new Set<string>();
-    const uncachedIndices: number[] = [];
-    const cachedUpdates: Array<{ id: string; embedding: number[] }> = [];
-
-    for (let i = 0; i < nodes.length; i++) {
-      const hash = embeddingTextHash(allTexts[i]);
-      usedHashes.add(hash);
-      const cached = embeddingCache?.entries[hash];
-      if (cached) {
-        cachedUpdates.push({ id: nodes[i].id, embedding: cached.embedding });
-        cacheHits++;
-      } else {
-        uncachedIndices.push(i);
-      }
     }
 
     // Insert cached embeddings in bulk

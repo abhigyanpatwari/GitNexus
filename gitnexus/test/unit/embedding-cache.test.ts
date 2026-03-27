@@ -7,6 +7,8 @@ import {
   embeddingTextHash,
   createEmptyEmbeddingCache,
   loadEmbeddingCache,
+  loadEmbeddingCacheMeta,
+  validateEmbeddingCacheMeta,
   saveEmbeddingCache,
   deleteEmbeddingCache,
   type EmbeddingCache,
@@ -49,36 +51,83 @@ describe('embedding-cache', () => {
     });
   });
 
-  describe('loadEmbeddingCache', () => {
-    it('returns null when file missing', async () => {
-      const cache = await loadEmbeddingCache(tmpDir);
-      expect(cache).toBeNull();
-    });
-
-    it('returns null when JSON is corrupt', async () => {
-      await fs.writeFile(path.join(tmpDir, 'embedding-cache.json'), 'not json', 'utf-8');
-      const cache = await loadEmbeddingCache(tmpDir);
-      expect(cache).toBeNull();
+  describe('loadEmbeddingCacheMeta', () => {
+    it('returns null when no meta file', async () => {
+      const meta = await loadEmbeddingCacheMeta(tmpDir);
+      expect(meta).toBeNull();
     });
 
     it('returns null when version mismatches', async () => {
-      const stale = { version: -1, dimensions: 384, modelId: 'm', entries: {} };
-      await fs.writeFile(path.join(tmpDir, 'embedding-cache.json'), JSON.stringify(stale), 'utf-8');
+      await fs.writeFile(
+        path.join(tmpDir, 'embedding-cache-meta.json'),
+        JSON.stringify({ version: -1, dimensions: 384, modelId: 'm' }),
+        'utf-8',
+      );
+      expect(await loadEmbeddingCacheMeta(tmpDir)).toBeNull();
+    });
+
+    it('returns metadata when valid', async () => {
+      const cache = createEmptyEmbeddingCache(384, 'model-a');
+      cache.entries['h1'] = { embedding: [1, 2, 3] };
+      await saveEmbeddingCache(tmpDir, cache);
+      const meta = await loadEmbeddingCacheMeta(tmpDir);
+      expect(meta).not.toBeNull();
+      expect(meta!.dimensions).toBe(384);
+      expect(meta!.modelId).toBe('model-a');
+    });
+  });
+
+  describe('validateEmbeddingCacheMeta', () => {
+    it('returns true for matching dimensions and model', () => {
+      expect(validateEmbeddingCacheMeta(
+        { version: EMBEDDING_CACHE_VERSION, dimensions: 384, modelId: 'a' },
+        384, 'a',
+      )).toBe(true);
+    });
+
+    it('returns false for mismatched dimensions', () => {
+      expect(validateEmbeddingCacheMeta(
+        { version: EMBEDDING_CACHE_VERSION, dimensions: 384, modelId: 'a' },
+        768, 'a',
+      )).toBe(false);
+    });
+
+    it('returns false for mismatched model', () => {
+      expect(validateEmbeddingCacheMeta(
+        { version: EMBEDDING_CACHE_VERSION, dimensions: 384, modelId: 'a' },
+        384, 'b',
+      )).toBe(false);
+    });
+  });
+
+  describe('loadEmbeddingCache', () => {
+    it('returns null when no files exist', async () => {
       const cache = await loadEmbeddingCache(tmpDir);
       expect(cache).toBeNull();
     });
 
+    it('returns null when meta version mismatches', async () => {
+      await fs.writeFile(
+        path.join(tmpDir, 'embedding-cache-meta.json'),
+        JSON.stringify({ version: -1, dimensions: 384, modelId: 'm' }),
+        'utf-8',
+      );
+      expect(await loadEmbeddingCache(tmpDir)).toBeNull();
+    });
+
     it('loads valid cache', async () => {
-      const valid: EmbeddingCache = {
+      const cache: EmbeddingCache = {
         version: EMBEDDING_CACHE_VERSION,
         dimensions: 384,
         modelId: 'test-model',
         entries: { abc123: { embedding: [0.1, 0.2, 0.3] } },
       };
-      await fs.writeFile(path.join(tmpDir, 'embedding-cache.json'), JSON.stringify(valid), 'utf-8');
-      const cache = await loadEmbeddingCache(tmpDir);
-      expect(cache).not.toBeNull();
-      expect(cache!.entries['abc123'].embedding).toEqual([0.1, 0.2, 0.3]);
+      await saveEmbeddingCache(tmpDir, cache);
+      const loaded = await loadEmbeddingCache(tmpDir);
+      expect(loaded).not.toBeNull();
+      expect(loaded!.entries['abc123'].embedding).toEqual([0.1, 0.2, 0.3]);
+      expect(loaded!.modelId).toBe('test-model');
+      expect(loaded!.dimensions).toBe(384);
     });
   });
 
@@ -105,52 +154,54 @@ describe('embedding-cache', () => {
       expect(loaded).not.toBeNull();
     });
 
-    it('no temp file left behind', async () => {
+    it('writes meta and entries files', async () => {
+      const cache: EmbeddingCache = {
+        version: EMBEDDING_CACHE_VERSION,
+        dimensions: 384,
+        modelId: 'x',
+        entries: { a1b2c3: { embedding: [1] } },
+      };
+      await saveEmbeddingCache(tmpDir, cache);
+      const files = await fs.readdir(tmpDir);
+      expect(files).toContain('embedding-cache-meta.json');
+      expect(files).toContain('embedding-cache.json');
+    });
+
+    it('no temp files left behind', async () => {
       await saveEmbeddingCache(tmpDir, createEmptyEmbeddingCache(384, 'x'));
       const files = await fs.readdir(tmpDir);
-      expect(files).not.toContain('embedding-cache.json.tmp');
-      expect(files).toContain('embedding-cache.json');
+      expect(files.filter(f => f.endsWith('.tmp'))).toHaveLength(0);
     });
   });
 
   describe('deleteEmbeddingCache', () => {
-    it('removes cache file', async () => {
+    it('removes entries and meta files', async () => {
       await saveEmbeddingCache(tmpDir, createEmptyEmbeddingCache(384, 'x'));
       await deleteEmbeddingCache(tmpDir);
       const files = await fs.readdir(tmpDir);
       expect(files).not.toContain('embedding-cache.json');
+      expect(files).not.toContain('embedding-cache-meta.json');
     });
 
-    it('does not throw if file missing', async () => {
+    it('does not throw if nothing exists', async () => {
       await expect(deleteEmbeddingCache(tmpDir)).resolves.toBeUndefined();
     });
   });
 
   describe('model/dimension invalidation', () => {
-    it('cache with different dimensions is treated as stale by caller', () => {
-      const cache = createEmptyEmbeddingCache(384, 'model-a');
-      cache.entries['h1'] = { embedding: [1, 2, 3] };
-
-      // Simulate what analyze.ts does: check dimensions + modelId match
-      const newDims = 768;
-      const isValid = cache.dimensions === newDims && cache.modelId === 'model-a';
-      expect(isValid).toBe(false);
+    it('cache with different dimensions is treated as stale by validateEmbeddingCacheMeta', () => {
+      const meta = { version: EMBEDDING_CACHE_VERSION, dimensions: 384, modelId: 'model-a' };
+      expect(validateEmbeddingCacheMeta(meta, 768, 'model-a')).toBe(false);
     });
 
-    it('cache with different model is treated as stale by caller', () => {
-      const cache = createEmptyEmbeddingCache(384, 'model-a');
-      cache.entries['h1'] = { embedding: [1, 2, 3] };
-
-      const isValid = cache.dimensions === 384 && cache.modelId === 'model-b';
-      expect(isValid).toBe(false);
+    it('cache with different model is treated as stale by validateEmbeddingCacheMeta', () => {
+      const meta = { version: EMBEDDING_CACHE_VERSION, dimensions: 384, modelId: 'model-a' };
+      expect(validateEmbeddingCacheMeta(meta, 384, 'model-b')).toBe(false);
     });
 
     it('cache with matching dimensions and model is valid', () => {
-      const cache = createEmptyEmbeddingCache(384, 'model-a');
-      cache.entries['h1'] = { embedding: [1, 2, 3] };
-
-      const isValid = cache.dimensions === 384 && cache.modelId === 'model-a';
-      expect(isValid).toBe(true);
+      const meta = { version: EMBEDDING_CACHE_VERSION, dimensions: 384, modelId: 'model-a' };
+      expect(validateEmbeddingCacheMeta(meta, 384, 'model-a')).toBe(true);
     });
   });
 });

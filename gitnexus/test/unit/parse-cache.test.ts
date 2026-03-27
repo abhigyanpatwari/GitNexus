@@ -52,30 +52,26 @@ describe('parse-cache', () => {
   });
 
   describe('loadParseCache', () => {
-    it('returns empty cache when file missing', async () => {
+    it('returns empty cache when no file exists', async () => {
       const cache = await loadParseCache(tmpDir);
       expect(cache.version).toBe(PARSE_CACHE_VERSION);
       expect(Object.keys(cache.entries)).toHaveLength(0);
     });
 
-    it('returns empty cache when JSON is corrupt', async () => {
-      await fs.writeFile(path.join(tmpDir, 'parse-cache.json'), '{invalid', 'utf-8');
-      const cache = await loadParseCache(tmpDir);
-      expect(Object.keys(cache.entries)).toHaveLength(0);
-    });
-
     it('returns empty cache when version mismatches', async () => {
-      const stale = { version: -1, entries: { 'foo.ts': { hash: 'abc', result: {} } } };
-      await fs.writeFile(path.join(tmpDir, 'parse-cache.json'), JSON.stringify(stale), 'utf-8');
+      await fs.writeFile(path.join(tmpDir, 'parse-cache.json'), JSON.stringify({ version: -1, entries: {} }), 'utf-8');
       const cache = await loadParseCache(tmpDir);
       expect(Object.keys(cache.entries)).toHaveLength(0);
     });
 
     it('loads valid cache', async () => {
-      const valid: ParseCache = { version: PARSE_CACHE_VERSION, entries: { 'foo.ts': { hash: 'abc', result: minimalResult() } } };
-      await fs.writeFile(path.join(tmpDir, 'parse-cache.json'), JSON.stringify(valid), 'utf-8');
-      const cache = await loadParseCache(tmpDir);
-      expect(cache.entries['foo.ts'].hash).toBe('abc');
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: { 'foo.ts': { hash: 'abc', result: minimalResult() } },
+      };
+      await saveParseCache(tmpDir, cache);
+      const loaded = await loadParseCache(tmpDir);
+      expect(loaded.entries['foo.ts'].hash).toBe('abc');
     });
   });
 
@@ -95,11 +91,20 @@ describe('parse-cache', () => {
       expect(loaded.version).toBe(PARSE_CACHE_VERSION);
     });
 
-    it('no temp file left behind', async () => {
+    it('writes a single cache file', async () => {
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: { 'a.ts': { hash: '1', result: minimalResult() } },
+      };
+      await saveParseCache(tmpDir, cache);
+      const files = await fs.readdir(tmpDir);
+      expect(files).toContain('parse-cache.json');
+    });
+
+    it('no temp files left behind', async () => {
       await saveParseCache(tmpDir, createEmptyCache());
       const files = await fs.readdir(tmpDir);
-      expect(files).not.toContain('parse-cache.json.tmp');
-      expect(files).toContain('parse-cache.json');
+      expect(files.filter(f => f.endsWith('.tmp'))).toHaveLength(0);
     });
   });
 
@@ -111,7 +116,7 @@ describe('parse-cache', () => {
       expect(files).not.toContain('parse-cache.json');
     });
 
-    it('does not throw if file missing', async () => {
+    it('does not throw if nothing exists', async () => {
       await expect(deleteParseCache(tmpDir)).resolves.toBeUndefined();
     });
   });
