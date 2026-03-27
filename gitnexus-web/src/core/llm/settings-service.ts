@@ -76,31 +76,14 @@ const writeSettings = (storage: Storage, settings: LLMSettings): void => {
 };
 
 /**
- * Load settings from sessionStorage (migrates legacy localStorage once).
+ * Load settings from localStorage so they persist across tabs and sessions.
  */
 export const loadSettings = (): LLMSettings => {
   try {
-    const sessionData = typeof sessionStorage !== 'undefined' ? readSettings(sessionStorage) : null;
-    if (sessionData) {
-      return mergeWithDefaults(sessionData);
+    const data = typeof localStorage !== 'undefined' ? readSettings(localStorage) : null;
+    if (data) {
+      return mergeWithDefaults(data);
     }
-
-    const legacyData = typeof localStorage !== 'undefined' ? readSettings(localStorage) : null;
-    if (legacyData) {
-      const merged = mergeWithDefaults(legacyData);
-      try {
-        if (typeof sessionStorage !== 'undefined') {
-          writeSettings(sessionStorage, merged);
-        }
-        if (typeof localStorage !== 'undefined') {
-          localStorage.removeItem(STORAGE_KEY);
-        }
-      } catch (error) {
-        console.warn('Failed to migrate legacy LLM settings to sessionStorage:', error);
-      }
-      return merged;
-    }
-
     return DEFAULT_LLM_SETTINGS;
   } catch (error) {
     console.warn('Failed to load LLM settings:', error);
@@ -109,12 +92,12 @@ export const loadSettings = (): LLMSettings => {
 };
 
 /**
- * Save settings to sessionStorage
+ * Save settings to localStorage so they persist across tabs and sessions.
  */
 export const saveSettings = (settings: LLMSettings): void => {
   try {
-    if (typeof sessionStorage !== 'undefined') {
-      writeSettings(sessionStorage, settings);
+    if (typeof localStorage !== 'undefined') {
+      writeSettings(localStorage, settings);
     }
   } catch (error) {
     console.error('Failed to save LLM settings:', error);
@@ -335,9 +318,6 @@ export const isProviderConfigured = (): boolean => {
  */
 export const clearSettings = (): void => {
   try {
-    if (typeof sessionStorage !== 'undefined') {
-      sessionStorage.removeItem(STORAGE_KEY);
-    }
     if (typeof localStorage !== 'undefined') {
       localStorage.removeItem(STORAGE_KEY);
     }
