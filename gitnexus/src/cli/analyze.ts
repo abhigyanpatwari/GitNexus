@@ -9,12 +9,14 @@ import { execFileSync } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
 import { runPipelineFromRepo } from '../core/ingestion/pipeline.js';
-import { initLbug, loadGraphToLbug, getLbugStats, executeQuery, executeWithReusedStatement, closeLbug, createFTSIndex, loadCachedEmbeddings } from '../core/lbug/lbug-adapter.js';
+import { initLbug, loadGraphToLbug, getLbugStats, executeQuery, executeWithReusedStatement, closeLbug, createFTSIndex } from '../core/lbug/lbug-adapter.js';
 // Embedding imports are lazy (dynamic import) so onnxruntime-node is never
 // loaded when embeddings are not requested. This avoids crashes on Node
 // versions whose ABI is not yet supported by the native binary (#89).
 // disposeEmbedder intentionally not called — ONNX Runtime segfaults on cleanup (see #38)
 import { getStoragePaths, saveMeta, loadMeta, addToGitignore, registerRepo, getGlobalRegistryPath, cleanupOldKuzuFiles } from '../storage/repo-manager.js';
+import { loadParseCache, saveParseCache, pruneCache } from '../storage/parse-cache.js';
+import { loadEmbeddingCache, saveEmbeddingCache, createEmptyEmbeddingCache } from '../storage/embedding-cache.js';
 import { getCurrentCommit, getGitRoot, hasGitDir } from '../storage/git.js';
 import { generateAIContextFiles } from './ai-context.js';
 import { generateSkillFiles, type GeneratedSkillInfo } from './skill-gen.js';
@@ -199,29 +201,16 @@ export const analyzeCommand = async (
 
   const t0Global = Date.now();
 
-  // ── Cache embeddings from existing index before rebuild ────────────
-  let cachedEmbeddingNodeIds = new Set<string>();
-  let cachedEmbeddings: Array<{ nodeId: string; embedding: number[] }> = [];
-
-  if (options?.embeddings && existingMeta && !options?.force) {
-    try {
-      updateBar(0, 'Caching embeddings...');
-      await initLbug(lbugPath);
-      const cached = await loadCachedEmbeddings();
-      cachedEmbeddingNodeIds = cached.embeddingNodeIds;
-      cachedEmbeddings = cached.embeddings;
-      await closeLbug();
-    } catch {
-      try { await closeLbug(); } catch {}
-    }
-  }
+  // ── Caches ──────────────────────────────────────────────────────────
+  // Both caches are content-addressed and always safe to reuse (even with --force).
+  const parseCache = await loadParseCache(storagePath);
 
   // ── Phase 1: Full Pipeline (0–60%) ─────────────────────────────────
   const pipelineResult = await runPipelineFromRepo(repoPath, (progress) => {
     const phaseLabel = PHASE_LABELS[progress.phase] || progress.phase;
     const scaled = Math.round(progress.percent * 0.6);
     updateBar(scaled, phaseLabel);
-  });
+  }, { parseCache });
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────────
   updateBar(60, 'Loading into LadybugDB...');
@@ -258,31 +247,8 @@ export const analyzeCommand = async (
   }
   const ftsTime = ((Date.now() - t0Fts) / 1000).toFixed(1);
 
-  // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
-  if (cachedEmbeddings.length > 0) {
-    // Check if cached embedding dimensions match current schema
-    const cachedDims = cachedEmbeddings[0].embedding.length;
-    const { EMBEDDING_DIMS } = await import('../core/lbug/schema.js');
-    if (cachedDims !== EMBEDDING_DIMS) {
-      // Dimensions changed (e.g. switched embedding model) — discard cache and re-embed all
-      console.error(`⚠️  Embedding dimensions changed (${cachedDims}d → ${EMBEDDING_DIMS}d), discarding cache`);
-      cachedEmbeddings = [];
-      cachedEmbeddingNodeIds = new Set();
-    } else {
-      updateBar(88, `Restoring ${cachedEmbeddings.length} cached embeddings...`);
-      const EMBED_BATCH = 200;
-      for (let i = 0; i < cachedEmbeddings.length; i += EMBED_BATCH) {
-        const batch = cachedEmbeddings.slice(i, i + EMBED_BATCH);
-        const paramsList = batch.map(e => ({ nodeId: e.nodeId, embedding: e.embedding }));
-        try {
-          await executeWithReusedStatement(
-            `CREATE (e:CodeEmbedding {nodeId: $nodeId, embedding: $embedding})`,
-            paramsList,
-          );
-        } catch { /* some may fail if node was removed, that's fine */ }
-      }
-    }
-  }
+  // Old LadybugDB-based embedding cache removed — replaced by file-based
+  // content-addressed cache in embedding-cache.json (passed into runEmbeddingPipeline).
 
   // ── Phase 4: Embeddings (90–98%) ──────────────────────────────────
   const stats = await getLbugStats();
@@ -300,9 +266,19 @@ export const analyzeCommand = async (
 
   if (!embeddingSkipped) {
     const { isHttpMode } = await import('../core/embeddings/http-client.js');
+    const { DEFAULT_EMBEDDING_CONFIG } = await import('../core/embeddings/types.js');
     const httpMode = isHttpMode();
     updateBar(90, httpMode ? 'Connecting to embedding endpoint...' : 'Loading embedding model...');
     const t0Emb = Date.now();
+
+    // Load content-addressed embedding cache (survives --force)
+    const existingEmbCache = await loadEmbeddingCache(storagePath);
+    const embeddingCache = (existingEmbCache
+      && existingEmbCache.dimensions === DEFAULT_EMBEDDING_CONFIG.dimensions
+      && existingEmbCache.modelId === DEFAULT_EMBEDDING_CONFIG.modelId)
+      ? existingEmbCache
+      : createEmptyEmbeddingCache(DEFAULT_EMBEDDING_CONFIG.dimensions, DEFAULT_EMBEDDING_CONFIG.modelId);
+
     const { runEmbeddingPipeline } = await import('../core/embeddings/embedding-pipeline.js');
     await runEmbeddingPipeline(
       executeQuery,
@@ -315,8 +291,9 @@ export const analyzeCommand = async (
         updateBar(scaled, label);
       },
       {},
-      cachedEmbeddingNodeIds.size > 0 ? cachedEmbeddingNodeIds : undefined,
+      embeddingCache,
     );
+    await saveEmbeddingCache(storagePath, embeddingCache);
     embeddingTime = ((Date.now() - t0Emb) / 1000).toFixed(1);
   }
 
@@ -344,6 +321,7 @@ export const analyzeCommand = async (
     },
   };
   await saveMeta(storagePath, meta);
+  await saveParseCache(storagePath, parseCache);
   await registerRepo(repoPath, meta);
   // Only attempt to update .gitignore when a .git directory is present.
   // Use hasGitDir (filesystem check) rather than git CLI subprocess
@@ -397,10 +375,11 @@ export const analyzeCommand = async (
   bar.stop();
 
   // ── Summary ───────────────────────────────────────────────────────
-  const embeddingsCached = cachedEmbeddings.length > 0;
-  console.log(`\n  Repository indexed successfully (${totalTime}s)${embeddingsCached ? ` [${cachedEmbeddings.length} embeddings cached]` : ''}\n`);
+  console.log(`\n  Repository indexed successfully (${totalTime}s)\n`);
   console.log(`  ${stats.nodes.toLocaleString()} nodes | ${stats.edges.toLocaleString()} edges | ${pipelineResult.communityResult?.stats.totalCommunities || 0} clusters | ${pipelineResult.processResult?.stats.totalProcesses || 0} flows`);
-  console.log(`  LadybugDB ${lbugTime}s | FTS ${ftsTime}s | Embeddings ${embeddingSkipped ? embeddingSkipReason : embeddingTime + 's'}`);
+  const cs = pipelineResult.cacheStats;
+  const cacheInfo = cs ? `Parse cache: ${cs.hits} cached, ${cs.misses} parsed | ` : '';
+  console.log(`  ${cacheInfo}LadybugDB ${lbugTime}s | FTS ${ftsTime}s | Embeddings ${embeddingSkipped ? embeddingSkipReason : embeddingTime + 's'}`);
   console.log(`  ${repoPath}`);
 
   if (aiContext.files.length > 0) {

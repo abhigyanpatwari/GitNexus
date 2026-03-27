@@ -32,6 +32,50 @@ export interface WorkerExtractedData {
   typeEnvBindings: FileTypeEnvBindings[];
 }
 
+/** Replay a ParseWorkerResult into the graph, symbol table, and accumulators.
+ *  Shared by the worker merge path, sequential path replay, and cache replay. */
+export function mergeParseResult(
+  graph: KnowledgeGraph,
+  symbolTable: SymbolTable,
+  result: ParseWorkerResult,
+  accumulators: WorkerExtractedData,
+): void {
+  for (const node of result.nodes) {
+    graph.addNode({
+      id: node.id,
+      label: node.label as any,
+      properties: node.properties,
+    });
+  }
+
+  for (const rel of result.relationships) {
+    graph.addRelationship(rel);
+  }
+
+  for (const sym of result.symbols) {
+    symbolTable.add(sym.filePath, sym.name, sym.nodeId, sym.type, {
+      parameterCount: sym.parameterCount,
+      requiredParameterCount: sym.requiredParameterCount,
+      parameterTypes: sym.parameterTypes,
+      returnType: sym.returnType,
+      declaredType: sym.declaredType,
+      ownerId: sym.ownerId,
+    });
+  }
+
+  accumulators.imports.push(...result.imports);
+  accumulators.calls.push(...result.calls);
+  accumulators.assignments.push(...result.assignments);
+  accumulators.heritage.push(...result.heritage);
+  accumulators.routes.push(...result.routes);
+  accumulators.fetchCalls.push(...result.fetchCalls);
+  accumulators.decoratorRoutes.push(...result.decoratorRoutes);
+  accumulators.toolDefs.push(...result.toolDefs);
+  if (result.ormQueries) accumulators.ormQueries.push(...result.ormQueries);
+  accumulators.constructorBindings.push(...result.constructorBindings);
+  accumulators.typeEnvBindings.push(...result.typeEnvBindings);
+}
+
 // ============================================================================
 // Worker-based parallel parsing
 // ============================================================================
@@ -43,7 +87,7 @@ const processParsingWithWorkers = async (
   astCache: ASTCache,
   workerPool: WorkerPool,
   onFileProgress?: FileProgressCallback,
-): Promise<WorkerExtractedData> => {
+): Promise<WorkerExtractedData & { rawResults?: ParseWorkerResult[] }> => {
   // Filter to parseable files only
   const parseableFiles: ParseWorkerInput[] = [];
   for (const file of files) {
@@ -64,52 +108,13 @@ const processParsingWithWorkers = async (
   );
 
   // Merge results from all workers into graph and symbol table
-  const allImports: ExtractedImport[] = [];
-  const allCalls: ExtractedCall[] = [];
-  const allAssignments: ExtractedAssignment[] = [];
-  const allHeritage: ExtractedHeritage[] = [];
-  const allRoutes: ExtractedRoute[] = [];
-  const allFetchCalls: ExtractedFetchCall[] = [];
-  const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
-  const allToolDefs: ExtractedToolDef[] = [];
-  const allORMQueries: ExtractedORMQuery[] = [];
-  const allConstructorBindings: FileConstructorBindings[] = [];
-  const allTypeEnvBindings: FileTypeEnvBindings[] = [];
+  const accumulators: WorkerExtractedData = {
+    imports: [], calls: [], assignments: [], heritage: [], routes: [],
+    fetchCalls: [], decoratorRoutes: [], toolDefs: [], ormQueries: [],
+    constructorBindings: [], typeEnvBindings: [],
+  };
   for (const result of chunkResults) {
-    for (const node of result.nodes) {
-      graph.addNode({
-        id: node.id,
-        label: node.label as any,
-        properties: node.properties,
-      });
-    }
-
-    for (const rel of result.relationships) {
-      graph.addRelationship(rel);
-    }
-
-    for (const sym of result.symbols) {
-      symbolTable.add(sym.filePath, sym.name, sym.nodeId, sym.type, {
-        parameterCount: sym.parameterCount,
-        requiredParameterCount: sym.requiredParameterCount,
-        parameterTypes: sym.parameterTypes,
-        returnType: sym.returnType,
-        declaredType: sym.declaredType,
-        ownerId: sym.ownerId,
-      });
-    }
-
-    allImports.push(...result.imports);
-    allCalls.push(...result.calls);
-    allAssignments.push(...result.assignments);
-    allHeritage.push(...result.heritage);
-    allRoutes.push(...result.routes);
-    allFetchCalls.push(...result.fetchCalls);
-    allDecoratorRoutes.push(...result.decoratorRoutes);
-    allToolDefs.push(...result.toolDefs);
-    if (result.ormQueries) allORMQueries.push(...result.ormQueries);
-    allConstructorBindings.push(...result.constructorBindings);
-    allTypeEnvBindings.push(...result.typeEnvBindings);
+    mergeParseResult(graph, symbolTable, result, accumulators);
   }
 
   // Merge and log skipped languages from workers
@@ -128,7 +133,7 @@ const processParsingWithWorkers = async (
 
   // Final progress
   onFileProgress?.(total, total, 'done');
-  return { imports: allImports, calls: allCalls, assignments: allAssignments, heritage: allHeritage, routes: allRoutes, fetchCalls: allFetchCalls, decoratorRoutes: allDecoratorRoutes, toolDefs: allToolDefs, ormQueries: allORMQueries, constructorBindings: allConstructorBindings, typeEnvBindings: allTypeEnvBindings };
+  return { ...accumulators, rawResults: chunkResults };
 };
 
 // ============================================================================
@@ -423,7 +428,7 @@ export const processParsing = async (
   astCache: ASTCache,
   onFileProgress?: FileProgressCallback,
   workerPool?: WorkerPool,
-): Promise<WorkerExtractedData | null> => {
+): Promise<(WorkerExtractedData & { rawResults?: ParseWorkerResult[] }) | null> => {
   if (workerPool) {
     try {
       return await processParsingWithWorkers(graph, files, symbolTable, astCache, workerPool, onFileProgress);

@@ -11,6 +11,7 @@
 
 import { initEmbedder, embedBatch, embedText, embeddingToArray, isEmbedderReady } from './embedder.js';
 import { generateBatchEmbeddingTexts, generateEmbeddingText } from './text-generator.js';
+import { embeddingTextHash, type EmbeddingCache } from '../../storage/embedding-cache.js';
 import {
   type EmbeddingProgress,
   type EmbeddingConfig,
@@ -142,57 +143,24 @@ const createVectorIndex = async (
  * @param executeWithReusedStatement - Function to execute with reused prepared statement
  * @param onProgress - Callback for progress updates
  * @param config - Optional configuration override
- * @param skipNodeIds - Optional set of node IDs that already have embeddings (incremental mode)
+ * @param embeddingCache - Optional content-addressed embedding cache (survives --force)
  */
 export const runEmbeddingPipeline = async (
   executeQuery: (cypher: string) => Promise<any[]>,
   executeWithReusedStatement: (cypher: string, paramsList: Array<Record<string, any>>) => Promise<void>,
   onProgress: EmbeddingProgressCallback,
   config: Partial<EmbeddingConfig> = {},
-  skipNodeIds?: Set<string>,
+  embeddingCache?: EmbeddingCache,
 ): Promise<void> => {
   const finalConfig = { ...DEFAULT_EMBEDDING_CONFIG, ...config };
 
   try {
-    // Phase 1: Load embedding model
-    onProgress({
-      phase: 'loading-model',
-      percent: 0,
-      modelDownloadPercent: 0,
-    });
-
-    if (!isEmbedderReady()) {
-      await initEmbedder((modelProgress: ModelProgress) => {
-        const downloadPercent = modelProgress.progress ?? 0;
-        onProgress({
-          phase: 'loading-model',
-          percent: Math.round(downloadPercent * 0.2),
-          modelDownloadPercent: downloadPercent,
-        });
-      }, finalConfig);
-    }
-
-    onProgress({
-      phase: 'loading-model',
-      percent: 20,
-      modelDownloadPercent: 100,
-    });
-
     if (isDev) {
       console.log('🔍 Querying embeddable nodes...');
     }
 
-    // Phase 2: Query embeddable nodes
+    // Phase 1: Query embeddable nodes (before loading model — allows early exit if all cached)
     let nodes = await queryEmbeddableNodes(executeQuery);
-
-    // Incremental mode: filter out nodes that already have embeddings
-    if (skipNodeIds && skipNodeIds.size > 0) {
-      const beforeCount = nodes.length;
-      nodes = nodes.filter(n => !skipNodeIds.has(n.id));
-      if (isDev) {
-        console.log(`📦 Incremental embeddings: ${beforeCount} total, ${skipNodeIds.size} cached, ${nodes.length} to embed`);
-      }
-    }
 
     const totalNodes = nodes.length;
 
@@ -210,15 +178,91 @@ export const runEmbeddingPipeline = async (
       return;
     }
 
-    // Phase 3: Batch embed nodes
+    // Check how many nodes have cached embeddings — skip model load if all are cached
+    const allTexts = generateBatchEmbeddingTexts(nodes, finalConfig);
+    let allCached = true;
+    if (embeddingCache) {
+      for (let i = 0; i < allTexts.length; i++) {
+        if (!embeddingCache.entries[embeddingTextHash(allTexts[i])]) {
+          allCached = false;
+          break;
+        }
+      }
+    } else {
+      allCached = false;
+    }
+
+    // Phase 2: Load embedding model (only if we have uncached nodes)
+    if (!allCached) {
+      onProgress({
+        phase: 'loading-model',
+        percent: 0,
+        modelDownloadPercent: 0,
+      });
+
+      if (!isEmbedderReady()) {
+        await initEmbedder((modelProgress: ModelProgress) => {
+          const downloadPercent = modelProgress.progress ?? 0;
+          onProgress({
+            phase: 'loading-model',
+            percent: Math.round(downloadPercent * 0.2),
+            modelDownloadPercent: downloadPercent,
+          });
+        }, finalConfig);
+      }
+
+      onProgress({
+        phase: 'loading-model',
+        percent: 20,
+        modelDownloadPercent: 100,
+      });
+    }
+
+    // Phase 3: Batch embed nodes (with content-addressed cache)
     const batchSize = finalConfig.batchSize;
-    const totalBatches = Math.ceil(totalNodes / batchSize);
     let processedNodes = 0;
+    let cacheHits = 0;
+
+    // allTexts already computed above for cache check
+    const usedHashes = new Set<string>();
+    const uncachedIndices: number[] = [];
+    const cachedUpdates: Array<{ id: string; embedding: number[] }> = [];
+
+    for (let i = 0; i < nodes.length; i++) {
+      const hash = embeddingTextHash(allTexts[i]);
+      usedHashes.add(hash);
+      const cached = embeddingCache?.entries[hash];
+      if (cached) {
+        cachedUpdates.push({ id: nodes[i].id, embedding: cached.embedding });
+        cacheHits++;
+      } else {
+        uncachedIndices.push(i);
+      }
+    }
+
+    // Insert cached embeddings in bulk
+    if (cachedUpdates.length > 0) {
+      const BULK_BATCH = 200;
+      for (let i = 0; i < cachedUpdates.length; i += BULK_BATCH) {
+        const slice = cachedUpdates.slice(i, i + BULK_BATCH);
+        await batchInsertEmbeddings(executeWithReusedStatement, slice);
+      }
+      processedNodes += cachedUpdates.length;
+    }
+
+    if (isDev && cacheHits > 0) {
+      console.log(`📦 Embedding cache: ${cacheHits} cached, ${uncachedIndices.length} to embed`);
+    }
+
+    // Embed only uncached nodes
+    const uncachedNodes = uncachedIndices.map(i => nodes[i]);
+    const uncachedTexts = uncachedIndices.map(i => allTexts[i]);
+    const totalBatches = Math.ceil(uncachedNodes.length / batchSize);
 
     onProgress({
       phase: 'embedding',
       percent: 20,
-      nodesProcessed: 0,
+      nodesProcessed: processedNodes,
       totalNodes,
       currentBatch: 0,
       totalBatches,
@@ -226,24 +270,27 @@ export const runEmbeddingPipeline = async (
 
     for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
       const start = batchIndex * batchSize;
-      const end = Math.min(start + batchSize, totalNodes);
-      const batch = nodes.slice(start, end);
-
-      // Generate texts for this batch
-      const texts = generateBatchEmbeddingTexts(batch, finalConfig);
+      const end = Math.min(start + batchSize, uncachedNodes.length);
+      const batchNodes = uncachedNodes.slice(start, end);
+      const batchTexts = uncachedTexts.slice(start, end);
 
       // Embed the batch
-      const embeddings = await embedBatch(texts);
+      const embeddings = await embedBatch(batchTexts);
 
-      // Update LadybugDB with embeddings
-      const updates = batch.map((node, i) => ({
-        id: node.id,
-        embedding: embeddingToArray(embeddings[i]),
-      }));
+      // Build updates and store in cache
+      const updates = batchNodes.map((node, i) => {
+        const vec = embeddingToArray(embeddings[i]);
+        // Store in file-based cache for next run
+        if (embeddingCache) {
+          const hash = embeddingTextHash(batchTexts[i]);
+          embeddingCache.entries[hash] = { embedding: Array.from(vec) };
+        }
+        return { id: node.id, embedding: vec };
+      });
 
       await batchInsertEmbeddings(executeWithReusedStatement, updates);
 
-      processedNodes += batch.length;
+      processedNodes += batchNodes.length;
 
       // Report progress (20-90% for embedding phase)
       const embeddingProgress = 20 + ((processedNodes / totalNodes) * 70);
@@ -255,6 +302,20 @@ export const runEmbeddingPipeline = async (
         currentBatch: batchIndex + 1,
         totalBatches,
       });
+    }
+
+    // Prune stale entries from embedding cache (symbols that no longer exist)
+    if (embeddingCache) {
+      let pruned = 0;
+      for (const hash of Object.keys(embeddingCache.entries)) {
+        if (!usedHashes.has(hash)) {
+          delete embeddingCache.entries[hash];
+          pruned++;
+        }
+      }
+      if (isDev && pruned > 0) {
+        console.log(`🧹 Pruned ${pruned} stale embedding cache entries`);
+      }
     }
 
     // Phase 4: Create vector index

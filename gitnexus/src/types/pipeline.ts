@@ -25,6 +25,8 @@ export interface PipelineResult {
   totalFileCount: number;
   communityResult?: CommunityDetectionResult;
   processResult?: ProcessDetectionResult;
+  /** Parse cache hit/miss stats (present when parse cache is enabled) */
+  cacheStats?: { hits: number; misses: number };
 }
 
 // Serializable version for Web Worker communication

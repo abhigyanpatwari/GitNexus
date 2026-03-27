@@ -2,7 +2,8 @@ import { createKnowledgeGraph } from '../graph/graph.js';
 import { processStructure } from './structure-processor.js';
 import { processMarkdown } from './markdown-processor.js';
 import { processCobol, isCobolFile, isJclFile } from './cobol-processor.js';
-import { processParsing } from './parsing-processor.js';
+import { processParsing, mergeParseResult, type WorkerExtractedData } from './parsing-processor.js';
+import { contentHash, pruneCache, type ParseCache } from '../../storage/parse-cache.js';
 import {
   processImports,
   processImportsFromExtracted,
@@ -400,6 +401,8 @@ async function runCrossFileBindingPropagation(
 export interface PipelineOptions {
   /** Skip MRO, community detection, and process extraction for faster test runs. */
   skipGraphPhases?: boolean;
+  /** Parse cache from previous run. Files with matching content hashes skip Tree-sitter. */
+  parseCache?: import('../../storage/parse-cache.js').ParseCache;
 }
 
 // ── Extracted pipeline phases ──────────────────────────────────────────────
@@ -528,6 +531,46 @@ async function runScanAndStructure(
  * @writes graph (Symbol nodes, IMPORTS/CALLS/EXTENDS/IMPLEMENTS/ACCESSES edges)
  * @writes ctx.symbolTable, ctx.importMap, ctx.namedImportMap, ctx.moduleAliasMap
  */
+
+/** Extract a single file's data from raw ParseWorkerResult arrays.
+ *  Used to populate the parse cache with per-file entries after a fresh parse. */
+function filterRawResultsByFile(rawResults: import('./workers/parse-worker.js').ParseWorkerResult[], filePath: string): import('./workers/parse-worker.js').ParseWorkerResult {
+  const merged: import('./workers/parse-worker.js').ParseWorkerResult = {
+    nodes: [], relationships: [], symbols: [],
+    imports: [], calls: [], assignments: [], heritage: [],
+    routes: [], fetchCalls: [], decoratorRoutes: [], toolDefs: [],
+    ormQueries: [], constructorBindings: [], typeEnvBindings: [],
+    skippedLanguages: {}, fileCount: 1,
+  };
+  // IDs are formatted as "Label:filePath" or "Label:filePath:symbolName"
+  // Match relationships where source or target belongs to this file using exact boundary checks
+  const fileNodeId = `File:${filePath}`;
+  const filePathWithColon = `:${filePath}:`;
+  const filePathSuffix = `:${filePath}`;
+  const belongsToFile = (id: string) =>
+    id === fileNodeId || id.includes(filePathWithColon) || id.endsWith(filePathSuffix);
+
+  for (const raw of rawResults) {
+    for (const n of raw.nodes) { if (n.properties.filePath === filePath) merged.nodes.push(n); }
+    for (const r of raw.relationships) {
+      if (belongsToFile(r.sourceId) || belongsToFile(r.targetId)) merged.relationships.push(r);
+    }
+    for (const s of raw.symbols) { if (s.filePath === filePath) merged.symbols.push(s); }
+    for (const i of raw.imports) { if (i.filePath === filePath) merged.imports.push(i); }
+    for (const c of raw.calls) { if (c.filePath === filePath) merged.calls.push(c); }
+    for (const a of raw.assignments) { if (a.filePath === filePath) merged.assignments.push(a); }
+    for (const h of raw.heritage) { if (h.filePath === filePath) merged.heritage.push(h); }
+    for (const r of raw.routes) { if (r.filePath === filePath) merged.routes.push(r); }
+    for (const f of raw.fetchCalls) { if (f.filePath === filePath) merged.fetchCalls.push(f); }
+    for (const d of raw.decoratorRoutes) { if (d.filePath === filePath) merged.decoratorRoutes.push(d); }
+    for (const t of raw.toolDefs) { if (t.filePath === filePath) merged.toolDefs.push(t); }
+    for (const o of raw.ormQueries) { if (o.filePath === filePath) merged.ormQueries.push(o); }
+    for (const c of raw.constructorBindings) { if (c.filePath === filePath) merged.constructorBindings.push(c); }
+    for (const t of raw.typeEnvBindings) { if (t.filePath === filePath) merged.typeEnvBindings.push(t); }
+  }
+  return merged;
+}
+
 async function runChunkedParseAndResolve(
   graph: ReturnType<typeof createKnowledgeGraph>,
   ctx: ReturnType<typeof createResolutionContext>,
@@ -537,6 +580,7 @@ async function runChunkedParseAndResolve(
   repoPath: string,
   pipelineStart: number,
   onProgress: ProgressFn,
+  parseCache?: ParseCache,
 ): Promise<{
   exportedTypeMap: ExportedTypeMap;
   allFetchCalls: ExtractedFetchCall[];
@@ -544,6 +588,7 @@ async function runChunkedParseAndResolve(
   allDecoratorRoutes: ExtractedDecoratorRoute[];
   allToolDefs: ExtractedToolDef[];
   allORMQueries: ExtractedORMQuery[];
+  cacheStats: { hits: number; misses: number };
 }> {
   const symbolTable = ctx.symbols;
 
@@ -666,6 +711,16 @@ async function runChunkedParseAndResolve(
   const allToolDefs: ExtractedToolDef[] = [];
     const allORMQueries: ExtractedORMQuery[] = [];
 
+  // Parse cache: replay cached results for unchanged files, only parse changed ones
+  let cacheHits = 0;
+  let cacheMisses = 0;
+  // Accumulator for replaying cached results into the graph
+  const cacheReplayAccumulators: WorkerExtractedData = {
+    imports: [], calls: [], assignments: [], heritage: [], routes: [],
+    fetchCalls: [], decoratorRoutes: [], toolDefs: [], ormQueries: [],
+    constructorBindings: [], typeEnvBindings: [],
+  };
+
   try {
     for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
       const chunkPaths = chunks[chunkIdx];
@@ -676,28 +731,77 @@ async function runChunkedParseAndResolve(
         .filter(p => chunkContents.has(p))
         .map(p => ({ path: p, content: chunkContents.get(p)! }));
 
-      // Parse this chunk (workers or sequential fallback)
-      const chunkWorkerData = await processParsing(
-        graph, chunkFiles, symbolTable, astCache,
-        (current, _total, filePath) => {
-          const globalCurrent = filesParsedSoFar + current;
-          const parsingProgress = 20 + ((globalCurrent / totalParseable) * 62);
-          onProgress({
-            phase: 'parsing',
-            percent: Math.round(parsingProgress),
-            message: `Parsing chunk ${chunkIdx + 1}/${numChunks}...`,
-            detail: filePath,
-            stats: { filesProcessed: globalCurrent, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
-          });
-        },
-        workerPool,
-      );
+      // Split files into cache hits (replay) and cache misses (need parsing)
+      let filesToParse = chunkFiles;
+      const fileHashes = new Map<string, string>();
+      if (parseCache && Object.keys(parseCache.entries).length > 0) {
+        const uncached: typeof chunkFiles = [];
+        for (const file of chunkFiles) {
+          const entry = parseCache.entries[file.path];
+          const hash = contentHash(file.content);
+          fileHashes.set(file.path, hash);
+          if (entry && entry.hash === hash) {
+            // Cache hit — replay stored result into graph
+            mergeParseResult(graph, symbolTable, entry.result, cacheReplayAccumulators);
+            cacheHits++;
+          } else {
+            uncached.push(file);
+            cacheMisses++;
+          }
+        }
+        filesToParse = uncached;
+      } else {
+        cacheMisses += chunkFiles.length;
+      }
+
+      // Parse only uncached files (workers or sequential fallback)
+      const chunkWorkerData = filesToParse.length > 0
+        ? await processParsing(
+            graph, filesToParse, symbolTable, astCache,
+            (current, _total, filePath) => {
+              const globalCurrent = filesParsedSoFar + current;
+              const parsingProgress = 20 + ((globalCurrent / totalParseable) * 62);
+              onProgress({
+                phase: 'parsing',
+                percent: Math.round(parsingProgress),
+                message: `Parsing chunk ${chunkIdx + 1}/${numChunks}...`,
+                detail: filePath,
+                stats: { filesProcessed: globalCurrent, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
+              });
+            },
+            workerPool,
+          )
+        : null;
+
+      // Store freshly parsed results in cache for next run
+      if (parseCache && chunkWorkerData?.rawResults) {
+        for (const file of filesToParse) {
+          const hash = fileHashes.get(file.path) || contentHash(file.content);
+          const perFileResult = filterRawResultsByFile(chunkWorkerData.rawResults, file.path);
+          parseCache.entries[file.path] = { hash, result: perFileResult };
+        }
+      }
 
       const chunkBasePercent = 20 + ((filesParsedSoFar / totalParseable) * 62);
 
-      if (chunkWorkerData) {
+      // Merge cached replay data + freshly parsed data, then drain cache accumulators
+      const drainAndMerge = <T>(cached: T[], fresh: T[] | undefined): T[] => {
+        const merged = cached.length > 0 ? [...cached, ...(fresh ?? [])] : (fresh ?? []);
+        cached.length = 0;
+        return merged;
+      };
+      const chunkImports = drainAndMerge(cacheReplayAccumulators.imports, chunkWorkerData?.imports);
+      const chunkCalls = drainAndMerge(cacheReplayAccumulators.calls, chunkWorkerData?.calls);
+      const chunkHeritage = drainAndMerge(cacheReplayAccumulators.heritage, chunkWorkerData?.heritage);
+      const chunkRoutes = drainAndMerge(cacheReplayAccumulators.routes, chunkWorkerData?.routes);
+      const chunkAssignments = drainAndMerge(cacheReplayAccumulators.assignments, chunkWorkerData?.assignments);
+      const chunkConstructorBindings = drainAndMerge(cacheReplayAccumulators.constructorBindings, chunkWorkerData?.constructorBindings);
+
+      const hasExtractedData = chunkWorkerData || chunkImports.length > 0;
+
+      if (hasExtractedData) {
         // Imports
-        await processImportsFromExtracted(graph, allPathObjects, chunkWorkerData.imports, ctx, (current, total) => {
+        await processImportsFromExtracted(graph, allPathObjects, chunkImports, ctx, (current, total) => {
           onProgress({
             phase: 'parsing',
             percent: Math.round(chunkBasePercent),
@@ -718,7 +822,7 @@ async function runChunkedParseAndResolve(
         // it activates only if incremental export collection is added per-chunk.
         if (exportedTypeMap.size > 0 && ctx.namedImportMap.size > 0) {
           const { enrichedCount } = seedCrossFileReceiverTypes(
-            chunkWorkerData.calls, ctx.namedImportMap, exportedTypeMap,
+            chunkCalls, ctx.namedImportMap, exportedTypeMap,
           );
           if (isDev && enrichedCount > 0) {
             console.log(`🔗 E1: Seeded ${enrichedCount} cross-file receiver types (chunk ${chunkIdx + 1})`);
@@ -730,7 +834,7 @@ async function runChunkedParseAndResolve(
         await Promise.all([
           processCallsFromExtracted(
             graph,
-            chunkWorkerData.calls,
+            chunkCalls,
             ctx,
             (current, total) => {
               onProgress({
@@ -741,11 +845,11 @@ async function runChunkedParseAndResolve(
                 stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
               });
             },
-            chunkWorkerData.constructorBindings,
+            chunkConstructorBindings,
           ),
           processHeritageFromExtracted(
             graph,
-            chunkWorkerData.heritage,
+            chunkHeritage,
             ctx,
             (current, total) => {
               onProgress({
@@ -759,7 +863,7 @@ async function runChunkedParseAndResolve(
           ),
           processRoutesFromExtracted(
             graph,
-            chunkWorkerData.routes ?? [],
+            chunkRoutes,
             ctx,
             (current, total) => {
               onProgress({
@@ -773,33 +877,28 @@ async function runChunkedParseAndResolve(
           ),
         ]);
         // Process field write assignments (synchronous, runs after calls resolve)
-        if (chunkWorkerData.assignments?.length) {
-          processAssignmentsFromExtracted(graph, chunkWorkerData.assignments, ctx, chunkWorkerData.constructorBindings);
+        if (chunkAssignments.length > 0) {
+          processAssignmentsFromExtracted(graph, chunkAssignments, ctx, chunkConstructorBindings);
         }
-        // Collect TypeEnv file-scope bindings for exported type enrichment
-        if (chunkWorkerData.typeEnvBindings?.length) {
-          workerTypeEnvBindings.push(...chunkWorkerData.typeEnvBindings);
-        }
-        // Collect fetch() calls for Next.js route matching
-        if (chunkWorkerData.fetchCalls?.length) {
-          allFetchCalls.push(...chunkWorkerData.fetchCalls);
-        }
-        if (chunkWorkerData.routes?.length) {
-          allExtractedRoutes.push(...chunkWorkerData.routes);
-        }
-        if (chunkWorkerData.decoratorRoutes?.length) {
-          allDecoratorRoutes.push(...chunkWorkerData.decoratorRoutes);
-        }
-        if (chunkWorkerData.toolDefs?.length) {
-          allToolDefs.push(...chunkWorkerData.toolDefs);
-        }
-        if (chunkWorkerData.ormQueries?.length) {
-          allORMQueries.push(...chunkWorkerData.ormQueries);
-        }
-      } else {
+      } else if (filesToParse.length > 0) {
+        // Sequential fallback — no worker data AND no cache hits with extracted data
         await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
         sequentialChunkPaths.push(chunkPaths);
       }
+
+      // Drain remaining accumulators unconditionally to prevent leak across chunks
+      const chunkTypeEnvBindings = drainAndMerge(cacheReplayAccumulators.typeEnvBindings, chunkWorkerData?.typeEnvBindings);
+      const chunkFetchCalls = drainAndMerge(cacheReplayAccumulators.fetchCalls, chunkWorkerData?.fetchCalls);
+      const chunkDecoratorRoutes = drainAndMerge(cacheReplayAccumulators.decoratorRoutes, chunkWorkerData?.decoratorRoutes);
+      const chunkToolDefs = drainAndMerge(cacheReplayAccumulators.toolDefs, chunkWorkerData?.toolDefs);
+      const chunkOrmQueries = drainAndMerge(cacheReplayAccumulators.ormQueries, chunkWorkerData?.ormQueries);
+
+      if (chunkTypeEnvBindings.length > 0) workerTypeEnvBindings.push(...chunkTypeEnvBindings);
+      if (chunkFetchCalls.length > 0) allFetchCalls.push(...chunkFetchCalls);
+      if (chunkRoutes.length > 0) allExtractedRoutes.push(...chunkRoutes);
+      if (chunkDecoratorRoutes.length > 0) allDecoratorRoutes.push(...chunkDecoratorRoutes);
+      if (chunkToolDefs.length > 0) allToolDefs.push(...chunkToolDefs);
+      if (chunkOrmQueries.length > 0) allORMQueries.push(...chunkOrmQueries);
 
       filesParsedSoFar += chunkFiles.length;
 
@@ -891,7 +990,7 @@ async function runChunkedParseAndResolve(
   importCtx.index = EMPTY_INDEX; // Release suffix index memory (~30MB for large repos)
   importCtx.normalizedFileList = [];
 
-  return { exportedTypeMap, allFetchCalls, allExtractedRoutes, allDecoratorRoutes, allToolDefs, allORMQueries };
+  return { exportedTypeMap, allFetchCalls, allExtractedRoutes, allDecoratorRoutes, allToolDefs, allORMQueries, cacheStats: { hits: cacheHits, misses: cacheMisses } };
 }
 
 /**
@@ -1112,9 +1211,14 @@ export const runPipelineFromRepo = async (
     // Phase 1+2: Scan paths, build structure, process markdown
     const { scannedFiles, allPaths, totalFiles } = await runScanAndStructure(repoPath, graph, onProgress);
 
+    // Prune cache entries for files that no longer exist
+    if (options?.parseCache) {
+      pruneCache(options.parseCache, new Set(allPaths));
+    }
+
     // Phase 3+4: Chunked parse + resolve (imports, calls, heritage, routes)
-    const { exportedTypeMap, allFetchCalls, allExtractedRoutes, allDecoratorRoutes, allToolDefs, allORMQueries } = await runChunkedParseAndResolve(
-      graph, ctx, scannedFiles, allPaths, totalFiles, repoPath, pipelineStart, onProgress,
+    const { exportedTypeMap, allFetchCalls, allExtractedRoutes, allDecoratorRoutes, allToolDefs, allORMQueries, cacheStats } = await runChunkedParseAndResolve(
+      graph, ctx, scannedFiles, allPaths, totalFiles, repoPath, pipelineStart, onProgress, options?.parseCache,
     );
 
     // ── Phase 3.5: Route Registry (Next.js + PHP + Laravel + decorators) ──
@@ -1411,7 +1515,7 @@ export const runPipelineFromRepo = async (
       },
     });
 
-    return { graph, repoPath, totalFileCount: totalFiles, communityResult, processResult };
+    return { graph, repoPath, totalFileCount: totalFiles, communityResult, processResult, cacheStats };
   } catch (error) {
     ctx.clear();
     throw error;
