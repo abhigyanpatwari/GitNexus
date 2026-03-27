@@ -612,41 +612,6 @@ export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> 
   return { nodes: totalNodes, edges: totalEdges };
 };
 
-/**
- * Load cached embeddings from LadybugDB before a rebuild.
- * Returns all embedding vectors so they can be re-inserted after the graph is reloaded,
- * avoiding expensive re-embedding of unchanged nodes.
- */
-export const loadCachedEmbeddings = async (): Promise<{
-  embeddingNodeIds: Set<string>;
-  embeddings: Array<{ nodeId: string; embedding: number[] }>;
-}> => {
-  if (!conn) {
-    return { embeddingNodeIds: new Set(), embeddings: [] };
-  }
-
-  const embeddingNodeIds = new Set<string>();
-  const embeddings: Array<{ nodeId: string; embedding: number[] }> = [];
-  try {
-    const rows = await conn.query(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.embedding AS embedding`);
-    const result = Array.isArray(rows) ? rows[0] : rows;
-    for (const row of await result.getAll()) {
-      const nodeId = String(row.nodeId ?? row[0] ?? '');
-      if (!nodeId) continue;
-      embeddingNodeIds.add(nodeId);
-      const embedding = row.embedding ?? row[1];
-      if (embedding) {
-        embeddings.push({
-          nodeId,
-          embedding: Array.isArray(embedding) ? embedding.map(Number) : Array.from(embedding as any).map(Number),
-        });
-      }
-    }
-  } catch { /* embedding table may not exist */ }
-
-  return { embeddingNodeIds, embeddings };
-};
-
 export const closeLbug = async (): Promise<void> => {
   if (conn) {
     try {
