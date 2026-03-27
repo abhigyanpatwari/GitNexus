@@ -90,8 +90,6 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
       console.error('GitNexus: Loading embedding model (first search may take a moment)...');
 
       // Try GPU first (DirectML on Windows, CUDA on Linux), fall back to CPU.
-      // CRITICAL: probe for CUDA before requesting it — a failed CUDA attempt
-      // poisons ONNX Runtime's native state so even CPU fallback fails.
       const isWindows = process.platform === 'win32';
       const gpuDevice = isWindows ? 'dml' : (isCudaAvailable() ? 'cuda' : 'cpu');
       const devicesToTry: Array<'dml' | 'cuda' | 'cpu'> =
