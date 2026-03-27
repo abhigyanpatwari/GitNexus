@@ -223,6 +223,24 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
   }
 }
 
+async function setupBob(result: SetupResult): Promise<void> {
+  const bobDir = path.join(os.homedir(), '.bob');
+  if (!(await dirExists(bobDir))) {
+    result.skipped.push('Bob (not installed)');
+    return;
+  }
+
+  const mcpPath = path.join(bobDir, 'mcp_settings.json');
+  try {
+    const existing = await readJsonFile(mcpPath);
+    const updated = mergeMcpConfig(existing);
+    await writeJsonFile(mcpPath, updated);
+    result.configured.push('Bob');
+  } catch (err: any) {
+    result.errors.push(`Bob: ${err.message}`);
+  }
+}
+
 async function setupOpenCode(result: SetupResult): Promise<void> {
   const opencodeDir = path.join(os.homedir(), '.config', 'opencode');
   if (!(await dirExists(opencodeDir))) {
@@ -325,7 +343,7 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
   let dirSkillFiles: string[] = [];
   try {
     [flatFiles, dirSkillFiles] = await Promise.all([
-      glob('*.md', { cwd: skillsRoot }),
+      glob('*.md', { cwd: skillsRoot, ignore: '*-rules.md' }),
       glob('*/SKILL.md', { cwd: skillsRoot }),
     ]);
   } catch {
@@ -438,6 +456,54 @@ async function installCodexSkills(result: SetupResult): Promise<void> {
   }
 }
 
+/**
+ * Install global Bob skills to ~/.bob/skills/
+ */
+async function installBobSkills(result: SetupResult): Promise<void> {
+  const bobDir = path.join(os.homedir(), '.bob');
+  if (!(await dirExists(bobDir))) return;
+
+  const skillsDir = path.join(bobDir, 'skills');
+  try {
+    const installed = await installSkillsTo(skillsDir);
+    if (installed.length > 0) {
+      result.configured.push(`Bob skills (${installed.length} skills → ~/.bob/skills/)`);
+    }
+  } catch (err: any) {
+    result.errors.push(`Bob skills: ${err.message}`);
+  }
+}
+
+/**
+ * Install GitNexus rules to ~/.bob/rules/
+ * Bob supports rules files that provide behavioral guidelines for the assistant.
+ * Rules are shipped as *-rules.md files in the shared gitnexus/skills/ directory
+ * (same source tree as skills) and copied to ~/.bob/rules/ with the "-rules"
+ * suffix stripped from the filename.
+ */
+async function installBobRules(result: SetupResult): Promise<void> {
+  const bobDir = path.join(os.homedir(), '.bob');
+  if (!(await dirExists(bobDir))) return;
+
+  const skillsRoot = path.join(__dirname, '..', '..', 'skills');
+  const destRules = path.join(bobDir, 'rules');
+  try {
+    const ruleFiles = await glob('*-rules.md', { cwd: skillsRoot });
+    if (ruleFiles.length === 0) return;
+
+    await fs.mkdir(destRules, { recursive: true });
+    for (const ruleFile of ruleFiles) {
+      const src = path.join(skillsRoot, ruleFile);
+      // Strip "-rules" suffix: gitnexus-core-rules.md → gitnexus-core.md
+      const destName = ruleFile.replace(/-rules\.md$/, '.md');
+      await fs.copyFile(src, path.join(destRules, destName));
+    }
+    result.configured.push(`Bob rules (${ruleFiles.length} rules → ~/.bob/rules/)`);
+  } catch (err: any) {
+    result.errors.push(`Bob rules: ${err.message}`);
+  }
+}
+
 // ─── Main command ──────────────────────────────────────────────────
 
 export const setupCommand = async () => {
@@ -459,13 +525,16 @@ export const setupCommand = async () => {
   // Detect and configure each editor's MCP
   await setupCursor(result);
   await setupClaudeCode(result);
+  await setupBob(result);
   await setupOpenCode(result);
   await setupCodex(result);
-  
+
   // Install global skills for platforms that support them
   await installClaudeCodeSkills(result);
   await installClaudeCodeHooks(result);
   await installCursorSkills(result);
+  await installBobSkills(result);
+  await installBobRules(result);
   await installOpenCodeSkills(result);
   await installCodexSkills(result);
 

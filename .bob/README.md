@@ -27,7 +27,7 @@ ls .gitnexus/   # index directory should exist
 
 Add the GitNexus MCP server to your Bob configuration.
 
-**User-level** (`~/.bob/mcp_config.json`) — available across all projects:
+**User-level** (`~/.bob/mcp_settings.json`) — available across all projects:
 
 ```json
 {
@@ -40,7 +40,7 @@ Add the GitNexus MCP server to your Bob configuration.
 }
 ```
 
-**Project-level** (`.bob/mcp_config.json`) — same format, scoped to one project.
+**Project-level** (`.bob/mcp.json`) — same format, scoped to one project.
 
 Once configured, open Bob and navigate to **MCP Servers** to verify the connection:
 

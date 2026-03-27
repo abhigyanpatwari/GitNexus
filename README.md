@@ -78,7 +78,7 @@ The CLI indexes your repository and runs an MCP server that gives AI agents deep
 npx gitnexus analyze
 ```
 
-That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
+That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` / `.bob/rules/` context files — all in one command.
 
 To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
 
@@ -129,7 +129,7 @@ claude mcp add gitnexus -- cmd /c npx -y gitnexus@latest mcp
 codex mcp add gitnexus -- npx -y gitnexus@latest mcp
 ```
 
-**Bob (IBM)** (`~/.bob/mcp_config.json` — global, works for all projects):
+**Bob (IBM)** (`~/.bob/mcp_settings.json` — global, works for all projects):
 
 ```json
 {

@@ -278,6 +278,111 @@ Use GitNexus tools to accomplish this task.
 }
 
 /**
+ * Generate Bob project-level rules content.
+ * Adapts the same GitNexus context for Bob's rules format,
+ * with repo-specific project name baked into resource URIs.
+ */
+function generateBobProjectContent(projectName: string, stats: RepoStats): string {
+  return `${GITNEXUS_START_MARKER}
+# GitNexus — Project Context
+
+This project is indexed by GitNexus as **${projectName}** (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+
+> If any GitNexus tool warns the index is stale, run \`npx gitnexus analyze\` in terminal first.
+
+## Always Do
+
+- **MUST run impact analysis before editing any symbol.** Run \`gitnexus_impact({target: "symbolName", direction: "upstream"})\` and report the blast radius to the user.
+- **MUST run \`gitnexus_detect_changes()\` before committing** to verify changes only affect expected symbols.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding.
+- Use \`gitnexus_query({query: "concept"})\` to find execution flows instead of grepping.
+- Use \`gitnexus_context({name: "symbolName"})\` for full context on a specific symbol.
+
+## When Debugging
+
+1. \`gitnexus_query({query: "<error or symptom>"})\` — find related execution flows
+2. \`gitnexus_context({name: "<suspect function>"})\` — see callers, callees, process participation
+3. \`READ gitnexus://repo/${projectName}/process/{processName}\` — trace the full execution flow
+4. For regressions: \`gitnexus_detect_changes({scope: "compare", base_ref: "main"})\`
+
+## When Refactoring
+
+- **Renaming**: MUST use \`gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})\` first.
+- **Extracting/Splitting**: MUST run \`gitnexus_context\` then \`gitnexus_impact\` before moving code.
+- After any refactor: run \`gitnexus_detect_changes({scope: "all"})\` to verify scope.
+
+## Never Do
+
+- NEVER edit a function/class/method without first running \`gitnexus_impact\`.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use \`gitnexus_rename\`.
+- NEVER commit without running \`gitnexus_detect_changes()\`.
+
+## Tools Quick Reference
+
+| Tool | Command |
+|------|---------|
+| \`query\` | \`gitnexus_query({query: "auth validation"})\` |
+| \`context\` | \`gitnexus_context({name: "validateUser"})\` |
+| \`impact\` | \`gitnexus_impact({target: "X", direction: "upstream"})\` |
+| \`detect_changes\` | \`gitnexus_detect_changes({scope: "staged"})\` |
+| \`rename\` | \`gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})\` |
+| \`cypher\` | \`gitnexus_cypher({query: "MATCH ..."})\` |
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| \`gitnexus://repo/${projectName}/context\` | Codebase overview, check index freshness |
+| \`gitnexus://repo/${projectName}/clusters\` | All functional areas |
+| \`gitnexus://repo/${projectName}/processes\` | All execution flows |
+| \`gitnexus://repo/${projectName}/process/{name}\` | Step-by-step execution trace |
+
+## Self-Check Before Finishing
+
+1. \`gitnexus_impact\` was run for all modified symbols
+2. No HIGH/CRITICAL risk warnings were ignored
+3. \`gitnexus_detect_changes()\` confirms changes match expected scope
+4. All d=1 (WILL BREAK) dependents were updated
+${GITNEXUS_END_MARKER}`;
+}
+
+/**
+ * Install GitNexus skills to .bob/skills/ at project level.
+ * Reuses the same package skill files as the global install.
+ */
+async function installBobProjectSkills(repoPath: string): Promise<string[]> {
+  const skillsDir = path.join(repoPath, '.bob', 'skills');
+  const installedSkills: string[] = [];
+
+  const skills = [
+    'gitnexus-exploring',
+    'gitnexus-debugging',
+    'gitnexus-impact-analysis',
+    'gitnexus-refactoring',
+    'gitnexus-guide',
+    'gitnexus-cli',
+  ];
+
+  for (const skillName of skills) {
+    const skillDir = path.join(skillsDir, skillName);
+    const skillPath = path.join(skillDir, 'SKILL.md');
+
+    try {
+      await fs.mkdir(skillDir, { recursive: true });
+      const packageSkillPath = path.join(__dirname, '..', '..', 'skills', `${skillName}.md`);
+      const content = await fs.readFile(packageSkillPath, 'utf-8');
+      await fs.writeFile(skillPath, content, 'utf-8');
+      installedSkills.push(skillName);
+    } catch {
+      // Skip on error
+    }
+  }
+
+  return installedSkills;
+}
+
+/**
  * Generate AI context files after indexing
  */
 export async function generateAIContextFiles(
@@ -304,6 +409,20 @@ export async function generateAIContextFiles(
   const installedSkills = await installSkills(repoPath);
   if (installedSkills.length > 0) {
     createdFiles.push(`.claude/skills/gitnexus/ (${installedSkills.length} skills)`);
+  }
+
+  // Create .bob/rules/gitnexus-project.md (project-level rules for Bob)
+  const bobRulesDir = path.join(repoPath, '.bob', 'rules');
+  await fs.mkdir(bobRulesDir, { recursive: true });
+  const bobContent = generateBobProjectContent(projectName, stats);
+  const bobRulesPath = path.join(bobRulesDir, 'gitnexus-project.md');
+  const bobResult = await upsertGitNexusSection(bobRulesPath, bobContent);
+  createdFiles.push(`.bob/rules/gitnexus-project.md (${bobResult})`);
+
+  // Install skills to .bob/skills/
+  const bobSkills = await installBobProjectSkills(repoPath);
+  if (bobSkills.length > 0) {
+    createdFiles.push(`.bob/skills/ (${bobSkills.length} skills)`);
   }
 
   return { files: createdFiles };
