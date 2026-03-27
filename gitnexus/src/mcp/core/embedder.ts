@@ -6,10 +6,59 @@
  */
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import { existsSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { join, dirname } from 'path';
+import { createRequire } from 'module';
 import { isHttpMode, getHttpDimensions, httpEmbedQuery } from '../../core/embeddings/http-client.js';
 
 // Model config
 const MODEL_ID = 'Snowflake/snowflake-arctic-embed-xs';
+
+/**
+ * Check whether onnxruntime-node ships the CUDA execution provider.
+ * Resolves from transformers' module scope to find the same binary it will dlopen.
+ */
+function hasOrtCudaProvider(): boolean {
+  try {
+    const require = createRequire(import.meta.url);
+    const transformersDir = dirname(require.resolve('@huggingface/transformers/package.json'));
+    const ortRequire = createRequire(join(transformersDir, 'package.json'));
+    const ortPath = dirname(ortRequire.resolve('onnxruntime-node/package.json'));
+    const arch = process.arch;
+    return existsSync(join(ortPath, 'bin', 'napi-v6', 'linux', arch, 'libonnxruntime_providers_cuda.so'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check whether CUDA libraries are available on the system.
+ * A failed CUDA attempt poisons ONNX Runtime process state, making the
+ * CPU fallback fail too.  We must probe before ever requesting CUDA.
+ */
+function isCudaAvailable(): boolean {
+  if (!hasOrtCudaProvider()) return false;
+
+  try {
+    const out = execFileSync('ldconfig', ['-p'], { timeout: 3000, encoding: 'utf-8' });
+    if (out.includes('libcublasLt.so.12')) return true;
+  } catch {
+    // ldconfig not available
+  }
+
+  for (const envVar of ['CUDA_PATH', 'LD_LIBRARY_PATH']) {
+    const val = process.env[envVar];
+    if (!val) continue;
+    for (const dir of val.split(':').filter(Boolean)) {
+      if (existsSync(join(dir, 'lib64', 'libcublasLt.so.12')) ||
+          existsSync(join(dir, 'lib', 'libcublasLt.so.12')) ||
+          existsSync(join(dir, 'libcublasLt.so.12'))) return true;
+    }
+  }
+
+  return false;
+}
 
 // Module-level state for singleton pattern
 let embedderInstance: FeatureExtractionPipeline | null = null;
@@ -40,10 +89,15 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
       
       console.error('GitNexus: Loading embedding model (first search may take a moment)...');
 
-      // Try GPU first (DirectML on Windows, CUDA on Linux), fall back to CPU
+      // Try GPU first (DirectML on Windows, CUDA on Linux), fall back to CPU.
+      // CRITICAL: probe for CUDA before requesting it — a failed CUDA attempt
+      // poisons ONNX Runtime's native state so even CPU fallback fails.
       const isWindows = process.platform === 'win32';
-      const gpuDevice = isWindows ? 'dml' : 'cuda';
-      const devicesToTry: Array<'dml' | 'cuda' | 'cpu'> = [gpuDevice, 'cpu'];
+      const gpuDevice = isWindows ? 'dml' : (isCudaAvailable() ? 'cuda' : 'cpu');
+      const devicesToTry: Array<'dml' | 'cuda' | 'cpu'> =
+        (gpuDevice === 'dml' || gpuDevice === 'cuda')
+          ? [gpuDevice, 'cpu']
+          : ['cpu'];
       
       for (const device of devicesToTry) {
         try {
