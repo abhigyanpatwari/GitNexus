@@ -6,7 +6,6 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 COPY gitnexus/ .
 RUN npm ci --ignore-scripts \
-    && node scripts/patch-tree-sitter-swift.cjs \
     && (npm rebuild 2>&1 || true) \
     && (cd node_modules/tree-sitter-kotlin && npx --yes node-gyp rebuild 2>&1 || true) \
     && npm run build
@@ -29,7 +28,6 @@ WORKDIR /app
 COPY --from=cli-builder /app/dist ./dist
 COPY --from=cli-builder /app/node_modules ./node_modules
 COPY --from=cli-builder /app/package.json .
-COPY --from=cli-builder /app/scripts ./scripts
 COPY --from=cli-builder /app/vendor ./vendor
 COPY --from=web-builder /app/dist /usr/share/nginx/html
 
