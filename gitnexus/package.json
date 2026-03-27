@@ -65,24 +65,24 @@
     "mnemonist": "^0.39.0",
     "onnxruntime-node": "^1.24.0",
     "pandemonium": "^2.4.0",
-    "tree-sitter": "^0.25.0",
-    "tree-sitter-c": "^0.24.1",
+    "tree-sitter": "0.21.1",
+    "tree-sitter-c": "0.23.2",
     "tree-sitter-c-sharp": "^0.23.1",
     "tree-sitter-cpp": "^0.23.4",
-    "tree-sitter-go": "^0.25.0",
+    "tree-sitter-go": "^0.23.0",
     "tree-sitter-java": "^0.23.5",
-    "tree-sitter-javascript": "^0.25.0",
-    "tree-sitter-php": "^0.24.2",
-    "tree-sitter-python": "^0.25.0",
+    "tree-sitter-javascript": "^0.23.0",
+    "tree-sitter-php": "^0.23.0",
+    "tree-sitter-python": "0.23.4",
     "tree-sitter-ruby": "^0.23.1",
-    "tree-sitter-rust": "^0.24.0",
+    "tree-sitter-rust": "0.23.1",
     "tree-sitter-typescript": "^0.23.2",
     "uuid": "^13.0.0"
   },
   "optionalDependencies": {
     "tree-sitter-dart": "github:UserNobody14/tree-sitter-dart#0fc19c3a57b1109802af41d2b8f60d8835c5da3a",
     "tree-sitter-kotlin": "^0.3.8",
-    "tree-sitter-swift": "0.7.1"
+    "tree-sitter-swift": "0.6.0"
   },
   "devDependencies": {
     "@types/cli-progress": "^3.11.6",
@@ -99,8 +99,7 @@
   "overrides": {
     "@huggingface/transformers": {
       "onnxruntime-node": "$onnxruntime-node"
-    },
-    "tree-sitter": "^0.25.0"
+    }
   },
   "engines": {
     "node": ">=20.0.0"
