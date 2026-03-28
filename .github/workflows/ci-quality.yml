@@ -17,6 +17,19 @@ jobs:
       - run: npm ci
       - run: npx prettier --check .
 
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npx eslint .
+
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 10
