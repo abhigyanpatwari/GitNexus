@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Code, PanelLeftClose, PanelLeft, Trash2, X, Target, FileCode, Sparkles, MousePointerClick } from '@/lib/lucide-icons';
+import { Code, PanelLeftClose, PanelLeft, Trash2, X, Target, FileCode, Sparkles, MousePointerClick, Loader2 } from '@/lib/lucide-icons';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useAppState } from '../hooks/useAppState';
 import { type GraphNode, getSyntaxLanguageFromFilename } from 'gitnexus-shared';
 import { NODE_COLORS } from '../lib/constants';
+import { readFile } from '../services/backend-client';
 
 const getSyntaxLanguage = (filePath: string | undefined): string => {
   if (!filePath) return 'text';
@@ -168,10 +169,61 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
   }, [aiReferences]);
 
   const selectedFilePath = selectedNode?.properties?.filePath;
-  const selectedFileContent: string | undefined = undefined;
   const selectedIsFile = selectedNode?.label === 'File' && !!selectedFilePath;
   const showSelectedViewer = !!selectedNode && !!selectedFilePath;
   const showCitations = aiReferences.length > 0;
+
+  // Fetch file content from the server when a node with a filePath is selected
+  const [selectedFileContent, setSelectedFileContent] = useState<string | undefined>(undefined);
+  const [isLoadingFile, setIsLoadingFile] = useState(false);
+  const selectedViewerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!selectedFilePath) {
+      setSelectedFileContent(undefined);
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoadingFile(true);
+    setSelectedFileContent(undefined);
+
+    readFile(selectedFilePath).then(content => {
+      if (!cancelled) {
+        setSelectedFileContent(content);
+        setIsLoadingFile(false);
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setSelectedFileContent(undefined);
+        setIsLoadingFile(false);
+      }
+    });
+
+    return () => { cancelled = true; };
+  }, [selectedFilePath]);
+
+  // Scroll to the selected node's startLine after content loads
+  useEffect(() => {
+    if (!selectedFileContent || !selectedNode?.properties?.startLine) return;
+    const startLine = selectedNode.properties.startLine as number;
+
+    // Wait for SyntaxHighlighter to render, then scroll
+    requestAnimationFrame(() => {
+      const container = selectedViewerRef.current;
+      if (!container) return;
+      // Each line is a span with a line number. Find the target line element.
+      const lineEl = container.querySelector(`[data-line-number="${startLine + 1}"]`) as HTMLElement
+        ?? container.querySelectorAll('.linenumber')[startLine] as HTMLElement;
+      if (lineEl) {
+        lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else {
+        // Fallback: estimate scroll position based on line height
+        const lineHeight = 20.8; // 13px font * 1.6 line-height
+        container.scrollTop = Math.max(0, startLine * lineHeight - container.clientHeight / 3);
+      }
+    });
+  }, [selectedFileContent, selectedNode?.properties?.startLine]);
 
   if (isCollapsed) {
     return (
@@ -257,8 +309,13 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="flex-1 min-h-0 overflow-auto scrollbar-thin">
-              {selectedFileContent ? (
+            <div ref={selectedViewerRef} className="flex-1 min-h-0 overflow-auto scrollbar-thin">
+              {isLoadingFile ? (
+                <div className="flex items-center justify-center py-8 gap-2 text-text-muted">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span className="text-sm">Loading source...</span>
+                </div>
+              ) : selectedFileContent ? (
                 <SyntaxHighlighter
                   language={getSyntaxLanguage(selectedFilePath)}
                   style={customTheme as any}
