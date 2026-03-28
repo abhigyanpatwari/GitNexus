@@ -15,22 +15,26 @@ import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from '../languages/index.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from '../constants.js';
+import { SymbolTable } from '../symbol-table.js';
+
+/** Language grammar type accepted by Parser.setLanguage(). */
+type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
 
 // tree-sitter-swift is an optionalDependency — may not be installed
 const _require = createRequire(import.meta.url);
-let Swift: any = null;
+let Swift: TreeSitterLanguage | null = null;
 try {
   Swift = _require('tree-sitter-swift');
 } catch {}
 
 // tree-sitter-dart is an optionalDependency — may not be installed
-let Dart: any = null;
+let Dart: TreeSitterLanguage | null = null;
 try {
   Dart = _require('tree-sitter-dart');
 } catch {}
 
 // tree-sitter-kotlin is an optionalDependency — may not be installed
-let Kotlin: any = null;
+let Kotlin: TreeSitterLanguage | null = null;
 try {
   Kotlin = _require('tree-sitter-kotlin');
 } catch {}
@@ -252,7 +256,7 @@ export interface ParseWorkerInput {
 
 const parser = new Parser();
 
-const languageMap: Record<string, any> = {
+const languageMap: Record<string, TreeSitterLanguage> = {
   [SupportedLanguages.JavaScript]: JavaScript,
   [SupportedLanguages.TypeScript]: TypeScript.typescript,
   [`${SupportedLanguages.TypeScript}:tsx`]: TypeScript.tsx,
@@ -301,9 +305,9 @@ const setLanguage = (language: SupportedLanguages, filePath: string): void => {
 // a stored null (enclosing class/function not found = top-level).
 // ============================================================================
 
-const classIdCache = new Map<any, string | null>();
-const functionIdCache = new Map<any, string | null>();
-const exportCache = new Map<any, boolean>();
+const classIdCache = new Map<SyntaxNode, string | null>();
+const functionIdCache = new Map<SyntaxNode, string | null>();
+const exportCache = new Map<SyntaxNode, boolean>();
 
 const clearCaches = (): void => {
   classIdCache.clear();
@@ -339,11 +343,11 @@ function findEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
  * Field extraction only uses symbolTable.lookupExactAll for optional type resolution —
  * returning [] causes the extractor to use the raw type string, which is fine for us.
  */
-const NOOP_SYMBOL_TABLE: any = {
+const NOOP_SYMBOL_TABLE = {
   lookupExactAll: () => [],
   lookupExact: () => undefined,
   lookupExactFull: () => undefined,
-};
+} as unknown as SymbolTable;
 
 /**
  * Get (or extract and cache) field info for a class node.
@@ -381,7 +385,7 @@ import type { LanguageProvider } from '../language-provider.js';
 /** Walk up AST to find enclosing function, return its generateId or null for top-level.
  *  Applies provider.labelOverride so the label matches the definition phase (single source of truth). */
 const findEnclosingFunctionId = (
-  node: any,
+  node: SyntaxNode,
   filePath: string,
   provider: LanguageProvider,
 ): string | null => {
@@ -429,7 +433,7 @@ const findEnclosingFunctionId = (
 };
 
 /** Cached wrapper for findEnclosingClassId — avoids repeated parent walks. */
-const cachedFindEnclosingClassId = (node: any, filePath: string): string | null => {
+const cachedFindEnclosingClassId = (node: SyntaxNode, filePath: string): string | null => {
   const cached = classIdCache.get(node);
   if (cached !== undefined) return cached;
 
@@ -440,8 +444,8 @@ const cachedFindEnclosingClassId = (node: any, filePath: string): string | null 
 
 /** Cached wrapper for export checking — avoids repeated parent walks per symbol. */
 const cachedExportCheck = (
-  checker: (node: any, name: string) => boolean,
-  node: any,
+  checker: (node: SyntaxNode, name: string) => boolean,
+  node: SyntaxNode,
   name: string,
 ): boolean => {
   const cached = exportCache.get(node);
@@ -631,26 +635,26 @@ const RESOURCE_ACTIONS = ['index', 'create', 'store', 'show', 'edit', 'update', 
 const API_RESOURCE_ACTIONS = ['index', 'store', 'show', 'update', 'destroy'];
 
 /** Check if node is a scoped_call_expression with object 'Route' */
-function isRouteStaticCall(node: any): boolean {
+function isRouteStaticCall(node: SyntaxNode): boolean {
   if (node.type !== 'scoped_call_expression') return false;
   const obj = node.childForFieldName?.('object') ?? node.children?.[0];
   return obj?.text === 'Route';
 }
 
 /** Get the method name from a scoped_call_expression or member_call_expression */
-function getCallMethodName(node: any): string | null {
+function getCallMethodName(node: SyntaxNode): string | null {
   const nameNode =
-    node.childForFieldName?.('name') ?? node.children?.find((c: any) => c.type === 'name');
+    node.childForFieldName?.('name') ?? node.children?.find((c: SyntaxNode) => c.type === 'name');
   return nameNode?.text ?? null;
 }
 
 /** Get the arguments node from a call expression */
-function getArguments(node: any): any {
-  return node.children?.find((c: any) => c.type === 'arguments') ?? null;
+function getArguments(node: SyntaxNode): SyntaxNode | null {
+  return node.children?.find((c: SyntaxNode) => c.type === 'arguments') ?? null;
 }
 
 /** Find the closure body inside arguments */
-function findClosureBody(argsNode: any): any | null {
+function findClosureBody(argsNode: SyntaxNode | null): SyntaxNode | null {
   if (!argsNode) return null;
   for (const child of argsNode.children ?? []) {
     if (child.type === 'argument') {
@@ -658,7 +662,8 @@ function findClosureBody(argsNode: any): any | null {
         if (inner.type === 'anonymous_function' || inner.type === 'arrow_function') {
           return (
             inner.childForFieldName?.('body') ??
-            inner.children?.find((c: any) => c.type === 'compound_statement')
+            inner.children?.find((c: SyntaxNode) => c.type === 'compound_statement') ??
+            null
           );
         }
       }
@@ -666,7 +671,8 @@ function findClosureBody(argsNode: any): any | null {
     if (child.type === 'anonymous_function' || child.type === 'arrow_function') {
       return (
         child.childForFieldName?.('body') ??
-        child.children?.find((c: any) => c.type === 'compound_statement')
+        child.children?.find((c: SyntaxNode) => c.type === 'compound_statement') ??
+        null
       );
     }
   }
@@ -674,7 +680,7 @@ function findClosureBody(argsNode: any): any | null {
 }
 
 /** Extract first string argument from arguments node */
-function extractFirstStringArg(argsNode: any): string | null {
+function extractFirstStringArg(argsNode: SyntaxNode | null): string | null {
   if (!argsNode) return null;
   for (const child of argsNode.children ?? []) {
     const target = child.type === 'argument' ? child.children?.[0] : child;
@@ -687,7 +693,7 @@ function extractFirstStringArg(argsNode: any): string | null {
 }
 
 /** Extract middleware from arguments — handles string or array */
-function extractMiddlewareArg(argsNode: any): string[] {
+function extractMiddlewareArg(argsNode: SyntaxNode | null): string[] {
   if (!argsNode) return [];
   for (const child of argsNode.children ?? []) {
     const target = child.type === 'argument' ? child.children?.[0] : child;
@@ -701,7 +707,7 @@ function extractMiddlewareArg(argsNode: any): string[] {
       for (const el of target.children ?? []) {
         if (el.type === 'array_element_initializer') {
           const str = el.children?.find(
-            (c: any) => c.type === 'string' || c.type === 'encapsed_string',
+            (c: SyntaxNode) => c.type === 'string' || c.type === 'encapsed_string',
           );
           const val = str ? extractStringContent(str) : null;
           if (val) items.push(val);
@@ -714,25 +720,25 @@ function extractMiddlewareArg(argsNode: any): string[] {
 }
 
 /** Extract Controller::class from arguments */
-function extractClassArg(argsNode: any): string | null {
+function extractClassArg(argsNode: SyntaxNode | null): string | null {
   if (!argsNode) return null;
   for (const child of argsNode.children ?? []) {
     const target = child.type === 'argument' ? child.children?.[0] : child;
     if (target?.type === 'class_constant_access_expression') {
-      return target.children?.find((c: any) => c.type === 'name')?.text ?? null;
+      return target.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
     }
   }
   return null;
 }
 
 /** Extract controller class name from arguments: [Controller::class, 'method'] or 'Controller@method' */
-function extractControllerTarget(argsNode: any): {
+function extractControllerTarget(argsNode: SyntaxNode | null): {
   controller: string | null;
   method: string | null;
 } {
   if (!argsNode) return { controller: null, method: null };
 
-  const args: any[] = [];
+  const args: (SyntaxNode | undefined)[] = [];
   for (const child of argsNode.children ?? []) {
     if (child.type === 'argument') args.push(child.children?.[0]);
     else if (child.type !== '(' && child.type !== ')' && child.type !== ',') args.push(child);
@@ -746,14 +752,14 @@ function extractControllerTarget(argsNode: any): {
   if (handlerNode.type === 'array_creation_expression') {
     let controller: string | null = null;
     let method: string | null = null;
-    const elements: any[] = [];
+    const elements: SyntaxNode[] = [];
     for (const el of handlerNode.children ?? []) {
       if (el.type === 'array_element_initializer') elements.push(el);
     }
     if (elements[0]) {
       const classAccess = findDescendant(elements[0], 'class_constant_access_expression');
       if (classAccess) {
-        controller = classAccess.children?.find((c: any) => c.type === 'name')?.text ?? null;
+        controller = classAccess.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
       }
     }
     if (elements[1]) {
@@ -774,7 +780,7 @@ function extractControllerTarget(argsNode: any): {
 
   // Class reference: UserController::class (invokable controller)
   if (handlerNode.type === 'class_constant_access_expression') {
-    const controller = handlerNode.children?.find((c: any) => c.type === 'name')?.text ?? null;
+    const controller = handlerNode.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
     return { controller, method: '__invoke' };
   }
 
@@ -784,22 +790,22 @@ function extractControllerTarget(argsNode: any): {
 interface ChainedRouteCall {
   isRouteFacade: boolean;
   terminalMethod: string;
-  attributes: { method: string; argsNode: any }[];
-  terminalArgs: any;
-  node: any;
+  attributes: { method: string; argsNode: SyntaxNode | null }[];
+  terminalArgs: SyntaxNode | null;
+  node: SyntaxNode;
 }
 
 /**
  * Unwrap a chained call like Route::middleware('auth')->prefix('api')->group(fn)
  */
-function unwrapRouteChain(node: any): ChainedRouteCall | null {
+function unwrapRouteChain(node: SyntaxNode): ChainedRouteCall | null {
   if (node.type !== 'member_call_expression') return null;
 
   const terminalMethod = getCallMethodName(node);
   if (!terminalMethod) return null;
 
   const terminalArgs = getArguments(node);
-  const attributes: { method: string; argsNode: any }[] = [];
+  const attributes: { method: string; argsNode: SyntaxNode | null }[] = [];
 
   let current = node.children?.[0];
 
@@ -827,7 +833,7 @@ function unwrapRouteChain(node: any): ChainedRouteCall | null {
 }
 
 /** Parse Route::group(['middleware' => ..., 'prefix' => ...], fn) array syntax */
-function parseArrayGroupArgs(argsNode: any): RouteGroupContext {
+function parseArrayGroupArgs(argsNode: SyntaxNode | null): RouteGroupContext {
   const ctx: RouteGroupContext = { middleware: [], prefix: null, controller: null };
   if (!argsNode) return ctx;
 
@@ -837,7 +843,7 @@ function parseArrayGroupArgs(argsNode: any): RouteGroupContext {
       for (const el of target.children ?? []) {
         if (el.type !== 'array_element_initializer') continue;
         const children = el.children ?? [];
-        const arrowIdx = children.findIndex((c: any) => c.type === '=>');
+        const arrowIdx = children.findIndex((c: SyntaxNode) => c.type === '=>');
         if (arrowIdx === -1) continue;
         const key = extractStringContent(children[arrowIdx - 1]);
         const val = children[arrowIdx + 1];
@@ -848,7 +854,7 @@ function parseArrayGroupArgs(argsNode: any): RouteGroupContext {
           } else if (val?.type === 'array_creation_expression') {
             for (const item of val.children ?? []) {
               if (item.type === 'array_element_initializer') {
-                const str = item.children?.find((c: any) => c.type === 'string');
+                const str = item.children?.find((c: SyntaxNode) => c.type === 'string');
                 const s = str ? extractStringContent(str) : null;
                 if (s) ctx.middleware.push(s);
               }
@@ -858,7 +864,7 @@ function parseArrayGroupArgs(argsNode: any): RouteGroupContext {
           ctx.prefix = extractStringContent(val) ?? null;
         } else if (key === 'controller') {
           if (val?.type === 'class_constant_access_expression') {
-            ctx.controller = val.children?.find((c: any) => c.type === 'name')?.text ?? null;
+            ctx.controller = val.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
           }
         }
       }
@@ -867,7 +873,7 @@ function parseArrayGroupArgs(argsNode: any): RouteGroupContext {
   return ctx;
 }
 
-function extractLaravelRoutes(tree: any, filePath: string): ExtractedRoute[] {
+function extractLaravelRoutes(tree: Parser.Tree, filePath: string): ExtractedRoute[] {
   const routes: ExtractedRoute[] = [];
 
   function resolveStack(stack: RouteGroupContext[]): {
@@ -888,10 +894,10 @@ function extractLaravelRoutes(tree: any, filePath: string): ExtractedRoute[] {
 
   function emitRoute(
     httpMethod: string,
-    argsNode: any,
+    argsNode: SyntaxNode | null,
     lineNumber: number,
     groupStack: RouteGroupContext[],
-    chainAttrs: { method: string; argsNode: any }[],
+    chainAttrs: { method: string; argsNode: SyntaxNode | null }[],
   ) {
     const effective = resolveStack(groupStack);
 
@@ -940,7 +946,7 @@ function extractLaravelRoutes(tree: any, filePath: string): ExtractedRoute[] {
     }
   }
 
-  function walk(node: any, groupStack: RouteGroupContext[]) {
+  function walk(node: SyntaxNode, groupStack: RouteGroupContext[]) {
     // Case 1: Simple Route::get(...), Route::post(...), etc.
     if (isRouteStaticCall(node)) {
       const method = getCallMethodName(node);
@@ -999,7 +1005,7 @@ function extractLaravelRoutes(tree: any, filePath: string): ExtractedRoute[] {
     walkChildren(node, groupStack);
   }
 
-  function walkChildren(node: any, groupStack: RouteGroupContext[]) {
+  function walkChildren(node: SyntaxNode, groupStack: RouteGroupContext[]) {
     for (const child of node.children ?? []) {
       walk(child, groupStack);
     }
@@ -1069,7 +1075,7 @@ const processFileGroup = (
   result: ParseWorkerResult,
   onFileProcessed?: () => void,
 ): void => {
-  let query: any;
+  let query: Parser.Query;
   try {
     const lang = parser.getLanguage();
     query = new Parser.Query(lang, queryString);
@@ -1120,7 +1126,7 @@ const processFileGroup = (
     // runs. This pre-pass makes parent class information available for type resolution.
     const fileParentMap = new Map<string, string[]>();
     for (const match of matches) {
-      const captureMap: Record<string, any> = {};
+      const captureMap: Record<string, SyntaxNode> = {};
       for (const c of match.captures) {
         captureMap[c.name] = c.node;
       }
@@ -1172,7 +1178,7 @@ const processFileGroup = (
     const fileDecorators = new Map<number, { name: string; arg?: string; isTool?: boolean }>();
 
     for (const match of matches) {
-      const captureMap: Record<string, any> = {};
+      const captureMap: Record<string, SyntaxNode> = {};
       for (const c of match.captures) {
         captureMap[c.name] = c.node;
       }

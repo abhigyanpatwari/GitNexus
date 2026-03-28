@@ -13,7 +13,7 @@ import { phpExportChecker } from '../export-detection.js';
 import { resolvePhpImport } from '../import-resolvers/php.js';
 import { extractPhpNamedBindings } from '../named-bindings/php.js';
 import { PHP_QUERIES } from '../tree-sitter-queries.js';
-import { findDescendant, extractStringContent } from '../utils/ast-helpers.js';
+import { findDescendant, extractStringContent, type SyntaxNode } from '../utils/ast-helpers.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { phpConfig as phpFieldConfig } from '../field-extractors/configs/php.js';
@@ -128,7 +128,7 @@ const ELOQUENT_RELATIONS = new Set([
  * For a PHP property_declaration node, extract array values as a description string.
  * Returns null if not an Eloquent model property or no array values found.
  */
-function extractPhpPropertyDescription(propName: string, propDeclNode: any): string | null {
+function extractPhpPropertyDescription(propName: string, propDeclNode: SyntaxNode): string | null {
   if (!ELOQUENT_ARRAY_PROPS.has(propName)) return null;
 
   const arrayNode = findDescendant(propDeclNode, 'array_creation_expression');
@@ -138,7 +138,7 @@ function extractPhpPropertyDescription(propName: string, propDeclNode: any): str
   for (const child of arrayNode.children ?? []) {
     if (child.type !== 'array_element_initializer') continue;
     const children = child.children ?? [];
-    const arrowIdx = children.findIndex((c: any) => c.type === '=>');
+    const arrowIdx = children.findIndex((c: SyntaxNode) => c.type === '=>');
     if (arrowIdx !== -1) {
       const key = extractStringContent(children[arrowIdx - 1]);
       const val = extractStringContent(children[arrowIdx + 1]);
@@ -156,14 +156,14 @@ function extractPhpPropertyDescription(propName: string, propDeclNode: any): str
  * For a PHP method_declaration node, detect if it defines an Eloquent relationship.
  * Returns description like "hasMany(Post)" or null.
  */
-function extractEloquentRelationDescription(methodNode: any): string | null {
-  function findRelationCall(node: any): any {
+function extractEloquentRelationDescription(methodNode: SyntaxNode): string | null {
+  function findRelationCall(node: SyntaxNode): SyntaxNode | null {
     if (node.type === 'member_call_expression') {
       const children = node.children ?? [];
       const objectNode = children.find(
-        (c: any) => c.type === 'variable_name' && c.text === '$this',
+        (c: SyntaxNode) => c.type === 'variable_name' && c.text === '$this',
       );
-      const nameNode = children.find((c: any) => c.type === 'name');
+      const nameNode = children.find((c: SyntaxNode) => c.type === 'name');
       if (objectNode && nameNode && ELOQUENT_RELATIONS.has(nameNode.text)) return node;
     }
     for (const child of node.children ?? []) {
@@ -176,17 +176,17 @@ function extractEloquentRelationDescription(methodNode: any): string | null {
   const callNode = findRelationCall(methodNode);
   if (!callNode) return null;
 
-  const relType = callNode.children?.find((c: any) => c.type === 'name')?.text;
-  const argsNode = callNode.children?.find((c: any) => c.type === 'arguments');
+  const relType = callNode.children?.find((c: SyntaxNode) => c.type === 'name')?.text;
+  const argsNode = callNode.children?.find((c: SyntaxNode) => c.type === 'arguments');
   let targetModel: string | null = null;
   if (argsNode) {
-    const firstArg = argsNode.children?.find((c: any) => c.type === 'argument');
+    const firstArg = argsNode.children?.find((c: SyntaxNode) => c.type === 'argument');
     if (firstArg) {
       const classConstant = firstArg.children?.find(
-        (c: any) => c.type === 'class_constant_access_expression',
+        (c: SyntaxNode) => c.type === 'class_constant_access_expression',
       );
       if (classConstant) {
-        targetModel = classConstant.children?.find((c: any) => c.type === 'name')?.text ?? null;
+        targetModel = classConstant.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
       }
     }
   }
@@ -203,7 +203,7 @@ function extractEloquentRelationDescription(methodNode: any): string | null {
 function phpDescriptionExtractor(
   nodeLabel: NodeLabel,
   nodeName: string,
-  captureMap: Record<string, any>,
+  captureMap: Record<string, SyntaxNode>,
 ): string | undefined {
   if (nodeLabel === 'Property' && captureMap['definition.property']) {
     return extractPhpPropertyDescription(nodeName, captureMap['definition.property']) ?? undefined;

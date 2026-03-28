@@ -38,7 +38,7 @@ export const DEFINITION_CAPTURE_KEYS = [
 
 /** Extract the definition node from a tree-sitter query capture map. */
 export const getDefinitionNodeFromCaptures = (
-  captureMap: Record<string, any>,
+  captureMap: Record<string, SyntaxNode>,
 ): SyntaxNode | null => {
   for (const key of DEFINITION_CAPTURE_KEYS) {
     if (captureMap[key]) return captureMap[key];
@@ -149,7 +149,7 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
 /** Check if a Kotlin function_declaration capture is inside a class_body (i.e., a method).
  *  Kotlin grammar uses function_declaration for both top-level functions and class methods.
  *  Returns true when the captured definition node has a class_body ancestor. */
-export function isKotlinClassMethod(captureNode: { parent?: any } | null | undefined): boolean {
+export function isKotlinClassMethod(captureNode: { parent?: SyntaxNode | null } | null | undefined): boolean {
   let ancestor = captureNode?.parent;
   while (ancestor) {
     if (ancestor.type === 'class_body') return true;
@@ -165,7 +165,7 @@ export function isKotlinClassMethod(captureNode: { parent?: any } | null | undef
  * Returns null if the capture should be skipped (import, call, C/C++ duplicate, missing name).
  */
 export function getLabelFromCaptures(
-  captureMap: Record<string, any>,
+  captureMap: Record<string, SyntaxNode>,
   provider: LanguageProvider,
 ): NodeLabel | null {
   if (captureMap['import'] || captureMap['call']) return null;
@@ -204,7 +204,7 @@ export function getLabelFromCaptures(
 
 /** Walk up AST to find enclosing class/struct/interface/impl, return its generateId or null.
  *  For Go method_declaration nodes, extracts receiver type (e.g. `func (u *User) Save()` → User struct). */
-export const findEnclosingClassId = (node: any, filePath: string): string | null => {
+export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string | null => {
   let current = node.parent;
   while (current) {
     // Go: method_declaration has a receiver parameter with the struct type
@@ -213,7 +213,7 @@ export const findEnclosingClassId = (node: any, filePath: string): string | null
       if (receiver) {
         // receiver is a parameter_list: (u *User) or (u User)
         const paramDecl = receiver.namedChildren?.find?.(
-          (c: any) => c.type === 'parameter_declaration',
+          (c: SyntaxNode) => c.type === 'parameter_declaration',
         );
         if (paramDecl) {
           const typeNode = paramDecl.childForFieldName?.('type');
@@ -230,7 +230,7 @@ export const findEnclosingClassId = (node: any, filePath: string): string | null
     // Go: type_declaration wrapping a struct_type (type User struct { ... })
     // field_declaration → field_declaration_list → struct_type → type_spec → type_declaration
     if (current.type === 'type_declaration') {
-      const typeSpec = current.children?.find((c: any) => c.type === 'type_spec');
+      const typeSpec = current.children?.find((c: SyntaxNode) => c.type === 'type_spec');
       if (typeSpec) {
         const typeBody = typeSpec.childForFieldName?.('type');
         if (typeBody?.type === 'struct_type' || typeBody?.type === 'interface_type') {
@@ -246,11 +246,11 @@ export const findEnclosingClassId = (node: any, filePath: string): string | null
       // Rust impl_item: for `impl Trait for Struct {}`, pick the type after `for`
       if (current.type === 'impl_item') {
         const children = current.children ?? [];
-        const forIdx = children.findIndex((c: any) => c.text === 'for');
+        const forIdx = children.findIndex((c: SyntaxNode) => c.text === 'for');
         if (forIdx !== -1) {
           const nameNode = children
             .slice(forIdx + 1)
-            .find((c: any) => c.type === 'type_identifier' || c.type === 'identifier');
+            .find((c: SyntaxNode) => c.type === 'type_identifier' || c.type === 'identifier');
           if (nameNode) {
             return generateId('Impl', `${filePath}:${nameNode.text}`);
           }
@@ -260,7 +260,7 @@ export const findEnclosingClassId = (node: any, filePath: string): string | null
       const nameNode =
         current.childForFieldName?.('name') ??
         current.children?.find(
-          (c: any) =>
+          (c: SyntaxNode) =>
             c.type === 'type_identifier' ||
             c.type === 'identifier' ||
             c.type === 'name' ||
@@ -281,10 +281,10 @@ export const findEnclosingClassId = (node: any, filePath: string): string | null
  * Used for Kotlin AST traversal where visibility_modifier lives inside a modifiers sibling.
  */
 export const findSiblingChild = (
-  parent: any,
+  parent: SyntaxNode,
   siblingType: string,
   childType: string,
-): any | null => {
+): SyntaxNode | null => {
   for (let i = 0; i < parent.childCount; i++) {
     const sibling = parent.child(i);
     if (sibling?.type === siblingType) {
@@ -843,7 +843,7 @@ export const extractMethodSignature = (node: SyntaxNode | null | undefined): Met
 // ============================================================================
 
 /** Walk an AST node depth-first, returning the first descendant with the given type. */
-export function findDescendant(node: any, type: string): any {
+export function findDescendant(node: SyntaxNode, type: string): SyntaxNode | null {
   if (node.type === type) return node;
   for (const child of node.children ?? []) {
     const found = findDescendant(child, type);
@@ -853,9 +853,9 @@ export function findDescendant(node: any, type: string): any {
 }
 
 /** Extract the text content from a string or encapsed_string AST node. */
-export function extractStringContent(node: any): string | null {
+export function extractStringContent(node: SyntaxNode | null | undefined): string | null {
   if (!node) return null;
-  const content = node.children?.find((c: any) => c.type === 'string_content');
+  const content = node.children?.find((c: SyntaxNode) => c.type === 'string_content');
   if (content) return content.text;
   if (node.type === 'string_content') return node.text;
   return null;

@@ -1,4 +1,4 @@
-import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
+import type { GraphNode, GraphRelationship, NodeLabel } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import Parser from 'tree-sitter';
 import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/parser-loader.js';
@@ -114,7 +114,7 @@ const processParsingWithWorkers = async (
     for (const node of result.nodes) {
       graph.addNode({
         id: node.id,
-        label: node.label as any,
+        label: node.label as NodeLabel,
         properties: node.properties,
       });
     }
@@ -184,10 +184,10 @@ const processParsingWithWorkers = async (
 
 // Inline caches to avoid repeated parent-walks per node (same pattern as parse-worker.ts).
 // Keyed by tree-sitter node reference — cleared at the start of each file.
-const classIdCache = new Map<any, string | null>();
-const exportCache = new Map<any, boolean>();
+const classIdCache = new Map<SyntaxNode, string | null>();
+const exportCache = new Map<SyntaxNode, boolean>();
 
-const cachedFindEnclosingClassId = (node: any, filePath: string): string | null => {
+const cachedFindEnclosingClassId = (node: SyntaxNode, filePath: string): string | null => {
   const cached = classIdCache.get(node);
   if (cached !== undefined) return cached;
   const result = findEnclosingClassId(node, filePath);
@@ -196,8 +196,8 @@ const cachedFindEnclosingClassId = (node: any, filePath: string): string | null 
 };
 
 const cachedExportCheck = (
-  checker: (node: any, name: string) => boolean,
-  node: any,
+  checker: (node: SyntaxNode, name: string) => boolean,
+  node: SyntaxNode,
   name: string,
 ): boolean => {
   const cached = exportCache.get(node);
@@ -210,7 +210,7 @@ const cachedExportCheck = (
 // FieldExtractor cache for sequential path — same pattern as parse-worker.ts
 const seqFieldInfoCache = new Map<number, Map<string, FieldInfo>>();
 
-function seqFindEnclosingClassNode(node: any): any | null {
+function seqFindEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
   let current = node.parent;
   while (current) {
     if (CLASS_CONTAINER_TYPES.has(current.type)) return current;
@@ -221,11 +221,11 @@ function seqFindEnclosingClassNode(node: any): any | null {
 
 /** Minimal no-op SymbolTable stub for FieldExtractorContext (sequential path has a real
  *  SymbolTable, but it's incomplete at this stage — use the stub for safety). */
-const NOOP_SYMBOL_TABLE_SEQ: any = {
+const NOOP_SYMBOL_TABLE_SEQ = {
   lookupExactAll: () => [],
   lookupExact: () => undefined,
   lookupExactFull: () => undefined,
-};
+} as unknown as SymbolTable;
 
 function seqGetFieldInfo(
   classNode: SyntaxNode,
@@ -321,7 +321,7 @@ const processParsingSequential = async (
       : null;
 
     matches.forEach((match) => {
-      const captureMap: Record<string, any> = {};
+      const captureMap: Record<string, SyntaxNode> = {};
 
       match.captures.forEach((c) => {
         captureMap[c.name] = c.node;
@@ -372,7 +372,7 @@ const processParsingSequential = async (
 
       const node: GraphNode = {
         id: nodeId,
-        label: nodeLabel as any,
+        label: nodeLabel as NodeLabel,
         properties: {
           name: nodeName,
           filePath: file.path,
