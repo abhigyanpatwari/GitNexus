@@ -157,14 +157,13 @@ const AppContent = () => {
     return (
       <DropZone
         onServerConnect={async (result, serverUrl) => {
+          // Refresh repo list before transitioning so it's ready in the header
+          const repos = await fetchRepos().catch(() => [] as BackendRepo[]);
+          setAvailableRepos(repos);
           await handleServerConnect(result);
           setProgress(null);
           if (serverUrl) {
-            const baseUrl = normalizeServerUrl(serverUrl);
-            setServerBaseUrl(baseUrl);
-            fetchRepos()
-              .then((repos) => setAvailableRepos(repos))
-              .catch((e) => console.warn('Failed to fetch repo list:', e));
+            setServerBaseUrl(normalizeServerUrl(serverUrl));
           }
         }}
       />
@@ -184,8 +183,11 @@ const AppContent = () => {
         onSwitchRepo={switchRepo}
         onAnalyzeComplete={async (repoName) => {
           // A new repo was just indexed via the header dropdown.
-          // Connect to it and refresh the available repos list.
+          // Refresh the repo list first (so it appears immediately),
+          // then connect to the new repo's graph.
           try {
+            const repos = await fetchRepos();
+            setAvailableRepos(repos);
             const result = await connectToServer(
               serverBaseUrl ?? 'http://localhost:4747',
               undefined,
@@ -194,11 +196,10 @@ const AppContent = () => {
             );
             await handleServerConnect(result);
             setProgress(null);
-            fetchRepos()
-              .then(repos => setAvailableRepos(repos))
-              .catch(e => console.warn('Failed to refresh repo list:', e));
           } catch (err) {
             console.error('Failed to connect after analyze:', err);
+            // Still refresh the list even if connect fails
+            fetchRepos().then(repos => setAvailableRepos(repos)).catch(() => {});
           }
         }}
       />

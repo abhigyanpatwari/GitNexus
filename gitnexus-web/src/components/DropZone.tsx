@@ -191,12 +191,40 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
   handleAutoConnectRef.current = handleAutoConnect;
 
   // Called by AnalyzeOnboarding when a new repo finishes indexing.
-  // Re-runs the auto-connect logic — repos.length is now > 0 so it will proceed.
-  const handleAnalyzeComplete = () => {
+  // Connects directly to the newly-analyzed repo by name.
+  const handleAnalyzeComplete = (repoName: string) => {
     autoConnectRan.current = true;
     setPhase('loading');
-    setLoadingMessage('Connecting...');
-    handleAutoConnectRef.current();
+    setLoadingMessage('Loading graph...');
+    // Connect to the specific repo that was just analyzed
+    (async () => {
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+      try {
+        const result = await connectToServer(
+          detectedBackendUrl,
+          (p, downloaded, total) => {
+            if (p === 'downloading') {
+              const pct = total ? Math.round((downloaded / total) * 100) : null;
+              setLoadingMessage(pct ? `Downloading graph... ${pct}%` : 'Downloading graph...');
+            } else if (p === 'extracting') {
+              setLoadingMessage('Processing graph...');
+            }
+          },
+          abortController.signal,
+          repoName,
+        );
+        if (onServerConnect) {
+          await onServerConnect(result, detectedBackendUrl);
+        }
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') return;
+        setError(err instanceof Error ? err.message : 'Failed to load graph');
+        setPhase('onboarding');
+      } finally {
+        abortControllerRef.current = null;
+      }
+    })();
   };
 
   // Track when the initial probe finishes
