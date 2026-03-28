@@ -2,6 +2,11 @@
  * Language Detection — maps file paths to SupportedLanguages enum values.
  *
  * Shared between CLI (ingestion pipeline) and web (syntax highlighting).
+ *
+ * ADDING A NEW LANGUAGE:
+ * 1. Add enum member to SupportedLanguages in languages.ts
+ * 2. Add file extensions to EXTENSION_MAP below
+ * 3. TypeScript will error if you miss either step (exhaustive Record)
  */
 
 import { SupportedLanguages } from './languages.js';
@@ -10,61 +15,82 @@ import { SupportedLanguages } from './languages.js';
 const RUBY_EXTENSIONLESS_FILES = new Set(['Rakefile', 'Gemfile', 'Guardfile', 'Vagrantfile', 'Brewfile']);
 
 /**
+ * Exhaustive map: every SupportedLanguages member → its file extensions.
+ *
+ * If a new language is added to the enum without adding an entry here,
+ * TypeScript emits a compile error: "Property 'NewLang' is missing in type..."
+ */
+const EXTENSION_MAP: Record<SupportedLanguages, readonly string[]> = {
+  [SupportedLanguages.JavaScript]:  ['.js', '.jsx', '.mjs', '.cjs'],
+  [SupportedLanguages.TypeScript]:  ['.ts', '.tsx', '.mts', '.cts'],
+  [SupportedLanguages.Python]:      ['.py'],
+  [SupportedLanguages.Java]:        ['.java'],
+  [SupportedLanguages.C]:           ['.c'],
+  [SupportedLanguages.CPlusPlus]:   ['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh'],
+  [SupportedLanguages.CSharp]:      ['.cs'],
+  [SupportedLanguages.Go]:          ['.go'],
+  [SupportedLanguages.Ruby]:        ['.rb', '.rake', '.gemspec'],
+  [SupportedLanguages.Rust]:        ['.rs'],
+  [SupportedLanguages.PHP]:         ['.php', '.phtml', '.php3', '.php4', '.php5', '.php8'],
+  [SupportedLanguages.Kotlin]:      ['.kt', '.kts'],
+  [SupportedLanguages.Swift]:       ['.swift'],
+  [SupportedLanguages.Dart]:        ['.dart'],
+  [SupportedLanguages.Cobol]:       ['.cbl', '.cob', '.cpy', '.cobol'],
+} satisfies Record<SupportedLanguages, readonly string[]>; // Ensure exhaustiveness
+
+/** Pre-built reverse lookup: extension → language (built once at module load). */
+const extToLang = new Map<string, SupportedLanguages>();
+for (const [lang, exts] of Object.entries(EXTENSION_MAP) as [SupportedLanguages, readonly string[]][]) {
+  for (const ext of exts) {
+    extToLang.set(ext, lang);
+  }
+}
+
+/**
  * Map file extension to SupportedLanguage enum.
  * Returns null if the file extension is not recognized.
  */
 export const getLanguageFromFilename = (filename: string): SupportedLanguages | null => {
-  // TypeScript (including TSX)
-  if (filename.endsWith('.tsx')) return SupportedLanguages.TypeScript;
-  if (filename.endsWith('.ts')) return SupportedLanguages.TypeScript;
-  // JavaScript (including JSX)
-  if (filename.endsWith('.jsx')) return SupportedLanguages.JavaScript;
-  if (filename.endsWith('.js')) return SupportedLanguages.JavaScript;
-  // Python
-  if (filename.endsWith('.py')) return SupportedLanguages.Python;
-  // Java
-  if (filename.endsWith('.java')) return SupportedLanguages.Java;
-  // C source files
-  if (filename.endsWith('.c')) return SupportedLanguages.C;
-  // C++ (all common extensions, including .h)
-  // .h is parsed as C++ because tree-sitter-cpp is a strict superset of C, so pure-C
-  // headers parse correctly, and C++ headers (classes, templates) are handled properly.
-  if (filename.endsWith('.cpp') || filename.endsWith('.cc') || filename.endsWith('.cxx') ||
-      filename.endsWith('.h') || filename.endsWith('.hpp') || filename.endsWith('.hxx') || filename.endsWith('.hh')) return SupportedLanguages.CPlusPlus;
-  // C#
-  if (filename.endsWith('.cs')) return SupportedLanguages.CSharp;
-  // Go
-  if (filename.endsWith('.go')) return SupportedLanguages.Go;
-  // Rust
-  if (filename.endsWith('.rs')) return SupportedLanguages.Rust;
-  // Kotlin
-  if (filename.endsWith('.kt') || filename.endsWith('.kts')) return SupportedLanguages.Kotlin;
-  // PHP (all common extensions)
-  if (filename.endsWith('.php') || filename.endsWith('.phtml') ||
-      filename.endsWith('.php3') || filename.endsWith('.php4') ||
-      filename.endsWith('.php5') || filename.endsWith('.php8')) {
-    return SupportedLanguages.PHP;
+  // Fast path: check the extension map
+  const lastDot = filename.lastIndexOf('.');
+  if (lastDot >= 0) {
+    const ext = filename.slice(lastDot).toLowerCase();
+    const lang = extToLang.get(ext);
+    if (lang !== undefined) return lang;
   }
-  // Ruby (extensions)
-  if (filename.endsWith('.rb') || filename.endsWith('.rake') || filename.endsWith('.gemspec')) {
-    return SupportedLanguages.Ruby;
-  }
-  // Ruby (extensionless files)
+
+  // Ruby extensionless files (Rakefile, Gemfile, etc.)
   const basename = filename.split('/').pop() || filename;
   if (RUBY_EXTENSIONLESS_FILES.has(basename)) {
     return SupportedLanguages.Ruby;
   }
-  // Swift
-  if (filename.endsWith('.swift')) return SupportedLanguages.Swift;
-  // Dart
-  if (filename.endsWith('.dart')) return SupportedLanguages.Dart;
-  // COBOL
-  if (filename.endsWith('.cbl') || filename.endsWith('.cob') ||
-      filename.endsWith('.cpy') || filename.endsWith('.cobol')) {
-    return SupportedLanguages.Cobol;
-  }
+
   return null;
 };
+
+/**
+ * Exhaustive map: every SupportedLanguages member → Prism syntax identifier.
+ *
+ * If a new language is added to the enum without adding an entry here,
+ * TypeScript emits a compile error.
+ */
+const SYNTAX_MAP: Record<SupportedLanguages, string> = {
+  [SupportedLanguages.JavaScript]:  'javascript',
+  [SupportedLanguages.TypeScript]:  'typescript',
+  [SupportedLanguages.Python]:      'python',
+  [SupportedLanguages.Java]:        'java',
+  [SupportedLanguages.C]:           'c',
+  [SupportedLanguages.CPlusPlus]:   'cpp',
+  [SupportedLanguages.CSharp]:      'csharp',
+  [SupportedLanguages.Go]:          'go',
+  [SupportedLanguages.Ruby]:        'ruby',
+  [SupportedLanguages.Rust]:        'rust',
+  [SupportedLanguages.PHP]:         'php',
+  [SupportedLanguages.Kotlin]:      'kotlin',
+  [SupportedLanguages.Swift]:       'swift',
+  [SupportedLanguages.Dart]:        'dart',
+  [SupportedLanguages.Cobol]:       'cobol',
+} satisfies Record<SupportedLanguages, string>; // Ensure exhaustiveness
 
 /** Non-code file extensions → Prism-compatible syntax identifiers */
 const AUXILIARY_SYNTAX_MAP: Record<string, string> = {
@@ -89,7 +115,7 @@ const AUXILIARY_BASENAME_MAP: Record<string, string> = {
  */
 export const getSyntaxLanguageFromFilename = (filePath: string): string => {
   const lang = getLanguageFromFilename(filePath);
-  if (lang) return lang;
+  if (lang) return SYNTAX_MAP[lang];
   const ext = filePath.split('.').pop()?.toLowerCase();
   if (ext && ext in AUXILIARY_SYNTAX_MAP) return AUXILIARY_SYNTAX_MAP[ext];
   const basename = filePath.split('/').pop() || '';
