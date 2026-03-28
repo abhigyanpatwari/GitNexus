@@ -21,6 +21,8 @@ import {
   buildImportedRawReturnTypes,
   type ExportedTypeMap,
   buildExportedTypeMapFromGraph,
+  buildImplementorMap,
+  mergeImplementorMaps,
 } from './call-processor.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from './route-extractors/nextjs.js';
 import { expoFileToRouteURL } from './route-extractors/expo.js';
@@ -37,11 +39,15 @@ import {
 } from './route-extractors/middleware.js';
 import { generateId } from '../../lib/utils.js';
 import type {
-  ExtractedFetchCall,
-  ExtractedRoute,
+  ExtractedAssignment,
+  ExtractedCall,
   ExtractedDecoratorRoute,
-  ExtractedToolDef,
+  ExtractedFetchCall,
+  ExtractedHeritage,
   ExtractedORMQuery,
+  ExtractedRoute,
+  ExtractedToolDef,
+  FileConstructorBindings,
 } from './workers/parse-worker.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
 import { computeMRO } from './mro-processor.js';
@@ -607,7 +613,8 @@ async function runScanAndStructure(
  * 1. Parse via worker pool (or sequential fallback)
  * 2. Resolve imports from extracted data
  * 3. Synthesize wildcard import bindings (Go/Ruby/C++/Swift/Python)
- * 4. Resolve calls, heritage, routes concurrently (Promise.all)
+ * 4. Resolve heritage + routes per chunk; defer worker CALLS until all chunks
+ *    have contributed heritage so interface-dispatch implementor map is complete
  * 5. Collect TypeEnv bindings for cross-file propagation
  *
  * State accumulated across chunks: symbolTable, importMap, namedImportMap,
@@ -617,6 +624,9 @@ async function runScanAndStructure(
  * @reads  allPaths (from scan phase)
  * @writes graph (Symbol nodes, IMPORTS/CALLS/EXTENDS/IMPLEMENTS/ACCESSES edges)
  * @writes ctx.symbolTable, ctx.importMap, ctx.namedImportMap, ctx.moduleAliasMap
+ *
+ * Follow-up from PR review: MethodExtractor (FieldExtractor parity) and optional
+ * METHOD_IMPLEMENTS graph edges to make dispatch queryable without an in-memory map.
  */
 async function runChunkedParseAndResolve(
   graph: ReturnType<typeof createKnowledgeGraph>,
@@ -748,10 +758,10 @@ async function runChunkedParseAndResolve(
   const importCtx = buildImportResolutionContext(allPaths);
   const allPathObjects = allPaths.map((p) => ({ path: p }));
 
-  // Single-pass: parse + resolve imports/calls/heritage per chunk.
-  // Calls/heritage use the symbol table built so far (symbols from earlier chunks
-  // are already registered). This trades ~5% cross-chunk resolution accuracy for
-  // 200-400MB less memory — critical for Linux-kernel-scale repos.
+  // Worker path: parse + imports + heritage per chunk; buffer extracted calls and
+  // run processCallsFromExtracted once after all chunks so interface-dispatch uses a
+  // complete implementor map (heritage from every chunk). Costs peak RAM for buffered
+  // call rows vs streaming resolution per chunk.
   const sequentialChunkPaths: string[][] = [];
   // Pre-compute which chunks need synthesis — O(1) lookup per chunk.
   const chunkNeedsSynthesis = chunks.map((paths) =>
@@ -773,6 +783,12 @@ async function runChunkedParseAndResolve(
   // Accumulate MCP/RPC tool definitions (@mcp.tool(), @app.tool(), etc.)
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
+  // Interface dispatch: maps interface name → implementor file paths (accumulated across chunks)
+  const globalImplementorMap = new Map<string, Set<string>>();
+  const deferredWorkerCalls: ExtractedCall[] = [];
+  const deferredWorkerHeritage: ExtractedHeritage[] = [];
+  const deferredConstructorBindings: FileConstructorBindings[] = [];
+  const deferredAssignments: ExtractedAssignment[] = [];
 
   try {
     for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
@@ -855,29 +871,16 @@ async function runChunkedParseAndResolve(
             );
           }
         }
-        // Calls + Heritage + Routes — resolve in parallel (no shared mutable state between them)
-        // This is safe because each writes disjoint relationship types into idempotent id-keyed Maps,
-        // and the single-threaded event loop prevents races between synchronous addRelationship calls.
+        deferredWorkerCalls.push(...chunkWorkerData.calls);
+        deferredWorkerHeritage.push(...chunkWorkerData.heritage);
+        deferredConstructorBindings.push(...chunkWorkerData.constructorBindings);
+        if (chunkWorkerData.assignments?.length) {
+          deferredAssignments.push(...chunkWorkerData.assignments);
+        }
+
+        // Heritage + Routes — calls deferred until all chunks have contributed heritage
+        // (complete implementor map for interface dispatch).
         await Promise.all([
-          processCallsFromExtracted(
-            graph,
-            chunkWorkerData.calls,
-            ctx,
-            (current, total) => {
-              onProgress({
-                phase: 'parsing',
-                percent: Math.round(chunkBasePercent),
-                message: `Resolving calls (chunk ${chunkIdx + 1}/${numChunks})...`,
-                detail: `${current}/${total} files`,
-                stats: {
-                  filesProcessed: filesParsedSoFar,
-                  totalFiles: totalParseable,
-                  nodesCreated: graph.nodeCount,
-                },
-              });
-            },
-            chunkWorkerData.constructorBindings,
-          ),
           processHeritageFromExtracted(graph, chunkWorkerData.heritage, ctx, (current, total) => {
             onProgress({
               phase: 'parsing',
@@ -905,15 +908,6 @@ async function runChunkedParseAndResolve(
             });
           }),
         ]);
-        // Process field write assignments (synchronous, runs after calls resolve)
-        if (chunkWorkerData.assignments?.length) {
-          processAssignmentsFromExtracted(
-            graph,
-            chunkWorkerData.assignments,
-            ctx,
-            chunkWorkerData.constructorBindings,
-          );
-        }
         // Collect TypeEnv file-scope bindings for exported type enrichment
         if (chunkWorkerData.typeEnvBindings?.length) {
           workerTypeEnvBindings.push(...chunkWorkerData.typeEnvBindings);
@@ -944,6 +938,40 @@ async function runChunkedParseAndResolve(
       // Clear AST cache between chunks to free memory
       astCache.clear();
       // chunkContents + chunkFiles + chunkWorkerData go out of scope → GC reclaims
+    }
+
+    // Complete implementor map from all worker heritage, then resolve CALLS once (interface dispatch).
+    const fullWorkerImplementorMap = deferredWorkerHeritage.length > 0
+      ? buildImplementorMap(deferredWorkerHeritage)
+      : new Map<string, Set<string>>();
+    mergeImplementorMaps(globalImplementorMap, fullWorkerImplementorMap);
+
+    if (deferredWorkerCalls.length > 0) {
+      await processCallsFromExtracted(
+        graph,
+        deferredWorkerCalls,
+        ctx,
+        (current, total) => {
+          onProgress({
+            phase: 'parsing',
+            percent: 82,
+            message: 'Resolving calls (all chunks)...',
+            detail: `${current}/${total} files`,
+            stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
+          });
+        },
+        deferredConstructorBindings.length > 0 ? deferredConstructorBindings : undefined,
+        fullWorkerImplementorMap,
+      );
+    }
+
+    if (deferredAssignments.length > 0) {
+      processAssignmentsFromExtracted(
+        graph,
+        deferredAssignments,
+        ctx,
+        deferredConstructorBindings.length > 0 ? deferredConstructorBindings : undefined,
+      );
     }
   } finally {
     await workerPool?.terminate();

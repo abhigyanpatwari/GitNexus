@@ -1,7 +1,4 @@
-/**
- * Java-specific call-site shapes (tree-sitter-java AST).
- * Kept out of utils/call-analysis.ts so shared call utilities stay language-agnostic.
- */
+/** Java `method_reference` (`::`) nodes (tree-sitter-java). `super::` still lacks TypeEnv receiver typing. */
 
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 
@@ -11,10 +8,7 @@ export type ParsedJavaMethodReference = {
   receiverName?: string;
 };
 
-/**
- * Java `::` method references: `expr::method`, `Type::new`, `this::m`, `super::m`.
- * tree-sitter-java uses `method_reference`; RHS `new` is an anonymous child, not a named node.
- */
+/** Parse `expr::method`, `Type::new`, `this::m`, `super::m`. */
 export const parseJavaMethodReference = (
   callNode: SyntaxNode,
 ): ParsedJavaMethodReference | null => {

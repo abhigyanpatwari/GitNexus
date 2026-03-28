@@ -619,11 +619,7 @@ export function extractMixedChain(
   return chain.length > 0 ? { chain, baseReceiverName: undefined } : undefined;
 }
 
-/**
- * Extract argument types from a call AST node using literal type inference
- * and optional TypeEnv fallback for identifiers.
- * Returns undefined when the argument list cannot be located or all types are unknown.
- */
+/** Arg types per call position (literals + optional TypeEnv for ids); undefined if unusable */
 export const extractCallArgTypes = (
   callNode: SyntaxNode,
   inferLiteralType: (node: SyntaxNode) => string | undefined,

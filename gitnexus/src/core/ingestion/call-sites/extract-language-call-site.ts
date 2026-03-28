@@ -1,10 +1,4 @@
-/**
- * Hooks for language-specific call-site AST shapes that are not covered by the
- * generic @call + @call.name tree-sitter pattern.
- *
- * Orchestration stays in call-processor.ts / parse-worker.ts; this module only
- * maps AST → { calledName, callForm, receiverName? }.
- */
+/** Non-generic @call shapes → { calledName, callForm, receiverName? } (used from call-processor / parse-worker). */
 
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
@@ -13,14 +7,10 @@ import { parseJavaMethodReference } from './java.js';
 export type ParsedCallSite = {
   calledName: string;
   callForm: 'free' | 'member' | 'constructor';
-  /** Present for member-style seeds (instance ref, this::, super::, Type::staticMethod). */
   receiverName?: string;
 };
 
-/**
- * When non-null, the match is fully described by the seed — callers must not require
- * @call.name. When null, use the standard @call.name + inferCallForm / extractReceiverName path.
- */
+/** Non-null → seed replaces @call.name; null → use @call.name + inferCallForm / extractReceiverName. */
 export function extractParsedCallSite(
   language: SupportedLanguages,
   callNode: SyntaxNode,
