@@ -49,7 +49,11 @@ import type {
   ExtractedToolDef,
   FileConstructorBindings,
 } from './workers/parse-worker.js';
-import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
+import {
+  processHeritage,
+  processHeritageFromExtracted,
+  extractExtractedHeritageFromFiles,
+} from './heritage-processor.js';
 import { computeMRO } from './mro-processor.js';
 import { processCommunities } from './community-processor.js';
 import { processProcesses } from './process-processor.js';
@@ -943,7 +947,7 @@ async function runChunkedParseAndResolve(
     // Complete implementor map from all worker heritage, then resolve CALLS once (interface dispatch).
     const fullWorkerImplementorMap =
       deferredWorkerHeritage.length > 0
-        ? buildImplementorMap(deferredWorkerHeritage)
+        ? buildImplementorMap(deferredWorkerHeritage, ctx)
         : new Map<string, Set<string>>();
     mergeImplementorMaps(globalImplementorMap, fullWorkerImplementorMap);
 
@@ -992,6 +996,8 @@ async function runChunkedParseAndResolve(
       .filter((p) => chunkContents.has(p))
       .map((p) => ({ path: p, content: chunkContents.get(p)! }));
     astCache = createASTCache(chunkFiles.length);
+    const sequentialHeritage = await extractExtractedHeritageFromFiles(chunkFiles, astCache);
+    const sequentialImplementorMap = buildImplementorMap(sequentialHeritage, ctx);
     const rubyHeritage = await processCalls(
       graph,
       chunkFiles,
@@ -999,6 +1005,10 @@ async function runChunkedParseAndResolve(
       ctx,
       undefined,
       exportedTypeMap,
+      undefined,
+      undefined,
+      undefined,
+      sequentialImplementorMap,
     );
     await processHeritage(graph, chunkFiles, astCache, ctx);
     if (rubyHeritage.length > 0) {

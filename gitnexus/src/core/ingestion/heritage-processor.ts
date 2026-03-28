@@ -37,7 +37,8 @@ import { TIER_CONFIDENCE } from './resolution-context.js';
  *   - heritageDefaultEdge: 'IMPLEMENTS' causes all unresolved parents to map to IMPLEMENTS
  *   - All others: default EXTENDS
  */
-const resolveExtendsType = (
+/** Exported for implementor-map construction (C#/Java: `extends` rows in base_list may be interfaces). */
+export const resolveExtendsType = (
   parentName: string,
   currentFilePath: string,
   ctx: ResolutionContext,
@@ -367,3 +368,91 @@ export const processHeritageFromExtracted = async (
 
   onProgress?.(total, total);
 };
+
+/**
+ * Walk source files with the same heritage captures as parse-worker, producing
+ * {@link ExtractedHeritage} rows without mutating the graph. Used on the
+ * sequential pipeline path so `buildImplementorMap(..., ctx)` can run before
+ * `processCalls` (worker path defers calls until heritage from all chunks exists).
+ */
+export async function extractExtractedHeritageFromFiles(
+  files: { path: string; content: string }[],
+  astCache: ASTCache,
+): Promise<ExtractedHeritage[]> {
+  const parser = await loadParser();
+  const out: ExtractedHeritage[] = [];
+
+  for (const file of files) {
+    const language = getLanguageFromFilename(file.path);
+    if (!language || !isLanguageAvailable(language)) continue;
+
+    const provider = getProvider(language);
+    const queryStr = provider.treeSitterQueries;
+    if (!queryStr) continue;
+
+    await loadLanguage(language, file.path);
+
+    let tree = astCache.get(file.path);
+    if (!tree) {
+      try {
+        tree = parser.parse(file.content, undefined, {
+          bufferSize: getTreeSitterBufferSize(file.content.length),
+        });
+      } catch {
+        continue;
+      }
+      astCache.set(file.path, tree);
+    }
+
+    let matches;
+    try {
+      const lang = parser.getLanguage();
+      const query = new Parser.Query(lang, queryStr);
+      matches = query.matches(tree.rootNode);
+    } catch {
+      continue;
+    }
+
+    for (const match of matches) {
+      const captureMap: Record<string, any> = {};
+      match.captures.forEach((c) => {
+        captureMap[c.name] = c.node;
+      });
+
+      if (captureMap['heritage.class']) {
+        if (captureMap['heritage.extends']) {
+          const extendsNode = captureMap['heritage.extends'];
+          const fieldDecl = extendsNode.parent;
+          const isNamedField =
+            fieldDecl?.type === 'field_declaration' && fieldDecl.childForFieldName('name');
+          if (!isNamedField) {
+            out.push({
+              filePath: file.path,
+              className: captureMap['heritage.class'].text,
+              parentName: captureMap['heritage.extends'].text,
+              kind: 'extends',
+            });
+          }
+        }
+        if (captureMap['heritage.implements']) {
+          out.push({
+            filePath: file.path,
+            className: captureMap['heritage.class'].text,
+            parentName: captureMap['heritage.implements'].text,
+            kind: 'implements',
+          });
+        }
+        if (captureMap['heritage.trait']) {
+          out.push({
+            filePath: file.path,
+            className: captureMap['heritage.class'].text,
+            parentName: captureMap['heritage.trait'].text,
+            kind: 'trait-impl',
+          });
+        }
+      }
+    }
+  }
+
+  return out;
+}

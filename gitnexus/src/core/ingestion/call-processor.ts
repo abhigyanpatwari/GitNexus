@@ -26,6 +26,7 @@ import {
 } from './utils/call-analysis.js';
 import { buildTypeEnv, isSubclassOf } from './type-env.js';
 import type { ConstructorBinding, TypeEnvironment } from './type-env.js';
+import { resolveExtendsType } from './heritage-processor.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type {
   ExtractedCall,
@@ -347,12 +348,28 @@ export type ImplementorMap = ReadonlyMap<string, ReadonlySet<string>>;
  * the common Java/Kotlin/C# interface dispatch pattern).
  * `extends` is ignored — dispatch keyed on abstract class bases is not modeled here.
  */
+/**
+ * Maps interface name → file paths of classes that implement it (direct only).
+ * When `ctx` is set, `kind: 'extends'` rows are classified like heritage-processor
+ * (C#/Java base_list: class vs interface parents share one capture name).
+ */
 export const buildImplementorMap = (
   heritage: readonly ExtractedHeritage[],
+  ctx?: ResolutionContext,
 ): Map<string, Set<string>> => {
   const map = new Map<string, Set<string>>();
   for (const h of heritage) {
+    let record = false;
     if (h.kind === 'implements') {
+      record = true;
+    } else if (h.kind === 'extends' && ctx) {
+      const lang = getLanguageFromFilename(h.filePath);
+      if (lang) {
+        const { type } = resolveExtendsType(h.parentName, h.filePath, ctx, lang);
+        record = type === 'IMPLEMENTS';
+      }
+    }
+    if (record) {
       let files = map.get(h.parentName);
       if (!files) {
         files = new Set();
