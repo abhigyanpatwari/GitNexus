@@ -625,9 +625,11 @@ export const extractCallArgTypes = (
   inferLiteralType: (node: SyntaxNode) => string | undefined,
   typeEnvLookup?: (varName: string, callNode: SyntaxNode) => string | undefined,
 ): (string | undefined)[] | undefined => {
-  let argList: SyntaxNode | undefined = callNode.childForFieldName?.('arguments')
-    ?? callNode.children.find((c: SyntaxNode) =>
-      c.type === 'arguments' || c.type === 'argument_list' || c.type === 'value_arguments'
+  let argList: SyntaxNode | undefined =
+    callNode.childForFieldName?.('arguments') ??
+    callNode.children.find(
+      (c: SyntaxNode) =>
+        c.type === 'arguments' || c.type === 'argument_list' || c.type === 'value_arguments',
     );
   if (!argList) {
     const callSuffix = callNode.children.find((c: SyntaxNode) => c.type === 'call_suffix');
@@ -640,10 +642,11 @@ export const extractCallArgTypes = (
   const argTypes: (string | undefined)[] = [];
   for (const arg of argList.namedChildren) {
     if (arg.type === 'comment') continue;
-    const valueNode = arg.childForFieldName?.('value')
-      ?? arg.childForFieldName?.('expression')
-      ?? (arg.type === 'argument' || arg.type === 'value_argument'
-        ? arg.firstNamedChild ?? arg
+    const valueNode =
+      arg.childForFieldName?.('value') ??
+      arg.childForFieldName?.('expression') ??
+      (arg.type === 'argument' || arg.type === 'value_argument'
+        ? (arg.firstNamedChild ?? arg)
         : arg);
     let inferred = inferLiteralType(valueNode);
     if (!inferred && typeEnvLookup && valueNode.type === 'identifier') {
@@ -652,6 +655,6 @@ export const extractCallArgTypes = (
     argTypes.push(inferred);
   }
 
-  if (argTypes.every(t => t === undefined)) return undefined;
+  if (argTypes.every((t) => t === undefined)) return undefined;
   return argTypes;
 };

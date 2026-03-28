@@ -1328,7 +1328,9 @@ const processFileGroup = (
               generateId('File', file.path);
             const receiverName =
               languageSeed.callForm === 'member' ? languageSeed.receiverName : undefined;
-            let receiverTypeName = receiverName ? typeEnv.lookup(receiverName, callNode0) : undefined;
+            let receiverTypeName = receiverName
+              ? typeEnv.lookup(receiverName, callNode0)
+              : undefined;
             // Type-as-receiver (e.g. Java `User::getName`): no TypeEnv binding for the class name
             if (
               receiverName !== undefined &&

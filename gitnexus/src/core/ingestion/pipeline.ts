@@ -941,9 +941,10 @@ async function runChunkedParseAndResolve(
     }
 
     // Complete implementor map from all worker heritage, then resolve CALLS once (interface dispatch).
-    const fullWorkerImplementorMap = deferredWorkerHeritage.length > 0
-      ? buildImplementorMap(deferredWorkerHeritage)
-      : new Map<string, Set<string>>();
+    const fullWorkerImplementorMap =
+      deferredWorkerHeritage.length > 0
+        ? buildImplementorMap(deferredWorkerHeritage)
+        : new Map<string, Set<string>>();
     mergeImplementorMaps(globalImplementorMap, fullWorkerImplementorMap);
 
     if (deferredWorkerCalls.length > 0) {
@@ -957,7 +958,11 @@ async function runChunkedParseAndResolve(
             percent: 82,
             message: 'Resolving calls (all chunks)...',
             detail: `${current}/${total} files`,
-            stats: { filesProcessed: filesParsedSoFar, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
+            stats: {
+              filesProcessed: filesParsedSoFar,
+              totalFiles: totalParseable,
+              nodesCreated: graph.nodeCount,
+            },
           });
         },
         deferredConstructorBindings.length > 0 ? deferredConstructorBindings : undefined,

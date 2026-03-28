@@ -1420,7 +1420,13 @@ describe('buildImplementorMap / mergeImplementorMaps', () => {
   it('mergeImplementorMaps unions files per interface and adds new keys', () => {
     const acc = new Map<string, Set<string>>();
     mergeImplementorMaps(acc, new Map([['I', new Set(['a.java'])]]));
-    mergeImplementorMaps(acc, new Map([['I', new Set(['b.java'])], ['J', new Set(['c.java'])]]));
+    mergeImplementorMaps(
+      acc,
+      new Map([
+        ['I', new Set(['b.java'])],
+        ['J', new Set(['c.java'])],
+      ]),
+    );
     expect(acc.get('I')).toEqual(new Set(['a.java', 'b.java']));
     expect(acc.get('J')).toEqual(new Set(['c.java']));
   });
@@ -1463,11 +1469,31 @@ describe('processCallsFromExtracted — interface dispatch', () => {
     ctx.symbols.add(implB, 'execute', implBExecuteId, 'Method');
     ctx.importMap.set(runnerFile, new Set([ifaceFile]));
 
-    graph.addNode({ id: 'Function:runner.java:run', label: 'Function', properties: { name: 'run', filePath: runnerFile } });
-    graph.addNode({ id: actionIfaceId, label: 'Interface', properties: { name: 'Action', filePath: ifaceFile } });
-    graph.addNode({ id: ifaceExecuteId, label: 'Method', properties: { name: 'execute', filePath: ifaceFile } });
-    graph.addNode({ id: implAExecuteId, label: 'Method', properties: { name: 'execute', filePath: implA } });
-    graph.addNode({ id: implBExecuteId, label: 'Method', properties: { name: 'execute', filePath: implB } });
+    graph.addNode({
+      id: 'Function:runner.java:run',
+      label: 'Function',
+      properties: { name: 'run', filePath: runnerFile },
+    });
+    graph.addNode({
+      id: actionIfaceId,
+      label: 'Interface',
+      properties: { name: 'Action', filePath: ifaceFile },
+    });
+    graph.addNode({
+      id: ifaceExecuteId,
+      label: 'Method',
+      properties: { name: 'execute', filePath: ifaceFile },
+    });
+    graph.addNode({
+      id: implAExecuteId,
+      label: 'Method',
+      properties: { name: 'execute', filePath: implA },
+    });
+    graph.addNode({
+      id: implBExecuteId,
+      label: 'Method',
+      properties: { name: 'execute', filePath: implB },
+    });
   });
 
   it('adds CALLS to interface method plus lower-confidence edges to implementing methods', async () => {
@@ -1475,23 +1501,25 @@ describe('processCallsFromExtracted — interface dispatch', () => {
       ['Action', new Set(['impl/A.java', 'impl/B.java'])],
     ]);
 
-    const calls: ExtractedCall[] = [{
-      filePath: 'runner.java',
-      calledName: 'execute',
-      sourceId: 'Function:runner.java:run',
-      callForm: 'member',
-      receiverName: 'action',
-      receiverTypeName: 'Action',
-    }];
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'runner.java',
+        calledName: 'execute',
+        sourceId: 'Function:runner.java:run',
+        callForm: 'member',
+        receiverName: 'action',
+        receiverTypeName: 'Action',
+      },
+    ];
 
     await processCallsFromExtracted(graph, calls, ctx, undefined, undefined, implementorMap);
 
-    const rels = graph.relationships.filter(r => r.type === 'CALLS');
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
     expect(rels).toHaveLength(3);
 
-    const primary = rels.find(r => r.targetId === 'Method:contracts/Action.java:execute');
-    const toA = rels.find(r => r.targetId === 'Method:impl/A.java:execute');
-    const toB = rels.find(r => r.targetId === 'Method:impl/B.java:execute');
+    const primary = rels.find((r) => r.targetId === 'Method:contracts/Action.java:execute');
+    const toA = rels.find((r) => r.targetId === 'Method:impl/A.java:execute');
+    const toB = rels.find((r) => r.targetId === 'Method:impl/B.java:execute');
     expect(primary).toBeDefined();
     expect(primary!.confidence).toBeGreaterThan(0.7);
     expect(toA?.confidence).toBe(0.7);

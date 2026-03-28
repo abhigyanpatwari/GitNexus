@@ -3,7 +3,6 @@ import {
   inferCallForm,
   extractReceiverName,
 } from '../../src/core/ingestion/utils/call-analysis.js';
-import { parseJavaMethodReference } from '../../src/core/ingestion/call-sites/java.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 import { createSymbolTable } from '../../src/core/ingestion/symbol-table.js';
 import Parser from 'tree-sitter';

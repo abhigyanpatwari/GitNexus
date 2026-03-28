@@ -911,13 +911,7 @@ export const processCalls = async (
   return collectedHeritage;
 };
 
-const CALLABLE_SYMBOL_TYPES = new Set([
-  'Function',
-  'Method',
-  'Constructor',
-  'Macro',
-  'Delegate',
-]);
+const CALLABLE_SYMBOL_TYPES = new Set(['Function', 'Method', 'Constructor', 'Macro', 'Delegate']);
 
 const CONSTRUCTOR_TARGET_TYPES = new Set(['Constructor', 'Class', 'Struct', 'Record']);
 
