@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { X } from 'lucide-react';
+import { X } from '@/lib/lucide-icons';
 import type { JobProgress as AnalyzeJobProgress } from '../services/backend-client';
 
 interface AnalyzeProgressProps {

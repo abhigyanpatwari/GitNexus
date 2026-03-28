@@ -34,6 +34,7 @@ function CopyButton({ text }: { text: string }) {
       className={`
         shrink-0 px-2 py-1 rounded-md cursor-pointer
         transition-all duration-200
+        focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none
         ${copied
           ? 'text-emerald-400 bg-emerald-400/10'
           : 'text-text-muted hover:text-text-primary hover:bg-white/5'

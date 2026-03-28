@@ -310,26 +310,28 @@ export const connectHeartbeat = (
   let closed = false;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let es: EventSource | null = null;
+  let attempt = 0;
+  const MAX_RETRIES = 3;
 
-  const connect = (isRetry: boolean) => {
+  const connect = () => {
     if (closed) return;
     es = new EventSource(`${_backendUrl}/api/heartbeat`);
-    es.onopen = () => { if (!closed) onConnect(); };
+    es.onopen = () => { if (!closed) { attempt = 0; onConnect(); } };
     es.onerror = () => {
       es?.close();
       es = null;
       if (closed) return;
-      if (!isRetry) {
-        // First failure — retry once after 1s to avoid false positives
-        retryTimer = setTimeout(() => connect(true), 1_000);
+      if (attempt < MAX_RETRIES) {
+        const delay = 1_000 * Math.pow(2, attempt);
+        attempt++;
+        retryTimer = setTimeout(connect, delay);
       } else {
-        // Second consecutive failure — server is truly down
         onDisconnect();
       }
     };
   };
 
-  connect(false);
+  connect();
 
   return () => {
     closed = true;

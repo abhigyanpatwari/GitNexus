@@ -89,7 +89,8 @@ export function useBackend(): UseBackendResult {
     const schedule = () => {
       pollingTimerRef.current = setTimeout(async () => {
         if (document.hidden) {
-          schedule();
+          // Don't reschedule — visibilitychange handler restarts the chain
+          pollingTimerRef.current = null;
           return;
         }
         const ok = await probeRef.current();
@@ -105,19 +106,29 @@ export function useBackend(): UseBackendResult {
     schedule();
   }, [stopPolling]);
 
-  // On tab return during polling, clear pending timer and probe immediately
+  // On tab return during polling, clear pending timer, probe, and reschedule if needed
   useEffect(() => {
     if (!isPolling) return;
     const handleVisibility = () => {
-      if (!document.hidden && pollingTimerRef.current !== null) {
-        clearTimeout(pollingTimerRef.current);
-        pollingTimerRef.current = null;
-        void probeRef.current();
+      if (!document.hidden) {
+        // Clear any pending timer so we don't double-fire
+        if (pollingTimerRef.current !== null) {
+          clearTimeout(pollingTimerRef.current);
+          pollingTimerRef.current = null;
+        }
+        // Probe immediately, then restart the polling chain if still disconnected
+        void probeRef.current().then(ok => {
+          if (!ok && isPolling) {
+            // Restart the setTimeout chain — schedule is captured in startPolling's closure,
+            // so we re-call startPolling which clears+restarts cleanly.
+            startPolling();
+          }
+        });
       }
     };
     document.addEventListener('visibilitychange', handleVisibility);
     return () => document.removeEventListener('visibilitychange', handleVisibility);
-  }, [isPolling]);
+  }, [isPolling, startPolling]);
 
   // Cleanup polling on unmount
   useEffect(() => {

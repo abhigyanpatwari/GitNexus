@@ -1,9 +1,10 @@
-import { Search, Settings, HelpCircle, Sparkles, Github, Star, ChevronDown } from '@/lib/lucide-icons';
+import { Search, Settings, HelpCircle, Sparkles, Github, Star, FolderOpen, ChevronDown } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
 import type { BackendRepo } from '../services/backend-client';
-import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { GraphNode } from 'gitnexus-shared';
 import { EmbeddingStatus } from './EmbeddingStatus';
+import { RepoAnalyzer } from './RepoAnalyzer';
 
 // Color mapping for node types in search results
 const NODE_TYPE_COLORS: Record<string, string> = {
@@ -22,9 +23,11 @@ interface HeaderProps {
   onFocusNode?: (nodeId: string) => void;
   availableRepos?: BackendRepo[];
   onSwitchRepo?: (repoName: string) => void;
+  /** Called when a newly-analyzed repo is ready; triggers connectToServer. */
+  onAnalyzeComplete?: (repoName: string) => void;
 }
 
-export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: HeaderProps) => {
+export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnalyzeComplete }: HeaderProps) => {
   const {
     projectName,
     graph,
@@ -34,9 +37,10 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
     setSettingsPanelOpen,
     setHelpDialogBoxOpen
   } = useAppState();
-  const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
-  const repoDropdownRef = useRef<HTMLDivElement>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
+  const [showAnalyzer, setShowAnalyzer] = useState(false);
+  const repoDropdownRef = useRef<HTMLDivElement>(null);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const searchRef = useRef<HTMLDivElement>(null);
@@ -55,7 +59,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
       .slice(0, 10); // Limit to 10 results
   }, [graph, searchQuery]);
 
-  // Handle clicking outside to close dropdowns
+  // Handle clicking outside search or repo dropdown to close them
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
@@ -63,6 +67,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
       }
       if (repoDropdownRef.current && !repoDropdownRef.current.contains(e.target as Node)) {
         setIsRepoDropdownOpen(false);
+        setShowAnalyzer(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -125,48 +130,81 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
           <span className="font-semibold text-[15px] tracking-tight">GitNexus</span>
         </div>
 
-        {/* Project badge / Repo selector dropdown */}
+        {/* Project badge + repo dropdown */}
         {projectName && (
           <div className="relative" ref={repoDropdownRef}>
             <button
-              onClick={() => availableRepos.length >= 2 && setIsRepoDropdownOpen(prev => !prev)}
-              className={`flex items-center gap-2 px-3 py-1.5 bg-surface border border-border-subtle rounded-lg text-sm text-text-secondary transition-colors ${availableRepos.length >= 2 ? 'hover:bg-hover cursor-pointer' : ''}`}
+              onClick={() => { setIsRepoDropdownOpen(prev => !prev); setShowAnalyzer(false); }}
+              className={`
+                flex items-center gap-2 px-3 py-1.5 border rounded-lg text-sm transition-all cursor-pointer
+                ${isRepoDropdownOpen
+                  ? 'bg-accent/10 border-accent/40 text-text-primary'
+                  : 'bg-surface border-border-subtle text-text-secondary hover:bg-hover hover:border-border-default'
+                }
+              `}
             >
               <span className="w-1.5 h-1.5 bg-node-function rounded-full animate-pulse" />
-              <span className="truncate max-w-[200px]">{projectName}</span>
-              {availableRepos.length >= 2 && (
-                <ChevronDown className={`w-3.5 h-3.5 text-text-muted transition-transform ${isRepoDropdownOpen ? 'rotate-180' : ''}`} />
-              )}
+              <span className="truncate max-w-[160px]">{projectName}</span>
+              <ChevronDown className={`w-3 h-3 text-text-muted transition-transform duration-200 ${isRepoDropdownOpen ? 'rotate-180' : ''}`} />
             </button>
 
-            {/* Repo dropdown */}
-            {isRepoDropdownOpen && availableRepos.length >= 2 && (
-              <div className="absolute top-full left-0 mt-1 w-72 bg-surface border border-border-subtle rounded-lg shadow-xl overflow-hidden z-50">
-                {availableRepos.map((repo) => {
-                  const isCurrent = repo.name === projectName;
-                  return (
-                    <button
-                      key={repo.name}
-                      onClick={() => {
-                        if (!isCurrent && onSwitchRepo) {
-                          onSwitchRepo(repo.name);
-                        }
+            {isRepoDropdownOpen && (
+              <div className="absolute top-full left-0 mt-1.5 w-80 bg-surface border border-border-subtle rounded-xl shadow-xl overflow-hidden z-50 animate-slide-up">
+                {showAnalyzer ? (
+                  <div className="p-4">
+                    <RepoAnalyzer
+                      variant="sheet"
+                      onComplete={(repoName) => {
+                        setShowAnalyzer(false);
                         setIsRepoDropdownOpen(false);
+                        onAnalyzeComplete?.(repoName);
                       }}
-                      className={`w-full px-4 py-3 flex items-center gap-3 text-left transition-colors ${isCurrent ? 'bg-accent/10 border-l-2 border-accent' : 'hover:bg-hover border-l-2 border-transparent'}`}
-                    >
-                      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isCurrent ? 'bg-node-function animate-pulse' : 'bg-text-muted'}`} />
-                      <div className="flex-1 min-w-0">
-                        <div className={`text-sm font-medium truncate ${isCurrent ? 'text-accent' : 'text-text-primary'}`}>
-                          {repo.name}
+                      onCancel={() => setShowAnalyzer(false)}
+                    />
+                  </div>
+                ) : (
+                  <>
+                    {/* Repo list */}
+                    {availableRepos.length > 0 && (
+                      <div>
+                        <div className="px-3 pt-2.5 pb-1.5 text-[10px] font-medium text-text-muted uppercase tracking-wider">
+                          Repositories
                         </div>
-                        <div className="text-xs text-text-muted mt-0.5">
-                          {repo.stats?.nodes ?? '?'} nodes &middot; {repo.stats?.files ?? '?'} files
-                        </div>
+                        {availableRepos.map(repo => (
+                          <button
+                            key={repo.name}
+                            onClick={() => {
+                              if (repo.name !== projectName) onSwitchRepo?.(repo.name);
+                              setIsRepoDropdownOpen(false);
+                            }}
+                            className={`w-full px-4 py-2 flex items-center gap-3 text-left transition-colors cursor-pointer ${
+                              repo.name === projectName
+                                ? 'bg-accent/10 border-l-2 border-accent'
+                                : 'hover:bg-hover'
+                            }`}
+                          >
+                            <FolderOpen className="w-3.5 h-3.5 text-node-folder shrink-0" />
+                            <span className="flex-1 truncate text-sm text-text-primary font-mono">{repo.name}</span>
+                            {repo.name === projectName && (
+                              <span className="text-[10px] text-accent font-mono">active</span>
+                            )}
+                          </button>
+                        ))}
                       </div>
-                    </button>
-                  );
-                })}
+                    )}
+
+                    {/* Analyze new */}
+                    <div className={availableRepos.length > 0 ? 'border-t border-border-subtle' : ''}>
+                      <button
+                        onClick={() => setShowAnalyzer(true)}
+                        className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-hover transition-colors cursor-pointer"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-accent shrink-0" />
+                        <span className="text-sm text-text-secondary">Analyze a new repository...</span>
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -198,10 +236,10 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
 
         {/* Search Results Dropdown */}
         {isSearchOpen && searchQuery.trim() && (
-          <div className="absolute top-full left-0 right-0 mt-1 bg-surface border border-border-subtle rounded-lg shadow-xl overflow-hidden z-50">
+          <div className="absolute top-full left-0 right-0 mt-1 bg-surface border border-border-subtle rounded-xl shadow-xl overflow-hidden z-50">
             {searchResults.length === 0 ? (
               <div className="px-4 py-3 text-sm text-text-muted">
-                No nodes found for "{searchQuery}"
+                No nodes found for &ldquo;{searchQuery}&rdquo;
               </div>
             ) : (
               <div className="max-h-80 overflow-y-auto">
@@ -209,21 +247,18 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
                   <button
                     key={node.id}
                     onClick={() => handleSelectNode(node)}
-                    className={`w-full px-4 py-2.5 flex items-center gap-3 text-left transition-colors ${index === selectedIndex
+                    className={`w-full px-4 py-2.5 flex items-center gap-3 text-left transition-colors cursor-pointer ${index === selectedIndex
                       ? 'bg-accent/20 text-text-primary'
                       : 'hover:bg-hover text-text-secondary'
                       }`}
                   >
-                    {/* Node type indicator */}
                     <span
                       className="w-2.5 h-2.5 rounded-full flex-shrink-0"
                       style={{ backgroundColor: NODE_TYPE_COLORS[node.label] || '#6b7280' }}
                     />
-                    {/* Node name */}
                     <span className="flex-1 truncate text-sm font-medium">
                       {node.properties.name}
                     </span>
-                    {/* Node type badge */}
                     <span className="text-xs text-text-muted px-2 py-0.5 bg-elevated rounded">
                       {node.label}
                     </span>
@@ -264,7 +299,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
         {/* Icon buttons */}
         <button
           onClick={() => setSettingsPanelOpen(true)}
-          className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors"
+          className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors cursor-pointer"
           title="AI Settings"
         >
           <Settings className="w-4.5 h-4.5" />
@@ -272,7 +307,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
         <button
           title="Help"
           onClick={() => setHelpDialogBoxOpen(true)}
-          className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors">
+          className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors cursor-pointer">
           <HelpCircle className="w-4.5 h-4.5" />
         </button>
 

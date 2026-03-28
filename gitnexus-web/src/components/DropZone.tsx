@@ -3,6 +3,7 @@ import { Loader2, Check, Sparkles } from '@/lib/lucide-icons';
 import { connectToServer, fetchRepos, type ConnectResult } from '../services/backend-client';
 import { useBackend } from '../hooks/useBackend';
 import { OnboardingGuide } from './OnboardingGuide';
+import { AnalyzeOnboarding } from './AnalyzeOnboarding';
 
 interface DropZoneProps {
   onServerConnect?: (result: ConnectResult, serverUrl?: string) => void | Promise<void>;
@@ -55,17 +56,17 @@ function Crossfade({ activeKey, children }: {
 
 function SuccessCard() {
   return (
-    <div className="p-10 bg-surface border border-emerald-500/20 rounded-3xl relative overflow-hidden" role="status" aria-live="polite">
+    <div className="p-7 bg-surface border border-emerald-500/20 rounded-3xl relative overflow-hidden" role="status" aria-live="polite">
       {/* Success glow */}
       <div className="absolute -top-20 left-1/2 -translate-x-1/2 w-64 h-64 bg-emerald-500/8 rounded-full blur-3xl pointer-events-none" />
 
       <div className="relative">
         {/* Animated check icon */}
-        <div className="mx-auto w-20 h-20 mb-6 flex items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500/20 to-emerald-600/10 border border-emerald-500/30 shadow-[0_0_30px_rgba(16,185,129,0.15)]">
-          <Check className="w-10 h-10 text-emerald-400" />
+        <div className="mx-auto w-16 h-16 mb-5 flex items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500/20 to-emerald-600/10 border border-emerald-500/30 shadow-[0_0_30px_rgba(16,185,129,0.15)]">
+          <Check className="w-8 h-8 text-emerald-400" />
         </div>
 
-        <h2 className="text-xl font-semibold text-emerald-400 text-center mb-2">
+        <h2 className="text-lg font-semibold text-emerald-400 text-center mb-2">
           Server Connected
         </h2>
         <p className="text-sm text-text-secondary text-center leading-relaxed">
@@ -91,14 +92,14 @@ function SuccessCard() {
 
 function LoadingCard({ message }: { message: string }) {
   return (
-    <div className="p-10 bg-surface border border-accent/20 rounded-3xl relative overflow-hidden" role="status" aria-live="polite">
+    <div className="p-7 bg-surface border border-accent/20 rounded-3xl relative overflow-hidden" role="status" aria-live="polite">
       {/* Loading glow */}
       <div className="absolute -top-20 left-1/2 -translate-x-1/2 w-64 h-64 bg-accent/8 rounded-full blur-3xl pointer-events-none" />
 
       <div className="relative">
         {/* Spinner */}
-        <div className="mx-auto w-20 h-20 mb-6 flex items-center justify-center rounded-2xl bg-gradient-to-br from-accent/20 to-accent-dim/10 border border-accent/30 shadow-glow-soft">
-          <Loader2 className="w-10 h-10 text-accent animate-spin" />
+        <div className="mx-auto w-16 h-16 mb-5 flex items-center justify-center rounded-2xl bg-gradient-to-br from-accent/20 to-accent-dim/10 border border-accent/30 shadow-glow-soft">
+          <Loader2 className="w-8 h-8 text-accent animate-spin" />
         </div>
 
         <h2 className="text-lg font-semibold text-text-primary text-center mb-2">
@@ -129,7 +130,8 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
   const autoConnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Connection state
-  const [phase, setPhase] = useState<'onboarding' | 'success' | 'loading'>('onboarding');
+  // 'analyze' = server up but zero repos indexed — show URL input
+  const [phase, setPhase] = useState<'onboarding' | 'analyze' | 'success' | 'loading'>('onboarding');
   const [loadingMessage, setLoadingMessage] = useState('');
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -146,8 +148,9 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
       // Check if the server has any indexed repos first
       const repos = await fetchRepos();
       if (repos.length === 0) {
-        setError('No repositories indexed yet. Run "gitnexus analyze" on a repo first.');
-        setPhase('onboarding');
+        // Server is up but has no repos — transition to the analyze UI
+        // instead of showing a generic error string.
+        setPhase('analyze');
         autoConnectRan.current = false;
         return;
       }
@@ -187,6 +190,15 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
   const handleAutoConnectRef = useRef(handleAutoConnect);
   handleAutoConnectRef.current = handleAutoConnect;
 
+  // Called by AnalyzeOnboarding when a new repo finishes indexing.
+  // Re-runs the auto-connect logic — repos.length is now > 0 so it will proceed.
+  const handleAnalyzeComplete = () => {
+    autoConnectRan.current = true;
+    setPhase('loading');
+    setLoadingMessage('Connecting...');
+    handleAutoConnectRef.current();
+  };
+
   // Track when the initial probe finishes
   useEffect(() => {
     if (!isProbing && !initialProbeComplete) {
@@ -212,7 +224,7 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
         handleAutoConnectRef.current();
       }, 1200); // hold success state long enough to register
     }
-    // Server went away — reset to onboarding
+    // Server went away — reset to onboarding (or analyze if we were on analyze)
     if (!isConnected && autoConnectRan.current && !isProbing) {
       autoConnectRan.current = false;
       if (autoConnectTimerRef.current !== null) {
@@ -259,6 +271,9 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
           <Crossfade activeKey={displayPhase}>
             {displayPhase === 'onboarding' && (
               <OnboardingGuide isPolling={isPolling} />
+            )}
+            {displayPhase === 'analyze' && (
+              <AnalyzeOnboarding onComplete={handleAnalyzeComplete} />
             )}
             {displayPhase === 'success' && <SuccessCard />}
             {displayPhase === 'loading' && <LoadingCard message={loadingMessage} />}

@@ -178,7 +178,30 @@ const AppContent = () => {
   // Exploring view
   return (
     <div className="flex flex-col h-screen bg-void overflow-hidden">
-      <Header onFocusNode={handleFocusNode} availableRepos={availableRepos} onSwitchRepo={switchRepo} />
+      <Header
+        onFocusNode={handleFocusNode}
+        availableRepos={availableRepos}
+        onSwitchRepo={switchRepo}
+        onAnalyzeComplete={async (repoName) => {
+          // A new repo was just indexed via the header dropdown.
+          // Connect to it and refresh the available repos list.
+          try {
+            const result = await connectToServer(
+              serverBaseUrl ?? 'http://localhost:4747',
+              undefined,
+              undefined,
+              repoName,
+            );
+            await handleServerConnect(result);
+            setProgress(null);
+            fetchRepos()
+              .then(repos => setAvailableRepos(repos))
+              .catch(e => console.warn('Failed to refresh repo list:', e));
+          } catch (err) {
+            console.error('Failed to connect after analyze:', err);
+          }
+        }}
+      />
 
       <main className="flex-1 flex min-h-0">
         {/* Left Panel - File Tree */}
