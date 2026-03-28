@@ -21,6 +21,13 @@ export interface WorkerPool {
   readonly size: number;
 }
 
+/** Message shapes sent back by worker threads. */
+type WorkerOutgoingMessage =
+  | { type: 'progress'; filesProcessed: number }
+  | { type: 'sub-batch-done' }
+  | { type: 'error'; error: string }
+  | { type: 'result'; data: unknown };
+
 /**
  * Max files to send to a worker in a single postMessage.
  * Keeps structured-clone memory bounded per sub-batch.
@@ -105,32 +112,28 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
           worker.postMessage({ type: 'sub-batch', files: subBatch });
         };
 
-        const handler = (msg: any) => {
+        const handler = (msg: WorkerOutgoingMessage) => {
           if (settled) return;
-          if (msg && msg.type === 'progress') {
+          if (msg.type === 'progress') {
             workerProgress[i] = msg.filesProcessed;
             if (onProgress) {
               const total = workerProgress.reduce((a, b) => a + b, 0);
               onProgress(total);
             }
-          } else if (msg && msg.type === 'sub-batch-done') {
+          } else if (msg.type === 'sub-batch-done') {
             sendNextSubBatch();
-          } else if (msg && msg.type === 'error') {
+          } else if (msg.type === 'error') {
             settled = true;
             cleanup();
             reject(new Error(`Worker ${i} error: ${msg.error}`));
-          } else if (msg && msg.type === 'result') {
+          } else if (msg.type === 'result') {
             settled = true;
             cleanup();
-            resolve(msg.data);
-          } else {
-            settled = true;
-            cleanup();
-            resolve(msg);
+            resolve(msg.data as TResult);
           }
         };
 
-        const errorHandler = (err: any) => {
+        const errorHandler = (err: Error) => {
           if (!settled) {
             settled = true;
             cleanup();

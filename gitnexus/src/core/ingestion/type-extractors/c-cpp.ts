@@ -33,9 +33,11 @@ const SMART_PTR_WRAPPERS = new Set(['shared_ptr', 'unique_ptr', 'weak_ptr']);
  *  Unwraps type_descriptor wrappers common in tree-sitter-cpp ASTs.
  *  Returns undefined if no template arguments or no type found. */
 export const extractFirstTemplateTypeArg = (parentNode: SyntaxNode): string | undefined => {
-  const templateArgs = parentNode.children.find((c: any) => c.type === 'template_argument_list');
+  const templateArgs = parentNode.children.find(
+    (c: SyntaxNode) => c.type === 'template_argument_list',
+  );
   if (!templateArgs?.firstNamedChild) return undefined;
-  let argNode: any = templateArgs.firstNamedChild;
+  let argNode: SyntaxNode | null = templateArgs.firstNamedChild;
   if (argNode.type === 'type_descriptor') {
     const inner = argNode.childForFieldName('type');
     if (inner) argNode = inner;
@@ -141,7 +143,7 @@ const extractInitializer: InitializerExtractor = (
         func.type === 'template_function'
           ? func
           : func.type === 'qualified_identifier' || func.type === 'scoped_identifier'
-            ? (func.namedChildren.find((c: any) => c.type === 'template_function') ?? null)
+            ? (func.namedChildren.find((c: SyntaxNode) => c.type === 'template_function') ?? null)
             : null;
       if (templateFunc) {
         const nameNode = templateFunc.firstNamedChild;

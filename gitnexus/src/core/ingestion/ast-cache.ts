@@ -19,7 +19,7 @@ export const createASTCache = (maxSize: number = 50): ASTCache => {
       try {
         // NOTE: web-tree-sitter has tree.delete(); native tree-sitter trees are GC-managed.
         // Keep this try/catch so we don't crash on either runtime.
-        (tree as any).delete?.();
+        (tree as unknown as { delete?: () => void }).delete?.();
       } catch (e) {
         console.warn('Failed to delete tree from WASM memory', e);
       }

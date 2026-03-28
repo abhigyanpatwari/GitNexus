@@ -186,7 +186,8 @@ function extractEloquentRelationDescription(methodNode: SyntaxNode): string | nu
         (c: SyntaxNode) => c.type === 'class_constant_access_expression',
       );
       if (classConstant) {
-        targetModel = classConstant.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
+        targetModel =
+          classConstant.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
       }
     }
   }

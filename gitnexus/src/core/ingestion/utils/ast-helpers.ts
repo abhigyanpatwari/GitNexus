@@ -149,7 +149,9 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
 /** Check if a Kotlin function_declaration capture is inside a class_body (i.e., a method).
  *  Kotlin grammar uses function_declaration for both top-level functions and class methods.
  *  Returns true when the captured definition node has a class_body ancestor. */
-export function isKotlinClassMethod(captureNode: { parent?: SyntaxNode | null } | null | undefined): boolean {
+export function isKotlinClassMethod(
+  captureNode: { parent?: SyntaxNode | null } | null | undefined,
+): boolean {
   let ancestor = captureNode?.parent;
   while (ancestor) {
     if (ancestor.type === 'class_body') return true;

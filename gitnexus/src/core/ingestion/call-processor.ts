@@ -900,17 +900,17 @@ const tryOverloadDisambiguation = (
   // Find the argument list node in the call expression.
   // Kotlin wraps value_arguments inside a call_suffix child, so we must also
   // search one level deeper when a direct match is not found.
-  let argList: any =
+  let argList: SyntaxNode | undefined =
     hints.callNode.childForFieldName?.('arguments') ??
     hints.callNode.children.find(
-      (c: any) =>
+      (c: SyntaxNode) =>
         c.type === 'arguments' || c.type === 'argument_list' || c.type === 'value_arguments',
     );
   if (!argList) {
     // Kotlin: call_expression → call_suffix → value_arguments
-    const callSuffix = hints.callNode.children.find((c: any) => c.type === 'call_suffix');
+    const callSuffix = hints.callNode.children.find((c: SyntaxNode) => c.type === 'call_suffix');
     if (callSuffix) {
-      argList = callSuffix.children.find((c: any) => c.type === 'value_arguments');
+      argList = callSuffix.children.find((c: SyntaxNode) => c.type === 'value_arguments');
     }
   }
   if (!argList) return null;

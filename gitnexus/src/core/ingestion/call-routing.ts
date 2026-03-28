@@ -72,8 +72,8 @@ export function routeRubyCall(calledName: string, callNode: SyntaxNode): RubyCal
   // ── require / require_relative → import ─────────────────────────────────
   if (calledName === 'require' || calledName === 'require_relative') {
     const argList = callNode.childForFieldName?.('arguments');
-    const stringNode = argList?.children?.find((c: any) => c.type === 'string');
-    const contentNode = stringNode?.children?.find((c: any) => c.type === 'string_content');
+    const stringNode = argList?.children?.find((c: SyntaxNode) => c.type === 'string');
+    const contentNode = stringNode?.children?.find((c: SyntaxNode) => c.type === 'string_content');
     if (!contentNode) return SKIP_RESULT;
 
     let importPath: string = contentNode.text;

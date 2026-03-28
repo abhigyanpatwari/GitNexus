@@ -352,7 +352,7 @@ export const processImports = async (
         console.groupEnd();
       }
 
-      if (wasReparsed) (tree as any).delete?.();
+      if (wasReparsed) (tree as unknown as { delete?: () => void }).delete?.();
       continue;
     }
 

@@ -12,6 +12,7 @@
 // (src/communities-leiden) because it was never published to npm.
 // We use createRequire to load the CommonJS vendored files in ESM context.
 import Graph from 'graphology';
+import type { AbstractGraph, Attributes } from 'graphology-types';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -23,7 +24,22 @@ const __dirname = dirname(__filename);
 // Navigate to package root (works from both src/ and dist/)
 const leidenPath = resolve(__dirname, '..', '..', '..', 'vendor', 'leiden', 'index.cjs');
 const _require = createRequire(import.meta.url);
-const leiden = _require(leidenPath);
+/** Graphology Graph instance type (AbstractGraph from graphology-types avoids CJS/ESM interop namespace issue) */
+type GraphInstance = AbstractGraph<Attributes, Attributes, Attributes>;
+
+const leiden: LeidenModule = _require(leidenPath);
+
+/** Vendored Leiden algorithm module shape */
+interface LeidenModule {
+  detailed: (graph: GraphInstance, options: Record<string, unknown>) => LeidenDetailedResult;
+}
+
+/** Result returned by leiden.detailed() */
+interface LeidenDetailedResult {
+  communities: Record<string, number>;
+  count: number;
+  modularity: number;
+}
 
 // ============================================================================
 // TYPES
@@ -127,16 +143,16 @@ export const processCommunities = async (
   // The first 2 iterations capture ~95%+ of modularity; additional iterations have diminishing returns.
   // Timeout: abort after 60s for pathological graph structures.
   const LEIDEN_TIMEOUT_MS = 60_000;
-  let details: any;
+  let details: LeidenDetailedResult;
   try {
     details = await Promise.race([
       Promise.resolve(
-        (leiden as any).detailed(graph, {
+        leiden.detailed(graph, {
           resolution: isLarge ? 2.0 : 1.0,
           maxIterations: isLarge ? 3 : 0,
         }),
       ),
-      new Promise((_, reject) =>
+      new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Leiden timeout')), LEIDEN_TIMEOUT_MS),
       ),
     ]);
@@ -199,8 +215,12 @@ export const processCommunities = async (
  */
 const MIN_CONFIDENCE_LARGE = 0.5;
 
-const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph, isLarge: boolean): any => {
-  const graph = new (Graph as any)({ type: 'undirected', allowSelfLoops: false });
+const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph, isLarge: boolean): GraphInstance => {
+  const GraphCtor = Graph as unknown as new (options: {
+    type: string;
+    allowSelfLoops: boolean;
+  }) => GraphInstance;
+  const graph = new GraphCtor({ type: 'undirected', allowSelfLoops: false });
 
   const symbolTypes = new Set<NodeLabel>(['Function', 'Class', 'Method', 'Interface']);
   const clusteringRelTypes = new Set(['CALLS', 'EXTENDS', 'IMPLEMENTS']);
@@ -257,7 +277,7 @@ const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph, isLarge: boolean):
 const createCommunityNodes = (
   communities: Record<string, number>,
   communityCount: number,
-  graph: any,
+  graph: GraphInstance,
   knowledgeGraph: KnowledgeGraph,
 ): CommunityNode[] => {
   // Group node IDs by community
@@ -312,7 +332,7 @@ const createCommunityNodes = (
 const generateHeuristicLabel = (
   memberIds: string[],
   nodePathMap: Map<string, string>,
-  graph: any,
+  graph: GraphInstance,
   commNum: number,
 ): string => {
   // Collect folder names from file paths
@@ -397,7 +417,7 @@ const findCommonPrefix = (strings: string[]): string => {
  * Estimate cohesion score (0-1) based on internal edge density.
  * Uses sampling for large communities to avoid O(N^2) cost.
  */
-const calculateCohesion = (memberIds: string[], graph: any): number => {
+const calculateCohesion = (memberIds: string[], graph: GraphInstance): number => {
   if (memberIds.length <= 1) return 1.0;
 
   const memberSet = new Set(memberIds);

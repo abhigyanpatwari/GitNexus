@@ -250,6 +250,11 @@ export interface ParseWorkerInput {
   content: string;
 }
 
+type WorkerIncomingMessage =
+  | { type: 'sub-batch'; files: ParseWorkerInput[] }
+  | { type: 'flush' }
+  | ParseWorkerInput[];
+
 // ============================================================================
 // Worker-local parser + language map
 // ============================================================================
@@ -780,7 +785,8 @@ function extractControllerTarget(argsNode: SyntaxNode | null): {
 
   // Class reference: UserController::class (invokable controller)
   if (handlerNode.type === 'class_constant_access_expression') {
-    const controller = handlerNode.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
+    const controller =
+      handlerNode.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
     return { controller, method: '__invoke' };
   }
 
@@ -1783,10 +1789,19 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   target.fileCount += src.fileCount;
 };
 
-parentPort!.on('message', (msg: any) => {
+parentPort!.on('message', (msg: WorkerIncomingMessage) => {
   try {
+    // Legacy single-message mode (backward compat): array of files
+    if (Array.isArray(msg)) {
+      const result = processBatch(msg, (filesProcessed) => {
+        parentPort!.postMessage({ type: 'progress', filesProcessed });
+      });
+      parentPort!.postMessage({ type: 'result', data: result });
+      return;
+    }
+
     // Sub-batch mode: { type: 'sub-batch', files: [...] }
-    if (msg && msg.type === 'sub-batch') {
+    if (msg.type === 'sub-batch') {
       const result = processBatch(msg.files, (filesProcessed) => {
         parentPort!.postMessage({
           type: 'progress',
@@ -1801,7 +1816,7 @@ parentPort!.on('message', (msg: any) => {
     }
 
     // Flush: send accumulated results
-    if (msg && msg.type === 'flush') {
+    if (msg.type === 'flush') {
       parentPort!.postMessage({ type: 'result', data: accumulated });
       // Reset for potential reuse
       accumulated = {
@@ -1823,15 +1838,6 @@ parentPort!.on('message', (msg: any) => {
         fileCount: 0,
       };
       cumulativeProcessed = 0;
-      return;
-    }
-
-    // Legacy single-message mode (backward compat): array of files
-    if (Array.isArray(msg)) {
-      const result = processBatch(msg, (filesProcessed) => {
-        parentPort!.postMessage({ type: 'progress', filesProcessed });
-      });
-      parentPort!.postMessage({ type: 'result', data: result });
       return;
     }
   } catch (err) {
