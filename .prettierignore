@@ -1,0 +1,16 @@
+dist/
+coverage/
+gitnexus/vendor/
+gitnexus/test/fixtures/
+gitnexus-web/playwright-report/
+gitnexus-web/test-results/
+*.d.ts
+*.snap
+*.wasm
+*.md
+.gitnexus/
+.vercel/
+.claude-flow/
+.swarm/
+assets/
+repomix-output*

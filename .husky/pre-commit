@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-commit hook (husky): typecheck + unit tests for both packages.
+# Pre-commit hook: format staged files, then typecheck + unit tests.
 # Mirrors CI checks from ci-quality.yml and ci-tests.yml.
 # Skip with: git commit --no-verify
 #
@@ -11,23 +11,28 @@
 
 ROOT="$(git rev-parse --show-toplevel)"
 
+# 1. Format staged files with prettier via lint-staged
+echo "pre-commit: formatting staged files..."
+"$ROOT/node_modules/.bin/lint-staged" || exit 1
+
+# 2. Typecheck + test changed packages
 WEB_CHANGED=$(git diff --cached --name-only -- 'gitnexus-web/' | head -1)
 CLI_CHANGED=$(git diff --cached --name-only -- 'gitnexus/' | head -1)
 
 if [ -n "$WEB_CHANGED" ]; then
   echo "pre-commit: typechecking gitnexus-web (tsc -b)..."
-  cd "$ROOT/gitnexus-web" && npx tsc -b --noEmit
+  cd "$ROOT/gitnexus-web" && ./node_modules/.bin/tsc -b --noEmit || exit 1
 
   echo "pre-commit: running gitnexus-web unit tests..."
-  npx vitest run --reporter=dot
+  ./node_modules/.bin/vitest run --reporter=dot || exit 1
 fi
 
 if [ -n "$CLI_CHANGED" ]; then
   echo "pre-commit: typechecking gitnexus..."
-  cd "$ROOT/gitnexus" && npx tsc --noEmit
+  cd "$ROOT/gitnexus" && ./node_modules/.bin/tsc --noEmit || exit 1
 
   echo "pre-commit: running gitnexus unit tests (default project)..."
-  npx vitest run --project default --reporter=dot
+  ./node_modules/.bin/vitest run --project default --reporter=dot || exit 1
 fi
 
 echo "pre-commit: all checks passed"
