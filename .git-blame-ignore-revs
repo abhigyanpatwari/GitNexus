@@ -1,2 +1,5 @@
 # Prettier initial formatting (2026-03-28)
 afcc3d1523f99c77ff67c4fd1af12334660113f6
+
+# ESLint unused import removal (2026-03-28)
+1491826bc8da5436d3b1eb092d9274f2c9f028a7
