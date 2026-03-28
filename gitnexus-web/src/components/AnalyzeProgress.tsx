@@ -24,6 +24,7 @@ const PHASE_LABELS: Record<string, string> = {
   fts: 'Creating search indexes',
   embeddings: 'Generating embeddings',
   done: 'Done',
+  retrying: 'Retrying after crash',
 };
 
 export const AnalyzeProgress = ({ progress, onCancel }: AnalyzeProgressProps) => {

@@ -804,14 +804,17 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
           jobManager.updateJob(job.id, { repoPath: targetPath, status: 'analyzing' });
 
-          // Fork child process with 8GB heap.
-          // In dev mode (tsx), import.meta.url points to .ts source — resolve to .ts and
-          // register the tsx ESM hook so the worker can compile TypeScript on-the-fly.
+          // ── Worker fork with auto-retry ──────────────────────────────
           //
-          // --import requires a file:// URL on Windows (bare specifiers are resolved
-          // relative to the forked process's CWD, which may not have tsx in its
-          // node_modules). Using an absolute file:// URL bypasses CWD lookup and
-          // works identically on Windows, macOS, and Linux.
+          // Forks a child process with 8GB heap. If the worker crashes
+          // (OOM, native addon segfault, etc.), it retries up to
+          // MAX_WORKER_RETRIES times with exponential backoff before
+          // marking the job as permanently failed.
+          //
+          // In dev mode (tsx), registers the tsx ESM hook via a file://
+          // URL so the child can compile TypeScript on-the-fly.
+
+          const MAX_WORKER_RETRIES = 2;
           const callerPath = fileURLToPath(import.meta.url);
           const isDev = callerPath.endsWith('.ts');
           const workerFile = isDev ? 'analyze-worker.ts' : 'analyze-worker.js';
@@ -819,69 +822,98 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           const tsxHookArgs: string[] = isDev
             ? ['--import', pathToFileURL(_require.resolve('tsx/esm')).href]
             : [];
-          const child = fork(workerPath, [], {
-            execArgv: [...tsxHookArgs, '--max-old-space-size=8192'],
-            stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-          });
 
-          // Capture stderr for better error reporting on crash
-          let stderrChunks = '';
-          child.stderr?.on('data', (chunk: Buffer) => {
-            stderrChunks += chunk.toString();
-            if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
-          });
-
-          child.on('message', (msg: any) => {
-            if (msg.type === 'progress') {
-              jobManager.updateJob(job.id, {
-                status: 'analyzing',
-                progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
-              });
-            } else if (msg.type === 'complete') {
-              releaseRepoLock(analyzeLockKey);
-              jobManager.updateJob(job.id, {
-                status: 'complete',
-                repoName: msg.result.repoName,
-              });
-              // Reinitialize backend so it picks up the new repo
-              backend.init().catch((err) => console.error('backend.init() failed after analyze:', err));
-            } else if (msg.type === 'error') {
-              releaseRepoLock(analyzeLockKey);
-              jobManager.updateJob(job.id, {
-                status: 'failed',
-                error: msg.message,
-              });
-            }
-          });
-
-          child.on('error', (err) => {
-            releaseRepoLock(analyzeLockKey);
-            jobManager.updateJob(job.id, {
-              status: 'failed',
-              error: `Worker process error: ${err.message}`,
-            });
-          });
-
-          child.on('exit', (code) => {
+          const forkWorker = () => {
             const currentJob = jobManager.getJob(job.id);
-            if (currentJob && currentJob.status !== 'complete' && currentJob.status !== 'failed') {
+            if (!currentJob || currentJob.status === 'complete' || currentJob.status === 'failed') return;
+
+            const child = fork(workerPath, [], {
+              execArgv: [...tsxHookArgs, '--max-old-space-size=8192'],
+              stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+            });
+
+            // Capture stderr for crash diagnostics
+            let stderrChunks = '';
+            child.stderr?.on('data', (chunk: Buffer) => {
+              stderrChunks += chunk.toString();
+              if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
+            });
+
+            child.on('message', (msg: any) => {
+              if (msg.type === 'progress') {
+                jobManager.updateJob(job.id, {
+                  status: 'analyzing',
+                  progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
+                });
+              } else if (msg.type === 'complete') {
+                releaseRepoLock(analyzeLockKey);
+                jobManager.updateJob(job.id, {
+                  status: 'complete',
+                  repoName: msg.result.repoName,
+                });
+                backend.init().catch((err) => console.error('backend.init() failed after analyze:', err));
+              } else if (msg.type === 'error') {
+                releaseRepoLock(analyzeLockKey);
+                jobManager.updateJob(job.id, {
+                  status: 'failed',
+                  error: msg.message,
+                });
+              }
+            });
+
+            child.on('error', (err) => {
               releaseRepoLock(analyzeLockKey);
               jobManager.updateJob(job.id, {
                 status: 'failed',
-                error: `Worker exited unexpectedly (code ${code})${stderrChunks ? ': ' + stderrChunks.trim().split('\n').pop() : ''}`,
+                error: `Worker process error: ${err.message}`,
               });
-            }
-          });
+            });
 
-          // Register child for cancellation + timeout tracking
-          jobManager.registerChild(job.id, child);
+            child.on('exit', (code) => {
+              const j = jobManager.getJob(job.id);
+              if (!j || j.status === 'complete' || j.status === 'failed') return;
 
-          // Send start command to child
-          child.send({
-            type: 'start',
-            repoPath: targetPath,
-            options: { force: !!force, embeddings: !!embeddings },
-          });
+              // Worker crashed — attempt retry if under the limit
+              if (j.retryCount < MAX_WORKER_RETRIES) {
+                j.retryCount++;
+                const delay = 1000 * Math.pow(2, j.retryCount - 1); // 1s, 2s
+                const lastErr = stderrChunks.trim().split('\n').pop() || '';
+                console.warn(
+                  `Analyze worker crashed (code ${code}), retry ${j.retryCount}/${MAX_WORKER_RETRIES} in ${delay}ms` +
+                  (lastErr ? `: ${lastErr}` : ''),
+                );
+                jobManager.updateJob(job.id, {
+                  status: 'analyzing',
+                  progress: {
+                    phase: 'retrying',
+                    percent: j.progress.percent,
+                    message: `Worker crashed, retrying (${j.retryCount}/${MAX_WORKER_RETRIES})...`,
+                  },
+                });
+                stderrChunks = '';
+                setTimeout(forkWorker, delay);
+              } else {
+                // Exhausted retries — permanent failure
+                releaseRepoLock(analyzeLockKey);
+                jobManager.updateJob(job.id, {
+                  status: 'failed',
+                  error: `Worker crashed ${MAX_WORKER_RETRIES + 1} times (code ${code})${stderrChunks ? ': ' + stderrChunks.trim().split('\n').pop() : ''}`,
+                });
+              }
+            });
+
+            // Register child for cancellation + timeout tracking
+            jobManager.registerChild(job.id, child);
+
+            // Send start command to child
+            child.send({
+              type: 'start',
+              repoPath: targetPath,
+              options: { force: !!force, embeddings: !!embeddings },
+            });
+          };
+
+          forkWorker();
 
         } catch (err: any) {
           if (targetPath) releaseRepoLock(getStoragePath(targetPath));
@@ -1078,20 +1110,27 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     res.status(500).json({ error: 'Internal server error' });
   });
 
-  const server = app.listen(port, host, () => {
-    console.log(`GitNexus server running on http://${host}:${port}`);
-  });
+  // Wrap listen in a promise so errors (EADDRINUSE, EACCES, etc.) propagate
+  // to the caller instead of crashing with an unhandled 'error' event.
+  await new Promise<void>((resolve, reject) => {
+    const server = app.listen(port, host, () => {
+      console.log(`GitNexus server running on http://${host}:${port}`);
+      resolve();
+    });
+    server.on('error', (err) => reject(err));
 
-  // Graceful shutdown — close Express + LadybugDB cleanly
-  const shutdown = async () => {
-    server.close();
-    jobManager.dispose();
-    embedJobManager.dispose();
-    await cleanupMcp();
-    await closeLbug();
-    await backend.disconnect();
-    process.exit(0);
-  };
-  process.once('SIGINT', shutdown);
-  process.once('SIGTERM', shutdown);
+    // Graceful shutdown — close Express + LadybugDB cleanly
+    const shutdown = async () => {
+      console.log('\nShutting down...');
+      server.close();
+      jobManager.dispose();
+      embedJobManager.dispose();
+      await cleanupMcp();
+      await closeLbug();
+      await backend.disconnect();
+      process.exit(0);
+    };
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
+  });
 };

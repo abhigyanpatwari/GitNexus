@@ -29,6 +29,8 @@ export interface AnalyzeJob {
   error?: string;
   startedAt: number;
   completedAt?: number;
+  /** Number of times the worker has been retried after a crash. */
+  retryCount: number;
 }
 
 const JOB_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -74,6 +76,7 @@ export class JobManager {
       repoPath: params.repoPath,
       progress: { phase: 'queued', percent: 0, message: 'Waiting to start...' },
       startedAt: Date.now(),
+      retryCount: 0,
     };
 
     this.jobs.set(job.id, job);
