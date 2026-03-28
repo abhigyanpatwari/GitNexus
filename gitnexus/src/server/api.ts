@@ -377,6 +377,61 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     }
   });
 
+  // Delete a repo — removes index, clone dir (if any), and unregisters it
+  app.delete('/api/repo', async (req, res) => {
+    try {
+      const repoName = requestedRepo(req);
+      if (!repoName) {
+        res.status(400).json({ error: 'Missing repo name' });
+        return;
+      }
+      const entry = await resolveRepo(repoName);
+      if (!entry) {
+        res.status(404).json({ error: 'Repository not found' });
+        return;
+      }
+
+      // Acquire repo lock — prevents deleting while analyze/embed is in flight
+      const lockKey = getStoragePath(entry.path);
+      const lockErr = acquireRepoLock(lockKey);
+      if (lockErr) {
+        res.status(409).json({ error: lockErr });
+        return;
+      }
+
+      try {
+      // Close any open LadybugDB handle before deleting files
+      try { await closeLbug(); } catch {}
+
+      // 1. Delete the .gitnexus index/storage directory
+      const storagePath = getStoragePath(entry.path);
+      await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
+
+      // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/
+      const cloneDir = getCloneDir(entry.name);
+      try {
+        const stat = await fs.stat(cloneDir);
+        if (stat.isDirectory()) {
+          await fs.rm(cloneDir, { recursive: true, force: true });
+        }
+      } catch { /* clone dir may not exist (local repos) */ }
+
+      // 3. Unregister from the global registry
+      const { unregisterRepo } = await import('../storage/repo-manager.js');
+      await unregisterRepo(entry.path);
+
+      // 4. Reinitialize backend to reflect the removal
+      await backend.init().catch(() => {});
+
+      res.json({ deleted: entry.name });
+      } finally {
+        releaseRepoLock(lockKey);
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to delete repo' });
+    }
+  });
+
   // Get full graph
   app.get('/api/graph', async (req, res) => {
     try {
@@ -862,11 +917,22 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 });
               } else if (msg.type === 'complete') {
                 releaseRepoLock(analyzeLockKey);
-                jobManager.updateJob(job.id, {
-                  status: 'complete',
-                  repoName: msg.result.repoName,
-                });
-                backend.init().catch((err) => console.error('backend.init() failed after analyze:', err));
+                // Reinitialize backend BEFORE marking complete — ensures the new
+                // repo is queryable when the client receives the SSE complete event.
+                backend.init()
+                  .then(() => {
+                    jobManager.updateJob(job.id, {
+                      status: 'complete',
+                      repoName: msg.result.repoName,
+                    });
+                  })
+                  .catch((err) => {
+                    console.error('backend.init() failed after analyze:', err);
+                    jobManager.updateJob(job.id, {
+                      status: 'failed',
+                      error: 'Server failed to reload after analysis. Try again.',
+                    });
+                  });
               } else if (msg.type === 'error') {
                 releaseRepoLock(analyzeLockKey);
                 jobManager.updateJob(job.id, {

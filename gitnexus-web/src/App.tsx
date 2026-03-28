@@ -11,7 +11,7 @@ import { FileTreePanel } from './components/FileTreePanel';
 import { CodeReferencesPanel } from './components/CodeReferencesPanel';
 import { getActiveProviderConfig } from './core/llm/settings-service';
 import { createKnowledgeGraph } from './core/graph/graph';
-import { connectToServer, fetchRepos, normalizeServerUrl, connectHeartbeat, type ConnectResult } from './services/backend-client';
+import { connectToServer, fetchRepos, normalizeServerUrl, connectHeartbeat, BackendError, type ConnectResult, type BackendRepo } from './services/backend-client';
 import { ERROR_RESET_DELAY_MS } from './config/ui-constants';
 
 const AppContent = () => {
@@ -181,25 +181,32 @@ const AppContent = () => {
         onFocusNode={handleFocusNode}
         availableRepos={availableRepos}
         onSwitchRepo={switchRepo}
+        onReposChanged={(repos) => setAvailableRepos(repos)}
         onAnalyzeComplete={async (repoName) => {
           // A new repo was just indexed via the header dropdown.
-          // Refresh the repo list first (so it appears immediately),
-          // then connect to the new repo's graph.
-          try {
-            const repos = await fetchRepos();
-            setAvailableRepos(repos);
-            const result = await connectToServer(
-              serverBaseUrl ?? 'http://localhost:4747',
-              undefined,
-              undefined,
-              repoName,
-            );
-            await handleServerConnect(result);
-            setProgress(null);
-          } catch (err) {
-            console.error('Failed to connect after analyze:', err);
-            // Still refresh the list even if connect fails
-            fetchRepos().then(repos => setAvailableRepos(repos)).catch(() => {});
+          // Refresh the repo list, connect to the new repo, and switch to it.
+          // Retry once after 1s if the repo isn't found yet (server may still
+          // be reinitializing after the worker completed).
+          const url = serverBaseUrl ?? 'http://localhost:4747';
+          for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+              const repos = await fetchRepos();
+              setAvailableRepos(repos);
+              const result = await connectToServer(url, undefined, undefined, repoName);
+              await handleServerConnect(result);
+              setServerBaseUrl(normalizeServerUrl(url));
+              setProgress(null);
+              return;
+            } catch (err: unknown) {
+              if (attempt === 0 && err instanceof BackendError && err.status === 404) {
+                // Server may still be reinitializing — wait and retry
+                await new Promise(r => setTimeout(r, 1500));
+                continue;
+              }
+              console.error('Failed to connect after analyze:', err);
+              fetchRepos().then(repos => setAvailableRepos(repos)).catch(() => {});
+              return;
+            }
           }
         }}
       />

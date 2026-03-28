@@ -340,6 +340,14 @@ export const connectHeartbeat = (
   };
 };
 
+/** Delete a repo's index and unregister it. */
+export const deleteRepo = async (repoName: string): Promise<void> => {
+  const response = await fetchWithTimeout(`${_backendUrl}/api/repo?repo=${encodeURIComponent(repoName)}`, {
+    method: 'DELETE',
+  });
+  await assertOk(response);
+};
+
 /** Probe the backend. Returns true if reachable. */
 export const probeBackend = async (): Promise<boolean> => {
   try {
