@@ -8,7 +8,7 @@
 
 import { SupportedLanguages } from '../../../config/supported-languages.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
-import { parseJavaMethodReference } from '../utils/call-analysis.js';
+import { parseJavaMethodReference } from './java.js';
 
 export type ParsedCallSite = {
   calledName: string;

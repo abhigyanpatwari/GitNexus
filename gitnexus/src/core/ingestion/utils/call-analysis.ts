@@ -618,3 +618,44 @@ export function extractMixedChain(
 
   return chain.length > 0 ? { chain, baseReceiverName: undefined } : undefined;
 }
+
+/**
+ * Extract argument types from a call AST node using literal type inference
+ * and optional TypeEnv fallback for identifiers.
+ * Returns undefined when the argument list cannot be located or all types are unknown.
+ */
+export const extractCallArgTypes = (
+  callNode: SyntaxNode,
+  inferLiteralType: (node: SyntaxNode) => string | undefined,
+  typeEnvLookup?: (varName: string, callNode: SyntaxNode) => string | undefined,
+): (string | undefined)[] | undefined => {
+  let argList: SyntaxNode | undefined = callNode.childForFieldName?.('arguments')
+    ?? callNode.children.find((c: SyntaxNode) =>
+      c.type === 'arguments' || c.type === 'argument_list' || c.type === 'value_arguments'
+    );
+  if (!argList) {
+    const callSuffix = callNode.children.find((c: SyntaxNode) => c.type === 'call_suffix');
+    if (callSuffix) {
+      argList = callSuffix.children.find((c: SyntaxNode) => c.type === 'value_arguments');
+    }
+  }
+  if (!argList) return undefined;
+
+  const argTypes: (string | undefined)[] = [];
+  for (const arg of argList.namedChildren) {
+    if (arg.type === 'comment') continue;
+    const valueNode = arg.childForFieldName?.('value')
+      ?? arg.childForFieldName?.('expression')
+      ?? (arg.type === 'argument' || arg.type === 'value_argument'
+        ? arg.firstNamedChild ?? arg
+        : arg);
+    let inferred = inferLiteralType(valueNode);
+    if (!inferred && typeEnvLookup && valueNode.type === 'identifier') {
+      inferred = typeEnvLookup(valueNode.text, callNode);
+    }
+    argTypes.push(inferred);
+  }
+
+  if (argTypes.every(t => t === undefined)) return undefined;
+  return argTypes;
+};
