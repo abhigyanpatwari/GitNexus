@@ -14,10 +14,7 @@
 import path from 'path';
 import { describe, beforeAll, afterAll, inject } from 'vitest';
 import type { TestDBHandle } from './test-db.js';
-import {
-  NODE_TABLES,
-  EMBEDDING_TABLE_NAME,
-} from '../../src/core/lbug/schema.js';
+import { NODE_TABLES, EMBEDDING_TABLE_NAME } from '../../src/core/lbug/schema.js';
 
 export interface IndexedDBHandle {
   /** Path to the LadybugDB database file */
@@ -94,7 +91,11 @@ export function withTestLbugDB(
     // 3. Drop stale FTS indexes from previous test file
     if (options?.ftsIndexes?.length) {
       for (const idx of options.ftsIndexes) {
-        try { await adapter.dropFTSIndex(idx.table, idx.indexName); } catch { /* may not exist */ }
+        try {
+          await adapter.dropFTSIndex(idx.table, idx.indexName);
+        } catch {
+          /* may not exist */
+        }
       }
     }
 
@@ -153,7 +154,8 @@ export function withTestLbugDB(
 
   const lazyHandle = new Proxy({} as IndexedDBHandle, {
     get(_target, prop) {
-      if (!ref.handle) throw new Error('withTestLbugDB: handle not initialized — beforeAll has not run yet');
+      if (!ref.handle)
+        throw new Error('withTestLbugDB: handle not initialized — beforeAll has not run yet');
       return (ref.handle as any)[prop];
     },
   });
@@ -166,7 +168,9 @@ export function withTestLbugDB(
     // native resource cleanup.  The vitest hookTimeout (120s) should apply
     // automatically, but some vitest versions fall back to testTimeout (30s)
     // for afterAll.  Pass 120s explicitly to avoid CI flakes on Windows.
-    afterAll(async () => { if (ref.handle) await ref.handle.cleanup(); }, 120_000);
+    afterAll(async () => {
+      if (ref.handle) await ref.handle.cleanup();
+    }, 120_000);
     fn(lazyHandle);
   });
 }

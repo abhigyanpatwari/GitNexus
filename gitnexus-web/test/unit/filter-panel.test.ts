@@ -4,8 +4,16 @@ import type { NodeLabel } from '../../src/core/graph/types';
 import * as lucideIcons from '../../src/lib/lucide-icons';
 
 const LEGEND_LABELS: NodeLabel[] = [
-  'Folder', 'File', 'Class', 'Interface', 'Enum', 'Type',
-  'Function', 'Method', 'Variable', 'Decorator',
+  'Folder',
+  'File',
+  'Class',
+  'Interface',
+  'Enum',
+  'Type',
+  'Function',
+  'Method',
+  'Variable',
+  'Decorator',
 ];
 
 const ICON_MAP: Record<string, string> = {
@@ -33,7 +41,9 @@ describe('filter panel icon mappings', () => {
     const exportedNames = new Set(Object.keys(lucideIcons));
     const requiredIcons = new Set(Object.values(ICON_MAP));
     for (const iconName of requiredIcons) {
-      expect(exportedNames.has(iconName), `${iconName} should be exported from lucide-icons`).toBe(true);
+      expect(exportedNames.has(iconName), `${iconName} should be exported from lucide-icons`).toBe(
+        true,
+      );
     }
   });
 
@@ -61,8 +71,16 @@ describe('color legend', () => {
 
   it('legend labels match the order used in FileTreePanel', () => {
     const expected: NodeLabel[] = [
-      'Folder', 'File', 'Class', 'Interface', 'Enum', 'Type',
-      'Function', 'Method', 'Variable', 'Decorator',
+      'Folder',
+      'File',
+      'Class',
+      'Interface',
+      'Enum',
+      'Type',
+      'Function',
+      'Method',
+      'Variable',
+      'Decorator',
     ];
     expect(LEGEND_LABELS).toEqual(expected);
   });

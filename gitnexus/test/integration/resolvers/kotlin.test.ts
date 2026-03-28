@@ -4,8 +4,14 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, CROSS_FILE_FIXTURES, getRelationships, getNodesByLabel, getNodesByLabelFull, edgeSet,
-  runPipelineFromRepo, type PipelineResult,
+  FIXTURES,
+  CROSS_FILE_FIXTURES,
+  getRelationships,
+  getNodesByLabel,
+  getNodesByLabelFull,
+  edgeSet,
+  runPipelineFromRepo,
+  type PipelineResult,
 } from './helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -16,10 +22,7 @@ describe('Kotlin heritage resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-heritage'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-heritage'), () => {});
   }, 60000);
 
   it('detects exactly 3 classes and 2 interfaces', () => {
@@ -30,7 +33,12 @@ describe('Kotlin heritage resolution', () => {
   it('detects 6 class/interface methods (processUser is inside UserService)', () => {
     expect(getNodesByLabel(result, 'Function')).toEqual([]);
     expect(getNodesByLabel(result, 'Method')).toEqual([
-      'processUser', 'save', 'serialize', 'serialize', 'validate', 'validate',
+      'processUser',
+      'save',
+      'serialize',
+      'serialize',
+      'validate',
+      'validate',
     ]);
   });
 
@@ -44,10 +52,7 @@ describe('Kotlin heritage resolution', () => {
   it('emits exactly 2 IMPLEMENTS edges via symbol table resolution', () => {
     const implements_ = getRelationships(result, 'IMPLEMENTS');
     expect(implements_.length).toBe(2);
-    expect(edgeSet(implements_)).toEqual([
-      'User → Serializable',
-      'User → Validatable',
-    ]);
+    expect(edgeSet(implements_)).toEqual(['User → Serializable', 'User → Validatable']);
   });
 
   it('resolves exactly 4 IMPORTS edges (JVM-style package imports)', () => {
@@ -63,14 +68,14 @@ describe('Kotlin heritage resolution', () => {
 
   it('does not emit EXTENDS edges to interfaces', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
-    expect(extends_.some(e => e.target === 'Serializable')).toBe(false);
-    expect(extends_.some(e => e.target === 'Validatable')).toBe(false);
+    expect(extends_.some((e) => e.target === 'Serializable')).toBe(false);
+    expect(extends_.some((e) => e.target === 'Validatable')).toBe(false);
   });
 
   it('resolves ambiguous validate() call through non-aliased import with import-resolved reason', () => {
     const calls = getRelationships(result, 'CALLS');
     // validate is defined in both Validatable (interface) and User (override) → needs import scoping
-    const validateCall = calls.find(c => c.target === 'validate');
+    const validateCall = calls.find((c) => c.target === 'validate');
     expect(validateCall).toBeDefined();
     expect(validateCall!.source).toBe('processUser');
     expect(validateCall!.rel.reason).toBe('import-resolved');
@@ -79,7 +84,7 @@ describe('Kotlin heritage resolution', () => {
   it('resolves unique save() call through non-aliased import', () => {
     const calls = getRelationships(result, 'CALLS');
     // save is unique globally (only in BaseModel) → resolves as unique-global
-    const saveCall = calls.find(c => c.target === 'save');
+    const saveCall = calls.find((c) => c.target === 'save');
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('processUser');
   });
@@ -113,17 +118,14 @@ describe('Kotlin ambiguous symbol resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-ambiguous'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-ambiguous'), () => {});
   }, 60000);
 
   it('detects 2 Handler classes and 2 Runnable interfaces', () => {
     const classes = getNodesByLabel(result, 'Class');
-    expect(classes.filter(n => n === 'Handler').length).toBe(2);
+    expect(classes.filter((n) => n === 'Handler').length).toBe(2);
     const ifaces = getNodesByLabel(result, 'Interface');
-    expect(ifaces.filter(n => n === 'Runnable').length).toBe(2);
+    expect(ifaces.filter((n) => n === 'Runnable').length).toBe(2);
   });
 
   it('resolves EXTENDS to models/Handler.kt (not other/Handler.kt)', () => {
@@ -150,7 +152,10 @@ describe('Kotlin ambiguous symbol resolution', () => {
   });
 
   it('all heritage edges point to real graph nodes', () => {
-    for (const edge of [...getRelationships(result, 'EXTENDS'), ...getRelationships(result, 'IMPLEMENTS')]) {
+    for (const edge of [
+      ...getRelationships(result, 'EXTENDS'),
+      ...getRelationships(result, 'IMPLEMENTS'),
+    ]) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
       expect(target!.properties.name).toBe(edge.target);
@@ -162,10 +167,7 @@ describe('Kotlin call resolution with arity filtering', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-calls'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-calls'), () => {});
   }, 60000);
 
   it('resolves processUser → writeAudit to util/OneArg.kt via arity narrowing', () => {
@@ -186,15 +188,12 @@ describe('Kotlin member-call resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-member-calls'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-member-calls'), () => {});
   }, 60000);
 
   it('resolves processUser → save as a member call on User', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save');
+    const saveCall = calls.find((c) => c.target === 'save');
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('processUser');
     expect(saveCall!.targetFilePath).toBe('models/User.kt');
@@ -214,26 +213,23 @@ describe('Kotlin receiver-constrained resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-receiver-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-receiver-resolution'), () => {});
   }, 60000);
 
   it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() to User.save and repo.save() to Repo.save via receiver typing', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save');
+    const saveCalls = calls.filter((c) => c.target === 'save');
     expect(saveCalls.length).toBe(2);
 
-    const userSave = saveCalls.find(c => c.targetFilePath === 'models/User.kt');
-    const repoSave = saveCalls.find(c => c.targetFilePath === 'models/Repo.kt');
+    const userSave = saveCalls.find((c) => c.targetFilePath === 'models/User.kt');
+    const repoSave = saveCalls.find((c) => c.targetFilePath === 'models/Repo.kt');
 
     expect(userSave).toBeDefined();
     expect(repoSave).toBeDefined();
@@ -250,10 +246,7 @@ describe('Kotlin alias import resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-alias-imports'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-alias-imports'), () => {});
   }, 60000);
 
   it('detects User and Repo classes with their methods', () => {
@@ -264,8 +257,8 @@ describe('Kotlin alias import resolution', () => {
 
   it('resolves u.save() to models/Models.kt and r.persist() to models/Models.kt via alias', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save');
-    const persistCall = calls.find(c => c.target === 'persist');
+    const saveCall = calls.find((c) => c.target === 'save');
+    const persistCall = calls.find((c) => c.target === 'persist');
 
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('main');
@@ -285,10 +278,7 @@ describe('Kotlin constructor-call resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-constructor-calls'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-constructor-calls'), () => {});
   }, 60000);
 
   it('detects User class with save method and main function', () => {
@@ -299,20 +289,20 @@ describe('Kotlin constructor-call resolution', () => {
 
   it('resolves import from app/App.kt to models/User.kt', () => {
     const imports = getRelationships(result, 'IMPORTS');
-    const imp = imports.find(e => e.source === 'App.kt' && e.targetFilePath === 'models/User.kt');
+    const imp = imports.find((e) => e.source === 'App.kt' && e.targetFilePath === 'models/User.kt');
     expect(imp).toBeDefined();
   });
 
   it('emits HAS_METHOD from User class to save function', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const edge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
+    const edge = hasMethod.find((e) => e.source === 'User' && e.target === 'save');
     expect(edge).toBeDefined();
     expect(edge!.targetFilePath).toBe('models/User.kt');
   });
 
   it('resolves user.save() as a method call to models/User.kt', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save');
+    const saveCall = calls.find((c) => c.target === 'save');
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('main');
     expect(saveCall!.targetFilePath).toBe('models/User.kt');
@@ -335,15 +325,12 @@ describe('Kotlin variadic call resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-variadic-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-variadic-resolution'), () => {});
   }, 60000);
 
   it('resolves 3-arg call to vararg function logEntry(vararg String) in Logger.kt', () => {
     const calls = getRelationships(result, 'CALLS');
-    const logCall = calls.find(c => c.target === 'logEntry');
+    const logCall = calls.find((c) => c.target === 'logEntry');
     expect(logCall).toBeDefined();
     expect(logCall!.source).toBe('main');
     expect(logCall!.targetFilePath).toBe('util/Logger.kt');
@@ -358,22 +345,21 @@ describe('Kotlin local definition shadows import', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-local-shadow'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-local-shadow'), () => {});
   }, 60000);
 
   it('resolves run → save to same-file definition, not the imported one', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save' && c.source === 'run');
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'run');
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('src/main/kotlin/app/Main.kt');
   });
 
   it('does NOT resolve save to Logger.kt', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveToUtils = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/main/kotlin/utils/Logger.kt');
+    const saveToUtils = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'src/main/kotlin/utils/Logger.kt',
+    );
     expect(saveToUtils).toBeUndefined();
   });
 });
@@ -396,27 +382,31 @@ describe('Kotlin constructor-inferred type resolution', () => {
   it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
-it('resolves user.save() to models/User.kt via constructor-inferred type', () => {
+  it('resolves user.save() to models/User.kt via constructor-inferred type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/User.kt');
+    const userSave = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'models/User.kt',
+    );
     expect(userSave).toBeDefined();
     expect(userSave!.source).toBe('processEntities');
   });
 
   it('resolves repo.save() to models/Repo.kt via constructor-inferred type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/Repo.kt');
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'models/Repo.kt',
+    );
     expect(repoSave).toBeDefined();
     expect(repoSave!.source).toBe('processEntities');
   });
 
   it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save');
+    const saveCalls = calls.filter((c) => c.target === 'save');
     expect(saveCalls.length).toBe(2);
   });
 });
@@ -443,14 +433,14 @@ describe('Kotlin this resolution', () => {
 
   it('resolves this.save() inside User.process to User.save, not Repo.save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process');
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'process');
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('models/User.kt');
   });
 
   it('resolves this.init() inside AppConfig.setup to AppConfig.init (object_declaration)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const initCall = calls.find(c => c.target === 'init' && c.source === 'setup');
+    const initCall = calls.find((c) => c.target === 'init' && c.source === 'setup');
     expect(initCall).toBeDefined();
     expect(initCall!.targetFilePath).toBe('models/AppConfig.kt');
   });
@@ -466,39 +456,39 @@ describe('Kotlin return type inference', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-return-type'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-return-type'), () => {});
   }, 60000);
 
   it('detects User and Repo classes with competing save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() to User#save via return type inference', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processUser' && c.targetFilePath?.includes('User.kt'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUser' && c.targetFilePath?.includes('User.kt'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves repo.save() to Repo#save via return type inference', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processRepo' && c.targetFilePath?.includes('Repo.kt'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processRepo' && c.targetFilePath?.includes('Repo.kt'),
     );
     expect(repoSave).toBeDefined();
   });
 
   it('user.save() does NOT resolve to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processUser' && c.targetFilePath?.includes('Repo.kt'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUser' && c.targetFilePath?.includes('Repo.kt'),
     );
     expect(wrongSave).toBeUndefined();
   });
@@ -512,10 +502,7 @@ describe('Kotlin parent resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-parent-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-parent-resolution'), () => {});
   }, 60000);
 
   it('detects BaseModel and User classes plus Serializable interface', () => {
@@ -538,7 +525,10 @@ describe('Kotlin parent resolution', () => {
   });
 
   it('all heritage edges point to real graph nodes', () => {
-    for (const edge of [...getRelationships(result, 'EXTENDS'), ...getRelationships(result, 'IMPLEMENTS')]) {
+    for (const edge of [
+      ...getRelationships(result, 'EXTENDS'),
+      ...getRelationships(result, 'IMPLEMENTS'),
+    ]) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
       expect(target!.properties.name).toBe(edge.target);
@@ -554,10 +544,7 @@ describe('Kotlin super resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-super-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-super-resolution'), () => {});
   }, 60000);
 
   it('detects BaseModel, User, and Repo classes', () => {
@@ -566,10 +553,14 @@ describe('Kotlin super resolution', () => {
 
   it('resolves super.save() inside User to BaseModel.save, not Repo.save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const superSave = calls.find(c => c.source === 'save' && c.target === 'save'
-      && c.targetFilePath === 'models/BaseModel.kt');
+    const superSave = calls.find(
+      (c) =>
+        c.source === 'save' && c.target === 'save' && c.targetFilePath === 'models/BaseModel.kt',
+    );
     expect(superSave).toBeDefined();
-    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/Repo.kt');
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'models/Repo.kt',
+    );
     expect(repoSave).toBeUndefined();
   });
 });
@@ -582,46 +573,55 @@ describe('Kotlin for-each loop type resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-foreach'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-foreach'), () => {});
   }, 60000);
 
   it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() inside for-each to models/User.kt', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c => c.target === 'save' && c.source === 'processUsers' && c.targetFilePath === 'models/User.kt');
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath === 'models/User.kt',
+    );
     expect(userSave).toBeDefined();
   });
 
   it('resolves repo.save() inside for-each to models/Repo.kt', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c => c.target === 'save' && c.source === 'processRepos' && c.targetFilePath === 'models/Repo.kt');
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processRepos' && c.targetFilePath === 'models/Repo.kt',
+    );
     expect(repoSave).toBeDefined();
   });
 
   it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save');
+    const saveCalls = calls.filter((c) => c.target === 'save');
     expect(saveCalls.length).toBe(2);
   });
 
   it('user.save() does NOT resolve to Repo.save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c => c.target === 'save' && c.source === 'processUsers' && c.targetFilePath === 'models/Repo.kt');
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath === 'models/Repo.kt',
+    );
     expect(wrongSave).toBeUndefined();
   });
 
   it('repo.save() does NOT resolve to User.save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c => c.target === 'save' && c.source === 'processRepos' && c.targetFilePath === 'models/User.kt');
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processRepos' && c.targetFilePath === 'models/User.kt',
+    );
     expect(wrongSave).toBeUndefined();
   });
 });
@@ -646,10 +646,14 @@ describe('Kotlin generic parent super resolution', () => {
 
   it('resolves super.save() inside User to BaseModel.save, not Repo.save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const superSave = calls.find(c => c.source === 'save' && c.target === 'save'
-      && c.targetFilePath === 'models/BaseModel.kt');
+    const superSave = calls.find(
+      (c) =>
+        c.source === 'save' && c.target === 'save' && c.targetFilePath === 'models/BaseModel.kt',
+    );
     expect(superSave).toBeDefined();
-    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/Repo.kt');
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'models/Repo.kt',
+    );
     expect(repoSave).toBeUndefined();
   });
 });
@@ -662,10 +666,7 @@ describe('Kotlin nullable receiver resolution (safe calls)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-nullable-receiver'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-nullable-receiver'), () => {});
   }, 60000);
 
   it('detects User and Repo classes with competing save methods', () => {
@@ -677,25 +678,31 @@ describe('Kotlin nullable receiver resolution (safe calls)', () => {
 
   it('resolves user?.save() to User#save via receiver typing', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath.includes('User.kt'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath.includes('User.kt'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves repo?.save() to Repo#save via receiver typing', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath.includes('Repo.kt'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath.includes('Repo.kt'),
     );
     expect(repoSave).toBeDefined();
   });
 
   it('does NOT cross-contaminate (exactly 1 save per receiver file)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save' && c.source === 'processEntities');
-    const userTargeted = saveCalls.filter(c => c.targetFilePath.includes('User.kt'));
-    const repoTargeted = saveCalls.filter(c => c.targetFilePath.includes('Repo.kt'));
+    const saveCalls = calls.filter((c) => c.target === 'save' && c.source === 'processEntities');
+    const userTargeted = saveCalls.filter((c) => c.targetFilePath.includes('User.kt'));
+    const repoTargeted = saveCalls.filter((c) => c.targetFilePath.includes('Repo.kt'));
     expect(userTargeted.length).toBe(1);
     expect(repoTargeted.length).toBe(1);
   });
@@ -709,31 +716,34 @@ describe('Kotlin assignment chain propagation', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-assignment-chain'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-assignment-chain'), () => {});
   }, 60000);
 
   it('detects User and Repo classes each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves alias.save() to User#save via assignment chain', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath.includes('User.kt'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath.includes('User.kt'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves rAlias.save() to Repo#save via assignment chain', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath.includes('Repo.kt'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath.includes('Repo.kt'),
     );
     expect(repoSave).toBeDefined();
   });
@@ -741,19 +751,28 @@ describe('Kotlin assignment chain propagation', () => {
   it('alias.save() does NOT resolve to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
     // There should be exactly one save() call targeting User.kt from processEntities
-    const userSaves = calls.filter(c =>
-      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath.includes('User.kt'),
+    const userSaves = calls.filter(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath.includes('User.kt'),
     );
     expect(userSaves.length).toBe(1);
   });
 
   it('each alias resolves to its own class, not the other', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath.includes('User.kt'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath.includes('User.kt'),
     );
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath.includes('Repo.kt'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath.includes('Repo.kt'),
     );
     expect(userSave).toBeDefined();
     expect(repoSave).toBeDefined();
@@ -772,47 +791,48 @@ describe('Kotlin assignment chain inside class method', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-class-method-chain'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-class-method-chain'), () => {});
   }, 60000);
 
   it('detects User and Repo classes each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves alias.save() to User#save via chain inside function', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processUser' && c.targetFilePath?.includes('User.kt'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUser' && c.targetFilePath?.includes('User.kt'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('alias.save() in processUser does NOT resolve to Repo (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processUser' && c.targetFilePath?.includes('Repo.kt'),
+    const wrongCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUser' && c.targetFilePath?.includes('Repo.kt'),
     );
     expect(wrongCall).toBeUndefined();
   });
 
   it('resolves alias.save() to Repo#save via chain inside function', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processRepo' && c.targetFilePath?.includes('Repo.kt'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processRepo' && c.targetFilePath?.includes('Repo.kt'),
     );
     expect(repoSave).toBeDefined();
   });
 
   it('alias.save() in processRepo does NOT resolve to User (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processRepo' && c.targetFilePath?.includes('User.kt'),
+    const wrongCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processRepo' && c.targetFilePath?.includes('User.kt'),
     );
     expect(wrongCall).toBeUndefined();
   });
@@ -828,10 +848,7 @@ describe('Kotlin chained method call resolution (Phase 5 review fix)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-chain-call'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-chain-call'), () => {});
   }, 60000);
 
   it('detects User, Repo, and UserService classes', () => {
@@ -849,20 +866,18 @@ describe('Kotlin chained method call resolution (Phase 5 review fix)', () => {
 
   it('resolves svc.getUser().save() to User#save via chain resolution', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'processUser' &&
-      c.targetFilePath?.includes('User.kt'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUser' && c.targetFilePath?.includes('User.kt'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('does NOT resolve svc.getUser().save() to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'processUser' &&
-      c.targetFilePath?.includes('Repo.kt'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUser' && c.targetFilePath?.includes('Repo.kt'),
     );
     expect(repoSave).toBeUndefined();
   });
@@ -876,10 +891,7 @@ describe('Kotlin unannotated for-loop type resolution (Tier 1c)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-var-foreach'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-var-foreach'), () => {});
   }, 60000);
 
   it('detects User and Repo classes with save methods', () => {
@@ -889,24 +901,27 @@ describe('Kotlin unannotated for-loop type resolution (Tier 1c)', () => {
 
   it('resolves user.save() in unannotated for to User#save via Tier 1c', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('User.kt'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('User.kt'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves repo.save() in unannotated for to Repo#save via Tier 1c', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('Repo.kt'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('Repo.kt'),
     );
     expect(repoSave).toBeDefined();
   });
 
   it('does NOT cross-resolve user.save() to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrong = calls.find(c =>
-      c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('Repo.kt'),
+    const wrong = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('Repo.kt'),
     );
     expect(wrong).toBeUndefined();
   });
@@ -920,47 +935,48 @@ describe('Kotlin when/is pattern binding', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-when-pattern'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-when-pattern'), () => {});
   }, 60000);
 
   it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves obj.save() in when/is User arm to models/User.kt', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processAny' && c.targetFilePath === 'models/User.kt',
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processAny' && c.targetFilePath === 'models/User.kt',
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves obj.save() in when/is Repo arm to models/Repo.kt', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processAny' && c.targetFilePath === 'models/Repo.kt',
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processAny' && c.targetFilePath === 'models/Repo.kt',
     );
     expect(repoSave).toBeDefined();
   });
 
   it('resolves obj.save() in handleUser when/is User arm to models/User.kt', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'handleUser' && c.targetFilePath === 'models/User.kt',
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'handleUser' && c.targetFilePath === 'models/User.kt',
     );
     expect(userSave).toBeDefined();
   });
 
   it('does NOT cross-resolve handleUser when/is User to Repo.save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'handleUser' && c.targetFilePath === 'models/Repo.kt',
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'handleUser' && c.targetFilePath === 'models/Repo.kt',
     );
     expect(wrongSave).toBeUndefined();
   });
@@ -974,10 +990,7 @@ describe('Kotlin HashMap .values for-loop resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-map-keys-values'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-map-keys-values'), () => {});
   }, 60000);
 
   it('detects User class with save function', () => {
@@ -986,56 +999,64 @@ describe('Kotlin HashMap .values for-loop resolution', () => {
 
   it('resolves user.save() via HashMap.values to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processValues' && c.targetFilePath?.includes('User'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processValues' && c.targetFilePath?.includes('User'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('does NOT resolve user.save() to Repo#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processValues' && c.targetFilePath?.includes('Repo'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processValues' && c.targetFilePath?.includes('Repo'),
     );
     expect(wrongSave).toBeUndefined();
   });
 
   it('resolves user.save() via List iteration to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processList' && c.targetFilePath?.includes('User'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processList' && c.targetFilePath?.includes('User'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves user.save() via HashMap.keys to User#save (first type arg)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processKeys' && c.targetFilePath?.includes('User'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processKeys' && c.targetFilePath?.includes('User'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('does NOT resolve HashMap.keys iteration to Repo#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrong = calls.find(c =>
-      c.target === 'save' && c.source === 'processKeys' && c.targetFilePath?.includes('Repo'),
+    const wrong = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processKeys' && c.targetFilePath?.includes('Repo'),
     );
     expect(wrong).toBeUndefined();
   });
 
   it('resolves repo.save() via MutableMap.values to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processMutableMapValues' && c.targetFilePath?.includes('Repo'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processMutableMapValues' &&
+        c.targetFilePath?.includes('Repo'),
     );
     expect(repoSave).toBeDefined();
   });
 
   it('resolves repo.save() via Set iteration to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processSet' && c.targetFilePath?.includes('Repo'),
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.source === 'processSet' && c.targetFilePath?.includes('Repo'),
     );
     expect(repoSave).toBeDefined();
   });
@@ -1049,10 +1070,7 @@ describe('Kotlin when/is complex pattern binding', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-when-complex'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-when-complex'), () => {});
   }, 60000);
 
   it('detects User, Repo, and Admin classes', () => {
@@ -1066,24 +1084,33 @@ describe('Kotlin when/is complex pattern binding', () => {
 
   it('resolves obj.save() in 3-arm when/is User to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processThreeArms' && c.targetFilePath === 'models/User.kt',
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processThreeArms' &&
+        c.targetFilePath === 'models/User.kt',
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves obj.save() in 3-arm when/is Repo to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processThreeArms' && c.targetFilePath === 'models/Repo.kt',
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processThreeArms' &&
+        c.targetFilePath === 'models/Repo.kt',
     );
     expect(repoSave).toBeDefined();
   });
 
   it('resolves obj.save() in 3-arm when/is Admin to Admin#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const adminSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processThreeArms' && c.targetFilePath === 'models/Admin.kt',
+    const adminSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processThreeArms' &&
+        c.targetFilePath === 'models/Admin.kt',
     );
     expect(adminSave).toBeDefined();
   });
@@ -1092,32 +1119,44 @@ describe('Kotlin when/is complex pattern binding', () => {
 
   it('resolves obj.validate() in when/is User arm to User#validate', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userValidate = calls.find(c =>
-      c.target === 'validate' && c.source === 'processMultiCall' && c.targetFilePath === 'models/User.kt',
+    const userValidate = calls.find(
+      (c) =>
+        c.target === 'validate' &&
+        c.source === 'processMultiCall' &&
+        c.targetFilePath === 'models/User.kt',
     );
     expect(userValidate).toBeDefined();
   });
 
   it('resolves obj.save() in when/is User arm to User#save (multi-call)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processMultiCall' && c.targetFilePath === 'models/User.kt',
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processMultiCall' &&
+        c.targetFilePath === 'models/User.kt',
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves obj.validate() in when/is Repo arm to Repo#validate', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoValidate = calls.find(c =>
-      c.target === 'validate' && c.source === 'processMultiCall' && c.targetFilePath === 'models/Repo.kt',
+    const repoValidate = calls.find(
+      (c) =>
+        c.target === 'validate' &&
+        c.source === 'processMultiCall' &&
+        c.targetFilePath === 'models/Repo.kt',
     );
     expect(repoValidate).toBeDefined();
   });
 
   it('resolves obj.save() in when/is Repo arm to Repo#save (multi-call)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processMultiCall' && c.targetFilePath === 'models/Repo.kt',
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processMultiCall' &&
+        c.targetFilePath === 'models/Repo.kt',
     );
     expect(repoSave).toBeDefined();
   });
@@ -1126,15 +1165,16 @@ describe('Kotlin when/is complex pattern binding', () => {
 
   it('does NOT resolve processMultiCall when/is User arm validate() to Repo', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrong = calls.find(c =>
-      c.target === 'validate' && c.source === 'processMultiCall' && c.targetFilePath === 'models/Repo.kt',
+    const wrong = calls.find(
+      (c) =>
+        c.target === 'validate' &&
+        c.source === 'processMultiCall' &&
+        c.targetFilePath === 'models/Repo.kt',
     );
     // Both User and Repo have validate(), so the Repo arm DOES resolve here.
     // But processMultiCall should NOT have a cross-arm leak.
     // We test that the User arm doesn't produce a Repo edge by checking save count.
-    const userSaves = calls.filter(c =>
-      c.target === 'save' && c.source === 'processMultiCall',
-    );
+    const userSaves = calls.filter((c) => c.target === 'save' && c.source === 'processMultiCall');
     // Exactly 2 save() CALLS edges (one per arm, not duplicated)
     expect(userSaves.length).toBe(2);
   });
@@ -1143,19 +1183,28 @@ describe('Kotlin when/is complex pattern binding', () => {
 
   it('resolves obj.save() in when/is User + else to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processWithElse' && c.targetFilePath === 'models/User.kt',
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processWithElse' &&
+        c.targetFilePath === 'models/User.kt',
     );
     expect(userSave).toBeDefined();
   });
 
   it('does NOT resolve processWithElse to Repo#save or Admin#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongRepo = calls.find(c =>
-      c.target === 'save' && c.source === 'processWithElse' && c.targetFilePath === 'models/Repo.kt',
+    const wrongRepo = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processWithElse' &&
+        c.targetFilePath === 'models/Repo.kt',
     );
-    const wrongAdmin = calls.find(c =>
-      c.target === 'save' && c.source === 'processWithElse' && c.targetFilePath === 'models/Admin.kt',
+    const wrongAdmin = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processWithElse' &&
+        c.targetFilePath === 'models/Admin.kt',
     );
     expect(wrongRepo).toBeUndefined();
     expect(wrongAdmin).toBeUndefined();
@@ -1171,47 +1220,48 @@ describe('Kotlin for-loop call_expression iterable resolution (Phase 7.3)', () =
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-foreach-call-expr'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-foreach-call-expr'), () => {});
   }, 60000);
 
   it('detects User and Repo classes with competing save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() in for-loop over getUsers() to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('User.kt'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('User.kt'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves repo.save() in for-loop over getRepos() to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('Repo.kt'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('Repo.kt'),
     );
     expect(repoSave).toBeDefined();
   });
 
   it('does NOT resolve user.save() to Repo#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('Repo.kt'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('Repo.kt'),
     );
     expect(wrongSave).toBeUndefined();
   });
 
   it('does NOT resolve repo.save() to User#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('User.kt'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('User.kt'),
     );
     expect(wrongSave).toBeUndefined();
   });
@@ -1225,10 +1275,7 @@ describe('Field type resolution (Kotlin)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-field-types'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-field-types'), () => {});
   }, 60000);
 
   it('detects classes: Address, User', () => {
@@ -1252,9 +1299,9 @@ describe('Field type resolution (Kotlin)', () => {
 
   it('resolves user.address.save() → Address#save via field type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(e => e.target === 'save');
+    const saveCalls = calls.filter((e) => e.target === 'save');
     const addressSave = saveCalls.find(
-      e => e.source === 'processUser' && e.targetFilePath.includes('Models'),
+      (e) => e.source === 'processUser' && e.targetFilePath.includes('Models'),
     );
     expect(addressSave).toBeDefined();
   });
@@ -1262,13 +1309,13 @@ describe('Field type resolution (Kotlin)', () => {
   it('Property nodes contain expected field names', () => {
     const properties = getNodesByLabelFull(result, 'Property');
 
-    const city = properties.find(p => p.name === 'city');
+    const city = properties.find((p) => p.name === 'city');
     expect(city).toBeDefined();
 
-    const name = properties.find(p => p.name === 'name');
+    const name = properties.find((p) => p.name === 'name');
     expect(name).toBeDefined();
 
-    const addr = properties.find(p => p.name === 'address');
+    const addr = properties.find((p) => p.name === 'address');
     expect(addr).toBeDefined();
   });
 });
@@ -1281,10 +1328,7 @@ describe('Deep field chain resolution (Kotlin)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-deep-field-chain'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-deep-field-chain'), () => {});
   }, 60000);
 
   it('detects classes: Address, City, User', () => {
@@ -1307,15 +1351,15 @@ describe('Deep field chain resolution (Kotlin)', () => {
 
   it('resolves 2-level chain: user.address.save() → Address#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(e => e.target === 'save' && e.source === 'processUser');
-    const addressSave = saveCalls.find(e => e.targetFilePath.includes('Models'));
+    const saveCalls = calls.filter((e) => e.target === 'save' && e.source === 'processUser');
+    const addressSave = saveCalls.find((e) => e.targetFilePath.includes('Models'));
     expect(addressSave).toBeDefined();
   });
 
   it('resolves 3-level chain: user.address.city.getName() → City#getName', () => {
     const calls = getRelationships(result, 'CALLS');
-    const getNameCalls = calls.filter(e => e.target === 'getName' && e.source === 'processUser');
-    const cityGetName = getNameCalls.find(e => e.targetFilePath.includes('Models'));
+    const getNameCalls = calls.filter((e) => e.target === 'getName' && e.source === 'processUser');
+    const cityGetName = getNameCalls.find((e) => e.targetFilePath.includes('Models'));
     expect(cityGetName).toBeDefined();
   });
 });
@@ -1328,10 +1372,7 @@ describe('Kotlin data class primary constructor property capture', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-data-class-fields'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-data-class-fields'), () => {});
   }, 60000);
 
   it('detects classes: Address, User', () => {
@@ -1354,9 +1395,9 @@ describe('Kotlin data class primary constructor property capture', () => {
 
   it('resolves user.address.save() → Address#save via data class field type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(e => e.target === 'save');
+    const saveCalls = calls.filter((e) => e.target === 'save');
     const addressSave = saveCalls.find(
-      e => e.source === 'processUser' && e.targetFilePath.includes('Models'),
+      (e) => e.source === 'processUser' && e.targetFilePath.includes('Models'),
     );
     expect(addressSave).toBeDefined();
   });
@@ -1369,19 +1410,16 @@ describe('Write access tracking (Kotlin)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-write-access'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-write-access'), () => {});
   }, 60000);
 
   it('emits ACCESSES write edges for property assignments', () => {
     const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter(e => e.rel.reason === 'write');
+    const writes = accesses.filter((e) => e.rel.reason === 'write');
     expect(writes.length).toBe(3);
-    const nameWrite = writes.find(e => e.target === 'name');
-    const addressWrite = writes.find(e => e.target === 'address');
-    const scoreWrite = writes.find(e => e.target === 'score');
+    const nameWrite = writes.find((e) => e.target === 'name');
+    const addressWrite = writes.find((e) => e.target === 'address');
+    const scoreWrite = writes.find((e) => e.target === 'score');
     expect(nameWrite).toBeDefined();
     expect(nameWrite!.source).toBe('updateUser');
     expect(addressWrite).toBeDefined();
@@ -1392,15 +1430,15 @@ describe('Write access tracking (Kotlin)', () => {
 
   it('emits ACCESSES write edge for compound assignment (+=)', () => {
     const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter(e => e.rel.reason === 'write');
-    const scoreWrite = writes.find(e => e.target === 'score');
+    const writes = accesses.filter((e) => e.rel.reason === 'write');
+    const scoreWrite = writes.find((e) => e.target === 'score');
     expect(scoreWrite).toBeDefined();
     expect(scoreWrite!.source).toBe('updateUser');
   });
 
   it('write ACCESSES edges have confidence 1.0', () => {
     const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter(e => e.rel.reason === 'write');
+    const writes = accesses.filter((e) => e.rel.reason === 'write');
     for (const edge of writes) {
       expect(edge.rel.confidence).toBe(1.0);
     }
@@ -1415,16 +1453,13 @@ describe('Kotlin call-result variable binding (Tier 2b)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-call-result-binding'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-call-result-binding'), () => {});
   }, 60000);
 
   it('resolves user.save() to User#save via call-result binding', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('User')
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('User'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -1446,8 +1481,9 @@ describe('Kotlin method chain binding via unified fixpoint (Phase 9C)', () => {
 
   it('resolves city.save() to City#save via method chain', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processChain' && c.targetFilePath.includes('Models')
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processChain' && c.targetFilePath.includes('Models'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -1484,17 +1520,15 @@ describe('Kotlin grandparent method resolution via MRO (Phase B)', () => {
 
   it('resolves c.greet().save() to Greeting#save via depth-2 MRO lookup', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.targetFilePath.includes('Greeting'),
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath.includes('Greeting'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves c.greet() to A#greet (method found via MRO walk)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const greetCall = calls.find(c =>
-      c.target === 'greet' && c.targetFilePath.includes('A.kt'),
-    );
+    const greetCall = calls.find((c) => c.target === 'greet' && c.targetFilePath.includes('A.kt'));
     expect(greetCall).toBeDefined();
   });
 });
@@ -1521,24 +1555,26 @@ describe('Kotlin null-check narrowing resolution (Phase C)', () => {
 
   it('resolves x.save() inside != null guard to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processNullable' && c.targetFilePath.includes('User'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processNullable' && c.targetFilePath.includes('User'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('does NOT resolve to Repo#save (no cross-contamination)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongCall = calls.find(c =>
-      c.target === 'save' && c.targetFilePath.includes('Repo'),
-    );
+    const wrongCall = calls.find((c) => c.target === 'save' && c.targetFilePath.includes('Repo'));
     expect(wrongCall).toBeUndefined();
   });
 
   it('resolves x.save() from local variable val x: User? via null-check narrowing', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processLocalNullable' && c.targetFilePath.includes('User'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processLocalNullable' &&
+        c.targetFilePath.includes('User'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -1558,14 +1594,14 @@ describe('Kotlin overload disambiguation by parameter types', () => {
 
   it('detects lookup method with parameterTypes on graph node', () => {
     const nodes = getNodesByLabelFull(result, 'Method');
-    const lookupNodes = nodes.filter(m => m.name === 'lookup');
+    const lookupNodes = nodes.filter((m) => m.name === 'lookup');
     expect(lookupNodes.length).toBe(1);
     expect(lookupNodes[0].properties.parameterTypes).toEqual(['Int']);
   });
 
   it('emits CALLS edge from run() → lookup() via overload disambiguation', () => {
     const calls = getRelationships(result, 'CALLS');
-    const lookupCalls = calls.filter(c => c.source === 'run' && c.target === 'lookup');
+    const lookupCalls = calls.filter((c) => c.source === 'run' && c.target === 'lookup');
     // Both lookup(42) and lookup("alice") resolve to same nodeId → 1 CALLS edge
     expect(lookupCalls.length).toBe(1);
   });
@@ -1577,10 +1613,7 @@ describe('Kotlin virtual dispatch via constructor type (cross-file)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-virtual-dispatch'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-virtual-dispatch'), () => {});
   }, 60000);
 
   it('detects Dog class', () => {
@@ -1590,8 +1623,8 @@ describe('Kotlin virtual dispatch via constructor type (cross-file)', () => {
 
   it('resolves animal.speak() to models/Dog.kt via constructor type override', () => {
     const calls = getRelationships(result, 'CALLS');
-    const speakCall = calls.find(c =>
-      c.source === 'process' && c.target === 'speak' && c.targetFilePath === 'models/Dog.kt',
+    const speakCall = calls.find(
+      (c) => c.source === 'process' && c.target === 'speak' && c.targetFilePath === 'models/Dog.kt',
     );
     expect(speakCall).toBeDefined();
   });
@@ -1603,15 +1636,12 @@ describe('Kotlin default parameter arity resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'kotlin-default-params'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-default-params'), () => {});
   }, 60000);
 
   it('resolves greet("Alice") with 1 arg to greet with 2 params (1 default)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const greetCalls = calls.filter(c => c.source === 'process' && c.target === 'greet');
+    const greetCalls = calls.filter((c) => c.source === 'process' && c.target === 'greet');
     expect(greetCalls.length).toBe(1);
   });
 });
@@ -1647,36 +1677,32 @@ describe('Kotlin cross-file binding propagation', () => {
 
   it('emits IMPORTS edge from App.kt to User.kt', () => {
     const imports = getRelationships(result, 'IMPORTS');
-    const edge = imports.find(e =>
-      e.sourceFilePath.includes('App') && e.targetFilePath.includes('User'),
+    const edge = imports.find(
+      (e) => e.sourceFilePath.includes('App') && e.targetFilePath.includes('User'),
     );
     expect(edge).toBeDefined();
   });
 
   it('resolves u.save() in run() to User#save via cross-file return type propagation', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'run' &&
-      c.targetFilePath.includes('User'),
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'run' && c.targetFilePath.includes('User'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves u.getName() in run() to User#getName via cross-file return type propagation', () => {
     const calls = getRelationships(result, 'CALLS');
-    const getNameCall = calls.find(c =>
-      c.target === 'getName' &&
-      c.source === 'run' &&
-      c.targetFilePath.includes('User'),
+    const getNameCall = calls.find(
+      (c) => c.target === 'getName' && c.source === 'run' && c.targetFilePath.includes('User'),
     );
     expect(getNameCall).toBeDefined();
   });
 
   it('emits HAS_METHOD edges linking save and getName to User', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const saveEdge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
-    const getNameEdge = hasMethod.find(e => e.source === 'User' && e.target === 'getName');
+    const saveEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'save');
+    const getNameEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'getName');
     expect(saveEdge).toBeDefined();
     expect(getNameEdge).toBeDefined();
   });

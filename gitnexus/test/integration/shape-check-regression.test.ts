@@ -65,128 +65,133 @@ const SEED: string[] = [
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-withTestLbugDB('shape-check-regression', (handle) => {
-  let backend: LocalBackend;
+withTestLbugDB(
+  'shape-check-regression',
+  (handle) => {
+    let backend: LocalBackend;
 
-  beforeAll(async () => {
-    const ext = handle as typeof handle & { _backend?: LocalBackend };
-    if (!ext._backend) {
-      throw new Error('LocalBackend not initialized — afterSetup did not attach _backend to handle');
-    }
-    backend = ext._backend;
-  });
-
-  // ─── Test 1: errorPathKeys exclusion from mismatched ──────────────────
-
-  describe('errorPathKeys exclusion from mismatched', () => {
-    it('error-path key appears in errorPathKeys, not mismatched', async () => {
-      const result = await backend.callTool('shape_check', { route: '/api/orders' });
-
-      expect(result.routes).toBeDefined();
-      const ordersRoute = result.routes.find((r: any) => r.route === '/api/orders');
-      expect(ordersRoute).toBeDefined();
-
-      const consumer = ordersRoute!.consumers.find(
-        (c: any) => c.filePath === 'components/OrderStatus.tsx',
-      );
-      expect(consumer).toBeDefined();
-
-      // 'error' is in the route's errorKeys — consumer accessing it is valid
-      // It must appear in errorPathKeys, NOT in mismatched
-      expect(consumer!.errorPathKeys).toBeDefined();
-      expect(consumer!.errorPathKeys).toContain('error');
-
-      // 'error' must NOT appear in mismatched
-      if (consumer!.mismatched) {
-        expect(consumer!.mismatched).not.toContain('error');
+    beforeAll(async () => {
+      const ext = handle as typeof handle & { _backend?: LocalBackend };
+      if (!ext._backend) {
+        throw new Error(
+          'LocalBackend not initialized — afterSetup did not attach _backend to handle',
+        );
       }
+      backend = ext._backend;
     });
 
-    it('route with only error-path differences has no MISMATCH status', async () => {
-      const result = await backend.callTool('shape_check', { route: '/api/orders' });
+    // ─── Test 1: errorPathKeys exclusion from mismatched ──────────────────
 
-      const ordersRoute = result.routes.find((r: any) => r.route === '/api/orders');
-      expect(ordersRoute).toBeDefined();
+    describe('errorPathKeys exclusion from mismatched', () => {
+      it('error-path key appears in errorPathKeys, not mismatched', async () => {
+        const result = await backend.callTool('shape_check', { route: '/api/orders' });
 
-      // All consumer keys are known (either in responseKeys or errorKeys)
-      // So the route must NOT be flagged as MISMATCH
-      expect(ordersRoute!.status).toBeUndefined();
+        expect(result.routes).toBeDefined();
+        const ordersRoute = result.routes.find((r: any) => r.route === '/api/orders');
+        expect(ordersRoute).toBeDefined();
+
+        const consumer = ordersRoute!.consumers.find(
+          (c: any) => c.filePath === 'components/OrderStatus.tsx',
+        );
+        expect(consumer).toBeDefined();
+
+        // 'error' is in the route's errorKeys — consumer accessing it is valid
+        // It must appear in errorPathKeys, NOT in mismatched
+        expect(consumer!.errorPathKeys).toBeDefined();
+        expect(consumer!.errorPathKeys).toContain('error');
+
+        // 'error' must NOT appear in mismatched
+        if (consumer!.mismatched) {
+          expect(consumer!.mismatched).not.toContain('error');
+        }
+      });
+
+      it('route with only error-path differences has no MISMATCH status', async () => {
+        const result = await backend.callTool('shape_check', { route: '/api/orders' });
+
+        const ordersRoute = result.routes.find((r: any) => r.route === '/api/orders');
+        expect(ordersRoute).toBeDefined();
+
+        // All consumer keys are known (either in responseKeys or errorKeys)
+        // So the route must NOT be flagged as MISMATCH
+        expect(ordersRoute!.status).toBeUndefined();
+      });
+
+      it('no global mismatches count when only error-path keys differ', async () => {
+        const result = await backend.callTool('shape_check', { route: '/api/orders' });
+
+        // Top-level mismatches count should be absent (0 mismatches)
+        expect(result.mismatches).toBeUndefined();
+      });
     });
 
-    it('no global mismatches count when only error-path keys differ', async () => {
-      const result = await backend.callTool('shape_check', { route: '/api/orders' });
+    // ─── Test 2: blocklist doesn't suppress legitimate API fields ─────────
 
-      // Top-level mismatches count should be absent (0 mismatches)
-      expect(result.mismatches).toBeUndefined();
+    describe('blocklist does not suppress legitimate API fields', () => {
+      it('DOM-like field names in route response are valid matches', async () => {
+        const result = await backend.callTool('shape_check', { route: '/api/links' });
+
+        expect(result.routes).toBeDefined();
+        const linksRoute = result.routes.find((r: any) => r.route === '/api/links');
+        expect(linksRoute).toBeDefined();
+
+        const consumer = linksRoute!.consumers.find(
+          (c: any) => c.filePath === 'components/LinkList.tsx',
+        );
+        expect(consumer).toBeDefined();
+
+        // All accessed keys (type, href, target, label) are in the route's responseKeys
+        // None should be treated as mismatched
+        if (consumer!.mismatched) {
+          expect(consumer!.mismatched).not.toContain('type');
+          expect(consumer!.mismatched).not.toContain('href');
+          expect(consumer!.mismatched).not.toContain('target');
+          expect(consumer!.mismatched).not.toContain('label');
+        }
+      });
+
+      it('route with DOM-like fields has no MISMATCH status', async () => {
+        const result = await backend.callTool('shape_check', { route: '/api/links' });
+
+        const linksRoute = result.routes.find((r: any) => r.route === '/api/links');
+        expect(linksRoute).toBeDefined();
+
+        // No mismatches — all consumer keys match route responseKeys
+        expect(linksRoute!.status).toBeUndefined();
+      });
+
+      it('no errorPathKeys when all accessed keys are in responseKeys', async () => {
+        const result = await backend.callTool('shape_check', { route: '/api/links' });
+
+        const linksRoute = result.routes.find((r: any) => r.route === '/api/links');
+        const consumer = linksRoute!.consumers.find(
+          (c: any) => c.filePath === 'components/LinkList.tsx',
+        );
+        expect(consumer).toBeDefined();
+
+        // All keys are in responseKeys (not errorKeys), so no errorPathKeys
+        expect(consumer!.errorPathKeys).toBeUndefined();
+      });
     });
-  });
-
-  // ─── Test 2: blocklist doesn't suppress legitimate API fields ─────────
-
-  describe('blocklist does not suppress legitimate API fields', () => {
-    it('DOM-like field names in route response are valid matches', async () => {
-      const result = await backend.callTool('shape_check', { route: '/api/links' });
-
-      expect(result.routes).toBeDefined();
-      const linksRoute = result.routes.find((r: any) => r.route === '/api/links');
-      expect(linksRoute).toBeDefined();
-
-      const consumer = linksRoute!.consumers.find(
-        (c: any) => c.filePath === 'components/LinkList.tsx',
-      );
-      expect(consumer).toBeDefined();
-
-      // All accessed keys (type, href, target, label) are in the route's responseKeys
-      // None should be treated as mismatched
-      if (consumer!.mismatched) {
-        expect(consumer!.mismatched).not.toContain('type');
-        expect(consumer!.mismatched).not.toContain('href');
-        expect(consumer!.mismatched).not.toContain('target');
-        expect(consumer!.mismatched).not.toContain('label');
-      }
-    });
-
-    it('route with DOM-like fields has no MISMATCH status', async () => {
-      const result = await backend.callTool('shape_check', { route: '/api/links' });
-
-      const linksRoute = result.routes.find((r: any) => r.route === '/api/links');
-      expect(linksRoute).toBeDefined();
-
-      // No mismatches — all consumer keys match route responseKeys
-      expect(linksRoute!.status).toBeUndefined();
-    });
-
-    it('no errorPathKeys when all accessed keys are in responseKeys', async () => {
-      const result = await backend.callTool('shape_check', { route: '/api/links' });
-
-      const linksRoute = result.routes.find((r: any) => r.route === '/api/links');
-      const consumer = linksRoute!.consumers.find(
-        (c: any) => c.filePath === 'components/LinkList.tsx',
-      );
-      expect(consumer).toBeDefined();
-
-      // All keys are in responseKeys (not errorKeys), so no errorPathKeys
-      expect(consumer!.errorPathKeys).toBeUndefined();
-    });
-  });
-
-}, {
-  seed: SEED,
-  poolAdapter: true,
-  afterSetup: async (handle) => {
-    vi.mocked(listRegisteredRepos).mockResolvedValue([
-      {
-        name: 'test-shape-regression',
-        path: '/test/shape-regression',
-        storagePath: handle.tmpHandle.dbPath,
-        indexedAt: new Date().toISOString(),
-        lastCommit: 'abc123',
-        stats: { files: 4, nodes: 8, communities: 0, processes: 0 },
-      },
-    ]);
-
-    const backend = new LocalBackend();
-    await backend.init();
-    (handle as any)._backend = backend;
   },
-});
+  {
+    seed: SEED,
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'test-shape-regression',
+          path: '/test/shape-regression',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc123',
+          stats: { files: 4, nodes: 8, communities: 0, processes: 0 },
+        },
+      ]);
+
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as any)._backend = backend;
+    },
+  },
+);

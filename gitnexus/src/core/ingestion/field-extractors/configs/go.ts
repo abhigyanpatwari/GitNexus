@@ -15,9 +15,7 @@ import { extractSimpleTypeName } from '../../type-extractors/shared.js';
  */
 export const goConfig: FieldExtractionConfig = {
   language: SupportedLanguages.Go,
-  typeDeclarationNodes: [
-    'type_declaration',
-  ],
+  typeDeclarationNodes: ['type_declaration'],
   fieldNodeTypes: ['field_declaration'],
   bodyNodeTypes: ['field_declaration_list'],
   defaultVisibility: 'package',
@@ -51,9 +49,7 @@ export const goConfig: FieldExtractionConfig = {
     const text = name?.text;
     if (text && text.length > 0) {
       const first = text.charAt(0);
-      return first === first.toUpperCase() && first !== first.toLowerCase()
-        ? 'public'
-        : 'package';
+      return first === first.toUpperCase() && first !== first.toLowerCase() ? 'public' : 'package';
     }
     return 'package';
   },

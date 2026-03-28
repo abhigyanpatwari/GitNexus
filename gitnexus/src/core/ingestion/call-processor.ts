@@ -10,7 +10,11 @@ import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
-import { FUNCTION_NODE_TYPES, extractFunctionName, findEnclosingClassId } from './utils/ast-helpers.js';
+import {
+  FUNCTION_NODE_TYPES,
+  extractFunctionName,
+  findEnclosingClassId,
+} from './utils/ast-helpers.js';
 import {
   countCallArguments,
   inferCallForm,
@@ -23,7 +27,14 @@ import {
 import { buildTypeEnv, isSubclassOf } from './type-env.js';
 import type { ConstructorBinding } from './type-env.js';
 import { getTreeSitterBufferSize } from './constants.js';
-import type { ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, ExtractedFetchCall, FileConstructorBindings } from './workers/parse-worker.js';
+import type {
+  ExtractedCall,
+  ExtractedAssignment,
+  ExtractedHeritage,
+  ExtractedRoute,
+  ExtractedFetchCall,
+  FileConstructorBindings,
+} from './workers/parse-worker.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
 import type { LiteralTypeInferrer } from './type-extractors/types.js';
@@ -40,8 +51,13 @@ const MAX_TYPE_NAME_LENGTH = 256;
  *  Consulted ONLY when SymbolTable has no unambiguous local match (local-first principle). */
 export function buildImportedReturnTypes(
   filePath: string,
-  namedImportMap: ReadonlyMap<string, ReadonlyMap<string, { sourcePath: string; exportedName: string }>>,
-  symbolTable: { lookupExactFull(filePath: string, name: string): { returnType?: string } | undefined },
+  namedImportMap: ReadonlyMap<
+    string,
+    ReadonlyMap<string, { sourcePath: string; exportedName: string }>
+  >,
+  symbolTable: {
+    lookupExactFull(filePath: string, name: string): { returnType?: string } | undefined;
+  },
 ): ReadonlyMap<string, string> {
   const result = new Map<string, string>();
   const fileImports = namedImportMap.get(filePath);
@@ -62,8 +78,13 @@ export function buildImportedReturnTypes(
  *  Used by lookupRawReturnType for for-loop element extraction via extractElementTypeFromString. */
 export function buildImportedRawReturnTypes(
   filePath: string,
-  namedImportMap: ReadonlyMap<string, ReadonlyMap<string, { sourcePath: string; exportedName: string }>>,
-  symbolTable: { lookupExactFull(filePath: string, name: string): { returnType?: string } | undefined },
+  namedImportMap: ReadonlyMap<
+    string,
+    ReadonlyMap<string, { sourcePath: string; exportedName: string }>
+  >,
+  symbolTable: {
+    lookupExactFull(filePath: string, name: string): { returnType?: string } | undefined;
+  },
 ): ReadonlyMap<string, string> {
   const result = new Map<string, string>();
   const fileImports = namedImportMap.get(filePath);
@@ -110,7 +131,7 @@ export function buildExportedTypeMapFromGraph(
   symbolTable: SymbolTable,
 ): ExportedTypeMap {
   const result: ExportedTypeMap = new Map();
-  graph.forEachNode(node => {
+  graph.forEachNode((node) => {
     if (!node.properties?.isExported) return;
     if (!node.properties?.filePath || !node.properties?.name) return;
     const filePath = node.properties.filePath as string;
@@ -125,7 +146,10 @@ export function buildExportedTypeMapFromGraph(
     const simpleType = extractReturnTypeName(typeName) ?? typeName;
     if (!simpleType) return;
     let fileExports = result.get(filePath);
-    if (!fileExports) { fileExports = new Map(); result.set(filePath, fileExports); }
+    if (!fileExports) {
+      fileExports = new Map();
+      result.set(filePath, fileExports);
+    }
     if (fileExports.size < MAX_EXPORTS_PER_FILE) {
       fileExports.set(name, simpleType);
     }
@@ -139,7 +163,10 @@ export function buildExportedTypeMapFromGraph(
  *  Mutates calls in-place. Runs BEFORE processCallsFromExtracted. */
 export function seedCrossFileReceiverTypes(
   calls: ExtractedCall[],
-  namedImportMap: ReadonlyMap<string, ReadonlyMap<string, { sourcePath: string; exportedName: string }>>,
+  namedImportMap: ReadonlyMap<
+    string,
+    ReadonlyMap<string, { sourcePath: string; exportedName: string }>
+  >,
   exportedTypeMap: ReadonlyMap<string, ReadonlyMap<string, string>>,
 ): { enrichedCount: number } {
   if (namedImportMap.size === 0 || exportedTypeMap.size === 0) {
@@ -172,10 +199,19 @@ export function seedCrossFileReceiverTypes(
 // strips nullable wrappers (Option<User> → User), these chain steps are no-ops
 // for type resolution — the current type passes through unchanged.
 const TYPE_PRESERVING_METHODS = new Set([
-  'unwrap', 'expect', 'unwrap_or', 'unwrap_or_default', 'unwrap_or_else',  // Rust Option/Result
-  'clone', 'to_owned', 'as_ref', 'as_mut', 'borrow', 'borrow_mut',        // Rust clone/borrow
-  'get',                                                                     // Kotlin/Java Optional.get()
-  'orElseThrow',                                                             // Java Optional
+  'unwrap',
+  'expect',
+  'unwrap_or',
+  'unwrap_or_default',
+  'unwrap_or_else', // Rust Option/Result
+  'clone',
+  'to_owned',
+  'as_ref',
+  'as_mut',
+  'borrow',
+  'borrow_mut', // Rust clone/borrow
+  'get', // Kotlin/Java Optional.get()
+  'orElseThrow', // Java Optional
 ]);
 
 /**
@@ -249,13 +285,13 @@ const verifyConstructorBindings = (
 
   for (const { scope, varName, calleeName, receiverClassName } of bindings) {
     const tiered = ctx.resolve(calleeName, filePath);
-    const isClass = tiered?.candidates.some(def => def.type === 'Class') ?? false;
+    const isClass = tiered?.candidates.some((def) => def.type === 'Class') ?? false;
 
     if (isClass) {
       verified.set(receiverKey(scope, varName), calleeName);
     } else {
-      let callableDefs = tiered?.candidates.filter(d =>
-        d.type === 'Function' || d.type === 'Method'
+      let callableDefs = tiered?.candidates.filter(
+        (d) => d.type === 'Function' || d.type === 'Method',
       );
 
       // When receiver class is known (e.g. $this->method() in PHP), narrow
@@ -263,7 +299,7 @@ const verifyConstructorBindings = (
       if (callableDefs && callableDefs.length > 1 && receiverClassName) {
         if (graph) {
           // Worker path: use graph.getNode (fast, already in-memory)
-          const narrowed = callableDefs.filter(d => {
+          const narrowed = callableDefs.filter((d) => {
             if (!d.ownerId) return false;
             const owner = graph.getNode(d.ownerId);
             return owner?.properties.name === receiverClassName;
@@ -273,10 +309,8 @@ const verifyConstructorBindings = (
           // Sequential path: use ctx.resolve (no graph available)
           const classResolved = ctx.resolve(receiverClassName, filePath);
           if (classResolved && classResolved.candidates.length > 0) {
-            const classNodeIds = new Set(classResolved.candidates.map(c => c.nodeId));
-            const narrowed = callableDefs.filter(d =>
-              d.ownerId && classNodeIds.has(d.ownerId)
-            );
+            const classNodeIds = new Set(classResolved.candidates.map((c) => c.nodeId));
+            const narrowed = callableDefs.filter((d) => d.ownerId && classNodeIds.has(d.ownerId));
             if (narrowed.length > 0) callableDefs = narrowed;
           }
         }
@@ -311,7 +345,12 @@ export const processCalls = async (
 ): Promise<ExtractedHeritage[]> => {
   const parser = await loadParser();
   const collectedHeritage: ExtractedHeritage[] = [];
-  const pendingWrites: { receiverTypeName: string; propertyName: string; filePath: string; srcId: string }[] = [];
+  const pendingWrites: {
+    receiverTypeName: string;
+    propertyName: string;
+    filePath: string;
+    srcId: string;
+  }[] = [];
   // Phase P cross-file: accumulate heritage across files for cross-file isSubclassOf.
   // Used as a secondary check when per-file parentMap lacks the relationship — helps
   // when the heritage-declaring file is processed before the call site file.
@@ -344,7 +383,9 @@ export const processCalls = async (
     let tree = astCache.get(file.path);
     if (!tree) {
       try {
-        tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
+        tree = parser.parse(file.content, undefined, {
+          bufferSize: getTreeSitterBufferSize(file.content.length),
+        });
       } catch (parseError) {
         continue;
       }
@@ -367,15 +408,19 @@ export const processCalls = async (
     const fileParentMap = new Map<string, string[]>();
     for (const match of matches) {
       const captureMap: Record<string, any> = {};
-      match.captures.forEach(c => captureMap[c.name] = c.node);
+      match.captures.forEach((c) => (captureMap[c.name] = c.node));
       if (captureMap['heritage.class'] && captureMap['heritage.extends']) {
         const className: string = captureMap['heritage.class'].text;
         const parentName: string = captureMap['heritage.extends'].text;
         const extendsNode = captureMap['heritage.extends'];
         const fieldDecl = extendsNode.parent;
-        if (fieldDecl?.type === 'field_declaration' && fieldDecl.childForFieldName('name')) continue;
+        if (fieldDecl?.type === 'field_declaration' && fieldDecl.childForFieldName('name'))
+          continue;
         let parents = fileParentMap.get(className);
-        if (!parents) { parents = []; fileParentMap.set(className, parents); }
+        if (!parents) {
+          parents = [];
+          fileParentMap.set(className, parents);
+        }
         if (!parents.includes(parentName)) parents.push(parentName);
       }
     }
@@ -385,36 +430,57 @@ export const processCalls = async (
     for (const [cls, parents] of fileParentMap) {
       let global = globalParentMap.get(cls);
       let seen = globalParentSeen.get(cls);
-      if (!global) { global = []; globalParentMap.set(cls, global); }
-      if (!seen) { seen = new Set(); globalParentSeen.set(cls, seen); }
+      if (!global) {
+        global = [];
+        globalParentMap.set(cls, global);
+      }
+      if (!seen) {
+        seen = new Set();
+        globalParentSeen.set(cls, seen);
+      }
       for (const p of parents) {
-        if (!seen.has(p)) { seen.add(p); global.push(p); }
+        if (!seen.has(p)) {
+          seen.add(p);
+          global.push(p);
+        }
       }
     }
 
     const importedBindings = importedBindingsMap?.get(file.path);
     const importedReturnTypes = importedReturnTypesMap?.get(file.path);
     const importedRawReturnTypes = importedRawReturnTypesMap?.get(file.path);
-    const typeEnv = buildTypeEnv(tree, language, { symbolTable: ctx.symbols, parentMap, importedBindings, importedReturnTypes, importedRawReturnTypes, enclosingFunctionFinder: provider?.enclosingFunctionFinder });
+    const typeEnv = buildTypeEnv(tree, language, {
+      symbolTable: ctx.symbols,
+      parentMap,
+      importedBindings,
+      importedReturnTypes,
+      importedRawReturnTypes,
+      enclosingFunctionFinder: provider?.enclosingFunctionFinder,
+    });
     if (typeEnv && exportedTypeMap) {
       const fileExports = collectExportedBindings(typeEnv, file.path, ctx.symbols, graph);
       if (fileExports) exportedTypeMap.set(file.path, fileExports);
     }
     const callRouter = provider.callRouter;
 
-    const verifiedReceivers = typeEnv.constructorBindings.length > 0
-      ? verifyConstructorBindings(typeEnv.constructorBindings, file.path, ctx)
-      : new Map<string, string>();
+    const verifiedReceivers =
+      typeEnv.constructorBindings.length > 0
+        ? verifyConstructorBindings(typeEnv.constructorBindings, file.path, ctx)
+        : new Map<string, string>();
     const receiverIndex = buildReceiverTypeIndex(verifiedReceivers);
 
     ctx.enableCache(file.path);
     const widenCache: WidenCache = new Map();
 
-    matches.forEach(match => {
+    matches.forEach((match) => {
       const captureMap: Record<string, any> = {};
-      match.captures.forEach(c => captureMap[c.name] = c.node);
+      match.captures.forEach((c) => (captureMap[c.name] = c.node));
       // ── Write access: emit ACCESSES {reason: 'write'} for assignments to member fields ──
-      if (captureMap['assignment'] && captureMap['assignment.receiver'] && captureMap['assignment.property']) {
+      if (
+        captureMap['assignment'] &&
+        captureMap['assignment.receiver'] &&
+        captureMap['assignment.property']
+      ) {
         const receiverNode = captureMap['assignment.receiver'];
         const propertyName: string = captureMap['assignment.property'].text;
         // Resolve receiver type: simple identifier → TypeEnv lookup or class resolution
@@ -425,21 +491,38 @@ export const processCalls = async (
         }
         // Fall back to verified constructor bindings (mirrors CALLS resolution tier 2)
         if (!receiverTypeName && receiverText && receiverIndex.size > 0) {
-          const enclosing = findEnclosingFunction(captureMap['assignment'], file.path, ctx, provider);
+          const enclosing = findEnclosingFunction(
+            captureMap['assignment'],
+            file.path,
+            ctx,
+            provider,
+          );
           const funcName = enclosing ? extractFuncNameFromSourceId(enclosing) : '';
           receiverTypeName = lookupReceiverType(receiverIndex, funcName, receiverText);
         }
         if (!receiverTypeName && receiverText) {
           const resolved = ctx.resolve(receiverText, file.path);
-          if (resolved?.candidates.some(d =>
-            d.type === 'Class' || d.type === 'Struct' || d.type === 'Interface'
-              || d.type === 'Enum' || d.type === 'Record' || d.type === 'Impl',
-          )) {
+          if (
+            resolved?.candidates.some(
+              (d) =>
+                d.type === 'Class' ||
+                d.type === 'Struct' ||
+                d.type === 'Interface' ||
+                d.type === 'Enum' ||
+                d.type === 'Record' ||
+                d.type === 'Impl',
+            )
+          ) {
             receiverTypeName = receiverText;
           }
         }
         if (receiverTypeName) {
-          const enclosing = findEnclosingFunction(captureMap['assignment'], file.path, ctx, provider);
+          const enclosing = findEnclosingFunction(
+            captureMap['assignment'],
+            file.path,
+            ctx,
+            provider,
+          );
           const srcId = enclosing || generateId('File', file.path);
           // Defer resolution: Ruby attr_accessor properties are registered during
           // this same loop, so cross-file lookups fail if the declaring file hasn't
@@ -485,9 +568,12 @@ export const processCalls = async (
                 id: nodeId,
                 label: 'Property',
                 properties: {
-                  name: item.propName, filePath: file.path,
-                  startLine: item.startLine, endLine: item.endLine,
-                  language, isExported: true,
+                  name: item.propName,
+                  filePath: file.path,
+                  startLine: item.startLine,
+                  endLine: item.endLine,
+                  language,
+                  isExported: true,
                   description: item.accessorType,
                 },
               });
@@ -497,14 +583,21 @@ export const processCalls = async (
               });
               const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
               graph.addRelationship({
-                id: relId, sourceId: fileId, targetId: nodeId,
-                type: 'DEFINES', confidence: 1.0, reason: '',
+                id: relId,
+                sourceId: fileId,
+                targetId: nodeId,
+                type: 'DEFINES',
+                confidence: 1.0,
+                reason: '',
               });
               if (propEnclosingClassId) {
                 graph.addRelationship({
                   id: generateId('HAS_PROPERTY', `${propEnclosingClassId}->${nodeId}`),
-                  sourceId: propEnclosingClassId, targetId: nodeId,
-                  type: 'HAS_PROPERTY', confidence: 1.0, reason: '',
+                  sourceId: propEnclosingClassId,
+                  targetId: nodeId,
+                  type: 'HAS_PROPERTY',
+                  confidence: 1.0,
+                  reason: '',
                 });
               }
             }
@@ -521,7 +614,8 @@ export const processCalls = async (
       const callNode = captureMap['call'];
       const callForm = inferCallForm(callNode, nameNode);
       const receiverName = callForm === 'member' ? extractReceiverName(nameNode) : undefined;
-      let receiverTypeName = receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
+      let receiverTypeName =
+        receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
       // Phase P: virtual dispatch override — when the declared type is a base class but
       // the constructor created a known subclass, prefer the more specific type.
       // Checks per-file parentMap first, then falls back to globalParentMap for
@@ -535,7 +629,10 @@ export const processCalls = async (
         while (p) {
           if (FUNCTION_NODE_TYPES.has(p.type)) {
             const { funcName } = extractFunctionName(p);
-            if (funcName) { scope = `${funcName}@${p.startIndex}`; break; }
+            if (funcName) {
+              scope = `${funcName}@${p.startIndex}`;
+              break;
+            }
           }
           p = p.parent;
         }
@@ -549,10 +646,16 @@ export const processCalls = async (
           // when a type annotation AND constructor are both present (val x: Base = Sub()),
           // confirming both are class-like types is sufficient — the original code would
           // not compile if Sub didn't extend Base.
-          if (isSubclassOf(ctorType, receiverTypeName, parentMap)
-            || isSubclassOf(ctorType, receiverTypeName, globalParentMap)
-            || (ctx.symbols.lookupFuzzy(ctorType).some(d => d.type === 'Class' || d.type === 'Struct')
-              && ctx.symbols.lookupFuzzy(receiverTypeName).some(d => d.type === 'Class' || d.type === 'Struct' || d.type === 'Interface'))) {
+          if (
+            isSubclassOf(ctorType, receiverTypeName, parentMap) ||
+            isSubclassOf(ctorType, receiverTypeName, globalParentMap) ||
+            (ctx.symbols
+              .lookupFuzzy(ctorType)
+              .some((d) => d.type === 'Class' || d.type === 'Struct') &&
+              ctx.symbols
+                .lookupFuzzy(receiverTypeName)
+                .some((d) => d.type === 'Class' || d.type === 'Struct' || d.type === 'Interface'))
+          ) {
             receiverTypeName = ctorType;
           }
         }
@@ -568,9 +671,16 @@ export const processCalls = async (
       // through the standard tiered resolution, use it directly as the receiver type.
       if (!receiverTypeName && receiverName && callForm === 'member') {
         const typeResolved = ctx.resolve(receiverName, file.path);
-        if (typeResolved && typeResolved.candidates.some(
-          d => d.type === 'Class' || d.type === 'Interface' || d.type === 'Struct' || d.type === 'Enum',
-        )) {
+        if (
+          typeResolved &&
+          typeResolved.candidates.some(
+            (d) =>
+              d.type === 'Class' ||
+              d.type === 'Interface' ||
+              d.type === 'Struct' ||
+              d.type === 'Enum',
+          )
+        ) {
           receiverTypeName = receiverName;
         }
       }
@@ -586,24 +696,34 @@ export const processCalls = async (
         if (receiverNode) {
           const extracted = extractMixedChain(receiverNode);
           if (extracted && extracted.chain.length > 0) {
-            let currentType = extracted.baseReceiverName && typeEnv
-              ? typeEnv.lookup(extracted.baseReceiverName, callNode)
-              : undefined;
+            let currentType =
+              extracted.baseReceiverName && typeEnv
+                ? typeEnv.lookup(extracted.baseReceiverName, callNode)
+                : undefined;
             if (!currentType && extracted.baseReceiverName && receiverIndex.size > 0) {
               const funcName = enclosingFuncId ? extractFuncNameFromSourceId(enclosingFuncId) : '';
               currentType = lookupReceiverType(receiverIndex, funcName, extracted.baseReceiverName);
             }
             if (!currentType && extracted.baseReceiverName) {
               const cr = ctx.resolve(extracted.baseReceiverName, file.path);
-              if (cr?.candidates.some(d =>
-                d.type === 'Class' || d.type === 'Interface' || d.type === 'Struct' || d.type === 'Enum',
-              )) {
+              if (
+                cr?.candidates.some(
+                  (d) =>
+                    d.type === 'Class' ||
+                    d.type === 'Interface' ||
+                    d.type === 'Struct' ||
+                    d.type === 'Enum',
+                )
+              ) {
                 currentType = extracted.baseReceiverName;
               }
             }
             if (currentType) {
               receiverTypeName = walkMixedChain(
-                extracted.chain, currentType, file.path, ctx,
+                extracted.chain,
+                currentType,
+                file.path,
+                ctx,
                 makeAccessEmitter(graph, sourceId),
               );
             }
@@ -618,13 +738,19 @@ export const processCalls = async (
         ? { callNode, inferLiteralType: langConfig.inferLiteralType }
         : undefined;
 
-      const resolved = resolveCallTarget({
-        calledName,
-        argCount: countCallArguments(callNode),
-        callForm,
-        receiverTypeName,
-        receiverName,
-      }, file.path, ctx, hints, widenCache);
+      const resolved = resolveCallTarget(
+        {
+          calledName,
+          argCount: countCallArguments(callNode),
+          callForm,
+          receiverTypeName,
+          receiverName,
+        },
+        file.path,
+        ctx,
+        hints,
+        widenCache,
+      );
 
       if (!resolved) return;
       const relId = generateId('CALLS', `${sourceId}:${calledName}->${resolved.nodeId}`);
@@ -645,7 +771,12 @@ export const processCalls = async (
   // ── Resolve deferred write-access edges ──
   // All properties (including Ruby attr_accessor) are now registered.
   for (const pw of pendingWrites) {
-    const fieldOwner = resolveFieldOwnership(pw.receiverTypeName, pw.propertyName, pw.filePath, ctx);
+    const fieldOwner = resolveFieldOwnership(
+      pw.receiverTypeName,
+      pw.propertyName,
+      pw.filePath,
+      ctx,
+    );
     if (fieldOwner) {
       graph.addRelationship({
         id: generateId('ACCESSES', `${pw.srcId}:${fieldOwner.nodeId}:write`),
@@ -661,7 +792,7 @@ export const processCalls = async (
   if (skippedByLang && skippedByLang.size > 0) {
     for (const [lang, count] of skippedByLang.entries()) {
       console.warn(
-        `[ingestion] Skipped ${count} ${lang} file(s) in call processing — ${lang} parser not available.`
+        `[ingestion] Skipped ${count} ${lang} file(s) in call processing — ${lang} parser not available.`,
       );
     }
   }
@@ -679,13 +810,7 @@ interface ResolveResult {
   returnType?: string;
 }
 
-const CALLABLE_SYMBOL_TYPES = new Set([
-  'Function',
-  'Method',
-  'Constructor',
-  'Macro',
-  'Delegate',
-]);
+const CALLABLE_SYMBOL_TYPES = new Set(['Function', 'Method', 'Constructor', 'Macro', 'Delegate']);
 
 const CONSTRUCTOR_TARGET_TYPES = new Set(['Constructor', 'Class', 'Struct', 'Record']);
 
@@ -697,40 +822,41 @@ const filterCallableCandidates = (
   let kindFiltered: SymbolDefinition[];
 
   if (callForm === 'constructor') {
-    const constructors = candidates.filter(c => c.type === 'Constructor');
+    const constructors = candidates.filter((c) => c.type === 'Constructor');
     if (constructors.length > 0) {
       kindFiltered = constructors;
     } else {
-      const types = candidates.filter(c => CONSTRUCTOR_TARGET_TYPES.has(c.type));
-      kindFiltered = types.length > 0 ? types : candidates.filter(c => CALLABLE_SYMBOL_TYPES.has(c.type));
+      const types = candidates.filter((c) => CONSTRUCTOR_TARGET_TYPES.has(c.type));
+      kindFiltered =
+        types.length > 0 ? types : candidates.filter((c) => CALLABLE_SYMBOL_TYPES.has(c.type));
     }
   } else {
-    kindFiltered = candidates.filter(c => CALLABLE_SYMBOL_TYPES.has(c.type));
+    kindFiltered = candidates.filter((c) => CALLABLE_SYMBOL_TYPES.has(c.type));
   }
 
   if (kindFiltered.length === 0) return [];
   if (argCount === undefined) return kindFiltered;
 
-  const hasParameterMetadata = kindFiltered.some(candidate => candidate.parameterCount !== undefined);
+  const hasParameterMetadata = kindFiltered.some(
+    (candidate) => candidate.parameterCount !== undefined,
+  );
   if (!hasParameterMetadata) return kindFiltered;
 
-  return kindFiltered.filter(candidate =>
-    candidate.parameterCount === undefined
-    || (argCount >= (candidate.requiredParameterCount ?? candidate.parameterCount)
-      && argCount <= candidate.parameterCount)
+  return kindFiltered.filter(
+    (candidate) =>
+      candidate.parameterCount === undefined ||
+      (argCount >= (candidate.requiredParameterCount ?? candidate.parameterCount) &&
+        argCount <= candidate.parameterCount),
   );
 };
 
-const toResolveResult = (
-  definition: SymbolDefinition,
-  tier: ResolutionTier,
-): ResolveResult => ({
+const toResolveResult = (definition: SymbolDefinition, tier: ResolutionTier): ResolveResult => ({
   nodeId: definition.nodeId,
   confidence: TIER_CONFIDENCE[tier],
-  reason: tier === 'same-file' ? 'same-file' : tier === 'import-scoped' ? 'import-resolved' : 'global',
+  reason:
+    tier === 'same-file' ? 'same-file' : tier === 'import-scoped' ? 'import-resolved' : 'global',
   returnType: definition.returnType,
 });
-
 
 /** Optional hints for overload disambiguation via argument literal types.
  *  Only available on the sequential path (has AST); worker path passes undefined. */
@@ -759,8 +885,7 @@ const KOTLIN_BOXED_TO_PRIMITIVE: Readonly<Record<string, string>> = {
   Char: 'char',
 };
 
-const normalizeJvmTypeName = (name: string): string =>
-  KOTLIN_BOXED_TO_PRIMITIVE[name] ?? name;
+const normalizeJvmTypeName = (name: string): string => KOTLIN_BOXED_TO_PRIMITIVE[name] ?? name;
 
 /**
  * Try to disambiguate overloaded candidates using argument literal types.
@@ -771,14 +896,16 @@ const tryOverloadDisambiguation = (
   candidates: SymbolDefinition[],
   hints: OverloadHints,
 ): SymbolDefinition | null => {
-  if (!candidates.some(c => c.parameterTypes)) return null;
+  if (!candidates.some((c) => c.parameterTypes)) return null;
 
   // Find the argument list node in the call expression.
   // Kotlin wraps value_arguments inside a call_suffix child, so we must also
   // search one level deeper when a direct match is not found.
-  let argList: any = hints.callNode.childForFieldName?.('arguments')
-    ?? hints.callNode.children.find((c: any) =>
-      c.type === 'arguments' || c.type === 'argument_list' || c.type === 'value_arguments'
+  let argList: any =
+    hints.callNode.childForFieldName?.('arguments') ??
+    hints.callNode.children.find(
+      (c: any) =>
+        c.type === 'arguments' || c.type === 'argument_list' || c.type === 'value_arguments',
     );
   if (!argList) {
     // Kotlin: call_expression → call_suffix → value_arguments
@@ -797,18 +924,19 @@ const tryOverloadDisambiguation = (
     //   - C# argument: has 'expression' field (handles named args like `name: "alice"`
     //     where firstNamedChild would return name_colon instead of the value)
     //   - Java/others: arg IS the literal directly (no unwrapping needed)
-    const valueNode = arg.childForFieldName?.('value')
-      ?? arg.childForFieldName?.('expression')
-      ?? (arg.type === 'argument' || arg.type === 'value_argument'
-        ? arg.firstNamedChild ?? arg
+    const valueNode =
+      arg.childForFieldName?.('value') ??
+      arg.childForFieldName?.('expression') ??
+      (arg.type === 'argument' || arg.type === 'value_argument'
+        ? (arg.firstNamedChild ?? arg)
         : arg);
     argTypes.push(hints.inferLiteralType(valueNode));
   }
 
   // If no literal types could be inferred, can't disambiguate
-  if (argTypes.every(t => t === undefined)) return null;
+  if (argTypes.every((t) => t === undefined)) return null;
 
-  const matched = candidates.filter(c => {
+  const matched = candidates.filter((c) => {
     // Keep candidates without type info — conservative: partially-annotated codebases
     // (e.g. C++ with some missing declarations) may have mixed typed/untyped overloads.
     // If one typed and one untyped both survive, matched.length > 1 → returns null (no edge).
@@ -826,7 +954,7 @@ const tryOverloadDisambiguation = (
   // implementation body all collide via generateId). Deduplicate by nodeId — if all
   // matched candidates resolve to the same graph node, disambiguation succeeded.
   if (matched.length > 1) {
-    const uniqueIds = new Set(matched.map(c => c.nodeId));
+    const uniqueIds = new Set(matched.map((c) => c.nodeId));
     if (uniqueIds.size === 1) return matched[0];
   }
   return null;
@@ -846,7 +974,10 @@ const tryOverloadDisambiguation = (
 type WidenCache = Map<string, readonly SymbolDefinition[]>;
 
 const resolveCallTarget = (
-  call: Pick<ExtractedCall, 'calledName' | 'argCount' | 'callForm' | 'receiverTypeName' | 'receiverName'>,
+  call: Pick<
+    ExtractedCall,
+    'calledName' | 'argCount' | 'callForm' | 'receiverTypeName' | 'receiverName'
+  >,
   currentFile: string,
   ctx: ResolutionContext,
   overloadHints?: OverloadHints,
@@ -855,17 +986,25 @@ const resolveCallTarget = (
   const tiered = ctx.resolve(call.calledName, currentFile);
   if (!tiered) return null;
 
-  let filteredCandidates = filterCallableCandidates(tiered.candidates, call.argCount, call.callForm);
+  let filteredCandidates = filterCallableCandidates(
+    tiered.candidates,
+    call.argCount,
+    call.callForm,
+  );
 
   // Swift/Kotlin: constructor calls look like free function calls (no `new` keyword).
   // If free-form filtering found no callable candidates but the symbol resolves to a
   // Class/Struct, retry with constructor form so CONSTRUCTOR_TARGET_TYPES applies.
   if (filteredCandidates.length === 0 && call.callForm === 'free') {
-    const hasTypeTarget = tiered.candidates.some(c =>
-      c.type === 'Class' || c.type === 'Struct' || c.type === 'Enum',
+    const hasTypeTarget = tiered.candidates.some(
+      (c) => c.type === 'Class' || c.type === 'Struct' || c.type === 'Enum',
     );
     if (hasTypeTarget) {
-      filteredCandidates = filterCallableCandidates(tiered.candidates, call.argCount, 'constructor');
+      filteredCandidates = filterCallableCandidates(
+        tiered.candidates,
+        call.argCount,
+        'constructor',
+      );
     }
   }
 
@@ -886,7 +1025,7 @@ const resolveCallTarget = (
     if (aliasMap) {
       const moduleFile = aliasMap.get(call.receiverName);
       if (moduleFile) {
-        const aliasFiltered = filteredCandidates.filter(c => c.filePath === moduleFile);
+        const aliasFiltered = filteredCandidates.filter((c) => c.filePath === moduleFile);
         if (aliasFiltered.length > 0) {
           filteredCandidates = aliasFiltered;
         } else {
@@ -900,8 +1039,9 @@ const resolveCallTarget = (
             fuzzyDefs = ctx.symbols.lookupFuzzy(call.calledName);
             widenCache?.set(cacheKey, fuzzyDefs);
           }
-          const widened = filterCallableCandidates(fuzzyDefs, call.argCount, call.callForm)
-            .filter(c => c.filePath === moduleFile);
+          const widened = filterCallableCandidates(fuzzyDefs, call.argCount, call.callForm).filter(
+            (c) => c.filePath === moduleFile,
+          );
           if (widened.length > 0) filteredCandidates = widened;
         }
       }
@@ -920,25 +1060,30 @@ const resolveCallTarget = (
     // D1. Resolve the receiver type
     const typeResolved = ctx.resolve(call.receiverTypeName, currentFile);
     if (typeResolved && typeResolved.candidates.length > 0) {
-      const typeNodeIds = new Set(typeResolved.candidates.map(d => d.nodeId));
-      const typeFiles = new Set(typeResolved.candidates.map(d => d.filePath));
+      const typeNodeIds = new Set(typeResolved.candidates.map((d) => d.nodeId));
+      const typeFiles = new Set(typeResolved.candidates.map((d) => d.filePath));
 
       // D2. Widen candidates: same-file tier may miss the parent's method when
       //     it lives in another file. Query the symbol table directly for all
       //     global methods with this name, then apply arity/kind filtering.
-      const methodPool = filteredCandidates.length <= 1
-        ? filterCallableCandidates(ctx.symbols.lookupFuzzy(call.calledName), call.argCount, call.callForm)
-        : filteredCandidates;
+      const methodPool =
+        filteredCandidates.length <= 1
+          ? filterCallableCandidates(
+              ctx.symbols.lookupFuzzy(call.calledName),
+              call.argCount,
+              call.callForm,
+            )
+          : filteredCandidates;
 
       // D3. File-based: prefer candidates whose filePath matches the resolved type's file
-      const fileFiltered = methodPool.filter(c => typeFiles.has(c.filePath));
+      const fileFiltered = methodPool.filter((c) => typeFiles.has(c.filePath));
       if (fileFiltered.length === 1) {
         return toResolveResult(fileFiltered[0], tiered.tier);
       }
 
       // D4. ownerId fallback: narrow by ownerId matching the type's nodeId
       const pool = fileFiltered.length > 0 ? fileFiltered : methodPool;
-      const ownerFiltered = pool.filter(c => c.ownerId && typeNodeIds.has(c.ownerId));
+      const ownerFiltered = pool.filter((c) => c.ownerId && typeNodeIds.has(c.ownerId));
       if (ownerFiltered.length === 1) {
         return toResolveResult(ownerFiltered[0], tiered.tier);
       }
@@ -966,9 +1111,14 @@ const resolveCallTarget = (
     // primary definition), they represent the same symbol. Prefer the primary
     // definition (shortest file path: Product.swift over ProductExtension.swift).
     if (filteredCandidates.length > 1) {
-      const allSameType = filteredCandidates.every(c => c.type === filteredCandidates[0].type);
-      if (allSameType && (filteredCandidates[0].type === 'Class' || filteredCandidates[0].type === 'Struct')) {
-        const sorted = [...filteredCandidates].sort((a, b) => a.filePath.length - b.filePath.length);
+      const allSameType = filteredCandidates.every((c) => c.type === filteredCandidates[0].type);
+      if (
+        allSameType &&
+        (filteredCandidates[0].type === 'Class' || filteredCandidates[0].type === 'Struct')
+      ) {
+        const sorted = [...filteredCandidates].sort(
+          (a, b) => a.filePath.length - b.filePath.length,
+        );
         return toResolveResult(sorted[0], tiered.tier);
       }
     }
@@ -990,8 +1140,7 @@ const resolveCallTarget = (
 // Lookup uses a secondary funcName-only index built in lookupReceiverType.
 
 /** Extract the function name from a scope key ("funcName@startIndex" → "funcName"). */
-const extractFuncNameFromScope = (scope: string): string =>
-  scope.slice(0, scope.indexOf('@'));
+const extractFuncNameFromScope = (scope: string): string => scope.slice(0, scope.indexOf('@'));
 
 /** Extract the trailing function name from a sourceId ("Function:filepath:funcName" → "funcName"). */
 const extractFuncNameFromSourceId = (sourceId: string): string => {
@@ -1004,8 +1153,7 @@ const extractFuncNameFromSourceId = (sourceId: string): string => {
  * Uses the full scope string (e.g. "save@100") to distinguish overloaded
  * methods with the same name in different classes.
  */
-const receiverKey = (scope: string, varName: string): string =>
-  `${scope}\0${varName}`;
+const receiverKey = (scope: string, varName: string): string => `${scope}\0${varName}`;
 
 /**
  * Pre-built secondary index for O(1) receiver type lookups.
@@ -1034,7 +1182,10 @@ const buildReceiverTypeIndex = (map: Map<string, string>): ReceiverTypeIndex => 
     const funcName = scope === '' ? '' : scope.slice(0, scope.indexOf('@'));
 
     let varMap = index.get(funcName);
-    if (!varMap) { varMap = new Map(); index.set(funcName, varMap); }
+    if (!varMap) {
+      varMap = new Map();
+      index.set(funcName, varMap);
+    }
 
     const existing = varMap.get(varName);
     if (existing === undefined) {
@@ -1074,8 +1225,8 @@ const lookupReceiverType = (
 };
 
 interface FieldResolution {
-  typeName: string;      // resolved declared type (continues chain threading)
-  fieldNodeId: string;   // nodeId of the Property symbol (for ACCESSES edge target)
+  typeName: string; // resolved declared type (continues chain threading)
+  fieldNodeId: string; // nodeId of the Property symbol (for ACCESSES edge target)
 }
 
 /**
@@ -1113,8 +1264,13 @@ const resolveFieldOwnership = (
   const typeResolved = ctx.resolve(receiverName, filePath);
   if (!typeResolved) return undefined;
   const classDef = typeResolved.candidates.find(
-    d => d.type === 'Class' || d.type === 'Struct' || d.type === 'Interface'
-      || d.type === 'Enum' || d.type === 'Record' || d.type === 'Impl',
+    (d) =>
+      d.type === 'Class' ||
+      d.type === 'Struct' ||
+      d.type === 'Interface' ||
+      d.type === 'Enum' ||
+      d.type === 'Record' ||
+      d.type === 'Impl',
   );
   if (!classDef) return undefined;
 
@@ -1125,10 +1281,7 @@ const resolveFieldOwnership = (
  * Create a deduplicated ACCESSES edge emitter for a single source node.
  * Each (sourceId, fieldNodeId) pair is emitted at most once per source.
  */
-const makeAccessEmitter = (
-  graph: KnowledgeGraph,
-  sourceId: string,
-): OnFieldResolved => {
+const makeAccessEmitter = (graph: KnowledgeGraph, sourceId: string): OnFieldResolved => {
   const emitted = new Set<string>();
   return (fieldNodeId: string): void => {
     const key = `${sourceId}\0${fieldNodeId}`;
@@ -1168,7 +1321,10 @@ const walkMixedChain = (
     if (!currentType) break;
     if (step.kind === 'field') {
       const resolved = resolveFieldAccessType(currentType, step.name, filePath, ctx);
-      if (!resolved) { currentType = undefined; break; }
+      if (!resolved) {
+        currentType = undefined;
+        break;
+      }
       onFieldResolved?.(resolved.fieldNodeId);
       currentType = resolved.typeName;
     } else {
@@ -1189,11 +1345,18 @@ const walkMixedChain = (
       if (!resolved) {
         // Stdlib passthrough: unwrap(), clone(), etc. preserve the receiver type
         if (TYPE_PRESERVING_METHODS.has(step.name)) continue;
-        currentType = undefined; break;
+        currentType = undefined;
+        break;
       }
-      if (!resolved.returnType) { currentType = undefined; break; }
+      if (!resolved.returnType) {
+        currentType = undefined;
+        break;
+      }
       const retType = extractReturnTypeName(resolved.returnType);
-      if (!retType) { currentType = undefined; break; }
+      if (!retType) {
+        currentType = undefined;
+        break;
+      }
       currentType = retType;
     }
   }
@@ -1227,7 +1390,10 @@ export const processCallsFromExtracted = async (
   const byFile = new Map<string, ExtractedCall[]>();
   for (const call of extractedCalls) {
     let list = byFile.get(call.filePath);
-    if (!list) { list = []; byFile.set(call.filePath, list); }
+    if (!list) {
+      list = [];
+      byFile.set(call.filePath, list);
+    }
     list.push(call);
   }
   const totalFiles = byFile.size;
@@ -1257,11 +1423,22 @@ export const processCallsFromExtracted = async (
       }
 
       // Step 1b: class-as-receiver for static method calls (e.g. UserService.find_user())
-      if (!effectiveCall.receiverTypeName && effectiveCall.receiverName && effectiveCall.callForm === 'member') {
+      if (
+        !effectiveCall.receiverTypeName &&
+        effectiveCall.receiverName &&
+        effectiveCall.callForm === 'member'
+      ) {
         const typeResolved = ctx.resolve(effectiveCall.receiverName, effectiveCall.filePath);
-        if (typeResolved && typeResolved.candidates.some(
-          d => d.type === 'Class' || d.type === 'Interface' || d.type === 'Struct' || d.type === 'Enum',
-        )) {
+        if (
+          typeResolved &&
+          typeResolved.candidates.some(
+            (d) =>
+              d.type === 'Class' ||
+              d.type === 'Interface' ||
+              d.type === 'Struct' ||
+              d.type === 'Enum',
+          )
+        ) {
           effectiveCall = { ...effectiveCall, receiverTypeName: effectiveCall.receiverName };
         }
       }
@@ -1278,15 +1455,24 @@ export const processCallsFromExtracted = async (
         }
         if (!currentType && effectiveCall.receiverName) {
           const typeResolved = ctx.resolve(effectiveCall.receiverName, effectiveCall.filePath);
-          if (typeResolved?.candidates.some(d =>
-            d.type === 'Class' || d.type === 'Interface' || d.type === 'Struct' || d.type === 'Enum',
-          )) {
+          if (
+            typeResolved?.candidates.some(
+              (d) =>
+                d.type === 'Class' ||
+                d.type === 'Interface' ||
+                d.type === 'Struct' ||
+                d.type === 'Enum',
+            )
+          ) {
             currentType = effectiveCall.receiverName;
           }
         }
         if (currentType) {
           const walkedType = walkMixedChain(
-            effectiveCall.receiverMixedChain, currentType, effectiveCall.filePath, ctx,
+            effectiveCall.receiverMixedChain,
+            currentType,
+            effectiveCall.filePath,
+            ctx,
             makeAccessEmitter(graph, effectiveCall.sourceId),
           );
           if (walkedType) {
@@ -1295,10 +1481,19 @@ export const processCallsFromExtracted = async (
         }
       }
 
-      const resolved = resolveCallTarget(effectiveCall, effectiveCall.filePath, ctx, undefined, widenCache);
+      const resolved = resolveCallTarget(
+        effectiveCall,
+        effectiveCall.filePath,
+        ctx,
+        undefined,
+        widenCache,
+      );
       if (!resolved) continue;
 
-      const relId = generateId('CALLS', `${effectiveCall.sourceId}:${effectiveCall.calledName}->${resolved.nodeId}`);
+      const relId = generateId(
+        'CALLS',
+        `${effectiveCall.sourceId}:${effectiveCall.calledName}->${resolved.nodeId}`,
+      );
       graph.addRelationship({
         id: relId,
         sourceId: effectiveCall.sourceId,
@@ -1351,10 +1546,17 @@ export const processAssignmentsFromExtracted = (
     // Tier 3: static class-as-receiver fallback
     if (!receiverTypeName) {
       const resolved = ctx.resolve(asn.receiverText, asn.filePath);
-      if (resolved?.candidates.some(d =>
-        d.type === 'Class' || d.type === 'Struct' || d.type === 'Interface'
-          || d.type === 'Enum' || d.type === 'Record' || d.type === 'Impl',
-      )) {
+      if (
+        resolved?.candidates.some(
+          (d) =>
+            d.type === 'Class' ||
+            d.type === 'Struct' ||
+            d.type === 'Interface' ||
+            d.type === 'Enum' ||
+            d.type === 'Record' ||
+            d.type === 'Impl',
+        )
+      ) {
         receiverTypeName = asn.receiverText;
       }
     }
@@ -1398,7 +1600,8 @@ export const processRoutesFromExtracted = async (
     const confidence = TIER_CONFIDENCE[controllerResolved.tier];
 
     const methodResolved = ctx.resolve(route.methodName, controllerDef.filePath);
-    const methodId = methodResolved?.tier === 'same-file' ? methodResolved.candidates[0]?.nodeId : undefined;
+    const methodId =
+      methodResolved?.tier === 'same-file' ? methodResolved.candidates[0]?.nodeId : undefined;
     const sourceId = generateId('File', route.filePath);
 
     if (!methodId) {
@@ -1450,25 +1653,82 @@ export const processRoutesFromExtracted = async (
 // that happen to share names with response variables (data, result, response, etc.).
 const RESPONSE_ACCESS_BLOCKLIST = new Set([
   // Fetch/Response API
-  'json', 'text', 'blob', 'arrayBuffer', 'formData', 'ok', 'status', 'headers', 'clone',
+  'json',
+  'text',
+  'blob',
+  'arrayBuffer',
+  'formData',
+  'ok',
+  'status',
+  'headers',
+  'clone',
   // Promise
-  'then', 'catch', 'finally',
+  'then',
+  'catch',
+  'finally',
   // Array
-  'map', 'filter', 'forEach', 'reduce', 'find', 'some', 'every',
-  'push', 'pop', 'shift', 'unshift', 'splice', 'slice', 'concat', 'join',
-  'sort', 'reverse', 'includes', 'indexOf',
+  'map',
+  'filter',
+  'forEach',
+  'reduce',
+  'find',
+  'some',
+  'every',
+  'push',
+  'pop',
+  'shift',
+  'unshift',
+  'splice',
+  'slice',
+  'concat',
+  'join',
+  'sort',
+  'reverse',
+  'includes',
+  'indexOf',
   // Object
-  'length', 'toString', 'valueOf', 'keys', 'values', 'entries',
+  'length',
+  'toString',
+  'valueOf',
+  'keys',
+  'values',
+  'entries',
   // DOM methods — file-download patterns often reuse `data`/`response` variable names
-  'appendChild', 'removeChild', 'insertBefore', 'replaceChild', 'replaceChildren',
-  'createElement', 'getElementById', 'querySelector', 'querySelectorAll',
-  'setAttribute', 'getAttribute', 'removeAttribute', 'hasAttribute',
-  'addEventListener', 'removeEventListener', 'dispatchEvent',
-  'classList', 'className',
-  'parentNode', 'parentElement', 'childNodes', 'children',
-  'nextSibling', 'previousSibling', 'firstChild', 'lastChild',
-  'click', 'focus', 'blur', 'submit', 'reset',
-  'innerHTML', 'outerHTML', 'textContent', 'innerText',
+  'appendChild',
+  'removeChild',
+  'insertBefore',
+  'replaceChild',
+  'replaceChildren',
+  'createElement',
+  'getElementById',
+  'querySelector',
+  'querySelectorAll',
+  'setAttribute',
+  'getAttribute',
+  'removeAttribute',
+  'hasAttribute',
+  'addEventListener',
+  'removeEventListener',
+  'dispatchEvent',
+  'classList',
+  'className',
+  'parentNode',
+  'parentElement',
+  'childNodes',
+  'children',
+  'nextSibling',
+  'previousSibling',
+  'firstChild',
+  'lastChild',
+  'click',
+  'focus',
+  'blur',
+  'submit',
+  'reset',
+  'innerHTML',
+  'outerHTML',
+  'textContent',
+  'innerText',
 ]);
 
 export const extractConsumerAccessedKeys = (content: string): string[] => {
@@ -1476,7 +1736,8 @@ export const extractConsumerAccessedKeys = (content: string): string[] => {
 
   // Pattern 1: Destructuring from .json() — const { key1, key2 } = await res.json()
   // Also matches: const { key1, key2 } = await (await fetch(...)).json()
-  const destructurePattern = /(?:const|let|var)\s+\{([^}]+)\}\s*=\s*(?:await\s+)?(?:\w+\.json\s*\(\)|(?:await\s+)?(?:fetch|axios|got)\s*\([^)]*\)(?:\.then\s*\([^)]*\))?(?:\.json\s*\(\))?)/g;
+  const destructurePattern =
+    /(?:const|let|var)\s+\{([^}]+)\}\s*=\s*(?:await\s+)?(?:\w+\.json\s*\(\)|(?:await\s+)?(?:fetch|axios|got)\s*\([^)]*\)(?:\.then\s*\([^)]*\))?(?:\.json\s*\(\))?)/g;
   let match;
   while ((match = destructurePattern.exec(content)) !== null) {
     const destructuredBody = match[1];
@@ -1490,7 +1751,8 @@ export const extractConsumerAccessedKeys = (content: string): string[] => {
 
   // Pattern 2: Destructuring from a data/result/response/json variable
   // e.g., const { items, total } = data; or const { error } = result;
-  const dataVarDestructure = /(?:const|let|var)\s+\{([^}]+)\}\s*=\s*(?:data|result|response|json|body|res)\b/g;
+  const dataVarDestructure =
+    /(?:const|let|var)\s+\{([^}]+)\}\s*=\s*(?:data|result|response|json|body|res)\b/g;
   while ((match = dataVarDestructure.exec(content)) !== null) {
     const destructuredBody = match[1];
     const keyPattern = /(\w+)\s*(?::\s*\w+)?/g;
@@ -1523,8 +1785,8 @@ export const extractConsumerAccessedKeys = (content: string): string[] => {
 export const processNextjsFetchRoutes = (
   graph: KnowledgeGraph,
   fetchCalls: ExtractedFetchCall[],
-  routeRegistry: Map<string, string>,  // routeURL → handlerFilePath
-  consumerContents?: Map<string, string>,  // filePath → file content
+  routeRegistry: Map<string, string>, // routeURL → handlerFilePath
+  consumerContents?: Map<string, string>, // filePath → file content
 ) => {
   // Pre-count how many routes each consumer file matches (for confidence attribution)
   const routeCountByFile = new Map<string, number>();
@@ -1606,8 +1868,12 @@ export const extractFetchCallsFromFiles = async (
     let tree = astCache.get(file.path);
     if (!tree) {
       try {
-        tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
-      } catch { continue; }
+        tree = parser.parse(file.content, undefined, {
+          bufferSize: getTreeSitterBufferSize(file.content.length),
+        });
+      } catch {
+        continue;
+      }
       astCache.set(file.path, tree);
     }
 
@@ -1616,11 +1882,13 @@ export const extractFetchCallsFromFiles = async (
       const lang = parser.getLanguage();
       const query = new Parser.Query(lang, queryStr);
       matches = query.matches(tree.rootNode);
-    } catch { continue; }
+    } catch {
+      continue;
+    }
 
     for (const match of matches) {
       const captureMap: Record<string, any> = {};
-      match.captures.forEach(c => captureMap[c.name] = c.node);
+      match.captures.forEach((c) => (captureMap[c.name] = c.node));
 
       if (captureMap['route.fetch']) {
         const urlNode = captureMap['route.url'] ?? captureMap['route.template_url'];
@@ -1636,7 +1904,11 @@ export const extractFetchCallsFromFiles = async (
         const url = captureMap['http_client.url'].text;
         const HTTP_CLIENT_ONLY = new Set(['head', 'options', 'request', 'ajax']);
         if (method && HTTP_CLIENT_ONLY.has(method) && url.startsWith('/')) {
-          result.push({ filePath: file.path, fetchURL: url, lineNumber: captureMap['http_client'].startPosition.row });
+          result.push({
+            filePath: file.path,
+            fetchURL: url,
+            lineNumber: captureMap['http_client'].startPosition.row,
+          });
         }
       }
     }

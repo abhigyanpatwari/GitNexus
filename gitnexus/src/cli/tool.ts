@@ -1,15 +1,15 @@
 /**
  * Direct CLI Tool Commands
- * 
+ *
  * Exposes GitNexus tools (query, context, impact, cypher) as direct CLI commands.
  * Bypasses MCP entirely — invokes LocalBackend directly for minimal overhead.
- * 
+ *
  * Usage:
  *   gitnexus query "authentication flow"
  *   gitnexus context --name "validateUser"
  *   gitnexus impact --target "AuthService" --direction upstream
  *   gitnexus cypher "MATCH (n:Function) RETURN n.name LIMIT 10"
- * 
+ *
  * Note: Output goes to stdout via fs.writeSync(fd 1), bypassing LadybugDB's
  * native module which captures the Node.js process.stdout stream during init.
  * See the output() function for details (#324).
@@ -56,13 +56,16 @@ function output(data: any): void {
   }
 }
 
-export async function queryCommand(queryText: string, options?: {
-  repo?: string;
-  context?: string;
-  goal?: string;
-  limit?: string;
-  content?: boolean;
-}): Promise<void> {
+export async function queryCommand(
+  queryText: string,
+  options?: {
+    repo?: string;
+    context?: string;
+    goal?: string;
+    limit?: string;
+    content?: boolean;
+  },
+): Promise<void> {
   if (!queryText?.trim()) {
     console.error('Usage: gitnexus query <search_query>');
     process.exit(1);
@@ -80,12 +83,15 @@ export async function queryCommand(queryText: string, options?: {
   output(result);
 }
 
-export async function contextCommand(name: string, options?: {
-  repo?: string;
-  file?: string;
-  uid?: string;
-  content?: boolean;
-}): Promise<void> {
+export async function contextCommand(
+  name: string,
+  options?: {
+    repo?: string;
+    file?: string;
+    uid?: string;
+    content?: boolean;
+  },
+): Promise<void> {
   if (!name?.trim() && !options?.uid) {
     console.error('Usage: gitnexus context <symbol_name> [--uid <uid>] [--file <path>]');
     process.exit(1);
@@ -102,12 +108,15 @@ export async function contextCommand(name: string, options?: {
   output(result);
 }
 
-export async function impactCommand(target: string, options?: {
-  direction?: string;
-  repo?: string;
-  depth?: string;
-  includeTests?: boolean;
-}): Promise<void> {
+export async function impactCommand(
+  target: string,
+  options?: {
+    direction?: string;
+    repo?: string;
+    depth?: string;
+    includeTests?: boolean;
+  },
+): Promise<void> {
   if (!target?.trim()) {
     console.error('Usage: gitnexus impact <symbol_name> [--direction upstream|downstream]');
     process.exit(1);
@@ -127,7 +136,8 @@ export async function impactCommand(target: string, options?: {
     // Belt-and-suspenders: catch infrastructure failures (getBackend, callTool transport)
     // The backend's impact() already returns structured errors for graph query failures
     output({
-      error: (err instanceof Error ? err.message : String(err)) || 'Impact analysis failed unexpectedly',
+      error:
+        (err instanceof Error ? err.message : String(err)) || 'Impact analysis failed unexpectedly',
       target: { name: target },
       direction: options?.direction || 'upstream',
       suggestion: 'Try reducing --depth or using gitnexus context <symbol> as a fallback',
@@ -136,9 +146,12 @@ export async function impactCommand(target: string, options?: {
   }
 }
 
-export async function cypherCommand(query: string, options?: {
-  repo?: string;
-}): Promise<void> {
+export async function cypherCommand(
+  query: string,
+  options?: {
+    repo?: string;
+  },
+): Promise<void> {
   if (!query?.trim()) {
     console.error('Usage: gitnexus cypher <cypher_query>');
     process.exit(1);

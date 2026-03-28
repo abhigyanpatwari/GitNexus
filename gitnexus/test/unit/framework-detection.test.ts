@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { detectFrameworkFromPath, detectFrameworkFromAST, FRAMEWORK_AST_PATTERNS } from '../../src/core/ingestion/framework-detection.js';
+import {
+  detectFrameworkFromPath,
+  detectFrameworkFromAST,
+  FRAMEWORK_AST_PATTERNS,
+} from '../../src/core/ingestion/framework-detection.js';
 
 describe('detectFrameworkFromPath', () => {
   describe('Next.js', () => {
@@ -321,7 +325,10 @@ describe('detectFrameworkFromAST', () => {
   });
 
   it('detects Laravel route definitions in PHP', () => {
-    const result = detectFrameworkFromAST('php', "Route::get('/users', [UserController::class, 'index'])");
+    const result = detectFrameworkFromAST(
+      'php',
+      "Route::get('/users', [UserController::class, 'index'])",
+    );
     expect(result).not.toBeNull();
     expect(result!.framework).toBe('laravel');
   });
@@ -356,14 +363,36 @@ describe('detectFrameworkFromAST', () => {
 describe('FRAMEWORK_AST_PATTERNS', () => {
   it('has patterns for all expected frameworks', () => {
     const expectedFrameworks = [
-      'nestjs', 'expo-router', 'express', 'fastapi', 'flask', 'spring', 'jaxrs',
-      'aspnet', 'go-http', 'gin', 'echo', 'fiber', 'go-grpc',
-      'laravel', 'actix', 'axum', 'rocket', 'tokio', 'qt',
-      'uikit', 'swiftui', 'vapor', 'rails', 'sinatra',
+      'nestjs',
+      'expo-router',
+      'express',
+      'fastapi',
+      'flask',
+      'spring',
+      'jaxrs',
+      'aspnet',
+      'go-http',
+      'gin',
+      'echo',
+      'fiber',
+      'go-grpc',
+      'laravel',
+      'actix',
+      'axum',
+      'rocket',
+      'tokio',
+      'qt',
+      'uikit',
+      'swiftui',
+      'vapor',
+      'rails',
+      'sinatra',
     ];
     for (const fw of expectedFrameworks) {
       expect(FRAMEWORK_AST_PATTERNS).toHaveProperty(fw);
-      expect(FRAMEWORK_AST_PATTERNS[fw as keyof typeof FRAMEWORK_AST_PATTERNS].length).toBeGreaterThan(0);
+      expect(
+        FRAMEWORK_AST_PATTERNS[fw as keyof typeof FRAMEWORK_AST_PATTERNS].length,
+      ).toBeGreaterThan(0);
     }
   });
 });

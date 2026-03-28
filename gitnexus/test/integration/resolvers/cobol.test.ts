@@ -11,19 +11,21 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, getRelationships, getNodesByLabel, edgeSet,
-  runPipelineFromRepo, type PipelineResult,
+  FIXTURES,
+  getRelationships,
+  getNodesByLabel,
+  edgeSet,
+  runPipelineFromRepo,
+  type PipelineResult,
 } from './helpers.js';
 
 describe('COBOL full system extraction', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'cobol-app'),
-      () => {},
-      { skipGraphPhases: true },
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cobol-app'), () => {}, {
+      skipGraphPhases: true,
+    });
   }, 60000);
 
   // =====================================================================
@@ -31,7 +33,6 @@ describe('COBOL full system extraction', () => {
   // =====================================================================
 
   describe('node completeness', () => {
-
     it('produces exactly 5 Module nodes', () => {
       const nodes = getNodesByLabel(result, 'Module');
       expect(nodes.length).toBe(5);
@@ -42,13 +43,27 @@ describe('COBOL full system extraction', () => {
       const nodes = getNodesByLabel(result, 'Function');
       expect(nodes.length).toBe(21);
       expect(nodes).toEqual([
-        'ABEND-HANDLER', 'BUILD-SORT-INPUT', 'CLEANUP-PARAGRAPH',
-        'EXIT-PARAGRAPH', 'FETCH-DATA', 'FORMAT-REPORT', 'INIT-PARAGRAPH',
-        'INNER-MAIN', 'INNER-PROCESS',
-        'MAIN-PARAGRAPH', 'MAIN-PARAGRAPH', 'MAIN-PARAGRAPH',
-        'OUTER-MAIN', 'OUTER-PROCESS',
-        'PROCESS-PARAGRAPH', 'READ-CUSTOMER', 'SEND-SCREEN',
-        'UPDATE-BALANCE', 'WRITE-CUSTOMER', 'WRITE-LOG', 'WRITE-SORTED',
+        'ABEND-HANDLER',
+        'BUILD-SORT-INPUT',
+        'CLEANUP-PARAGRAPH',
+        'EXIT-PARAGRAPH',
+        'FETCH-DATA',
+        'FORMAT-REPORT',
+        'INIT-PARAGRAPH',
+        'INNER-MAIN',
+        'INNER-PROCESS',
+        'MAIN-PARAGRAPH',
+        'MAIN-PARAGRAPH',
+        'MAIN-PARAGRAPH',
+        'OUTER-MAIN',
+        'OUTER-PROCESS',
+        'PROCESS-PARAGRAPH',
+        'READ-CUSTOMER',
+        'SEND-SCREEN',
+        'UPDATE-BALANCE',
+        'WRITE-CUSTOMER',
+        'WRITE-LOG',
+        'WRITE-SORTED',
       ]);
     });
 
@@ -60,17 +75,42 @@ describe('COBOL full system extraction', () => {
       const nodes = getNodesByLabel(result, 'Property');
       expect(nodes.length).toBe(36);
       expect(nodes).toEqual([
-        'CUST-BALANCE', 'CUST-ID', 'CUST-NAME', 'CUSTOMER-RECORD',
-        'END-OF-FILE', 'FIELD-A', 'FIELD-B',
-        'LS-AMOUNT', 'LS-CUST-ID', 'LS-PARAM',
-        'PREMIUM-CUSTOMER', 'REGULAR-CUSTOMER',
-        'WS-AMOUNT', 'WS-AMT', 'WS-CODE', 'WS-COUNT',
-        'WS-CUST-ADDR', 'WS-CUST-CODE', 'WS-CUST-TYPE',
-        'WS-CUSTOMER-DATA', 'WS-CUSTOMER-NAME', 'WS-EOF',
-        'WS-FILE-STATUS', 'WS-INNER-CODE', 'WS-LOG-MESSAGE',
-        'WS-MAP-NAME', 'WS-NAME', 'WS-NEXT-PGM', 'WS-OUTER-FLAG',
-        'WS-PROG-NAME', 'WS-QUEUE-NAME', 'WS-RECORD',
-        'WS-REPORT-LINE', 'WS-SORT-FILE', 'WS-SQL-CODE', 'WS-TIMESTAMP',
+        'CUST-BALANCE',
+        'CUST-ID',
+        'CUST-NAME',
+        'CUSTOMER-RECORD',
+        'END-OF-FILE',
+        'FIELD-A',
+        'FIELD-B',
+        'LS-AMOUNT',
+        'LS-CUST-ID',
+        'LS-PARAM',
+        'PREMIUM-CUSTOMER',
+        'REGULAR-CUSTOMER',
+        'WS-AMOUNT',
+        'WS-AMT',
+        'WS-CODE',
+        'WS-COUNT',
+        'WS-CUST-ADDR',
+        'WS-CUST-CODE',
+        'WS-CUST-TYPE',
+        'WS-CUSTOMER-DATA',
+        'WS-CUSTOMER-NAME',
+        'WS-EOF',
+        'WS-FILE-STATUS',
+        'WS-INNER-CODE',
+        'WS-LOG-MESSAGE',
+        'WS-MAP-NAME',
+        'WS-NAME',
+        'WS-NEXT-PGM',
+        'WS-OUTER-FLAG',
+        'WS-PROG-NAME',
+        'WS-QUEUE-NAME',
+        'WS-RECORD',
+        'WS-REPORT-LINE',
+        'WS-SORT-FILE',
+        'WS-SQL-CODE',
+        'WS-TIMESTAMP',
       ]);
     });
 
@@ -82,11 +122,21 @@ describe('COBOL full system extraction', () => {
       const nodes = getNodesByLabel(result, 'CodeElement');
       expect(nodes.length).toBe(15);
       expect(nodes).toEqual([
-        'CALL WS-PROG-NAME', 'CICS XCTL WS-NEXT-PGM', 'CUSTJOB',
-        'EXEC CICS HANDLE ABEND', 'EXEC CICS LINK', 'EXEC CICS READ',
-        'EXEC CICS RETURN', 'EXEC CICS SEND MAP', 'EXEC CICS WRITEQ TS',
-        'EXEC CICS XCTL', 'EXEC CICS XCTL', 'EXEC SQL SELECT',
-        'PROD.CUSTOMER.MASTER', 'STEP1', 'STEP2',
+        'CALL WS-PROG-NAME',
+        'CICS XCTL WS-NEXT-PGM',
+        'CUSTJOB',
+        'EXEC CICS HANDLE ABEND',
+        'EXEC CICS LINK',
+        'EXEC CICS READ',
+        'EXEC CICS RETURN',
+        'EXEC CICS SEND MAP',
+        'EXEC CICS WRITEQ TS',
+        'EXEC CICS XCTL',
+        'EXEC CICS XCTL',
+        'EXEC SQL SELECT',
+        'PROD.CUSTOMER.MASTER',
+        'STEP1',
+        'STEP2',
       ]);
     });
 
@@ -100,9 +150,10 @@ describe('COBOL full system extraction', () => {
   // =====================================================================
 
   describe('CALLS edge completeness', () => {
-
     it('produces exactly 15 CALLS edges with reason cobol-perform', () => {
-      const edges = getRelationships(result, 'CALLS').filter(e => e.rel.reason === 'cobol-perform');
+      const edges = getRelationships(result, 'CALLS').filter(
+        (e) => e.rel.reason === 'cobol-perform',
+      );
       expect(edges.length).toBe(15);
       expect(edgeSet(edges)).toEqual([
         'FORMAT-REPORT \u2192 BUILD-SORT-INPUT',
@@ -124,7 +175,9 @@ describe('COBOL full system extraction', () => {
     });
 
     it('produces exactly 2 CALLS edges with reason cobol-perform-thru', () => {
-      const edges = getRelationships(result, 'CALLS').filter(e => e.rel.reason === 'cobol-perform-thru');
+      const edges = getRelationships(result, 'CALLS').filter(
+        (e) => e.rel.reason === 'cobol-perform-thru',
+      );
       expect(edges.length).toBe(2);
       expect(edgeSet(edges)).toEqual([
         'FORMAT-REPORT \u2192 FORMAT-REPORT',
@@ -133,7 +186,7 @@ describe('COBOL full system extraction', () => {
     });
 
     it('produces exactly 3 CALLS edges with reason cobol-call', () => {
-      const edges = getRelationships(result, 'CALLS').filter(e => e.rel.reason === 'cobol-call');
+      const edges = getRelationships(result, 'CALLS').filter((e) => e.rel.reason === 'cobol-call');
       expect(edges.length).toBe(3);
       expect(edgeSet(edges)).toEqual([
         'CUSTUPDT \u2192 AUDITLOG',
@@ -143,7 +196,7 @@ describe('COBOL full system extraction', () => {
     });
 
     it('produces exactly 4 CALLS edges with reason cobol-goto', () => {
-      const edges = getRelationships(result, 'CALLS').filter(e => e.rel.reason === 'cobol-goto');
+      const edges = getRelationships(result, 'CALLS').filter((e) => e.rel.reason === 'cobol-goto');
       expect(edges.length).toBe(4);
       expect(edgeSet(edges)).toEqual([
         'FORMAT-REPORT \u2192 FETCH-DATA',
@@ -154,42 +207,53 @@ describe('COBOL full system extraction', () => {
     });
 
     it('produces exactly 1 CALLS edge with reason cics-link', () => {
-      const edges = getRelationships(result, 'CALLS').filter(e => e.rel.reason === 'cics-link');
+      const edges = getRelationships(result, 'CALLS').filter((e) => e.rel.reason === 'cics-link');
       expect(edges.length).toBe(1);
       expect(edgeSet(edges)).toEqual(['RPTGEN \u2192 AUDITLOG']);
     });
 
     it('produces exactly 1 CALLS edge with reason cics-xctl', () => {
-      const edges = getRelationships(result, 'CALLS').filter(e => e.rel.reason === 'cics-xctl');
+      const edges = getRelationships(result, 'CALLS').filter((e) => e.rel.reason === 'cics-xctl');
       expect(edges.length).toBe(1);
       expect(edgeSet(edges)).toEqual(['RPTGEN \u2192 CUSTUPDT']);
     });
 
     it('produces exactly 1 CALLS edge with reason cics-handle-abend', () => {
-      const edges = getRelationships(result, 'CALLS').filter(e => e.rel.reason === 'cics-handle-abend');
+      const edges = getRelationships(result, 'CALLS').filter(
+        (e) => e.rel.reason === 'cics-handle-abend',
+      );
       expect(edges.length).toBe(1);
       expect(edgeSet(edges)).toEqual(['RPTGEN \u2192 ABEND-HANDLER']);
     });
 
     it('produces exactly 1 CALLS edge with reason cics-return-transid', () => {
-      const edges = getRelationships(result, 'CALLS').filter(e => e.rel.reason === 'cics-return-transid');
+      const edges = getRelationships(result, 'CALLS').filter(
+        (e) => e.rel.reason === 'cics-return-transid',
+      );
       expect(edges.length).toBe(1);
     });
 
     it('produces exactly 2 CALLS edges with reason jcl-exec-pgm', () => {
-      const edges = getRelationships(result, 'CALLS').filter(e => e.rel.reason === 'jcl-exec-pgm');
+      const edges = getRelationships(result, 'CALLS').filter(
+        (e) => e.rel.reason === 'jcl-exec-pgm',
+      );
       expect(edges.length).toBe(2);
       expect(edgeSet(edges)).toEqual(['STEP1 \u2192 CUSTUPDT', 'STEP2 \u2192 RPTGEN']);
     });
 
     it('produces exactly 1 CALLS edge with reason jcl-dd:CUSTFILE', () => {
-      const edges = getRelationships(result, 'CALLS').filter(e => e.rel.reason === 'jcl-dd:CUSTFILE');
+      const edges = getRelationships(result, 'CALLS').filter(
+        (e) => e.rel.reason === 'jcl-dd:CUSTFILE',
+      );
       expect(edges.length).toBe(1);
       expect(edgeSet(edges)).toEqual(['STEP1 \u2192 PROD.CUSTOMER.MASTER']);
     });
 
     it('produces zero unresolved CALLS edges', () => {
-      expect(getRelationships(result, 'CALLS').filter(e => e.rel.reason.endsWith('-unresolved')).length).toBe(0);
+      expect(
+        getRelationships(result, 'CALLS').filter((e) => e.rel.reason.endsWith('-unresolved'))
+          .length,
+      ).toBe(0);
     });
   });
 
@@ -198,9 +262,10 @@ describe('COBOL full system extraction', () => {
   // =====================================================================
 
   describe('CONTAINS edge completeness', () => {
-
     it('produces exactly 4 CONTAINS edges with reason cobol-program-id', () => {
-      const edges = getRelationships(result, 'CONTAINS').filter(e => e.rel.reason === 'cobol-program-id');
+      const edges = getRelationships(result, 'CONTAINS').filter(
+        (e) => e.rel.reason === 'cobol-program-id',
+      );
       expect(edges.length).toBe(4);
       expect(edgeSet(edges)).toEqual([
         'AUDITLOG.cbl \u2192 AUDITLOG',
@@ -211,13 +276,17 @@ describe('COBOL full system extraction', () => {
     });
 
     it('produces exactly 1 CONTAINS edge with reason cobol-nested-program', () => {
-      const edges = getRelationships(result, 'CONTAINS').filter(e => e.rel.reason === 'cobol-nested-program');
+      const edges = getRelationships(result, 'CONTAINS').filter(
+        (e) => e.rel.reason === 'cobol-nested-program',
+      );
       expect(edges.length).toBe(1);
       expect(edgeSet(edges)).toEqual(['OUTER-PROG \u2192 INNER-PROG']);
     });
 
     it('produces exactly 2 CONTAINS edges with reason cobol-section', () => {
-      const edges = getRelationships(result, 'CONTAINS').filter(e => e.rel.reason === 'cobol-section');
+      const edges = getRelationships(result, 'CONTAINS').filter(
+        (e) => e.rel.reason === 'cobol-section',
+      );
       expect(edges.length).toBe(2);
       expect(edgeSet(edges)).toEqual([
         'CUSTUPDT \u2192 INIT-SECTION',
@@ -226,7 +295,9 @@ describe('COBOL full system extraction', () => {
     });
 
     it('produces exactly 21 CONTAINS edges with reason cobol-paragraph', () => {
-      const edges = getRelationships(result, 'CONTAINS').filter(e => e.rel.reason === 'cobol-paragraph');
+      const edges = getRelationships(result, 'CONTAINS').filter(
+        (e) => e.rel.reason === 'cobol-paragraph',
+      );
       expect(edges.length).toBe(21);
       expect(edgeSet(edges)).toEqual([
         'AUDITLOG \u2192 MAIN-PARAGRAPH',
@@ -254,7 +325,9 @@ describe('COBOL full system extraction', () => {
     });
 
     it('produces exactly 36 CONTAINS edges with reason cobol-data-item', () => {
-      const edges = getRelationships(result, 'CONTAINS').filter(e => e.rel.reason === 'cobol-data-item');
+      const edges = getRelationships(result, 'CONTAINS').filter(
+        (e) => e.rel.reason === 'cobol-data-item',
+      );
       expect(edges.length).toBe(36);
       expect(edgeSet(edges)).toEqual([
         'AUDITLOG \u2192 LS-AMOUNT',
@@ -297,7 +370,9 @@ describe('COBOL full system extraction', () => {
     });
 
     it('produces exactly 8 CONTAINS edges with reason cobol-exec-cics', () => {
-      const edges = getRelationships(result, 'CONTAINS').filter(e => e.rel.reason === 'cobol-exec-cics');
+      const edges = getRelationships(result, 'CONTAINS').filter(
+        (e) => e.rel.reason === 'cobol-exec-cics',
+      );
       expect(edges.length).toBe(8);
       expect(edgeSet(edges)).toEqual([
         'RPTGEN \u2192 EXEC CICS HANDLE ABEND',
@@ -312,38 +387,59 @@ describe('COBOL full system extraction', () => {
     });
 
     it('produces exactly 1 CONTAINS edge with reason cobol-exec-sql', () => {
-      expect(edgeSet(getRelationships(result, 'CONTAINS').filter(e => e.rel.reason === 'cobol-exec-sql')))
-        .toEqual(['RPTGEN \u2192 EXEC SQL SELECT']);
+      expect(
+        edgeSet(
+          getRelationships(result, 'CONTAINS').filter((e) => e.rel.reason === 'cobol-exec-sql'),
+        ),
+      ).toEqual(['RPTGEN \u2192 EXEC SQL SELECT']);
     });
 
     it('produces exactly 1 CONTAINS edge with reason cics-dynamic-program', () => {
-      expect(edgeSet(getRelationships(result, 'CONTAINS').filter(e => e.rel.reason === 'cics-dynamic-program')))
-        .toEqual(['RPTGEN \u2192 CICS XCTL WS-NEXT-PGM']);
+      expect(
+        edgeSet(
+          getRelationships(result, 'CONTAINS').filter(
+            (e) => e.rel.reason === 'cics-dynamic-program',
+          ),
+        ),
+      ).toEqual(['RPTGEN \u2192 CICS XCTL WS-NEXT-PGM']);
     });
 
     it('produces exactly 1 CONTAINS edge with reason cobol-dynamic-call', () => {
-      expect(edgeSet(getRelationships(result, 'CONTAINS').filter(e => e.rel.reason === 'cobol-dynamic-call')))
-        .toEqual(['CUSTUPDT \u2192 CALL WS-PROG-NAME']);
+      expect(
+        edgeSet(
+          getRelationships(result, 'CONTAINS').filter((e) => e.rel.reason === 'cobol-dynamic-call'),
+        ),
+      ).toEqual(['CUSTUPDT \u2192 CALL WS-PROG-NAME']);
     });
 
     it('produces exactly 2 CONTAINS edges with reason cobol-entry-point', () => {
-      expect(edgeSet(getRelationships(result, 'CONTAINS').filter(e => e.rel.reason === 'cobol-entry-point')))
-        .toEqual(['AUDITLOG \u2192 AUDITLOG-BATCH', 'CUSTUPDT \u2192 ALTENTRY']);
+      expect(
+        edgeSet(
+          getRelationships(result, 'CONTAINS').filter((e) => e.rel.reason === 'cobol-entry-point'),
+        ),
+      ).toEqual(['AUDITLOG \u2192 AUDITLOG-BATCH', 'CUSTUPDT \u2192 ALTENTRY']);
     });
 
     it('produces exactly 1 CONTAINS edge with reason cobol-file-declaration', () => {
-      expect(edgeSet(getRelationships(result, 'CONTAINS').filter(e => e.rel.reason === 'cobol-file-declaration')))
-        .toEqual(['CUSTUPDT \u2192 CUSTOMER-FILE']);
+      expect(
+        edgeSet(
+          getRelationships(result, 'CONTAINS').filter(
+            (e) => e.rel.reason === 'cobol-file-declaration',
+          ),
+        ),
+      ).toEqual(['CUSTUPDT \u2192 CUSTOMER-FILE']);
     });
 
     it('produces exactly 1 CONTAINS edge with reason jcl-job', () => {
-      expect(edgeSet(getRelationships(result, 'CONTAINS').filter(e => e.rel.reason === 'jcl-job')))
-        .toEqual(['RUNJOBS.jcl \u2192 CUSTJOB']);
+      expect(
+        edgeSet(getRelationships(result, 'CONTAINS').filter((e) => e.rel.reason === 'jcl-job')),
+      ).toEqual(['RUNJOBS.jcl \u2192 CUSTJOB']);
     });
 
     it('produces exactly 2 CONTAINS edges with reason jcl-step', () => {
-      expect(edgeSet(getRelationships(result, 'CONTAINS').filter(e => e.rel.reason === 'jcl-step')))
-        .toEqual(['CUSTJOB \u2192 STEP1', 'CUSTJOB \u2192 STEP2']);
+      expect(
+        edgeSet(getRelationships(result, 'CONTAINS').filter((e) => e.rel.reason === 'jcl-step')),
+      ).toEqual(['CUSTJOB \u2192 STEP1', 'CUSTJOB \u2192 STEP2']);
     });
   });
 
@@ -352,9 +448,10 @@ describe('COBOL full system extraction', () => {
   // =====================================================================
 
   describe('ACCESSES edge completeness', () => {
-
     it('produces exactly 4 ACCESSES edges with reason cobol-move-read', () => {
-      const edges = getRelationships(result, 'ACCESSES').filter(e => e.rel.reason === 'cobol-move-read');
+      const edges = getRelationships(result, 'ACCESSES').filter(
+        (e) => e.rel.reason === 'cobol-move-read',
+      );
       expect(edges.length).toBe(4);
       expect(edgeSet(edges)).toEqual([
         'FORMAT-REPORT \u2192 WS-CUST-CODE',
@@ -365,7 +462,9 @@ describe('COBOL full system extraction', () => {
     });
 
     it('produces exactly 5 ACCESSES edges with reason cobol-move-write', () => {
-      const edges = getRelationships(result, 'ACCESSES').filter(e => e.rel.reason === 'cobol-move-write');
+      const edges = getRelationships(result, 'ACCESSES').filter(
+        (e) => e.rel.reason === 'cobol-move-write',
+      );
       expect(edges.length).toBe(5);
       expect(edgeSet(edges)).toEqual([
         'FORMAT-REPORT \u2192 WS-REPORT-LINE',
@@ -377,25 +476,37 @@ describe('COBOL full system extraction', () => {
     });
 
     it('produces exactly 1 ACCESSES edge with reason cics-file-read', () => {
-      expect(getRelationships(result, 'ACCESSES').filter(e => e.rel.reason === 'cics-file-read').length).toBe(1);
+      expect(
+        getRelationships(result, 'ACCESSES').filter((e) => e.rel.reason === 'cics-file-read')
+          .length,
+      ).toBe(1);
     });
 
     it('produces exactly 1 ACCESSES edge with reason cics-map', () => {
-      expect(getRelationships(result, 'ACCESSES').filter(e => e.rel.reason === 'cics-map').length).toBe(1);
+      expect(
+        getRelationships(result, 'ACCESSES').filter((e) => e.rel.reason === 'cics-map').length,
+      ).toBe(1);
     });
 
     it('produces exactly 1 ACCESSES edge with reason cics-queue-write', () => {
-      expect(getRelationships(result, 'ACCESSES').filter(e => e.rel.reason === 'cics-queue-write').length).toBe(1);
+      expect(
+        getRelationships(result, 'ACCESSES').filter((e) => e.rel.reason === 'cics-queue-write')
+          .length,
+      ).toBe(1);
     });
 
     it('produces exactly 1 ACCESSES edge with reason cics-receive-into', () => {
-      const edges = getRelationships(result, 'ACCESSES').filter(e => e.rel.reason === 'cics-receive-into');
+      const edges = getRelationships(result, 'ACCESSES').filter(
+        (e) => e.rel.reason === 'cics-receive-into',
+      );
       expect(edges.length).toBe(1);
       expect(edges[0].target).toBe('WS-CUSTOMER-DATA');
     });
 
     it('produces exactly 2 ACCESSES edges with reason cics-send-from', () => {
-      const edges = getRelationships(result, 'ACCESSES').filter(e => e.rel.reason === 'cics-send-from');
+      const edges = getRelationships(result, 'ACCESSES').filter(
+        (e) => e.rel.reason === 'cics-send-from',
+      );
       expect(edges.length).toBe(2);
       expect(edgeSet(edges)).toEqual([
         'EXEC CICS SEND MAP \u2192 WS-REPORT-LINE',
@@ -404,30 +515,37 @@ describe('COBOL full system extraction', () => {
     });
 
     it('produces exactly 1 ACCESSES edge with reason cobol-search', () => {
-      const edges = getRelationships(result, 'ACCESSES').filter(e => e.rel.reason === 'cobol-search');
+      const edges = getRelationships(result, 'ACCESSES').filter(
+        (e) => e.rel.reason === 'cobol-search',
+      );
       expect(edges.length).toBe(1);
       expect(edgeSet(edges)).toEqual(['RPTGEN \u2192 WS-CUSTOMER-DATA']);
     });
 
     it('produces exactly 1 ACCESSES edge with reason sort-using', () => {
-      expect(getRelationships(result, 'ACCESSES').filter(e => e.rel.reason === 'sort-using').length).toBe(1);
+      expect(
+        getRelationships(result, 'ACCESSES').filter((e) => e.rel.reason === 'sort-using').length,
+      ).toBe(1);
     });
 
     it('produces exactly 1 ACCESSES edge with reason sort-giving (multi-line SORT)', () => {
-      expect(getRelationships(result, 'ACCESSES').filter(e => e.rel.reason === 'sort-giving').length).toBe(1);
+      expect(
+        getRelationships(result, 'ACCESSES').filter((e) => e.rel.reason === 'sort-giving').length,
+      ).toBe(1);
     });
 
     it('produces exactly 2 ACCESSES edges with reason cobol-procedure-using', () => {
-      const edges = getRelationships(result, 'ACCESSES').filter(e => e.rel.reason === 'cobol-procedure-using');
+      const edges = getRelationships(result, 'ACCESSES').filter(
+        (e) => e.rel.reason === 'cobol-procedure-using',
+      );
       expect(edges.length).toBe(2);
-      expect(edgeSet(edges)).toEqual([
-        'AUDITLOG \u2192 LS-AMOUNT',
-        'AUDITLOG \u2192 LS-CUST-ID',
-      ]);
+      expect(edgeSet(edges)).toEqual(['AUDITLOG \u2192 LS-AMOUNT', 'AUDITLOG \u2192 LS-CUST-ID']);
     });
 
     it('produces exactly 1 ACCESSES edge with reason sql-select', () => {
-      expect(getRelationships(result, 'ACCESSES').filter(e => e.rel.reason === 'sql-select').length).toBe(1);
+      expect(
+        getRelationships(result, 'ACCESSES').filter((e) => e.rel.reason === 'sql-select').length,
+      ).toBe(1);
     });
   });
 
@@ -436,9 +554,10 @@ describe('COBOL full system extraction', () => {
   // =====================================================================
 
   describe('IMPORTS edge completeness', () => {
-
     it('produces exactly 2 IMPORTS edges with reason cobol-copy', () => {
-      const edges = getRelationships(result, 'IMPORTS').filter(e => e.rel.reason === 'cobol-copy');
+      const edges = getRelationships(result, 'IMPORTS').filter(
+        (e) => e.rel.reason === 'cobol-copy',
+      );
       expect(edges.length).toBe(2);
     });
   });
@@ -448,25 +567,23 @@ describe('COBOL full system extraction', () => {
   // =====================================================================
 
   describe('multi-PERFORM on same line (Finding #III)', () => {
-
     it('captures both PERFORMs in IF/ELSE on a single logical line', () => {
       // IF WS-COUNT > 0 PERFORM FETCH-DATA ELSE PERFORM SEND-SCREEN
       const edges = getRelationships(result, 'CALLS').filter(
-        e => e.rel.reason === 'cobol-perform' && e.source === 'FORMAT-REPORT',
+        (e) => e.rel.reason === 'cobol-perform' && e.source === 'FORMAT-REPORT',
       );
-      const targets = edges.map(e => e.target).sort();
+      const targets = edges.map((e) => e.target).sort();
       expect(targets).toContain('FETCH-DATA');
       expect(targets).toContain('SEND-SCREEN');
     });
   });
 
   describe('INPUT/OUTPUT PROCEDURE IS in SORT (Finding #iii)', () => {
-
     it('creates CALLS edges for INPUT PROCEDURE and OUTPUT PROCEDURE targets', () => {
       const edges = getRelationships(result, 'CALLS').filter(
-        e => e.rel.reason === 'cobol-perform' && e.source === 'FORMAT-REPORT',
+        (e) => e.rel.reason === 'cobol-perform' && e.source === 'FORMAT-REPORT',
       );
-      const targets = edges.map(e => e.target).sort();
+      const targets = edges.map((e) => e.target).sort();
       expect(targets).toContain('BUILD-SORT-INPUT');
       expect(targets).toContain('WRITE-SORTED');
     });
@@ -479,11 +596,10 @@ describe('COBOL full system extraction', () => {
   });
 
   describe('GO TO DEPENDING ON multi-target (Finding #iv)', () => {
-
     it('captures all three targets from GO TO ... DEPENDING ON', () => {
       // GO TO FETCH-DATA FORMAT-REPORT SEND-SCREEN DEPENDING ON WS-COUNT
       const edges = getRelationships(result, 'CALLS').filter(
-        e => e.rel.reason === 'cobol-goto' && e.source === 'FORMAT-REPORT',
+        (e) => e.rel.reason === 'cobol-goto' && e.source === 'FORMAT-REPORT',
       );
       expect(edges.length).toBe(3);
       expect(edgeSet(edges)).toEqual([
@@ -495,16 +611,15 @@ describe('COBOL full system extraction', () => {
   });
 
   describe('MOVE CORR abbreviation (Finding #IV)', () => {
-
     it('produces ACCESSES edges for MOVE CORR with corresponding reason', () => {
       const readEdges = getRelationships(result, 'ACCESSES').filter(
-        e => e.rel.reason === 'cobol-move-corresponding-read',
+        (e) => e.rel.reason === 'cobol-move-corresponding-read',
       );
       expect(readEdges.length).toBe(1);
       expect(edgeSet(readEdges)).toEqual(['FORMAT-REPORT \u2192 WS-CUSTOMER-DATA']);
 
       const writeEdges = getRelationships(result, 'ACCESSES').filter(
-        e => e.rel.reason === 'cobol-move-corresponding-write',
+        (e) => e.rel.reason === 'cobol-move-corresponding-write',
       );
       expect(writeEdges.length).toBe(1);
       expect(edgeSet(writeEdges)).toEqual(['FORMAT-REPORT \u2192 WS-REPORT-LINE']);
@@ -512,10 +627,9 @@ describe('COBOL full system extraction', () => {
   });
 
   describe('nested program CONTAINS attribution (Finding #I, #II)', () => {
-
     it('attributes INNER-PROG paragraphs to INNER-PROG, not OUTER-PROG', () => {
       const edges = getRelationships(result, 'CONTAINS').filter(
-        e => e.rel.reason === 'cobol-paragraph' && e.target === 'INNER-MAIN',
+        (e) => e.rel.reason === 'cobol-paragraph' && e.target === 'INNER-MAIN',
       );
       expect(edges.length).toBe(1);
       expect(edges[0].source).toBe('INNER-PROG');
@@ -523,7 +637,7 @@ describe('COBOL full system extraction', () => {
 
     it('attributes INNER-PROG data items to INNER-PROG, not OUTER-PROG', () => {
       const edges = getRelationships(result, 'CONTAINS').filter(
-        e => e.rel.reason === 'cobol-data-item' && e.target === 'WS-INNER-CODE',
+        (e) => e.rel.reason === 'cobol-data-item' && e.target === 'WS-INNER-CODE',
       );
       expect(edges.length).toBe(1);
       expect(edges[0].source).toBe('INNER-PROG');
@@ -531,7 +645,7 @@ describe('COBOL full system extraction', () => {
 
     it('attributes OUTER-PROG data items to OUTER-PROG', () => {
       const edges = getRelationships(result, 'CONTAINS').filter(
-        e => e.rel.reason === 'cobol-data-item' && e.target === 'WS-OUTER-FLAG',
+        (e) => e.rel.reason === 'cobol-data-item' && e.target === 'WS-OUTER-FLAG',
       );
       expect(edges.length).toBe(1);
       expect(edges[0].source).toBe('OUTER-PROG');
@@ -539,10 +653,9 @@ describe('COBOL full system extraction', () => {
   });
 
   describe('per-program PROCEDURE DIVISION USING (Finding #III partial)', () => {
-
     it('creates ACCESSES edges from AUDITLOG, not from wrong program', () => {
       const edges = getRelationships(result, 'ACCESSES').filter(
-        e => e.rel.reason === 'cobol-procedure-using',
+        (e) => e.rel.reason === 'cobol-procedure-using',
       );
       expect(edges.length).toBe(2);
       // Both edges should source from AUDITLOG (the program that declares USING)
@@ -553,20 +666,18 @@ describe('COBOL full system extraction', () => {
   });
 
   describe('PERFORM THRU edge correctness', () => {
-
     it('captures FORMAT-REPORT PERFORM THRU from MAIN-PARAGRAPH', () => {
       const edges = getRelationships(result, 'CALLS').filter(
-        e => e.rel.reason === 'cobol-perform-thru',
+        (e) => e.rel.reason === 'cobol-perform-thru',
       );
       expect(edgeSet(edges)).toContain('FORMAT-REPORT \u2192 FORMAT-REPORT');
     });
   });
 
   describe('nested program CALLS attribution', () => {
-
     it('attributes INNER-PROG PERFORM edges to INNER-PROG paragraphs', () => {
       const edges = getRelationships(result, 'CALLS').filter(
-        e => e.rel.reason === 'cobol-perform' && e.source === 'INNER-MAIN',
+        (e) => e.rel.reason === 'cobol-perform' && e.source === 'INNER-MAIN',
       );
       expect(edges.length).toBe(1);
       expect(edges[0].target).toBe('INNER-PROCESS');
@@ -578,7 +689,6 @@ describe('COBOL full system extraction', () => {
   // =====================================================================
 
   describe('grand totals', () => {
-
     it('produces exactly 31 total CALLS edges', () => {
       // 15 perform + 2 perform-thru + 3 call + 4 goto + 1 link + 1 xctl
       // + 1 handle-abend + 1 return-transid + 2 jcl-exec-pgm + 1 jcl-dd

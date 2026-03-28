@@ -12,7 +12,16 @@ import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
 
-const DIST_WORKER = path.resolve(__dirname, '..', '..', 'dist', 'core', 'ingestion', 'workers', 'parse-worker.js');
+const DIST_WORKER = path.resolve(
+  __dirname,
+  '..',
+  '..',
+  'dist',
+  'core',
+  'ingestion',
+  'workers',
+  'parse-worker.js',
+);
 const hasDistWorker = fs.existsSync(DIST_WORKER);
 
 describe('worker pool integration', () => {
@@ -42,12 +51,17 @@ describe('worker pool integration', () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;
     pool = createWorkerPool(workerUrl, 1);
 
-    const fixtureFile = path.resolve(__dirname, '..', 'fixtures', 'mini-repo', 'src', 'validator.ts');
+    const fixtureFile = path.resolve(
+      __dirname,
+      '..',
+      'fixtures',
+      'mini-repo',
+      'src',
+      'validator.ts',
+    );
     const content = fs.readFileSync(fixtureFile, 'utf-8');
 
-    const results = await pool.dispatch<any, any>([
-      { path: 'src/validator.ts', content },
-    ]);
+    const results = await pool.dispatch<any, any>([{ path: 'src/validator.ts', content }]);
 
     // Worker returns an array of results (one per worker chunk)
     expect(results).toHaveLength(1);
@@ -65,9 +79,10 @@ describe('worker pool integration', () => {
     pool = createWorkerPool(workerUrl, 2);
 
     const fixturesDir = path.resolve(__dirname, '..', 'fixtures', 'mini-repo', 'src');
-    const files = fs.readdirSync(fixturesDir)
-      .filter(f => f.endsWith('.ts'))
-      .map(f => ({
+    const files = fs
+      .readdirSync(fixturesDir)
+      .filter((f) => f.endsWith('.ts'))
+      .map((f) => ({
         path: `src/${f}`,
         content: fs.readFileSync(path.join(fixturesDir, f), 'utf-8'),
       }));
@@ -96,9 +111,10 @@ describe('worker pool integration', () => {
     pool = createWorkerPool(workerUrl, 1);
 
     const fixturesDir = path.resolve(__dirname, '..', 'fixtures', 'mini-repo', 'src');
-    const files = fs.readdirSync(fixturesDir)
-      .filter(f => f.endsWith('.ts'))
-      .map(f => ({
+    const files = fs
+      .readdirSync(fixturesDir)
+      .filter((f) => f.endsWith('.ts'))
+      .map((f) => ({
         path: `src/${f}`,
         content: fs.readFileSync(path.join(fixturesDir, f), 'utf-8'),
       }));
@@ -140,8 +156,9 @@ describe('worker pool integration', () => {
     await terminatedPool.terminate();
     pool = undefined; // already terminated — prevent afterEach double-terminate
 
-    await expect(terminatedPool.dispatch([{ path: 'x.ts', content: 'const x = 1;' }]))
-      .rejects.toThrow();
+    await expect(
+      terminatedPool.dispatch([{ path: 'x.ts', content: 'const x = 1;' }]),
+    ).rejects.toThrow();
   });
 
   it.skipIf(!hasDistWorker)('double terminate does not throw', async () => {
@@ -152,20 +169,21 @@ describe('worker pool integration', () => {
     pool = undefined;
   });
 
-  it.skipIf(!hasDistWorker)('dispatches entries with empty content string without crashing', async () => {
-    const workerUrl = pathToFileURL(DIST_WORKER) as URL;
-    pool = createWorkerPool(workerUrl, 1);
+  it.skipIf(!hasDistWorker)(
+    'dispatches entries with empty content string without crashing',
+    async () => {
+      const workerUrl = pathToFileURL(DIST_WORKER) as URL;
+      pool = createWorkerPool(workerUrl, 1);
 
-    const results = await pool.dispatch<any, any>([
-      { path: 'empty.ts', content: '' },
-    ]);
+      const results = await pool.dispatch<any, any>([{ path: 'empty.ts', content: '' }]);
 
-    expect(results).toHaveLength(1);
-    const result = results[0];
-    expect(typeof result.fileCount).toBe('number');
-    expect(result.fileCount).toBeGreaterThanOrEqual(0);
-    expect(Array.isArray(result.nodes)).toBe(true);
-  });
+      expect(results).toHaveLength(1);
+      const result = results[0];
+      expect(typeof result.fileCount).toBe('number');
+      expect(result.fileCount).toBeGreaterThanOrEqual(0);
+      expect(Array.isArray(result.nodes)).toBe(true);
+    },
+  );
 
   it.skipIf(!hasDistWorker)('createWorkerPool with size 0 creates pool with zero workers', () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;

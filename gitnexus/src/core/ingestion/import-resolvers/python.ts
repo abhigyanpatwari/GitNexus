@@ -55,7 +55,8 @@ export function resolvePythonImportInternal(
   const importerDir = currentFile.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
   if (!importerDir) return null;
 
-  if (allFiles.has(`${importerDir}/${pathLike}/__init__.py`)) return `${importerDir}/${pathLike}/__init__.py`;
+  if (allFiles.has(`${importerDir}/${pathLike}/__init__.py`))
+    return `${importerDir}/${pathLike}/__init__.py`;
   if (allFiles.has(`${importerDir}/${pathLike}.py`)) return `${importerDir}/${pathLike}.py`;
 
   // Ancestor directory walk — Python resolves bare imports against sys.path entries,

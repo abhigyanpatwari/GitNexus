@@ -29,7 +29,14 @@ export interface SymbolTable {
     name: string,
     nodeId: string,
     type: NodeLabel,
-    metadata?: { parameterCount?: number; requiredParameterCount?: number; parameterTypes?: string[]; returnType?: string; declaredType?: string; ownerId?: string }
+    metadata?: {
+      parameterCount?: number;
+      requiredParameterCount?: number;
+      parameterTypes?: string[];
+      returnType?: string;
+      declaredType?: string;
+      ownerId?: string;
+    },
   ) => void;
 
   /**
@@ -37,7 +44,7 @@ export interface SymbolTable {
    * Returns the Node ID if found
    */
   lookupExact: (filePath: string, name: string) => string | undefined;
-  
+
   /**
    * High Confidence: Look for a symbol in a specific file, returning full definition.
    * Includes type information needed for heritage resolution (Class vs Interface).
@@ -76,7 +83,7 @@ export interface SymbolTable {
    * Debugging: See how many symbols are tracked
    */
   getStats: () => { fileCount: number; globalSymbolCount: number };
-  
+
   /**
    * Cleanup memory
    */
@@ -109,15 +116,28 @@ export const createSymbolTable = (): SymbolTable => {
     name: string,
     nodeId: string,
     type: NodeLabel,
-    metadata?: { parameterCount?: number; requiredParameterCount?: number; parameterTypes?: string[]; returnType?: string; declaredType?: string; ownerId?: string }
+    metadata?: {
+      parameterCount?: number;
+      requiredParameterCount?: number;
+      parameterTypes?: string[];
+      returnType?: string;
+      declaredType?: string;
+      ownerId?: string;
+    },
   ) => {
     const def: SymbolDefinition = {
       nodeId,
       filePath,
       type,
-      ...(metadata?.parameterCount !== undefined ? { parameterCount: metadata.parameterCount } : {}),
-      ...(metadata?.requiredParameterCount !== undefined ? { requiredParameterCount: metadata.requiredParameterCount } : {}),
-      ...(metadata?.parameterTypes !== undefined ? { parameterTypes: metadata.parameterTypes } : {}),
+      ...(metadata?.parameterCount !== undefined
+        ? { parameterCount: metadata.parameterCount }
+        : {}),
+      ...(metadata?.requiredParameterCount !== undefined
+        ? { requiredParameterCount: metadata.requiredParameterCount }
+        : {}),
+      ...(metadata?.parameterTypes !== undefined
+        ? { parameterTypes: metadata.parameterTypes }
+        : {}),
       ...(metadata?.returnType !== undefined ? { returnType: metadata.returnType } : {}),
       ...(metadata?.declaredType !== undefined ? { declaredType: metadata.declaredType } : {}),
       ...(metadata?.ownerId !== undefined ? { ownerId: metadata.ownerId } : {}),
@@ -179,20 +199,23 @@ export const createSymbolTable = (): SymbolTable => {
       // Build the callable index lazily on first use
       callableIndex = new Map();
       for (const [symName, defs] of globalIndex) {
-        const callables = defs.filter(d => CALLABLE_TYPES.has(d.type));
+        const callables = defs.filter((d) => CALLABLE_TYPES.has(d.type));
         if (callables.length > 0) callableIndex.set(symName, callables);
       }
     }
     return callableIndex.get(name) ?? [];
   };
 
-  const lookupFieldByOwner = (ownerNodeId: string, fieldName: string): SymbolDefinition | undefined => {
+  const lookupFieldByOwner = (
+    ownerNodeId: string,
+    fieldName: string,
+  ): SymbolDefinition | undefined => {
     return fieldByOwner.get(`${ownerNodeId}\0${fieldName}`);
   };
 
   const getStats = () => ({
     fileCount: fileIndex.size,
-    globalSymbolCount: globalIndex.size
+    globalSymbolCount: globalIndex.size,
   });
 
   const clear = () => {
@@ -202,5 +225,15 @@ export const createSymbolTable = (): SymbolTable => {
     fieldByOwner.clear();
   };
 
-  return { add, lookupExact, lookupExactFull, lookupExactAll, lookupFuzzy, lookupFuzzyCallable, lookupFieldByOwner, getStats, clear };
+  return {
+    add,
+    lookupExact,
+    lookupExactFull,
+    lookupExactAll,
+    lookupFuzzy,
+    lookupFuzzyCallable,
+    lookupFieldByOwner,
+    getStats,
+    clear,
+  };
 };

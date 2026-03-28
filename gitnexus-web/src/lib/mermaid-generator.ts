@@ -1,6 +1,6 @@
 /**
  * Mermaid Diagram Generator for Processes
- * 
+ *
  * Generates Mermaid flowchart syntax from Process step data.
  * Designed to show branching/merging when CALLS edges exist between steps.
  */
@@ -24,9 +24,9 @@ export interface ProcessData {
   label: string;
   processType: 'intra_community' | 'cross_community';
   steps: ProcessStep[];
-  edges?: ProcessEdge[];  // CALLS edges between steps for branching
+  edges?: ProcessEdge[]; // CALLS edges between steps for branching
   clusters?: string[];
-  rawMermaid?: string;    // AI-generated mermaid code (sanitized before rendering)
+  rawMermaid?: string; // AI-generated mermaid code (sanitized before rendering)
 }
 
 /**
@@ -34,7 +34,7 @@ export interface ProcessData {
  */
 export function generateProcessMermaid(process: ProcessData): string {
   const { steps, edges, clusters } = process;
-  
+
   if (!steps || steps.length === 0) {
     return 'graph TD\n  A[No steps found]';
   }
@@ -43,16 +43,26 @@ export function generateProcessMermaid(process: ProcessData): string {
 
   // Add class definitions for styling (rounded corners + colors)
   lines.push('  %% Styles');
-  lines.push('  classDef default fill:#1e293b,stroke:#94a3b8,stroke-width:3px,color:#f8fafc,rx:10,ry:10,font-size:24px;');
-  lines.push('  classDef entry fill:#1e293b,stroke:#34d399,stroke-width:5px,color:#f8fafc,rx:10,ry:10,font-size:24px;');
-  lines.push('  classDef step fill:#1e293b,stroke:#22d3ee,stroke-width:3px,color:#f8fafc,rx:10,ry:10,font-size:24px;');
-  lines.push('  classDef terminal fill:#1e293b,stroke:#f472b6,stroke-width:5px,color:#f8fafc,rx:10,ry:10,font-size:24px;');
-  lines.push('  classDef cluster fill:#0f172a,stroke:#334155,stroke-width:3px,color:#94a3b8,rx:4,ry:4,font-size:20px;');
+  lines.push(
+    '  classDef default fill:#1e293b,stroke:#94a3b8,stroke-width:3px,color:#f8fafc,rx:10,ry:10,font-size:24px;',
+  );
+  lines.push(
+    '  classDef entry fill:#1e293b,stroke:#34d399,stroke-width:5px,color:#f8fafc,rx:10,ry:10,font-size:24px;',
+  );
+  lines.push(
+    '  classDef step fill:#1e293b,stroke:#22d3ee,stroke-width:3px,color:#f8fafc,rx:10,ry:10,font-size:24px;',
+  );
+  lines.push(
+    '  classDef terminal fill:#1e293b,stroke:#f472b6,stroke-width:5px,color:#f8fafc,rx:10,ry:10,font-size:24px;',
+  );
+  lines.push(
+    '  classDef cluster fill:#0f172a,stroke:#334155,stroke-width:3px,color:#94a3b8,rx:4,ry:4,font-size:20px;',
+  );
 
   // Track clusters for subgraph grouping
   const clusterGroups = new Map<string, ProcessStep[]>();
   const noCluster: ProcessStep[] = [];
-  
+
   for (const step of steps) {
     if (step.cluster) {
       const group = clusterGroups.get(step.cluster) || [];
@@ -88,10 +98,12 @@ export function generateProcessMermaid(process: ProcessData): string {
   if (useClusters) {
     // Generate subgraphs for each cluster
     let clusterIndex = 0;
-    
+
     for (const [clusterName, clusterSteps] of clusterGroups) {
-      lines.push(`  subgraph ${sanitizeLabel(clusterName)}["${sanitizeLabel(clusterName)}"]:::cluster`);
-      
+      lines.push(
+        `  subgraph ${sanitizeLabel(clusterName)}["${sanitizeLabel(clusterName)}"]:::cluster`,
+      );
+
       for (const step of clusterSteps) {
         const id = nodeId(step);
         const label = `${step.stepNumber}. ${sanitizeLabel(step.name)}`;
@@ -102,7 +114,7 @@ export function generateProcessMermaid(process: ProcessData): string {
       lines.push('  end');
       clusterIndex++;
     }
-    
+
     // Add unclustered steps
     for (const step of noCluster) {
       const id = nodeId(step);
@@ -125,7 +137,7 @@ export function generateProcessMermaid(process: ProcessData): string {
   // Generate edges
   if (edges && edges.length > 0) {
     // Use actual CALLS edges for branching
-    const stepById = new Map(steps.map(s => [s.id, s]));
+    const stepById = new Map(steps.map((s) => [s.id, s]));
     for (const edge of edges) {
       const fromStep = stepById.get(edge.from);
       const toStep = stepById.get(edge.to);
@@ -150,8 +162,8 @@ export function generateProcessMermaid(process: ProcessData): string {
  * Simple linear mermaid for quick preview
  */
 export function generateSimpleMermaid(processLabel: string, stepCount: number): string {
-  const [entry, terminal] = processLabel.split(' → ').map(s => s.trim());
-  
+  const [entry, terminal] = processLabel.split(' → ').map((s) => s.trim());
+
   return `graph LR
   classDef entry fill:#059669,stroke:#34d399,stroke-width:2px,color:#ffffff,rx:10,ry:10;
   classDef terminal fill:#be185d,stroke:#f472b6,stroke-width:2px,color:#ffffff,rx:10,ry:10;

@@ -21,10 +21,33 @@ import { createFieldExtractor } from '../field-extractors/generic.js';
 import { pythonConfig as pythonFieldConfig } from '../field-extractors/configs/python.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
-  'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple',
-  'append', 'extend', 'update',
-  'type', 'isinstance', 'issubclass', 'getattr', 'setattr', 'hasattr',
-  'enumerate', 'zip', 'sorted', 'reversed', 'min', 'max', 'sum', 'abs',
+  'print',
+  'len',
+  'range',
+  'str',
+  'int',
+  'float',
+  'list',
+  'dict',
+  'set',
+  'tuple',
+  'append',
+  'extend',
+  'update',
+  'type',
+  'isinstance',
+  'issubclass',
+  'getattr',
+  'setattr',
+  'hasattr',
+  'enumerate',
+  'zip',
+  'sorted',
+  'reversed',
+  'min',
+  'max',
+  'sum',
+  'abs',
 ]);
 
 export const pythonProvider = defineLanguage({

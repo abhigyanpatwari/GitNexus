@@ -29,37 +29,36 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
   const [highlightedNodeIds, setHighlightedNodeIds] = useState<Set<string>>(new Set());
 
   const toggleLabelVisibility = useCallback((label: NodeLabel) => {
-    setVisibleLabels(prev =>
-      prev.includes(label) ? prev.filter(l => l !== label) : [...prev, label]
+    setVisibleLabels((prev) =>
+      prev.includes(label) ? prev.filter((l) => l !== label) : [...prev, label],
     );
   }, []);
 
   const toggleEdgeVisibility = useCallback((edgeType: EdgeType) => {
-    setVisibleEdgeTypes(prev =>
-      prev.includes(edgeType) ? prev.filter(e => e !== edgeType) : [...prev, edgeType]
+    setVisibleEdgeTypes((prev) =>
+      prev.includes(edgeType) ? prev.filter((e) => e !== edgeType) : [...prev, edgeType],
     );
   }, []);
 
-  const value = useMemo<GraphStateContextValue>(() => ({
-    graph,
-    setGraph,
-    selectedNode,
-    setSelectedNode,
-    visibleLabels,
-    toggleLabelVisibility,
-    visibleEdgeTypes,
-    toggleEdgeVisibility,
-    depthFilter,
-    setDepthFilter,
-    highlightedNodeIds,
-    setHighlightedNodeIds,
-  }), [graph, selectedNode, visibleLabels, visibleEdgeTypes, depthFilter, highlightedNodeIds]);
-
-  return (
-    <GraphStateContext.Provider value={value}>
-      {children}
-    </GraphStateContext.Provider>
+  const value = useMemo<GraphStateContextValue>(
+    () => ({
+      graph,
+      setGraph,
+      selectedNode,
+      setSelectedNode,
+      visibleLabels,
+      toggleLabelVisibility,
+      visibleEdgeTypes,
+      toggleEdgeVisibility,
+      depthFilter,
+      setDepthFilter,
+      highlightedNodeIds,
+      setHighlightedNodeIds,
+    }),
+    [graph, selectedNode, visibleLabels, visibleEdgeTypes, depthFilter, highlightedNodeIds],
   );
+
+  return <GraphStateContext.Provider value={value}>{children}</GraphStateContext.Provider>;
 };
 
 export const useGraphState = (): GraphStateContextValue => {

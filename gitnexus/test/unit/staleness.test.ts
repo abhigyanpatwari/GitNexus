@@ -18,10 +18,10 @@ describe('checkStaleness', () => {
     // Get the actual HEAD commit of this repo
     let headCommit: string;
     try {
-      headCommit = execFileSync(
-        'git', ['rev-parse', 'HEAD'],
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
-      ).trim();
+      headCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim();
     } catch {
       // If we can't get HEAD (e.g., not in a git repo), skip
       return;
@@ -37,10 +37,10 @@ describe('checkStaleness', () => {
     // Use HEAD~1 — works in shallow clones (GitHub Actions) unlike rev-list --max-parents=0
     let previousCommit: string;
     try {
-      previousCommit = execFileSync(
-        'git', ['rev-parse', 'HEAD~1'],
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
-      ).trim();
+      previousCommit = execFileSync('git', ['rev-parse', 'HEAD~1'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim();
     } catch {
       return; // Not in a git repo or only 1 commit
     }

@@ -6,7 +6,7 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
   const relationshipMap = new Map<string, GraphRelationship>();
 
   const addNode = (node: GraphNode) => {
-    if(!nodeMap.has(node.id)) {
+    if (!nodeMap.has(node.id)) {
       nodeMap.set(node.id, node);
     }
   };
@@ -22,9 +22,9 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
    */
   const removeNode = (nodeId: string): boolean => {
     if (!nodeMap.has(nodeId)) return false;
-    
+
     nodeMap.delete(nodeId);
-    
+
     // Remove all relationships involving this node
     for (const [relId, rel] of relationshipMap) {
       if (rel.sourceId === nodeId || rel.targetId === nodeId) {
@@ -56,19 +56,23 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
     return removed;
   };
 
-  return{
-    get nodes(){
-      return Array.from(nodeMap.values())
+  return {
+    get nodes() {
+      return Array.from(nodeMap.values());
     },
 
-    get relationships(){
-      return Array.from(relationshipMap.values())
+    get relationships() {
+      return Array.from(relationshipMap.values());
     },
 
     iterNodes: () => nodeMap.values(),
     iterRelationships: () => relationshipMap.values(),
-    forEachNode(fn: (node: GraphNode) => void) { nodeMap.forEach(fn); },
-    forEachRelationship(fn: (rel: GraphRelationship) => void) { relationshipMap.forEach(fn); },
+    forEachNode(fn: (node: GraphNode) => void) {
+      nodeMap.forEach(fn);
+    },
+    forEachRelationship(fn: (rel: GraphRelationship) => void) {
+      relationshipMap.forEach(fn);
+    },
     getNode: (id: string) => nodeMap.get(id),
 
     // O(1) count getters - avoid creating arrays just for length
@@ -85,6 +89,5 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
     removeNode,
     removeNodesByFile,
     removeRelationship,
-
   };
 };

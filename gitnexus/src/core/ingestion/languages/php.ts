@@ -19,22 +19,91 @@ import { createFieldExtractor } from '../field-extractors/generic.js';
 import { phpConfig as phpFieldConfig } from '../field-extractors/configs/php.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
-  'echo', 'isset', 'empty', 'unset', 'list', 'array', 'compact', 'extract',
-  'count', 'strlen', 'strpos', 'strrpos', 'substr', 'strtolower', 'strtoupper', 'trim',
-  'ltrim', 'rtrim', 'str_replace', 'str_contains', 'str_starts_with', 'str_ends_with',
-  'sprintf', 'vsprintf', 'printf', 'number_format',
-  'array_map', 'array_filter', 'array_reduce', 'array_push', 'array_pop', 'array_shift',
-  'array_unshift', 'array_slice', 'array_splice', 'array_merge', 'array_keys', 'array_values',
-  'array_key_exists', 'in_array', 'array_search', 'array_unique', 'usort', 'rsort',
-  'json_encode', 'json_decode', 'serialize', 'unserialize',
-  'intval', 'floatval', 'strval', 'boolval', 'is_null', 'is_string', 'is_int', 'is_array',
-  'is_object', 'is_numeric', 'is_bool', 'is_float',
-  'var_dump', 'print_r', 'var_export',
-  'date', 'time', 'strtotime', 'mktime', 'microtime',
-  'file_exists', 'file_get_contents', 'file_put_contents', 'is_file', 'is_dir',
-  'preg_match', 'preg_match_all', 'preg_replace', 'preg_split',
-  'header', 'session_start', 'session_destroy', 'ob_start', 'ob_end_clean', 'ob_get_clean',
-  'dd', 'dump',
+  'echo',
+  'isset',
+  'empty',
+  'unset',
+  'list',
+  'array',
+  'compact',
+  'extract',
+  'count',
+  'strlen',
+  'strpos',
+  'strrpos',
+  'substr',
+  'strtolower',
+  'strtoupper',
+  'trim',
+  'ltrim',
+  'rtrim',
+  'str_replace',
+  'str_contains',
+  'str_starts_with',
+  'str_ends_with',
+  'sprintf',
+  'vsprintf',
+  'printf',
+  'number_format',
+  'array_map',
+  'array_filter',
+  'array_reduce',
+  'array_push',
+  'array_pop',
+  'array_shift',
+  'array_unshift',
+  'array_slice',
+  'array_splice',
+  'array_merge',
+  'array_keys',
+  'array_values',
+  'array_key_exists',
+  'in_array',
+  'array_search',
+  'array_unique',
+  'usort',
+  'rsort',
+  'json_encode',
+  'json_decode',
+  'serialize',
+  'unserialize',
+  'intval',
+  'floatval',
+  'strval',
+  'boolval',
+  'is_null',
+  'is_string',
+  'is_int',
+  'is_array',
+  'is_object',
+  'is_numeric',
+  'is_bool',
+  'is_float',
+  'var_dump',
+  'print_r',
+  'var_export',
+  'date',
+  'time',
+  'strtotime',
+  'mktime',
+  'microtime',
+  'file_exists',
+  'file_get_contents',
+  'file_put_contents',
+  'is_file',
+  'is_dir',
+  'preg_match',
+  'preg_match_all',
+  'preg_replace',
+  'preg_split',
+  'header',
+  'session_start',
+  'session_destroy',
+  'ob_start',
+  'ob_end_clean',
+  'ob_get_clean',
+  'dd',
+  'dump',
 ]);
 
 /** Eloquent model properties whose array values are worth indexing. */
@@ -42,9 +111,17 @@ const ELOQUENT_ARRAY_PROPS = new Set(['fillable', 'casts', 'hidden', 'guarded', 
 
 /** Eloquent relationship method names. */
 const ELOQUENT_RELATIONS = new Set([
-  'hasMany', 'hasOne', 'belongsTo', 'belongsToMany',
-  'morphTo', 'morphMany', 'morphOne', 'morphToMany', 'morphedByMany',
-  'hasManyThrough', 'hasOneThrough',
+  'hasMany',
+  'hasOne',
+  'belongsTo',
+  'belongsToMany',
+  'morphTo',
+  'morphMany',
+  'morphOne',
+  'morphToMany',
+  'morphedByMany',
+  'hasManyThrough',
+  'hasOneThrough',
 ]);
 
 /**
@@ -58,7 +135,7 @@ function extractPhpPropertyDescription(propName: string, propDeclNode: any): str
   if (!arrayNode) return null;
 
   const items: string[] = [];
-  for (const child of (arrayNode.children ?? [])) {
+  for (const child of arrayNode.children ?? []) {
     if (child.type !== 'array_element_initializer') continue;
     const children = child.children ?? [];
     const arrowIdx = children.findIndex((c: any) => c.type === '=>');
@@ -83,11 +160,13 @@ function extractEloquentRelationDescription(methodNode: any): string | null {
   function findRelationCall(node: any): any {
     if (node.type === 'member_call_expression') {
       const children = node.children ?? [];
-      const objectNode = children.find((c: any) => c.type === 'variable_name' && c.text === '$this');
+      const objectNode = children.find(
+        (c: any) => c.type === 'variable_name' && c.text === '$this',
+      );
       const nameNode = children.find((c: any) => c.type === 'name');
       if (objectNode && nameNode && ELOQUENT_RELATIONS.has(nameNode.text)) return node;
     }
-    for (const child of (node.children ?? [])) {
+    for (const child of node.children ?? []) {
       const found = findRelationCall(child);
       if (found) return found;
     }
@@ -103,8 +182,8 @@ function extractEloquentRelationDescription(methodNode: any): string | null {
   if (argsNode) {
     const firstArg = argsNode.children?.find((c: any) => c.type === 'argument');
     if (firstArg) {
-      const classConstant = firstArg.children?.find((c: any) =>
-        c.type === 'class_constant_access_expression'
+      const classConstant = firstArg.children?.find(
+        (c: any) => c.type === 'class_constant_access_expression',
       );
       if (classConstant) {
         targetModel = classConstant.children?.find((c: any) => c.type === 'name')?.text ?? null;
@@ -137,8 +216,9 @@ function phpDescriptionExtractor(
 
 /** Detect Laravel route files by path convention. */
 function isPhpRouteFile(filePath: string): boolean {
-  return filePath.endsWith('.php') &&
-    (filePath.includes('/routes/') || filePath.startsWith('routes/'));
+  return (
+    filePath.endsWith('.php') && (filePath.includes('/routes/') || filePath.startsWith('routes/'))
+  );
 }
 
 export const phpProvider = defineLanguage({

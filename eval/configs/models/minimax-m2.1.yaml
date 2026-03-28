@@ -3,9 +3,9 @@
 # The action_regex tells mini-swe-agent to parse ```bash blocks from responses.
 model:
   model_class: litellm_textbased
-  model_name: "openrouter/minimax/minimax-m2.5"
+  model_name: 'openrouter/minimax/minimax-m2.5'
   action_regex: "```(?:bash|mswea_bash_command)\\s*\\n(.*?)\\n```"
-  cost_tracking: "ignore_errors"
+  cost_tracking: 'ignore_errors'
   model_kwargs:
     max_tokens: 8192
     temperature: 0

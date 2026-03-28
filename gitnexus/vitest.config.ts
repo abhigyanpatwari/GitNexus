@@ -21,9 +21,9 @@ export default defineConfig({
       provider: 'v8',
       include: ['src/**/*.ts'],
       exclude: [
-        'src/cli/index.ts',          // CLI entry point (commander wiring)
-        'src/server/**',              // HTTP server (requires network)
-        'src/core/wiki/**',           // Wiki generation (requires LLM)
+        'src/cli/index.ts', // CLI entry point (commander wiring)
+        'src/server/**', // HTTP server (requires network)
+        'src/core/wiki/**', // Wiki generation (requires LLM)
       ],
       // Auto-ratchet: vitest bumps thresholds when coverage exceeds them.
       // CI will fail if a PR drops below these floors.
@@ -93,4 +93,3 @@ export default defineConfig({
     ],
   },
 });
-

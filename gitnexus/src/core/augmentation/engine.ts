@@ -1,12 +1,12 @@
 /**
  * Augmentation Engine
- * 
+ *
  * Lightweight, fast-path enrichment of search patterns with knowledge graph context.
  * Designed to be called from platform hooks (Claude Code PreToolUse, Cursor beforeShellExecution)
  * when an agent runs grep/glob/search.
- * 
+ *
  * Performance target: <500ms cold start, <200ms warm.
- * 
+ *
  * Design decisions:
  * - Uses only BM25 search (no semantic/embedding) for speed
  * - Clusters used internally for ranking, NEVER in output
@@ -29,20 +29,20 @@ async function findRepoForCwd(cwd: string): Promise<{
   try {
     const entries = await listRegisteredRepos({ validate: true });
     const resolved = path.resolve(cwd);
-    
+
     // Normalize to lowercase on Windows (drive letters can differ: D: vs d:)
     const isWindows = process.platform === 'win32';
     const normalizedCwd = isWindows ? resolved.toLowerCase() : resolved;
     const sep = path.sep;
-    
+
     // Find the LONGEST matching repo path (most specific match wins)
-    let bestMatch: typeof entries[0] | null = null;
+    let bestMatch: (typeof entries)[0] | null = null;
     let bestLen = 0;
-    
+
     for (const entry of entries) {
       const repoResolved = path.resolve(entry.path);
       const normalizedRepo = isWindows ? repoResolved.toLowerCase() : repoResolved;
-      
+
       // Check if cwd is inside repo OR repo is inside cwd
       // Must match at a path separator boundary to avoid false positives
       // (e.g. /projects/gitnexusv2 should NOT match /projects/gitnexus)
@@ -54,15 +54,15 @@ async function findRepoForCwd(cwd: string): Promise<{
       } else if (normalizedRepo.startsWith(normalizedCwd + sep)) {
         matched = true;
       }
-      
+
       if (matched && normalizedRepo.length > bestLen) {
         bestMatch = entry;
         bestLen = normalizedRepo.length;
       }
     }
-    
+
     if (!bestMatch) return null;
-    
+
     return {
       name: bestMatch.name,
       storagePath: bestMatch.storagePath,
@@ -75,23 +75,23 @@ async function findRepoForCwd(cwd: string): Promise<{
 
 /**
  * Augment a search pattern with knowledge graph context.
- * 
+ *
  * 1. BM25 search for the pattern
  * 2. For top matches, fetch callers/callees/processes
  * 3. Rank by internal cluster cohesion (not exposed)
  * 4. Format as structured text block
- * 
+ *
  * Returns empty string on any error (graceful failure).
  */
 export async function augment(pattern: string, cwd?: string): Promise<string> {
   if (!pattern || pattern.length < 3) return '';
-  
+
   const workDir = cwd || process.cwd();
-  
+
   try {
     const repo = await findRepoForCwd(workDir);
     if (!repo) return '';
-    
+
     // Lazy-load lbug adapter (skip unnecessary init)
     const { initLbug, executeQuery, isLbugReady } = await import('../../mcp/core/lbug-adapter.js');
     const { searchFTSFromLbug } = await import('../search/bm25-index.js');
@@ -105,9 +105,9 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
 
     // Step 1: BM25 search (fast, no embeddings)
     const bm25Results = await searchFTSFromLbug(pattern, 10, repoId);
-    
+
     if (bm25Results.length === 0) return '';
-    
+
     // Step 2: Map BM25 file results to symbols
     const symbolMatches: Array<{
       nodeId: string;
@@ -116,16 +116,19 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
       filePath: string;
       score: number;
     }> = [];
-    
+
     for (const result of bm25Results.slice(0, 5)) {
       const escaped = result.filePath.replace(/'/g, "''");
       try {
-        const symbols = await executeQuery(repoId, `
+        const symbols = await executeQuery(
+          repoId,
+          `
           MATCH (n) WHERE n.filePath = '${escaped}'
           AND n.name CONTAINS '${pattern.replace(/'/g, "''").split(/\s+/)[0]}'
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
           LIMIT 3
-        `);
+        `,
+        );
         for (const sym of symbols) {
           symbolMatches.push({
             nodeId: sym.id || sym[0],
@@ -135,30 +138,35 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
             score: result.score,
           });
         }
-      } catch { /* skip */ }
+      } catch {
+        /* skip */
+      }
     }
-    
+
     if (symbolMatches.length === 0) return '';
-    
+
     // Step 3: Batch-fetch callers/callees/processes/cohesion for top matches
     // Uses batched WHERE n.id IN [...] queries instead of per-symbol queries
-    const uniqueSymbols = symbolMatches.slice(0, 5).filter((sym, i, arr) =>
-      arr.findIndex(s => s.nodeId === sym.nodeId) === i
-    );
+    const uniqueSymbols = symbolMatches
+      .slice(0, 5)
+      .filter((sym, i, arr) => arr.findIndex((s) => s.nodeId === sym.nodeId) === i);
 
     if (uniqueSymbols.length === 0) return '';
 
-    const idList = uniqueSymbols.map(s => `'${s.nodeId.replace(/'/g, "''")}'`).join(', ');
+    const idList = uniqueSymbols.map((s) => `'${s.nodeId.replace(/'/g, "''")}'`).join(', ');
 
     // Batch fetch callers
     const callersMap = new Map<string, string[]>();
     try {
-      const rows = await executeQuery(repoId, `
+      const rows = await executeQuery(
+        repoId,
+        `
         MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(n)
         WHERE n.id IN [${idList}]
         RETURN n.id AS targetId, caller.name AS name
         LIMIT 15
-      `);
+      `,
+      );
       for (const r of rows) {
         const tid = r.targetId || r[0];
         const name = r.name || r[1];
@@ -167,17 +175,22 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
           callersMap.get(tid)!.push(name);
         }
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
 
     // Batch fetch callees
     const calleesMap = new Map<string, string[]>();
     try {
-      const rows = await executeQuery(repoId, `
+      const rows = await executeQuery(
+        repoId,
+        `
         MATCH (n)-[:CodeRelation {type: 'CALLS'}]->(callee)
         WHERE n.id IN [${idList}]
         RETURN n.id AS sourceId, callee.name AS name
         LIMIT 15
-      `);
+      `,
+      );
       for (const r of rows) {
         const sid = r.sourceId || r[0];
         const name = r.name || r[1];
@@ -186,16 +199,21 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
           calleesMap.get(sid)!.push(name);
         }
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
 
     // Batch fetch processes
     const processesMap = new Map<string, string[]>();
     try {
-      const rows = await executeQuery(repoId, `
+      const rows = await executeQuery(
+        repoId,
+        `
         MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
         WHERE n.id IN [${idList}]
         RETURN n.id AS nodeId, p.heuristicLabel AS label, r.step AS step, p.stepCount AS stepCount
-      `);
+      `,
+      );
       for (const r of rows) {
         const nid = r.nodeId || r[0];
         const label = r.label || r[1];
@@ -206,22 +224,29 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
           processesMap.get(nid)!.push(`${label} (step ${step}/${stepCount})`);
         }
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
 
     // Batch fetch cohesion
     const cohesionMap = new Map<string, number>();
     try {
-      const rows = await executeQuery(repoId, `
+      const rows = await executeQuery(
+        repoId,
+        `
         MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
         WHERE n.id IN [${idList}]
         RETURN n.id AS nodeId, c.cohesion AS cohesion
-      `);
+      `,
+      );
       for (const r of rows) {
         const nid = r.nodeId || r[0];
         const coh = r.cohesion ?? r[1] ?? 0;
         if (nid) cohesionMap.set(nid, coh);
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
 
     // Assemble enriched results
     const enriched: Array<{
@@ -243,14 +268,14 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
         cohesion: cohesionMap.get(sym.nodeId) || 0,
       });
     }
-    
+
     if (enriched.length === 0) return '';
-    
+
     // Step 4: Rank by cohesion (internal signal) and format
     enriched.sort((a, b) => b.cohesion - a.cohesion);
-    
+
     const lines: string[] = [`[GitNexus] ${enriched.length} related symbols found:`, ''];
-    
+
     for (const item of enriched) {
       lines.push(`${item.name} (${item.filePath})`);
       if (item.callers.length > 0) {
@@ -264,7 +289,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
       }
       lines.push('');
     }
-    
+
     return lines.join('\n').trim();
   } catch {
     // Graceful failure — never break the original tool

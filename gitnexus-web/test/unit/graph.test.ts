@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createKnowledgeGraph } from '../../src/core/graph/graph';
-import { createFileNode, createFunctionNode, createCallsRelationship, createContainsRelationship } from '../fixtures/graph';
+import {
+  createFileNode,
+  createFunctionNode,
+  createCallsRelationship,
+  createContainsRelationship,
+} from '../fixtures/graph';
 
 describe('createKnowledgeGraph', () => {
   it('starts empty', () => {

@@ -16,7 +16,11 @@ function makeNode(id: string, name: string, filePath: string = 'src/test.ts'): G
   };
 }
 
-function makeRel(src: string, tgt: string, type: GraphRelationship['type'] = 'CALLS'): GraphRelationship {
+function makeRel(
+  src: string,
+  tgt: string,
+  type: GraphRelationship['type'] = 'CALLS',
+): GraphRelationship {
   return {
     id: `${src}-${type}-${tgt}`,
     sourceId: src,
@@ -94,7 +98,7 @@ describe('createKnowledgeGraph', () => {
     g.addNode(makeNode('fn:a', 'a'));
     g.addNode(makeNode('fn:b', 'b'));
 
-    const ids = [...g.iterNodes()].map(n => n.id);
+    const ids = [...g.iterNodes()].map((n) => n.id);
     expect(ids).toHaveLength(2);
     expect(ids).toContain('fn:a');
     expect(ids).toContain('fn:b');
@@ -172,7 +176,7 @@ describe('createKnowledgeGraph', () => {
     g.addNode(makeNode('fn:b', 'b'));
 
     const ids: string[] = [];
-    g.forEachNode(n => ids.push(n.id));
+    g.forEachNode((n) => ids.push(n.id));
     expect(ids).toHaveLength(2);
   });
 
@@ -183,7 +187,7 @@ describe('createKnowledgeGraph', () => {
     g.addRelationship(makeRel('fn:a', 'fn:b'));
 
     const types: string[] = [];
-    g.forEachRelationship(r => types.push(r.type));
+    g.forEachRelationship((r) => types.push(r.type));
     expect(types).toEqual(['CALLS']);
   });
 

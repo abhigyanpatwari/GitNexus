@@ -7,7 +7,11 @@ import CPP from 'tree-sitter-cpp';
 import Rust from 'tree-sitter-rust';
 import CSharp from 'tree-sitter-c-sharp';
 import Go from 'tree-sitter-go';
-import { findEnclosingClassId, CLASS_CONTAINER_TYPES, CONTAINER_TYPE_TO_LABEL } from '../../src/core/ingestion/utils/ast-helpers.js';
+import {
+  findEnclosingClassId,
+  CLASS_CONTAINER_TYPES,
+  CONTAINER_TYPE_TO_LABEL,
+} from '../../src/core/ingestion/utils/ast-helpers.js';
 
 function parseCode(language: any, code: string): Parser.Tree {
   const parser = new Parser();
@@ -16,7 +20,10 @@ function parseCode(language: any, code: string): Parser.Tree {
 }
 
 /** Find the first descendant node matching a predicate (BFS). */
-function findNode(root: Parser.SyntaxNode, predicate: (n: Parser.SyntaxNode) => boolean): Parser.SyntaxNode | null {
+function findNode(
+  root: Parser.SyntaxNode,
+  predicate: (n: Parser.SyntaxNode) => boolean,
+): Parser.SyntaxNode | null {
   const queue: Parser.SyntaxNode[] = [root];
   while (queue.length > 0) {
     const node = queue.shift()!;
@@ -61,19 +68,25 @@ describe('findEnclosingClassId', () => {
 
   describe('TypeScript', () => {
     it('finds enclosing class for a method', () => {
-      const tree = parseCode(TypeScript.typescript, `
+      const tree = parseCode(
+        TypeScript.typescript,
+        `
 class MyService {
   getData() {
     return 42;
   }
 }
-`);
+`,
+      );
       // Find the method_definition node for getData
-      const methodNode = findNode(tree.rootNode, n => n.type === 'method_definition');
+      const methodNode = findNode(tree.rootNode, (n) => n.type === 'method_definition');
       expect(methodNode).not.toBeNull();
 
       // Find the identifier 'getData' inside the method
-      const nameNode = findNode(methodNode!, n => n.type === 'property_identifier' && n.text === 'getData');
+      const nameNode = findNode(
+        methodNode!,
+        (n) => n.type === 'property_identifier' && n.text === 'getData',
+      );
       expect(nameNode).not.toBeNull();
 
       const result = findEnclosingClassId(nameNode!, filePath);
@@ -81,13 +94,19 @@ class MyService {
     });
 
     it('finds enclosing interface for a method signature', () => {
-      const tree = parseCode(TypeScript.typescript, `
+      const tree = parseCode(
+        TypeScript.typescript,
+        `
 interface MyInterface {
   doSomething(): void;
 }
-`);
+`,
+      );
       // In TS, interface methods are method_signature nodes — find method name
-      const nameNode = findNode(tree.rootNode, n => n.type === 'property_identifier' && n.text === 'doSomething');
+      const nameNode = findNode(
+        tree.rootNode,
+        (n) => n.type === 'property_identifier' && n.text === 'doSomething',
+      );
       if (nameNode) {
         const result = findEnclosingClassId(nameNode, filePath);
         expect(result).toBe('Interface:test/example.ts:MyInterface');
@@ -95,12 +114,18 @@ interface MyInterface {
     });
 
     it('returns null for a top-level function', () => {
-      const tree = parseCode(TypeScript.typescript, `
+      const tree = parseCode(
+        TypeScript.typescript,
+        `
 function topLevel() {
   return 1;
 }
-`);
-      const nameNode = findNode(tree.rootNode, n => n.type === 'identifier' && n.text === 'topLevel');
+`,
+      );
+      const nameNode = findNode(
+        tree.rootNode,
+        (n) => n.type === 'identifier' && n.text === 'topLevel',
+      );
       expect(nameNode).not.toBeNull();
 
       const result = findEnclosingClassId(nameNode!, filePath);
@@ -117,15 +142,18 @@ function topLevel() {
 
   describe('Python', () => {
     it('finds enclosing class for a method', () => {
-      const tree = parseCode(Python, `
+      const tree = parseCode(
+        Python,
+        `
 class Calculator:
     def add(self, a, b):
         return a + b
-`);
-      const methodNode = findNode(tree.rootNode, n => n.type === 'function_definition');
+`,
+      );
+      const methodNode = findNode(tree.rootNode, (n) => n.type === 'function_definition');
       expect(methodNode).not.toBeNull();
 
-      const nameNode = findNode(methodNode!, n => n.type === 'identifier' && n.text === 'add');
+      const nameNode = findNode(methodNode!, (n) => n.type === 'identifier' && n.text === 'add');
       expect(nameNode).not.toBeNull();
 
       const result = findEnclosingClassId(nameNode!, 'test/calc.py');
@@ -135,15 +163,18 @@ class Calculator:
 
   describe('Java', () => {
     it('finds enclosing class for a method', () => {
-      const tree = parseCode(Java, `
+      const tree = parseCode(
+        Java,
+        `
 class UserService {
   public void save(User user) {}
 }
-`);
-      const methodNode = findNode(tree.rootNode, n => n.type === 'method_declaration');
+`,
+      );
+      const methodNode = findNode(tree.rootNode, (n) => n.type === 'method_declaration');
       expect(methodNode).not.toBeNull();
 
-      const nameNode = findNode(methodNode!, n => n.type === 'identifier' && n.text === 'save');
+      const nameNode = findNode(methodNode!, (n) => n.type === 'identifier' && n.text === 'save');
       expect(nameNode).not.toBeNull();
 
       const result = findEnclosingClassId(nameNode!, 'test/UserService.java');
@@ -151,15 +182,21 @@ class UserService {
     });
 
     it('finds enclosing interface for a method', () => {
-      const tree = parseCode(Java, `
+      const tree = parseCode(
+        Java,
+        `
 interface Repository {
   void findById(int id);
 }
-`);
-      const methodNode = findNode(tree.rootNode, n => n.type === 'method_declaration');
+`,
+      );
+      const methodNode = findNode(tree.rootNode, (n) => n.type === 'method_declaration');
       expect(methodNode).not.toBeNull();
 
-      const nameNode = findNode(methodNode!, n => n.type === 'identifier' && n.text === 'findById');
+      const nameNode = findNode(
+        methodNode!,
+        (n) => n.type === 'identifier' && n.text === 'findById',
+      );
       expect(nameNode).not.toBeNull();
 
       const result = findEnclosingClassId(nameNode!, 'test/Repository.java');
@@ -169,23 +206,26 @@ interface Repository {
 
   describe('C++', () => {
     it('finds enclosing class_specifier for a method', () => {
-      const tree = parseCode(CPP, `
+      const tree = parseCode(
+        CPP,
+        `
 class Vector {
 public:
   int size() { return _size; }
 private:
   int _size;
 };
-`);
+`,
+      );
       // In C++ tree-sitter, the class is a class_specifier
-      const classNode = findNode(tree.rootNode, n => n.type === 'class_specifier');
+      const classNode = findNode(tree.rootNode, (n) => n.type === 'class_specifier');
       expect(classNode).not.toBeNull();
 
       // Find a function_definition inside the class
-      const funcDef = findNode(classNode!, n => n.type === 'function_definition');
+      const funcDef = findNode(classNode!, (n) => n.type === 'function_definition');
       expect(funcDef).not.toBeNull();
 
-      const nameNode = findNode(funcDef!, n => n.type === 'identifier' && n.text === 'size');
+      const nameNode = findNode(funcDef!, (n) => n.type === 'identifier' && n.text === 'size');
       if (nameNode) {
         const result = findEnclosingClassId(nameNode, 'test/vector.h');
         expect(result).toBe('Class:test/vector.h:Vector');
@@ -193,14 +233,17 @@ private:
     });
 
     it('finds enclosing struct_specifier for a method', () => {
-      const tree = parseCode(CPP, `
+      const tree = parseCode(
+        CPP,
+        `
 struct Point {
   double distance() { return 0; }
 };
-`);
-      const funcDef = findNode(tree.rootNode, n => n.type === 'function_definition');
+`,
+      );
+      const funcDef = findNode(tree.rootNode, (n) => n.type === 'function_definition');
       if (funcDef) {
-        const nameNode = findNode(funcDef, n => n.type === 'identifier' && n.text === 'distance');
+        const nameNode = findNode(funcDef, (n) => n.type === 'identifier' && n.text === 'distance');
         if (nameNode) {
           const result = findEnclosingClassId(nameNode, 'test/point.h');
           expect(result).toBe('Struct:test/point.h:Point');
@@ -211,7 +254,9 @@ struct Point {
 
   describe('Rust', () => {
     it('finds enclosing impl_item for a method', () => {
-      const tree = parseCode(Rust, `
+      const tree = parseCode(
+        Rust,
+        `
 struct Counter {
   count: u32,
 }
@@ -220,14 +265,18 @@ impl Counter {
     self.count += 1;
   }
 }
-`);
-      const implNode = findNode(tree.rootNode, n => n.type === 'impl_item');
+`,
+      );
+      const implNode = findNode(tree.rootNode, (n) => n.type === 'impl_item');
       expect(implNode).not.toBeNull();
 
-      const funcItem = findNode(implNode!, n => n.type === 'function_item');
+      const funcItem = findNode(implNode!, (n) => n.type === 'function_item');
       expect(funcItem).not.toBeNull();
 
-      const nameNode = findNode(funcItem!, n => n.type === 'identifier' && n.text === 'increment');
+      const nameNode = findNode(
+        funcItem!,
+        (n) => n.type === 'identifier' && n.text === 'increment',
+      );
       expect(nameNode).not.toBeNull();
 
       const result = findEnclosingClassId(nameNode!, 'test/counter.rs');
@@ -235,7 +284,9 @@ impl Counter {
     });
 
     it('picks struct name (not trait name) for impl Trait for Struct', () => {
-      const tree = parseCode(Rust, `
+      const tree = parseCode(
+        Rust,
+        `
 struct MyStruct {
   value: i32,
 }
@@ -249,17 +300,22 @@ impl MyTrait for MyStruct {
     println!("{}", self.value);
   }
 }
-`);
+`,
+      );
       // Find the impl_item that has a `for` keyword (impl Trait for Struct)
-      const implNode = findNode(tree.rootNode, n =>
-        n.type === 'impl_item' && n.children?.some((c: any) => c.text === 'for')
+      const implNode = findNode(
+        tree.rootNode,
+        (n) => n.type === 'impl_item' && n.children?.some((c: any) => c.text === 'for'),
       );
       expect(implNode).not.toBeNull();
 
-      const funcItem = findNode(implNode!, n => n.type === 'function_item');
+      const funcItem = findNode(implNode!, (n) => n.type === 'function_item');
       expect(funcItem).not.toBeNull();
 
-      const nameNode = findNode(funcItem!, n => n.type === 'identifier' && n.text === 'do_something');
+      const nameNode = findNode(
+        funcItem!,
+        (n) => n.type === 'identifier' && n.text === 'do_something',
+      );
       expect(nameNode).not.toBeNull();
 
       const result = findEnclosingClassId(nameNode!, 'test/my_struct.rs');
@@ -268,7 +324,9 @@ impl MyTrait for MyStruct {
     });
 
     it('still picks struct name for plain impl Struct (no trait)', () => {
-      const tree = parseCode(Rust, `
+      const tree = parseCode(
+        Rust,
+        `
 struct Counter {
   count: u32,
 }
@@ -277,14 +335,18 @@ impl Counter {
     self.count += 1;
   }
 }
-`);
-      const implNode = findNode(tree.rootNode, n => n.type === 'impl_item');
+`,
+      );
+      const implNode = findNode(tree.rootNode, (n) => n.type === 'impl_item');
       expect(implNode).not.toBeNull();
 
-      const funcItem = findNode(implNode!, n => n.type === 'function_item');
+      const funcItem = findNode(implNode!, (n) => n.type === 'function_item');
       expect(funcItem).not.toBeNull();
 
-      const nameNode = findNode(funcItem!, n => n.type === 'identifier' && n.text === 'increment');
+      const nameNode = findNode(
+        funcItem!,
+        (n) => n.type === 'identifier' && n.text === 'increment',
+      );
       expect(nameNode).not.toBeNull();
 
       const result = findEnclosingClassId(nameNode!, 'test/counter.rs');
@@ -292,17 +354,23 @@ impl Counter {
     });
 
     it('finds enclosing trait_item for a method', () => {
-      const tree = parseCode(Rust, `
+      const tree = parseCode(
+        Rust,
+        `
 trait Drawable {
   fn draw(&self);
 }
-`);
-      const traitNode = findNode(tree.rootNode, n => n.type === 'trait_item');
+`,
+      );
+      const traitNode = findNode(tree.rootNode, (n) => n.type === 'trait_item');
       expect(traitNode).not.toBeNull();
 
-      const funcItem = findNode(traitNode!, n => n.type === 'function_signature_item' || n.type === 'function_item');
+      const funcItem = findNode(
+        traitNode!,
+        (n) => n.type === 'function_signature_item' || n.type === 'function_item',
+      );
       if (funcItem) {
-        const nameNode = findNode(funcItem, n => n.type === 'identifier' && n.text === 'draw');
+        const nameNode = findNode(funcItem, (n) => n.type === 'identifier' && n.text === 'draw');
         if (nameNode) {
           const result = findEnclosingClassId(nameNode, 'test/draw.rs');
           expect(result).toBe('Trait:test/draw.rs:Drawable');
@@ -313,15 +381,21 @@ trait Drawable {
 
   describe('C#', () => {
     it('finds enclosing class for a method', () => {
-      const tree = parseCode(CSharp, `
+      const tree = parseCode(
+        CSharp,
+        `
 class OrderService {
   public void Process() {}
 }
-`);
-      const methodNode = findNode(tree.rootNode, n => n.type === 'method_declaration');
+`,
+      );
+      const methodNode = findNode(tree.rootNode, (n) => n.type === 'method_declaration');
       expect(methodNode).not.toBeNull();
 
-      const nameNode = findNode(methodNode!, n => n.type === 'identifier' && n.text === 'Process');
+      const nameNode = findNode(
+        methodNode!,
+        (n) => n.type === 'identifier' && n.text === 'Process',
+      );
       expect(nameNode).not.toBeNull();
 
       const result = findEnclosingClassId(nameNode!, 'test/OrderService.cs');
@@ -329,14 +403,20 @@ class OrderService {
     });
 
     it('finds enclosing record for a method', () => {
-      const tree = parseCode(CSharp, `
+      const tree = parseCode(
+        CSharp,
+        `
 record Person {
   public string GetName() { return ""; }
 }
-`);
-      const methodNode = findNode(tree.rootNode, n => n.type === 'method_declaration');
+`,
+      );
+      const methodNode = findNode(tree.rootNode, (n) => n.type === 'method_declaration');
       if (methodNode) {
-        const nameNode = findNode(methodNode, n => n.type === 'identifier' && n.text === 'GetName');
+        const nameNode = findNode(
+          methodNode,
+          (n) => n.type === 'identifier' && n.text === 'GetName',
+        );
         if (nameNode) {
           const result = findEnclosingClassId(nameNode, 'test/Person.cs');
           expect(result).toBe('Record:test/Person.cs:Person');
@@ -345,14 +425,20 @@ record Person {
     });
 
     it('finds enclosing struct for a method', () => {
-      const tree = parseCode(CSharp, `
+      const tree = parseCode(
+        CSharp,
+        `
 struct Vector2 {
   public float Length() { return 0; }
 }
-`);
-      const methodNode = findNode(tree.rootNode, n => n.type === 'method_declaration');
+`,
+      );
+      const methodNode = findNode(tree.rootNode, (n) => n.type === 'method_declaration');
       if (methodNode) {
-        const nameNode = findNode(methodNode, n => n.type === 'identifier' && n.text === 'Length');
+        const nameNode = findNode(
+          methodNode,
+          (n) => n.type === 'identifier' && n.text === 'Length',
+        );
         if (nameNode) {
           const result = findEnclosingClassId(nameNode, 'test/Vector2.cs');
           expect(result).toBe('Struct:test/Vector2.cs:Vector2');
@@ -365,7 +451,9 @@ struct Vector2 {
     it('returns receiver struct ID for Go methods', () => {
       // Go methods have receiver parameter: func (s *Server) Start() {}
       // findEnclosingClassId extracts the receiver type to link method → struct
-      const tree = parseCode(Go, `
+      const tree = parseCode(
+        Go,
+        `
 package main
 
 type Server struct {
@@ -373,11 +461,15 @@ type Server struct {
 }
 
 func (s *Server) Start() {}
-`);
-      const methodNode = findNode(tree.rootNode, n => n.type === 'method_declaration');
+`,
+      );
+      const methodNode = findNode(tree.rootNode, (n) => n.type === 'method_declaration');
       expect(methodNode).not.toBeNull();
 
-      const nameNode = findNode(methodNode!, n => n.type === 'field_identifier' && n.text === 'Start');
+      const nameNode = findNode(
+        methodNode!,
+        (n) => n.type === 'field_identifier' && n.text === 'Start',
+      );
       if (nameNode) {
         const result = findEnclosingClassId(nameNode, 'test/server.go');
         expect(result).not.toBeNull();
@@ -389,16 +481,22 @@ func (s *Server) Start() {}
 
   describe('edge cases', () => {
     it('handles nested classes — returns innermost enclosing class', () => {
-      const tree = parseCode(TypeScript.typescript, `
+      const tree = parseCode(
+        TypeScript.typescript,
+        `
 class Outer {
   inner = class Inner {
     doWork() {}
   }
 }
-`);
-      const methodNode = findNode(tree.rootNode, n => n.type === 'method_definition');
+`,
+      );
+      const methodNode = findNode(tree.rootNode, (n) => n.type === 'method_definition');
       if (methodNode) {
-        const nameNode = findNode(methodNode, n => n.type === 'property_identifier' && n.text === 'doWork');
+        const nameNode = findNode(
+          methodNode,
+          (n) => n.type === 'property_identifier' && n.text === 'doWork',
+        );
         if (nameNode) {
           const result = findEnclosingClassId(nameNode, filePath);
           // Should find the innermost class (Inner, which is a class node)

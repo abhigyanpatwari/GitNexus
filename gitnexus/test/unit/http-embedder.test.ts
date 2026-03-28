@@ -13,9 +13,7 @@ const mockVec = Array.from({ length: 384 }, (_, i) => i / 384);
 
 describe('HTTP embedding backend', () => {
   // Save original env state before any test mutates it
-  const savedEnv = Object.fromEntries(
-    ENV_KEYS.map(k => [k, process.env[k]]),
-  );
+  const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
 
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -59,16 +57,16 @@ describe('HTTP embedding backend', () => {
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
 
       const ok = { ok: true, json: async () => ({ data: [{ embedding: mockVec }] }) };
-      vi.stubGlobal('fetch', vi.fn()
-        .mockResolvedValueOnce({ ok: false, status: 503 })
-        .mockResolvedValueOnce(ok));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce({ ok: false, status: 503 }).mockResolvedValueOnce(ok),
+      );
 
       const mod = await import('../../src/mcp/core/embedder.js');
       const result = await mod.embedQuery('test query');
 
       expect(fetch).toHaveBeenCalledTimes(2);
       expect(result).toEqual(mockVec);
-
     });
   });
 
@@ -79,10 +77,13 @@ describe('HTTP embedding backend', () => {
       process.env.GITNEXUS_EMBEDDING_API_KEY = 'test-key';
 
       const mockEmbedding = Array.from({ length: 384 }, (_, i) => i * 0.001);
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [{ embedding: mockEmbedding }] }),
-      }));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [{ embedding: mockEmbedding }] }),
+        }),
+      );
 
       const { embedText } = await import('../../src/core/embeddings/embedder.js');
       const result = await embedText('test text');
@@ -93,7 +94,6 @@ describe('HTTP embedding backend', () => {
       expect(body.input).toEqual(['test text']);
       expect(result).toBeInstanceOf(Float32Array);
       expect(result.length).toBe(384);
-
     });
 
     it('retries on server error', async () => {
@@ -101,14 +101,14 @@ describe('HTTP embedding backend', () => {
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
 
       const ok = { ok: true, json: async () => ({ data: [{ embedding: mockVec }] }) };
-      vi.stubGlobal('fetch', vi.fn()
-        .mockResolvedValueOnce({ ok: false, status: 503 })
-        .mockResolvedValueOnce(ok));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce({ ok: false, status: 503 }).mockResolvedValueOnce(ok),
+      );
 
       const { embedText } = await import('../../src/core/embeddings/embedder.js');
       await embedText('test');
       expect(fetch).toHaveBeenCalledTimes(2);
-
     });
 
     it('retries on rate limit', async () => {
@@ -116,14 +116,14 @@ describe('HTTP embedding backend', () => {
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
 
       const ok = { ok: true, json: async () => ({ data: [{ embedding: mockVec }] }) };
-      vi.stubGlobal('fetch', vi.fn()
-        .mockResolvedValueOnce({ ok: false, status: 429 })
-        .mockResolvedValueOnce(ok));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce({ ok: false, status: 429 }).mockResolvedValueOnce(ok),
+      );
 
       const { embedText } = await import('../../src/core/embeddings/embedder.js');
       await embedText('test');
       expect(fetch).toHaveBeenCalledTimes(2);
-
     });
 
     it('throws when all retries are exhausted', async () => {
@@ -134,7 +134,6 @@ describe('HTTP embedding backend', () => {
 
       const { embedText } = await import('../../src/core/embeddings/embedder.js');
       await expect(embedText('test')).rejects.toThrow('500');
-
     });
 
     it('excludes API key from error messages', async () => {
@@ -151,24 +150,25 @@ describe('HTTP embedding backend', () => {
         expect(e.message).not.toContain('secret-key-12345');
         expect(e.message).not.toContain('Authorization');
       }
-
     });
 
     it('includes abort signal for timeout', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
 
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [{ embedding: mockVec }] }),
-      }));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [{ embedding: mockVec }] }),
+        }),
+      );
 
       const { embedText } = await import('../../src/core/embeddings/embedder.js');
       await embedText('test');
 
       const opts = (fetch as any).mock.calls[0][1];
       expect(opts.signal).toBeDefined();
-
     });
 
     it('splits large inputs into batches', async () => {
@@ -179,16 +179,16 @@ describe('HTTP embedding backend', () => {
         ok: true,
         json: async () => ({ data: Array.from({ length: n }, () => ({ embedding: mockVec })) }),
       });
-      vi.stubGlobal('fetch', vi.fn()
-        .mockResolvedValueOnce(makeResp(64))
-        .mockResolvedValueOnce(makeResp(6)));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce(makeResp(64)).mockResolvedValueOnce(makeResp(6)),
+      );
 
       const { embedBatch } = await import('../../src/core/embeddings/embedder.js');
       const results = await embedBatch(Array.from({ length: 70 }, (_, i) => `text ${i}`));
 
       expect(fetch).toHaveBeenCalledTimes(2);
       expect(results).toHaveLength(70);
-
     });
 
     it('rejects initEmbedder when using HTTP backend', async () => {
@@ -197,7 +197,6 @@ describe('HTTP embedding backend', () => {
 
       const { initEmbedder } = await import('../../src/core/embeddings/embedder.js');
       await expect(initEmbedder()).rejects.toThrow('HTTP mode');
-
     });
 
     it('rejects getEmbedder when using HTTP backend', async () => {
@@ -206,35 +205,40 @@ describe('HTTP embedding backend', () => {
 
       const { getEmbedder } = await import('../../src/core/embeddings/embedder.js');
       expect(() => getEmbedder()).toThrow('HTTP embedding mode');
-
     });
 
     it('throws on empty response from endpoint', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
 
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [] }),
-      }));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [] }),
+        }),
+      );
 
       const mod = await import('../../src/mcp/core/embedder.js');
       await expect(mod.embedQuery('test')).rejects.toThrow('empty response');
-
     });
 
     it('throws when endpoint returns fewer embeddings than texts', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
 
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [{ embedding: mockVec }] }),
-      }));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [{ embedding: mockVec }] }),
+        }),
+      );
 
       const { embedBatch } = await import('../../src/core/embeddings/embedder.js');
-      await expect(embedBatch(['text1', 'text2', 'text3'])).rejects.toThrow('1 vectors for 3 texts');
-
+      await expect(embedBatch(['text1', 'text2', 'text3'])).rejects.toThrow(
+        '1 vectors for 3 texts',
+      );
     });
 
     it('throws on dimension mismatch when GITNEXUS_EMBEDDING_DIMS is set', async () => {
@@ -242,14 +246,16 @@ describe('HTTP embedding backend', () => {
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
       process.env.GITNEXUS_EMBEDDING_DIMS = '512';
 
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [{ embedding: [0.1, 0.2, 0.3] }] }),
-      }));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [{ embedding: [0.1, 0.2, 0.3] }] }),
+        }),
+      );
 
       const { embedText } = await import('../../src/core/embeddings/embedder.js');
       await expect(embedText('test')).rejects.toThrow('Embedding dimension mismatch');
-
     });
   });
 
@@ -271,7 +277,10 @@ describe('HTTP embedding backend', () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
 
-      const timeoutErr = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+      const timeoutErr = new DOMException(
+        'The operation was aborted due to timeout',
+        'TimeoutError',
+      );
       vi.stubGlobal('fetch', vi.fn().mockRejectedValue(timeoutErr));
 
       const { embedText } = await import('../../src/core/embeddings/embedder.js');
@@ -284,9 +293,10 @@ describe('HTTP embedding backend', () => {
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
 
       const ok = { ok: true, json: async () => ({ data: [{ embedding: mockVec }] }) };
-      vi.stubGlobal('fetch', vi.fn()
-        .mockRejectedValueOnce(new TypeError('fetch failed'))
-        .mockResolvedValueOnce(ok));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockRejectedValueOnce(new TypeError('fetch failed')).mockResolvedValueOnce(ok),
+      );
 
       const { embedText } = await import('../../src/core/embeddings/embedder.js');
       const result = await embedText('test');
@@ -301,10 +311,13 @@ describe('HTTP embedding backend', () => {
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
       process.env.GITNEXUS_EMBEDDING_DIMS = '512';
 
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [{ embedding: mockVec }] }),
-      }));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [{ embedding: mockVec }] }),
+        }),
+      );
 
       const mod = await import('../../src/mcp/core/embedder.js');
       await expect(mod.embedQuery('test')).rejects.toThrow('dimension mismatch');
@@ -315,10 +328,13 @@ describe('HTTP embedding backend', () => {
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
 
       const vec768 = Array.from({ length: 768 }, (_, i) => i / 768);
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ data: [{ embedding: vec768 }] }),
-      }));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [{ embedding: vec768 }] }),
+        }),
+      );
 
       const { embedText } = await import('../../src/core/embeddings/embedder.js');
       await expect(embedText('test')).rejects.toThrow('Set GITNEXUS_EMBEDDING_DIMS=768');

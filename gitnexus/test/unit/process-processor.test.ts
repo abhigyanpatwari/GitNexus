@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { processProcesses, type ProcessDetectionConfig } from '../../src/core/ingestion/process-processor.js';
+import {
+  processProcesses,
+  type ProcessDetectionConfig,
+} from '../../src/core/ingestion/process-processor.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { CommunityMembership } from '../../src/core/ingestion/community-processor.js';
 
@@ -17,8 +20,15 @@ describe('processProcesses', () => {
   it('detects no processes when there are no CALLS relationships', async () => {
     const graph = createKnowledgeGraph();
     graph.addNode({
-      id: 'func:main', label: 'Function',
-      properties: { name: 'main', filePath: 'src/index.ts', startLine: 1, endLine: 10, isExported: true }
+      id: 'func:main',
+      label: 'Function',
+      properties: {
+        name: 'main',
+        filePath: 'src/index.ts',
+        startLine: 1,
+        endLine: 10,
+        isExported: true,
+      },
     });
 
     const result = await processProcesses(graph, []);
@@ -30,26 +40,55 @@ describe('processProcesses', () => {
 
     // Create 3 functions in a chain
     graph.addNode({
-      id: 'func:handleRequest', label: 'Function',
-      properties: { name: 'handleRequest', filePath: 'src/handler.ts', startLine: 1, endLine: 10, isExported: true }
+      id: 'func:handleRequest',
+      label: 'Function',
+      properties: {
+        name: 'handleRequest',
+        filePath: 'src/handler.ts',
+        startLine: 1,
+        endLine: 10,
+        isExported: true,
+      },
     });
     graph.addNode({
-      id: 'func:validateInput', label: 'Function',
-      properties: { name: 'validateInput', filePath: 'src/validator.ts', startLine: 1, endLine: 5, isExported: true }
+      id: 'func:validateInput',
+      label: 'Function',
+      properties: {
+        name: 'validateInput',
+        filePath: 'src/validator.ts',
+        startLine: 1,
+        endLine: 5,
+        isExported: true,
+      },
     });
     graph.addNode({
-      id: 'func:saveToDb', label: 'Function',
-      properties: { name: 'saveToDb', filePath: 'src/db.ts', startLine: 1, endLine: 8, isExported: true }
+      id: 'func:saveToDb',
+      label: 'Function',
+      properties: {
+        name: 'saveToDb',
+        filePath: 'src/db.ts',
+        startLine: 1,
+        endLine: 8,
+        isExported: true,
+      },
     });
 
     // handleRequest -> validateInput -> saveToDb
     graph.addRelationship({
-      id: 'call:1', sourceId: 'func:handleRequest', targetId: 'func:validateInput',
-      type: 'CALLS', confidence: 0.9, reason: 'import-resolved'
+      id: 'call:1',
+      sourceId: 'func:handleRequest',
+      targetId: 'func:validateInput',
+      type: 'CALLS',
+      confidence: 0.9,
+      reason: 'import-resolved',
     });
     graph.addRelationship({
-      id: 'call:2', sourceId: 'func:validateInput', targetId: 'func:saveToDb',
-      type: 'CALLS', confidence: 0.9, reason: 'import-resolved'
+      id: 'call:2',
+      sourceId: 'func:validateInput',
+      targetId: 'func:saveToDb',
+      type: 'CALLS',
+      confidence: 0.9,
+      reason: 'import-resolved',
     });
 
     const memberships: CommunityMembership[] = [
@@ -64,7 +103,7 @@ describe('processProcesses', () => {
     expect(result.processes.length).toBeGreaterThan(0);
 
     // Find the process starting from handleRequest
-    const process = result.processes.find(p => p.entryPointId === 'func:handleRequest');
+    const process = result.processes.find((p) => p.entryPointId === 'func:handleRequest');
     expect(process).toBeDefined();
     expect(process!.stepCount).toBe(3);
     expect(process!.entryPointId).toBe('func:handleRequest');
@@ -73,17 +112,17 @@ describe('processProcesses', () => {
     expect(process!.communities).toEqual(['community:0']);
 
     // Verify trace order: entry -> middle -> terminal
-    expect(process!.trace).toEqual([
-      'func:handleRequest',
-      'func:validateInput',
-      'func:saveToDb',
-    ]);
+    expect(process!.trace).toEqual(['func:handleRequest', 'func:validateInput', 'func:saveToDb']);
 
     // Verify steps are 1-indexed and in correct order
-    const processSteps = result.steps.filter(s => s.processId === process!.id);
+    const processSteps = result.steps.filter((s) => s.processId === process!.id);
     expect(processSteps).toHaveLength(3);
-    expect(processSteps[0]).toEqual(expect.objectContaining({ nodeId: 'func:handleRequest', step: 1 }));
-    expect(processSteps[1]).toEqual(expect.objectContaining({ nodeId: 'func:validateInput', step: 2 }));
+    expect(processSteps[0]).toEqual(
+      expect.objectContaining({ nodeId: 'func:handleRequest', step: 1 }),
+    );
+    expect(processSteps[1]).toEqual(
+      expect.objectContaining({ nodeId: 'func:validateInput', step: 2 }),
+    );
     expect(processSteps[2]).toEqual(expect.objectContaining({ nodeId: 'func:saveToDb', step: 3 }));
 
     // Verify label is generated from entry and terminal names
@@ -101,19 +140,31 @@ describe('processProcesses', () => {
     // Create a long chain: f0 -> f1 -> f2 -> f3 -> f4
     for (let i = 0; i < 5; i++) {
       graph.addNode({
-        id: `func:f${i}`, label: 'Function',
-        properties: { name: `f${i}`, filePath: `src/f${i}.ts`, startLine: 1, endLine: 5, isExported: true }
+        id: `func:f${i}`,
+        label: 'Function',
+        properties: {
+          name: `f${i}`,
+          filePath: `src/f${i}.ts`,
+          startLine: 1,
+          endLine: 5,
+          isExported: true,
+        },
       });
     }
     for (let i = 0; i < 4; i++) {
       graph.addRelationship({
-        id: `call:${i}`, sourceId: `func:f${i}`, targetId: `func:f${i+1}`,
-        type: 'CALLS', confidence: 0.9, reason: ''
+        id: `call:${i}`,
+        sourceId: `func:f${i}`,
+        targetId: `func:f${i + 1}`,
+        type: 'CALLS',
+        confidence: 0.9,
+        reason: '',
       });
     }
 
     const memberships: CommunityMembership[] = Array.from({ length: 5 }, (_, i) => ({
-      nodeId: `func:f${i}`, communityId: 'community:0'
+      nodeId: `func:f${i}`,
+      communityId: 'community:0',
     }));
 
     // Limit to 3 steps max depth
@@ -131,26 +182,55 @@ describe('processProcesses', () => {
     const graph = createKnowledgeGraph();
 
     graph.addNode({
-      id: 'func:apiHandler', label: 'Function',
-      properties: { name: 'apiHandler', filePath: 'src/api/handler.ts', startLine: 1, endLine: 10, isExported: true }
+      id: 'func:apiHandler',
+      label: 'Function',
+      properties: {
+        name: 'apiHandler',
+        filePath: 'src/api/handler.ts',
+        startLine: 1,
+        endLine: 10,
+        isExported: true,
+      },
     });
     graph.addNode({
-      id: 'func:dbQuery', label: 'Function',
-      properties: { name: 'dbQuery', filePath: 'src/db/query.ts', startLine: 1, endLine: 5, isExported: true }
+      id: 'func:dbQuery',
+      label: 'Function',
+      properties: {
+        name: 'dbQuery',
+        filePath: 'src/db/query.ts',
+        startLine: 1,
+        endLine: 5,
+        isExported: true,
+      },
     });
     graph.addNode({
-      id: 'func:formatResponse', label: 'Function',
-      properties: { name: 'formatResponse', filePath: 'src/api/format.ts', startLine: 1, endLine: 5, isExported: true }
+      id: 'func:formatResponse',
+      label: 'Function',
+      properties: {
+        name: 'formatResponse',
+        filePath: 'src/api/format.ts',
+        startLine: 1,
+        endLine: 5,
+        isExported: true,
+      },
     });
 
     // apiHandler -> dbQuery (cross community), apiHandler -> formatResponse (same community)
     graph.addRelationship({
-      id: 'call:1', sourceId: 'func:apiHandler', targetId: 'func:dbQuery',
-      type: 'CALLS', confidence: 0.9, reason: ''
+      id: 'call:1',
+      sourceId: 'func:apiHandler',
+      targetId: 'func:dbQuery',
+      type: 'CALLS',
+      confidence: 0.9,
+      reason: '',
     });
     graph.addRelationship({
-      id: 'call:2', sourceId: 'func:dbQuery', targetId: 'func:formatResponse',
-      type: 'CALLS', confidence: 0.9, reason: ''
+      id: 'call:2',
+      sourceId: 'func:dbQuery',
+      targetId: 'func:formatResponse',
+      type: 'CALLS',
+      confidence: 0.9,
+      reason: '',
     });
 
     // Put them in different communities
@@ -166,7 +246,7 @@ describe('processProcesses', () => {
     expect(result.processes.length).toBeGreaterThan(0);
 
     // The process from apiHandler should be cross_community (touches api + db communities)
-    const crossProcess = result.processes.find(p => p.entryPointId === 'func:apiHandler');
+    const crossProcess = result.processes.find((p) => p.entryPointId === 'func:apiHandler');
     expect(crossProcess).toBeDefined();
     expect(crossProcess!.processType).toBe('cross_community');
     expect(crossProcess!.communities.length).toBeGreaterThan(1);
@@ -182,23 +262,41 @@ describe('processProcesses', () => {
 
     // Test file function
     graph.addNode({
-      id: 'func:testMain', label: 'Function',
-      properties: { name: 'testMain', filePath: 'test/unit/main.test.ts', startLine: 1, endLine: 10, isExported: true }
+      id: 'func:testMain',
+      label: 'Function',
+      properties: {
+        name: 'testMain',
+        filePath: 'test/unit/main.test.ts',
+        startLine: 1,
+        endLine: 10,
+        isExported: true,
+      },
     });
     graph.addNode({
-      id: 'func:helper', label: 'Function',
-      properties: { name: 'helper', filePath: 'src/helper.ts', startLine: 1, endLine: 5, isExported: true }
+      id: 'func:helper',
+      label: 'Function',
+      properties: {
+        name: 'helper',
+        filePath: 'src/helper.ts',
+        startLine: 1,
+        endLine: 5,
+        isExported: true,
+      },
     });
 
     graph.addRelationship({
-      id: 'call:1', sourceId: 'func:testMain', targetId: 'func:helper',
-      type: 'CALLS', confidence: 0.9, reason: ''
+      id: 'call:1',
+      sourceId: 'func:testMain',
+      targetId: 'func:helper',
+      type: 'CALLS',
+      confidence: 0.9,
+      reason: '',
     });
 
     const result = await processProcesses(graph, []);
 
     // Test files should not be used as entry points
-    const testProcess = result.processes.find(p => p.entryPointId === 'func:testMain');
+    const testProcess = result.processes.find((p) => p.entryPointId === 'func:testMain');
     expect(testProcess).toBeUndefined();
   });
 
@@ -206,26 +304,37 @@ describe('processProcesses', () => {
     const graph = createKnowledgeGraph();
 
     graph.addNode({
-      id: 'func:a', label: 'Function',
-      properties: { name: 'a', filePath: 'src/a.ts', startLine: 1, endLine: 5, isExported: true }
+      id: 'func:a',
+      label: 'Function',
+      properties: { name: 'a', filePath: 'src/a.ts', startLine: 1, endLine: 5, isExported: true },
     });
     graph.addNode({
-      id: 'func:b', label: 'Function',
-      properties: { name: 'b', filePath: 'src/b.ts', startLine: 1, endLine: 5, isExported: true }
+      id: 'func:b',
+      label: 'Function',
+      properties: { name: 'b', filePath: 'src/b.ts', startLine: 1, endLine: 5, isExported: true },
     });
     graph.addNode({
-      id: 'func:c', label: 'Function',
-      properties: { name: 'c', filePath: 'src/c.ts', startLine: 1, endLine: 5, isExported: true }
+      id: 'func:c',
+      label: 'Function',
+      properties: { name: 'c', filePath: 'src/c.ts', startLine: 1, endLine: 5, isExported: true },
     });
 
     // a -> b with low confidence (fuzzy-global ambiguous), a -> c with high confidence
     graph.addRelationship({
-      id: 'call:1', sourceId: 'func:a', targetId: 'func:b',
-      type: 'CALLS', confidence: 0.3, reason: 'fuzzy-global'
+      id: 'call:1',
+      sourceId: 'func:a',
+      targetId: 'func:b',
+      type: 'CALLS',
+      confidence: 0.3,
+      reason: 'fuzzy-global',
     });
     graph.addRelationship({
-      id: 'call:2', sourceId: 'func:a', targetId: 'func:c',
-      type: 'CALLS', confidence: 0.9, reason: 'import-resolved'
+      id: 'call:2',
+      sourceId: 'func:a',
+      targetId: 'func:c',
+      type: 'CALLS',
+      confidence: 0.9,
+      reason: 'import-resolved',
     });
 
     const result = await processProcesses(graph, []);
@@ -240,30 +349,63 @@ describe('processProcesses', () => {
     const graph = createKnowledgeGraph();
 
     graph.addNode({
-      id: 'func:a', label: 'Function',
-      properties: { name: 'processItem', filePath: 'src/a.ts', startLine: 1, endLine: 5, isExported: true }
+      id: 'func:a',
+      label: 'Function',
+      properties: {
+        name: 'processItem',
+        filePath: 'src/a.ts',
+        startLine: 1,
+        endLine: 5,
+        isExported: true,
+      },
     });
     graph.addNode({
-      id: 'func:b', label: 'Function',
-      properties: { name: 'validate', filePath: 'src/b.ts', startLine: 1, endLine: 5, isExported: true }
+      id: 'func:b',
+      label: 'Function',
+      properties: {
+        name: 'validate',
+        filePath: 'src/b.ts',
+        startLine: 1,
+        endLine: 5,
+        isExported: true,
+      },
     });
     graph.addNode({
-      id: 'func:c', label: 'Function',
-      properties: { name: 'retry', filePath: 'src/c.ts', startLine: 1, endLine: 5, isExported: true }
+      id: 'func:c',
+      label: 'Function',
+      properties: {
+        name: 'retry',
+        filePath: 'src/c.ts',
+        startLine: 1,
+        endLine: 5,
+        isExported: true,
+      },
     });
 
     // a -> b -> c -> a (cycle)
     graph.addRelationship({
-      id: 'call:1', sourceId: 'func:a', targetId: 'func:b',
-      type: 'CALLS', confidence: 0.9, reason: ''
+      id: 'call:1',
+      sourceId: 'func:a',
+      targetId: 'func:b',
+      type: 'CALLS',
+      confidence: 0.9,
+      reason: '',
     });
     graph.addRelationship({
-      id: 'call:2', sourceId: 'func:b', targetId: 'func:c',
-      type: 'CALLS', confidence: 0.9, reason: ''
+      id: 'call:2',
+      sourceId: 'func:b',
+      targetId: 'func:c',
+      type: 'CALLS',
+      confidence: 0.9,
+      reason: '',
     });
     graph.addRelationship({
-      id: 'call:3', sourceId: 'func:c', targetId: 'func:a',
-      type: 'CALLS', confidence: 0.9, reason: ''
+      id: 'call:3',
+      sourceId: 'func:c',
+      targetId: 'func:a',
+      type: 'CALLS',
+      confidence: 0.9,
+      reason: '',
     });
 
     const memberships: CommunityMembership[] = [
@@ -285,17 +427,35 @@ describe('processProcesses', () => {
 
     // Only 2 functions: a -> b (2 steps, below default minSteps of 3)
     graph.addNode({
-      id: 'func:caller', label: 'Function',
-      properties: { name: 'caller', filePath: 'src/caller.ts', startLine: 1, endLine: 5, isExported: true }
+      id: 'func:caller',
+      label: 'Function',
+      properties: {
+        name: 'caller',
+        filePath: 'src/caller.ts',
+        startLine: 1,
+        endLine: 5,
+        isExported: true,
+      },
     });
     graph.addNode({
-      id: 'func:callee', label: 'Function',
-      properties: { name: 'callee', filePath: 'src/callee.ts', startLine: 1, endLine: 5, isExported: true }
+      id: 'func:callee',
+      label: 'Function',
+      properties: {
+        name: 'callee',
+        filePath: 'src/callee.ts',
+        startLine: 1,
+        endLine: 5,
+        isExported: true,
+      },
     });
 
     graph.addRelationship({
-      id: 'call:1', sourceId: 'func:caller', targetId: 'func:callee',
-      type: 'CALLS', confidence: 0.9, reason: ''
+      id: 'call:1',
+      sourceId: 'func:caller',
+      targetId: 'func:callee',
+      type: 'CALLS',
+      confidence: 0.9,
+      reason: '',
     });
 
     const result = await processProcesses(graph, []);
@@ -326,21 +486,25 @@ describe('processProcesses', () => {
     for (let chain = 0; chain < 10; chain++) {
       for (let step = 0; step < 3; step++) {
         graph.addNode({
-          id: `func:chain${chain}_f${step}`, label: 'Function',
+          id: `func:chain${chain}_f${step}`,
+          label: 'Function',
           properties: {
             name: `chain${chain}_f${step}`,
             filePath: `src/chain${chain}/f${step}.ts`,
-            startLine: 1, endLine: 5,
-            isExported: true
-          }
+            startLine: 1,
+            endLine: 5,
+            isExported: true,
+          },
         });
       }
       for (let step = 0; step < 2; step++) {
         graph.addRelationship({
           id: `call:chain${chain}_${step}`,
           sourceId: `func:chain${chain}_f${step}`,
-          targetId: `func:chain${chain}_f${step+1}`,
-          type: 'CALLS', confidence: 0.9, reason: ''
+          targetId: `func:chain${chain}_f${step + 1}`,
+          type: 'CALLS',
+          confidence: 0.9,
+          reason: '',
         });
       }
     }

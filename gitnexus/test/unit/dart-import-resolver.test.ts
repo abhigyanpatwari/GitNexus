@@ -4,7 +4,7 @@ import type { ResolveCtx } from '../../src/core/ingestion/import-resolvers/types
 
 function makeCtx(files: string[]): ResolveCtx {
   const allFileList = files;
-  const normalizedFileList = files.map(f => f.toLowerCase());
+  const normalizedFileList = files.map((f) => f.toLowerCase());
   return {
     allFilePaths: new Set(files),
     allFileList,

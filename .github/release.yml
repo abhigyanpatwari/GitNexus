@@ -35,7 +35,7 @@ changelog:
         - dependencies
     - title: "\U0001F4DD Other Changes"
       labels:
-        - "*"
+        - '*'
       exclude:
         labels:
           - dependencies

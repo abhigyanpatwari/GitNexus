@@ -45,16 +45,18 @@ describe('CompatibleStdioServerTransport', () => {
   it('parses newline-delimited initialize requests', async () => {
     await transport.start();
     const messagePromise = onceMessage(transport);
-    stdin.write(`${JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'initialize',
-      params: {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: { name: 'cursor', version: '0.1' },
-      },
-    })}\n`);
+    stdin.write(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'cursor', version: '0.1' },
+        },
+      })}\n`,
+    );
 
     await expect(messagePromise).resolves.toMatchObject({
       method: 'initialize',
@@ -88,8 +90,6 @@ describe('CompatibleStdioServerTransport', () => {
     expect(raw).toMatch(/^Content-Length: \d+\r\n\r\n/);
     expect(raw).toContain('"ok":true');
   });
-
-
 
   it('reports malformed Content-Length headers once without looping forever', async () => {
     await transport.start();
@@ -214,9 +214,9 @@ describe('CompatibleStdioServerTransport', () => {
     await transport.start();
     await transport.close();
 
-    await expect(
-      transport.send({ jsonrpc: '2.0', id: 1, result: { ok: true } }),
-    ).rejects.toThrow(/closed/i);
+    await expect(transport.send({ jsonrpc: '2.0', id: 1, result: { ok: true } })).rejects.toThrow(
+      /closed/i,
+    );
   });
 
   it('does not detect content-length framing from short ambiguous prefix', async () => {
@@ -236,16 +236,18 @@ describe('CompatibleStdioServerTransport', () => {
   it('responds with newline framing after newline input', async () => {
     await transport.start();
     const messagePromise = onceMessage(transport);
-    stdin.write(`${JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'initialize',
-      params: {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: { name: 'cursor', version: '0.1' },
-      },
-    })}\n`);
+    stdin.write(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'cursor', version: '0.1' },
+        },
+      })}\n`,
+    );
     await messagePromise;
 
     const chunks: Buffer[] = [];

@@ -35,11 +35,24 @@
 export interface CobolRegexResults {
   programName: string | null;
   /** All programs in this file with line-range boundaries for per-program scoping. */
-  programs: Array<{ name: string; startLine: number; endLine: number; nestingDepth: number; procedureUsing?: string[]; isCommon?: boolean }>;
+  programs: Array<{
+    name: string;
+    startLine: number;
+    endLine: number;
+    nestingDepth: number;
+    procedureUsing?: string[];
+    isCommon?: boolean;
+  }>;
   paragraphs: Array<{ name: string; line: number }>;
   sections: Array<{ name: string; line: number }>;
   performs: Array<{ caller: string | null; target: string; thruTarget?: string; line: number }>;
-  calls: Array<{ target: string; line: number; isQuoted: boolean; parameters?: string[]; returning?: string }>;
+  calls: Array<{
+    target: string;
+    line: number;
+    isQuoted: boolean;
+    parameters?: string[];
+    returning?: string;
+  }>;
   copies: Array<{ target: string; line: number }>;
   dataItems: Array<{
     name: string;
@@ -84,7 +97,16 @@ export interface CobolRegexResults {
     tables: string[];
     cursors: string[];
     hostVariables: string[];
-    operation: 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'DECLARE' | 'OPEN' | 'CLOSE' | 'FETCH' | 'OTHER';
+    operation:
+      | 'SELECT'
+      | 'INSERT'
+      | 'UPDATE'
+      | 'DELETE'
+      | 'DECLARE'
+      | 'OPEN'
+      | 'CLOSE'
+      | 'FETCH'
+      | 'OTHER';
     includeMember?: string;
   }>;
   execCicsBlocks: Array<{
@@ -208,23 +230,61 @@ export function preprocessCobolSource(content: string): string {
 // ---------------------------------------------------------------------------
 
 // COBOL calling-convention keywords to filter from USING parameter lists
-const USING_KEYWORDS = new Set(['BY', 'VALUE', 'REFERENCE', 'CONTENT', 'ADDRESS', 'OF', 'RETURNING']);
+const USING_KEYWORDS = new Set([
+  'BY',
+  'VALUE',
+  'REFERENCE',
+  'CONTENT',
+  'ADDRESS',
+  'OF',
+  'RETURNING',
+]);
 
 // CALL ... USING keyword filter (extends USING_KEYWORDS for CALL-specific forms)
 const CALL_USING_FILTER = new Set([
-  'BY', 'REFERENCE', 'CONTENT', 'VALUE',
-  'ADDRESS', 'OF', 'LENGTH', 'OMITTED',
+  'BY',
+  'REFERENCE',
+  'CONTENT',
+  'VALUE',
+  'ADDRESS',
+  'OF',
+  'LENGTH',
+  'OMITTED',
 ]);
 
 const EXCLUDED_PARA_NAMES = new Set([
-  'DECLARATIVES', 'END', 'PROCEDURE', 'IDENTIFICATION',
-  'ENVIRONMENT', 'DATA', 'WORKING-STORAGE', 'LINKAGE',
-  'FILE', 'LOCAL-STORAGE', 'COMMUNICATION', 'REPORT',
-  'SCREEN', 'INPUT-OUTPUT', 'CONFIGURATION',
+  'DECLARATIVES',
+  'END',
+  'PROCEDURE',
+  'IDENTIFICATION',
+  'ENVIRONMENT',
+  'DATA',
+  'WORKING-STORAGE',
+  'LINKAGE',
+  'FILE',
+  'LOCAL-STORAGE',
+  'COMMUNICATION',
+  'REPORT',
+  'SCREEN',
+  'INPUT-OUTPUT',
+  'CONFIGURATION',
   // COBOL verbs that appear alone on a line with period (false-positive in free-format)
-  'GOBACK', 'STOP', 'EXIT', 'CONTINUE',
-  'DISPLAY', 'ACCEPT', 'WRITE', 'READ', 'REWRITE', 'DELETE',
-  'OPEN', 'CLOSE', 'RETURN', 'RELEASE', 'SORT', 'MERGE',
+  'GOBACK',
+  'STOP',
+  'EXIT',
+  'CONTINUE',
+  'DISPLAY',
+  'ACCEPT',
+  'WRITE',
+  'READ',
+  'REWRITE',
+  'DELETE',
+  'OPEN',
+  'CLOSE',
+  'RETURN',
+  'RELEASE',
+  'SORT',
+  'MERGE',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -242,7 +302,8 @@ type EnvironmentSection = 'input-output' | 'configuration' | null;
 // ---------------------------------------------------------------------------
 
 const RE_DIVISION = /\b(IDENTIFICATION|ENVIRONMENT|DATA|PROCEDURE)\s+DIVISION\b/i;
-const RE_SECTION = /\b(WORKING-STORAGE|LINKAGE|FILE|LOCAL-STORAGE|SCREEN|INPUT-OUTPUT|CONFIGURATION)\s+SECTION\b/i;
+const RE_SECTION =
+  /\b(WORKING-STORAGE|LINKAGE|FILE|LOCAL-STORAGE|SCREEN|INPUT-OUTPUT|CONFIGURATION)\s+SECTION\b/i;
 
 // IDENTIFICATION DIVISION
 const RE_PROGRAM_ID = /\bPROGRAM-ID\.\s*([A-Z][A-Z0-9-]*)(?:\s+IS\s+COMMON)?/i;
@@ -284,7 +345,8 @@ const RE_END_EXEC = /\bEND-EXEC\b/i;
 
 // GO TO — control flow transfer (same graph semantics as PERFORM)
 // GO TO — captures first target; GO TO p1 p2 p3 DEPENDING ON x handled below
-const RE_GOTO = /\bGO\s+TO\s+([A-Z][A-Z0-9-]+(?:\s+[A-Z][A-Z0-9-]+)*?)(?:\s+DEPENDING\s+ON\s+[A-Z][A-Z0-9-]+)?(?:\s*\.|$)/i;
+const RE_GOTO =
+  /\bGO\s+TO\s+([A-Z][A-Z0-9-]+(?:\s+[A-Z][A-Z0-9-]+)*?)(?:\s+DEPENDING\s+ON\s+[A-Z][A-Z0-9-]+)?(?:\s*\.|$)/i;
 
 // SORT/MERGE file references
 const RE_SORT = /\bSORT\s+([A-Z][A-Z0-9-]+)/i;
@@ -303,17 +365,27 @@ const RE_66_LEVEL = /^\s*66\s+([A-Z][A-Z0-9-]+)\s+RENAMES\s+([A-Z][A-Z0-9-]+)/i;
 // DECLARATIVES boundary and USE AFTER EXCEPTION
 const RE_DECLARATIVES_START = /^\s*DECLARATIVES\s*\.\s*$/i;
 const RE_DECLARATIVES_END = /^\s*END\s+DECLARATIVES\s*\.\s*$/i;
-const RE_USE_AFTER = /\bUSE\s+(?:AFTER\s+)?(?:STANDARD\s+)?(?:EXCEPTION|ERROR)\s+ON\s+([A-Z][A-Z0-9-]+|INPUT|OUTPUT|I-O|EXTEND)\b/i;
+const RE_USE_AFTER =
+  /\bUSE\s+(?:AFTER\s+)?(?:STANDARD\s+)?(?:EXCEPTION|ERROR)\s+ON\s+([A-Z][A-Z0-9-]+|INPUT|OUTPUT|I-O|EXTEND)\b/i;
 
 // SET statement (condition, index)
 const RE_SET_TO_TRUE = /\bSET\s+((?:[A-Z][A-Z0-9-]+(?:\s+OF\s+[A-Z][A-Z0-9-]+)?\s+)+)TO\s+TRUE\b/i;
-const RE_SET_INDEX = /\bSET\s+((?:[A-Z][A-Z0-9-]+\s+)+)(TO|UP\s+BY|DOWN\s+BY)\s+(\d+|[A-Z][A-Z0-9-]+)/i;
+const RE_SET_INDEX =
+  /\bSET\s+((?:[A-Z][A-Z0-9-]+\s+)+)(TO|UP\s+BY|DOWN\s+BY)\s+(\d+|[A-Z][A-Z0-9-]+)/i;
 
 // INITIALIZE statement — data reset (captures targets before REPLACING/WITH clause)
 const RE_INITIALIZE = /\bINITIALIZE\s+([\s\S]*?)(?=\bREPLACING\b|\bWITH\b|\.\s*$|$)/i;
 const INITIALIZE_CLAUSE_KEYWORDS = new Set([
-  'REPLACING', 'WITH', 'ALL', 'ALPHABETIC', 'ALPHANUMERIC',
-  'NUMERIC', 'NATIONAL', 'DBCS', 'EGCS', 'FILLER',
+  'REPLACING',
+  'WITH',
+  'ALL',
+  'ALPHABETIC',
+  'ALPHANUMERIC',
+  'NUMERIC',
+  'NATIONAL',
+  'DBCS',
+  'EGCS',
+  'FILLER',
 ]);
 
 // EXEC DLI (IMS/DB)
@@ -328,8 +400,16 @@ const RE_ENTRY = /\bENTRY\s+(?:"([^"]+)"|'([^']+)')(?:\s+USING\s+([\s\S]*?))?(?:
 // MOVE statement — captures everything after TO for multi-target extraction
 const RE_MOVE = /\bMOVE\s+((?:CORRESPONDING|CORR)\s+)?([A-Z][A-Z0-9-]+)\s+TO\s+(.+)/i;
 const MOVE_SKIP = new Set([
-  'SPACES', 'ZEROS', 'ZEROES', 'LOW-VALUES', 'LOW-VALUE',
-  'HIGH-VALUES', 'HIGH-VALUE', 'QUOTES', 'QUOTE', 'ALL',
+  'SPACES',
+  'ZEROS',
+  'ZEROES',
+  'LOW-VALUES',
+  'LOW-VALUE',
+  'HIGH-VALUES',
+  'HIGH-VALUE',
+  'QUOTES',
+  'QUOTE',
+  'ALL',
 ]);
 
 /**
@@ -344,14 +424,20 @@ function extractMoveTargets(afterTo: string): string[] {
 
   // Remove subscript/reference-modification parenthesized suffixes
   const noSubscripts = text.replace(/\([^)]*\)/g, '');
-  const tokens = noSubscripts.split(/\s+/).filter(t => t.length > 0);
+  const tokens = noSubscripts.split(/\s+/).filter((t) => t.length > 0);
 
   const targets: string[] = [];
   const QUAL_KEYWORDS = new Set(['OF', 'IN']);
   let skipNext = false;
   for (const token of tokens) {
-    if (skipNext) { skipNext = false; continue; }
-    if (QUAL_KEYWORDS.has(token.toUpperCase())) { skipNext = true; continue; }
+    if (skipNext) {
+      skipNext = false;
+      continue;
+    }
+    if (QUAL_KEYWORDS.has(token.toUpperCase())) {
+      skipNext = true;
+      continue;
+    }
     if (/^[A-Z][A-Z0-9-]+$/i.test(token) && !MOVE_SKIP.has(token.toUpperCase())) {
       targets.push(token);
     }
@@ -362,15 +448,28 @@ function extractMoveTargets(afterTo: string): string[] {
 // PERFORM: keywords that may follow PERFORM but are NOT paragraph/section names.
 // Inline PERFORM loops (UNTIL, VARYING) and inline test clauses (WITH TEST,
 // FOREVER) must not be stored as perform-target false positives.
-const PERFORM_KEYWORD_SKIP = new Set([
-  'UNTIL', 'VARYING', 'WITH', 'TEST', 'FOREVER',
-]);
+const PERFORM_KEYWORD_SKIP = new Set(['UNTIL', 'VARYING', 'WITH', 'TEST', 'FOREVER']);
 
 // SORT/MERGE clause keywords that should not be captured as file names
 const SORT_CLAUSE_NOISE = new Set([
-  'ON', 'ASCENDING', 'DESCENDING', 'KEY', 'WITH', 'DUPLICATES',
-  'IN', 'ORDER', 'COLLATING', 'SEQUENCE', 'IS', 'THROUGH', 'THRU',
-  'INPUT', 'OUTPUT', 'PROCEDURE', 'USING', 'GIVING',
+  'ON',
+  'ASCENDING',
+  'DESCENDING',
+  'KEY',
+  'WITH',
+  'DUPLICATES',
+  'IN',
+  'ORDER',
+  'COLLATING',
+  'SEQUENCE',
+  'IS',
+  'THROUGH',
+  'THRU',
+  'INPUT',
+  'OUTPUT',
+  'PROCEDURE',
+  'USING',
+  'GIVING',
 ]);
 
 // COBOL statement verbs used as boundary detectors across accumulators.
@@ -379,27 +478,52 @@ const SORT_CLAUSE_NOISE = new Set([
 // Including CALL here would cause the flush trigger to consume the new CALL line
 // without re-detecting it as a CALL start.
 const COBOL_STATEMENT_VERBS = [
-  'GO\\s+TO', 'PERFORM', 'MOVE', 'DISPLAY', 'ACCEPT',
-  'INSPECT', 'SEARCH', 'SORT', 'MERGE', 'IF', 'EVALUATE',
-  'SET', 'INITIALIZE', 'STOP', 'EXIT', 'GOBACK', 'CONTINUE',
-  'READ', 'WRITE', 'REWRITE', 'DELETE', 'OPEN', 'CLOSE', 'START',
-  'CANCEL', 'COMPUTE', 'ADD', 'SUBTRACT', 'MULTIPLY', 'DIVIDE',
-  'STRING', 'UNSTRING',
+  'GO\\s+TO',
+  'PERFORM',
+  'MOVE',
+  'DISPLAY',
+  'ACCEPT',
+  'INSPECT',
+  'SEARCH',
+  'SORT',
+  'MERGE',
+  'IF',
+  'EVALUATE',
+  'SET',
+  'INITIALIZE',
+  'STOP',
+  'EXIT',
+  'GOBACK',
+  'CONTINUE',
+  'READ',
+  'WRITE',
+  'REWRITE',
+  'DELETE',
+  'OPEN',
+  'CLOSE',
+  'START',
+  'CANCEL',
+  'COMPUTE',
+  'ADD',
+  'SUBTRACT',
+  'MULTIPLY',
+  'DIVIDE',
+  'STRING',
+  'UNSTRING',
 ];
 
 /** Regex matching start of any COBOL statement verb (for accumulator flush triggers). */
-const RE_STATEMENT_VERB_START = new RegExp(
-  `^(?:${COBOL_STATEMENT_VERBS.join('|')})(?:\\s|$)`, 'i',
-);
+const RE_STATEMENT_VERB_START = new RegExp(`^(?:${COBOL_STATEMENT_VERBS.join('|')})(?:\\s|$)`, 'i');
 
 /** Lookahead alternation for USING parameter extraction (stops before statement verbs).
  *  Includes CALL (excluded from COBOL_STATEMENT_VERBS to avoid callAccum conflicts). */
 const USING_VERB_LOOKAHEAD = [...COBOL_STATEMENT_VERBS, 'CALL']
-  .filter(v => v !== 'GO\\s+TO') // GO TO handled separately with \bGO\s+TO\b
-  .map(v => `\\b${v}(?=\\s|$)`)
+  .filter((v) => v !== 'GO\\s+TO') // GO TO handled separately with \bGO\s+TO\b
+  .map((v) => `\\b${v}(?=\\s|$)`)
   .join('|');
 const RE_USING_PARAMS = new RegExp(
-  `\\bUSING\\s+([\\s\\S]*?)(?=\\bRETURNING\\b|\\bON\\s+(?:EXCEPTION|OVERFLOW)\\b|\\bNOT\\s+ON\\b|\\bEND-CALL\\b|\\bGO\\s+TO\\b|${USING_VERB_LOOKAHEAD}|\\.\\s*$|$)`, 'i',
+  `\\bUSING\\s+([\\s\\S]*?)(?=\\bRETURNING\\b|\\bON\\s+(?:EXCEPTION|OVERFLOW)\\b|\\bNOT\\s+ON\\b|\\bEND-CALL\\b|\\bGO\\s+TO\\b|${USING_VERB_LOOKAHEAD}|\\.\\s*$|$)`,
+  'i',
 );
 
 // ---------------------------------------------------------------------------
@@ -435,7 +559,16 @@ function parseDataItemClauses(rest: string): {
   isExternal?: boolean;
   isGlobal?: boolean;
 } {
-  const result: { pic?: string; usage?: string; redefines?: string; occurs?: number; dependingOn?: string; value?: string; isExternal?: boolean; isGlobal?: boolean } = {};
+  const result: {
+    pic?: string;
+    usage?: string;
+    redefines?: string;
+    occurs?: number;
+    dependingOn?: string;
+    value?: string;
+    isExternal?: boolean;
+    isGlobal?: boolean;
+  } = {};
 
   // Strip trailing period for easier parsing
   const text = rest.replace(/\.\s*$/, '');
@@ -447,7 +580,9 @@ function parseDataItemClauses(rest: string): {
   }
 
   // USAGE [IS] <usage-type> — including non-standard COMP-6, COMP-X etc.
-  const usageMatch = text.match(/\bUSAGE\s+(?:IS\s+)?(COMP(?:UTATIONAL)?(?:-[0-9X])?|BINARY|PACKED-DECIMAL|DISPLAY|INDEX|POINTER|NATIONAL)\b/i);
+  const usageMatch = text.match(
+    /\bUSAGE\s+(?:IS\s+)?(COMP(?:UTATIONAL)?(?:-[0-9X])?|BINARY|PACKED-DECIMAL|DISPLAY|INDEX|POINTER|NATIONAL)\b/i,
+  );
   if (usageMatch) {
     result.usage = usageMatch[1].toUpperCase();
   } else {
@@ -465,7 +600,9 @@ function parseDataItemClauses(rest: string): {
   }
 
   // OCCURS <n> [TO <m>] [TIMES] [DEPENDING ON <field>]
-  const occursMatch = text.match(/\bOCCURS\s+(\d+)(?:\s+TO\s+(\d+))?\s*(?:TIMES\s*)?(?:DEPENDING\s+ON\s+([A-Z][A-Z0-9-]+(?:\s*\([^)]*\))?))?/i);
+  const occursMatch = text.match(
+    /\bOCCURS\s+(\d+)(?:\s+TO\s+(\d+))?\s*(?:TIMES\s*)?(?:DEPENDING\s+ON\s+([A-Z][A-Z0-9-]+(?:\s*\([^)]*\))?))?/i,
+  );
   if (occursMatch) {
     result.occurs = parseInt(occursMatch[1], 10);
     if (occursMatch[3]) {
@@ -482,12 +619,17 @@ function parseDataItemClauses(rest: string): {
   if (!result.value) {
     const valueIdx = text.search(/\bVALUE\b/i);
     if (valueIdx >= 0) {
-      const afterValue = text.substring(valueIdx + 5).replace(/^\s+IS\s+/i, '').trimStart();
+      const afterValue = text
+        .substring(valueIdx + 5)
+        .replace(/^\s+IS\s+/i, '')
+        .trimStart();
       // Try quoted: "..." or '...' (with optional type prefix X, N, G, B)
       const quotedMatch = afterValue.match(/^([XNGB])?(?:"([^"]*)"|'([^']*)')/i);
       if (quotedMatch) {
         const prefix = quotedMatch[1] ? quotedMatch[1].toUpperCase() : '';
-        result.value = prefix ? `${prefix}'${quotedMatch[2] ?? quotedMatch[3]}'` : (quotedMatch[2] ?? quotedMatch[3]);
+        result.value = prefix
+          ? `${prefix}'${quotedMatch[2] ?? quotedMatch[3]}'`
+          : (quotedMatch[2] ?? quotedMatch[3]);
       } else {
         // Try ALL "..." or ALL '...'
         const allMatch = afterValue.match(/^ALL\s+(?:"([^"]*)"|'([^']*)')/i);
@@ -582,7 +724,9 @@ function parseSelectStatement(stmt: string, startLine: number): FileDeclaration 
     result.assignTo = assignMatch[2] || assignMatch[3] || '';
   }
 
-  const orgMatch = text.match(/\bORGANIZATION\s+(?:IS\s+)?(SEQUENTIAL|INDEXED|RELATIVE|LINE\s+SEQUENTIAL)/i);
+  const orgMatch = text.match(
+    /\bORGANIZATION\s+(?:IS\s+)?(SEQUENTIAL|INDEXED|RELATIVE|LINE\s+SEQUENTIAL)/i,
+  );
   if (orgMatch) {
     result.organization = orgMatch[1].toUpperCase();
   }
@@ -619,9 +763,21 @@ function parseSelectStatement(stmt: string, startLine: number): FileDeclaration 
 // Private helper: parse EXEC SQL block
 // ---------------------------------------------------------------------------
 
-type SqlOperation = 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'DECLARE' | 'OPEN' | 'CLOSE' | 'FETCH' | 'OTHER';
+type SqlOperation =
+  | 'SELECT'
+  | 'INSERT'
+  | 'UPDATE'
+  | 'DELETE'
+  | 'DECLARE'
+  | 'OPEN'
+  | 'CLOSE'
+  | 'FETCH'
+  | 'OTHER';
 
-function parseExecSqlBlock(block: string, line: number): CobolRegexResults['execSqlBlocks'][number] {
+function parseExecSqlBlock(
+  block: string,
+  line: number,
+): CobolRegexResults['execSqlBlocks'][number] {
   // Strip EXEC SQL ... END-EXEC wrapper
   const body = block
     .replace(/\bEXEC\s+SQL\b/i, '')
@@ -632,9 +788,15 @@ function parseExecSqlBlock(block: string, line: number): CobolRegexResults['exec
   // Determine operation from first SQL keyword
   const firstWord = body.split(/\s+/)[0]?.toUpperCase() || '';
   const OP_MAP: Record<string, SqlOperation> = {
-    SELECT: 'SELECT', INSERT: 'INSERT', UPDATE: 'UPDATE', DELETE: 'DELETE',
-    DECLARE: 'DECLARE', OPEN: 'OPEN', CLOSE: 'CLOSE', FETCH: 'FETCH',
-    INCLUDE: 'OTHER',  // we handle INCLUDE specially below
+    SELECT: 'SELECT',
+    INSERT: 'INSERT',
+    UPDATE: 'UPDATE',
+    DELETE: 'DELETE',
+    DECLARE: 'DECLARE',
+    OPEN: 'OPEN',
+    CLOSE: 'CLOSE',
+    FETCH: 'FETCH',
+    INCLUDE: 'OTHER', // we handle INCLUDE specially below
   };
   const operation: SqlOperation = OP_MAP[firstWord] || 'OTHER';
 
@@ -692,7 +854,10 @@ function parseExecSqlBlock(block: string, line: number): CobolRegexResults['exec
 // Private helper: parse EXEC CICS block
 // ---------------------------------------------------------------------------
 
-function parseExecCicsBlock(block: string, line: number): CobolRegexResults['execCicsBlocks'][number] {
+function parseExecCicsBlock(
+  block: string,
+  line: number,
+): CobolRegexResults['execCicsBlocks'][number] {
   // Strip EXEC CICS ... END-EXEC wrapper
   const body = block
     .replace(/\bEXEC\s+CICS\b/i, '')
@@ -702,11 +867,21 @@ function parseExecCicsBlock(block: string, line: number): CobolRegexResults['exe
 
   // Command: first keyword(s) — handle two-word commands like SEND MAP, RECEIVE MAP
   const twoWordCommands = [
-    'SEND MAP', 'RECEIVE MAP', 'SEND TEXT', 'SEND CONTROL',
-    'READ NEXT', 'READ PREV',
-    'WRITEQ TS', 'WRITEQ TD', 'READQ TS', 'READQ TD',
-    'DELETEQ TS', 'DELETEQ TD',
-    'HANDLE ABEND', 'HANDLE AID', 'HANDLE CONDITION',
+    'SEND MAP',
+    'RECEIVE MAP',
+    'SEND TEXT',
+    'SEND CONTROL',
+    'READ NEXT',
+    'READ PREV',
+    'WRITEQ TS',
+    'WRITEQ TD',
+    'READQ TS',
+    'READQ TD',
+    'DELETEQ TS',
+    'DELETEQ TD',
+    'HANDLE ABEND',
+    'HANDLE AID',
+    'HANDLE CONDITION',
     'START TRANSID',
   ];
   let command = '';
@@ -740,7 +915,9 @@ function parseExecCicsBlock(block: string, line: number): CobolRegexResults['exe
 
   // FILE/DATASET: FILE('name') or DATASET('name') or FILE(VARIABLE)
   // Used in CICS READ, WRITE, REWRITE, DELETE, STARTBR, READNEXT, READPREV, ENDBR
-  const fileMatch = body.match(/\b(?:FILE|DATASET)\s*\(\s*(?:['"]([^'"]+)['"]|([A-Z][A-Z0-9-]+))\s*\)/i);
+  const fileMatch = body.match(
+    /\b(?:FILE|DATASET)\s*\(\s*(?:['"]([^'"]+)['"]|([A-Z][A-Z0-9-]+))\s*\)/i,
+  );
   if (fileMatch) {
     result.fileName = fileMatch[1] ?? fileMatch[2];
     result.fileIsLiteral = !!fileMatch[1];
@@ -769,8 +946,15 @@ function parseExecCicsBlock(block: string, line: number): CobolRegexResults['exe
 // Private helper: parse EXEC DLI block (IMS/DB)
 // ---------------------------------------------------------------------------
 
-function parseExecDliBlock(block: string, line: number): CobolRegexResults['execDliBlocks'][number] {
-  const body = block.replace(/\bEXEC\s+DLI\b/i, '').replace(/\bEND-EXEC\b/i, '').replace(/\s+/g, ' ').trim();
+function parseExecDliBlock(
+  block: string,
+  line: number,
+): CobolRegexResults['execDliBlocks'][number] {
+  const body = block
+    .replace(/\bEXEC\s+DLI\b/i, '')
+    .replace(/\bEND-EXEC\b/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
   const verb = body.split(/\s+/)[0]?.toUpperCase() || '';
   const result: CobolRegexResults['execDliBlocks'][number] = { line, verb };
 
@@ -842,7 +1026,12 @@ export function extractCobolSymbolsWithRegex(
   let currentParagraph: string | null = null;
 
   // Program boundary stack for nested PROGRAM-ID / END PROGRAM tracking
-  const programBoundaryStack: Array<{ name: string; startLine: number; procedureUsing?: string[]; isCommon?: boolean }> = [];
+  const programBoundaryStack: Array<{
+    name: string;
+    startLine: number;
+    procedureUsing?: string[];
+    isCommon?: boolean;
+  }> = [];
 
   // SELECT accumulator (multi-line)
   let selectAccum: string | null = null;
@@ -1135,16 +1324,27 @@ export function extractCobolSymbolsWithRegex(
 
       const divName = divMatch[1].toUpperCase();
       switch (divName) {
-        case 'IDENTIFICATION': currentDivision = 'identification'; break;
-        case 'ENVIRONMENT':    currentDivision = 'environment'; currentEnvSection = null; break;
-        case 'DATA':           currentDivision = 'data'; currentDataSection = 'unknown'; break;
+        case 'IDENTIFICATION':
+          currentDivision = 'identification';
+          break;
+        case 'ENVIRONMENT':
+          currentDivision = 'environment';
+          currentEnvSection = null;
+          break;
+        case 'DATA':
+          currentDivision = 'data';
+          currentDataSection = 'unknown';
+          break;
         case 'PROCEDURE': {
           currentDivision = 'procedure';
           currentParagraph = null;
           const procUsingMatch = line.match(RE_PROC_USING);
           if (procUsingMatch) {
-            const params = procUsingMatch[1].split(/\bRETURNING\b/i)[0].trim().split(/\s+/)
-              .filter(s => s.length > 0 && !USING_KEYWORDS.has(s.toUpperCase()));
+            const params = procUsingMatch[1]
+              .split(/\bRETURNING\b/i)[0]
+              .trim()
+              .split(/\s+/)
+              .filter((s) => s.length > 0 && !USING_KEYWORDS.has(s.toUpperCase()));
             result.procedureUsing = params;
             // Store per-program on the boundary stack
             const topProg = programBoundaryStack[programBoundaryStack.length - 1];
@@ -1168,13 +1368,34 @@ export function extractCobolSymbolsWithRegex(
 
       const secName = secMatch[1].toUpperCase();
       switch (secName) {
-        case 'WORKING-STORAGE': currentDivision = 'data'; currentDataSection = 'working-storage'; break;
-        case 'LINKAGE':         currentDivision = 'data'; currentDataSection = 'linkage'; break;
-        case 'FILE':            currentDivision = 'data'; currentDataSection = 'file'; break;
-        case 'LOCAL-STORAGE':   currentDivision = 'data'; currentDataSection = 'local-storage'; break;
-        case 'SCREEN':          currentDivision = 'data'; currentDataSection = 'screen'; break;
-        case 'INPUT-OUTPUT':    currentDivision = 'environment'; currentEnvSection = 'input-output'; break;
-        case 'CONFIGURATION':   currentDivision = 'environment'; currentEnvSection = 'configuration'; break;
+        case 'WORKING-STORAGE':
+          currentDivision = 'data';
+          currentDataSection = 'working-storage';
+          break;
+        case 'LINKAGE':
+          currentDivision = 'data';
+          currentDataSection = 'linkage';
+          break;
+        case 'FILE':
+          currentDivision = 'data';
+          currentDataSection = 'file';
+          break;
+        case 'LOCAL-STORAGE':
+          currentDivision = 'data';
+          currentDataSection = 'local-storage';
+          break;
+        case 'SCREEN':
+          currentDivision = 'data';
+          currentDataSection = 'screen';
+          break;
+        case 'INPUT-OUTPUT':
+          currentDivision = 'environment';
+          currentEnvSection = 'input-output';
+          break;
+        case 'CONFIGURATION':
+          currentDivision = 'environment';
+          currentEnvSection = 'configuration';
+          break;
       }
       return;
     }
@@ -1200,10 +1421,14 @@ export function extractCobolSymbolsWithRegex(
       // Only use RE_PROC_PARAGRAPH as flush trigger when in Area A (≤7 leading spaces, fixed-format).
       // In free-format, never use RE_PROC_PARAGRAPH (can't distinguish parameters from paragraphs).
       const trimmedLine = line.trimStart();
-      const leadingSpaces = (line.match(/^(\s*)/)?.[1].length ?? 0);
-      const isAreaAParagraph = RE_PROC_PARAGRAPH.test(line) && (!isFreeFormat ? leadingSpaces <= 7 : false);
-      if (RE_STATEMENT_VERB_START.test(trimmedLine)
-        || RE_PROC_SECTION.test(line) || isAreaAParagraph) {
+      const leadingSpaces = line.match(/^(\s*)/)?.[1].length ?? 0;
+      const isAreaAParagraph =
+        RE_PROC_PARAGRAPH.test(line) && (!isFreeFormat ? leadingSpaces <= 7 : false);
+      if (
+        RE_STATEMENT_VERB_START.test(trimmedLine) ||
+        RE_PROC_SECTION.test(line) ||
+        isAreaAParagraph
+      ) {
         flushCallAccum(); // Flush CALL without this line's content
         // Fall through to process this line normally
       } else {
@@ -1213,7 +1438,10 @@ export function extractCobolSymbolsWithRegex(
         }
         return; // continuation line consumed by CALL accumulator
       }
-    } else if (currentDivision === 'procedure' && /(?<![A-Z0-9-])\bCALL\s+(?:"[^"]+"|'[^']+'|[A-Z][A-Z0-9-]+)/i.test(line)) {
+    } else if (
+      currentDivision === 'procedure' &&
+      /(?<![A-Z0-9-])\bCALL\s+(?:"[^"]+"|'[^']+'|[A-Z][A-Z0-9-]+)/i.test(line)
+    ) {
       // Check if this is a complete single-line CALL (ends with period or END-CALL)
       if (/\.\s*$/.test(line) || /\bEND-CALL\b/i.test(line)) {
         // Single-line CALL — extract immediately via flushCallAccum
@@ -1265,7 +1493,11 @@ export function extractCobolSymbolsWithRegex(
       const isCommon = /\bIS\s+COMMON\b/i.test(line);
 
       // Push program boundary for line-range tracking
-      programBoundaryStack.push({ name: m[1], startLine: lineNum, isCommon: isCommon || undefined });
+      programBoundaryStack.push({
+        name: m[1],
+        startLine: lineNum,
+        isCommon: isCommon || undefined,
+      });
       return;
     }
 
@@ -1339,21 +1571,47 @@ export function extractCobolSymbolsWithRegex(
         const afterUsing = fullSort.substring(usingIdx + 6);
         const gIdx = afterUsing.toUpperCase().search(/\bGIVING\b/);
         const usingText = gIdx >= 0 ? afterUsing.substring(0, gIdx) : afterUsing;
-        usingFiles.push(...usingText.trim().split(/\s+/).map(f => f.replace(/\.$/, '')).filter(f => /^[A-Z][A-Z0-9-]+$/i.test(f) && !SORT_CLAUSE_NOISE.has(f.toUpperCase())));
+        usingFiles.push(
+          ...usingText
+            .trim()
+            .split(/\s+/)
+            .map((f) => f.replace(/\.$/, ''))
+            .filter((f) => /^[A-Z][A-Z0-9-]+$/i.test(f) && !SORT_CLAUSE_NOISE.has(f.toUpperCase())),
+        );
       }
       if (givingIdx >= 0) {
         const givingText = fullSort.substring(givingIdx + 7);
-        givingFiles.push(...givingText.trim().split(/\s+/).map(f => f.replace(/\.$/, '')).filter(f => /^[A-Z][A-Z0-9-]+$/i.test(f) && !SORT_CLAUSE_NOISE.has(f.toUpperCase())));
+        givingFiles.push(
+          ...givingText
+            .trim()
+            .split(/\s+/)
+            .map((f) => f.replace(/\.$/, ''))
+            .filter((f) => /^[A-Z][A-Z0-9-]+$/i.test(f) && !SORT_CLAUSE_NOISE.has(f.toUpperCase())),
+        );
       }
       // INPUT PROCEDURE IS / OUTPUT PROCEDURE IS → control-flow targets (like PERFORM)
       // Supports optional THRU/THROUGH range: INPUT PROCEDURE IS proc-start THRU proc-end
-      const inputProcMatch = fullSort.match(/\bINPUT\s+PROCEDURE\s+(?:IS\s+)?([A-Z][A-Z0-9-]+)(?:\s+(?:THRU|THROUGH)\s+([A-Z][A-Z0-9-]+))?/i);
-      const outputProcMatch = fullSort.match(/\bOUTPUT\s+PROCEDURE\s+(?:IS\s+)?([A-Z][A-Z0-9-]+)(?:\s+(?:THRU|THROUGH)\s+([A-Z][A-Z0-9-]+))?/i);
+      const inputProcMatch = fullSort.match(
+        /\bINPUT\s+PROCEDURE\s+(?:IS\s+)?([A-Z][A-Z0-9-]+)(?:\s+(?:THRU|THROUGH)\s+([A-Z][A-Z0-9-]+))?/i,
+      );
+      const outputProcMatch = fullSort.match(
+        /\bOUTPUT\s+PROCEDURE\s+(?:IS\s+)?([A-Z][A-Z0-9-]+)(?:\s+(?:THRU|THROUGH)\s+([A-Z][A-Z0-9-]+))?/i,
+      );
       if (inputProcMatch) {
-        result.performs.push({ caller: currentParagraph, target: inputProcMatch[1], thruTarget: inputProcMatch[2] || undefined, line: sortStartLine });
+        result.performs.push({
+          caller: currentParagraph,
+          target: inputProcMatch[1],
+          thruTarget: inputProcMatch[2] || undefined,
+          line: sortStartLine,
+        });
       }
       if (outputProcMatch) {
-        result.performs.push({ caller: currentParagraph, target: outputProcMatch[1], thruTarget: outputProcMatch[2] || undefined, line: sortStartLine });
+        result.performs.push({
+          caller: currentParagraph,
+          target: outputProcMatch[1],
+          thruTarget: outputProcMatch[2] || undefined,
+          line: sortStartLine,
+        });
       }
       result.sorts.push({ sortFile: smatch[1], usingFiles, givingFiles, line: sortStartLine });
     }
@@ -1364,10 +1622,15 @@ export function extractCobolSymbolsWithRegex(
     if (inspectAccum === null) return;
     const text = inspectAccum;
     const fieldMatch = text.match(/\bINSPECT\s+([A-Z][A-Z0-9-]+)/i);
-    if (!fieldMatch) { inspectAccum = null; return; }
+    if (!fieldMatch) {
+      inspectAccum = null;
+      return;
+    }
 
     const counters: string[] = [];
-    const tallySection = text.match(/\bTALLYING\b([\s\S]+?)(?:\bREPLACING\b|\bCONVERTING\b|\.\s*$)/i);
+    const tallySection = text.match(
+      /\bTALLYING\b([\s\S]+?)(?:\bREPLACING\b|\bCONVERTING\b|\.\s*$)/i,
+    );
     if (tallySection) {
       const counterRe = /([A-Z][A-Z0-9-]+)\s+FOR\b/gi;
       let cm: RegExpExecArray | null;
@@ -1379,10 +1642,13 @@ export function extractCobolSymbolsWithRegex(
     const hasTallying = /\bTALLYING\b/i.test(text);
     const hasReplacing = /\bREPLACING\b/i.test(text);
     const hasConverting = /\bCONVERTING\b/i.test(text);
-    const form = hasConverting ? 'converting' as const
-      : hasTallying && hasReplacing ? 'tallying-replacing' as const
-      : hasTallying ? 'tallying' as const
-      : 'replacing' as const;
+    const form = hasConverting
+      ? ('converting' as const)
+      : hasTallying && hasReplacing
+        ? ('tallying-replacing' as const)
+        : hasTallying
+          ? ('tallying' as const)
+          : ('replacing' as const);
 
     result.inspects.push({
       inspectedField: fieldMatch[1],
@@ -1408,12 +1674,26 @@ export function extractCobolSymbolsWithRegex(
       const afterCall = text.substring(callMatch.index! + callMatch[0].length);
       const usingMatch = afterCall.match(RE_USING_PARAMS);
       const parameters = usingMatch
-        ? usingMatch[1].split(/\bRETURNING\b/i)[0].trim().split(/\s+/)
-            .filter(s => s.length > 0 && !CALL_USING_FILTER.has(s.toUpperCase()) && /^[A-Z][A-Z0-9-]+$/i.test(s))
+        ? usingMatch[1]
+            .split(/\bRETURNING\b/i)[0]
+            .trim()
+            .split(/\s+/)
+            .filter(
+              (s) =>
+                s.length > 0 &&
+                !CALL_USING_FILTER.has(s.toUpperCase()) &&
+                /^[A-Z][A-Z0-9-]+$/i.test(s),
+            )
         : undefined;
       const retMatch = afterCall.match(/\bRETURNING\s+([A-Z][A-Z0-9-]+)/i);
       const returning = retMatch ? retMatch[1] : undefined;
-      result.calls.push({ target: callTarget, line: callAccumLine, isQuoted: true, parameters, returning });
+      result.calls.push({
+        target: callTarget,
+        line: callAccumLine,
+        isQuoted: true,
+        parameters,
+        returning,
+      });
     }
 
     // Extract dynamic CALLs from the full statement
@@ -1421,17 +1701,35 @@ export function extractCobolSymbolsWithRegex(
       const afterDynCall = text.substring(dynCallMatch.index! + dynCallMatch[0].length);
       const dynUsingMatch = afterDynCall.match(RE_USING_PARAMS);
       const dynParameters = dynUsingMatch
-        ? dynUsingMatch[1].split(/\bRETURNING\b/i)[0].trim().split(/\s+/)
-            .filter(s => s.length > 0 && !CALL_USING_FILTER.has(s.toUpperCase()) && /^[A-Z][A-Z0-9-]+$/i.test(s))
+        ? dynUsingMatch[1]
+            .split(/\bRETURNING\b/i)[0]
+            .trim()
+            .split(/\s+/)
+            .filter(
+              (s) =>
+                s.length > 0 &&
+                !CALL_USING_FILTER.has(s.toUpperCase()) &&
+                /^[A-Z][A-Z0-9-]+$/i.test(s),
+            )
         : undefined;
       const dynRetMatch = afterDynCall.match(/\bRETURNING\s+([A-Z][A-Z0-9-]+)/i);
       const dynReturning = dynRetMatch ? dynRetMatch[1] : undefined;
-      result.calls.push({ target: dynCallMatch[1], line: callAccumLine, isQuoted: false, parameters: dynParameters, returning: dynReturning });
+      result.calls.push({
+        target: dynCallMatch[1],
+        line: callAccumLine,
+        isQuoted: false,
+        parameters: dynParameters,
+        returning: dynReturning,
+      });
     }
 
     // Extract CANCELs from within the CALL block (common in ON EXCEPTION handlers)
     for (const cancelMatch of text.matchAll(RE_CANCEL)) {
-      result.cancels.push({ target: cancelMatch[1] ?? cancelMatch[2], line: callAccumLine, isQuoted: true });
+      result.cancels.push({
+        target: cancelMatch[1] ?? cancelMatch[2],
+        line: callAccumLine,
+        isQuoted: true,
+      });
     }
     for (const dynCancelMatch of text.matchAll(RE_CANCEL_DYNAMIC)) {
       result.cancels.push({ target: dynCancelMatch[1], line: callAccumLine, isQuoted: false });
@@ -1569,8 +1867,11 @@ export function extractCobolSymbolsWithRegex(
     if (pendingProcUsing) {
       const usingMatch = line.match(/\bUSING\s+([\s\S]*?)(?:\.|$)/i);
       if (usingMatch) {
-        const params = usingMatch[1].split(/\bRETURNING\b/i)[0].trim().split(/\s+/)
-          .filter(s => s.length > 0 && !USING_KEYWORDS.has(s.toUpperCase()));
+        const params = usingMatch[1]
+          .split(/\bRETURNING\b/i)[0]
+          .trim()
+          .split(/\s+/)
+          .filter((s) => s.length > 0 && !USING_KEYWORDS.has(s.toUpperCase()));
         result.procedureUsing = params;
         const topProg = programBoundaryStack[programBoundaryStack.length - 1];
         if (topProg) topProg.procedureUsing = params;
@@ -1583,7 +1884,10 @@ export function extractCobolSymbolsWithRegex(
     const secMatch = line.match(RE_PROC_SECTION);
     if (secMatch) {
       const name = secMatch[1];
-      if (!EXCLUDED_PARA_NAMES.has(name.toUpperCase()) && !name.toUpperCase().includes('DIVISION')) {
+      if (
+        !EXCLUDED_PARA_NAMES.has(name.toUpperCase()) &&
+        !name.toUpperCase().includes('DIVISION')
+      ) {
         result.sections.push({ name, line: lineNum });
         // Don't set currentParagraph to section name — sections are Namespaces,
         // not Functions. Setting it here would cause PERFORMs to be attributed
@@ -1601,7 +1905,12 @@ export function extractCobolSymbolsWithRegex(
       // data items or CALL USING parameters on continuation lines.
       const leadingSpaces = line.match(/^(\s*)/)?.[1].length ?? 0;
       if (!isFreeFormat && leadingSpaces > 7) return; // Area B — not a paragraph
-      if (!EXCLUDED_PARA_NAMES.has(name.toUpperCase()) && !name.toUpperCase().startsWith('END-') && name.toUpperCase() !== 'DIVISION' && name.toUpperCase() !== 'SECTION') {
+      if (
+        !EXCLUDED_PARA_NAMES.has(name.toUpperCase()) &&
+        !name.toUpperCase().startsWith('END-') &&
+        name.toUpperCase() !== 'DIVISION' &&
+        name.toUpperCase() !== 'SECTION'
+      ) {
         result.paragraphs.push({ name, line: lineNum });
         currentParagraph = name;
       }
@@ -1637,7 +1946,10 @@ export function extractCobolSymbolsWithRegex(
         result.entryPoints.push({
           name: entryName,
           parameters: usingClause
-            ? usingClause.trim().split(/\s+/).filter(s => s.length > 0 && !USING_KEYWORDS.has(s.toUpperCase()))
+            ? usingClause
+                .trim()
+                .split(/\s+/)
+                .filter((s) => s.length > 0 && !USING_KEYWORDS.has(s.toUpperCase()))
             : [],
           line: lineNum,
         });
@@ -1652,7 +1964,9 @@ export function extractCobolSymbolsWithRegex(
         const isCorresponding = !!moveMatch[1];
         // MOVE CORRESPONDING is always single-target per COBOL standard
         const targets = isCorresponding
-          ? [moveMatch[3].replace(/\..*$/, '').trim().split(/\s+/)[0]].filter(t => /^[A-Z][A-Z0-9-]+$/i.test(t))
+          ? [moveMatch[3].replace(/\..*$/, '').trim().split(/\s+/)[0]].filter((t) =>
+              /^[A-Z][A-Z0-9-]+$/i.test(t),
+            )
           : extractMoveTargets(moveMatch[3]);
 
         if (targets.length > 0) {
@@ -1670,7 +1984,10 @@ export function extractCobolSymbolsWithRegex(
     // GO TO — control flow transfer (handles GO TO p1 p2 p3 DEPENDING ON x)
     const gotoMatch = line.match(RE_GOTO);
     if (gotoMatch) {
-      const targets = gotoMatch[1].trim().split(/\s+/).filter(t => /^[A-Z][A-Z0-9-]+$/i.test(t));
+      const targets = gotoMatch[1]
+        .trim()
+        .split(/\s+/)
+        .filter((t) => /^[A-Z][A-Z0-9-]+$/i.test(t));
       for (const target of targets) {
         result.gotos.push({ caller: currentParagraph, target, line: lineNum });
       }
@@ -1698,11 +2015,15 @@ export function extractCobolSymbolsWithRegex(
     // flush the INSPECT as-is and process the line normally.
     if (inspectAccum !== null) {
       const inspTrimmed = line.trimStart();
-      const inspLeading = (line.match(/^(\s*)/)?.[1].length ?? 0);
-      const inspIsAreaAPara = RE_PROC_PARAGRAPH.test(line) && (!isFreeFormat ? inspLeading <= 7 : false);
-      if (RE_PROC_SECTION.test(line) || inspIsAreaAPara
-        || RE_STATEMENT_VERB_START.test(inspTrimmed)
-        || /^CALL(?:\s|$)/i.test(inspTrimmed)) {
+      const inspLeading = line.match(/^(\s*)/)?.[1].length ?? 0;
+      const inspIsAreaAPara =
+        RE_PROC_PARAGRAPH.test(line) && (!isFreeFormat ? inspLeading <= 7 : false);
+      if (
+        RE_PROC_SECTION.test(line) ||
+        inspIsAreaAPara ||
+        RE_STATEMENT_VERB_START.test(inspTrimmed) ||
+        /^CALL(?:\s|$)/i.test(inspTrimmed)
+      ) {
         flushInspect();
         // Fall through to process this line normally
       } else {
@@ -1730,7 +2051,11 @@ export function extractCobolSymbolsWithRegex(
 
     // CANCEL — program lifecycle (global matchAll captures multiple CANCELs on same line)
     for (const cancelMatch of line.matchAll(RE_CANCEL)) {
-      result.cancels.push({ target: cancelMatch[1] ?? cancelMatch[2], line: lineNum, isQuoted: true });
+      result.cancels.push({
+        target: cancelMatch[1] ?? cancelMatch[2],
+        line: lineNum,
+        isQuoted: true,
+      });
     }
     // Dynamic CANCEL — RE_CANCEL_DYNAMIC cannot match quoted targets, no dedup guard needed
     for (const dynCancelMatch of line.matchAll(RE_CANCEL_DYNAMIC)) {
@@ -1740,29 +2065,46 @@ export function extractCobolSymbolsWithRegex(
     // SET statement (condition, index)
     const setTrueMatch = line.match(RE_SET_TO_TRUE);
     if (setTrueMatch) {
-      const targets = setTrueMatch[1].trim().split(/\s+/)
-        .filter(t => /^[A-Z][A-Z0-9-]+$/i.test(t) && t.toUpperCase() !== 'OF');
+      const targets = setTrueMatch[1]
+        .trim()
+        .split(/\s+/)
+        .filter((t) => /^[A-Z][A-Z0-9-]+$/i.test(t) && t.toUpperCase() !== 'OF');
       if (targets.length > 0) {
         result.sets.push({ targets, form: 'to-true', line: lineNum, caller: currentParagraph });
       }
     } else {
       const setIdxMatch = line.match(RE_SET_INDEX);
       if (setIdxMatch) {
-        const targets = setIdxMatch[1].trim().split(/\s+/)
-          .filter(t => /^[A-Z][A-Z0-9-]+$/i.test(t));
+        const targets = setIdxMatch[1]
+          .trim()
+          .split(/\s+/)
+          .filter((t) => /^[A-Z][A-Z0-9-]+$/i.test(t));
         const mode = setIdxMatch[2].toUpperCase();
-        const form = mode === 'TO' ? 'to-value' as const
-          : mode.startsWith('UP') ? 'up-by' as const
-          : 'down-by' as const;
-        result.sets.push({ targets, form, value: setIdxMatch[3], line: lineNum, caller: currentParagraph });
+        const form =
+          mode === 'TO'
+            ? ('to-value' as const)
+            : mode.startsWith('UP')
+              ? ('up-by' as const)
+              : ('down-by' as const);
+        result.sets.push({
+          targets,
+          form,
+          value: setIdxMatch[3],
+          line: lineNum,
+          caller: currentParagraph,
+        });
       }
     }
 
     // INITIALIZE — data reset (multi-target: INITIALIZE WS-A WS-B WS-C.)
     const initMatch = line.match(RE_INITIALIZE);
     if (initMatch) {
-      const targets = initMatch[1].trim().split(/\s+/)
-        .filter(t => /^[A-Z][A-Z0-9-]+$/i.test(t) && !INITIALIZE_CLAUSE_KEYWORDS.has(t.toUpperCase()));
+      const targets = initMatch[1]
+        .trim()
+        .split(/\s+/)
+        .filter(
+          (t) => /^[A-Z][A-Z0-9-]+$/i.test(t) && !INITIALIZE_CLAUSE_KEYWORDS.has(t.toUpperCase()),
+        );
       for (const target of targets) {
         result.initializes.push({ target, line: lineNum, caller: currentParagraph });
       }

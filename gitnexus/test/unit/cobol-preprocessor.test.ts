@@ -30,10 +30,7 @@ function cobol(...lines: string[]): string {
 
 describe('preprocessCobolSource', () => {
   it('replaces alphabetic patch markers in cols 1-6 with spaces', () => {
-    const input = cobol(
-      'mzADD  IDENTIFICATION DIVISION.',
-      'estero PROGRAM-ID. TEST1.',
-    );
+    const input = cobol('mzADD  IDENTIFICATION DIVISION.', 'estero PROGRAM-ID. TEST1.');
     const output = preprocessCobolSource(input);
     const lines = output.split('\n');
     expect(lines[0].substring(0, 6)).toBe('      ');
@@ -42,10 +39,7 @@ describe('preprocessCobolSource', () => {
   });
 
   it('strips numeric sequence numbers from cols 1-6', () => {
-    const input = cobol(
-      '000100 IDENTIFICATION DIVISION.',
-      '000200 PROGRAM-ID. TEST1.',
-    );
+    const input = cobol('000100 IDENTIFICATION DIVISION.', '000200 PROGRAM-ID. TEST1.');
     const output = preprocessCobolSource(input);
     const lines = output.split('\n');
     expect(lines[0]).toBe('       IDENTIFICATION DIVISION.');
@@ -78,16 +72,12 @@ describe('preprocessCobolSource', () => {
 // ---------------------------------------------------------------------------
 
 describe('extractCobolSymbolsWithRegex', () => {
-
   // -------------------------------------------------------------------------
   // PROGRAM-ID
   // -------------------------------------------------------------------------
   describe('PROGRAM-ID', () => {
     it('extracts PROGRAM-ID from IDENTIFICATION DIVISION', () => {
-      const src = cobol(
-        '      IDENTIFICATION DIVISION.',
-        '       PROGRAM-ID. TESTPROG.',
-      );
+      const src = cobol('      IDENTIFICATION DIVISION.', '       PROGRAM-ID. TESTPROG.');
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       expect(r.programName).toBe('TESTPROG');
     });
@@ -117,15 +107,12 @@ describe('extractCobolSymbolsWithRegex', () => {
       // INNER-PROG's startLine < endLine, contained within OUTER-PROG
       expect(r.programs[0].startLine).toBe(2); // OUTER-PROG
       expect(r.programs[1].startLine).toBe(7); // INNER-PROG
-      expect(r.programs[1].endLine).toBe(11);  // END PROGRAM INNER-PROG
-      expect(r.programs[0].endLine).toBe(12);  // END PROGRAM OUTER-PROG
+      expect(r.programs[1].endLine).toBe(11); // END PROGRAM INNER-PROG
+      expect(r.programs[0].endLine).toBe(12); // END PROGRAM OUTER-PROG
     });
 
     it('returns null programName for content without PROGRAM-ID', () => {
-      const src = cobol(
-        '      IDENTIFICATION DIVISION.',
-        '       AUTHOR. SOMEONE.',
-      );
+      const src = cobol('      IDENTIFICATION DIVISION.', '       AUTHOR. SOMEONE.');
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       expect(r.programName).toBeNull();
     });
@@ -178,7 +165,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         '           DISPLAY "OK".',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      expect(r.paragraphs.map(p => p.name)).toEqual(['REAL-PARA']);
+      expect(r.paragraphs.map((p) => p.name)).toEqual(['REAL-PARA']);
     });
 
     it('does NOT treat IDENTIFICATION/ENVIRONMENT/DATA/WORKING-STORAGE as paragraphs', () => {
@@ -193,7 +180,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         '           DISPLAY "OK".',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const names = r.paragraphs.map(p => p.name);
+      const names = r.paragraphs.map((p) => p.name);
       expect(names).not.toContain('IDENTIFICATION');
       expect(names).not.toContain('ENVIRONMENT');
       expect(names).not.toContain('DATA');
@@ -260,7 +247,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         '           PERFORM WS-COUNT TIMES.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      expect(r.performs.map(p => p.target)).not.toContain('WS-COUNT');
+      expect(r.performs.map((p) => p.target)).not.toContain('WS-COUNT');
     });
 
     it('extracts dynamic CALL (unquoted) with isQuoted=false', () => {
@@ -334,12 +321,12 @@ describe('extractCobolSymbolsWithRegex', () => {
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       expect(r.dataItems.length).toBe(3); // WS-NAME + WS-BALANCE + WS-AMOUNT (01-level group with only period has no clauses)
 
-      const wsName = r.dataItems.find(d => d.name === 'WS-NAME');
+      const wsName = r.dataItems.find((d) => d.name === 'WS-NAME');
       expect(wsName).toBeDefined();
       expect(wsName!.level).toBe(5);
       expect(wsName!.pic).toMatch(/^X\(30\)/);
 
-      const wsAmount = r.dataItems.find(d => d.name === 'WS-AMOUNT');
+      const wsAmount = r.dataItems.find((d) => d.name === 'WS-AMOUNT');
       expect(wsAmount).toBeDefined();
       expect(wsAmount!.usage).toBe('COMP-3');
     });
@@ -355,12 +342,12 @@ describe('extractCobolSymbolsWithRegex', () => {
         '           88  WS-INACTIVE    VALUE "I".',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const active = r.dataItems.find(d => d.name === 'WS-ACTIVE');
+      const active = r.dataItems.find((d) => d.name === 'WS-ACTIVE');
       expect(active).toBeDefined();
       expect(active!.level).toBe(88);
       expect(active!.values).toEqual(['A']);
 
-      const inactive = r.dataItems.find(d => d.name === 'WS-INACTIVE');
+      const inactive = r.dataItems.find((d) => d.name === 'WS-INACTIVE');
       expect(inactive).toBeDefined();
       expect(inactive!.values).toEqual(['I']);
     });
@@ -392,9 +379,9 @@ describe('extractCobolSymbolsWithRegex', () => {
         '           05  WS-DATA           PIC X(20).',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const fillerItems = r.dataItems.filter(d => d.name === 'FILLER');
+      const fillerItems = r.dataItems.filter((d) => d.name === 'FILLER');
       expect(fillerItems).toHaveLength(0);
-      expect(r.dataItems.find(d => d.name === 'WS-DATA')).toBeDefined();
+      expect(r.dataItems.find((d) => d.name === 'WS-DATA')).toBeDefined();
     });
 
     it('correctly assigns data section (working-storage, linkage, file)', () => {
@@ -412,15 +399,15 @@ describe('extractCobolSymbolsWithRegex', () => {
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
 
-      const fileRec = r.dataItems.find(d => d.name === 'FILE-REC');
+      const fileRec = r.dataItems.find((d) => d.name === 'FILE-REC');
       expect(fileRec).toBeDefined();
       expect(fileRec!.section).toBe('file');
 
-      const wsVar = r.dataItems.find(d => d.name === 'WS-VAR');
+      const wsVar = r.dataItems.find((d) => d.name === 'WS-VAR');
       expect(wsVar).toBeDefined();
       expect(wsVar!.section).toBe('working-storage');
 
-      const lkVar = r.dataItems.find(d => d.name === 'LK-VAR');
+      const lkVar = r.dataItems.find((d) => d.name === 'LK-VAR');
       expect(lkVar).toBeDefined();
       expect(lkVar!.section).toBe('linkage');
     });
@@ -473,7 +460,7 @@ describe('extractCobolSymbolsWithRegex', () => {
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       expect(r.programName).toBe('TESTPROG');
-      expect(r.dataItems.find(d => d.name === 'WS-VAR')).toBeDefined();
+      expect(r.dataItems.find((d) => d.name === 'WS-VAR')).toBeDefined();
       expect(r.paragraphs).toHaveLength(1);
       expect(r.paragraphs[0].name).toBe('MAIN-PARA');
     });
@@ -673,7 +660,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         '           DISPLAY "HELLO".',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      expect(r.paragraphs.map(p => p.name)).toContain('CROSS-SECTION-ANALYSIS');
+      expect(r.paragraphs.map((p) => p.name)).toContain('CROSS-SECTION-ANALYSIS');
     });
 
     it('PERFORM THROUGH (full spelling) captures thruTarget', () => {
@@ -716,7 +703,7 @@ describe('extractCobolSymbolsWithRegex', () => {
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       // WS-CALL should NOT produce a dynamic CALL — it's a data item name
-      expect(r.calls.filter(c => !c.isQuoted)).toHaveLength(0);
+      expect(r.calls.filter((c) => !c.isQuoted)).toHaveLength(0);
     });
 
     it('multi-line SORT captures USING and GIVING from continuation lines', () => {
@@ -767,8 +754,8 @@ describe('extractCobolSymbolsWithRegex', () => {
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       expect(r.programs).toHaveLength(2);
-      const outer = r.programs.find(p => p.name === 'OUTER');
-      const inner = r.programs.find(p => p.name === 'INNER');
+      const outer = r.programs.find((p) => p.name === 'OUTER');
+      const inner = r.programs.find((p) => p.name === 'INNER');
       expect(outer?.procedureUsing).toEqual(['WS-OUTER-PARAM']);
       expect(inner?.procedureUsing).toEqual(['WS-INNER-PARAM']);
     });
@@ -783,7 +770,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         '           DISPLAY "HI".',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      expect(r.sections.map(s => s.name)).toContain('MAIN-SECTION');
+      expect(r.sections.map((s) => s.name)).toContain('MAIN-SECTION');
     });
 
     it('dynamic CANCEL via data item is captured with isQuoted=false', () => {
@@ -809,16 +796,18 @@ describe('extractCobolSymbolsWithRegex', () => {
     });
 
     it('numeric sequence numbers are stripped so paragraphs are detected', () => {
-      const src = preprocessCobolSource(cobol(
-        '000100 IDENTIFICATION DIVISION.',
-        '000200 PROGRAM-ID. SEQTEST.',
-        '000300 PROCEDURE DIVISION.',
-        '000400 MAIN-PARA.',
-        '000500     DISPLAY "HI".',
-      ));
+      const src = preprocessCobolSource(
+        cobol(
+          '000100 IDENTIFICATION DIVISION.',
+          '000200 PROGRAM-ID. SEQTEST.',
+          '000300 PROCEDURE DIVISION.',
+          '000400 MAIN-PARA.',
+          '000500     DISPLAY "HI".',
+        ),
+      );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       expect(r.programName).toBe('SEQTEST');
-      expect(r.paragraphs.map(p => p.name)).toEqual(['MAIN-PARA']);
+      expect(r.paragraphs.map((p) => p.name)).toEqual(['MAIN-PARA']);
     });
 
     it('extracts MOVE statements (skipping figurative constants)', () => {
@@ -833,11 +822,15 @@ describe('extractCobolSymbolsWithRegex', () => {
         '           MOVE CORRESPONDING WS-REC1 TO WS-REC2.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const moveData = r.moves.map(m => ({ from: m.from, targets: m.targets, corr: m.corresponding }));
+      const moveData = r.moves.map((m) => ({
+        from: m.from,
+        targets: m.targets,
+        corr: m.corresponding,
+      }));
       expect(moveData).toContainEqual({ from: 'WS-SOURCE', targets: ['WS-TARGET'], corr: false });
       expect(moveData).toContainEqual({ from: 'WS-REC1', targets: ['WS-REC2'], corr: true });
-      expect(r.moves.find(m => m.from === 'SPACES')).toBeUndefined();
-      expect(r.moves.find(m => m.from === 'ZEROS')).toBeUndefined();
+      expect(r.moves.find((m) => m.from === 'SPACES')).toBeUndefined();
+      expect(r.moves.find((m) => m.from === 'ZEROS')).toBeUndefined();
     });
 
     it('captures multiple MOVE targets: MOVE X TO A B C', () => {
@@ -934,7 +927,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Phase 1: Data Flow Features
   // -------------------------------------------------------------------------
   describe('Phase 1: Data Flow Features', () => {
-
     it('EXEC SQL INCLUDE extracts member name (unquoted)', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -945,7 +937,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         '           EXEC SQL INCLUDE CUSTDCL END-EXEC.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const includes = r.execSqlBlocks.filter(b => b.includeMember);
+      const includes = r.execSqlBlocks.filter((b) => b.includeMember);
       expect(includes).toHaveLength(2);
       expect(includes[0].includeMember).toBe('SQLCA');
       expect(includes[1].includeMember).toBe('CUSTDCL');
@@ -960,7 +952,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         '           EXEC SQL INCLUDE CUST_TBL_DCL END-EXEC.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const includes = r.execSqlBlocks.filter(b => b.includeMember);
+      const includes = r.execSqlBlocks.filter((b) => b.includeMember);
       expect(includes).toHaveLength(2);
       expect(includes[0].includeMember).toBe('DBRMLIB.MEMBER');
       expect(includes[1].includeMember).toBe('CUST_TBL_DCL');
@@ -1026,7 +1018,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         '       01 WS-TABLE OCCURS 1 TO 100 DEPENDING ON WS-COUNT.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const table = r.dataItems.find(d => d.name === 'WS-TABLE');
+      const table = r.dataItems.find((d) => d.name === 'WS-TABLE');
       expect(table).toBeDefined();
       expect(table!.dependingOn).toBe('WS-COUNT');
       expect(table!.occurs).toBe(1);
@@ -1043,9 +1035,9 @@ describe('extractCobolSymbolsWithRegex', () => {
         '       01 WS-NAME PIC X(10) VALUE SPACES.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      expect(r.dataItems.find(d => d.name === 'WS-STATUS')?.values).toEqual(['A']);
-      expect(r.dataItems.find(d => d.name === 'WS-COUNT')?.values).toEqual(['0']);
-      expect(r.dataItems.find(d => d.name === 'WS-NAME')?.values).toEqual(['SPACES']);
+      expect(r.dataItems.find((d) => d.name === 'WS-STATUS')?.values).toEqual(['A']);
+      expect(r.dataItems.find((d) => d.name === 'WS-COUNT')?.values).toEqual(['0']);
+      expect(r.dataItems.find((d) => d.name === 'WS-NAME')?.values).toEqual(['SPACES']);
     });
   });
 
@@ -1053,7 +1045,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Phase 2: IMS + Error Handling Features
   // -------------------------------------------------------------------------
   describe('Phase 2: IMS + Error Handling Features', () => {
-
     it('EXEC DLI GU extracts verb, segment, PCB, and INTO', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -1208,7 +1199,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Phase 3-4: Completeness + Niche Features
   // -------------------------------------------------------------------------
   describe('Phase 3-4: Completeness + Niche Features', () => {
-
     it('SELECT OPTIONAL sets isOptional flag', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -1256,10 +1246,10 @@ describe('extractCobolSymbolsWithRegex', () => {
         '       END PROGRAM OUTER-PGM.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const inner = r.programs.find(p => p.name === 'INNER-PGM');
+      const inner = r.programs.find((p) => p.name === 'INNER-PGM');
       expect(inner).toBeDefined();
       expect(inner!.isCommon).toBe(true);
-      const outer = r.programs.find(p => p.name === 'OUTER-PGM');
+      const outer = r.programs.find((p) => p.name === 'OUTER-PGM');
       expect(outer!.isCommon).toBeFalsy();
     });
 
@@ -1274,10 +1264,10 @@ describe('extractCobolSymbolsWithRegex', () => {
         '       01 WS-NORMAL PIC X(10).',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      expect(r.dataItems.find(d => d.name === 'WS-SHARED')?.isExternal).toBe(true);
-      expect(r.dataItems.find(d => d.name === 'WS-GLOBAL')?.isGlobal).toBe(true);
-      expect(r.dataItems.find(d => d.name === 'WS-NORMAL')?.isExternal).toBeUndefined();
-      expect(r.dataItems.find(d => d.name === 'WS-NORMAL')?.isGlobal).toBeUndefined();
+      expect(r.dataItems.find((d) => d.name === 'WS-SHARED')?.isExternal).toBe(true);
+      expect(r.dataItems.find((d) => d.name === 'WS-GLOBAL')?.isGlobal).toBe(true);
+      expect(r.dataItems.find((d) => d.name === 'WS-NORMAL')?.isExternal).toBeUndefined();
+      expect(r.dataItems.find((d) => d.name === 'WS-NORMAL')?.isGlobal).toBeUndefined();
     });
 
     it('INITIALIZE extracts target', () => {
@@ -1314,7 +1304,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Reviews 9-15: Multi-line CALL USING accumulation
   // -------------------------------------------------------------------------
   describe('Multi-line CALL USING accumulation', () => {
-
     it('captures USING parameters on separate lines (IBM mainframe style)', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -1382,7 +1371,7 @@ describe('extractCobolSymbolsWithRegex', () => {
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       // WS-B should NOT be a paragraph
-      const paraNames = r.paragraphs.map(p => p.name);
+      const paraNames = r.paragraphs.map((p) => p.name);
       expect(paraNames).toContain('MAIN-PARA');
       expect(paraNames).toContain('NEXT-PARA');
       expect(paraNames).not.toContain('WS-B');
@@ -1445,7 +1434,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Reviews 9-15: Nested program edge attribution
   // -------------------------------------------------------------------------
   describe('Nested program edge attribution', () => {
-
     it('CALL in inner nested program attributed to inner module (not outer)', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -1465,7 +1453,7 @@ describe('extractCobolSymbolsWithRegex', () => {
       // The CALL should have line number within INNER-PGM's range
       expect(r.calls).toHaveLength(1);
       expect(r.calls[0].target).toBe('SUBPROG');
-      const innerProg = r.programs.find(p => p.name === 'INNER-PGM');
+      const innerProg = r.programs.find((p) => p.name === 'INNER-PGM');
       expect(innerProg).toBeDefined();
       expect(r.calls[0].line).toBe(10); // Line 10 in the fixture: CALL 'SUBPROG'.
     });
@@ -1488,7 +1476,7 @@ describe('extractCobolSymbolsWithRegex', () => {
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       // PERFORM before first paragraph — caller should be null (module-level)
-      const innerPerform = r.performs.find(p => p.target === 'INNER-INIT');
+      const innerPerform = r.performs.find((p) => p.target === 'INNER-INIT');
       expect(innerPerform).toBeDefined();
       expect(innerPerform!.caller).toBeNull();
     });
@@ -1498,7 +1486,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Reviews 9-15: CRLF / Windows line ending compatibility
   // -------------------------------------------------------------------------
   describe('CRLF / Windows line ending compatibility', () => {
-
     it('GO TO DEPENDING ON works with CRLF line endings', () => {
       // Simulate CRLF by using \r\n
       const src = [
@@ -1511,7 +1498,7 @@ describe('extractCobolSymbolsWithRegex', () => {
       ].join('\r\n');
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       expect(r.gotos).toHaveLength(3);
-      expect(r.gotos.map(g => g.target).sort()).toEqual(['PARA-A', 'PARA-B', 'PARA-C']);
+      expect(r.gotos.map((g) => g.target).sort()).toEqual(['PARA-A', 'PARA-B', 'PARA-C']);
     });
   });
 
@@ -1519,17 +1506,16 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Reviews 9-15: Fixed-format Area A paragraph detection
   // -------------------------------------------------------------------------
   describe('Fixed-format Area A paragraph detection', () => {
-
     it('rejects deeply-indented identifiers as paragraphs (Area B)', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
         '       PROGRAM-ID. TESTPROG.',
         '      PROCEDURE DIVISION.',
         '       MAIN-PARA.',
-        '               WS-CUST-ADDR.',  // Area B (>7 spaces) — NOT a paragraph
+        '               WS-CUST-ADDR.', // Area B (>7 spaces) — NOT a paragraph
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const paraNames = r.paragraphs.map(p => p.name);
+      const paraNames = r.paragraphs.map((p) => p.name);
       expect(paraNames).toContain('MAIN-PARA');
       expect(paraNames).not.toContain('WS-CUST-ADDR');
     });
@@ -1539,11 +1525,11 @@ describe('extractCobolSymbolsWithRegex', () => {
         '      IDENTIFICATION DIVISION.',
         '       PROGRAM-ID. TESTPROG.',
         '      PROCEDURE DIVISION.',
-        '       REAL-PARA.',  // 7 spaces — Area A, valid paragraph
+        '       REAL-PARA.', // 7 spaces — Area A, valid paragraph
         '           STOP RUN.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      expect(r.paragraphs.map(p => p.name)).toContain('REAL-PARA');
+      expect(r.paragraphs.map((p) => p.name)).toContain('REAL-PARA');
     });
   });
 
@@ -1551,7 +1537,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Reviews 9-15: SORT/MERGE edge cases
   // -------------------------------------------------------------------------
   describe('SORT/MERGE edge cases', () => {
-
     it('captures SORT GIVING without spurious COLLATING SEQUENCE keywords', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -1575,7 +1560,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Reviews 9-15: PROCEDURE DIVISION USING edge cases
   // -------------------------------------------------------------------------
   describe('PROCEDURE DIVISION USING edge cases', () => {
-
     it('excludes RETURNING value from USING parameter list', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -1606,7 +1590,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Reviews 9-15: Comment stripping edge cases
   // -------------------------------------------------------------------------
   describe('Comment stripping edge cases', () => {
-
     it('pipe character inside quoted string is preserved (not treated as comment)', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -1617,7 +1600,7 @@ describe('extractCobolSymbolsWithRegex', () => {
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       // The data item should be extracted (not truncated by pipe)
-      expect(r.dataItems.find(d => d.name === 'WS-SEP')).toBeDefined();
+      expect(r.dataItems.find((d) => d.name === 'WS-SEP')).toBeDefined();
     });
   });
 
@@ -1625,7 +1608,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Reviews 9-15: SELECT OPTIONAL and ALTERNATE KEY
   // -------------------------------------------------------------------------
   describe('SELECT OPTIONAL and ALTERNATE KEY', () => {
-
     it('SELECT OPTIONAL captures correct file name (not OPTIONAL keyword)', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -1788,7 +1770,7 @@ describe('extractCobolSymbolsWithRegex', () => {
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       // INSPECT should be flushed, NEXT-PARA should be detected
       expect(r.inspects).toHaveLength(1);
-      expect(r.paragraphs.map(p => p.name)).toContain('NEXT-PARA');
+      expect(r.paragraphs.map((p) => p.name)).toContain('NEXT-PARA');
     });
   });
 
@@ -1851,7 +1833,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         '           STOP RUN.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const paraNames = r.paragraphs.map(p => p.name);
+      const paraNames = r.paragraphs.map((p) => p.name);
       expect(paraNames).toContain('ERR-PARA');
       expect(paraNames).toContain('MAIN-PARA');
       expect(paraNames).toContain('PROCESS-DATA');
@@ -1886,7 +1868,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         "       01 WS-HEX PIC X(4) VALUE X'F1F2F3F4'.",
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const hex = r.dataItems.find(d => d.name === 'WS-HEX');
+      const hex = r.dataItems.find((d) => d.name === 'WS-HEX');
       expect(hex).toBeDefined();
       expect(hex!.values).toBeDefined();
       expect(hex!.values![0]).toContain('F1F2F3F4');
@@ -1901,7 +1883,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         '       01 WS-NEG PIC S9(4) VALUE -1.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      expect(r.dataItems.find(d => d.name === 'WS-NEG')?.values).toEqual(['-1']);
+      expect(r.dataItems.find((d) => d.name === 'WS-NEG')?.values).toEqual(['-1']);
     });
 
     it('VALUE with ALL literal', () => {
@@ -1913,7 +1895,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         "       01 WS-STARS PIC X(80) VALUE ALL '*'.",
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const stars = r.dataItems.find(d => d.name === 'WS-STARS');
+      const stars = r.dataItems.find((d) => d.name === 'WS-STARS');
       expect(stars?.values).toBeDefined();
       expect(stars!.values![0]).toContain('*');
     });
@@ -1933,7 +1915,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         '       01 WS-TBL OCCURS 1 TO 50 DEPENDING ON WS-CNT.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const tbl = r.dataItems.find(d => d.name === 'WS-TBL');
+      const tbl = r.dataItems.find((d) => d.name === 'WS-TBL');
       expect(tbl?.occurs).toBe(1);
       expect(tbl?.dependingOn).toBe('WS-CNT');
     });
@@ -1947,8 +1929,8 @@ describe('extractCobolSymbolsWithRegex', () => {
         '       01 WS-ARR OCCURS 10.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      expect(r.dataItems.find(d => d.name === 'WS-ARR')?.occurs).toBe(10);
-      expect(r.dataItems.find(d => d.name === 'WS-ARR')?.dependingOn).toBeUndefined();
+      expect(r.dataItems.find((d) => d.name === 'WS-ARR')?.occurs).toBe(10);
+      expect(r.dataItems.find((d) => d.name === 'WS-ARR')?.dependingOn).toBeUndefined();
     });
   });
 
@@ -2082,7 +2064,11 @@ describe('extractCobolSymbolsWithRegex', () => {
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       expect(r.initializes).toHaveLength(3);
-      expect(r.initializes.map(i => i.target)).toEqual(['WS-CUSTOMER', 'WS-ORDER', 'WS-LINE-ITEM']);
+      expect(r.initializes.map((i) => i.target)).toEqual([
+        'WS-CUSTOMER',
+        'WS-ORDER',
+        'WS-LINE-ITEM',
+      ]);
     });
 
     it('INITIALIZE with REPLACING clause does not capture keywords as targets', () => {
@@ -2126,10 +2112,10 @@ describe('extractCobolSymbolsWithRegex', () => {
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       expect(r.programs).toHaveLength(3);
-      expect(r.programs.map(p => p.name).sort()).toEqual(['INNER-A', 'INNER-B', 'OUTER']);
-      const innerA = r.programs.find(p => p.name === 'INNER-A')!;
-      const innerB = r.programs.find(p => p.name === 'INNER-B')!;
-      expect(innerA.endLine).toBe(11);   // END PROGRAM INNER-A
+      expect(r.programs.map((p) => p.name).sort()).toEqual(['INNER-A', 'INNER-B', 'OUTER']);
+      const innerA = r.programs.find((p) => p.name === 'INNER-A')!;
+      const innerB = r.programs.find((p) => p.name === 'INNER-B')!;
+      expect(innerA.endLine).toBe(11); // END PROGRAM INNER-A
       expect(innerB.startLine).toBe(13); // PROGRAM-ID. INNER-B
     });
 
@@ -2148,7 +2134,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         '       END PROGRAM OUTER.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const names = r.programs.map(p => p.name);
+      const names = r.programs.map((p) => p.name);
       expect(names).toContain('SIBLING');
       expect(names).toContain('OUTER');
     });
@@ -2187,7 +2173,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         '           IF WS-FLAG = 1 PERFORM PARA-A ELSE PERFORM PARA-B END-IF.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const targets = r.performs.map(p => p.target).sort();
+      const targets = r.performs.map((p) => p.target).sort();
       expect(targets).toEqual(['PARA-A', 'PARA-B']);
     });
   });
@@ -2205,7 +2191,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         '       01 WS-SHARED PIC X(10) USAGE DISPLAY IS EXTERNAL.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const item = r.dataItems.find(d => d.name === 'WS-SHARED');
+      const item = r.dataItems.find((d) => d.name === 'WS-SHARED');
       expect(item?.isExternal).toBe(true);
       // usage should NOT contain 'external' as a string suffix
       expect(item?.usage).toBe('DISPLAY');
@@ -2216,7 +2202,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Accumulator flush on division transitions
   // -------------------------------------------------------------------------
   describe('Accumulator flush on division transitions', () => {
-
     it('callAccum flushed when EXEC SQL interrupts multi-line CALL', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -2298,7 +2283,7 @@ describe('extractCobolSymbolsWithRegex', () => {
       expect(r.calls).toHaveLength(1);
       expect(r.calls[0].target).toBe('SUBPROG');
       // Both programs should be detected
-      expect(r.programs.map(p => p.name).sort()).toEqual(['INNER-PGM', 'OUTER-PGM']);
+      expect(r.programs.map((p) => p.name).sort()).toEqual(['INNER-PGM', 'OUTER-PGM']);
     });
   });
 
@@ -2306,7 +2291,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Free-format COBOL handling
   // -------------------------------------------------------------------------
   describe('Free-format COBOL handling', () => {
-
     it('free-format source detected via >>SOURCE FREE', () => {
       const src = [
         '>>SOURCE FORMAT IS FREE',
@@ -2334,7 +2318,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         '01 WS-DATA PIC X(10). *> this is a comment',
       ].join('\n');
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      expect(r.dataItems.find(d => d.name === 'WS-DATA')).toBeDefined();
+      expect(r.dataItems.find((d) => d.name === 'WS-DATA')).toBeDefined();
     });
   });
 
@@ -2342,7 +2326,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // CANCEL extraction in CALL ON EXCEPTION block
   // -------------------------------------------------------------------------
   describe('CANCEL extraction in CALL ON EXCEPTION block', () => {
-
     it('CANCEL inside CALL END-CALL block is extracted', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -2359,7 +2342,7 @@ describe('extractCobolSymbolsWithRegex', () => {
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       // Both CALLs should be captured
       expect(r.calls).toHaveLength(2);
-      expect(r.calls.map(c => c.target).sort()).toEqual(['BACKUP-PGM', 'MAINPROG']);
+      expect(r.calls.map((c) => c.target).sort()).toEqual(['BACKUP-PGM', 'MAINPROG']);
       // CANCEL should be captured from within the CALL block
       expect(r.cancels).toHaveLength(1);
       expect(r.cancels[0].target).toBe('MAINPROG');
@@ -2370,7 +2353,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // SORT INPUT PROCEDURE THRU range
   // -------------------------------------------------------------------------
   describe('SORT INPUT PROCEDURE THRU range', () => {
-
     it('captures both start and thru target', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -2383,11 +2365,11 @@ describe('extractCobolSymbolsWithRegex', () => {
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       // INPUT PROCEDURE should produce a perform with thruTarget
-      const inputProc = r.performs.find(p => p.target === 'BUILD-INPUT');
+      const inputProc = r.performs.find((p) => p.target === 'BUILD-INPUT');
       expect(inputProc).toBeDefined();
       expect(inputProc!.thruTarget).toBe('BUILD-END');
       // OUTPUT PROCEDURE should be captured too
-      expect(r.performs.find(p => p.target === 'WRITE-OUTPUT')).toBeDefined();
+      expect(r.performs.find((p) => p.target === 'WRITE-OUTPUT')).toBeDefined();
     });
   });
 
@@ -2395,13 +2377,17 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Shared verb constant coverage
   // -------------------------------------------------------------------------
   describe('Shared verb constant coverage', () => {
-
     it('COBOL_STATEMENT_VERBS flush trigger works for all major verbs', () => {
       // Test that each verb in the shared constant terminates callAccum
       const verbs = [
-        'PERFORM NEXT-PARA.', 'MOVE WS-A TO WS-B.', 'DISPLAY "HELLO".',
-        'GO TO EXIT-PARA.', 'INSPECT WS-X REPLACING ALL SPACES BY ZEROS.',
-        'SET WS-FLAG TO TRUE.', 'INITIALIZE WS-REC.', 'CANCEL WS-OLD.',
+        'PERFORM NEXT-PARA.',
+        'MOVE WS-A TO WS-B.',
+        'DISPLAY "HELLO".',
+        'GO TO EXIT-PARA.',
+        'INSPECT WS-X REPLACING ALL SPACES BY ZEROS.',
+        'SET WS-FLAG TO TRUE.',
+        'INITIALIZE WS-REC.',
+        'CANCEL WS-OLD.',
       ];
       for (const verb of verbs) {
         const src = cobol(
@@ -2424,7 +2410,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // EXEC SQL INCLUDE edge cases
   // -------------------------------------------------------------------------
   describe('EXEC SQL INCLUDE edge cases', () => {
-
     it('multiple EXEC SQL INCLUDEs extracted', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -2436,9 +2421,9 @@ describe('extractCobolSymbolsWithRegex', () => {
         '           EXEC SQL INCLUDE CUSTDCL END-EXEC.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
-      const includes = r.execSqlBlocks.filter(b => b.includeMember);
+      const includes = r.execSqlBlocks.filter((b) => b.includeMember);
       expect(includes).toHaveLength(3);
-      expect(includes.map(i => i.includeMember).sort()).toEqual(['CUSTDCL', 'SQLCA', 'SQLDA']);
+      expect(includes.map((i) => i.includeMember).sort()).toEqual(['CUSTDCL', 'SQLCA', 'SQLDA']);
     });
   });
 
@@ -2446,7 +2431,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Complete COBOL program integration
   // -------------------------------------------------------------------------
   describe('Complete COBOL program integration', () => {
-
     it('extracts all construct types from a realistic program', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -2480,8 +2464,8 @@ describe('extractCobolSymbolsWithRegex', () => {
       expect(r.programMetadata.author).toBe('TEST AUTHOR');
       expect(r.fileDeclarations).toHaveLength(1);
       expect(r.fileDeclarations[0].organization).toBe('INDEXED');
-      expect(r.dataItems.find(d => d.name === 'WS-COUNT')?.values).toEqual(['0']);
-      expect(r.dataItems.find(d => d.name === 'WS-TABLE')?.dependingOn).toBe('WS-COUNT');
+      expect(r.dataItems.find((d) => d.name === 'WS-COUNT')?.values).toEqual(['0']);
+      expect(r.dataItems.find((d) => d.name === 'WS-TABLE')?.dependingOn).toBe('WS-COUNT');
       expect(r.paragraphs).toHaveLength(2);
       expect(r.performs).toHaveLength(1);
       expect(r.sets).toHaveLength(1);
@@ -2498,7 +2482,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Accumulator flush at END PROGRAM boundary
   // -------------------------------------------------------------------------
   describe('Accumulator flush at END PROGRAM boundary', () => {
-
     it('multi-line CALL flushed at END PROGRAM', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -2543,7 +2526,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Accumulator flush at PROGRAM-ID sibling boundary
   // -------------------------------------------------------------------------
   describe('Accumulator flush at PROGRAM-ID sibling boundary', () => {
-
     it('multi-line CALL flushed when sibling PROGRAM-ID appears without ID DIVISION', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -2563,7 +2545,7 @@ describe('extractCobolSymbolsWithRegex', () => {
       expect(r.calls).toHaveLength(1);
       expect(r.calls[0].target).toBe('OUTERSUB');
       expect(r.calls[0].parameters).toEqual(['WS-OUTER']);
-      const names = r.programs.map(p => p.name);
+      const names = r.programs.map((p) => p.name);
       expect(names).toContain('SIBLING');
     });
   });
@@ -2572,7 +2554,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Accumulator flush on arithmetic verb boundaries
   // -------------------------------------------------------------------------
   describe('Accumulator flush on arithmetic verb boundaries', () => {
-
     it('COMPUTE terminates multi-line CALL accumulation', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -2656,7 +2637,7 @@ describe('extractCobolSymbolsWithRegex', () => {
         '       MAIN-PARA.',
         "           CALL 'PGM'",
         '               USING WS-NAME',
-        "           STRING WS-FIRST DELIMITED BY SIZE INTO WS-FULL.",
+        '           STRING WS-FIRST DELIMITED BY SIZE INTO WS-FULL.',
       );
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       expect(r.calls).toHaveLength(1);
@@ -2683,7 +2664,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // Arithmetic verbs not captured as false USING parameters
   // -------------------------------------------------------------------------
   describe('Arithmetic verbs not captured as false USING parameters', () => {
-
     it('COMPUTE after CALL USING does not pollute parameters', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -2704,7 +2684,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // SORT accumulator flushed at program boundaries
   // -------------------------------------------------------------------------
   describe('SORT accumulator flushed at program boundaries', () => {
-
     it('multi-line SORT flushed at END PROGRAM', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -2726,7 +2705,6 @@ describe('extractCobolSymbolsWithRegex', () => {
   // INSPECT accumulator flushed at program boundaries
   // -------------------------------------------------------------------------
   describe('INSPECT accumulator flushed at program boundaries', () => {
-
     it('multi-line INSPECT flushed at END PROGRAM', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',

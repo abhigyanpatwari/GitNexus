@@ -13,8 +13,11 @@ function extractAttrNames(node: SyntaxNode): string[] {
   const method = node.childForFieldName('method');
   if (!method) return [];
   const methodName = method.text;
-  if (methodName !== 'attr_accessor' && methodName !== 'attr_reader'
-    && methodName !== 'attr_writer') {
+  if (
+    methodName !== 'attr_accessor' &&
+    methodName !== 'attr_reader' &&
+    methodName !== 'attr_writer'
+  ) {
     return [];
   }
   const args = node.childForFieldName('arguments');

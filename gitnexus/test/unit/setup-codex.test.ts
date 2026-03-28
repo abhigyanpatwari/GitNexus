@@ -83,9 +83,7 @@ describe('setupCommand codex execution', () => {
       expect.any(Function),
     );
 
-    await expect(
-      fs.access(path.join(tempHome, '.codex', 'config.toml')),
-    ).rejects.toThrow();
+    await expect(fs.access(path.join(tempHome, '.codex', 'config.toml'))).rejects.toThrow();
   });
 
   it('skips Codex setup entirely when ~/.codex is missing', async () => {
@@ -96,8 +94,6 @@ describe('setupCommand codex execution', () => {
     await setupCommand();
 
     expect(execFileMock).not.toHaveBeenCalled();
-    await expect(
-      fs.access(path.join(tempHome, '.agents', 'skills')),
-    ).rejects.toThrow();
+    await expect(fs.access(path.join(tempHome, '.agents', 'skills'))).rejects.toThrow();
   });
 });

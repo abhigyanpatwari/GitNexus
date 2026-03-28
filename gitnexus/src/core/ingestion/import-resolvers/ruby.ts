@@ -29,6 +29,11 @@ export function resolveRubyImport(
   _filePath: string,
   ctx: ResolveCtx,
 ): ImportResult {
-  const resolved = resolveRubyImportInternal(rawImportPath, ctx.normalizedFileList, ctx.allFileList, ctx.index);
+  const resolved = resolveRubyImportInternal(
+    rawImportPath,
+    ctx.normalizedFileList,
+    ctx.allFileList,
+    ctx.index,
+  );
   return resolved ? { kind: 'files', files: [resolved] } : null;
 }

@@ -13,11 +13,7 @@ const shared: Omit<FieldExtractionConfig, 'language'> = {
     'abstract_class_declaration',
     'interface_declaration',
   ],
-  fieldNodeTypes: [
-    'public_field_definition',
-    'property_signature',
-    'field_definition',
-  ],
+  fieldNodeTypes: ['public_field_definition', 'property_signature', 'field_definition'],
   bodyNodeTypes: ['class_body', 'interface_body', 'object_type'],
   defaultVisibility: 'public',
 

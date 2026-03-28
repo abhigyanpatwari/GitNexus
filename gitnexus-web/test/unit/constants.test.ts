@@ -22,7 +22,7 @@ describe('NODE_COLORS', () => {
 
 describe('NODE_SIZES', () => {
   it('gives Project the largest size', () => {
-    const maxLabel = Object.entries(NODE_SIZES).reduce((a, b) => a[1] > b[1] ? a : b);
+    const maxLabel = Object.entries(NODE_SIZES).reduce((a, b) => (a[1] > b[1] ? a : b));
     expect(maxLabel[0]).toBe('Project');
   });
 

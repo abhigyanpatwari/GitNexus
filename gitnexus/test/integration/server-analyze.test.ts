@@ -100,8 +100,9 @@ describe('server-side analyze integration', () => {
     freshManager.updateJob(job1.id, { status: 'analyzing' });
 
     // Second different repo should be rejected
-    expect(() => freshManager.createJob({ repoUrl: 'https://github.com/user/repo-b' }))
-      .toThrow(/already in progress/);
+    expect(() => freshManager.createJob({ repoUrl: 'https://github.com/user/repo-b' })).toThrow(
+      /already in progress/,
+    );
 
     // Same repo should return existing job
     const job1again = freshManager.createJob({ repoUrl: 'https://github.com/user/repo-a' });

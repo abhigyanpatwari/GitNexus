@@ -89,218 +89,231 @@ const SEED = [
   `MATCH (f3:File {id:'file:RankPermissionHandler.java'}), (c2:Class {id:'class:RankPermissionHandler'}) CREATE (f3)-[:CodeRelation {type:'DEFINES', confidence:1.0, reason:'', step:0}]->(c2)`,
 ];
 
-withTestLbugDB('java-class-impact', (handle) => {
+withTestLbugDB(
+  'java-class-impact',
+  (handle) => {
+    // ─── Confirm root cause is present in graph ─────────────────────────
 
-  // ─── Confirm root cause is present in graph ─────────────────────────
+    describe('root cause confirmed: Java graph edge structure', () => {
+      it('CALLS edges go to Constructor, not Class — so naive Class traversal finds 0', async () => {
+        const onClass = await executeQuery(
+          handle.repoId,
+          `MATCH (a)-[r:CodeRelation {type:'CALLS'}]->(b:Class {name:'SessionTracker'}) RETURN a.name AS name`,
+        );
+        expect(onClass).toHaveLength(0); // this is the bug — Class has no CALLS edges
 
-  describe('root cause confirmed: Java graph edge structure', () => {
-    it('CALLS edges go to Constructor, not Class — so naive Class traversal finds 0', async () => {
-      const onClass = await executeQuery(handle.repoId,
-        `MATCH (a)-[r:CodeRelation {type:'CALLS'}]->(b:Class {name:'SessionTracker'}) RETURN a.name AS name`,
-      );
-      expect(onClass).toHaveLength(0); // this is the bug — Class has no CALLS edges
-
-      const onCtor = await executeQuery(handle.repoId,
-        `MATCH (a)-[r:CodeRelation {type:'CALLS'}]->(b:Constructor {name:'SessionTracker'}) RETURN a.name AS name`,
-      );
-      expect(onCtor).toHaveLength(5); // all 5 callers are on Constructor
-    });
-
-    it('IMPORTS edges go to File, not Class', async () => {
-      const onClass = await executeQuery(handle.repoId,
-        `MATCH (a)-[r:CodeRelation {type:'IMPORTS'}]->(b:Class {name:'SessionTracker'}) RETURN a.name AS name`,
-      );
-      expect(onClass).toHaveLength(0);
-
-      const onFile = await executeQuery(handle.repoId,
-        `MATCH (a)-[r:CodeRelation {type:'IMPORTS'}]->(b:File {name:'SessionTracker.java'}) RETURN a.name AS name`,
-      );
-      expect(onFile).toHaveLength(1); // ServerBootstrap.java
-    });
-  });
-
-  // ─── Bug 1: impact() fix ────────────────────────────────────────────
-
-  describe('Bug 1 fix: impact(upstream) on Class returns callers', () => {
-    let backend: LocalBackend;
-    beforeAll(async () => { backend = (handle as any)._backend; });
-
-    it('default call (no includeTests) finds the 1 production caller and excludes test callers', async () => {
-      // Exact call from the issue: gitnexus_impact({target: "SessionTracker", direction: "upstream"})
-      // Before fix: impactedCount: 0, risk: LOW, byDepth: {}
-      const result = await backend.callTool('impact', {
-        target: 'SessionTracker',
-        direction: 'upstream',
+        const onCtor = await executeQuery(
+          handle.repoId,
+          `MATCH (a)-[r:CodeRelation {type:'CALLS'}]->(b:Constructor {name:'SessionTracker'}) RETURN a.name AS name`,
+        );
+        expect(onCtor).toHaveLength(5); // all 5 callers are on Constructor
       });
 
-      expect(result).not.toHaveProperty('error');
-      // At minimum: 1 production caller (registerSessionTracker) + 1 file
-      // importer (ServerBootstrap.java discovered via BFS from the seeded File)
-      expect(result.impactedCount).toBeGreaterThanOrEqual(2);
+      it('IMPORTS edges go to File, not Class', async () => {
+        const onClass = await executeQuery(
+          handle.repoId,
+          `MATCH (a)-[r:CodeRelation {type:'IMPORTS'}]->(b:Class {name:'SessionTracker'}) RETURN a.name AS name`,
+        );
+        expect(onClass).toHaveLength(0);
 
-      const d1 = result.byDepth[1] || result.byDepth['1'] || [];
-      const names = d1.map((d: any) => d.name);
-
-      // Production caller must be present
-      expect(names).toContain('registerSessionTracker');
-
-      // Test callers must be excluded (paths match /test/ via isTestFilePath)
-      expect(names).not.toContain('setUp');
-      expect(names).not.toContain('constructor_nullGameMode_accepted');
-      expect(names).not.toContain('constructor_nullServerId_accepted');
-      expect(names).not.toContain('startPlayerSession_passesGameModeAndServerId');
+        const onFile = await executeQuery(
+          handle.repoId,
+          `MATCH (a)-[r:CodeRelation {type:'IMPORTS'}]->(b:File {name:'SessionTracker.java'}) RETURN a.name AS name`,
+        );
+        expect(onFile).toHaveLength(1); // ServerBootstrap.java
+      });
     });
 
-    it('with includeTests finds all 5 callers (1 prod + 4 tests)', async () => {
-      const result = await backend.callTool('impact', {
-        target: 'SessionTracker',
-        direction: 'upstream',
-        includeTests: true,
+    // ─── Bug 1: impact() fix ────────────────────────────────────────────
+
+    describe('Bug 1 fix: impact(upstream) on Class returns callers', () => {
+      let backend: LocalBackend;
+      beforeAll(async () => {
+        backend = (handle as any)._backend;
       });
 
-      expect(result).not.toHaveProperty('error');
-      expect(result.impactedCount).toBeGreaterThanOrEqual(5);
+      it('default call (no includeTests) finds the 1 production caller and excludes test callers', async () => {
+        // Exact call from the issue: gitnexus_impact({target: "SessionTracker", direction: "upstream"})
+        // Before fix: impactedCount: 0, risk: LOW, byDepth: {}
+        const result = await backend.callTool('impact', {
+          target: 'SessionTracker',
+          direction: 'upstream',
+        });
 
-      const d1 = result.byDepth[1] || result.byDepth['1'] || [];
-      const names = d1.map((d: any) => d.name);
-      expect(names).toContain('registerSessionTracker');
-      expect(names).toContain('setUp');
-      expect(names).toContain('constructor_nullGameMode_accepted');
-      expect(names).toContain('constructor_nullServerId_accepted');
-      expect(names).toContain('startPlayerSession_passesGameModeAndServerId');
+        expect(result).not.toHaveProperty('error');
+        // At minimum: 1 production caller (registerSessionTracker) + 1 file
+        // importer (ServerBootstrap.java discovered via BFS from the seeded File)
+        expect(result.impactedCount).toBeGreaterThanOrEqual(2);
 
-      // Owning file (SessionTracker.java) must NOT appear — it is the
-      // definition container, not an upstream dependent (#480 Copilot review)
-      const allNames = Object.values(result.byDepth as Record<string, any[]>)
-        .flat().map((d: any) => d.name);
-      expect(allNames).not.toContain('SessionTracker.java');
-    });
+        const d1 = result.byDepth[1] || result.byDepth['1'] || [];
+        const names = d1.map((d: any) => d.name);
 
-    it('RankPermissionHandler: 1 caller via Constructor + 10 importers via File (was 0 before fix)', async () => {
-      const result = await backend.callTool('impact', {
-        target: 'RankPermissionHandler',
-        direction: 'upstream',
-        includeTests: true,
+        // Production caller must be present
+        expect(names).toContain('registerSessionTracker');
+
+        // Test callers must be excluded (paths match /test/ via isTestFilePath)
+        expect(names).not.toContain('setUp');
+        expect(names).not.toContain('constructor_nullGameMode_accepted');
+        expect(names).not.toContain('constructor_nullServerId_accepted');
+        expect(names).not.toContain('startPlayerSession_passesGameModeAndServerId');
       });
 
-      expect(result).not.toHaveProperty('error');
-      // 1 caller (depth 1 via Constructor) + 10 importers (depth 2 via File)
-      expect(result.impactedCount).toBeGreaterThanOrEqual(11);
+      it('with includeTests finds all 5 callers (1 prod + 4 tests)', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'SessionTracker',
+          direction: 'upstream',
+          includeTests: true,
+        });
 
-      const allNames = Object.values(result.byDepth as Record<string, any[]>)
-        .flat().map((d: any) => d.name);
-      expect(allNames).toContain('initRankHandler');
-      expect(allNames).toContain('RankCommand.java');
-      expect(allNames).toContain('RankManager.java');
+        expect(result).not.toHaveProperty('error');
+        expect(result.impactedCount).toBeGreaterThanOrEqual(5);
 
-      // Owning file must NOT appear in results
-      expect(allNames).not.toContain('RankPermissionHandler.java');
-    });
+        const d1 = result.byDepth[1] || result.byDepth['1'] || [];
+        const names = d1.map((d: any) => d.name);
+        expect(names).toContain('registerSessionTracker');
+        expect(names).toContain('setUp');
+        expect(names).toContain('constructor_nullGameMode_accepted');
+        expect(names).toContain('constructor_nullServerId_accepted');
+        expect(names).toContain('startPlayerSession_passesGameModeAndServerId');
 
-    it('RankPermissionHandler: default call (no includeTests) excludes test importers', async () => {
-      const result = await backend.callTool('impact', {
-        target: 'RankPermissionHandler',
-        direction: 'upstream',
+        // Owning file (SessionTracker.java) must NOT appear — it is the
+        // definition container, not an upstream dependent (#480 Copilot review)
+        const allNames = Object.values(result.byDepth as Record<string, any[]>)
+          .flat()
+          .map((d: any) => d.name);
+        expect(allNames).not.toContain('SessionTracker.java');
       });
 
-      expect(result).not.toHaveProperty('error');
+      it('RankPermissionHandler: 1 caller via Constructor + 10 importers via File (was 0 before fix)', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'RankPermissionHandler',
+          direction: 'upstream',
+          includeTests: true,
+        });
 
-      const allNames = Object.values(result.byDepth as Record<string, any[]>)
-        .flat().map((d: any) => d.name);
+        expect(result).not.toHaveProperty('error');
+        // 1 caller (depth 1 via Constructor) + 10 importers (depth 2 via File)
+        expect(result.impactedCount).toBeGreaterThanOrEqual(11);
 
-      // Production importers must be present
-      expect(allNames).toContain('RankCommand.java');
+        const allNames = Object.values(result.byDepth as Record<string, any[]>)
+          .flat()
+          .map((d: any) => d.name);
+        expect(allNames).toContain('initRankHandler');
+        expect(allNames).toContain('RankCommand.java');
+        expect(allNames).toContain('RankManager.java');
 
-      // Test importers (src/test/java/... paths) must be excluded
-      expect(allNames).not.toContain('RankTest1.java');
-      expect(allNames).not.toContain('RankTest2.java');
-      expect(allNames).not.toContain('RankTest3.java');
-      expect(allNames).not.toContain('RankTest4.java');
-      expect(allNames).not.toContain('RankTest5.java');
-    });
-  });
-
-  // ─── Bug 2: context() fix ───────────────────────────────────────────
-
-  describe('Bug 2 fix: context() on Class shows non-empty incoming', () => {
-    let backend: LocalBackend;
-    beforeAll(async () => { backend = (handle as any)._backend; });
-
-    it('incoming.calls contains Constructor callers (was empty before fix)', async () => {
-      // Exact call from issue: gitnexus_context({name: "SessionTracker", file_path: "api/.../SessionTracker.java"})
-      // Before fix: incoming: {}
-      const result = await backend.callTool('context', {
-        name: 'SessionTracker',
-        file_path: 'api/session/SessionTracker.java',
+        // Owning file must NOT appear in results
+        expect(allNames).not.toContain('RankPermissionHandler.java');
       });
 
-      expect(result.status).toBe('found');
-      expect(result.symbol.kind).toBe('Class');
-      expect(result.incoming).toBeDefined();
+      it('RankPermissionHandler: default call (no includeTests) excludes test importers', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'RankPermissionHandler',
+          direction: 'upstream',
+        });
 
-      // Should have calls from the Constructor callers
-      const calls = result.incoming.calls || [];
-      expect(calls.length).toBeGreaterThanOrEqual(1);
-      const callerNames = calls.map((c: any) => c.name);
-      expect(callerNames).toContain('registerSessionTracker');
+        expect(result).not.toHaveProperty('error');
+
+        const allNames = Object.values(result.byDepth as Record<string, any[]>)
+          .flat()
+          .map((d: any) => d.name);
+
+        // Production importers must be present
+        expect(allNames).toContain('RankCommand.java');
+
+        // Test importers (src/test/java/... paths) must be excluded
+        expect(allNames).not.toContain('RankTest1.java');
+        expect(allNames).not.toContain('RankTest2.java');
+        expect(allNames).not.toContain('RankTest3.java');
+        expect(allNames).not.toContain('RankTest4.java');
+        expect(allNames).not.toContain('RankTest5.java');
+      });
     });
 
-    it('incoming.imports contains File importers', async () => {
-      const result = await backend.callTool('context', {
-        name: 'SessionTracker',
-        file_path: 'api/session/SessionTracker.java',
+    // ─── Bug 2: context() fix ───────────────────────────────────────────
+
+    describe('Bug 2 fix: context() on Class shows non-empty incoming', () => {
+      let backend: LocalBackend;
+      beforeAll(async () => {
+        backend = (handle as any)._backend;
       });
 
-      expect(result.status).toBe('found');
-      const imports = result.incoming.imports || [];
-      expect(imports.length).toBeGreaterThanOrEqual(1);
-      const importerNames = imports.map((c: any) => c.name);
-      expect(importerNames).toContain('ServerBootstrap.java');
-    });
+      it('incoming.calls contains Constructor callers (was empty before fix)', async () => {
+        // Exact call from issue: gitnexus_context({name: "SessionTracker", file_path: "api/.../SessionTracker.java"})
+        // Before fix: incoming: {}
+        const result = await backend.callTool('context', {
+          name: 'SessionTracker',
+          file_path: 'api/session/SessionTracker.java',
+        });
 
-    it('contrast: context() on a Method still works (regression check)', async () => {
-      // The issue notes context() on methods worked before — must still work after fix
-      const result = await backend.callTool('context', {
-        name: 'registerSessionTracker',
-      });
-      expect(result.status).toBe('found');
-      // registerSessionTracker calls SessionTracker constructor — should appear in outgoing
-      expect(result.outgoing).toBeDefined();
-    });
+        expect(result.status).toBe('found');
+        expect(result.symbol.kind).toBe('Class');
+        expect(result.incoming).toBeDefined();
 
-    it('RankPermissionHandler: incoming shows caller and importers', async () => {
-      const result = await backend.callTool('context', {
-        name: 'RankPermissionHandler',
-        file_path: 'core/rank/RankPermissionHandler.java',
+        // Should have calls from the Constructor callers
+        const calls = result.incoming.calls || [];
+        expect(calls.length).toBeGreaterThanOrEqual(1);
+        const callerNames = calls.map((c: any) => c.name);
+        expect(callerNames).toContain('registerSessionTracker');
       });
 
-      expect(result.status).toBe('found');
-      expect(result.symbol.kind).toBe('Class');
+      it('incoming.imports contains File importers', async () => {
+        const result = await backend.callTool('context', {
+          name: 'SessionTracker',
+          file_path: 'api/session/SessionTracker.java',
+        });
 
-      const calls = result.incoming.calls || [];
-      expect(calls.map((c: any) => c.name)).toContain('initRankHandler');
+        expect(result.status).toBe('found');
+        const imports = result.incoming.imports || [];
+        expect(imports.length).toBeGreaterThanOrEqual(1);
+        const importerNames = imports.map((c: any) => c.name);
+        expect(importerNames).toContain('ServerBootstrap.java');
+      });
 
-      const imports = result.incoming.imports || [];
-      expect(imports.length).toBeGreaterThanOrEqual(10);
+      it('contrast: context() on a Method still works (regression check)', async () => {
+        // The issue notes context() on methods worked before — must still work after fix
+        const result = await backend.callTool('context', {
+          name: 'registerSessionTracker',
+        });
+        expect(result.status).toBe('found');
+        // registerSessionTracker calls SessionTracker constructor — should appear in outgoing
+        expect(result.outgoing).toBeDefined();
+      });
+
+      it('RankPermissionHandler: incoming shows caller and importers', async () => {
+        const result = await backend.callTool('context', {
+          name: 'RankPermissionHandler',
+          file_path: 'core/rank/RankPermissionHandler.java',
+        });
+
+        expect(result.status).toBe('found');
+        expect(result.symbol.kind).toBe('Class');
+
+        const calls = result.incoming.calls || [];
+        expect(calls.map((c: any) => c.name)).toContain('initRankHandler');
+
+        const imports = result.incoming.imports || [];
+        expect(imports.length).toBeGreaterThanOrEqual(10);
+      });
     });
-  });
-
-}, {
-  seed: SEED,
-  poolAdapter: true,
-  afterSetup: async (handle) => {
-    vi.mocked(listRegisteredRepos).mockResolvedValue([
-      {
-        name: 'test-repo',
-        path: '/test/repo',
-        storagePath: handle.tmpHandle.dbPath,
-        indexedAt: new Date().toISOString(),
-        lastCommit: 'abc123',
-        stats: { files: 10, nodes: 20, communities: 0, processes: 0 },
-      },
-    ]);
-    const backend = new LocalBackend();
-    await backend.init();
-    (handle as any)._backend = backend;
   },
-});
+  {
+    seed: SEED,
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'test-repo',
+          path: '/test/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc123',
+          stats: { files: 10, nodes: 20, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as any)._backend = backend;
+    },
+  },
+);

@@ -14,10 +14,7 @@ import { hasKeyword } from './helpers.js';
  */
 export const rustConfig: FieldExtractionConfig = {
   language: SupportedLanguages.Rust,
-  typeDeclarationNodes: [
-    'struct_item',
-    'enum_item',
-  ],
+  typeDeclarationNodes: ['struct_item', 'enum_item'],
   fieldNodeTypes: ['field_declaration'],
   bodyNodeTypes: ['field_declaration_list'],
   defaultVisibility: 'private',

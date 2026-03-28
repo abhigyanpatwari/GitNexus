@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { calculateEntryPointScore, isTestFile, isUtilityFile } from '../../src/core/ingestion/entry-point-scoring.js';
+import {
+  calculateEntryPointScore,
+  isTestFile,
+  isUtilityFile,
+} from '../../src/core/ingestion/entry-point-scoring.js';
 
 describe('calculateEntryPointScore', () => {
   describe('base scoring', () => {
@@ -37,18 +41,28 @@ describe('calculateEntryPointScore', () => {
   });
 
   describe('universal name patterns', () => {
-    it.each([
-      'main', 'init', 'bootstrap', 'start', 'run', 'setup', 'configure',
-    ])('recognizes "%s" as entry point pattern', (name) => {
-      const result = calculateEntryPointScore(name, 'typescript', false, 0, 3);
-      expect(result.reasons).toContain('entry-pattern');
-    });
+    it.each(['main', 'init', 'bootstrap', 'start', 'run', 'setup', 'configure'])(
+      'recognizes "%s" as entry point pattern',
+      (name) => {
+        const result = calculateEntryPointScore(name, 'typescript', false, 0, 3);
+        expect(result.reasons).toContain('entry-pattern');
+      },
+    );
 
     it.each([
-      'handleLogin', 'handleSubmit', 'onClick', 'onSubmit',
-      'RequestHandler', 'UserController',
-      'processPayment', 'executeQuery', 'performAction',
-      'dispatchEvent', 'triggerAction', 'fireEvent', 'emitEvent',
+      'handleLogin',
+      'handleSubmit',
+      'onClick',
+      'onSubmit',
+      'RequestHandler',
+      'UserController',
+      'processPayment',
+      'executeQuery',
+      'performAction',
+      'dispatchEvent',
+      'triggerAction',
+      'fireEvent',
+      'emitEvent',
     ])('recognizes "%s" as entry point pattern', (name) => {
       const result = calculateEntryPointScore(name, 'typescript', false, 0, 3);
       expect(result.reasons).toContain('entry-pattern');
@@ -126,9 +140,17 @@ describe('calculateEntryPointScore', () => {
 
     // C-specific patterns
     it.each([
-      'init_server', 'server_init', 'start_server', 'handle_request',
-      'signal_handler', 'event_callback', 'cmd_new_window', 'server_start',
-      'client_connect', 'session_create', 'window_resize',
+      'init_server',
+      'server_init',
+      'start_server',
+      'handle_request',
+      'signal_handler',
+      'event_callback',
+      'cmd_new_window',
+      'server_start',
+      'client_connect',
+      'session_create',
+      'window_resize',
     ])('recognizes C pattern "%s"', (name) => {
       const result = calculateEntryPointScore(name, 'c', false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
@@ -136,8 +158,14 @@ describe('calculateEntryPointScore', () => {
 
     // C++-specific patterns
     it.each([
-      'CreateInstance', 'create_session', 'Run', 'run', 'Start', 'start',
-      'OnEventReceived', 'on_click',
+      'CreateInstance',
+      'create_session',
+      'Run',
+      'run',
+      'Start',
+      'start',
+      'OnEventReceived',
+      'on_click',
     ])('recognizes C++ pattern "%s"', (name) => {
       const result = calculateEntryPointScore(name, 'cpp', false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
@@ -146,10 +174,20 @@ describe('calculateEntryPointScore', () => {
 
   describe('utility pattern penalty', () => {
     it.each([
-      'getUser', 'setName', 'isValid', 'hasPermission', 'canEdit',
-      'formatDate', 'parseJSON', 'validateInput',
-      'toString', 'fromJSON', 'encodeBase64', 'serializeData',
-      'cloneDeep', 'mergeObjects',
+      'getUser',
+      'setName',
+      'isValid',
+      'hasPermission',
+      'canEdit',
+      'formatDate',
+      'parseJSON',
+      'validateInput',
+      'toString',
+      'fromJSON',
+      'encodeBase64',
+      'serializeData',
+      'cloneDeep',
+      'mergeObjects',
     ])('penalizes utility function "%s"', (name) => {
       const result = calculateEntryPointScore(name, 'typescript', false, 0, 3);
       expect(result.reasons).toContain('utility-pattern');
@@ -166,21 +204,42 @@ describe('calculateEntryPointScore', () => {
 
   describe('framework detection from path', () => {
     it('boosts Next.js page entry points', () => {
-      const result = calculateEntryPointScore('render', 'typescript', true, 0, 3, 'pages/users.tsx');
-      expect(result.reasons.some(r => r.includes('framework:'))).toBe(true);
+      const result = calculateEntryPointScore(
+        'render',
+        'typescript',
+        true,
+        0,
+        3,
+        'pages/users.tsx',
+      );
+      expect(result.reasons.some((r) => r.includes('framework:'))).toBe(true);
       expect(result.score).toBeGreaterThan(0);
     });
 
     it('does not apply framework bonus for non-framework paths', () => {
-      const result = calculateEntryPointScore('render', 'typescript', true, 0, 3, 'src/lib/utils.ts');
-      expect(result.reasons.every(r => !r.includes('framework:'))).toBe(true);
+      const result = calculateEntryPointScore(
+        'render',
+        'typescript',
+        true,
+        0,
+        3,
+        'src/lib/utils.ts',
+      );
+      expect(result.reasons.every((r) => !r.includes('framework:'))).toBe(true);
     });
   });
 
   describe('combined scoring', () => {
     it('multiplies all factors together', () => {
       // handleLogin: entry pattern (1.5x) + exported (2.0x) + base
-      const result = calculateEntryPointScore('handleLogin', 'typescript', true, 0, 4, 'routes/auth.ts');
+      const result = calculateEntryPointScore(
+        'handleLogin',
+        'typescript',
+        true,
+        0,
+        4,
+        'routes/auth.ts',
+      );
       expect(result.score).toBeGreaterThan(0);
       expect(result.reasons).toContain('exported');
       expect(result.reasons).toContain('entry-pattern');
@@ -243,12 +302,10 @@ describe('isUtilityFile', () => {
     expect(isUtilityFile(filePath)).toBe(true);
   });
 
-  it.each([
-    'src/controllers/auth.ts',
-    'src/routes/api.ts',
-    'src/main.ts',
-    'src/app.ts',
-  ])('returns false for non-utility file "%s"', (filePath) => {
-    expect(isUtilityFile(filePath)).toBe(false);
-  });
+  it.each(['src/controllers/auth.ts', 'src/routes/api.ts', 'src/main.ts', 'src/app.ts'])(
+    'returns false for non-utility file "%s"',
+    (filePath) => {
+      expect(isUtilityFile(filePath)).toBe(false);
+    },
+  );
 });

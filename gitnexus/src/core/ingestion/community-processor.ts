@@ -1,9 +1,9 @@
 /**
  * Community Detection Processor
- * 
+ *
  * Uses the Leiden algorithm (via graphology-communities-leiden) to detect
  * communities/clusters in the code graph based on CALLS relationships.
- * 
+ *
  * Communities represent groups of code that work together frequently,
  * helping agents navigate the codebase by functional area rather than file structure.
  */
@@ -81,20 +81,25 @@ export const getCommunityColor = (communityIndex: number): string => {
 
 /**
  * Detect communities in the knowledge graph using Leiden algorithm
- * 
+ *
  * This runs AFTER all relationships (CALLS, IMPORTS, etc.) have been built.
  * It uses primarily CALLS edges to cluster code that works together.
  */
 export const processCommunities = async (
   knowledgeGraph: KnowledgeGraph,
-  onProgress?: (message: string, progress: number) => void
+  onProgress?: (message: string, progress: number) => void,
 ): Promise<CommunityDetectionResult> => {
   onProgress?.('Building graph for community detection...', 0);
 
   // Pre-check total symbol count to determine large-graph mode before building
   let symbolCount = 0;
-  knowledgeGraph.forEachNode(node => {
-    if (node.label === 'Function' || node.label === 'Class' || node.label === 'Method' || node.label === 'Interface') {
+  knowledgeGraph.forEachNode((node) => {
+    if (
+      node.label === 'Function' ||
+      node.label === 'Class' ||
+      node.label === 'Method' ||
+      node.label === 'Interface'
+    ) {
       symbolCount++;
     }
   });
@@ -106,14 +111,17 @@ export const processCommunities = async (
     return {
       communities: [],
       memberships: [],
-      stats: { totalCommunities: 0, modularity: 0, nodesProcessed: 0 }
+      stats: { totalCommunities: 0, modularity: 0, nodesProcessed: 0 },
     };
   }
 
   const nodeCount = graph.order;
   const edgeCount = graph.size;
 
-  onProgress?.(`Running Leiden on ${nodeCount} nodes, ${edgeCount} edges${isLarge ? ` (filtered from ${symbolCount} symbols)` : ''}...`, 30);
+  onProgress?.(
+    `Running Leiden on ${nodeCount} nodes, ${edgeCount} edges${isLarge ? ` (filtered from ${symbolCount} symbols)` : ''}...`,
+    30,
+  );
 
   // Large graphs: higher resolution + capped iterations (matching Python leidenalg default of 2).
   // The first 2 iterations capture ~95%+ of modularity; additional iterations have diminishing returns.
@@ -122,12 +130,14 @@ export const processCommunities = async (
   let details: any;
   try {
     details = await Promise.race([
-      Promise.resolve((leiden as any).detailed(graph, {
-        resolution: isLarge ? 2.0 : 1.0,
-        maxIterations: isLarge ? 3 : 0,
-      })),
+      Promise.resolve(
+        (leiden as any).detailed(graph, {
+          resolution: isLarge ? 2.0 : 1.0,
+          maxIterations: isLarge ? 3 : 0,
+        }),
+      ),
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Leiden timeout')), LEIDEN_TIMEOUT_MS)
+        setTimeout(() => reject(new Error('Leiden timeout')), LEIDEN_TIMEOUT_MS),
       ),
     ]);
   } catch (e: any) {
@@ -135,7 +145,9 @@ export const processCommunities = async (
       onProgress?.('Community detection timed out, using fallback...', 60);
       // Fallback: assign all nodes to community 0
       const communities: Record<string, number> = {};
-      graph.forEachNode((node: string) => { communities[node] = 0; });
+      graph.forEachNode((node: string) => {
+        communities[node] = 0;
+      });
       details = { communities, count: 1, modularity: 0 };
     } else {
       throw e;
@@ -149,7 +161,7 @@ export const processCommunities = async (
     details.communities as Record<string, number>,
     details.count,
     graph,
-    knowledgeGraph
+    knowledgeGraph,
   );
 
   onProgress?.('Creating membership edges...', 80);
@@ -172,7 +184,7 @@ export const processCommunities = async (
       totalCommunities: details.count,
       modularity: details.modularity,
       nodesProcessed: graph.order,
-    }
+    },
   };
 };
 
@@ -195,7 +207,7 @@ const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph, isLarge: boolean):
   const connectedNodes = new Set<string>();
   const nodeDegree = new Map<string, number>();
 
-  knowledgeGraph.forEachRelationship(rel => {
+  knowledgeGraph.forEachRelationship((rel) => {
     if (!clusteringRelTypes.has(rel.type) || rel.sourceId === rel.targetId) return;
     if (isLarge && rel.confidence < MIN_CONFIDENCE_LARGE) return;
 
@@ -205,7 +217,7 @@ const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph, isLarge: boolean):
     nodeDegree.set(rel.targetId, (nodeDegree.get(rel.targetId) || 0) + 1);
   });
 
-  knowledgeGraph.forEachNode(node => {
+  knowledgeGraph.forEachNode((node) => {
     if (!symbolTypes.has(node.label) || !connectedNodes.has(node.id)) return;
     // For large graphs, skip degree-1 nodes — they just become singletons or
     // get absorbed into their single neighbor's community, but cost iteration time.
@@ -218,10 +230,14 @@ const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph, isLarge: boolean):
     });
   });
 
-  knowledgeGraph.forEachRelationship(rel => {
+  knowledgeGraph.forEachRelationship((rel) => {
     if (!clusteringRelTypes.has(rel.type)) return;
     if (isLarge && rel.confidence < MIN_CONFIDENCE_LARGE) return;
-    if (graph.hasNode(rel.sourceId) && graph.hasNode(rel.targetId) && rel.sourceId !== rel.targetId) {
+    if (
+      graph.hasNode(rel.sourceId) &&
+      graph.hasNode(rel.targetId) &&
+      rel.sourceId !== rel.targetId
+    ) {
       if (!graph.hasEdge(rel.sourceId, rel.targetId)) {
         graph.addEdge(rel.sourceId, rel.targetId);
       }
@@ -242,11 +258,11 @@ const createCommunityNodes = (
   communities: Record<string, number>,
   communityCount: number,
   graph: any,
-  knowledgeGraph: KnowledgeGraph
+  knowledgeGraph: KnowledgeGraph,
 ): CommunityNode[] => {
   // Group node IDs by community
   const communityMembers = new Map<number, string[]>();
-  
+
   Object.entries(communities).forEach(([nodeId, commNum]) => {
     if (!communityMembers.has(commNum)) {
       communityMembers.set(commNum, []);
@@ -264,13 +280,13 @@ const createCommunityNodes = (
 
   // Create community nodes - SKIP SINGLETONS (isolated nodes)
   const communityNodes: CommunityNode[] = [];
-  
+
   communityMembers.forEach((memberIds, commNum) => {
     // Skip singleton communities - they're just isolated nodes
     if (memberIds.length < 2) return;
-    
+
     const heuristicLabel = generateHeuristicLabel(memberIds, nodePathMap, graph, commNum);
-    
+
     communityNodes.push({
       id: `comm_${commNum}`,
       label: heuristicLabel,
@@ -297,20 +313,24 @@ const generateHeuristicLabel = (
   memberIds: string[],
   nodePathMap: Map<string, string>,
   graph: any,
-  commNum: number
+  commNum: number,
 ): string => {
   // Collect folder names from file paths
   const folderCounts = new Map<string, number>();
-  
-  memberIds.forEach(nodeId => {
+
+  memberIds.forEach((nodeId) => {
     const filePath = nodePathMap.get(nodeId) || '';
     const parts = filePath.split('/').filter(Boolean);
-    
+
     // Get the most specific folder (parent directory)
     if (parts.length >= 2) {
       const folder = parts[parts.length - 2];
       // Skip generic folder names
-      if (!['src', 'lib', 'core', 'utils', 'common', 'shared', 'helpers'].includes(folder.toLowerCase())) {
+      if (
+        !['src', 'lib', 'core', 'utils', 'common', 'shared', 'helpers'].includes(
+          folder.toLowerCase(),
+        )
+      ) {
         folderCounts.set(folder, (folderCounts.get(folder) || 0) + 1);
       }
     }
@@ -319,7 +339,7 @@ const generateHeuristicLabel = (
   // Find most common folder
   let maxCount = 0;
   let bestFolder = '';
-  
+
   folderCounts.forEach((count, folder) => {
     if (count > maxCount) {
       maxCount = count;
@@ -334,7 +354,7 @@ const generateHeuristicLabel = (
 
   // Fallback: use function names to detect patterns
   const names: string[] = [];
-  memberIds.forEach(nodeId => {
+  memberIds.forEach((nodeId) => {
     const name = graph.getNodeAttribute(nodeId, 'name');
     if (name) names.push(name);
   });
@@ -356,16 +376,16 @@ const generateHeuristicLabel = (
  */
 const findCommonPrefix = (strings: string[]): string => {
   if (strings.length === 0) return '';
-  
+
   const sorted = strings.slice().sort();
   const first = sorted[0];
   const last = sorted[sorted.length - 1];
-  
+
   let i = 0;
   while (i < first.length && first[i] === last[i]) {
     i++;
   }
-  
+
   return first.substring(0, i);
 };
 
@@ -384,9 +404,7 @@ const calculateCohesion = (memberIds: string[], graph: any): number => {
 
   // Sample up to 50 members for large communities
   const SAMPLE_SIZE = 50;
-  const sample = memberIds.length <= SAMPLE_SIZE
-    ? memberIds
-    : memberIds.slice(0, SAMPLE_SIZE);
+  const sample = memberIds.length <= SAMPLE_SIZE ? memberIds : memberIds.slice(0, SAMPLE_SIZE);
 
   let internalEdges = 0;
   let totalEdges = 0;

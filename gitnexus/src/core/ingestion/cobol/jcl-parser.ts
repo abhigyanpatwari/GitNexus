@@ -17,7 +17,13 @@
 export interface JclParseResults {
   jobs: Array<{ name: string; line: number; class?: string; msgclass?: string }>;
   steps: Array<{ name: string; jobName: string; program?: string; proc?: string; line: number }>;
-  ddStatements: Array<{ ddName: string; stepName: string; dataset?: string; disp?: string; line: number }>;
+  ddStatements: Array<{
+    ddName: string;
+    stepName: string;
+    dataset?: string;
+    disp?: string;
+    line: number;
+  }>;
   procs: Array<{ name: string; line: number; isInStream: boolean }>;
   includes: Array<{ member: string; line: number }>;
   sets: Array<{ variable: string; value: string; line: number }>;
@@ -173,7 +179,7 @@ export function parseJcl(content: string, filePath: string): JclParseResults {
     // JCLLIB ORDER=
     const jcllibMatch = text.match(JCLLIB_RE);
     if (jcllibMatch) {
-      const libs = jcllibMatch[1].split(',').map(s => s.trim().replace(/'/g, ''));
+      const libs = jcllibMatch[1].split(',').map((s) => s.trim().replace(/'/g, ''));
       results.jcllib.push({ order: libs, line: lineNum });
       continue;
     }

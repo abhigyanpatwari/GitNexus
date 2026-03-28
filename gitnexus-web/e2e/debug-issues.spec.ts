@@ -9,7 +9,7 @@ const BACKEND_URL = process.env.BACKEND_URL ?? 'http://localhost:4747';
 const debugTest = process.env.DEBUG_E2E ? test : test.skip;
 
 async function connectToServer(page: import('@playwright/test').Page) {
-  page.on('console', msg => {
+  page.on('console', (msg) => {
     if (msg.type() === 'error') console.log(`[error] ${msg.text()}`);
   });
 
@@ -86,7 +86,10 @@ debugTest('debug: process view Reset View button', async ({ page }, testInfo) =>
 
   const transformAfterReset = await diagramDiv.getAttribute('style');
   console.log('Transform AFTER reset:', transformAfterReset);
-  await page.screenshot({ path: testInfo.outputPath('debug-modal-after-reset.png'), fullPage: true });
+  await page.screenshot({
+    path: testInfo.outputPath('debug-modal-after-reset.png'),
+    fullPage: true,
+  });
 
   // Verify transform actually changed back
   expect(transformAfterZoom).not.toBe(transformBefore);
@@ -123,5 +126,8 @@ debugTest('debug: lightbulb clears node selection dimming', async ({ page }, tes
   // Click it again to toggle back on
   await lightbulbBtn.click();
   await page.waitForTimeout(500);
-  await page.screenshot({ path: testInfo.outputPath('debug-after-lightbulb-toggle-back.png'), fullPage: true });
+  await page.screenshot({
+    path: testInfo.outputPath('debug-after-lightbulb-toggle-back.png'),
+    fullPage: true,
+  });
 });

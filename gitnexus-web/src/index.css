@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 /* ═══════════════════════════════════════════════════════════════
    TAILWIND V4 THEME CONFIGURATION
@@ -51,7 +51,6 @@
 
 /* Keyframes */
 @keyframes breathe {
-
   0%,
   100% {
     border-color: #2a2a3a;
@@ -65,7 +64,6 @@
 }
 
 @keyframes pulse-glow {
-
   0%,
   100% {
     transform: scale(1);
@@ -116,7 +114,6 @@
    REDUCED MOTION — respect OS-level motion preferences (WCAG 2.3.3)
 ═══════════════════════════════════════════════════════════════ */
 @media (prefers-reduced-motion: reduce) {
-
   *,
   *::before,
   *::after {
@@ -242,10 +239,10 @@ body {
   color: var(--color-text-secondary);
 }
 
-.chat-prose>h1:first-child,
-.chat-prose>h2:first-child,
-.chat-prose>h3:first-child,
-.chat-prose>h4:first-child {
+.chat-prose > h1:first-child,
+.chat-prose > h2:first-child,
+.chat-prose > h3:first-child,
+.chat-prose > h4:first-child {
   margin-top: 0;
 }
 
@@ -273,7 +270,7 @@ body {
 }
 
 /* Inline code - VS Code style */
-.chat-prose code:not([class*="language-"]) {
+.chat-prose code:not([class*='language-']) {
   padding: 0.2em 0.5em;
   background: rgba(110, 118, 129, 0.2);
   border-radius: 6px;
@@ -285,9 +282,9 @@ body {
 }
 
 /* Ensure inline code keeps its color inside links and other elements */
-.chat-prose a code:not([class*="language-"]),
-.chat-prose strong code:not([class*="language-"]),
-.chat-prose em code:not([class*="language-"]) {
+.chat-prose a code:not([class*='language-']),
+.chat-prose strong code:not([class*='language-']),
+.chat-prose em code:not([class*='language-']) {
   color: #e6b450 !important;
 }
 

@@ -59,12 +59,15 @@ export async function closeWikiDb(): Promise<void> {
  * Get all source files with their exported symbol names and types.
  */
 export async function getFilesWithExports(): Promise<FileWithExports[]> {
-  const rows = await executeQuery(REPO_ID, `
+  const rows = await executeQuery(
+    REPO_ID,
+    `
     MATCH (f:File)-[:CodeRelation {type: 'DEFINES'}]->(n)
     WHERE n.isExported = true
     RETURN f.filePath AS filePath, n.name AS name, labels(n)[0] AS type
     ORDER BY f.filePath
-  `);
+  `,
+  );
 
   const fileMap = new Map<string, FileWithExports>();
   for (const row of rows) {
@@ -87,26 +90,32 @@ export async function getFilesWithExports(): Promise<FileWithExports[]> {
  * Get all files tracked in the graph (including those with no exports).
  */
 export async function getAllFiles(): Promise<string[]> {
-  const rows = await executeQuery(REPO_ID, `
+  const rows = await executeQuery(
+    REPO_ID,
+    `
     MATCH (f:File)
     RETURN f.filePath AS filePath
     ORDER BY f.filePath
-  `);
-  return rows.map(r => r.filePath || r[0]);
+  `,
+  );
+  return rows.map((r) => r.filePath || r[0]);
 }
 
 /**
  * Get inter-file call edges (calls between different files).
  */
 export async function getInterFileCallEdges(): Promise<CallEdge[]> {
-  const rows = await executeQuery(REPO_ID, `
+  const rows = await executeQuery(
+    REPO_ID,
+    `
     MATCH (a)-[:CodeRelation {type: 'CALLS'}]->(b)
     WHERE a.filePath <> b.filePath
     RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
            b.filePath AS toFile, b.name AS toName
-  `);
+  `,
+  );
 
-  return rows.map(r => ({
+  return rows.map((r) => ({
     fromFile: r.fromFile || r[0],
     fromName: r.fromName || r[1],
     toFile: r.toFile || r[2],
@@ -120,15 +129,18 @@ export async function getInterFileCallEdges(): Promise<CallEdge[]> {
 export async function getIntraModuleCallEdges(filePaths: string[]): Promise<CallEdge[]> {
   if (filePaths.length === 0) return [];
 
-  const fileList = filePaths.map(f => `'${f.replace(/'/g, "''")}'`).join(', ');
-  const rows = await executeQuery(REPO_ID, `
+  const fileList = filePaths.map((f) => `'${f.replace(/'/g, "''")}'`).join(', ');
+  const rows = await executeQuery(
+    REPO_ID,
+    `
     MATCH (a)-[:CodeRelation {type: 'CALLS'}]->(b)
     WHERE a.filePath IN [${fileList}] AND b.filePath IN [${fileList}]
     RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
            b.filePath AS toFile, b.name AS toName
-  `);
+  `,
+  );
 
-  return rows.map(r => ({
+  return rows.map((r) => ({
     fromFile: r.fromFile || r[0],
     fromName: r.fromName || r[1],
     toFile: r.toFile || r[2],
@@ -145,32 +157,38 @@ export async function getInterModuleCallEdges(filePaths: string[]): Promise<{
 }> {
   if (filePaths.length === 0) return { outgoing: [], incoming: [] };
 
-  const fileList = filePaths.map(f => `'${f.replace(/'/g, "''")}'`).join(', ');
+  const fileList = filePaths.map((f) => `'${f.replace(/'/g, "''")}'`).join(', ');
 
-  const outRows = await executeQuery(REPO_ID, `
+  const outRows = await executeQuery(
+    REPO_ID,
+    `
     MATCH (a)-[:CodeRelation {type: 'CALLS'}]->(b)
     WHERE a.filePath IN [${fileList}] AND NOT b.filePath IN [${fileList}]
     RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
            b.filePath AS toFile, b.name AS toName
     LIMIT 30
-  `);
+  `,
+  );
 
-  const inRows = await executeQuery(REPO_ID, `
+  const inRows = await executeQuery(
+    REPO_ID,
+    `
     MATCH (a)-[:CodeRelation {type: 'CALLS'}]->(b)
     WHERE NOT a.filePath IN [${fileList}] AND b.filePath IN [${fileList}]
     RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
            b.filePath AS toFile, b.name AS toName
     LIMIT 30
-  `);
+  `,
+  );
 
   return {
-    outgoing: outRows.map(r => ({
+    outgoing: outRows.map((r) => ({
       fromFile: r.fromFile || r[0],
       fromName: r.fromName || r[1],
       toFile: r.toFile || r[2],
       toName: r.toName || r[3],
     })),
-    incoming: inRows.map(r => ({
+    incoming: inRows.map((r) => ({
       fromFile: r.fromFile || r[0],
       fromName: r.fromName || r[1],
       toFile: r.toFile || r[2],
@@ -186,17 +204,20 @@ export async function getInterModuleCallEdges(filePaths: string[]): Promise<{
 export async function getProcessesForFiles(filePaths: string[], limit = 5): Promise<ProcessInfo[]> {
   if (filePaths.length === 0) return [];
 
-  const fileList = filePaths.map(f => `'${f.replace(/'/g, "''")}'`).join(', ');
+  const fileList = filePaths.map((f) => `'${f.replace(/'/g, "''")}'`).join(', ');
 
   // Find processes that have steps in the given files
-  const procRows = await executeQuery(REPO_ID, `
+  const procRows = await executeQuery(
+    REPO_ID,
+    `
     MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
     WHERE s.filePath IN [${fileList}]
     RETURN DISTINCT p.id AS id, p.heuristicLabel AS label,
            p.processType AS type, p.stepCount AS stepCount
     ORDER BY stepCount DESC
     LIMIT ${limit}
-  `);
+  `,
+  );
 
   const processes: ProcessInfo[] = [];
   for (const row of procRows) {
@@ -206,18 +227,21 @@ export async function getProcessesForFiles(filePaths: string[], limit = 5): Prom
     const stepCount = row.stepCount || row[3] || 0;
 
     // Get the full step trace for this process
-    const stepRows = await executeQuery(REPO_ID, `
+    const stepRows = await executeQuery(
+      REPO_ID,
+      `
       MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process {id: '${procId.replace(/'/g, "''")}'})
       RETURN s.name AS name, s.filePath AS filePath, labels(s)[0] AS type, r.step AS step
       ORDER BY r.step
-    `);
+    `,
+    );
 
     processes.push({
       id: procId,
       label,
       type,
       stepCount,
-      steps: stepRows.map(s => ({
+      steps: stepRows.map((s) => ({
         step: s.step || s[3] || 0,
         name: s.name || s[0],
         filePath: s.filePath || s[1],
@@ -233,13 +257,16 @@ export async function getProcessesForFiles(filePaths: string[], limit = 5): Prom
  * Get all processes in the graph (for overview page).
  */
 export async function getAllProcesses(limit = 20): Promise<ProcessInfo[]> {
-  const procRows = await executeQuery(REPO_ID, `
+  const procRows = await executeQuery(
+    REPO_ID,
+    `
     MATCH (p:Process)
     RETURN p.id AS id, p.heuristicLabel AS label,
            p.processType AS type, p.stepCount AS stepCount
     ORDER BY stepCount DESC
     LIMIT ${limit}
-  `);
+  `,
+  );
 
   const processes: ProcessInfo[] = [];
   for (const row of procRows) {
@@ -248,18 +275,21 @@ export async function getAllProcesses(limit = 20): Promise<ProcessInfo[]> {
     const type = row.type || row[2] || 'unknown';
     const stepCount = row.stepCount || row[3] || 0;
 
-    const stepRows = await executeQuery(REPO_ID, `
+    const stepRows = await executeQuery(
+      REPO_ID,
+      `
       MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process {id: '${procId.replace(/'/g, "''")}'})
       RETURN s.name AS name, s.filePath AS filePath, labels(s)[0] AS type, r.step AS step
       ORDER BY r.step
-    `);
+    `,
+    );
 
     processes.push({
       id: procId,
       label,
       type,
       stepCount,
-      steps: stepRows.map(s => ({
+      steps: stepRows.map((s) => ({
         step: s.step || s[3] || 0,
         name: s.name || s[0],
         filePath: s.filePath || s[1],
@@ -276,7 +306,7 @@ export async function getAllProcesses(limit = 20): Promise<ProcessInfo[]> {
  * Groups call edges by source/target module.
  */
 export async function getInterModuleEdgesForOverview(
-  moduleFiles: Record<string, string[]>
+  moduleFiles: Record<string, string[]>,
 ): Promise<Array<{ from: string; to: string; count: number }>> {
   // Build file-to-module lookup
   const fileToModule = new Map<string, string>();

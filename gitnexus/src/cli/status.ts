@@ -1,6 +1,6 @@
 /**
  * Status Command
- * 
+ *
  * Shows the indexing status of the current repository.
  */
 

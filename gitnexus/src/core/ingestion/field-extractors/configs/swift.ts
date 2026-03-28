@@ -6,7 +6,13 @@ import { hasKeyword, findVisibility } from './helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { FieldVisibility } from '../../field-types.js';
 
-const SWIFT_VIS = new Set<FieldVisibility>(['public', 'private', 'fileprivate', 'internal', 'open']);
+const SWIFT_VIS = new Set<FieldVisibility>([
+  'public',
+  'private',
+  'fileprivate',
+  'internal',
+  'open',
+]);
 
 /**
  * Swift field extraction config.
@@ -16,11 +22,7 @@ const SWIFT_VIS = new Set<FieldVisibility>(['public', 'private', 'fileprivate', 
  */
 export const swiftConfig: FieldExtractionConfig = {
   language: SupportedLanguages.Swift,
-  typeDeclarationNodes: [
-    'class_declaration',
-    'struct_declaration',
-    'protocol_declaration',
-  ],
+  typeDeclarationNodes: ['class_declaration', 'struct_declaration', 'protocol_declaration'],
   fieldNodeTypes: ['property_declaration'],
   bodyNodeTypes: ['class_body', 'protocol_body'],
   defaultVisibility: 'internal',

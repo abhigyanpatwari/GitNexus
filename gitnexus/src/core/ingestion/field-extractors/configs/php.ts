@@ -16,11 +16,7 @@ const PHP_VIS = new Set<FieldVisibility>(['public', 'private', 'protected']);
  */
 export const phpConfig: FieldExtractionConfig = {
   language: SupportedLanguages.PHP,
-  typeDeclarationNodes: [
-    'class_declaration',
-    'interface_declaration',
-    'trait_declaration',
-  ],
+  typeDeclarationNodes: ['class_declaration', 'interface_declaration', 'trait_declaration'],
   fieldNodeTypes: ['property_declaration'],
   bodyNodeTypes: ['declaration_list'],
   defaultVisibility: 'public',
@@ -30,8 +26,7 @@ export const phpConfig: FieldExtractionConfig = {
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
       if (child?.type === 'property_element') {
-        const varName = child.childForFieldName('name')
-          ?? child.firstNamedChild;
+        const varName = child.childForFieldName('name') ?? child.firstNamedChild;
         if (varName) {
           // strip leading $ from PHP variable names
           const text = varName.text;
@@ -53,9 +48,14 @@ export const phpConfig: FieldExtractionConfig = {
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
       if (!child) continue;
-      if (child.type === 'union_type' || child.type === 'named_type'
-        || child.type === 'optional_type' || child.type === 'primitive_type'
-        || child.type === 'intersection_type' || child.type === 'nullable_type') {
+      if (
+        child.type === 'union_type' ||
+        child.type === 'named_type' ||
+        child.type === 'optional_type' ||
+        child.type === 'primitive_type' ||
+        child.type === 'intersection_type' ||
+        child.type === 'nullable_type'
+      ) {
         return extractSimpleTypeName(child) ?? child.text?.trim();
       }
     }

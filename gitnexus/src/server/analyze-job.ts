@@ -87,7 +87,12 @@ export class JobManager {
     return this.jobs.get(id);
   }
 
-  updateJob(id: string, update: Partial<Pick<AnalyzeJob, 'status' | 'progress' | 'error' | 'repoPath' | 'repoName' | 'completedAt'>>) {
+  updateJob(
+    id: string,
+    update: Partial<
+      Pick<AnalyzeJob, 'status' | 'progress' | 'error' | 'repoPath' | 'repoName' | 'completedAt'>
+    >,
+  ) {
     const job = this.jobs.get(id);
     if (!job) return;
 
@@ -103,7 +108,7 @@ export class JobManager {
       this.emitter.emit(`progress:${id}`, {
         phase: update.status,
         percent: update.status === 'complete' ? 100 : job.progress.percent,
-        message: update.status === 'complete' ? 'Complete' : (update.error || 'Failed'),
+        message: update.status === 'complete' ? 'Complete' : update.error || 'Failed',
       });
     } else if (update.progress) {
       this.emitter.emit(`progress:${id}`, update.progress);
@@ -127,7 +132,10 @@ export class JobManager {
     child.on('exit', () => {
       this.children.delete(jobId);
       const t = this.timeouts.get(jobId);
-      if (t) { clearTimeout(t); this.timeouts.delete(jobId); }
+      if (t) {
+        clearTimeout(t);
+        this.timeouts.delete(jobId);
+      }
     });
   }
 

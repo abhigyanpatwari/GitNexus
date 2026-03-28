@@ -1,9 +1,9 @@
 model: deepseek-ai/DeepSeek-V3
 provider: openrouter
 cost:
-  input: 0.27  # per 1M tokens
-  output: 1.10  # per 1M tokens
-  
+  input: 0.27 # per 1M tokens
+  output: 1.10 # per 1M tokens
+
 # Native DeepSeek API (direct)
 # Get your API key at: https://platform.deepseek.com/
 # Or use OpenRouter with: OPENROUTER_API_KEY

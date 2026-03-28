@@ -28,10 +28,7 @@ describe('Cross-File Binding Propagation: TypeScript simple cross-file', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(CROSS_FILE_FIXTURES, 'ts-simple'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(CROSS_FILE_FIXTURES, 'ts-simple'), () => {});
   }, 60000);
 
   it('detects User class with save and getName methods', () => {
@@ -47,28 +44,24 @@ describe('Cross-File Binding Propagation: TypeScript simple cross-file', () => {
 
   it('resolves user.save() in main() to User#save via cross-file binding', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'main' &&
-      c.targetFilePath.includes('models'),
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'main' && c.targetFilePath.includes('models'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves user.getName() in main() to User#getName via cross-file binding', () => {
     const calls = getRelationships(result, 'CALLS');
-    const getNameCall = calls.find(c =>
-      c.target === 'getName' &&
-      c.source === 'main' &&
-      c.targetFilePath.includes('models'),
+    const getNameCall = calls.find(
+      (c) => c.target === 'getName' && c.source === 'main' && c.targetFilePath.includes('models'),
     );
     expect(getNameCall).toBeDefined();
   });
 
   it('emits HAS_METHOD edges linking save and getName to User', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const saveEdge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
-    const getNameEdge = hasMethod.find(e => e.source === 'User' && e.target === 'getName');
+    const saveEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'save');
+    const getNameEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'getName');
     expect(saveEdge).toBeDefined();
     expect(getNameEdge).toBeDefined();
   });
@@ -77,9 +70,9 @@ describe('Cross-File Binding Propagation: TypeScript simple cross-file', () => {
     const imports = getRelationships(result, 'IMPORTS');
     // service.ts → models.ts and app.ts → service.ts
     expect(imports.length).toBeGreaterThanOrEqual(2);
-    const paths = imports.map(e => `${e.sourceFilePath} → ${e.targetFilePath}`);
-    expect(paths.some(p => p.includes('service') && p.includes('models'))).toBe(true);
-    expect(paths.some(p => p.includes('app') && p.includes('service'))).toBe(true);
+    const paths = imports.map((e) => `${e.sourceFilePath} → ${e.targetFilePath}`);
+    expect(paths.some((p) => p.includes('service') && p.includes('models'))).toBe(true);
+    expect(paths.some((p) => p.includes('app') && p.includes('service'))).toBe(true);
   });
 });
 
@@ -95,10 +88,7 @@ describe('Cross-File Binding Propagation: TypeScript re-export chain', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(CROSS_FILE_FIXTURES, 'ts-reexport'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(CROSS_FILE_FIXTURES, 'ts-reexport'), () => {});
   }, 60000);
 
   it('detects Config class with validate method', () => {
@@ -113,17 +103,15 @@ describe('Cross-File Binding Propagation: TypeScript re-export chain', () => {
 
   it('resolves config.validate() in init() to Config#validate', () => {
     const calls = getRelationships(result, 'CALLS');
-    const validateCall = calls.find(c =>
-      c.target === 'validate' &&
-      c.source === 'init' &&
-      c.targetFilePath.includes('core'),
+    const validateCall = calls.find(
+      (c) => c.target === 'validate' && c.source === 'init' && c.targetFilePath.includes('core'),
     );
     expect(validateCall).toBeDefined();
   });
 
   it('emits HAS_METHOD edge from Config to validate', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const edge = hasMethod.find(e => e.source === 'Config' && e.target === 'validate');
+    const edge = hasMethod.find((e) => e.source === 'Config' && e.target === 'validate');
     expect(edge).toBeDefined();
   });
 });
@@ -139,10 +127,7 @@ describe('Cross-File Binding Propagation: TypeScript E3 return type propagation'
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(CROSS_FILE_FIXTURES, 'ts-return-type'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(CROSS_FILE_FIXTURES, 'ts-return-type'), () => {});
   }, 60000);
 
   it('detects Config class with validate method', () => {
@@ -157,24 +142,22 @@ describe('Cross-File Binding Propagation: TypeScript E3 return type propagation'
 
   it('resolves c.validate() in run() to Config#validate via cross-file return type propagation', () => {
     const calls = getRelationships(result, 'CALLS');
-    const validateCall = calls.find(c =>
-      c.target === 'validate' &&
-      c.source === 'run' &&
-      c.targetFilePath.includes('api'),
+    const validateCall = calls.find(
+      (c) => c.target === 'validate' && c.source === 'run' && c.targetFilePath.includes('api'),
     );
     expect(validateCall).toBeDefined();
   });
 
   it('emits HAS_METHOD edge from Config to validate', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const edge = hasMethod.find(e => e.source === 'Config' && e.target === 'validate');
+    const edge = hasMethod.find((e) => e.source === 'Config' && e.target === 'validate');
     expect(edge).toBeDefined();
   });
 
   it('emits IMPORTS edge from consumer to api', () => {
     const imports = getRelationships(result, 'IMPORTS');
-    const edge = imports.find(e =>
-      e.sourceFilePath.includes('consumer') && e.targetFilePath.includes('api'),
+    const edge = imports.find(
+      (e) => e.sourceFilePath.includes('consumer') && e.targetFilePath.includes('api'),
     );
     expect(edge).toBeDefined();
   });
@@ -193,10 +176,7 @@ describe('Cross-File Binding Propagation: TypeScript circular imports', () => {
 
   beforeAll(async () => {
     try {
-      result = await runPipelineFromRepo(
-        path.join(CROSS_FILE_FIXTURES, 'ts-circular'),
-        () => {},
-      );
+      result = await runPipelineFromRepo(path.join(CROSS_FILE_FIXTURES, 'ts-circular'), () => {});
     } catch (err) {
       pipelineError = err;
     }
@@ -223,10 +203,10 @@ describe('Cross-File Binding Propagation: TypeScript circular imports', () => {
 
   it('emits IMPORTS edges reflecting the circular dependency', () => {
     const imports = getRelationships(result, 'IMPORTS');
-    const paths = imports.map(e => `${e.sourceFilePath} → ${e.targetFilePath}`);
+    const paths = imports.map((e) => `${e.sourceFilePath} → ${e.targetFilePath}`);
     // a.ts imports from b.ts
-    expect(paths.some(p => p.includes('a.ts') && p.includes('b.ts'))).toBe(true);
+    expect(paths.some((p) => p.includes('a.ts') && p.includes('b.ts'))).toBe(true);
     // b.ts imports from a.ts
-    expect(paths.some(p => p.includes('b.ts') && p.includes('a.ts'))).toBe(true);
+    expect(paths.some((p) => p.includes('b.ts') && p.includes('a.ts'))).toBe(true);
   });
 });

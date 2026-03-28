@@ -1,6 +1,6 @@
 /**
  * List Command
- * 
+ *
  * Shows all indexed repositories from the global registry.
  */
 
@@ -26,7 +26,9 @@ export const listCommand = async () => {
     console.log(`    Path:    ${entry.path}`);
     console.log(`    Indexed: ${indexedDate}`);
     console.log(`    Commit:  ${commitShort}`);
-    console.log(`    Stats:   ${stats.files ?? 0} files, ${stats.nodes ?? 0} symbols, ${stats.edges ?? 0} edges`);
+    console.log(
+      `    Stats:   ${stats.files ?? 0} files, ${stats.nodes ?? 0} symbols, ${stats.edges ?? 0} edges`,
+    );
     if (stats.communities) console.log(`    Clusters:   ${stats.communities}`);
     if (stats.processes) console.log(`    Processes:  ${stats.processes}`);
     console.log('');

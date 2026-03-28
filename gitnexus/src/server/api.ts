@@ -14,7 +14,13 @@ import path from 'path';
 import fs from 'fs/promises';
 import { createRequire } from 'node:module';
 import { loadMeta, listRegisteredRepos, getStoragePath } from '../storage/repo-manager.js';
-import { executeQuery, executePrepared, executeWithReusedStatement, closeLbug, withLbugDb } from '../core/lbug/lbug-adapter.js';
+import {
+  executeQuery,
+  executePrepared,
+  executeWithReusedStatement,
+  closeLbug,
+  withLbugDb,
+} from '../core/lbug/lbug-adapter.js';
 import { isWriteQuery } from '../mcp/core/lbug-adapter.js';
 import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-shared';
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
@@ -55,13 +61,13 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
   }
 
   if (
-    origin.startsWith('http://localhost:')
-    || origin === 'http://localhost'
-    || origin.startsWith('http://127.0.0.1:')
-    || origin === 'http://127.0.0.1'
-    || origin.startsWith('http://[::1]:')
-    || origin === 'http://[::1]'
-    || origin === 'https://gitnexus.vercel.app'
+    origin.startsWith('http://localhost:') ||
+    origin === 'http://localhost' ||
+    origin.startsWith('http://127.0.0.1:') ||
+    origin === 'http://127.0.0.1' ||
+    origin.startsWith('http://[::1]:') ||
+    origin === 'http://[::1]' ||
+    origin === 'https://gitnexus.vercel.app'
   ) {
     return true;
   }
@@ -83,7 +89,7 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
   if (protocol !== 'http:' && protocol !== 'https:') return false;
 
   const octets = hostname.split('.').map(Number);
-  if (octets.length !== 4 || octets.some(o => !Number.isInteger(o) || o < 0 || o > 255)) {
+  if (octets.length !== 4 || octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) {
     return false;
   }
 
@@ -99,7 +105,9 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
   return false;
 };
 
-const buildGraph = async (includeContent = false): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
+const buildGraph = async (
+  includeContent = false,
+): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
   const nodes: GraphNode[] = [];
   for (const table of NODE_TABLES) {
     try {
@@ -149,7 +157,7 @@ const buildGraph = async (includeContent = false): Promise<{ nodes: GraphNode[];
 
   const relationships: GraphRelationship[] = [];
   const relRows = await executeQuery(
-    `MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`
+    `MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`,
   );
   for (const row of relRows) {
     relationships.push({
@@ -170,11 +178,7 @@ const buildGraph = async (includeContent = false): Promise<{ nodes: GraphNode[];
  * Mount an SSE progress endpoint for a JobManager.
  * Handles: initial state, terminal events, heartbeat, event IDs, client disconnect.
  */
-const mountSSEProgress = (
-  app: express.Express,
-  routePath: string,
-  jm: JobManager,
-) => {
+const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManager) => {
   app.get(routePath, (req, res) => {
     const job = jm.getJob(req.params.jobId);
     if (!job) {
@@ -186,7 +190,7 @@ const mountSSEProgress = (
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
+      Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
     });
 
@@ -197,10 +201,12 @@ const mountSSEProgress = (
     // If already terminal, send event and close
     if (job.status === 'complete' || job.status === 'failed') {
       eventId++;
-      res.write(`id: ${eventId}\nevent: ${job.status}\ndata: ${JSON.stringify({
-        repoName: job.repoName,
-        error: job.error,
-      })}\n\n`);
+      res.write(
+        `id: ${eventId}\nevent: ${job.status}\ndata: ${JSON.stringify({
+          repoName: job.repoName,
+          error: job.error,
+        })}\n\n`,
+      );
       res.end();
       return;
     }
@@ -221,10 +227,12 @@ const mountSSEProgress = (
         eventId++;
         if (progress.phase === 'complete' || progress.phase === 'failed') {
           const eventJob = jm.getJob(req.params.jobId);
-          res.write(`id: ${eventId}\nevent: ${progress.phase}\ndata: ${JSON.stringify({
-            repoName: eventJob?.repoName,
-            error: eventJob?.error,
-          })}\n\n`);
+          res.write(
+            `id: ${eventId}\nevent: ${progress.phase}\ndata: ${JSON.stringify({
+              repoName: eventJob?.repoName,
+              error: eventJob?.error,
+            })}\n\n`,
+          );
           clearInterval(heartbeat);
           res.end();
           unsubscribe();
@@ -268,15 +276,17 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // CORS: allow localhost, private/LAN networks, and the deployed site.
   // Non-browser requests (curl, server-to-server) have no origin and are allowed.
-  app.use(cors({
-    origin: (origin, callback) => {
-      if (isAllowedOrigin(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
-    }
-  }));
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        if (isAllowedOrigin(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error('Not allowed by CORS'));
+        }
+      },
+    }),
+  );
   app.use(express.json({ limit: '10mb' }));
 
   // Initialize MCP backend (multi-repo, shared across all MCP sessions)
@@ -305,7 +315,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const resolveRepo = async (repoName?: string) => {
     const repos = await listRegisteredRepos();
     if (repos.length === 0) return null;
-    if (repoName) return repos.find(r => r.name === repoName) || null;
+    if (repoName) return repos.find((r) => r.name === repoName) || null;
     return repos[0]; // default to first
   };
 
@@ -317,7 +327,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     res.set({
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
+      Connection: 'keep-alive',
     });
     res.flushHeaders();
     // Send initial ping so the client knows it connected
@@ -334,7 +344,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     const execPath = process.env.npm_execpath ?? '';
     const argv0 = process.argv[1] ?? '';
     let launchContext: 'npx' | 'global' | 'local';
-    if (execPath.includes('npx') || argv0.includes('_npx') || process.env.npm_config_prefix?.includes('_npx')) {
+    if (
+      execPath.includes('npx') ||
+      argv0.includes('_npx') ||
+      process.env.npm_config_prefix?.includes('_npx')
+    ) {
       launchContext = 'npx';
     } else if (argv0.includes('node_modules')) {
       launchContext = 'local';
@@ -348,10 +362,15 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   app.get('/api/repos', async (_req, res) => {
     try {
       const repos = await listRegisteredRepos();
-      res.json(repos.map(r => ({
-        name: r.name, path: r.path, indexedAt: r.indexedAt,
-        lastCommit: r.lastCommit, stats: r.stats,
-      })));
+      res.json(
+        repos.map((r) => ({
+          name: r.name,
+          path: r.path,
+          indexedAt: r.indexedAt,
+          lastCommit: r.lastCommit,
+          stats: r.stats,
+        })),
+      );
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to list repos' });
     }
@@ -400,30 +419,34 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
 
       try {
-      // Close any open LadybugDB handle before deleting files
-      try { await closeLbug(); } catch {}
+        // Close any open LadybugDB handle before deleting files
+        try {
+          await closeLbug();
+        } catch {}
 
-      // 1. Delete the .gitnexus index/storage directory
-      const storagePath = getStoragePath(entry.path);
-      await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
+        // 1. Delete the .gitnexus index/storage directory
+        const storagePath = getStoragePath(entry.path);
+        await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
 
-      // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/
-      const cloneDir = getCloneDir(entry.name);
-      try {
-        const stat = await fs.stat(cloneDir);
-        if (stat.isDirectory()) {
-          await fs.rm(cloneDir, { recursive: true, force: true });
+        // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/
+        const cloneDir = getCloneDir(entry.name);
+        try {
+          const stat = await fs.stat(cloneDir);
+          if (stat.isDirectory()) {
+            await fs.rm(cloneDir, { recursive: true, force: true });
+          }
+        } catch {
+          /* clone dir may not exist (local repos) */
         }
-      } catch { /* clone dir may not exist (local repos) */ }
 
-      // 3. Unregister from the global registry
-      const { unregisterRepo } = await import('../storage/repo-manager.js');
-      await unregisterRepo(entry.path);
+        // 3. Unregister from the global registry
+        const { unregisterRepo } = await import('../storage/repo-manager.js');
+        await unregisterRepo(entry.path);
 
-      // 4. Reinitialize backend to reflect the removal
-      await backend.init().catch(() => {});
+        // 4. Reinitialize backend to reflect the removal
+        await backend.init().catch(() => {});
 
-      res.json({ deleted: entry.name });
+        res.json({ deleted: entry.name });
       } finally {
         releaseRepoLock(lockKey);
       }
@@ -506,12 +529,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           if (!isEmbedderReady()) {
             return [] as any[];
           }
-          const { semanticSearch: semSearch } = await import('../core/embeddings/embedding-pipeline.js');
+          const { semanticSearch: semSearch } =
+            await import('../core/embeddings/embedding-pipeline.js');
           searchResults = await semSearch(executeQuery, query, limit);
           // Normalize semantic results to HybridSearchResult shape
           searchResults = searchResults.map((r: any, i: number) => ({
             ...r,
-            score: r.score ?? (1 - (r.distance ?? 0)),
+            score: r.score ?? 1 - (r.distance ?? 0),
             rank: i + 1,
             sources: ['semantic'],
           }));
@@ -526,7 +550,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           // hybrid (default)
           const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
           if (isEmbedderReady()) {
-            const { semanticSearch: semSearch } = await import('../core/embeddings/embedding-pipeline.js');
+            const { semanticSearch: semSearch } =
+              await import('../core/embeddings/embedding-pipeline.js');
             searchResults = await hybridSearch(query, limit, executeQuery, semSearch);
           } else {
             searchResults = await searchFTSFromLbug(query, limit);
@@ -540,18 +565,20 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         const validLabel = (label: string): boolean =>
           (NODE_TABLES as readonly string[]).includes(label);
 
-        const enriched = await Promise.all(searchResults.slice(0, limit).map(async (r: any) => {
-          const nodeId: string = r.nodeId || r.id || '';
-          const nodeLabel = nodeId.split(':')[0];
-          const enrichment: { connections?: any; cluster?: string; processes?: any[] } = {};
+        const enriched = await Promise.all(
+          searchResults.slice(0, limit).map(async (r: any) => {
+            const nodeId: string = r.nodeId || r.id || '';
+            const nodeLabel = nodeId.split(':')[0];
+            const enrichment: { connections?: any; cluster?: string; processes?: any[] } = {};
 
-          if (!nodeId || !validLabel(nodeLabel)) return { ...r, ...enrichment };
+            if (!nodeId || !validLabel(nodeLabel)) return { ...r, ...enrichment };
 
-          // Run connections, cluster, and process queries in parallel
-          // Label is validated against NODE_TABLES (compile-time safe identifiers);
-          // nodeId uses $nid parameter binding to prevent injection
-          const [connRes, clusterRes, procRes] = await Promise.all([
-            executePrepared(`
+            // Run connections, cluster, and process queries in parallel
+            // Label is validated against NODE_TABLES (compile-time safe identifiers);
+            // nodeId uses $nid parameter binding to prevent injection
+            const [connRes, clusterRes, procRes] = await Promise.all([
+              executePrepared(
+                `
               MATCH (n:${nodeLabel} {id: $nid})
               OPTIONAL MATCH (n)-[r1:CodeRelation]->(dst)
               OPTIONAL MATCH (src)-[r2:CodeRelation]->(n)
@@ -559,46 +586,59 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 collect(DISTINCT {name: dst.name, type: r1.type, confidence: r1.confidence}) AS outgoing,
                 collect(DISTINCT {name: src.name, type: r2.type, confidence: r2.confidence}) AS incoming
               LIMIT 1
-            `, { nid: nodeId }).catch(() => []),
-            executePrepared(`
+            `,
+                { nid: nodeId },
+              ).catch(() => []),
+              executePrepared(
+                `
               MATCH (n:${nodeLabel} {id: $nid})
               MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
               RETURN c.label AS label, c.description AS description
               LIMIT 1
-            `, { nid: nodeId }).catch(() => []),
-            executePrepared(`
+            `,
+                { nid: nodeId },
+              ).catch(() => []),
+              executePrepared(
+                `
               MATCH (n:${nodeLabel} {id: $nid})
               MATCH (n)-[rel:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
               RETURN p.id AS id, p.label AS label, rel.step AS step, p.stepCount AS stepCount
               ORDER BY rel.step
-            `, { nid: nodeId }).catch(() => []),
-          ]);
+            `,
+                { nid: nodeId },
+              ).catch(() => []),
+            ]);
 
-          if (connRes.length > 0) {
-            const row = connRes[0];
-            const outgoing = (Array.isArray(row) ? row[0] : row.outgoing || [])
-              .filter((c: any) => c?.name).slice(0, 5);
-            const incoming = (Array.isArray(row) ? row[1] : row.incoming || [])
-              .filter((c: any) => c?.name).slice(0, 5);
-            enrichment.connections = { outgoing, incoming };
-          }
+            if (connRes.length > 0) {
+              const row = connRes[0];
+              const outgoing = (Array.isArray(row) ? row[0] : row.outgoing || [])
+                .filter((c: any) => c?.name)
+                .slice(0, 5);
+              const incoming = (Array.isArray(row) ? row[1] : row.incoming || [])
+                .filter((c: any) => c?.name)
+                .slice(0, 5);
+              enrichment.connections = { outgoing, incoming };
+            }
 
-          if (clusterRes.length > 0) {
-            const row = clusterRes[0];
-            enrichment.cluster = Array.isArray(row) ? row[0] : row.label;
-          }
+            if (clusterRes.length > 0) {
+              const row = clusterRes[0];
+              enrichment.cluster = Array.isArray(row) ? row[0] : row.label;
+            }
 
-          if (procRes.length > 0) {
-            enrichment.processes = procRes.map((row: any) => ({
-              id: Array.isArray(row) ? row[0] : row.id,
-              label: Array.isArray(row) ? row[1] : row.label,
-              step: Array.isArray(row) ? row[2] : row.step,
-              stepCount: Array.isArray(row) ? row[3] : row.stepCount,
-            })).filter((p: any) => p.id && p.label);
-          }
+            if (procRes.length > 0) {
+              enrichment.processes = procRes
+                .map((row: any) => ({
+                  id: Array.isArray(row) ? row[0] : row.id,
+                  label: Array.isArray(row) ? row[1] : row.label,
+                  step: Array.isArray(row) ? row[2] : row.step,
+                  stepCount: Array.isArray(row) ? row[3] : row.stepCount,
+                }))
+                .filter((p: any) => p.id && p.label);
+            }
 
-          return { ...r, ...enrichment };
-        }));
+            return { ...r, ...enrichment };
+          }),
+        );
 
         return enriched;
       });
@@ -640,10 +680,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       if (startLine !== undefined && Number.isFinite(startLine)) {
         const lines = raw.split('\n');
         const start = Math.max(0, startLine);
-        const end = endLine !== undefined && Number.isFinite(endLine)
-          ? Math.min(lines.length, endLine + 1)
-          : lines.length;
-        res.json({ content: lines.slice(start, end).join('\n'), startLine: start, endLine: end - 1, totalLines: lines.length });
+        const end =
+          endLine !== undefined && Number.isFinite(endLine)
+            ? Math.min(lines.length, endLine + 1)
+            : lines.length;
+        res.json({
+          content: lines.slice(start, end).join('\n'),
+          startLine: start,
+          endLine: end - 1,
+          totalLines: lines.length,
+        });
       } else {
         res.json({ content: raw, totalLines: raw.split('\n').length });
       }
@@ -697,7 +743,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       // Get file paths from the graph (lightweight — no content loaded)
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const fileRows = await withLbugDb(lbugPath, () =>
-        executeQuery(`MATCH (n:File) WHERE n.content IS NOT NULL RETURN n.filePath AS filePath`)
+        executeQuery(`MATCH (n:File) WHERE n.content IS NOT NULL RETURN n.filePath AS filePath`),
       );
 
       // Search files on disk one at a time (constant memory)
@@ -758,7 +804,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       res.json(result);
     } catch (err: any) {
-      res.status(statusFromError(err)).json({ error: err.message || 'Failed to query process detail' });
+      res
+        .status(statusFromError(err))
+        .json({ error: err.message || 'Failed to query process detail' });
     }
   });
 
@@ -788,7 +836,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       res.json(result);
     } catch (err: any) {
-      res.status(statusFromError(err)).json({ error: err.message || 'Failed to query cluster detail' });
+      res
+        .status(statusFromError(err))
+        .json({ error: err.message || 'Failed to query cluster detail' });
     }
   });
 
@@ -841,7 +891,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       (async () => {
         let targetPath = repoLocalPath;
         try {
-
           // Clone if URL provided
           if (repoUrl && !repoLocalPath) {
             const repoName = extractRepoName(repoUrl);
@@ -895,7 +944,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
           const forkWorker = () => {
             const currentJob = jobManager.getJob(job.id);
-            if (!currentJob || currentJob.status === 'complete' || currentJob.status === 'failed') return;
+            if (!currentJob || currentJob.status === 'complete' || currentJob.status === 'failed')
+              return;
 
             const child = fork(workerPath, [], {
               execArgv: [...tsxHookArgs, '--max-old-space-size=8192'],
@@ -919,7 +969,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 releaseRepoLock(analyzeLockKey);
                 // Reinitialize backend BEFORE marking complete — ensures the new
                 // repo is queryable when the client receives the SSE complete event.
-                backend.init()
+                backend
+                  .init()
                   .then(() => {
                     jobManager.updateJob(job.id, {
                       status: 'complete',
@@ -961,7 +1012,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 const lastErr = stderrChunks.trim().split('\n').pop() || '';
                 console.warn(
                   `Analyze worker crashed (code ${code}), retry ${j.retryCount}/${MAX_WORKER_RETRIES} in ${delay}ms` +
-                  (lastErr ? `: ${lastErr}` : ''),
+                    (lastErr ? `: ${lastErr}` : ''),
                 );
                 jobManager.updateJob(job.id, {
                   status: 'analyzing',
@@ -995,7 +1046,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           };
 
           forkWorker();
-
         } catch (err: any) {
           if (targetPath) releaseRepoLock(getStoragePath(targetPath));
           jobManager.updateJob(job.id, {
@@ -1099,24 +1149,27 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         try {
           const lbugPath = path.join(entry.storagePath, 'lbug');
           await withLbugDb(lbugPath, async () => {
-            const { runEmbeddingPipeline } = await import('../core/embeddings/embedding-pipeline.js');
-            await runEmbeddingPipeline(
-              executeQuery,
-              executeWithReusedStatement,
-              (p) => {
-                embedJobManager.updateJob(job.id, {
-                  progress: {
-                    phase: p.phase === 'ready' ? 'complete' : p.phase === 'error' ? 'failed' : p.phase,
-                    percent: p.percent,
-                    message: p.phase === 'loading-model' ? 'Loading embedding model...'
-                      : p.phase === 'embedding' ? `Embedding nodes (${p.percent}%)...`
-                      : p.phase === 'indexing' ? 'Creating vector index...'
-                      : p.phase === 'ready' ? 'Embeddings complete'
-                      : `${p.phase} (${p.percent}%)`,
-                  },
-                });
-              },
-            );
+            const { runEmbeddingPipeline } =
+              await import('../core/embeddings/embedding-pipeline.js');
+            await runEmbeddingPipeline(executeQuery, executeWithReusedStatement, (p) => {
+              embedJobManager.updateJob(job.id, {
+                progress: {
+                  phase:
+                    p.phase === 'ready' ? 'complete' : p.phase === 'error' ? 'failed' : p.phase,
+                  percent: p.percent,
+                  message:
+                    p.phase === 'loading-model'
+                      ? 'Loading embedding model...'
+                      : p.phase === 'embedding'
+                        ? `Embedding nodes (${p.percent}%)...`
+                        : p.phase === 'indexing'
+                          ? 'Creating vector index...'
+                          : p.phase === 'ready'
+                            ? 'Embeddings complete'
+                            : `${p.phase} (${p.percent}%)`,
+                },
+              });
+            });
           });
 
           clearTimeout(embedTimeout);

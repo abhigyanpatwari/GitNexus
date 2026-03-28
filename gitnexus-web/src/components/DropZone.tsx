@@ -12,10 +12,7 @@ interface DropZoneProps {
 // ── Crossfade wrapper ───────────────────────────────────────────────────────
 // Captures the outgoing children during fade-out, then swaps to the new children on fade-in.
 
-function Crossfade({ activeKey, children }: {
-  activeKey: string;
-  children: React.ReactNode;
-}) {
+function Crossfade({ activeKey, children }: { activeKey: string; children: React.ReactNode }) {
   const [displayedKey, setDisplayedKey] = useState(activeKey);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const snapshotRef = useRef<React.ReactNode>(children);
@@ -36,7 +33,9 @@ function Crossfade({ activeKey, children }: {
         setIsTransitioning(false);
       }, 300);
     }
-    return () => { if (timeoutRef.current) clearTimeout(timeoutRef.current); };
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
   }, [activeKey, displayedKey]);
 
   return (
@@ -56,30 +55,34 @@ function Crossfade({ activeKey, children }: {
 
 function SuccessCard() {
   return (
-    <div className="p-7 bg-surface border border-emerald-500/20 rounded-3xl relative overflow-hidden" role="status" aria-live="polite">
+    <div
+      className="relative overflow-hidden rounded-3xl border border-emerald-500/20 bg-surface p-7"
+      role="status"
+      aria-live="polite"
+    >
       {/* Success glow */}
-      <div className="absolute -top-20 left-1/2 -translate-x-1/2 w-64 h-64 bg-emerald-500/8 rounded-full blur-3xl pointer-events-none" />
+      <div className="pointer-events-none absolute -top-20 left-1/2 h-64 w-64 -translate-x-1/2 rounded-full bg-emerald-500/8 blur-3xl" />
 
       <div className="relative">
         {/* Animated check icon */}
-        <div className="mx-auto w-16 h-16 mb-5 flex items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500/20 to-emerald-600/10 border border-emerald-500/30 shadow-[0_0_30px_rgba(16,185,129,0.15)]">
-          <Check className="w-8 h-8 text-emerald-400" />
+        <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border border-emerald-500/30 bg-gradient-to-br from-emerald-500/20 to-emerald-600/10 shadow-[0_0_30px_rgba(16,185,129,0.15)]">
+          <Check className="h-8 w-8 text-emerald-400" />
         </div>
 
-        <h2 className="text-lg font-semibold text-emerald-400 text-center mb-2">
+        <h2 className="mb-2 text-center text-lg font-semibold text-emerald-400">
           Server Connected
         </h2>
-        <p className="text-sm text-text-secondary text-center leading-relaxed">
+        <p className="text-center text-sm leading-relaxed text-text-secondary">
           Preparing your code knowledge graph...
         </p>
 
         {/* Subtle progress hint */}
         <div className="mt-6 flex items-center justify-center gap-2">
           <div className="flex gap-1">
-            {[0, 1, 2].map(i => (
+            {[0, 1, 2].map((i) => (
               <div
                 key={i}
-                className="w-1.5 h-1.5 rounded-full bg-emerald-400/60 animate-pulse"
+                className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400/60"
                 style={{ animationDelay: `${i * 200}ms` }}
               />
             ))}
@@ -92,26 +95,30 @@ function SuccessCard() {
 
 function LoadingCard({ message }: { message: string }) {
   return (
-    <div className="p-7 bg-surface border border-accent/20 rounded-3xl relative overflow-hidden" role="status" aria-live="polite">
+    <div
+      className="relative overflow-hidden rounded-3xl border border-accent/20 bg-surface p-7"
+      role="status"
+      aria-live="polite"
+    >
       {/* Loading glow */}
-      <div className="absolute -top-20 left-1/2 -translate-x-1/2 w-64 h-64 bg-accent/8 rounded-full blur-3xl pointer-events-none" />
+      <div className="pointer-events-none absolute -top-20 left-1/2 h-64 w-64 -translate-x-1/2 rounded-full bg-accent/8 blur-3xl" />
 
       <div className="relative">
         {/* Spinner */}
-        <div className="mx-auto w-16 h-16 mb-5 flex items-center justify-center rounded-2xl bg-gradient-to-br from-accent/20 to-accent-dim/10 border border-accent/30 shadow-glow-soft">
-          <Loader2 className="w-8 h-8 text-accent animate-spin" />
+        <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border border-accent/30 bg-gradient-to-br from-accent/20 to-accent-dim/10 shadow-glow-soft">
+          <Loader2 className="h-8 w-8 animate-spin text-accent" />
         </div>
 
-        <h2 className="text-lg font-semibold text-text-primary text-center mb-2">
+        <h2 className="mb-2 text-center text-lg font-semibold text-text-primary">
           {message || 'Connecting...'}
         </h2>
-        <p className="text-sm text-text-secondary text-center leading-relaxed">
+        <p className="text-center text-sm leading-relaxed text-text-secondary">
           This may take a moment for large repositories
         </p>
 
         {/* Decorative sparkle */}
         <div className="mt-5 flex items-center justify-center">
-          <Sparkles className="w-4 h-4 text-accent/30" />
+          <Sparkles className="h-4 w-4 text-accent/30" />
         </div>
       </div>
     </div>
@@ -124,14 +131,23 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
   const [error, setError] = useState<string | null>(null);
 
   // Backend polling for server detection
-  const { isConnected, isProbing, startPolling, stopPolling, isPolling, backendUrl: detectedBackendUrl } = useBackend();
+  const {
+    isConnected,
+    isProbing,
+    startPolling,
+    stopPolling,
+    isPolling,
+    backendUrl: detectedBackendUrl,
+  } = useBackend();
   const [initialProbeComplete, setInitialProbeComplete] = useState(false);
   const autoConnectRan = useRef(false);
   const autoConnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Connection state
   // 'analyze' = server up but zero repos indexed — show URL input
-  const [phase, setPhase] = useState<'onboarding' | 'analyze' | 'success' | 'loading'>('onboarding');
+  const [phase, setPhase] = useState<'onboarding' | 'analyze' | 'success' | 'loading'>(
+    'onboarding',
+  );
   const [loadingMessage, setLoadingMessage] = useState('');
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -279,17 +295,17 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
   const displayPhase = !initialProbeComplete ? null : phase;
 
   return (
-    <div className="flex items-center justify-center min-h-screen p-8 bg-void">
+    <div className="flex min-h-screen items-center justify-center bg-void p-8">
       {/* Background gradient effects */}
-      <div className="fixed inset-0 pointer-events-none">
-        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-accent/10 rounded-full blur-3xl" />
-        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-node-interface/10 rounded-full blur-3xl" />
+      <div className="pointer-events-none fixed inset-0">
+        <div className="absolute top-1/4 left-1/4 h-96 w-96 rounded-full bg-accent/10 blur-3xl" />
+        <div className="absolute right-1/4 bottom-1/4 h-96 w-96 rounded-full bg-node-interface/10 blur-3xl" />
       </div>
 
       <div className="relative w-full max-w-lg">
         {/* Error — floats above the card */}
         {error && (
-          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm text-center animate-fade-in">
+          <div className="mb-4 animate-fade-in rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-center text-sm text-red-400">
             {error}
           </div>
         )}
@@ -297,12 +313,8 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
         {/* Crossfade between phases */}
         {displayPhase && (
           <Crossfade activeKey={displayPhase}>
-            {displayPhase === 'onboarding' && (
-              <OnboardingGuide isPolling={isPolling} />
-            )}
-            {displayPhase === 'analyze' && (
-              <AnalyzeOnboarding onComplete={handleAnalyzeComplete} />
-            )}
+            {displayPhase === 'onboarding' && <OnboardingGuide isPolling={isPolling} />}
+            {displayPhase === 'analyze' && <AnalyzeOnboarding onComplete={handleAnalyzeComplete} />}
             {displayPhase === 'success' && <SuccessCard />}
             {displayPhase === 'loading' && <LoadingCard message={loadingMessage} />}
           </Crossfade>

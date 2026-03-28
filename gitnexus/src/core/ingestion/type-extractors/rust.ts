@@ -1,11 +1,29 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, PendingAssignmentExtractor, PendingAssignment, PatternBindingExtractor, ForLoopExtractor } from './types.js';
-import { extractSimpleTypeName, extractVarName, hasTypeAnnotation, unwrapAwait, extractGenericTypeArgs, resolveIterableElementType, methodToTypeArgPosition, extractElementTypeFromString, type TypeArgPosition } from './shared.js';
+import type {
+  LanguageTypeConfig,
+  ParameterExtractor,
+  TypeBindingExtractor,
+  InitializerExtractor,
+  ClassNameLookup,
+  ConstructorBindingScanner,
+  PendingAssignmentExtractor,
+  PendingAssignment,
+  PatternBindingExtractor,
+  ForLoopExtractor,
+} from './types.js';
+import {
+  extractSimpleTypeName,
+  extractVarName,
+  hasTypeAnnotation,
+  unwrapAwait,
+  extractGenericTypeArgs,
+  resolveIterableElementType,
+  methodToTypeArgPosition,
+  extractElementTypeFromString,
+  type TypeArgPosition,
+} from './shared.js';
 
-const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
-  'let_declaration',
-  'let_condition',
-]);
+const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set(['let_declaration', 'let_condition']);
 
 /** Walk up the AST to find the enclosing impl block and extract the implementing type name. */
 const findEnclosingImplType = (node: SyntaxNode): string | undefined => {
@@ -35,7 +53,11 @@ const extractStructPatternType = (structPattern: SyntaxNode): string | undefined
  * Recursively scan a pattern tree for captured_pattern nodes (x @ StructType { .. })
  * and extract variable → type bindings from them.
  */
-const extractCapturedPatternBindings = (pattern: SyntaxNode, env: Map<string, string>, depth = 0): void => {
+const extractCapturedPatternBindings = (
+  pattern: SyntaxNode,
+  env: Map<string, string>,
+  depth = 0,
+): void => {
   if (depth > 50) return;
   if (pattern.type === 'captured_pattern') {
     // captured_pattern: identifier @ inner_pattern
@@ -64,7 +86,10 @@ const extractCapturedPatternBindings = (pattern: SyntaxNode, env: Map<string, st
 };
 
 /** Rust: let x: Foo = ... | if let / while let pattern bindings */
-const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+const extractDeclaration: TypeBindingExtractor = (
+  node: SyntaxNode,
+  env: Map<string, string>,
+): void => {
   if (node.type === 'let_condition') {
     // if let / while let: extract type bindings from pattern matching.
     //
@@ -95,7 +120,11 @@ const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
 };
 
 /** Rust: let x = User::new(), let x = User::default(), or let x = User { ... } */
-const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ClassNameLookup): void => {
+const extractInitializer: InitializerExtractor = (
+  node: SyntaxNode,
+  env: Map<string, string>,
+  classNames: ClassNameLookup,
+): void => {
   // Skip if there's an explicit type annotation — Tier 0 already handled it
   if (node.childForFieldName('type') !== null) return;
   const pattern = node.childForFieldName('pattern');
@@ -293,9 +322,10 @@ const extractPatternBinding: PatternBindingExtractor = (
     // match_arm → pattern field is match_pattern wrapping the actual pattern
     const matchPatternNode = node.childForFieldName('pattern');
     // Unwrap match_pattern to get the tuple_struct_pattern inside
-    patternNode = matchPatternNode?.type === 'match_pattern'
-      ? matchPatternNode.firstNamedChild
-      : matchPatternNode;
+    patternNode =
+      matchPatternNode?.type === 'match_pattern'
+        ? matchPatternNode.firstNamedChild
+        : matchPatternNode;
     // source variable is in the parent match_expression's 'value' field
     const matchExpr = node.parent?.parent; // match_arm → match_block → match_expression
     if (matchExpr?.type === 'match_expression') {
@@ -359,7 +389,11 @@ const FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set(['for_expression']);
 /** Extract element type from a Rust type annotation AST node.
  *  Handles: generic_type (Vec<User>), reference_type (&[User]), array_type ([User; N]),
  *  slice_type ([User]). For call-graph purposes, strips references (&User → User). */
-const extractRustElementTypeFromTypeNode = (typeNode: SyntaxNode, pos: TypeArgPosition = 'last', depth = 0): string | undefined => {
+const extractRustElementTypeFromTypeNode = (
+  typeNode: SyntaxNode,
+  pos: TypeArgPosition = 'last',
+  depth = 0,
+): string | undefined => {
   if (depth > 50) return undefined;
   // generic_type: Vec<User>, HashMap<K, V> — extract type arg based on position
   if (typeNode.type === 'generic_type') {
@@ -386,7 +420,11 @@ const extractRustElementTypeFromTypeNode = (typeNode: SyntaxNode, pos: TypeArgPo
 
 /** Walk up from a for-loop to the enclosing function_item and search parameters
  *  for one named `iterableName`. Returns the element type from its annotation. */
-const findRustParamElementType = (iterableName: string, startNode: SyntaxNode, pos: TypeArgPosition = 'last'): string | undefined => {
+const findRustParamElementType = (
+  iterableName: string,
+  startNode: SyntaxNode,
+  pos: TypeArgPosition = 'last',
+): string | undefined => {
   let current: SyntaxNode | null = startNode.parent;
   while (current) {
     if (current.type === 'function_item') {
@@ -419,7 +457,10 @@ const findRustParamElementType = (iterableName: string, startNode: SyntaxNode, p
 
 /** Rust: for user in &users where users has a known container type.
  *  Unwraps reference_expression (&users, &mut users) to get the iterable name. */
-const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTypeNodes, scope, returnTypeLookup }): void => {
+const extractForLoopBinding: ForLoopExtractor = (
+  node,
+  { scopeEnv, declarationTypeNodes, scope, returnTypeLookup },
+): void => {
   if (node.type !== 'for_expression') return;
 
   const patternNode = node.childForFieldName('pattern');
@@ -462,8 +503,13 @@ const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTy
     const containerTypeName = scopeEnv.get(iterableName!);
     const typeArgPos = methodToTypeArgPosition(methodName, containerTypeName);
     elementType = resolveIterableElementType(
-      iterableName!, node, scopeEnv, declarationTypeNodes, scope,
-      extractRustElementTypeFromTypeNode, findRustParamElementType,
+      iterableName!,
+      node,
+      scopeEnv,
+      declarationTypeNodes,
+      scope,
+      extractRustElementTypeFromTypeNode,
+      findRustParamElementType,
       typeArgPos,
     );
   }

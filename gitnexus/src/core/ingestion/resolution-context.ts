@@ -32,7 +32,7 @@ export interface TieredCandidates {
 export const TIER_CONFIDENCE: Record<ResolutionTier, number> = {
   'same-file': 0.95,
   'import-scoped': 0.9,
-  'global': 0.5,
+  global: 0.5,
 };
 
 // --- Map types ---
@@ -67,7 +67,12 @@ export interface ResolutionContext {
   clearCache(): void;
 
   // --- Operational ---
-  getStats(): { fileCount: number; globalSymbolCount: number; cacheHits: number; cacheMisses: number };
+  getStats(): {
+    fileCount: number;
+    globalSymbolCount: number;
+    cacheHits: number;
+    cacheMisses: number;
+  };
   clear(): void;
 }
 
@@ -109,7 +114,7 @@ export const createResolutionContext = (): ResolutionContext => {
     // Tier 2a: Import-scoped — definition in a file imported by fromFile
     const importedFiles = importMap.get(fromFile);
     if (importedFiles) {
-      const importedDefs = allDefs.filter(def => importedFiles.has(def.filePath));
+      const importedDefs = allDefs.filter((def) => importedFiles.has(def.filePath));
       if (importedDefs.length > 0) {
         return { candidates: importedDefs, tier: 'import-scoped' };
       }
@@ -118,7 +123,7 @@ export const createResolutionContext = (): ResolutionContext => {
     // Tier 2b: Package-scoped — definition in a package dir imported by fromFile
     const importedPackages = packageMap.get(fromFile);
     if (importedPackages) {
-      const packageDefs = allDefs.filter(def => {
+      const packageDefs = allDefs.filter((def) => {
         for (const dirSuffix of importedPackages) {
           if (isFileInPackageDir(def.filePath, dirSuffix)) return true;
         }

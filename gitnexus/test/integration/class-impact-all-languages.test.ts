@@ -27,7 +27,16 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
 
 /** JVM topology: Class -HAS_METHOD-> Constructor, File -DEFINES-> Class.
  *  Callers CALL the Constructor; importers IMPORT the owning File. */
-function jvmNodes(lang: string, ext: string, cls: string, caller: string, importer: string, clsPath: string, callerPath: string, importerPath: string): string[] {
+function jvmNodes(
+  lang: string,
+  ext: string,
+  cls: string,
+  caller: string,
+  importer: string,
+  clsPath: string,
+  callerPath: string,
+  importerPath: string,
+): string[] {
   return [
     `CREATE (f:File {id:'${lang}:file:${cls}', name:'${cls}.${ext}', filePath:'${clsPath}', content:''})`,
     `CREATE (c:Class {id:'${lang}:class:${cls}', name:'${cls}', filePath:'${clsPath}', startLine:1, endLine:50, isExported:true, content:'', description:''})`,
@@ -42,7 +51,17 @@ function jvmNodes(lang: string, ext: string, cls: string, caller: string, import
 }
 
 /** Non-JVM topology: CALLS -> Class directly, IMPORTS -> File. */
-function nonJvmNodes(lang: string, ext: string, cls: string, caller: string, callerLabel: string, importer: string, clsPath: string, callerPath: string, importerPath: string): string[] {
+function nonJvmNodes(
+  lang: string,
+  ext: string,
+  cls: string,
+  caller: string,
+  callerLabel: string,
+  importer: string,
+  clsPath: string,
+  callerPath: string,
+  importerPath: string,
+): string[] {
   return [
     `CREATE (f:File {id:'${lang}:file:${cls}', name:'${cls}.${ext}', filePath:'${clsPath}', content:''})`,
     `CREATE (c:Class {id:'${lang}:class:${cls}', name:'${cls}', filePath:'${clsPath}', startLine:1, endLine:50, isExported:true, content:'', description:''})`,
@@ -58,60 +77,171 @@ function nonJvmNodes(lang: string, ext: string, cls: string, caller: string, cal
 
 const SEED = [
   // Java — JVM topology
-  ...jvmNodes('java', 'java', 'PaymentService', 'processPayment', 'OrderController',
+  ...jvmNodes(
+    'java',
+    'java',
+    'PaymentService',
+    'processPayment',
+    'OrderController',
     'src/main/java/payments/PaymentService.java',
     'src/main/java/orders/OrderController.java',
-    'src/main/java/orders/OrderController.java'),
+    'src/main/java/orders/OrderController.java',
+  ),
 
   // Kotlin — JVM topology
-  ...jvmNodes('kotlin', 'kt', 'UserRepository', 'fetchUser', 'UserService',
+  ...jvmNodes(
+    'kotlin',
+    'kt',
+    'UserRepository',
+    'fetchUser',
+    'UserService',
     'src/main/kotlin/data/UserRepository.kt',
     'src/main/kotlin/service/UserService.kt',
-    'src/main/kotlin/service/UserService.kt'),
+    'src/main/kotlin/service/UserService.kt',
+  ),
 
   // TypeScript — non-JVM
-  ...nonJvmNodes('ts', 'ts', 'AuthService', 'loginUser', 'Function', 'app',
-    'src/auth/AuthService.ts', 'src/routes/auth.ts', 'src/app.ts'),
+  ...nonJvmNodes(
+    'ts',
+    'ts',
+    'AuthService',
+    'loginUser',
+    'Function',
+    'app',
+    'src/auth/AuthService.ts',
+    'src/routes/auth.ts',
+    'src/app.ts',
+  ),
 
   // JavaScript — non-JVM
-  ...nonJvmNodes('js', 'js', 'EventEmitter', 'subscribe', 'Function', 'index',
-    'src/events/EventEmitter.js', 'src/handlers/handler.js', 'src/index.js'),
+  ...nonJvmNodes(
+    'js',
+    'js',
+    'EventEmitter',
+    'subscribe',
+    'Function',
+    'index',
+    'src/events/EventEmitter.js',
+    'src/handlers/handler.js',
+    'src/index.js',
+  ),
 
   // Python — non-JVM
-  ...nonJvmNodes('py', 'py', 'DatabaseClient', 'connect', 'Function', 'app',
-    'src/db/database_client.py', 'src/services/service.py', 'src/app.py'),
+  ...nonJvmNodes(
+    'py',
+    'py',
+    'DatabaseClient',
+    'connect',
+    'Function',
+    'app',
+    'src/db/database_client.py',
+    'src/services/service.py',
+    'src/app.py',
+  ),
 
   // C# — non-JVM
-  ...nonJvmNodes('cs', 'cs', 'OrderProcessor', 'ProcessOrder', 'Method', 'Startup',
-    'src/Orders/OrderProcessor.cs', 'src/Controllers/OrderController.cs', 'src/Startup.cs'),
+  ...nonJvmNodes(
+    'cs',
+    'cs',
+    'OrderProcessor',
+    'ProcessOrder',
+    'Method',
+    'Startup',
+    'src/Orders/OrderProcessor.cs',
+    'src/Controllers/OrderController.cs',
+    'src/Startup.cs',
+  ),
 
   // Ruby — non-JVM
-  ...nonJvmNodes('rb', 'rb', 'SessionManager', 'create_session', 'Function', 'application',
-    'lib/session/session_manager.rb', 'lib/controllers/auth_controller.rb', 'lib/application.rb'),
+  ...nonJvmNodes(
+    'rb',
+    'rb',
+    'SessionManager',
+    'create_session',
+    'Function',
+    'application',
+    'lib/session/session_manager.rb',
+    'lib/controllers/auth_controller.rb',
+    'lib/application.rb',
+  ),
 
   // PHP — non-JVM
-  ...nonJvmNodes('php', 'php', 'CacheService', 'getCache', 'Method', 'bootstrap',
-    'src/Cache/CacheService.php', 'src/Controllers/HomeController.php', 'src/bootstrap.php'),
+  ...nonJvmNodes(
+    'php',
+    'php',
+    'CacheService',
+    'getCache',
+    'Method',
+    'bootstrap',
+    'src/Cache/CacheService.php',
+    'src/Controllers/HomeController.php',
+    'src/bootstrap.php',
+  ),
 
   // Rust — non-JVM
-  ...nonJvmNodes('rs', 'rs', 'HttpClient', 'send_request', 'Function', 'main',
-    'src/http/client.rs', 'src/api/handler.rs', 'src/main.rs'),
+  ...nonJvmNodes(
+    'rs',
+    'rs',
+    'HttpClient',
+    'send_request',
+    'Function',
+    'main',
+    'src/http/client.rs',
+    'src/api/handler.rs',
+    'src/main.rs',
+  ),
 
   // Go — non-JVM
-  ...nonJvmNodes('go', 'go', 'Router', 'handleRequest', 'Function', 'main',
-    'pkg/router/router.go', 'pkg/handlers/handler.go', 'main.go'),
+  ...nonJvmNodes(
+    'go',
+    'go',
+    'Router',
+    'handleRequest',
+    'Function',
+    'main',
+    'pkg/router/router.go',
+    'pkg/handlers/handler.go',
+    'main.go',
+  ),
 
   // Swift — non-JVM
-  ...nonJvmNodes('swift', 'swift', 'NetworkManager', 'fetchData', 'Method', 'AppDelegate',
-    'Sources/Network/NetworkManager.swift', 'Sources/ViewControllers/HomeVC.swift', 'Sources/AppDelegate.swift'),
+  ...nonJvmNodes(
+    'swift',
+    'swift',
+    'NetworkManager',
+    'fetchData',
+    'Method',
+    'AppDelegate',
+    'Sources/Network/NetworkManager.swift',
+    'Sources/ViewControllers/HomeVC.swift',
+    'Sources/AppDelegate.swift',
+  ),
 
   // C — non-JVM
-  ...nonJvmNodes('c', 'c', 'MemoryPool', 'allocate', 'Function', 'main',
-    'src/memory/pool.c', 'src/runtime/runtime.c', 'src/main.c'),
+  ...nonJvmNodes(
+    'c',
+    'c',
+    'MemoryPool',
+    'allocate',
+    'Function',
+    'main',
+    'src/memory/pool.c',
+    'src/runtime/runtime.c',
+    'src/main.c',
+  ),
 
   // C++ — non-JVM
-  ...nonJvmNodes('cpp', 'cpp', 'ThreadPool', 'enqueue', 'Function', 'main',
-    'src/threading/thread_pool.cpp', 'src/workers/worker.cpp', 'src/main.cpp'),
+  ...nonJvmNodes(
+    'cpp',
+    'cpp',
+    'ThreadPool',
+    'enqueue',
+    'Function',
+    'main',
+    'src/threading/thread_pool.cpp',
+    'src/workers/worker.cpp',
+    'src/main.cpp',
+  ),
 ];
 
 // ─── Shared assertion helper ──────────────────────────────────────────────────
@@ -128,28 +258,35 @@ function suiteFor(
   describe(`${lang}: Class impact/context via ${topology}`, () => {
     it(`impact(upstream) surfaces the caller`, async () => {
       const result = await getBackend().callTool('impact', {
-        target: className, direction: 'upstream', includeTests: true,
+        target: className,
+        direction: 'upstream',
+        includeTests: true,
       });
       expect(result).not.toHaveProperty('error');
       expect(result.impactedCount).toBeGreaterThanOrEqual(1);
       const allNames = Object.values(result.byDepth as Record<string, any[]>)
-        .flat().map((d: any) => d.name);
+        .flat()
+        .map((d: any) => d.name);
       expect(allNames).toContain(callerName);
     });
 
     it(`impact(upstream) surfaces the file importer`, async () => {
       const result = await getBackend().callTool('impact', {
-        target: className, direction: 'upstream', includeTests: true,
+        target: className,
+        direction: 'upstream',
+        includeTests: true,
       });
       expect(result).not.toHaveProperty('error');
       const allNames = Object.values(result.byDepth as Record<string, any[]>)
-        .flat().map((d: any) => d.name);
+        .flat()
+        .map((d: any) => d.name);
       expect(allNames).toContain(importerFileName);
     });
 
     it(`context() returns found with kind Class`, async () => {
       const result = await getBackend().callTool('context', {
-        name: className, file_path: classFilePath,
+        name: className,
+        file_path: classFilePath,
       });
       expect(result.status).toBe('found');
       expect(result.symbol.kind).toBe('Class');
@@ -157,13 +294,11 @@ function suiteFor(
 
     it(`context() has non-empty incoming containing the caller`, async () => {
       const result = await getBackend().callTool('context', {
-        name: className, file_path: classFilePath,
+        name: className,
+        file_path: classFilePath,
       });
       expect(result.status).toBe('found');
-      const allIncoming = [
-        ...(result.incoming.calls || []),
-        ...(result.incoming.imports || []),
-      ];
+      const allIncoming = [...(result.incoming.calls || []), ...(result.incoming.imports || [])];
       expect(allIncoming.length).toBeGreaterThanOrEqual(1);
       expect(allIncoming.map((r: any) => r.name)).toContain(callerName);
     });
@@ -172,39 +307,152 @@ function suiteFor(
 
 // ─── Single DB instance, all languages ───────────────────────────────────────
 
-withTestLbugDB('class-impact-all-languages', (handle) => {
-  let backend: LocalBackend;
-  beforeAll(() => { backend = (handle as any)._backend; });
+withTestLbugDB(
+  'class-impact-all-languages',
+  (handle) => {
+    let backend: LocalBackend;
+    beforeAll(() => {
+      backend = (handle as any)._backend;
+    });
 
-  // JVM languages
-  suiteFor('Java',   'JVM (Constructor+File)', () => backend, 'PaymentService',  'processPayment',  'OrderController.java',  'src/main/java/payments/PaymentService.java');
-  suiteFor('Kotlin', 'JVM (Constructor+File)', () => backend, 'UserRepository',  'fetchUser',       'UserService.kt',        'src/main/kotlin/data/UserRepository.kt');
+    // JVM languages
+    suiteFor(
+      'Java',
+      'JVM (Constructor+File)',
+      () => backend,
+      'PaymentService',
+      'processPayment',
+      'OrderController.java',
+      'src/main/java/payments/PaymentService.java',
+    );
+    suiteFor(
+      'Kotlin',
+      'JVM (Constructor+File)',
+      () => backend,
+      'UserRepository',
+      'fetchUser',
+      'UserService.kt',
+      'src/main/kotlin/data/UserRepository.kt',
+    );
 
-  // Non-JVM languages
-  suiteFor('TypeScript', 'direct CALLS', () => backend, 'AuthService',    'loginUser',      'app.ts',              'src/auth/AuthService.ts');
-  suiteFor('JavaScript', 'direct CALLS', () => backend, 'EventEmitter',   'subscribe',      'index.js',            'src/events/EventEmitter.js');
-  suiteFor('Python',     'direct CALLS', () => backend, 'DatabaseClient', 'connect',        'app.py',              'src/db/database_client.py');
-  suiteFor('C#',         'direct CALLS', () => backend, 'OrderProcessor', 'ProcessOrder',   'Startup.cs',          'src/Orders/OrderProcessor.cs');
-  suiteFor('Ruby',       'direct CALLS', () => backend, 'SessionManager', 'create_session', 'application.rb',      'lib/session/session_manager.rb');
-  suiteFor('PHP',        'direct CALLS', () => backend, 'CacheService',   'getCache',       'bootstrap.php',       'src/Cache/CacheService.php');
-  suiteFor('Rust',       'direct CALLS', () => backend, 'HttpClient',     'send_request',   'main.rs',             'src/http/client.rs');
-  suiteFor('Go',         'direct CALLS', () => backend, 'Router',         'handleRequest',  'main.go',             'pkg/router/router.go');
-  suiteFor('Swift',      'direct CALLS', () => backend, 'NetworkManager', 'fetchData',      'AppDelegate.swift',   'Sources/Network/NetworkManager.swift');
-  suiteFor('C',          'direct CALLS', () => backend, 'MemoryPool',     'allocate',       'main.c',              'src/memory/pool.c');
-  suiteFor('C++',        'direct CALLS', () => backend, 'ThreadPool',     'enqueue',        'main.cpp',            'src/threading/thread_pool.cpp');
-
-}, {
-  seed: SEED,
-  poolAdapter: true,
-  afterSetup: async (handle) => {
-    vi.mocked(listRegisteredRepos).mockResolvedValue([{
-      name: 'test-repo', path: '/test/repo',
-      storagePath: handle.tmpHandle.dbPath,
-      indexedAt: new Date().toISOString(), lastCommit: 'abc123',
-      stats: { files: 20, nodes: 60, communities: 0, processes: 0 },
-    }]);
-    const backend = new LocalBackend();
-    await backend.init();
-    (handle as any)._backend = backend;
+    // Non-JVM languages
+    suiteFor(
+      'TypeScript',
+      'direct CALLS',
+      () => backend,
+      'AuthService',
+      'loginUser',
+      'app.ts',
+      'src/auth/AuthService.ts',
+    );
+    suiteFor(
+      'JavaScript',
+      'direct CALLS',
+      () => backend,
+      'EventEmitter',
+      'subscribe',
+      'index.js',
+      'src/events/EventEmitter.js',
+    );
+    suiteFor(
+      'Python',
+      'direct CALLS',
+      () => backend,
+      'DatabaseClient',
+      'connect',
+      'app.py',
+      'src/db/database_client.py',
+    );
+    suiteFor(
+      'C#',
+      'direct CALLS',
+      () => backend,
+      'OrderProcessor',
+      'ProcessOrder',
+      'Startup.cs',
+      'src/Orders/OrderProcessor.cs',
+    );
+    suiteFor(
+      'Ruby',
+      'direct CALLS',
+      () => backend,
+      'SessionManager',
+      'create_session',
+      'application.rb',
+      'lib/session/session_manager.rb',
+    );
+    suiteFor(
+      'PHP',
+      'direct CALLS',
+      () => backend,
+      'CacheService',
+      'getCache',
+      'bootstrap.php',
+      'src/Cache/CacheService.php',
+    );
+    suiteFor(
+      'Rust',
+      'direct CALLS',
+      () => backend,
+      'HttpClient',
+      'send_request',
+      'main.rs',
+      'src/http/client.rs',
+    );
+    suiteFor(
+      'Go',
+      'direct CALLS',
+      () => backend,
+      'Router',
+      'handleRequest',
+      'main.go',
+      'pkg/router/router.go',
+    );
+    suiteFor(
+      'Swift',
+      'direct CALLS',
+      () => backend,
+      'NetworkManager',
+      'fetchData',
+      'AppDelegate.swift',
+      'Sources/Network/NetworkManager.swift',
+    );
+    suiteFor(
+      'C',
+      'direct CALLS',
+      () => backend,
+      'MemoryPool',
+      'allocate',
+      'main.c',
+      'src/memory/pool.c',
+    );
+    suiteFor(
+      'C++',
+      'direct CALLS',
+      () => backend,
+      'ThreadPool',
+      'enqueue',
+      'main.cpp',
+      'src/threading/thread_pool.cpp',
+    );
   },
-});
+  {
+    seed: SEED,
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'test-repo',
+          path: '/test/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc123',
+          stats: { files: 20, nodes: 60, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as any)._backend = backend;
+    },
+  },
+);

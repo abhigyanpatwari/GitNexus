@@ -110,11 +110,24 @@ describe('loadServerGraph — data flow validation', () => {
   it('reconstructs graph from server node/relationship arrays', () => {
     const graph = createKnowledgeGraph();
     const serverNodes = [
-      { id: 'File:src/app.ts', label: 'File' as const, properties: { name: 'app.ts', filePath: 'src/app.ts' } },
-      { id: 'Function:src/app.ts:main', label: 'Function' as const, properties: { name: 'main', filePath: 'src/app.ts', startLine: 1, endLine: 20 } },
+      {
+        id: 'File:src/app.ts',
+        label: 'File' as const,
+        properties: { name: 'app.ts', filePath: 'src/app.ts' },
+      },
+      {
+        id: 'Function:src/app.ts:main',
+        label: 'Function' as const,
+        properties: { name: 'main', filePath: 'src/app.ts', startLine: 1, endLine: 20 },
+      },
     ];
     const serverRels = [
-      { sourceId: 'File:src/app.ts', targetId: 'Function:src/app.ts:main', type: 'CONTAINS' as const, properties: {} },
+      {
+        sourceId: 'File:src/app.ts',
+        targetId: 'Function:src/app.ts:main',
+        type: 'CONTAINS' as const,
+        properties: {},
+      },
     ];
 
     for (const node of serverNodes) graph.addNode(node);

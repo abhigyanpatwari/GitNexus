@@ -31,7 +31,9 @@ import { dartConfig as dartFieldConfig } from '../field-extractors/configs/dart.
  * Delegates name extraction to the shared `extractFunctionName` which already
  * handles Dart's function_signature and method_signature node types.
  */
-const dartEnclosingFunctionFinder = (node: SyntaxNode): { funcName: string; label: NodeLabel } | null => {
+const dartEnclosingFunctionFinder = (
+  node: SyntaxNode,
+): { funcName: string; label: NodeLabel } | null => {
   if (node.type !== 'function_body') return null;
   const prev = node.previousSibling;
   if (!prev || !FUNCTION_NODE_TYPES.has(prev.type)) return null;
@@ -40,12 +42,28 @@ const dartEnclosingFunctionFinder = (node: SyntaxNode): { funcName: string; labe
 };
 
 const BUILT_INS: ReadonlySet<string> = new Set([
-  'setState', 'mounted', 'debugPrint',
-  'runApp', 'showDialog', 'showModalBottomSheet',
-  'Navigator', 'push', 'pushNamed', 'pushReplacement', 'pop', 'maybePop',
-  'ScaffoldMessenger', 'showSnackBar',
-  'deactivate', 'reassemble', 'debugDumpApp', 'debugDumpRenderTree',
-  'then', 'catchError', 'whenComplete', 'listen',
+  'setState',
+  'mounted',
+  'debugPrint',
+  'runApp',
+  'showDialog',
+  'showModalBottomSheet',
+  'Navigator',
+  'push',
+  'pushNamed',
+  'pushReplacement',
+  'pop',
+  'maybePop',
+  'ScaffoldMessenger',
+  'showSnackBar',
+  'deactivate',
+  'reassemble',
+  'debugDumpApp',
+  'debugDumpRenderTree',
+  'then',
+  'catchError',
+  'whenComplete',
+  'listen',
 ]);
 
 export const dartProvider = defineLanguage({

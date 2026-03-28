@@ -50,7 +50,9 @@ describe('detectCursorCLI', () => {
     }));
     const { detectCursorCLI } = await import('../../src/core/wiki/cursor-client.js');
 
-    execSyncSpy.mockImplementation(() => { throw new Error('not found'); });
+    execSyncSpy.mockImplementation(() => {
+      throw new Error('not found');
+    });
 
     const first = detectCursorCLI();
     expect(first).toBeNull();
@@ -90,10 +92,7 @@ describe('resolveLLMConfig', () => {
     // Create empty config so loadCLIConfig returns {}
     const configDir = path.join(tmpDir, '.gitnexus');
     await fs.mkdir(configDir, { recursive: true });
-    await fs.writeFile(
-      path.join(configDir, 'config.json'),
-      JSON.stringify({}),
-    );
+    await fs.writeFile(path.join(configDir, 'config.json'), JSON.stringify({}));
   });
 
   afterEach(async () => {
@@ -203,9 +202,9 @@ describe('WikiGenerator --review mode', () => {
       initWikiDb: vi.fn().mockResolvedValue(undefined),
       closeWikiDb: vi.fn().mockResolvedValue(undefined),
       touchWikiDb: vi.fn(),
-      getFilesWithExports: vi.fn().mockResolvedValue(
-        fakeFiles.map(f => ({ filePath: f, symbols: [] })),
-      ),
+      getFilesWithExports: vi
+        .fn()
+        .mockResolvedValue(fakeFiles.map((f) => ({ filePath: f, symbols: [] }))),
       getAllFiles: vi.fn().mockResolvedValue(fakeFiles),
       getInterFileCallEdges: vi.fn().mockResolvedValue([]),
       getIntraModuleCallEdges: vi.fn().mockResolvedValue([]),
@@ -226,10 +225,7 @@ describe('WikiGenerator --review mode', () => {
       { name: 'Auth', slug: 'auth', files: ['src/auth.ts'] },
       { name: 'Core', slug: 'core', files: ['src/core.ts'] },
     ];
-    await fs.writeFile(
-      path.join(wikiDir, 'first_module_tree.json'),
-      JSON.stringify(tree),
-    );
+    await fs.writeFile(path.join(wikiDir, 'first_module_tree.json'), JSON.stringify(tree));
 
     const repoPath = path.join(tmpDir, 'repo');
     await fs.mkdir(repoPath, { recursive: true });
@@ -348,9 +344,11 @@ describe('WikiGenerator invokeLLM routing', () => {
     const cursorClient = await import('../../src/core/wiki/cursor-client.js');
     const llmClient = await import('../../src/core/wiki/llm-client.js');
 
-    const cursorSpy = vi.spyOn(cursorClient, 'callCursorLLM')
+    const cursorSpy = vi
+      .spyOn(cursorClient, 'callCursorLLM')
       .mockResolvedValue({ content: 'cursor response' });
-    const openaiSpy = vi.spyOn(llmClient, 'callLLM')
+    const openaiSpy = vi
+      .spyOn(llmClient, 'callLLM')
       .mockResolvedValue({ content: 'openai response' });
 
     const { WikiGenerator } = await import('../../src/core/wiki/generator.js');
@@ -362,12 +360,14 @@ describe('WikiGenerator invokeLLM routing', () => {
     const repoPath = path.join(tmpDir, 'repo');
     await fs.mkdir(repoPath, { recursive: true });
 
-    const generator = new WikiGenerator(
-      repoPath,
-      storagePath,
-      path.join(storagePath, 'lbug'),
-      { apiKey: '', baseUrl: '', model: 'test', maxTokens: 1000, temperature: 0, provider: 'cursor' },
-    );
+    const generator = new WikiGenerator(repoPath, storagePath, path.join(storagePath, 'lbug'), {
+      apiKey: '',
+      baseUrl: '',
+      model: 'test',
+      maxTokens: 1000,
+      temperature: 0,
+      provider: 'cursor',
+    });
 
     // Access the private method via prototype trick
     const result = await (generator as any).invokeLLM('test prompt', 'system prompt');
@@ -381,9 +381,11 @@ describe('WikiGenerator invokeLLM routing', () => {
     const cursorClient = await import('../../src/core/wiki/cursor-client.js');
     const llmClient = await import('../../src/core/wiki/llm-client.js');
 
-    const cursorSpy = vi.spyOn(cursorClient, 'callCursorLLM')
+    const cursorSpy = vi
+      .spyOn(cursorClient, 'callCursorLLM')
       .mockResolvedValue({ content: 'cursor response' });
-    const openaiSpy = vi.spyOn(llmClient, 'callLLM')
+    const openaiSpy = vi
+      .spyOn(llmClient, 'callLLM')
       .mockResolvedValue({ content: 'openai response' });
 
     const { WikiGenerator } = await import('../../src/core/wiki/generator.js');
@@ -395,12 +397,14 @@ describe('WikiGenerator invokeLLM routing', () => {
     const repoPath = path.join(tmpDir, 'repo');
     await fs.mkdir(repoPath, { recursive: true });
 
-    const generator = new WikiGenerator(
-      repoPath,
-      storagePath,
-      path.join(storagePath, 'lbug'),
-      { apiKey: 'key', baseUrl: 'http://localhost', model: 'gpt-4', maxTokens: 1000, temperature: 0, provider: 'openai' },
-    );
+    const generator = new WikiGenerator(repoPath, storagePath, path.join(storagePath, 'lbug'), {
+      apiKey: 'key',
+      baseUrl: 'http://localhost',
+      model: 'gpt-4',
+      maxTokens: 1000,
+      temperature: 0,
+      provider: 'openai',
+    });
 
     const result = await (generator as any).invokeLLM('test prompt', 'system prompt');
 
@@ -423,15 +427,15 @@ describe('callCursorLLM', () => {
 
   it('throws when Cursor CLI is not in PATH', async () => {
     vi.doMock('child_process', () => ({
-      execSync: vi.fn().mockImplementation(() => { throw new Error('not found'); }),
+      execSync: vi.fn().mockImplementation(() => {
+        throw new Error('not found');
+      }),
       spawn: vi.fn(),
     }));
 
     const { callCursorLLM } = await import('../../src/core/wiki/cursor-client.js');
 
-    await expect(callCursorLLM('hello', {})).rejects.toThrow(
-      'Cursor CLI not found',
-    );
+    await expect(callCursorLLM('hello', {})).rejects.toThrow('Cursor CLI not found');
   });
 });
 

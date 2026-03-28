@@ -36,7 +36,7 @@ describe('pipeline end-to-end', () => {
 
     // --- Verify File nodes exist for each source file ---
     const fileNodes: string[] = [];
-    result.graph.forEachNode(n => {
+    result.graph.forEachNode((n) => {
       if (n.label === 'File') fileNodes.push(n.properties.filePath || n.properties.name);
     });
     expect(fileNodes).toContain('src/handler.ts');
@@ -49,7 +49,7 @@ describe('pipeline end-to-end', () => {
 
     // --- Verify symbol nodes were created (functions, classes) ---
     const symbolNames: string[] = [];
-    result.graph.forEachNode(n => {
+    result.graph.forEachNode((n) => {
       if (['Function', 'Method', 'Class', 'Interface'].includes(n.label)) {
         symbolNames.push(n.properties.name);
       }
@@ -87,8 +87,8 @@ describe('pipeline end-to-end', () => {
     expect(callEdges.length).toBeGreaterThan(0);
 
     // handleRequest should call validateInput, saveToDb, formatResponse
-    const handleRequestCalls = callEdges.filter(e => e.source === 'handleRequest');
-    const calledByHandler = handleRequestCalls.map(e => e.target);
+    const handleRequestCalls = callEdges.filter((e) => e.source === 'handleRequest');
+    const calledByHandler = handleRequestCalls.map((e) => e.target);
     expect(calledByHandler).toContain('validateInput');
     expect(calledByHandler).toContain('saveToDb');
     expect(calledByHandler).toContain('formatResponse');
@@ -107,7 +107,7 @@ describe('pipeline end-to-end', () => {
 
     // Community nodes should be in the graph
     const communityNodes: string[] = [];
-    result.graph.forEachNode(n => {
+    result.graph.forEachNode((n) => {
       if (n.label === 'Community') communityNodes.push(n.properties.name);
     });
     expect(communityNodes.length).toBeGreaterThan(0);
@@ -124,7 +124,14 @@ describe('pipeline end-to-end', () => {
     expect(result.processResult).toBeDefined();
     expect(result.processResult?.stats.totalProcesses).toBeGreaterThan(0);
 
-    const proc = result.processResult?.processes[0] ?? { id: '', stepCount: 0, trace: [], entryPointId: '', terminalId: '', processType: '' };
+    const proc = result.processResult?.processes[0] ?? {
+      id: '',
+      stepCount: 0,
+      trace: [],
+      entryPointId: '',
+      terminalId: '',
+      processType: '',
+    };
 
     // Each process should have valid structure
     expect(proc.id).toBeTruthy();
@@ -170,10 +177,7 @@ describe('pipeline end-to-end', () => {
 
 describe('pipeline error handling', () => {
   it('returns empty result for non-existent repo path', async () => {
-    const result = await runPipelineFromRepo(
-      '/nonexistent/path/xyz123',
-      () => {},
-    );
+    const result = await runPipelineFromRepo('/nonexistent/path/xyz123', () => {});
     expect(result.totalFileCount).toBe(0);
   }, 30000);
 

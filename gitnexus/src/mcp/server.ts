@@ -95,14 +95,14 @@ export function createMCPServer(backend: LocalBackend): Server {
         resources: {},
         prompts: {},
       },
-    }
+    },
   );
 
   // Handle list resources request
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
     const resources = getResourceDefinitions();
     return {
-      resources: resources.map(r => ({
+      resources: resources.map((r) => ({
         uri: r.uri,
         name: r.name,
         description: r.description,
@@ -115,7 +115,7 @@ export function createMCPServer(backend: LocalBackend): Server {
   server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
     const templates = getResourceTemplates();
     return {
-      resourceTemplates: templates.map(t => ({
+      resourceTemplates: templates.map((t) => ({
         uriTemplate: t.uriTemplate,
         name: t.name,
         description: t.description,
@@ -151,7 +151,6 @@ export function createMCPServer(backend: LocalBackend): Server {
       };
     }
   });
-
 
   // Handle list tools request
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -198,17 +197,27 @@ export function createMCPServer(backend: LocalBackend): Server {
     prompts: [
       {
         name: 'detect_impact',
-        description: 'Analyze the impact of your current changes before committing. Guides through scope selection, change detection, process analysis, and risk assessment.',
+        description:
+          'Analyze the impact of your current changes before committing. Guides through scope selection, change detection, process analysis, and risk assessment.',
         arguments: [
-          { name: 'scope', description: 'What to analyze: unstaged, staged, all, or compare', required: false },
+          {
+            name: 'scope',
+            description: 'What to analyze: unstaged, staged, all, or compare',
+            required: false,
+          },
           { name: 'base_ref', description: 'Branch/commit for compare scope', required: false },
         ],
       },
       {
         name: 'generate_map',
-        description: 'Generate architecture documentation from the knowledge graph. Creates a codebase overview with execution flows and mermaid diagrams.',
+        description:
+          'Generate architecture documentation from the knowledge graph. Creates a codebase overview with execution flows and mermaid diagrams.',
         arguments: [
-          { name: 'repo', description: 'Repository name (omit if only one indexed)', required: false },
+          {
+            name: 'repo',
+            description: 'Repository name (omit if only one indexed)',
+            required: false,
+          },
         ],
       },
     ],
@@ -285,7 +294,7 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
       if (prop === 'write') return realStdoutWrite;
       const val = Reflect.get(target, prop, receiver);
       return typeof val === 'function' ? val.bind(target) : val;
-    }
+    },
   });
   const transport = new CompatibleStdioServerTransport(process.stdin, _safeStdout);
   await server.connect(transport);
@@ -295,8 +304,12 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
   const shutdown = async (exitCode = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    try { await backend.disconnect(); } catch {}
-    try { await server.close(); } catch {}
+    try {
+      await backend.disconnect();
+    } catch {}
+    try {
+      await server.close();
+    } catch {}
     process.exit(exitCode);
   };
 

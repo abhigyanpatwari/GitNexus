@@ -1,6 +1,6 @@
 /**
  * LLM Prompt Templates for Wiki Generation
- * 
+ *
  * All prompts produce deterministic, source-grounded documentation.
  * Templates use {{PLACEHOLDER}} substitution.
  */
@@ -122,10 +122,7 @@ Write a clear overview of this project: what it does, how it's architected, and 
 /**
  * Replace {{PLACEHOLDER}} tokens in a template string.
  */
-export function fillTemplate(
-  template: string,
-  vars: Record<string, string>,
-): string {
+export function fillTemplate(template: string, vars: Record<string, string>): string {
   let result = template;
   for (const [key, value] of Object.entries(vars)) {
     result = result.replaceAll(`{{${key}}}`, value);
@@ -142,10 +139,11 @@ export function formatFileListForGrouping(
   files: Array<{ filePath: string; symbols: Array<{ name: string; type: string }> }>,
 ): string {
   return files
-    .map(f => {
-      const exports = f.symbols.length > 0
-        ? f.symbols.map(s => `${s.name} (${s.type})`).join(', ')
-        : 'no exports';
+    .map((f) => {
+      const exports =
+        f.symbols.length > 0
+          ? f.symbols.map((s) => `${s.name} (${s.type})`).join(', ')
+          : 'no exports';
       return `- ${f.filePath}: ${exports}`;
     })
     .join('\n');
@@ -166,7 +164,10 @@ export function formatDirectoryTree(filePaths: string[]): string {
   const sorted = Array.from(dirs).sort();
   if (sorted.length === 0) return '(flat structure)';
 
-  return sorted.slice(0, 50).join('\n') + (sorted.length > 50 ? `\n... and ${sorted.length - 50} more directories` : '');
+  return (
+    sorted.slice(0, 50).join('\n') +
+    (sorted.length > 50 ? `\n... and ${sorted.length - 50} more directories` : '')
+  );
 }
 
 /**
@@ -178,7 +179,7 @@ export function formatCallEdges(
   if (edges.length === 0) return 'None';
   return edges
     .slice(0, 30)
-    .map(e => `${e.fromName} (${shortPath(e.fromFile)}) → ${e.toName} (${shortPath(e.toFile)})`)
+    .map((e) => `${e.fromName} (${shortPath(e.fromFile)}) → ${e.toName} (${shortPath(e.toFile)})`)
     .join('\n');
 }
 
@@ -195,9 +196,9 @@ export function formatProcesses(
   if (processes.length === 0) return 'No execution flows detected for this module.';
 
   return processes
-    .map(p => {
+    .map((p) => {
       const stepsText = p.steps
-        .map(s => `  ${s.step}. ${s.name} (${shortPath(s.filePath)})`)
+        .map((s) => `  ${s.step}. ${s.name} (${shortPath(s.filePath)})`)
         .join('\n');
       return `**${p.label}** (${p.type}):\n${stepsText}`;
     })

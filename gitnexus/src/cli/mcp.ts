@@ -1,6 +1,6 @@
 /**
  * MCP Command
- * 
+ *
  * Starts the MCP server in standalone mode.
  * Loads all indexed repos from the global registry.
  * No longer depends on cwd — works from any directory.
@@ -30,9 +30,13 @@ export const mcpCommand = async () => {
 
   const repos = await backend.listRepos();
   if (repos.length === 0) {
-    console.error('GitNexus: No indexed repos yet. Run `gitnexus analyze` in a git repo — the server will pick it up automatically.');
+    console.error(
+      'GitNexus: No indexed repos yet. Run `gitnexus analyze` in a git repo — the server will pick it up automatically.',
+    );
   } else {
-    console.error(`GitNexus: MCP server starting with ${repos.length} repo(s): ${repos.map(r => r.name).join(', ')}`);
+    console.error(
+      `GitNexus: MCP server starting with ${repos.length} repo(s): ${repos.map((r) => r.name).join(', ')}`,
+    );
   }
 
   // Start MCP server (serves all repos, discovers new ones lazily)

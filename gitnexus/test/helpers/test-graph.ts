@@ -5,7 +5,12 @@
  * without touching the filesystem or LadybugDB.
  */
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import type { KnowledgeGraph, GraphNode, NodeLabel, RelationshipType } from '../../src/core/graph/types.js';
+import type {
+  KnowledgeGraph,
+  GraphNode,
+  NodeLabel,
+  RelationshipType,
+} from '../../src/core/graph/types.js';
 
 export interface TestNodeInput {
   id: string;
@@ -75,16 +80,52 @@ export function createMinimalTestGraph(): KnowledgeGraph {
     [
       { id: 'File:src/index.ts', label: 'File', name: 'index.ts', filePath: 'src/index.ts' },
       { id: 'File:src/utils.ts', label: 'File', name: 'utils.ts', filePath: 'src/utils.ts' },
-      { id: 'Function:src/index.ts:main:1', label: 'Function', name: 'main', filePath: 'src/index.ts', startLine: 1, endLine: 10, isExported: true },
-      { id: 'Function:src/utils.ts:helper:1', label: 'Function', name: 'helper', filePath: 'src/utils.ts', startLine: 1, endLine: 5, isExported: true },
-      { id: 'Class:src/index.ts:App:12', label: 'Class', name: 'App', filePath: 'src/index.ts', startLine: 12, endLine: 30, isExported: true },
+      {
+        id: 'Function:src/index.ts:main:1',
+        label: 'Function',
+        name: 'main',
+        filePath: 'src/index.ts',
+        startLine: 1,
+        endLine: 10,
+        isExported: true,
+      },
+      {
+        id: 'Function:src/utils.ts:helper:1',
+        label: 'Function',
+        name: 'helper',
+        filePath: 'src/utils.ts',
+        startLine: 1,
+        endLine: 5,
+        isExported: true,
+      },
+      {
+        id: 'Class:src/index.ts:App:12',
+        label: 'Class',
+        name: 'App',
+        filePath: 'src/index.ts',
+        startLine: 12,
+        endLine: 30,
+        isExported: true,
+      },
       { id: 'Folder:src', label: 'Folder', name: 'src', filePath: 'src' },
     ],
     [
-      { sourceId: 'Function:src/index.ts:main:1', targetId: 'Function:src/utils.ts:helper:1', type: 'CALLS' },
-      { sourceId: 'Function:src/index.ts:main:1', targetId: 'Class:src/index.ts:App:12', type: 'CALLS' },
+      {
+        sourceId: 'Function:src/index.ts:main:1',
+        targetId: 'Function:src/utils.ts:helper:1',
+        type: 'CALLS',
+      },
+      {
+        sourceId: 'Function:src/index.ts:main:1',
+        targetId: 'Class:src/index.ts:App:12',
+        type: 'CALLS',
+      },
       { sourceId: 'File:src/index.ts', targetId: 'Function:src/index.ts:main:1', type: 'CONTAINS' },
-      { sourceId: 'File:src/utils.ts', targetId: 'Function:src/utils.ts:helper:1', type: 'CONTAINS' },
+      {
+        sourceId: 'File:src/utils.ts',
+        targetId: 'Function:src/utils.ts:helper:1',
+        type: 'CONTAINS',
+      },
     ],
   );
 }

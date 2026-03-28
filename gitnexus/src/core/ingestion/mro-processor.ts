@@ -33,14 +33,14 @@ export interface MROEntry {
   classId: string;
   className: string;
   language: SupportedLanguages;
-  mro: string[];               // linearized parent names
+  mro: string[]; // linearized parent names
   ambiguities: MethodAmbiguity[];
 }
 
 export interface MethodAmbiguity {
   methodName: string;
   definedIn: Array<{ classId: string; className: string; methodId: string }>;
-  resolvedTo: string | null;   // winning methodId or null if truly ambiguous
+  resolvedTo: string | null; // winning methodId or null if truly ambiguous
   reason: string;
 }
 
@@ -97,10 +97,7 @@ function buildAdjacency(graph: KnowledgeGraph) {
  * Gather all ancestor IDs in BFS / topological order.
  * Returns the linearized list of ancestor IDs (excluding the class itself).
  */
-function gatherAncestors(
-  classId: string,
-  parentMap: Map<string, string[]>,
-): string[] {
+function gatherAncestors(classId: string, parentMap: Map<string, string[]>): string[] {
   const visited = new Set<string>();
   const order: string[] = [];
   const queue: string[] = [...(parentMap.get(classId) ?? [])];
@@ -169,14 +166,14 @@ function c3Linearize(
   const sequences = [...parentLinearizations, [...directParents]];
   const result: string[] = [];
 
-  while (sequences.some(s => s.length > 0)) {
+  while (sequences.some((s) => s.length > 0)) {
     // Find a good head: one that doesn't appear in the tail of any other sequence
     let head: string | null = null;
     for (const seq of sequences) {
       if (seq.length === 0) continue;
       const candidate = seq[0];
       const inTail = sequences.some(
-        other => other.length > 1 && other.indexOf(candidate, 1) !== -1
+        (other) => other.length > 1 && other.indexOf(candidate, 1) !== -1,
       );
       if (!inTail) {
         head = candidate;
@@ -221,16 +218,20 @@ function resolveByMroOrder(
   reasonPrefix: string,
 ): Resolution {
   for (const ancestorId of mroOrder) {
-    const match = defs.find(d => d.classId === ancestorId);
+    const match = defs.find((d) => d.classId === ancestorId);
     if (match) {
       return {
         resolvedTo: match.methodId,
         reason: `${reasonPrefix}: ${match.className}::${methodName}`,
-        confidence: 0.9,  // MRO-ordered resolution
+        confidence: 0.9, // MRO-ordered resolution
       };
     }
   }
-  return { resolvedTo: defs[0].methodId, reason: `${reasonPrefix} fallback: first definition`, confidence: 0.7 };
+  return {
+    resolvedTo: defs[0].methodId,
+    reason: `${reasonPrefix} fallback: first definition`,
+    confidence: 0.7,
+  };
 }
 
 function resolveCsharpJava(
@@ -254,14 +255,14 @@ function resolveCsharpJava(
     return {
       resolvedTo: classDefs[0].methodId,
       reason: `class method wins: ${classDefs[0].className}::${methodName}`,
-      confidence: 0.95,  // Class method is authoritative
+      confidence: 0.95, // Class method is authoritative
     };
   }
 
   if (interfaceDefs.length > 1) {
     return {
       resolvedTo: null,
-      reason: `ambiguous: ${methodName} defined in multiple interfaces: ${interfaceDefs.map(d => d.className).join(', ')}`,
+      reason: `ambiguous: ${methodName} defined in multiple interfaces: ${interfaceDefs.map((d) => d.className).join(', ')}`,
       confidence: 0.5,
     };
   }
@@ -270,7 +271,7 @@ function resolveCsharpJava(
     return {
       resolvedTo: interfaceDefs[0].methodId,
       reason: `single interface default: ${interfaceDefs[0].className}::${methodName}`,
-      confidence: 0.85,  // Single interface, unambiguous
+      confidence: 0.85, // Single interface, unambiguous
     };
   }
 
@@ -312,7 +313,7 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
 
     // Get the parent names for the MRO entry
     const mroNames: string[] = mroOrder
-      .map(id => graph.getNode(id)?.properties.name)
+      .map((id) => graph.getNode(id)?.properties.name)
       .filter((n): n is string => n !== undefined);
 
     // Collect methods from all ancestors, grouped by method name
@@ -335,7 +336,7 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
           methodsByName.set(methodName, defs);
         }
         // Avoid duplicates (same method seen via multiple paths)
-        if (!defs.some(d => d.methodId === methodId)) {
+        if (!defs.some((d) => d.methodId === methodId)) {
           defs.push({
             classId: ancestorId,
             className: ancestorNode.properties.name,
@@ -359,7 +360,7 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
 
       // Own method shadows inherited — no ambiguity
       const ownMethods = methodMap.get(classId) ?? [];
-      const ownDefinesIt = ownMethods.some(mid => {
+      const ownDefinesIt = ownMethods.some((mid) => {
         const mn = graph.getNode(mid);
         return mn?.properties.name === methodName;
       });

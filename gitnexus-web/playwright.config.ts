@@ -40,9 +40,6 @@ export default defineConfig({
       use: { browserName: 'chromium' },
     },
   ],
-  reporter: [
-    ['list'],
-    ['html', { open: 'never', outputFolder: 'playwright-report' }],
-  ],
+  reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
   outputDir: 'test-results',
 });

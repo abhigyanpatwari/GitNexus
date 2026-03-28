@@ -25,7 +25,12 @@ import type {
   LiteralTypeInferrer,
   ConstructorTypeDetector,
 } from './types.js';
-import { extractSimpleTypeName, extractVarName, extractElementTypeFromString, resolveIterableElementType } from './shared.js';
+import {
+  extractSimpleTypeName,
+  extractVarName,
+  extractElementTypeFromString,
+  resolveIterableElementType,
+} from './shared.js';
 import { findChild } from '../utils/ast-helpers.js';
 
 // ── Node types ──────────────────────────────────────────────────────────
@@ -35,9 +40,7 @@ const DART_DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
   'initialized_identifier',
 ]);
 
-const DART_FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set([
-  'for_statement',
-]);
+const DART_FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set(['for_statement']);
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -59,8 +62,9 @@ function parseDartRHSChildren(children: Iterable<SyntaxNode>): Omit<DartRHS, 'is
       continue;
     }
     if (child.type === 'selector') {
-      const uas = findChild(child, 'unconditional_assignable_selector')
-        ?? findChild(child, 'conditional_assignable_selector');
+      const uas =
+        findChild(child, 'unconditional_assignable_selector') ??
+        findChild(child, 'conditional_assignable_selector');
       if (uas) {
         const id = findChild(uas, 'identifier');
         if (id && !member) member = id.text;
@@ -82,7 +86,10 @@ function parseDartRHS(node: SyntaxNode): DartRHS {
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
     if (!child) continue;
-    if (!child.isNamed && child.text === '=') { foundEquals = true; continue; }
+    if (!child.isNamed && child.text === '=') {
+      foundEquals = true;
+      continue;
+    }
     if (foundEquals) rhsChildren.push(child);
   }
 
@@ -110,7 +117,10 @@ function hasDartTypeAnnotation(node: SyntaxNode): boolean {
 
 // ── Tier 0: Explicit Type Annotations ───────────────────────────────────
 
-const extractDartDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+const extractDartDeclaration: TypeBindingExtractor = (
+  node: SyntaxNode,
+  env: Map<string, string>,
+): void => {
   // initialized_identifier: comma-separated variable (String a, b, c) — type is on parent
   if (node.type === 'initialized_identifier') {
     const parent = node.parent;
@@ -144,7 +154,10 @@ const extractDartDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map
   if (varName) env.set(varName, typeName);
 };
 
-const extractDartParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+const extractDartParameter: ParameterExtractor = (
+  node: SyntaxNode,
+  env: Map<string, string>,
+): void => {
   let typeNode = findChild(node, 'type_identifier');
   if (!typeNode) {
     const nullable = findChild(node, 'nullable_type');
@@ -161,7 +174,11 @@ const extractDartParameter: ParameterExtractor = (node: SyntaxNode, env: Map<str
 
 // ── Tier 1: Constructor / Initializer Inference ─────────────────────────
 
-const extractDartInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ClassNameLookup): void => {
+const extractDartInitializer: InitializerExtractor = (
+  node: SyntaxNode,
+  env: Map<string, string>,
+  classNames: ClassNameLookup,
+): void => {
   if (node.type !== 'initialized_variable_definition') return;
   if (hasDartTypeAnnotation(node)) return;
 
@@ -253,9 +270,11 @@ const extractDartPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv
   if (!rhs.callee) return undefined;
 
   if (!rhs.hasCall && !rhs.member) return { kind: 'copy', lhs, rhs: rhs.callee };
-  if (!rhs.hasCall && rhs.member) return { kind: 'fieldAccess', lhs, receiver: rhs.callee, field: rhs.member };
+  if (!rhs.hasCall && rhs.member)
+    return { kind: 'fieldAccess', lhs, receiver: rhs.callee, field: rhs.member };
   if (rhs.hasCall && !rhs.member) return { kind: 'callResult', lhs, callee: rhs.callee };
-  if (rhs.hasCall && rhs.member) return { kind: 'methodCallResult', lhs, receiver: rhs.callee, method: rhs.member };
+  if (rhs.hasCall && rhs.member)
+    return { kind: 'methodCallResult', lhs, receiver: rhs.callee, method: rhs.member };
 
   return undefined;
 };
@@ -318,21 +337,29 @@ const extractDartForLoopBinding: ForLoopExtractor = (node, ctx): void => {
     let hasCallSelector = false;
     let memberName: string | undefined;
 
-    const selectorParent = iterableNode.type === 'unary_expression'
-      ? findChild(iterableNode, 'await_expression')
-      : loopParts;
+    const selectorParent =
+      iterableNode.type === 'unary_expression'
+        ? findChild(iterableNode, 'await_expression')
+        : loopParts;
     if (!selectorParent) return;
 
     let foundIterable = false;
     for (let i = 0; i < selectorParent.childCount; i++) {
       const child = selectorParent.child(i);
       if (!child) continue;
-      if (child.type === 'identifier' && child.text === iterableName) { foundIterable = true; continue; }
-      if (child === iterableNode) { foundIterable = true; continue; }
+      if (child.type === 'identifier' && child.text === iterableName) {
+        foundIterable = true;
+        continue;
+      }
+      if (child === iterableNode) {
+        foundIterable = true;
+        continue;
+      }
       if (!foundIterable) continue;
       if (child.type === 'selector') {
-        const uas = findChild(child, 'unconditional_assignable_selector')
-          ?? findChild(child, 'conditional_assignable_selector');
+        const uas =
+          findChild(child, 'unconditional_assignable_selector') ??
+          findChild(child, 'conditional_assignable_selector');
         if (uas) {
           const id = findChild(uas, 'identifier');
           if (id) memberName = id.text;
@@ -358,7 +385,11 @@ const extractDartForLoopBinding: ForLoopExtractor = (node, ctx): void => {
     elementType = callExprElementType;
   } else if (iterableName) {
     elementType = resolveIterableElementType(
-      iterableName, node, scopeEnv, declarationTypeNodes, scope,
+      iterableName,
+      node,
+      scopeEnv,
+      declarationTypeNodes,
+      scope,
       extractDartElementTypeFromTypeNode,
     );
   }

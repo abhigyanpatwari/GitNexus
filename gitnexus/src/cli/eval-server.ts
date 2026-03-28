@@ -1,23 +1,23 @@
 /**
  * Eval Server — Lightweight HTTP server for SWE-bench evaluation
- * 
+ *
  * Keeps LadybugDB warm in memory so tool calls from the agent are near-instant.
  * Designed to run inside Docker containers during SWE-bench evaluation.
- * 
+ *
  * KEY DESIGN: Returns LLM-friendly text, not raw JSON.
  * Raw JSON wastes tokens and is hard for models to parse. The text formatter
  * converts structured results into compact, readable output that models
  * can immediately act on. Next-step hints guide the agent through a
  * productive tool-chaining workflow (query → context → impact → fix).
- * 
+ *
  * Architecture:
  *   Agent bash cmd → curl localhost:PORT/tool/query → eval-server → LocalBackend → format → text
- * 
+ *
  * Usage:
  *   gitnexus eval-server                    # default port 4848
  *   gitnexus eval-server --port 4848        # explicit port
  *   gitnexus eval-server --idle-timeout 300 # auto-shutdown after 300s idle
- * 
+ *
  * API:
  *   POST /tool/:name   — Call a tool. Body is JSON arguments. Returns formatted text.
  *   GET  /health       — Health check. Returns {"status":"ok","repos":[...]}
@@ -82,7 +82,9 @@ export function formatContextResult(result: any): string {
   if (result.error) return `Error: ${result.error}`;
 
   if (result.status === 'ambiguous') {
-    const lines = [`Multiple symbols named '${result.candidates?.[0]?.name || '?'}'. Disambiguate with file path:\n`];
+    const lines = [
+      `Multiple symbols named '${result.candidates?.[0]?.name || '?'}'. Disambiguate with file path:\n`,
+    ];
     for (const c of result.candidates || []) {
       lines.push(`  ${c.kind} ${c.name} → ${c.filePath}:${c.line || '?'}  (uid: ${c.uid})`);
     }
@@ -100,7 +102,10 @@ export function formatContextResult(result: any): string {
 
   // Incoming refs (who calls/imports/extends this)
   const incoming = result.incoming || {};
-  const incomingCount = Object.values(incoming).reduce((sum: number, arr: any) => sum + arr.length, 0) as number;
+  const incomingCount = Object.values(incoming).reduce(
+    (sum: number, arr: any) => sum + arr.length,
+    0,
+  ) as number;
   if (incomingCount > 0) {
     lines.push(`Called/imported by (${incomingCount}):`);
     for (const [relType, refs] of Object.entries(incoming)) {
@@ -113,7 +118,10 @@ export function formatContextResult(result: any): string {
 
   // Outgoing refs (what this calls/imports)
   const outgoing = result.outgoing || {};
-  const outgoingCount = Object.values(outgoing).reduce((sum: number, arr: any) => sum + arr.length, 0) as number;
+  const outgoingCount = Object.values(outgoing).reduce(
+    (sum: number, arr: any) => sum + arr.length,
+    0,
+  ) as number;
   if (outgoingCount > 0) {
     lines.push(`Calls/imports (${outgoingCount}):`);
     for (const [relType, refs] of Object.entries(outgoing)) {
@@ -158,8 +166,11 @@ export function formatImpactResult(result: any): string {
   }
 
   const lines: string[] = [];
-  const dirLabel = direction === 'upstream' ? 'depends on this (will break if changed)' : 'this depends on';
-  lines.push(`Blast radius for ${target?.kind || ''} ${target?.name} (${direction}): ${total} symbol(s) ${dirLabel}`);
+  const dirLabel =
+    direction === 'upstream' ? 'depends on this (will break if changed)' : 'this depends on';
+  lines.push(
+    `Blast radius for ${target?.kind || ''} ${target?.name} (${direction}): ${total} symbol(s) ${dirLabel}`,
+  );
   if (result.partial) {
     lines.push('⚠️  Partial results — graph traversal was interrupted. Deeper impacts may exist.');
   }
@@ -198,7 +209,7 @@ export function formatCypherResult(result: any): string {
     const keys = Object.keys(result[0]);
     const lines: string[] = [`${result.length} row(s):\n`];
     for (const row of result.slice(0, 30)) {
-      const parts = keys.map(k => `${k}: ${row[k]}`);
+      const parts = keys.map((k) => `${k}: ${row[k]}`);
       lines.push(`  ${parts.join(' | ')}`);
     }
     if (result.length > 30) {
@@ -254,7 +265,9 @@ export function formatListReposResult(result: any): string {
   const lines = ['Indexed repositories:\n'];
   for (const r of result) {
     const stats = r.stats || {};
-    lines.push(`  ${r.name} — ${stats.nodes || '?'} symbols, ${stats.edges || '?'} relationships, ${stats.processes || '?'} flows`);
+    lines.push(
+      `  ${r.name} — ${stats.nodes || '?'} symbols, ${stats.edges || '?'} relationships, ${stats.processes || '?'} flows`,
+    );
     lines.push(`    Path: ${r.path}`);
     lines.push(`    Indexed: ${r.indexedAt}`);
   }
@@ -266,13 +279,20 @@ export function formatListReposResult(result: any): string {
  */
 function formatToolResult(toolName: string, result: any): string {
   switch (toolName) {
-    case 'query': return formatQueryResult(result);
-    case 'context': return formatContextResult(result);
-    case 'impact': return formatImpactResult(result);
-    case 'cypher': return formatCypherResult(result);
-    case 'detect_changes': return formatDetectChangesResult(result);
-    case 'list_repos': return formatListReposResult(result);
-    default: return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+    case 'query':
+      return formatQueryResult(result);
+    case 'context':
+      return formatContextResult(result);
+    case 'impact':
+      return formatImpactResult(result);
+    case 'cypher':
+      return formatCypherResult(result);
+    case 'detect_changes':
+      return formatDetectChangesResult(result);
+    case 'list_repos':
+      return formatListReposResult(result);
+    default:
+      return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
   }
 }
 
@@ -317,7 +337,9 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
   }
 
   const repos = await backend.listRepos();
-  console.error(`GitNexus eval-server: ${repos.length} repo(s) loaded: ${repos.map(r => r.name).join(', ')}`);
+  console.error(
+    `GitNexus eval-server: ${repos.length} repo(s) loaded: ${repos.map((r) => r.name).join(', ')}`,
+  );
 
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -339,7 +361,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
       if (req.method === 'GET' && req.url === '/health') {
         res.setHeader('Content-Type', 'application/json');
         res.writeHead(200);
-        res.end(JSON.stringify({ status: 'ok', repos: repos.map(r => r.name) }));
+        res.end(JSON.stringify({ status: 'ok', repos: repos.map((r) => r.name) }));
         return;
       }
 
@@ -389,7 +411,6 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
       res.setHeader('Content-Type', 'text/plain');
       res.writeHead(404);
       res.end('Not found. Use POST /tool/:name or GET /health');
-
     } catch (err: any) {
       res.setHeader('Content-Type', 'text/plain');
       res.writeHead(500);

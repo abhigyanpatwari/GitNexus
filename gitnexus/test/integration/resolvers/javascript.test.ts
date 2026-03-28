@@ -4,8 +4,14 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, CROSS_FILE_FIXTURES, getRelationships, getNodesByLabel, getNodesByLabelFull, edgeSet,
-  runPipelineFromRepo, type PipelineResult,
+  FIXTURES,
+  CROSS_FILE_FIXTURES,
+  getRelationships,
+  getNodesByLabel,
+  getNodesByLabelFull,
+  edgeSet,
+  runPipelineFromRepo,
+  type PipelineResult,
 } from './helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -57,13 +63,13 @@ describe('JavaScript this resolution', () => {
 
   it('detects User and Repo classes, each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves this.save() inside User.process to User.save, not Repo.save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process');
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'process');
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('src/models/User.js');
   });
@@ -110,40 +116,43 @@ describe('JavaScript nullable receiver resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'js-nullable-receiver'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'js-nullable-receiver'), () => {});
   }, 60000);
 
   it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() to src/user.js via nullable-stripped JSDoc type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c => c.target === 'save' && c.source === 'processEntities' && c.targetFilePath === 'src/user.js');
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processEntities' && c.targetFilePath === 'src/user.js',
+    );
     expect(userSave).toBeDefined();
   });
 
   it('resolves repo.save() to src/repo.js via nullable-stripped JSDoc type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c => c.target === 'save' && c.source === 'processEntities' && c.targetFilePath === 'src/repo.js');
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processEntities' && c.targetFilePath === 'src/repo.js',
+    );
     expect(repoSave).toBeDefined();
   });
 
   it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save');
+    const saveCalls = calls.filter((c) => c.target === 'save');
     expect(saveCalls.length).toBe(2);
   });
 
   it('each save() call resolves to a distinct file (no duplicates)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save' && c.source === 'processEntities');
-    const files = saveCalls.map(c => c.targetFilePath).sort();
+    const saveCalls = calls.filter((c) => c.target === 'save' && c.source === 'processEntities');
+    const files = saveCalls.map((c) => c.targetFilePath).sort();
     expect(files).toEqual(['src/repo.js', 'src/user.js']);
   });
 });
@@ -164,7 +173,7 @@ describe('JavaScript super resolution', () => {
 
   it('detects BaseModel, User, and Repo classes, each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'Repo', 'User']);
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(3);
   });
 
@@ -177,10 +186,14 @@ describe('JavaScript super resolution', () => {
 
   it('resolves super.save() inside User to BaseModel.save, not Repo.save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const superSave = calls.find(c => c.source === 'save' && c.target === 'save'
-      && c.targetFilePath === 'src/models/Base.js');
+    const superSave = calls.find(
+      (c) =>
+        c.source === 'save' && c.target === 'save' && c.targetFilePath === 'src/models/Base.js',
+    );
     expect(superSave).toBeDefined();
-    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/models/Repo.js');
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'src/models/Repo.js',
+    );
     expect(repoSave).toBeUndefined();
   });
 });
@@ -195,10 +208,7 @@ describe('JavaScript chained method call resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'javascript-chain-call'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'javascript-chain-call'), () => {});
   }, 60000);
 
   it('detects User and Repo classes, and UserService', () => {
@@ -216,20 +226,18 @@ describe('JavaScript chained method call resolution', () => {
 
   it('resolves svc.getUser().save() to User#save via chain resolution', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'processUser' &&
-      c.targetFilePath?.includes('user.js'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUser' && c.targetFilePath?.includes('user.js'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('does NOT resolve svc.getUser().save() to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'processUser' &&
-      c.targetFilePath?.includes('repo.js'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUser' && c.targetFilePath?.includes('repo.js'),
     );
     expect(repoSave).toBeUndefined();
   });
@@ -243,10 +251,7 @@ describe('Field type resolution (JavaScript)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'js-field-types'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'js-field-types'), () => {});
   }, 60000);
 
   it('detects classes: Address, Config, User', () => {
@@ -272,13 +277,13 @@ describe('Field type resolution (JavaScript)', () => {
   it('populates field metadata (visibility, isStatic, isReadonly) on Property nodes', () => {
     const properties = getNodesByLabelFull(result, 'Property');
 
-    const city = properties.find(p => p.name === 'city');
+    const city = properties.find((p) => p.name === 'city');
     expect(city).toBeDefined();
     expect(city!.properties.visibility).toBe('public');
     expect(city!.properties.isStatic).toBe(false);
     expect(city!.properties.isReadonly).toBe(false);
 
-    const addr = properties.find(p => p.name === 'address');
+    const addr = properties.find((p) => p.name === 'address');
     expect(addr).toBeDefined();
     expect(addr!.properties.visibility).toBe('public');
     expect(addr!.properties.isStatic).toBe(false);
@@ -287,7 +292,7 @@ describe('Field type resolution (JavaScript)', () => {
 
   it('marks Config.DEFAULT as static', () => {
     const properties = getNodesByLabelFull(result, 'Property');
-    const def = properties.find(p => p.name === 'DEFAULT');
+    const def = properties.find((p) => p.name === 'DEFAULT');
     expect(def).toBeDefined();
     expect(def!.properties.isStatic).toBe(true);
     expect(def!.properties.visibility).toBe('public');
@@ -301,26 +306,23 @@ describe('Write access tracking (JavaScript)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'js-write-access'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'js-write-access'), () => {});
   }, 60000);
 
   it('emits ACCESSES write edges for field assignments', () => {
     const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter(e => e.rel.reason === 'write');
+    const writes = accesses.filter((e) => e.rel.reason === 'write');
     expect(writes.length).toBe(2);
-    const fieldNames = writes.map(e => e.target);
+    const fieldNames = writes.map((e) => e.target);
     expect(fieldNames).toContain('name');
     expect(fieldNames).toContain('address');
-    const sources = writes.map(e => e.source);
+    const sources = writes.map((e) => e.source);
     expect(sources).toContain('updateUser');
   });
 
   it('write ACCESSES edges have confidence 1.0', () => {
     const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter(e => e.rel.reason === 'write');
+    const writes = accesses.filter((e) => e.rel.reason === 'write');
     for (const edge of writes) {
       expect(edge.rel.confidence).toBe(1.0);
     }
@@ -335,10 +337,7 @@ describe('JavaScript object destructuring resolution (Phase A)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'js-object-destructuring'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'js-object-destructuring'), () => {});
   }, 60000);
 
   it('detects User, Address classes', () => {
@@ -349,9 +348,7 @@ describe('JavaScript object destructuring resolution (Phase A)', () => {
 
   it('resolves address.save() to Address#save via object destructuring', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.targetFilePath.includes('models'),
-    );
+    const saveCall = calls.find((c) => c.target === 'save' && c.targetFilePath.includes('models'));
     expect(saveCall).toBeDefined();
   });
 });
@@ -364,16 +361,13 @@ describe('JavaScript post-fixpoint for-loop replay (Phase A ex-9B)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'js-fixpoint-for-loop'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'js-fixpoint-for-loop'), () => {});
   }, 60000);
 
   it('resolves u.save() to User#save via post-fixpoint for-loop replay', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('models'),
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('models'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -390,10 +384,7 @@ describe('JavaScript cross-file binding propagation', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(CROSS_FILE_FIXTURES, 'js-cross-file'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(CROSS_FILE_FIXTURES, 'js-cross-file'), () => {});
   }, 60000);
 
   it('detects User class with save and getName methods', () => {
@@ -409,36 +400,32 @@ describe('JavaScript cross-file binding propagation', () => {
 
   it('emits IMPORTS edge from app.js to models.js', () => {
     const imports = getRelationships(result, 'IMPORTS');
-    const edge = imports.find(e =>
-      e.sourceFilePath.includes('app') && e.targetFilePath.includes('models'),
+    const edge = imports.find(
+      (e) => e.sourceFilePath.includes('app') && e.targetFilePath.includes('models'),
     );
     expect(edge).toBeDefined();
   });
 
   it('resolves u.save() in run() to User#save via cross-file return type propagation', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'run' &&
-      c.targetFilePath.includes('models'),
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'run' && c.targetFilePath.includes('models'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves u.getName() in run() to User#getName via cross-file return type propagation', () => {
     const calls = getRelationships(result, 'CALLS');
-    const getNameCall = calls.find(c =>
-      c.target === 'getName' &&
-      c.source === 'run' &&
-      c.targetFilePath.includes('models'),
+    const getNameCall = calls.find(
+      (c) => c.target === 'getName' && c.source === 'run' && c.targetFilePath.includes('models'),
     );
     expect(getNameCall).toBeDefined();
   });
 
   it('emits HAS_METHOD edges linking save and getName to User', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const saveEdge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
-    const getNameEdge = hasMethod.find(e => e.source === 'User' && e.target === 'getName');
+    const saveEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'save');
+    const getNameEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'getName');
     expect(saveEdge).toBeDefined();
     expect(getNameEdge).toBeDefined();
   });

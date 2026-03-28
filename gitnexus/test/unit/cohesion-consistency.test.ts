@@ -32,11 +32,7 @@ function makeNode(
 }
 
 /** Create a CALLS relationship between two nodes */
-function makeRel(
-  id: string,
-  sourceId: string,
-  targetId: string,
-): GraphRelationship {
+function makeRel(id: string, sourceId: string, targetId: string): GraphRelationship {
   return { id, sourceId, targetId, type: 'CALLS', confidence: 1.0, reason: '' };
 }
 
@@ -117,7 +113,7 @@ describe('calculateCohesion — internal edge ratio', () => {
     }
 
     // Find the community node
-    const cliqueCommunity = result.communities.find(c => c.id === cliqueCommunityId);
+    const cliqueCommunity = result.communities.find((c) => c.id === cliqueCommunityId);
     expect(cliqueCommunity).toBeDefined();
 
     // Key assertion: cohesion should be < 1.0 (edge ratio with boundary edges)
@@ -143,7 +139,7 @@ describe('calculateCohesion — internal edge ratio', () => {
     expect(result.communities.length).toBeGreaterThanOrEqual(1);
 
     // The community containing our clique should have cohesion 1.0
-    const community = result.communities.find(c => c.symbolCount >= 4);
+    const community = result.communities.find((c) => c.symbolCount >= 4);
     // If Leiden puts them all in one community (expected for a fully connected graph)
     if (community) {
       expect(community.cohesion).toBe(1.0);
@@ -166,8 +162,8 @@ describe('calculateCohesion — internal edge ratio', () => {
     graphA.addRelationship(makeRel('rel:bndA0', cliqueA[0], 'fn:extA0'));
 
     const resultA = await processCommunities(graphA);
-    const commIdA = resultA.memberships.find(m => m.nodeId === cliqueA[0])?.communityId;
-    const communityA = resultA.communities.find(c => c.id === commIdA);
+    const commIdA = resultA.memberships.find((m) => m.nodeId === cliqueA[0])?.communityId;
+    const communityA = resultA.communities.find((c) => c.id === commIdA);
 
     // --- Variant B: clique with 4 external edges ---
     const graphB = createKnowledgeGraph();
@@ -184,8 +180,8 @@ describe('calculateCohesion — internal edge ratio', () => {
     }
 
     const resultB = await processCommunities(graphB);
-    const commIdB = resultB.memberships.find(m => m.nodeId === cliqueB[0])?.communityId;
-    const communityB = resultB.communities.find(c => c.id === commIdB);
+    const commIdB = resultB.memberships.find((m) => m.nodeId === cliqueB[0])?.communityId;
+    const communityB = resultB.communities.find((c) => c.id === commIdB);
 
     expect(communityA).toBeDefined();
     expect(communityB).toBeDefined();
@@ -276,10 +272,10 @@ describe('calculateCohesion — internal edge ratio', () => {
     const result = await processCommunities(graph);
 
     // Find triangle community
-    const triCommId = result.memberships.find(m => m.nodeId === 'fn:t0')?.communityId;
+    const triCommId = result.memberships.find((m) => m.nodeId === 'fn:t0')?.communityId;
     expect(triCommId).toBeDefined();
 
-    const triComm = result.communities.find(c => c.id === triCommId);
+    const triComm = result.communities.find((c) => c.id === triCommId);
     expect(triComm).toBeDefined();
 
     // Hand-calculated edge ratio: 6 internal traversals / 7 total = 0.8571...

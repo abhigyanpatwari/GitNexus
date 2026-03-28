@@ -1,8 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import {
-  probeBackend,
-  setBackendUrl as setServiceUrl,
-} from '../services/backend-client';
+import { probeBackend, setBackendUrl as setServiceUrl } from '../services/backend-client';
 import { DEFAULT_BACKEND_URL } from '../config/ui-constants';
 
 // ── localStorage keys ────────────────────────────────────────────────────────
@@ -117,7 +114,7 @@ export function useBackend(): UseBackendResult {
           pollingTimerRef.current = null;
         }
         // Probe immediately, then restart the polling chain if still disconnected
-        void probeRef.current().then(ok => {
+        void probeRef.current().then((ok) => {
           if (!ok && isPolling) {
             // Restart the setTimeout chain — schedule is captured in startPolling's closure,
             // so we re-call startPolling which clears+restarts cleanly.

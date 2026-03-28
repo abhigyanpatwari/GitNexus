@@ -30,7 +30,7 @@ const MAX_FILE_SIZE = 512 * 1024;
  */
 export const walkRepositoryPaths = async (
   repoPath: string,
-  onProgress?: (current: number, total: number, filePath: string) => void
+  onProgress?: (current: number, total: number, filePath: string) => void,
 ): Promise<ScannedFile[]> => {
   const ignoreFilter = await createIgnoreFilter(repoPath);
 
@@ -47,7 +47,7 @@ export const walkRepositoryPaths = async (
   for (let start = 0; start < filtered.length; start += READ_CONCURRENCY) {
     const batch = filtered.slice(start, start + READ_CONCURRENCY);
     const results = await Promise.allSettled(
-      batch.map(async relativePath => {
+      batch.map(async (relativePath) => {
         const fullPath = path.join(repoPath, relativePath);
         const stat = await fs.stat(fullPath);
         if (stat.size > MAX_FILE_SIZE) {
@@ -55,7 +55,7 @@ export const walkRepositoryPaths = async (
           return null;
         }
         return { path: relativePath.replace(/\\/g, '/'), size: stat.size };
-      })
+      }),
     );
 
     for (const result of results) {
@@ -70,7 +70,9 @@ export const walkRepositoryPaths = async (
   }
 
   if (skippedLarge > 0) {
-    console.warn(`  Skipped ${skippedLarge} large files (>${MAX_FILE_SIZE / 1024}KB, likely generated/vendored)`);
+    console.warn(
+      `  Skipped ${skippedLarge} large files (>${MAX_FILE_SIZE / 1024}KB, likely generated/vendored)`,
+    );
   }
 
   return entries;
@@ -89,11 +91,11 @@ export const readFileContents = async (
   for (let start = 0; start < relativePaths.length; start += READ_CONCURRENCY) {
     const batch = relativePaths.slice(start, start + READ_CONCURRENCY);
     const results = await Promise.allSettled(
-      batch.map(async relativePath => {
+      batch.map(async (relativePath) => {
         const fullPath = path.join(repoPath, relativePath);
         const content = await fs.readFile(fullPath, 'utf-8');
         return { path: relativePath, content };
-      })
+      }),
     );
 
     for (const result of results) {
@@ -112,11 +114,14 @@ export const readFileContents = async (
  */
 export const walkRepository = async (
   repoPath: string,
-  onProgress?: (current: number, total: number, filePath: string) => void
+  onProgress?: (current: number, total: number, filePath: string) => void,
 ): Promise<FileEntry[]> => {
   const scanned = await walkRepositoryPaths(repoPath, onProgress);
-  const contents = await readFileContents(repoPath, scanned.map(f => f.path));
+  const contents = await readFileContents(
+    repoPath,
+    scanned.map((f) => f.path),
+  );
   return scanned
-    .filter(f => contents.has(f.path))
-    .map(f => ({ path: f.path, content: contents.get(f.path)! }));
+    .filter((f) => contents.has(f.path))
+    .map((f) => ({ path: f.path, content: contents.get(f.path)! }));
 };

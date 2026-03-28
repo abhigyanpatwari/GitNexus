@@ -12,7 +12,13 @@
 import { SupportedLanguages } from './languages.js';
 
 /** Ruby extensionless filenames recognised as Ruby source */
-const RUBY_EXTENSIONLESS_FILES = new Set(['Rakefile', 'Gemfile', 'Guardfile', 'Vagrantfile', 'Brewfile']);
+const RUBY_EXTENSIONLESS_FILES = new Set([
+  'Rakefile',
+  'Gemfile',
+  'Guardfile',
+  'Vagrantfile',
+  'Brewfile',
+]);
 
 /**
  * Exhaustive map: every SupportedLanguages member → its file extensions.
@@ -21,26 +27,29 @@ const RUBY_EXTENSIONLESS_FILES = new Set(['Rakefile', 'Gemfile', 'Guardfile', 'V
  * TypeScript emits a compile error: "Property 'NewLang' is missing in type..."
  */
 const EXTENSION_MAP: Record<SupportedLanguages, readonly string[]> = {
-  [SupportedLanguages.JavaScript]:  ['.js', '.jsx', '.mjs', '.cjs'],
-  [SupportedLanguages.TypeScript]:  ['.ts', '.tsx', '.mts', '.cts'],
-  [SupportedLanguages.Python]:      ['.py'],
-  [SupportedLanguages.Java]:        ['.java'],
-  [SupportedLanguages.C]:           ['.c'],
-  [SupportedLanguages.CPlusPlus]:   ['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh'],
-  [SupportedLanguages.CSharp]:      ['.cs'],
-  [SupportedLanguages.Go]:          ['.go'],
-  [SupportedLanguages.Ruby]:        ['.rb', '.rake', '.gemspec'],
-  [SupportedLanguages.Rust]:        ['.rs'],
-  [SupportedLanguages.PHP]:         ['.php', '.phtml', '.php3', '.php4', '.php5', '.php8'],
-  [SupportedLanguages.Kotlin]:      ['.kt', '.kts'],
-  [SupportedLanguages.Swift]:       ['.swift'],
-  [SupportedLanguages.Dart]:        ['.dart'],
-  [SupportedLanguages.Cobol]:       ['.cbl', '.cob', '.cpy', '.cobol'],
+  [SupportedLanguages.JavaScript]: ['.js', '.jsx', '.mjs', '.cjs'],
+  [SupportedLanguages.TypeScript]: ['.ts', '.tsx', '.mts', '.cts'],
+  [SupportedLanguages.Python]: ['.py'],
+  [SupportedLanguages.Java]: ['.java'],
+  [SupportedLanguages.C]: ['.c'],
+  [SupportedLanguages.CPlusPlus]: ['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh'],
+  [SupportedLanguages.CSharp]: ['.cs'],
+  [SupportedLanguages.Go]: ['.go'],
+  [SupportedLanguages.Ruby]: ['.rb', '.rake', '.gemspec'],
+  [SupportedLanguages.Rust]: ['.rs'],
+  [SupportedLanguages.PHP]: ['.php', '.phtml', '.php3', '.php4', '.php5', '.php8'],
+  [SupportedLanguages.Kotlin]: ['.kt', '.kts'],
+  [SupportedLanguages.Swift]: ['.swift'],
+  [SupportedLanguages.Dart]: ['.dart'],
+  [SupportedLanguages.Cobol]: ['.cbl', '.cob', '.cpy', '.cobol'],
 } satisfies Record<SupportedLanguages, readonly string[]>; // Ensure exhaustiveness
 
 /** Pre-built reverse lookup: extension → language (built once at module load). */
 const extToLang = new Map<string, SupportedLanguages>();
-for (const [lang, exts] of Object.entries(EXTENSION_MAP) as [SupportedLanguages, readonly string[]][]) {
+for (const [lang, exts] of Object.entries(EXTENSION_MAP) as [
+  SupportedLanguages,
+  readonly string[],
+][]) {
   for (const ext of exts) {
     extToLang.set(ext, lang);
   }
@@ -75,37 +84,50 @@ export const getLanguageFromFilename = (filename: string): SupportedLanguages | 
  * TypeScript emits a compile error.
  */
 const SYNTAX_MAP: Record<SupportedLanguages, string> = {
-  [SupportedLanguages.JavaScript]:  'javascript',
-  [SupportedLanguages.TypeScript]:  'typescript',
-  [SupportedLanguages.Python]:      'python',
-  [SupportedLanguages.Java]:        'java',
-  [SupportedLanguages.C]:           'c',
-  [SupportedLanguages.CPlusPlus]:   'cpp',
-  [SupportedLanguages.CSharp]:      'csharp',
-  [SupportedLanguages.Go]:          'go',
-  [SupportedLanguages.Ruby]:        'ruby',
-  [SupportedLanguages.Rust]:        'rust',
-  [SupportedLanguages.PHP]:         'php',
-  [SupportedLanguages.Kotlin]:      'kotlin',
-  [SupportedLanguages.Swift]:       'swift',
-  [SupportedLanguages.Dart]:        'dart',
-  [SupportedLanguages.Cobol]:       'cobol',
+  [SupportedLanguages.JavaScript]: 'javascript',
+  [SupportedLanguages.TypeScript]: 'typescript',
+  [SupportedLanguages.Python]: 'python',
+  [SupportedLanguages.Java]: 'java',
+  [SupportedLanguages.C]: 'c',
+  [SupportedLanguages.CPlusPlus]: 'cpp',
+  [SupportedLanguages.CSharp]: 'csharp',
+  [SupportedLanguages.Go]: 'go',
+  [SupportedLanguages.Ruby]: 'ruby',
+  [SupportedLanguages.Rust]: 'rust',
+  [SupportedLanguages.PHP]: 'php',
+  [SupportedLanguages.Kotlin]: 'kotlin',
+  [SupportedLanguages.Swift]: 'swift',
+  [SupportedLanguages.Dart]: 'dart',
+  [SupportedLanguages.Cobol]: 'cobol',
 } satisfies Record<SupportedLanguages, string>; // Ensure exhaustiveness
 
 /** Non-code file extensions → Prism-compatible syntax identifiers */
 const AUXILIARY_SYNTAX_MAP: Record<string, string> = {
-  json: 'json', yaml: 'yaml', yml: 'yaml',
-  md: 'markdown', mdx: 'markdown',
-  html: 'markup', htm: 'markup', erb: 'markup', xml: 'markup',
-  css: 'css', scss: 'css', sass: 'css',
-  sh: 'bash', bash: 'bash', zsh: 'bash',
-  sql: 'sql', toml: 'toml', ini: 'ini',
+  json: 'json',
+  yaml: 'yaml',
+  yml: 'yaml',
+  md: 'markdown',
+  mdx: 'markdown',
+  html: 'markup',
+  htm: 'markup',
+  erb: 'markup',
+  xml: 'markup',
+  css: 'css',
+  scss: 'css',
+  sass: 'css',
+  sh: 'bash',
+  bash: 'bash',
+  zsh: 'bash',
+  sql: 'sql',
+  toml: 'toml',
+  ini: 'ini',
   dockerfile: 'docker',
 };
 
 /** Extensionless filenames → Prism-compatible syntax identifiers */
 const AUXILIARY_BASENAME_MAP: Record<string, string> = {
-  Makefile: 'makefile', Dockerfile: 'docker',
+  Makefile: 'makefile',
+  Dockerfile: 'docker',
 };
 
 /**

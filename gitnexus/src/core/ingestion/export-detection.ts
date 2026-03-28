@@ -21,9 +21,11 @@ export const tsExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
   while (current) {
     const type = current.type;
-    if (type === 'export_statement' ||
-        type === 'export_specifier' ||
-        (type === 'lexical_declaration' && current.parent?.type === 'export_statement')) {
+    if (
+      type === 'export_statement' ||
+      type === 'export_specifier' ||
+      (type === 'lexical_declaration' && current.parent?.type === 'export_statement')
+    ) {
       return true;
     }
     // Fallback: check if node text starts with 'export ' for edge cases
@@ -63,12 +65,22 @@ export const javaExportChecker: ExportChecker = (node, _name) => {
 
 /** C# declaration node types for sibling modifier scanning. */
 const CSHARP_DECL_TYPES = new Set([
-  'method_declaration', 'local_function_statement', 'constructor_declaration',
-  'class_declaration', 'interface_declaration', 'struct_declaration',
-  'enum_declaration', 'record_declaration', 'record_struct_declaration',
-  'record_class_declaration', 'delegate_declaration',
-  'property_declaration', 'field_declaration', 'event_declaration',
-  'namespace_declaration', 'file_scoped_namespace_declaration',
+  'method_declaration',
+  'local_function_statement',
+  'constructor_declaration',
+  'class_declaration',
+  'interface_declaration',
+  'struct_declaration',
+  'enum_declaration',
+  'record_declaration',
+  'record_struct_declaration',
+  'record_class_declaration',
+  'delegate_declaration',
+  'property_declaration',
+  'field_declaration',
+  'event_declaration',
+  'namespace_declaration',
+  'file_scoped_namespace_declaration',
 ]);
 
 /**
@@ -99,9 +111,19 @@ export const goExportChecker: ExportChecker = (_node, name) => {
 
 /** Rust declaration node types for sibling visibility_modifier scanning. */
 const RUST_DECL_TYPES = new Set([
-  'function_item', 'struct_item', 'enum_item', 'trait_item', 'impl_item',
-  'union_item', 'type_item', 'const_item', 'static_item', 'mod_item',
-  'use_declaration', 'associated_type', 'function_signature_item',
+  'function_item',
+  'struct_item',
+  'enum_item',
+  'trait_item',
+  'impl_item',
+  'union_item',
+  'type_item',
+  'const_item',
+  'static_item',
+  'mod_item',
+  'use_declaration',
+  'associated_type',
+  'function_signature_item',
 ]);
 
 /**
@@ -176,10 +198,12 @@ export const cCppExportChecker: ExportChecker = (node, _name) => {
 export const phpExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
   while (current) {
-    if (current.type === 'class_declaration' ||
-        current.type === 'interface_declaration' ||
-        current.type === 'trait_declaration' ||
-        current.type === 'enum_declaration') {
+    if (
+      current.type === 'class_declaration' ||
+      current.type === 'interface_declaration' ||
+      current.type === 'trait_declaration' ||
+      current.type === 'enum_declaration'
+    ) {
       return true;
     }
     if (current.type === 'visibility_modifier') {
@@ -219,4 +243,3 @@ export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 
 /** Dart: public if no leading underscore (convention, same as Python). */
 export const dartExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
-

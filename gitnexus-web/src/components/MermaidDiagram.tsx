@@ -71,11 +71,14 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
 
         // Render the diagram
         const { svg: renderedSvg } = await mermaid.render(id, code.trim());
-        const sanitizedSvg = DOMPurify.sanitize(renderedSvg, { USE_PROFILES: { svg: true, svgFilters: true }, ADD_TAGS: ['foreignObject'] });
+        const sanitizedSvg = DOMPurify.sanitize(renderedSvg, {
+          USE_PROFILES: { svg: true, svgFilters: true },
+          ADD_TAGS: ['foreignObject'],
+        });
         setSvg(sanitizedSvg);
         setError(null);
       } catch (err) {
-        // Silent catch for streaming: 
+        // Silent catch for streaming:
         // If render fails (common during partial streaming), we:
         // 1. Log to console for debugging
         // 2. Do NOT set error state (avoids flashing red box)
@@ -93,29 +96,31 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
   }, [code]);
 
   // Create a pseudo ProcessData for the modal (with custom rawMermaid property)
-  const processData: any = showModal ? {
-    id: 'ai-generated',
-    label: 'AI Generated Diagram',
-    processType: 'intra_community',
-    steps: [], // Empty - we'll render raw mermaid
-    edges: [],
-    clusters: [],
-    rawMermaid: code, // Pass raw mermaid code
-  } : null;
+  const processData: any = showModal
+    ? {
+        id: 'ai-generated',
+        label: 'AI Generated Diagram',
+        processType: 'intra_community',
+        steps: [], // Empty - we'll render raw mermaid
+        edges: [],
+        clusters: [],
+        rawMermaid: code, // Pass raw mermaid code
+      }
+    : null;
 
   if (error) {
     return (
-      <div className="my-3 p-4 bg-rose-500/10 border border-rose-500/30 rounded-lg">
-        <div className="flex items-center gap-2 text-rose-300 text-sm mb-2">
-          <AlertTriangle className="w-4 h-4" />
+      <div className="my-3 rounded-lg border border-rose-500/30 bg-rose-500/10 p-4">
+        <div className="mb-2 flex items-center gap-2 text-sm text-rose-300">
+          <AlertTriangle className="h-4 w-4" />
           <span className="font-medium">Diagram Error</span>
         </div>
-        <pre className="text-xs text-rose-200/70 font-mono whitespace-pre-wrap">{error}</pre>
+        <pre className="font-mono text-xs whitespace-pre-wrap text-rose-200/70">{error}</pre>
         <details className="mt-2">
-          <summary className="text-xs text-text-muted cursor-pointer hover:text-text-secondary">
+          <summary className="cursor-pointer text-xs text-text-muted hover:text-text-secondary">
             Show source
           </summary>
-          <pre className="mt-2 p-2 bg-surface rounded text-xs text-text-muted overflow-x-auto">
+          <pre className="mt-2 overflow-x-auto rounded bg-surface p-2 text-xs text-text-muted">
             {code}
           </pre>
         </details>
@@ -125,42 +130,40 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
 
   return (
     <>
-      <div className="my-3 relative group">
-        <div className="relative bg-gradient-to-b from-surface to-elevated border border-border-subtle rounded-xl overflow-hidden">
+      <div className="group relative my-3">
+        <div className="relative overflow-hidden rounded-xl border border-border-subtle bg-gradient-to-b from-surface to-elevated">
           {/* Header */}
-          <div className="flex items-center justify-between px-3 py-2 bg-surface/60 border-b border-border-subtle">
-            <span className="text-[10px] text-text-muted uppercase tracking-wider font-medium">
+          <div className="flex items-center justify-between border-b border-border-subtle bg-surface/60 px-3 py-2">
+            <span className="text-[10px] font-medium tracking-wider text-text-muted uppercase">
               Diagram
             </span>
             <button
               onClick={() => setShowModal(true)}
-              className="p-1 text-text-muted hover:text-text-primary hover:bg-hover rounded transition-colors"
+              className="rounded p-1 text-text-muted transition-colors hover:bg-hover hover:text-text-primary"
               title="Expand"
             >
-              <Maximize2 className="w-3.5 h-3.5" />
+              <Maximize2 className="h-3.5 w-3.5" />
             </button>
           </div>
 
           {/* Diagram container */}
           <div
             ref={containerRef}
-            className="flex items-center justify-center p-4 overflow-auto max-h-[400px]"
-            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true }, ADD_TAGS: ['foreignObject'] }) }}
+            className="flex max-h-[400px] items-center justify-center overflow-auto p-4"
+            dangerouslySetInnerHTML={{
+              __html: DOMPurify.sanitize(svg, {
+                USE_PROFILES: { svg: true, svgFilters: true },
+                ADD_TAGS: ['foreignObject'],
+              }),
+            }}
           />
         </div>
       </div>
 
       {/* Use ProcessFlowModal for expansion */}
       {showModal && processData && (
-        <Suspense
-          fallback={
-            <div className="p-4 text-sm text-text-muted">Loading diagram…</div>
-          }
-        >
-          <ProcessFlowModal
-            process={processData}
-            onClose={() => setShowModal(false)}
-          />
+        <Suspense fallback={<div className="p-4 text-sm text-text-muted">Loading diagram…</div>}>
+          <ProcessFlowModal process={processData} onClose={() => setShowModal(false)} />
         </Suspense>
       )}
     </>

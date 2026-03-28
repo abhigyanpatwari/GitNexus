@@ -1,10 +1,10 @@
 /**
  * LadybugDB Schema Definitions
- * 
+ *
  * Hybrid Schema:
  * - Separate node tables for each code element type (File, Function, Class, etc.)
  * - Single CodeRelation table with 'type' property for all relationships
- * 
+ *
  * This allows LLMs to write natural Cypher queries like:
  *   MATCH (f:Function)-[r:CodeRelation {type: 'CALLS'}]->(g:Function) RETURN f, g
  */
@@ -493,12 +493,6 @@ export const NODE_SCHEMA_QUERIES = [
   TOOL_SCHEMA,
 ];
 
-export const REL_SCHEMA_QUERIES = [
-  RELATION_SCHEMA,
-];
+export const REL_SCHEMA_QUERIES = [RELATION_SCHEMA];
 
-export const SCHEMA_QUERIES = [
-  ...NODE_SCHEMA_QUERIES,
-  ...REL_SCHEMA_QUERIES,
-  EMBEDDING_SCHEMA,
-];
+export const SCHEMA_QUERIES = [...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES, EMBEDDING_SCHEMA];

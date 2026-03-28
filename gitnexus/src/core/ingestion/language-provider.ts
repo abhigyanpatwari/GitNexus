@@ -25,7 +25,12 @@ export type CaptureMap = Record<string, SyntaxNode | undefined>;
 
 // ── Strategy tag types ─────────────────────────────────────────────────────
 /** MRO strategy for multiple inheritance resolution. */
-export type MroStrategy = 'first-wins' | 'c3' | 'leftmost-base' | 'implements-split' | 'qualified-syntax';
+export type MroStrategy =
+  | 'first-wins'
+  | 'c3'
+  | 'leftmost-base'
+  | 'implements-split'
+  | 'qualified-syntax';
 /** How a language handles imports — determines wildcard synthesis behavior. */
 export type ImportSemantics = 'named' | 'wildcard' | 'namespace';
 
@@ -94,7 +99,9 @@ interface LanguageProviderConfig {
    *  language provider inspect each ancestor and return the resolved result.
    *  Return null to continue the default walk.
    *  Default: undefined (standard parent walk only). */
-  readonly enclosingFunctionFinder?: (ancestorNode: SyntaxNode) => { funcName: string; label: NodeLabel } | null;
+  readonly enclosingFunctionFinder?: (
+    ancestorNode: SyntaxNode,
+  ) => { funcName: string; label: NodeLabel } | null;
 
   // ── Labels ────────────────────────────────────────────────────────
   /** Override the default node label for definition.function captures.
@@ -139,7 +146,8 @@ interface LanguageProviderConfig {
 }
 
 /** Runtime type — same as LanguageProviderConfig but with defaults guaranteed present. */
-export interface LanguageProvider extends Omit<LanguageProviderConfig,
+export interface LanguageProvider extends Omit<
+  LanguageProviderConfig,
   'importSemantics' | 'heritageDefaultEdge' | 'mroStrategy'
 > {
   readonly importSemantics: ImportSemantics;
@@ -149,11 +157,12 @@ export interface LanguageProvider extends Omit<LanguageProviderConfig,
   readonly isBuiltInName: (name: string) => boolean;
 }
 
-const DEFAULTS: Pick<LanguageProvider, 'importSemantics' | 'heritageDefaultEdge' | 'mroStrategy'> = {
-  importSemantics: 'named',
-  heritageDefaultEdge: 'EXTENDS',
-  mroStrategy: 'first-wins',
-};
+const DEFAULTS: Pick<LanguageProvider, 'importSemantics' | 'heritageDefaultEdge' | 'mroStrategy'> =
+  {
+    importSemantics: 'named',
+    heritageDefaultEdge: 'EXTENDS',
+    mroStrategy: 'first-wins',
+  };
 
 /** Define a language provider — required fields must be supplied, optional fields get sensible defaults. */
 export function defineLanguage(config: LanguageProviderConfig): LanguageProvider {

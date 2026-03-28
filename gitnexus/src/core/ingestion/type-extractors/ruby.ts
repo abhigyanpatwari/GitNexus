@@ -1,5 +1,21 @@
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, ReturnTypeExtractor, PendingAssignmentExtractor, ForLoopExtractor } from './types.js';
-import { extractRubyConstructorAssignment, extractSimpleTypeName, extractElementTypeFromString, extractVarName, resolveIterableElementType } from './shared.js';
+import type {
+  LanguageTypeConfig,
+  ParameterExtractor,
+  TypeBindingExtractor,
+  InitializerExtractor,
+  ClassNameLookup,
+  ConstructorBindingScanner,
+  ReturnTypeExtractor,
+  PendingAssignmentExtractor,
+  ForLoopExtractor,
+} from './types.js';
+import {
+  extractRubyConstructorAssignment,
+  extractSimpleTypeName,
+  extractElementTypeFromString,
+  extractVarName,
+  resolveIterableElementType,
+} from './shared.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 
 /**
@@ -46,7 +62,8 @@ const extractYardTypeName = (yardType: string): string | undefined => {
   // Handle nullable: "Type, nil" or "nil, Type"
   // Use bracket-balanced split to avoid breaking on commas inside generics like Hash<Symbol, User>
   const parts: string[] = [];
-  let depth = 0, start = 0;
+  let depth = 0,
+    start = 0;
   for (let i = 0; i < trimmed.length; i++) {
     if (trimmed[i] === '<') depth++;
     else if (trimmed[i] === '>') depth--;
@@ -56,7 +73,7 @@ const extractYardTypeName = (yardType: string): string | undefined => {
     }
   }
   parts.push(trimmed.slice(start).trim());
-  const filtered = parts.filter(p => p !== '' && p !== 'nil');
+  const filtered = parts.filter((p) => p !== '' && p !== 'nil');
   if (filtered.length !== 1) return undefined; // ambiguous union
 
   const typePart = filtered[0];
@@ -168,7 +185,10 @@ const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
  * Pre-populates the scope env with parameter types before the
  * standard parameter walk (which won't find types since Ruby has none).
  */
-const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+const extractDeclaration: TypeBindingExtractor = (
+  node: SyntaxNode,
+  env: Map<string, string>,
+): void => {
   if (node.type !== 'method' && node.type !== 'singleton_method') return;
 
   const yardParams = collectYardParams(node);
@@ -188,7 +208,10 @@ const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
  *
  * We still register this to maintain the LanguageTypeConfig contract.
  */
-const extractParameter: ParameterExtractor = (_node: SyntaxNode, _env: Map<string, string>): void => {
+const extractParameter: ParameterExtractor = (
+  _node: SyntaxNode,
+  _env: Map<string, string>,
+): void => {
   // Ruby parameters have no type annotations.
   // YARD types are pre-populated by extractDeclaration.
 };
@@ -314,7 +337,10 @@ const collectYardRawParams = (methodNode: SyntaxNode): Map<string, string> => {
  *
  * Example: `@param users [Array<User>]` → extracts "User" from "Array<User>".
  */
-const findRubyParamElementType = (iterableName: string, startNode: SyntaxNode): string | undefined => {
+const findRubyParamElementType = (
+  iterableName: string,
+  startNode: SyntaxNode,
+): string | undefined => {
   let current: SyntaxNode | null = startNode.parent;
   while (current) {
     if (RUBY_METHOD_NODE_TYPES.has(current.type)) {
@@ -342,7 +368,10 @@ const findRubyParamElementType = (iterableName: string, startNode: SyntaxNode): 
  * Ruby has no static types on loop variables, so this mainly works when the
  * iterable has a YARD-annotated container type (e.g., `@param users [Array<User>]`).
  */
-const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTypeNodes, scope }): void => {
+const extractForLoopBinding: ForLoopExtractor = (
+  node,
+  { scopeEnv, declarationTypeNodes, scope },
+): void => {
   if (node.type !== 'for') return;
 
   // The loop variable is the `pattern` field (identifier).
@@ -368,8 +397,13 @@ const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTy
   const noopExtractFromTypeNode = (): string | undefined => undefined;
 
   const elementType = resolveIterableElementType(
-    iterableName, node, scopeEnv, declarationTypeNodes, scope,
-    noopExtractFromTypeNode, findRubyParamElementType,
+    iterableName,
+    node,
+    scopeEnv,
+    declarationTypeNodes,
+    scope,
+    noopExtractFromTypeNode,
+    findRubyParamElementType,
     undefined,
   );
   if (!elementType) return;
@@ -401,7 +435,12 @@ const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) =>
     }
     if (receiverNode?.type === 'identifier' && methodNode?.type === 'identifier') {
       // With receiver → methodCallResult (a.method)
-      return { kind: 'methodCallResult', lhs: varName, receiver: receiverNode.text, method: methodNode.text };
+      return {
+        kind: 'methodCallResult',
+        lhs: varName,
+        receiver: receiverNode.text,
+        method: methodNode.text,
+      };
     }
   }
   return undefined;

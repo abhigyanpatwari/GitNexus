@@ -35,23 +35,31 @@ describe('preprocessImportPath', () => {
   describe('quote and bracket stripping', () => {
     it('strips double quotes from a bare module path', () => {
       const node = makeNode();
-      expect(preprocessImportPath('"foo"', node, getProvider(SupportedLanguages.TypeScript))).toBe('foo');
+      expect(preprocessImportPath('"foo"', node, getProvider(SupportedLanguages.TypeScript))).toBe(
+        'foo',
+      );
     });
 
     it('strips single quotes from a bare module path', () => {
       const node = makeNode();
-      expect(preprocessImportPath("'bar/baz'", node, getProvider(SupportedLanguages.JavaScript))).toBe('bar/baz');
+      expect(
+        preprocessImportPath("'bar/baz'", node, getProvider(SupportedLanguages.JavaScript)),
+      ).toBe('bar/baz');
     });
 
     it('strips angle brackets from a C-style include path', () => {
       const node = makeNode();
-      expect(preprocessImportPath('<stdio.h>', node, getProvider(SupportedLanguages.C))).toBe('stdio.h');
+      expect(preprocessImportPath('<stdio.h>', node, getProvider(SupportedLanguages.C))).toBe(
+        'stdio.h',
+      );
     });
 
     it('strips mixed quote and angle bracket characters', () => {
       const node = makeNode();
       // Pathological input — all stripped characters removed
-      expect(preprocessImportPath('"<hello>"', node, getProvider(SupportedLanguages.TypeScript))).toBe('hello');
+      expect(
+        preprocessImportPath('"<hello>"', node, getProvider(SupportedLanguages.TypeScript)),
+      ).toBe('hello');
     });
   });
 
@@ -59,30 +67,40 @@ describe('preprocessImportPath', () => {
     it('returns null for an empty string (after cleaning)', () => {
       const node = makeNode();
       // Only quote characters — cleaned result is empty string
-      expect(preprocessImportPath('""', node, getProvider(SupportedLanguages.TypeScript))).toBeNull();
+      expect(
+        preprocessImportPath('""', node, getProvider(SupportedLanguages.TypeScript)),
+      ).toBeNull();
     });
 
     it('returns null for a string containing control characters', () => {
       const node = makeNode();
       // \x01 is a control character that passes the length check but fails the regex guard
-      expect(preprocessImportPath('foo\x01bar', node, getProvider(SupportedLanguages.Rust))).toBeNull();
+      expect(
+        preprocessImportPath('foo\x01bar', node, getProvider(SupportedLanguages.Rust)),
+      ).toBeNull();
     });
 
     it('returns null for a string containing a null byte', () => {
       const node = makeNode();
-      expect(preprocessImportPath('foo\x00bar', node, getProvider(SupportedLanguages.Go))).toBeNull();
+      expect(
+        preprocessImportPath('foo\x00bar', node, getProvider(SupportedLanguages.Go)),
+      ).toBeNull();
     });
 
     it('returns null for a path exceeding 2048 characters', () => {
       const node = makeNode();
       const longPath = 'a'.repeat(2049);
-      expect(preprocessImportPath(longPath, node, getProvider(SupportedLanguages.Python))).toBeNull();
+      expect(
+        preprocessImportPath(longPath, node, getProvider(SupportedLanguages.Python)),
+      ).toBeNull();
     });
 
     it('accepts a path of exactly 2048 characters', () => {
       const node = makeNode();
       const maxPath = 'a'.repeat(2048);
-      expect(preprocessImportPath(maxPath, node, getProvider(SupportedLanguages.Python))).toBe(maxPath);
+      expect(preprocessImportPath(maxPath, node, getProvider(SupportedLanguages.Python))).toBe(
+        maxPath,
+      );
     });
   });
 
@@ -90,7 +108,11 @@ describe('preprocessImportPath', () => {
     it('delegates to appendKotlinWildcard when language is Kotlin — no wildcard child', () => {
       // Node with no children -> appendKotlinWildcard returns the path unchanged
       const node = makeNode({ childCount: 0 });
-      const result = preprocessImportPath('com.example.models', node, getProvider(SupportedLanguages.Kotlin));
+      const result = preprocessImportPath(
+        'com.example.models',
+        node,
+        getProvider(SupportedLanguages.Kotlin),
+      );
       // Without a wildcard_import child the path is returned as-is
       expect(result).toBe('com.example.models');
     });
@@ -102,7 +124,11 @@ describe('preprocessImportPath', () => {
         childCount: 1,
         child: (i: number) => (i === 0 ? wildcardChild : null),
       });
-      const result = preprocessImportPath('com.example.models', node, getProvider(SupportedLanguages.Kotlin));
+      const result = preprocessImportPath(
+        'com.example.models',
+        node,
+        getProvider(SupportedLanguages.Kotlin),
+      );
       // appendKotlinWildcard appends .* when the wildcard_import child is found
       expect(result).toBe('com.example.models.*');
     });
@@ -111,12 +137,16 @@ describe('preprocessImportPath', () => {
   describe('non-Kotlin languages are returned unchanged (after cleaning)', () => {
     it('returns the cleaned path for Rust without modification', () => {
       const node = makeNode();
-      expect(preprocessImportPath('"crate::models"', node, getProvider(SupportedLanguages.Rust))).toBe('crate::models');
+      expect(
+        preprocessImportPath('"crate::models"', node, getProvider(SupportedLanguages.Rust)),
+      ).toBe('crate::models');
     });
 
     it('returns the cleaned path for PHP without modification', () => {
       const node = makeNode();
-      expect(preprocessImportPath('"App\\\\Models\\\\User"', node, getProvider(SupportedLanguages.PHP))).toBe('App\\\\Models\\\\User');
+      expect(
+        preprocessImportPath('"App\\\\Models\\\\User"', node, getProvider(SupportedLanguages.PHP)),
+      ).toBe('App\\\\Models\\\\User');
     });
   });
 });

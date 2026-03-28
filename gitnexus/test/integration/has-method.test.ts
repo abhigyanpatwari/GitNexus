@@ -51,7 +51,7 @@ function parseAndExtractMethods(
     const defNode = getDefinitionNodeFromCaptures(captureMap);
     if (!defNode || !nameNode) continue;
 
-    const defType = Object.keys(captureMap).find(k => k.startsWith('definition.')) || 'unknown';
+    const defType = Object.keys(captureMap).find((k) => k.startsWith('definition.')) || 'unknown';
     const enclosingClassId = findEnclosingClassId(nameNode, filePath);
 
     results.push({
@@ -85,20 +85,26 @@ class SqlRepository {
     const results = parseAndExtractMethods(code, SupportedLanguages.CSharp, 'src/Repo.cs');
 
     // Interface methods should be enclosed by the interface
-    const ifaceFindById = results.find(r => r.name === 'FindById' && r.enclosingClassId?.startsWith('Interface:'));
+    const ifaceFindById = results.find(
+      (r) => r.name === 'FindById' && r.enclosingClassId?.startsWith('Interface:'),
+    );
     expect(ifaceFindById).toBeDefined();
     expect(ifaceFindById!.enclosingClassId).toBe('Interface:src/Repo.cs:IRepository');
 
-    const ifaceSave = results.find(r => r.name === 'Save' && r.enclosingClassId?.startsWith('Interface:'));
+    const ifaceSave = results.find(
+      (r) => r.name === 'Save' && r.enclosingClassId?.startsWith('Interface:'),
+    );
     expect(ifaceSave).toBeDefined();
     expect(ifaceSave!.enclosingClassId).toBe('Interface:src/Repo.cs:IRepository');
 
     // Class methods should be enclosed by the class
-    const classFindById = results.find(r => r.name === 'FindById' && r.enclosingClassId?.startsWith('Class:'));
+    const classFindById = results.find(
+      (r) => r.name === 'FindById' && r.enclosingClassId?.startsWith('Class:'),
+    );
     expect(classFindById).toBeDefined();
     expect(classFindById!.enclosingClassId).toBe('Class:src/Repo.cs:SqlRepository');
 
-    const classConnect = results.find(r => r.name === 'Connect');
+    const classConnect = results.find((r) => r.name === 'Connect');
     expect(classConnect).toBeDefined();
     expect(classConnect!.enclosingClassId).toBe('Class:src/Repo.cs:SqlRepository');
   });
@@ -119,19 +125,23 @@ class ServiceImpl {
     // findEnclosingClassId returns the interface itself. This is expected —
     // the pipeline uses defType (definition.interface vs definition.method) to
     // distinguish container declarations from methods, not enclosingClassId.
-    const ifaceDecl = results.find(r => r.name === 'IService');
+    const ifaceDecl = results.find((r) => r.name === 'IService');
     expect(ifaceDecl).toBeDefined();
     expect(ifaceDecl!.defType).toBe('definition.interface');
 
-    const classDecl = results.find(r => r.name === 'ServiceImpl');
+    const classDecl = results.find((r) => r.name === 'ServiceImpl');
     expect(classDecl).toBeDefined();
     expect(classDecl!.defType).toBe('definition.class');
 
     // Methods should still correctly reference their container
-    const execMethods = results.filter(r => r.name === 'Execute');
+    const execMethods = results.filter((r) => r.name === 'Execute');
     expect(execMethods.length).toBe(2);
-    expect(execMethods.some(r => r.enclosingClassId === 'Interface:src/Service.cs:IService')).toBe(true);
-    expect(execMethods.some(r => r.enclosingClassId === 'Class:src/Service.cs:ServiceImpl')).toBe(true);
+    expect(
+      execMethods.some((r) => r.enclosingClassId === 'Interface:src/Service.cs:IService'),
+    ).toBe(true);
+    expect(execMethods.some((r) => r.enclosingClassId === 'Class:src/Service.cs:ServiceImpl')).toBe(
+      true,
+    );
   });
 });
 
@@ -164,23 +174,23 @@ impl Circle {
     const results = parseAndExtractMethods(code, SupportedLanguages.Rust, 'src/shapes.rs');
 
     // Trait methods should be enclosed by the trait
-    const traitDraw = results.find(r => r.name === 'draw');
+    const traitDraw = results.find((r) => r.name === 'draw');
     if (traitDraw) {
       expect(traitDraw.enclosingClassId).toBe('Trait:src/shapes.rs:Drawable');
     }
 
-    const traitResize = results.find(r => r.name === 'resize');
+    const traitResize = results.find((r) => r.name === 'resize');
     if (traitResize) {
       expect(traitResize.enclosingClassId).toBe('Trait:src/shapes.rs:Drawable');
     }
 
     // Impl methods should be enclosed by the impl block
-    const implNew = results.find(r => r.name === 'new');
+    const implNew = results.find((r) => r.name === 'new');
     if (implNew) {
       expect(implNew.enclosingClassId).toBe('Impl:src/shapes.rs:Circle');
     }
 
-    const implArea = results.find(r => r.name === 'area');
+    const implArea = results.find((r) => r.name === 'area');
     if (implArea) {
       expect(implArea.enclosingClassId).toBe('Impl:src/shapes.rs:Circle');
     }
@@ -200,11 +210,11 @@ impl Foo {
 `;
     const results = parseAndExtractMethods(code, SupportedLanguages.Rust, 'src/lib.rs');
 
-    const helper = results.find(r => r.name === 'helper');
+    const helper = results.find((r) => r.name === 'helper');
     expect(helper).toBeDefined();
     expect(helper!.enclosingClassId).toBeNull();
 
-    const bar = results.find(r => r.name === 'bar');
+    const bar = results.find((r) => r.name === 'bar');
     if (bar) {
       expect(bar.enclosingClassId).toBe('Impl:src/lib.rs:Foo');
     }
@@ -238,24 +248,24 @@ def another_standalone():
     const results = parseAndExtractMethods(code, SupportedLanguages.Python, 'src/calc.py');
 
     // Standalone functions should not be enclosed
-    const standaloneHelper = results.find(r => r.name === 'standalone_helper');
+    const standaloneHelper = results.find((r) => r.name === 'standalone_helper');
     expect(standaloneHelper).toBeDefined();
     expect(standaloneHelper!.enclosingClassId).toBeNull();
 
-    const anotherStandalone = results.find(r => r.name === 'another_standalone');
+    const anotherStandalone = results.find((r) => r.name === 'another_standalone');
     expect(anotherStandalone).toBeDefined();
     expect(anotherStandalone!.enclosingClassId).toBeNull();
 
     // Class methods should be enclosed
-    const init = results.find(r => r.name === '__init__');
+    const init = results.find((r) => r.name === '__init__');
     expect(init).toBeDefined();
     expect(init!.enclosingClassId).toBe('Class:src/calc.py:Calculator');
 
-    const add = results.find(r => r.name === 'add');
+    const add = results.find((r) => r.name === 'add');
     expect(add).toBeDefined();
     expect(add!.enclosingClassId).toBe('Class:src/calc.py:Calculator');
 
-    const resultMethod = results.find(r => r.name === 'result');
+    const resultMethod = results.find((r) => r.name === 'result');
     expect(resultMethod).toBeDefined();
     expect(resultMethod!.enclosingClassId).toBe('Class:src/calc.py:Calculator');
   });
@@ -287,28 +297,32 @@ function topLevelUtil() {
   return true;
 }
 `;
-      const results = parseAndExtractMethods(code, SupportedLanguages.TypeScript, 'src/services.ts');
+      const results = parseAndExtractMethods(
+        code,
+        SupportedLanguages.TypeScript,
+        'src/services.ts',
+      );
 
       // UserService methods
-      const findUser = results.find(r => r.name === 'findUser');
+      const findUser = results.find((r) => r.name === 'findUser');
       expect(findUser).toBeDefined();
       expect(findUser!.enclosingClassId).toBe('Class:src/services.ts:UserService');
 
-      const deleteUser = results.find(r => r.name === 'deleteUser');
+      const deleteUser = results.find((r) => r.name === 'deleteUser');
       expect(deleteUser).toBeDefined();
       expect(deleteUser!.enclosingClassId).toBe('Class:src/services.ts:UserService');
 
       // OrderService methods
-      const createOrder = results.find(r => r.name === 'createOrder');
+      const createOrder = results.find((r) => r.name === 'createOrder');
       expect(createOrder).toBeDefined();
       expect(createOrder!.enclosingClassId).toBe('Class:src/services.ts:OrderService');
 
-      const cancelOrder = results.find(r => r.name === 'cancelOrder');
+      const cancelOrder = results.find((r) => r.name === 'cancelOrder');
       expect(cancelOrder).toBeDefined();
       expect(cancelOrder!.enclosingClassId).toBe('Class:src/services.ts:OrderService');
 
       // Top-level function
-      const topLevelUtil = results.find(r => r.name === 'topLevelUtil');
+      const topLevelUtil = results.find((r) => r.name === 'topLevelUtil');
       expect(topLevelUtil).toBeDefined();
       expect(topLevelUtil!.enclosingClassId).toBeNull();
     });
@@ -331,21 +345,25 @@ class Formatter {
   private String escape(String input) { return input; }
 }
 `;
-      const results = parseAndExtractMethods(code, SupportedLanguages.Java, 'src/util/Logging.java');
+      const results = parseAndExtractMethods(
+        code,
+        SupportedLanguages.Java,
+        'src/util/Logging.java',
+      );
 
-      const info = results.find(r => r.name === 'info');
+      const info = results.find((r) => r.name === 'info');
       expect(info).toBeDefined();
       expect(info!.enclosingClassId).toBe('Class:src/util/Logging.java:Logger');
 
-      const error = results.find(r => r.name === 'error');
+      const error = results.find((r) => r.name === 'error');
       expect(error).toBeDefined();
       expect(error!.enclosingClassId).toBe('Class:src/util/Logging.java:Logger');
 
-      const format = results.find(r => r.name === 'format');
+      const format = results.find((r) => r.name === 'format');
       expect(format).toBeDefined();
       expect(format!.enclosingClassId).toBe('Class:src/util/Logging.java:Formatter');
 
-      const escape = results.find(r => r.name === 'escape');
+      const escape = results.find((r) => r.name === 'escape');
       expect(escape).toBeDefined();
       expect(escape!.enclosingClassId).toBe('Class:src/util/Logging.java:Formatter');
     });
@@ -370,25 +388,43 @@ class EmailValidator {
   private boolean checkFormat(String email) { return true; }
 }
 `;
-    const results = parseAndExtractMethods(code, SupportedLanguages.Java, 'src/validation/Validator.java');
+    const results = parseAndExtractMethods(
+      code,
+      SupportedLanguages.Java,
+      'src/validation/Validator.java',
+    );
 
     // Interface methods
-    const ifaceValidate = results.find(r => r.name === 'validate' && r.enclosingClassId?.startsWith('Interface:'));
+    const ifaceValidate = results.find(
+      (r) => r.name === 'validate' && r.enclosingClassId?.startsWith('Interface:'),
+    );
     expect(ifaceValidate).toBeDefined();
-    expect(ifaceValidate!.enclosingClassId).toBe('Interface:src/validation/Validator.java:Validator');
+    expect(ifaceValidate!.enclosingClassId).toBe(
+      'Interface:src/validation/Validator.java:Validator',
+    );
 
-    const ifaceGetMessage = results.find(r => r.name === 'getMessage' && r.enclosingClassId?.startsWith('Interface:'));
+    const ifaceGetMessage = results.find(
+      (r) => r.name === 'getMessage' && r.enclosingClassId?.startsWith('Interface:'),
+    );
     expect(ifaceGetMessage).toBeDefined();
-    expect(ifaceGetMessage!.enclosingClassId).toBe('Interface:src/validation/Validator.java:Validator');
+    expect(ifaceGetMessage!.enclosingClassId).toBe(
+      'Interface:src/validation/Validator.java:Validator',
+    );
 
     // Class methods
-    const classValidate = results.find(r => r.name === 'validate' && r.enclosingClassId?.startsWith('Class:'));
+    const classValidate = results.find(
+      (r) => r.name === 'validate' && r.enclosingClassId?.startsWith('Class:'),
+    );
     expect(classValidate).toBeDefined();
-    expect(classValidate!.enclosingClassId).toBe('Class:src/validation/Validator.java:EmailValidator');
+    expect(classValidate!.enclosingClassId).toBe(
+      'Class:src/validation/Validator.java:EmailValidator',
+    );
 
-    const classCheckFormat = results.find(r => r.name === 'checkFormat');
+    const classCheckFormat = results.find((r) => r.name === 'checkFormat');
     expect(classCheckFormat).toBeDefined();
-    expect(classCheckFormat!.enclosingClassId).toBe('Class:src/validation/Validator.java:EmailValidator');
+    expect(classCheckFormat!.enclosingClassId).toBe(
+      'Class:src/validation/Validator.java:EmailValidator',
+    );
   });
 
   it('class/interface declarations are captured with correct defType', () => {
@@ -404,19 +440,23 @@ class UserRepository {
     const results = parseAndExtractMethods(code, SupportedLanguages.Java, 'src/repo/Repo.java');
 
     // The pipeline distinguishes containers from methods via defType, not enclosingClassId
-    const repoDecl = results.find(r => r.name === 'Repository');
+    const repoDecl = results.find((r) => r.name === 'Repository');
     expect(repoDecl).toBeDefined();
     expect(repoDecl!.defType).toBe('definition.interface');
 
-    const userRepoDecl = results.find(r => r.name === 'UserRepository');
+    const userRepoDecl = results.find((r) => r.name === 'UserRepository');
     expect(userRepoDecl).toBeDefined();
     expect(userRepoDecl!.defType).toBe('definition.class');
 
     // Methods associate correctly
-    const saveMethods = results.filter(r => r.name === 'save');
+    const saveMethods = results.filter((r) => r.name === 'save');
     expect(saveMethods.length).toBe(2);
-    expect(saveMethods.some(r => r.enclosingClassId === 'Interface:src/repo/Repo.java:Repository')).toBe(true);
-    expect(saveMethods.some(r => r.enclosingClassId === 'Class:src/repo/Repo.java:UserRepository')).toBe(true);
+    expect(
+      saveMethods.some((r) => r.enclosingClassId === 'Interface:src/repo/Repo.java:Repository'),
+    ).toBe(true);
+    expect(
+      saveMethods.some((r) => r.enclosingClassId === 'Class:src/repo/Repo.java:UserRepository'),
+    ).toBe(true);
   });
 });
 
@@ -446,28 +486,28 @@ public:
     const results = parseAndExtractMethods(code, SupportedLanguages.CPlusPlus, 'src/containers.h');
 
     // Stack methods
-    const push = results.find(r => r.name === 'push');
+    const push = results.find((r) => r.name === 'push');
     if (push) {
       expect(push.enclosingClassId).toBe('Class:src/containers.h:Stack');
     }
 
-    const pop = results.find(r => r.name === 'pop');
+    const pop = results.find((r) => r.name === 'pop');
     if (pop) {
       expect(pop.enclosingClassId).toBe('Class:src/containers.h:Stack');
     }
 
-    const size = results.find(r => r.name === 'size');
+    const size = results.find((r) => r.name === 'size');
     if (size) {
       expect(size.enclosingClassId).toBe('Class:src/containers.h:Stack');
     }
 
     // Queue methods
-    const enqueue = results.find(r => r.name === 'enqueue');
+    const enqueue = results.find((r) => r.name === 'enqueue');
     if (enqueue) {
       expect(enqueue.enclosingClassId).toBe('Class:src/containers.h:Queue');
     }
 
-    const dequeue = results.find(r => r.name === 'dequeue');
+    const dequeue = results.find((r) => r.name === 'dequeue');
     if (dequeue) {
       expect(dequeue.enclosingClassId).toBe('Class:src/containers.h:Queue');
     }
@@ -484,12 +524,12 @@ public:
 `;
     const results = parseAndExtractMethods(code, SupportedLanguages.CPlusPlus, 'src/mixed.cpp');
 
-    const freeFn = results.find(r => r.name === 'freeFunction');
+    const freeFn = results.find((r) => r.name === 'freeFunction');
     if (freeFn) {
       expect(freeFn.enclosingClassId).toBeNull();
     }
 
-    const method = results.find(r => r.name === 'method');
+    const method = results.find((r) => r.name === 'method');
     if (method) {
       expect(method.enclosingClassId).toBe('Class:src/mixed.cpp:Foo');
     }
@@ -514,17 +554,17 @@ record Person {
 `;
     const results = parseAndExtractMethods(code, SupportedLanguages.CSharp, 'src/Types.cs');
 
-    const length = results.find(r => r.name === 'Length');
+    const length = results.find((r) => r.name === 'Length');
     if (length) {
       expect(length.enclosingClassId).toBe('Struct:src/Types.cs:Vector2');
     }
 
-    const normalize = results.find(r => r.name === 'Normalize');
+    const normalize = results.find((r) => r.name === 'Normalize');
     if (normalize) {
       expect(normalize.enclosingClassId).toBe('Struct:src/Types.cs:Vector2');
     }
 
-    const getFullName = results.find(r => r.name === 'GetFullName');
+    const getFullName = results.find((r) => r.name === 'GetFullName');
     if (getFullName) {
       expect(getFullName.enclosingClassId).toBe('Record:src/Types.cs:Person');
     }

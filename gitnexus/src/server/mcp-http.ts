@@ -35,7 +35,9 @@ export function mountMCPEndpoints(app: Express, backend: LocalBackend): () => Pr
     const now = Date.now();
     for (const [id, session] of sessions) {
       if (now - session.lastActivity > SESSION_TTL_MS) {
-        try { session.server.close(); } catch {}
+        try {
+          session.server.close();
+        } catch {}
         sessions.delete(id);
       }
     }
@@ -97,7 +99,7 @@ export function mountMCPEndpoints(app: Express, backend: LocalBackend): () => Pr
 
   const cleanup = async () => {
     clearInterval(cleanupTimer);
-    const closers = [...sessions.values()].map(async session => {
+    const closers = [...sessions.values()].map(async (session) => {
       try {
         await Promise.resolve(session.server.close());
       } catch {}

@@ -29,7 +29,11 @@ export function createClassNode(name: string, filePath: string): GraphNode {
   };
 }
 
-export function createProcessNode(id: string, label: string, type: 'cross_community' | 'intra_community' = 'cross_community'): GraphNode {
+export function createProcessNode(
+  id: string,
+  label: string,
+  type: 'cross_community' | 'intra_community' = 'cross_community',
+): GraphNode {
   return {
     id,
     label: 'Process',

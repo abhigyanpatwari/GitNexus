@@ -49,33 +49,26 @@ export const AnalyzeProgress = ({ progress, onCancel }: AnalyzeProgressProps) =>
     <div className="space-y-4">
       {/* Phase label + elapsed */}
       <div className="flex items-center justify-between text-sm">
-        <span className="text-text-secondary font-medium">{label}</span>
-        <span className="text-text-muted font-mono text-xs">{formatElapsed(elapsed)}</span>
+        <span className="font-medium text-text-secondary">{label}</span>
+        <span className="font-mono text-xs text-text-muted">{formatElapsed(elapsed)}</span>
       </div>
 
       {/* Progress bar */}
-      <div className="h-2 bg-elevated rounded-full overflow-hidden">
+      <div className="h-2 overflow-hidden rounded-full bg-elevated">
         <div
-          className="h-full bg-accent rounded-full transition-all duration-300 ease-out"
+          className="h-full rounded-full bg-accent transition-all duration-300 ease-out"
           style={{ width: `${pct}%` }}
         />
       </div>
 
       {/* Percent + cancel */}
       <div className="flex items-center justify-between">
-        <span className="text-xs text-text-muted font-mono">{pct}%</span>
+        <span className="font-mono text-xs text-text-muted">{pct}%</span>
         <button
           onClick={onCancel}
-          className="
-            flex items-center gap-1.5
-            px-3 py-1.5
-            text-xs text-red-400
-            bg-red-500/10 hover:bg-red-500/20
-            rounded-lg
-            transition-all duration-200
-          "
+          className="flex items-center gap-1.5 rounded-lg bg-red-500/10 px-3 py-1.5 text-xs text-red-400 transition-all duration-200 hover:bg-red-500/20"
         >
-          <X className="w-3.5 h-3.5" />
+          <X className="h-3.5 w-3.5" />
           Cancel
         </button>
       </div>

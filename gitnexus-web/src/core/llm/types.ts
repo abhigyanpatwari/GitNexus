@@ -1,6 +1,6 @@
 /**
  * LLM Provider Types
- * 
+ *
  * Type definitions for multi-provider LLM support.
  * Supports OpenAI, Azure OpenAI, Gemini, Anthropic, Ollama, OpenRouter, MiniMax, and GLM5.
  */
@@ -9,7 +9,15 @@
  * Supported LLM providers
  */
 import { DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENROUTER_BASE_URL } from '../../config/ui-constants';
-export type LLMProvider = 'openai' | 'azure-openai' | 'gemini' | 'anthropic' | 'ollama' | 'openrouter' | 'minimax' | 'glm';
+export type LLMProvider =
+  | 'openai'
+  | 'azure-openai'
+  | 'gemini'
+  | 'anthropic'
+  | 'ollama'
+  | 'openrouter'
+  | 'minimax'
+  | 'glm';
 
 /**
  * Base configuration shared by all providers
@@ -27,8 +35,8 @@ export interface BaseProviderConfig {
 export interface OpenAIConfig extends BaseProviderConfig {
   provider: 'openai';
   apiKey: string;
-  model: string;  // e.g., 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'
-  baseUrl?: string;  // optional, for custom endpoints or proxies
+  model: string; // e.g., 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'
+  baseUrl?: string; // optional, for custom endpoints or proxies
 }
 
 /**
@@ -37,9 +45,9 @@ export interface OpenAIConfig extends BaseProviderConfig {
 export interface AzureOpenAIConfig extends BaseProviderConfig {
   provider: 'azure-openai';
   apiKey: string;
-  endpoint: string;  // e.g., https://your-resource.openai.azure.com
+  endpoint: string; // e.g., https://your-resource.openai.azure.com
   deploymentName: string;
-  apiVersion?: string;  // defaults to '2024-08-01-preview'
+  apiVersion?: string; // defaults to '2024-08-01-preview'
 }
 
 /**
@@ -48,7 +56,7 @@ export interface AzureOpenAIConfig extends BaseProviderConfig {
 export interface GeminiConfig extends BaseProviderConfig {
   provider: 'gemini';
   apiKey: string;
-  model: string;  // e.g., 'gemini-2.0-flash', 'gemini-1.5-pro'
+  model: string; // e.g., 'gemini-2.0-flash', 'gemini-1.5-pro'
 }
 
 /**
@@ -57,7 +65,7 @@ export interface GeminiConfig extends BaseProviderConfig {
 export interface AnthropicConfig extends BaseProviderConfig {
   provider: 'anthropic';
   apiKey: string;
-  model: string;  // e.g., 'claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022'
+  model: string; // e.g., 'claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022'
 }
 
 /**
@@ -65,7 +73,7 @@ export interface AnthropicConfig extends BaseProviderConfig {
  */
 export interface OllamaConfig extends BaseProviderConfig {
   provider: 'ollama';
-  baseUrl?: string;  // defaults to http://localhost:11434
+  baseUrl?: string; // defaults to http://localhost:11434
   model: string;
 }
 
@@ -75,8 +83,8 @@ export interface OllamaConfig extends BaseProviderConfig {
 export interface OpenRouterConfig extends BaseProviderConfig {
   provider: 'openrouter';
   apiKey: string;
-  model: string;  // e.g., 'anthropic/claude-3.5-sonnet', 'openai/gpt-4-turbo'
-  baseUrl?: string;  // defaults to https://openrouter.ai/api/v1
+  model: string; // e.g., 'anthropic/claude-3.5-sonnet', 'openai/gpt-4-turbo'
+  baseUrl?: string; // defaults to https://openrouter.ai/api/v1
 }
 
 /**
@@ -85,7 +93,7 @@ export interface OpenRouterConfig extends BaseProviderConfig {
 export interface MiniMaxConfig extends BaseProviderConfig {
   provider: 'minimax';
   apiKey: string;
-  model: string;  // e.g., 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed'
+  model: string; // e.g., 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed'
 }
 
 /**
@@ -94,14 +102,22 @@ export interface MiniMaxConfig extends BaseProviderConfig {
 export interface GLMConfig extends BaseProviderConfig {
   provider: 'glm';
   apiKey: string;
-  model: string;  // e.g., 'GLM-4.7', 'GLM-4.5', 'GLM-4.5-Air', 'GLM-5'
-  baseUrl?: string;  // defaults to https://api.z.ai/api/coding/paas/v4
+  model: string; // e.g., 'GLM-4.7', 'GLM-4.5', 'GLM-4.5-Air', 'GLM-5'
+  baseUrl?: string; // defaults to https://api.z.ai/api/coding/paas/v4
 }
 
 /**
  * Union type for all provider configurations
  */
-export type ProviderConfig = OpenAIConfig | AzureOpenAIConfig | GeminiConfig | AnthropicConfig | OllamaConfig | OpenRouterConfig | MiniMaxConfig | GLMConfig;
+export type ProviderConfig =
+  | OpenAIConfig
+  | AzureOpenAIConfig
+  | GeminiConfig
+  | AnthropicConfig
+  | OllamaConfig
+  | OpenRouterConfig
+  | MiniMaxConfig
+  | GLMConfig;
 
 /**
  * Stored settings (what goes to localStorage)
@@ -380,4 +396,3 @@ NOTES:
 - For vector search, join CodeEmbedding.nodeId to the appropriate table's id
 - Use LIMIT to avoid returning too many results
 `;
-

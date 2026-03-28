@@ -25,7 +25,9 @@ describe('generateId', () => {
   });
 
   it('handles relationship IDs', () => {
-    expect(generateId('CONTAINS', 'Folder:src->File:src/index.ts')).toBe('CONTAINS:Folder:src->File:src/index.ts');
+    expect(generateId('CONTAINS', 'Folder:src->File:src/index.ts')).toBe(
+      'CONTAINS:Folder:src->File:src/index.ts',
+    );
   });
 
   it('handles multi-language node types', () => {

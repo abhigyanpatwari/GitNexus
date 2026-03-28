@@ -8,13 +8,34 @@ import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import { yieldToEventLoop } from './utils/event-loop.js';
-import { getDefinitionNodeFromCaptures, findEnclosingClassId, extractMethodSignature, getLabelFromCaptures, CLASS_CONTAINER_TYPES, type SyntaxNode } from './utils/ast-helpers.js';
+import {
+  getDefinitionNodeFromCaptures,
+  findEnclosingClassId,
+  extractMethodSignature,
+  getLabelFromCaptures,
+  CLASS_CONTAINER_TYPES,
+  type SyntaxNode,
+} from './utils/ast-helpers.js';
 import { detectFrameworkFromAST } from './framework-detection.js';
 import { buildTypeEnv } from './type-env.js';
 import type { FieldInfo, FieldExtractorContext } from './field-types.js';
 import type { LanguageProvider } from './language-provider.js';
 import { WorkerPool } from './workers/worker-pool.js';
-import type { ParseWorkerResult, ParseWorkerInput, ExtractedImport, ExtractedCall, ExtractedAssignment, ExtractedHeritage, ExtractedRoute, ExtractedFetchCall, ExtractedDecoratorRoute, ExtractedToolDef, FileConstructorBindings, FileTypeEnvBindings, ExtractedORMQuery } from './workers/parse-worker.js';
+import type {
+  ParseWorkerResult,
+  ParseWorkerInput,
+  ExtractedImport,
+  ExtractedCall,
+  ExtractedAssignment,
+  ExtractedHeritage,
+  ExtractedRoute,
+  ExtractedFetchCall,
+  ExtractedDecoratorRoute,
+  ExtractedToolDef,
+  FileConstructorBindings,
+  FileTypeEnvBindings,
+  ExtractedORMQuery,
+} from './workers/parse-worker.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
@@ -52,7 +73,20 @@ const processParsingWithWorkers = async (
     if (lang) parseableFiles.push({ path: file.path, content: file.content });
   }
 
-  if (parseableFiles.length === 0) return { imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], decoratorRoutes: [], toolDefs: [], ormQueries: [], constructorBindings: [], typeEnvBindings: [] };
+  if (parseableFiles.length === 0)
+    return {
+      imports: [],
+      calls: [],
+      assignments: [],
+      heritage: [],
+      routes: [],
+      fetchCalls: [],
+      decoratorRoutes: [],
+      toolDefs: [],
+      ormQueries: [],
+      constructorBindings: [],
+      typeEnvBindings: [],
+    };
 
   const total = files.length;
 
@@ -129,7 +163,19 @@ const processParsingWithWorkers = async (
 
   // Final progress
   onFileProgress?.(total, total, 'done');
-  return { imports: allImports, calls: allCalls, assignments: allAssignments, heritage: allHeritage, routes: allRoutes, fetchCalls: allFetchCalls, decoratorRoutes: allDecoratorRoutes, toolDefs: allToolDefs, ormQueries: allORMQueries, constructorBindings: allConstructorBindings, typeEnvBindings: allTypeEnvBindings };
+  return {
+    imports: allImports,
+    calls: allCalls,
+    assignments: allAssignments,
+    heritage: allHeritage,
+    routes: allRoutes,
+    fetchCalls: allFetchCalls,
+    decoratorRoutes: allDecoratorRoutes,
+    toolDefs: allToolDefs,
+    ormQueries: allORMQueries,
+    constructorBindings: allConstructorBindings,
+    typeEnvBindings: allTypeEnvBindings,
+  };
 };
 
 // ============================================================================
@@ -149,7 +195,11 @@ const cachedFindEnclosingClassId = (node: any, filePath: string): string | null 
   return result;
 };
 
-const cachedExportCheck = (checker: (node: any, name: string) => boolean, node: any, name: string): boolean => {
+const cachedExportCheck = (
+  checker: (node: any, name: string) => boolean,
+  node: any,
+  name: string,
+): boolean => {
   const cached = exportCache.get(node);
   if (cached !== undefined) return cached;
   const result = checker(node, name);
@@ -199,7 +249,7 @@ const processParsingSequential = async (
   files: { path: string; content: string }[],
   symbolTable: SymbolTable,
   astCache: ASTCache,
-  onFileProgress?: FileProgressCallback
+  onFileProgress?: FileProgressCallback,
 ) => {
   const parser = await loadParser();
   const total = files.length;
@@ -233,12 +283,14 @@ const processParsingSequential = async (
     try {
       await loadLanguage(language, file.path);
     } catch {
-      continue;  // parser unavailable — safety net
+      continue; // parser unavailable — safety net
     }
 
     let tree;
     try {
-      tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
+      tree = parser.parse(file.content, undefined, {
+        bufferSize: getTreeSitterBufferSize(file.content.length),
+      });
     } catch (parseError) {
       console.warn(`Skipping unparseable file: ${file.path}`);
       continue;
@@ -264,12 +316,14 @@ const processParsingSequential = async (
     }
 
     // Build per-file type environment for FieldExtractor context (lightweight — skipped if no fieldExtractor)
-    const typeEnv = provider.fieldExtractor ? buildTypeEnv(tree, language, { enclosingFunctionFinder: provider.enclosingFunctionFinder }) : null;
+    const typeEnv = provider.fieldExtractor
+      ? buildTypeEnv(tree, language, { enclosingFunctionFinder: provider.enclosingFunctionFinder })
+      : null;
 
-    matches.forEach(match => {
+    matches.forEach((match) => {
       const captureMap: Record<string, any> = {};
 
-      match.captures.forEach(c => {
+      match.captures.forEach((c) => {
         captureMap[c.name] = c.node;
       });
 
@@ -282,7 +336,11 @@ const processParsingSequential = async (
       const nodeName = nameNode ? nameNode.text : 'init';
 
       const definitionNodeForRange = getDefinitionNodeFromCaptures(captureMap);
-      const startLine = definitionNodeForRange ? definitionNodeForRange.startPosition.row : (nameNode ? nameNode.startPosition.row : 0);
+      const startLine = definitionNodeForRange
+        ? definitionNodeForRange.startPosition.row
+        : nameNode
+          ? nameNode.startPosition.row
+          : 0;
       const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}`);
 
       const definitionNode = getDefinitionNodeFromCaptures(captureMap);
@@ -291,13 +349,20 @@ const processParsingSequential = async (
         : null;
 
       // Extract method signature for Method/Constructor nodes
-      const methodSig = (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor')
-        ? extractMethodSignature(definitionNode)
-        : undefined;
+      const methodSig =
+        nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor'
+          ? extractMethodSignature(definitionNode)
+          : undefined;
 
       // Language-specific return type fallback (e.g. Ruby YARD @return [Type])
       // Also upgrades uninformative AST types like PHP `array` with PHPDoc `@return User[]`
-      if (methodSig && (!methodSig.returnType || methodSig.returnType === 'array' || methodSig.returnType === 'iterable') && definitionNode) {
+      if (
+        methodSig &&
+        (!methodSig.returnType ||
+          methodSig.returnType === 'array' ||
+          methodSig.returnType === 'iterable') &&
+        definitionNode
+      ) {
         const tc = provider.typeConfig;
         if (tc?.extractReturnType) {
           const docReturn = tc.extractReturnType(definitionNode);
@@ -314,17 +379,27 @@ const processParsingSequential = async (
           startLine: definitionNodeForRange ? definitionNodeForRange.startPosition.row : startLine,
           endLine: definitionNodeForRange ? definitionNodeForRange.endPosition.row : startLine,
           language: language,
-          isExported: cachedExportCheck(provider.exportChecker, nameNode || definitionNodeForRange, nodeName),
-          ...(frameworkHint ? {
-            astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
-            astFrameworkReason: frameworkHint.reason,
-          } : {}),
-          ...(methodSig ? {
-            parameterCount: methodSig.parameterCount,
-            ...(methodSig.requiredParameterCount !== undefined ? { requiredParameterCount: methodSig.requiredParameterCount } : {}),
-            ...(methodSig.parameterTypes ? { parameterTypes: methodSig.parameterTypes } : {}),
-            returnType: methodSig.returnType,
-          } : {}),
+          isExported: cachedExportCheck(
+            provider.exportChecker,
+            nameNode || definitionNodeForRange,
+            nodeName,
+          ),
+          ...(frameworkHint
+            ? {
+                astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
+                astFrameworkReason: frameworkHint.reason,
+              }
+            : {}),
+          ...(methodSig
+            ? {
+                parameterCount: methodSig.parameterCount,
+                ...(methodSig.requiredParameterCount !== undefined
+                  ? { requiredParameterCount: methodSig.requiredParameterCount }
+                  : {}),
+                ...(methodSig.parameterTypes ? { parameterTypes: methodSig.parameterTypes } : {}),
+                returnType: methodSig.returnType,
+              }
+            : {}),
         },
       };
 
@@ -332,8 +407,14 @@ const processParsingSequential = async (
 
       // Compute enclosing class for Method/Constructor/Property/Function — used for both ownerId and HAS_METHOD
       // Function is included because Kotlin/Rust/Python capture class methods as Function nodes
-      const needsOwner = nodeLabel === 'Method' || nodeLabel === 'Constructor' || nodeLabel === 'Property' || nodeLabel === 'Function';
-      const enclosingClassId = needsOwner ? cachedFindEnclosingClassId(nameNode || definitionNodeForRange, file.path) : null;
+      const needsOwner =
+        nodeLabel === 'Method' ||
+        nodeLabel === 'Constructor' ||
+        nodeLabel === 'Property' ||
+        nodeLabel === 'Function';
+      const enclosingClassId = needsOwner
+        ? cachedFindEnclosingClassId(nameNode || definitionNodeForRange, file.path)
+        : null;
 
       // Extract declared type and field metadata for Property nodes
       let declaredType: string | undefined;
@@ -346,7 +427,10 @@ const processParsingSequential = async (
           const classNode = seqFindEnclosingClassNode(definitionNode);
           if (classNode) {
             const fieldMap = seqGetFieldInfo(classNode, provider, {
-              typeEnv, symbolTable: NOOP_SYMBOL_TABLE_SEQ, filePath: file.path, language,
+              typeEnv,
+              symbolTable: NOOP_SYMBOL_TABLE_SEQ,
+              filePath: file.path,
+              language,
             });
             const info = fieldMap?.get(nodeName);
             if (info) {
@@ -427,9 +511,19 @@ export const processParsing = async (
 ): Promise<WorkerExtractedData | null> => {
   if (workerPool) {
     try {
-      return await processParsingWithWorkers(graph, files, symbolTable, astCache, workerPool, onFileProgress);
+      return await processParsingWithWorkers(
+        graph,
+        files,
+        symbolTable,
+        astCache,
+        workerPool,
+        onFileProgress,
+      );
     } catch (err) {
-      console.warn('Worker pool parsing failed, falling back to sequential:', err instanceof Error ? err.message : err);
+      console.warn(
+        'Worker pool parsing failed, falling back to sequential:',
+        err instanceof Error ? err.message : err,
+      );
     }
   }
 

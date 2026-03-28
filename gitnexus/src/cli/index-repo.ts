@@ -9,40 +9,35 @@
  * shared team index).
  */
 
-import path from "path";
-import fs from "fs/promises";
+import path from 'path';
+import fs from 'fs/promises';
 import {
   getStoragePaths,
   loadMeta,
   addToGitignore,
   registerRepo,
-} from "../storage/repo-manager.js";
-import { getGitRoot, isGitRepo } from "../storage/git.js";
+} from '../storage/repo-manager.js';
+import { getGitRoot, isGitRepo } from '../storage/git.js';
 
 export interface IndexOptions {
   force?: boolean;
   allowNonGit?: boolean;
 }
 
-export const indexCommand = async (
-  inputPathParts?: string[],
-  options?: IndexOptions,
-) => {
-  console.log("\n  GitNexus Index\n");
+export const indexCommand = async (inputPathParts?: string[], options?: IndexOptions) => {
+  console.log('\n  GitNexus Index\n');
 
-  const inputPath = inputPathParts?.length
-    ? inputPathParts.join(" ")
-    : undefined;
+  const inputPath = inputPathParts?.length ? inputPathParts.join(' ') : undefined;
 
   if (inputPathParts && inputPathParts.length > 1) {
     const resolvedCombinedPath = path.resolve(inputPath);
     try {
       await fs.access(resolvedCombinedPath);
     } catch {
-      console.log("  The `index` command accepts a single path only.");
-      console.log("  If your path contains spaces, wrap it in quotes.");
-      console.log(`  Received multiple path parts: ${inputPathParts.join(", ")}`);
-      console.log("");
+      console.log('  The `index` command accepts a single path only.');
+      console.log('  If your path contains spaces, wrap it in quotes.');
+      console.log(`  Received multiple path parts: ${inputPathParts.join(', ')}`);
+      console.log('');
       process.exitCode = 1;
       return;
     }
@@ -54,7 +49,7 @@ export const indexCommand = async (
   } else {
     const gitRoot = getGitRoot(process.cwd());
     if (!gitRoot) {
-      console.log("  Not inside a git repository, try to run git init\n");
+      console.log('  Not inside a git repository, try to run git init\n');
       process.exitCode = 1;
       return;
     }
@@ -63,8 +58,8 @@ export const indexCommand = async (
 
   if (!options?.allowNonGit && !isGitRepo(repoPath)) {
     console.log(`  Not a git repository: ${repoPath}`);
-    console.log("  Initialize one with `git init` or choose a valid repo path.\n");
-    console.log("  Or use --allow-non-git to register an existing .gitnexus index anyway.\n");
+    console.log('  Initialize one with `git init` or choose a valid repo path.\n');
+    console.log('  Or use --allow-non-git to register an existing .gitnexus index anyway.\n');
     process.exitCode = 1;
     return;
   }
@@ -76,7 +71,7 @@ export const indexCommand = async (
     await fs.access(storagePath);
   } catch {
     console.log(`  No .gitnexus/ folder found at: ${storagePath}`);
-    console.log("  Run `gitnexus analyze` to build the index first.\n");
+    console.log('  Run `gitnexus analyze` to build the index first.\n');
     process.exitCode = 1;
     return;
   }
@@ -86,7 +81,7 @@ export const indexCommand = async (
     await fs.access(lbugPath);
   } catch {
     console.log(`  .gitnexus/ folder exists but contains no LadybugDB index.`);
-    console.log("  Run `gitnexus analyze` to build the index.\n");
+    console.log('  Run `gitnexus analyze` to build the index.\n');
     process.exitCode = 1;
     return;
   }
@@ -97,8 +92,8 @@ export const indexCommand = async (
   if (!meta) {
     if (!options?.force) {
       console.log(`  .gitnexus/ exists but meta.json is missing.`);
-      console.log("  Use --force to register anyway (stats will be empty),");
-      console.log("  or run `gitnexus analyze` to rebuild properly.\n");
+      console.log('  Use --force to register anyway (stats will be empty),');
+      console.log('  or run `gitnexus analyze` to rebuild properly.\n');
       process.exitCode = 1;
       return;
     }
@@ -106,7 +101,7 @@ export const indexCommand = async (
     // --force: build a minimal meta so the repo can be registered
     meta = {
       repoPath,
-      lastCommit: "",
+      lastCommit: '',
       indexedAt: new Date().toISOString(),
     };
   }
@@ -129,9 +124,9 @@ export const indexCommand = async (
     }
     if (stats.communities != null) parts.push(`${stats.communities} clusters`);
     if (stats.processes != null) parts.push(`${stats.processes} flows`);
-    if (parts.length) console.log(`  ${parts.join(" | ")}`);
+    if (parts.length) console.log(`  ${parts.join(' | ')}`);
   }
   console.log(`  ${repoPath}`);
 
-  console.log("");
+  console.log('');
 };

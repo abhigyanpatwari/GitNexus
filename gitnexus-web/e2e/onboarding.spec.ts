@@ -38,7 +38,9 @@ test.describe('Flow 1: Onboarding — no server', () => {
     // Step 2 title changes to "Waiting for server to start" once polling begins
     await expect(page.getByText('Waiting for server to start')).toBeAttached({ timeout: 10_000 });
     // Step 3 is always rendered
-    await expect(page.getByText('Auto-connects and opens the graph')).toBeAttached({ timeout: 5_000 });
+    await expect(page.getByText('Auto-connects and opens the graph')).toBeAttached({
+      timeout: 5_000,
+    });
   });
 
   test('shows terminal window with command', async ({ page }) => {
@@ -98,7 +100,9 @@ test.describe('Flow 2: Server detected — auto-connect', () => {
     });
     await page.route(`${BACKEND_URL}/api/repo`, async (route) => {
       if (blockBackend) return route.abort('connectionrefused');
-      await route.fulfill({ json: { name: 'test-repo', path: '/tmp/test', repoPath: '/tmp/test' } });
+      await route.fulfill({
+        json: { name: 'test-repo', path: '/tmp/test', repoPath: '/tmp/test' },
+      });
     });
     await page.route(`${BACKEND_URL}/api/graph**`, async (route) => {
       if (blockBackend) return route.abort('connectionrefused');
@@ -135,7 +139,11 @@ test.describe('Flow 2: Server detected — auto-connect', () => {
       route.fulfill({ json: { version: '1.0.0', launchContext: 'npx', nodeVersion: 'v22.0.0' } }),
     );
     await page.route(`${BACKEND_URL}/api/heartbeat`, (route) =>
-      route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body: ':ok\n\n' }),
+      route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+        body: ':ok\n\n',
+      }),
     );
 
     await page.goto('/');
@@ -158,7 +166,11 @@ test.describe('Flow 3: Analyze form', () => {
       route.fulfill({ json: { version: '1.0.0', launchContext: 'npx', nodeVersion: 'v22.0.0' } }),
     );
     await page.route(`${BACKEND_URL}/api/heartbeat`, (route) =>
-      route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body: ':ok\n\n' }),
+      route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+        body: ':ok\n\n',
+      }),
     );
   });
 
@@ -222,9 +234,15 @@ test.describe('Flow 4: Repo dropdown in exploring view', () => {
     if (process.env.E2E) return;
     try {
       const res = await fetch(`${BACKEND_URL}/api/repos`);
-      if (!res.ok) { test.skip(true, SKIP_MSG); return; }
+      if (!res.ok) {
+        test.skip(true, SKIP_MSG);
+        return;
+      }
       const repos = await res.json();
-      if (!repos.length) { test.skip(true, 'Server has no indexed repos'); return; }
+      if (!repos.length) {
+        test.skip(true, 'Server has no indexed repos');
+        return;
+      }
     } catch {
       test.skip(true, SKIP_MSG);
     }
@@ -238,7 +256,10 @@ test.describe('Flow 4: Repo dropdown in exploring view', () => {
     await page.screenshot({ path: testInfo.outputPath('exploring-loaded.png') });
 
     // Click the project badge (has a chevron)
-    const badge = page.locator('header button').filter({ has: page.locator('svg') }).first();
+    const badge = page
+      .locator('header button')
+      .filter({ has: page.locator('svg') })
+      .first();
     await badge.click();
 
     // Repo dropdown should be visible
@@ -252,7 +273,10 @@ test.describe('Flow 4: Repo dropdown in exploring view', () => {
     await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
 
     // Open repo dropdown
-    const badge = page.locator('header button').filter({ has: page.locator('svg') }).first();
+    const badge = page
+      .locator('header button')
+      .filter({ has: page.locator('svg') })
+      .first();
     await badge.click();
 
     // Click "Analyze a new repository..."

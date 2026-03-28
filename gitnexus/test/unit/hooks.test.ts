@@ -26,7 +26,15 @@ import { runHook, parseHookOutput } from '../utils/hook-test-helpers.js';
 // ─── Paths to both hook variants ────────────────────────────────────
 
 const CJS_HOOK = path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'gitnexus-hook.cjs');
-const PLUGIN_HOOK = path.resolve(__dirname, '..', '..', '..', 'gitnexus-claude-plugin', 'hooks', 'gitnexus-hook.js');
+const PLUGIN_HOOK = path.resolve(
+  __dirname,
+  '..',
+  '..',
+  '..',
+  'gitnexus-claude-plugin',
+  'hooks',
+  'gitnexus-hook.js',
+);
 
 // ─── Test fixtures: temporary .gitnexus directory ───────────────────
 
@@ -55,7 +63,9 @@ afterAll(() => {
 
 function getHeadCommit(): string {
   const result = spawnSync('git', ['rev-parse', 'HEAD'], {
-    cwd: tmpDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+    cwd: tmpDir,
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
   return (result.stdout || '').trim();
 }
@@ -75,7 +85,10 @@ describe('Hook files exist', () => {
 // ─── Source code regression: no shell: true ──────────────────────────
 
 describe('Shell injection regression', () => {
-  for (const [label, hookPath] of [['CJS', CJS_HOOK], ['Plugin', PLUGIN_HOOK]] as const) {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
     it(`${label} hook has no shell: true in spawnSync calls`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       // Match spawnSync calls with shell option set to true or a variable
@@ -97,23 +110,29 @@ describe('Shell injection regression', () => {
 // ─── Source code regression: .cmd extensions for Windows ─────────────
 
 describe('Windows .cmd extension handling', () => {
-  for (const [label, hookPath] of [['CJS', CJS_HOOK], ['Plugin', PLUGIN_HOOK]] as const) {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
     it(`${label} hook uses .cmd extensions for Windows npx`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toContain("npx.cmd");
+      expect(source).toContain('npx.cmd');
     });
   }
 
   it('Plugin hook uses .cmd extension for Windows gitnexus binary', () => {
     const source = fs.readFileSync(PLUGIN_HOOK, 'utf-8');
-    expect(source).toContain("gitnexus.cmd");
+    expect(source).toContain('gitnexus.cmd');
   });
 });
 
 // ─── Source code regression: cwd validation ─────────────────────────
 
 describe('cwd validation guards', () => {
-  for (const [label, hookPath] of [['CJS', CJS_HOOK], ['Plugin', PLUGIN_HOOK]] as const) {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
     it(`${label} hook validates cwd is absolute path`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       const cwdChecks = (source.match(/path\.isAbsolute\(cwd\)/g) || []).length;
@@ -126,7 +145,10 @@ describe('cwd validation guards', () => {
 // ─── Source code regression: sendHookResponse used consistently ──────
 
 describe('sendHookResponse consistency', () => {
-  for (const [label, hookPath] of [['CJS', CJS_HOOK], ['Plugin', PLUGIN_HOOK]] as const) {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
     it(`${label} hook uses sendHookResponse in both handlers`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       const calls = (source.match(/sendHookResponse\(/g) || []).length;
@@ -147,7 +169,10 @@ describe('sendHookResponse consistency', () => {
 // ─── Source code regression: dispatch map pattern ────────────────────
 
 describe('Dispatch map pattern', () => {
-  for (const [label, hookPath] of [['CJS', CJS_HOOK], ['Plugin', PLUGIN_HOOK]] as const) {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
     it(`${label} hook uses dispatch map instead of if/else`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       expect(source).toContain('const handlers = {');
@@ -162,7 +187,10 @@ describe('Dispatch map pattern', () => {
 // ─── Source code regression: debug error truncation ──────────────────
 
 describe('Debug error message truncation', () => {
-  for (const [label, hookPath] of [['CJS', CJS_HOOK], ['Plugin', PLUGIN_HOOK]] as const) {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
     it(`${label} hook truncates error messages to 200 chars`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       expect(source).toContain('.slice(0, 200)');
@@ -173,7 +201,10 @@ describe('Debug error message truncation', () => {
 // ─── extractPattern regression (via source analysis) ────────────────
 
 describe('extractPattern coverage', () => {
-  for (const [label, hookPath] of [['CJS', CJS_HOOK], ['Plugin', PLUGIN_HOOK]] as const) {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
     it(`${label} hook extracts pattern from Grep tool input`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       expect(source).toContain("toolName === 'Grep'");
@@ -202,7 +233,10 @@ describe('extractPattern coverage', () => {
 describe('Git mutation regex', () => {
   const GIT_REGEX = /\\bgit\\s\+\(commit\|merge\|rebase\|cherry-pick\|pull\)/;
 
-  for (const [label, hookPath] of [['CJS', CJS_HOOK], ['Plugin', PLUGIN_HOOK]] as const) {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
     it(`${label} hook detects git commit`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       expect(source).toContain('commit');
@@ -234,7 +268,10 @@ describe('Git mutation regex', () => {
 // ─── Integration: PostToolUse staleness detection ───────────────────
 
 describe('PostToolUse staleness detection (integration)', () => {
-  for (const [label, hookPath] of [['CJS', CJS_HOOK], ['Plugin', PLUGIN_HOOK]] as const) {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
     it(`${label}: emits stale notification when HEAD differs from meta`, () => {
       // Write meta.json with a different commit
       fs.writeFileSync(
@@ -405,7 +442,10 @@ describe('PostToolUse staleness detection (integration)', () => {
 // ─── Integration: cwd validation rejects relative paths ─────────────
 
 describe('cwd validation (integration)', () => {
-  for (const [label, hookPath] of [['CJS', CJS_HOOK], ['Plugin', PLUGIN_HOOK]] as const) {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
     it(`${label}: PostToolUse silent when cwd is relative`, () => {
       const result = runHook(hookPath, {
         hook_event_name: 'PostToolUse',
@@ -432,7 +472,10 @@ describe('cwd validation (integration)', () => {
 // ─── Integration: dispatch map routes correctly ─────────────────────
 
 describe('Dispatch map routing (integration)', () => {
-  for (const [label, hookPath] of [['CJS', CJS_HOOK], ['Plugin', PLUGIN_HOOK]] as const) {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
     it(`${label}: unknown hook_event_name produces no output`, () => {
       const result = runHook(hookPath, {
         hook_event_name: 'UnknownEvent',
@@ -489,7 +532,10 @@ describe('Dispatch map routing (integration)', () => {
 // ─── Integration: PostToolUse with missing meta.json ────────────────
 
 describe('PostToolUse with missing/corrupt meta.json', () => {
-  for (const [label, hookPath] of [['CJS', CJS_HOOK], ['Plugin', PLUGIN_HOOK]] as const) {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
     it(`${label}: emits stale when meta.json does not exist`, () => {
       const metaPath = path.join(gitNexusDir, 'meta.json');
       const hadMeta = fs.existsSync(metaPath);

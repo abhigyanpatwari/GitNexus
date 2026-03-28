@@ -1,6 +1,6 @@
 /**
  * Clean Command
- * 
+ *
  * Removes the .gitnexus index from the current repository.
  * Also unregisters it from the global registry.
  */

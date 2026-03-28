@@ -4,8 +4,14 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, CROSS_FILE_FIXTURES, getRelationships, getNodesByLabel, getNodesByLabelFull, edgeSet,
-  runPipelineFromRepo, type PipelineResult,
+  FIXTURES,
+  CROSS_FILE_FIXTURES,
+  getRelationships,
+  getNodesByLabel,
+  getNodesByLabelFull,
+  edgeSet,
+  runPipelineFromRepo,
+  type PipelineResult,
 } from './helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -16,10 +22,7 @@ describe('Rust trait implementation resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-traits'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-traits'), () => {});
   }, 60000);
 
   it('detects exactly 1 struct and 2 traits', () => {
@@ -30,10 +33,7 @@ describe('Rust trait implementation resolution', () => {
   it('emits exactly 2 IMPLEMENTS edges with reason trait-impl', () => {
     const implements_ = getRelationships(result, 'IMPLEMENTS');
     expect(implements_.length).toBe(2);
-    expect(edgeSet(implements_)).toEqual([
-      'Button → Clickable',
-      'Button → Drawable',
-    ]);
+    expect(edgeSet(implements_)).toEqual(['Button → Clickable', 'Button → Drawable']);
     for (const edge of implements_) {
       expect(edge.rel.reason).toBe('trait-impl');
     }
@@ -53,7 +53,13 @@ describe('Rust trait implementation resolution', () => {
 
   it('detects 2 modules and 4 functions', () => {
     expect(getNodesByLabel(result, 'Module')).toEqual(['impls', 'traits']);
-    expect(getNodesByLabel(result, 'Function')).toEqual(['draw', 'is_enabled', 'main', 'on_click', 'resize']);
+    expect(getNodesByLabel(result, 'Function')).toEqual([
+      'draw',
+      'is_enabled',
+      'main',
+      'on_click',
+      'resize',
+    ]);
   });
 
   it('no OVERRIDES edges target Property nodes', () => {
@@ -74,26 +80,23 @@ describe('Rust ambiguous symbol resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-ambiguous'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-ambiguous'), () => {});
   }, 60000);
 
   it('detects 2 Handler structs in separate modules', () => {
     const structs: string[] = [];
-    result.graph.forEachNode(n => {
+    result.graph.forEachNode((n) => {
       if (n.label === 'Struct') structs.push(`${n.properties.name}@${n.properties.filePath}`);
     });
-    const handlers = structs.filter(s => s.startsWith('Handler@'));
+    const handlers = structs.filter((s) => s.startsWith('Handler@'));
     expect(handlers.length).toBe(2);
-    expect(handlers.some(h => h.includes('src/models/'))).toBe(true);
-    expect(handlers.some(h => h.includes('src/other/'))).toBe(true);
+    expect(handlers.some((h) => h.includes('src/models/'))).toBe(true);
+    expect(handlers.some((h) => h.includes('src/other/'))).toBe(true);
   });
 
   it('import resolves to src/models/mod.rs (not src/other/mod.rs)', () => {
     const imports = getRelationships(result, 'IMPORTS');
-    const modelsImport = imports.find(e => e.targetFilePath.includes('models'));
+    const modelsImport = imports.find((e) => e.targetFilePath.includes('models'));
     expect(modelsImport).toBeDefined();
     expect(modelsImport!.targetFilePath).toBe('src/models/mod.rs');
   });
@@ -110,10 +113,7 @@ describe('Rust call resolution with arity filtering', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-calls'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-calls'), () => {});
   }, 60000);
 
   it('resolves main → write_audit to src/onearg/mod.rs via arity narrowing', () => {
@@ -134,15 +134,12 @@ describe('Rust member-call resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-member-calls'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-member-calls'), () => {});
   }, 60000);
 
   it('resolves process_user → save as a member call on User', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save');
+    const saveCall = calls.find((c) => c.target === 'save');
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('process_user');
     expect(saveCall!.targetFilePath).toBe('src/user.rs');
@@ -150,7 +147,7 @@ describe('Rust member-call resolution', () => {
 
   it('detects User struct and save function (Rust impl fns are Function nodes)', () => {
     const structs: string[] = [];
-    result.graph.forEachNode(n => {
+    result.graph.forEachNode((n) => {
       if (n.label === 'Struct') structs.push(n.properties.name);
     });
     expect(structs).toContain('User');
@@ -167,15 +164,12 @@ describe('Rust struct literal resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-struct-literals'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-struct-literals'), () => {});
   }, 60000);
 
   it('resolves User { ... } as a CALLS edge to the User struct', () => {
     const calls = getRelationships(result, 'CALLS');
-    const ctorCall = calls.find(c => c.target === 'User');
+    const ctorCall = calls.find((c) => c.target === 'User');
     expect(ctorCall).toBeDefined();
     expect(ctorCall!.source).toBe('process_user');
     expect(ctorCall!.targetLabel).toBe('Struct');
@@ -185,14 +179,14 @@ describe('Rust struct literal resolution', () => {
 
   it('also resolves user.save() as a member call', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save');
+    const saveCall = calls.find((c) => c.target === 'save');
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('process_user');
   });
 
   it('detects User struct and process_user function', () => {
     const structs: string[] = [];
-    result.graph.forEachNode(n => {
+    result.graph.forEachNode((n) => {
       if (n.label === 'Struct') structs.push(n.properties.name);
     });
     expect(structs).toContain('User');
@@ -208,31 +202,28 @@ describe('Rust receiver-constrained resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-receiver-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-receiver-resolution'), () => {});
   }, 60000);
 
   it('detects User and Repo structs, both with save functions', () => {
     const structs: string[] = [];
-    result.graph.forEachNode(n => {
+    result.graph.forEachNode((n) => {
       if (n.label === 'Struct') structs.push(n.properties.name);
     });
     expect(structs).toContain('User');
     expect(structs).toContain('Repo');
     // Rust tree-sitter captures impl fns as Function nodes
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    const saveFns = getNodesByLabel(result, 'Function').filter((m) => m === 'save');
     expect(saveFns.length).toBe(2);
   });
 
   it('resolves user.save() to User.save and repo.save() to Repo.save via receiver typing', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save');
+    const saveCalls = calls.filter((c) => c.target === 'save');
     expect(saveCalls.length).toBe(2);
 
-    const userSave = saveCalls.find(c => c.targetFilePath === 'src/user.rs');
-    const repoSave = saveCalls.find(c => c.targetFilePath === 'src/repo.rs');
+    const userSave = saveCalls.find((c) => c.targetFilePath === 'src/user.rs');
+    const repoSave = saveCalls.find((c) => c.targetFilePath === 'src/repo.rs');
 
     expect(userSave).toBeDefined();
     expect(repoSave).toBeDefined();
@@ -249,15 +240,12 @@ describe('Rust alias import resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-alias-imports'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-alias-imports'), () => {});
   }, 60000);
 
   it('detects User and Repo structs with their methods', () => {
     const structs: string[] = [];
-    result.graph.forEachNode(n => {
+    result.graph.forEachNode((n) => {
       if (n.label === 'Struct') structs.push(n.properties.name);
     });
     expect(structs).toContain('User');
@@ -268,8 +256,8 @@ describe('Rust alias import resolution', () => {
 
   it('resolves u.save() to src/models.rs and r.persist() to src/models.rs via alias', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save');
-    const persistCall = calls.find(c => c.target === 'persist');
+    const saveCall = calls.find((c) => c.target === 'save');
+    const persistCall = calls.find((c) => c.target === 'persist');
 
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('main');
@@ -300,15 +288,12 @@ describe('Rust re-export chain resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-reexport-chain'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-reexport-chain'), () => {});
   }, 60000);
 
   it('detects Handler struct in handler.rs', () => {
     const structs: string[] = [];
-    result.graph.forEachNode(n => {
+    result.graph.forEachNode((n) => {
       if (n.label === 'Struct') structs.push(`${n.properties.name}@${n.properties.filePath}`);
     });
     expect(structs).toContain('Handler@src/models/handler.rs');
@@ -316,7 +301,7 @@ describe('Rust re-export chain resolution', () => {
 
   it('resolves Handler { ... } to src/models/handler.rs via re-export chain, not mod.rs', () => {
     const calls = getRelationships(result, 'CALLS');
-    const ctorCall = calls.find(c => c.target === 'Handler');
+    const ctorCall = calls.find((c) => c.target === 'Handler');
     expect(ctorCall).toBeDefined();
     expect(ctorCall!.source).toBe('main');
     expect(ctorCall!.targetLabel).toBe('Struct');
@@ -325,7 +310,7 @@ describe('Rust re-export chain resolution', () => {
 
   it('resolves h.process() to src/models/handler.rs', () => {
     const calls = getRelationships(result, 'CALLS');
-    const processCall = calls.find(c => c.target === 'process');
+    const processCall = calls.find((c) => c.target === 'process');
     expect(processCall).toBeDefined();
     expect(processCall!.source).toBe('main');
     expect(processCall!.targetFilePath).toBe('src/models/handler.rs');
@@ -340,22 +325,21 @@ describe('Rust local definition shadows import', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-local-shadow'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-local-shadow'), () => {});
   }, 60000);
 
   it('resolves run → save to same-file definition, not the imported one', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save' && c.source === 'run');
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'run');
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('src/main.rs');
   });
 
   it('does NOT resolve save to utils.rs', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveToUtils = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/utils.rs');
+    const saveToUtils = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'src/utils.rs',
+    );
     expect(saveToUtils).toBeUndefined();
   });
 });
@@ -369,15 +353,12 @@ describe('Rust grouped import resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-grouped-imports'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-grouped-imports'), () => {});
   }, 60000);
 
   it('resolves main → format_name to src/helpers/mod.rs', () => {
     const calls = getRelationships(result, 'CALLS');
-    const call = calls.find(c => c.target === 'format_name');
+    const call = calls.find((c) => c.target === 'format_name');
     expect(call).toBeDefined();
     expect(call!.source).toBe('main');
     expect(call!.targetFilePath).toBe('src/helpers/mod.rs');
@@ -386,7 +367,7 @@ describe('Rust grouped import resolution', () => {
 
   it('resolves main → validate_email to src/helpers/mod.rs', () => {
     const calls = getRelationships(result, 'CALLS');
-    const call = calls.find(c => c.target === 'validate_email');
+    const call = calls.find((c) => c.target === 'validate_email');
     expect(call).toBeDefined();
     expect(call!.source).toBe('main');
     expect(call!.targetFilePath).toBe('src/helpers/mod.rs');
@@ -395,7 +376,7 @@ describe('Rust grouped import resolution', () => {
 
   it('does not create a spurious CALLS edge for the path prefix "helpers"', () => {
     const calls = getRelationships(result, 'CALLS');
-    const spurious = calls.find(c => c.target === 'helpers' || c.source === 'helpers');
+    const spurious = calls.find((c) => c.target === 'helpers' || c.source === 'helpers');
     expect(spurious).toBeUndefined();
   });
 
@@ -419,10 +400,7 @@ describe('Rust scoped grouped imports (multi-file)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-scoped-multi-file'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-scoped-multi-file'), () => {});
   }, 60000);
 
   it('detects User and Repo structs', () => {
@@ -433,24 +411,24 @@ describe('Rust scoped grouped imports (multi-file)', () => {
 
   it('emits IMPORTS edge from main.rs to models/mod.rs', () => {
     const imports = getRelationships(result, 'IMPORTS');
-    const edge = imports.find(e =>
-      e.sourceFilePath.includes('main') && e.targetFilePath.includes('models'),
+    const edge = imports.find(
+      (e) => e.sourceFilePath.includes('main') && e.targetFilePath.includes('models'),
     );
     expect(edge).toBeDefined();
   });
 
   it('resolves user.save() call to User#save in models/user.rs', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'main' && c.targetFilePath.includes('user'),
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'main' && c.targetFilePath.includes('user'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves repo.clone_repo() call to Repo#clone_repo in models/repo.rs', () => {
     const calls = getRelationships(result, 'CALLS');
-    const cloneCall = calls.find(c =>
-      c.target === 'clone_repo' && c.source === 'main' && c.targetFilePath.includes('repo'),
+    const cloneCall = calls.find(
+      (c) => c.target === 'clone_repo' && c.source === 'main' && c.targetFilePath.includes('repo'),
     );
     expect(cloneCall).toBeDefined();
   });
@@ -474,27 +452,27 @@ describe('Rust constructor-inferred type resolution', () => {
   it('detects User and Repo structs, both with save methods', () => {
     expect(getNodesByLabel(result, 'Struct')).toContain('User');
     expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    const saveFns = getNodesByLabel(result, 'Function').filter((m) => m === 'save');
     expect(saveFns.length).toBe(2);
   });
 
   it('resolves user.save() to src/user.rs via constructor-inferred type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/user.rs');
+    const userSave = calls.find((c) => c.target === 'save' && c.targetFilePath === 'src/user.rs');
     expect(userSave).toBeDefined();
     expect(userSave!.source).toBe('process_entities');
   });
 
   it('resolves repo.save() to src/repo.rs via constructor-inferred type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/repo.rs');
+    const repoSave = calls.find((c) => c.target === 'save' && c.targetFilePath === 'src/repo.rs');
     expect(repoSave).toBeDefined();
     expect(repoSave!.source).toBe('process_entities');
   });
 
   it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save');
+    const saveCalls = calls.filter((c) => c.target === 'save');
     expect(saveCalls.length).toBe(2);
   });
 });
@@ -507,22 +485,19 @@ describe('Rust self resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-self-this-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-self-this-resolution'), () => {});
   }, 60000);
 
   it('detects User and Repo structs, each with a save function', () => {
     expect(getNodesByLabel(result, 'Struct')).toContain('User');
     expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    const saveFns = getNodesByLabel(result, 'Function').filter((m) => m === 'save');
     expect(saveFns.length).toBe(2);
   });
 
   it('resolves self.save() inside User::process to User::save, not Repo::save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process');
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'process');
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('src/user.rs');
   });
@@ -536,10 +511,7 @@ describe('Rust parent resolution (trait impl)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-parent-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-parent-resolution'), () => {});
   }, 60000);
 
   it('detects User struct and Serializable trait', () => {
@@ -577,14 +549,16 @@ describe('Rust struct literal type inference', () => {
 
   it('resolves user.save() via struct literal inference (User { ... })', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save' && c.targetFilePath === 'models.rs');
+    const saveCall = calls.find((c) => c.target === 'save' && c.targetFilePath === 'models.rs');
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('main');
   });
 
   it('resolves config.validate() via struct literal inference (Config { ... })', () => {
     const calls = getRelationships(result, 'CALLS');
-    const validateCall = calls.find(c => c.target === 'validate' && c.targetFilePath === 'models.rs');
+    const validateCall = calls.find(
+      (c) => c.target === 'validate' && c.targetFilePath === 'models.rs',
+    );
     expect(validateCall).toBeDefined();
     expect(validateCall!.source).toBe('main');
   });
@@ -598,15 +572,12 @@ describe('Rust Self {} struct literal resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-self-struct-literal'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-self-struct-literal'), () => {});
   }, 60000);
 
   it('resolves fresh.validate() inside impl User via Self {} inference', () => {
     const calls = getRelationships(result, 'CALLS');
-    const validateCall = calls.find(c => c.target === 'validate' && c.source === 'blank');
+    const validateCall = calls.find((c) => c.target === 'validate' && c.source === 'blank');
     expect(validateCall).toBeDefined();
     expect(validateCall!.targetFilePath).toBe('models.rs');
   });
@@ -621,10 +592,7 @@ describe('Rust if-let captured_pattern type resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-if-let'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-if-let'), () => {});
   }, 60000);
 
   it('detects User and Config structs with their methods', () => {
@@ -636,14 +604,16 @@ describe('Rust if-let captured_pattern type resolution', () => {
 
   it('resolves user.save() inside if-let via captured_pattern binding', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process_if_let');
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'process_if_let');
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('models.rs');
   });
 
   it('resolves cfg.validate() inside while-let via captured_pattern binding', () => {
     const calls = getRelationships(result, 'CALLS');
-    const validateCall = calls.find(c => c.target === 'validate' && c.source === 'process_while_let');
+    const validateCall = calls.find(
+      (c) => c.target === 'validate' && c.source === 'process_while_let',
+    );
     expect(validateCall).toBeDefined();
     expect(validateCall!.targetFilePath).toBe('models.rs');
   });
@@ -658,10 +628,7 @@ describe('Rust return type inference', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-return-type'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-return-type'), () => {});
   }, 60000);
 
   it('detects User struct and get_user + save functions', () => {
@@ -672,14 +639,14 @@ describe('Rust return type inference', () => {
 
   it('resolves main → get_user as a CALLS edge to src/models.rs', () => {
     const calls = getRelationships(result, 'CALLS');
-    const getUserCall = calls.find(c => c.target === 'get_user' && c.source === 'main');
+    const getUserCall = calls.find((c) => c.target === 'get_user' && c.source === 'main');
     expect(getUserCall).toBeDefined();
     expect(getUserCall!.targetFilePath).toBe('src/models.rs');
   });
 
   it('resolves user.save() to src/models.rs via return-type-inferred binding', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save' && c.source === 'main');
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'main');
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('src/models.rs');
   });
@@ -694,25 +661,21 @@ describe('Rust return-type inference via function return type', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-return-type-inference'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-return-type-inference'), () => {});
   }, 60000);
 
   it('resolves user.save() to models.rs User#save via return type of get_user()', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'process_user' && c.targetFilePath.includes('models')
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'process_user' && c.targetFilePath.includes('models'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('user.save() does NOT resolve to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_user'
-    );
+    const wrongSave = calls.find((c) => c.target === 'save' && c.source === 'process_user');
     // Should resolve to exactly one target — if it resolves at all, check it's the right one
     if (wrongSave) {
       expect(wrongSave.targetFilePath).toContain('models');
@@ -721,8 +684,9 @@ describe('Rust return-type inference via function return type', () => {
 
   it('resolves repo.save() to models.rs Repo#save via return type of get_repo()', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'process_repo' && c.targetFilePath.includes('models')
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'process_repo' && c.targetFilePath.includes('models'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -736,10 +700,7 @@ describe('Rust ::default() constructor resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-default-constructor'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-default-constructor'), () => {});
   }, 60000);
 
   it('detects User and Repo structs', () => {
@@ -755,8 +716,11 @@ describe('Rust ::default() constructor resolution', () => {
 
   it('resolves user.save() in process_with_new() via User::new() constructor', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'process_with_new' && c.targetFilePath.includes('user.rs'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_with_new' &&
+        c.targetFilePath.includes('user.rs'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -766,16 +730,22 @@ describe('Rust ::default() constructor resolution', () => {
     // NOT by the scanner — the scanner excludes ::default() to avoid
     // wasted cross-file lookups on the broadly-implemented Default trait
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'process_with_default' && c.targetFilePath.includes('user.rs'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_with_default' &&
+        c.targetFilePath.includes('user.rs'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('disambiguates repo.save() in process_with_default() to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_with_default' && c.targetFilePath.includes('repo.rs'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_with_default' &&
+        c.targetFilePath.includes('repo.rs'),
     );
     expect(repoSave).toBeDefined();
   });
@@ -783,14 +753,20 @@ describe('Rust ::default() constructor resolution', () => {
   it('does NOT cross-contaminate (user.save() does not resolve to Repo#save)', () => {
     const calls = getRelationships(result, 'CALLS');
     // In process_with_new: user.save() should go to user.rs, not repo.rs
-    const wrongCall = calls.find(c =>
-      c.target === 'save' && c.source === 'process_with_new' && c.targetFilePath.includes('repo.rs'),
+    const wrongCall = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_with_new' &&
+        c.targetFilePath.includes('repo.rs'),
     );
     // Either undefined (correctly disambiguated) or present (both resolved) — no single wrong one
     if (wrongCall) {
       // If both are present, there should also be a correct one
-      const correctCall = calls.find(c =>
-        c.target === 'save' && c.source === 'process_with_new' && c.targetFilePath.includes('user.rs'),
+      const correctCall = calls.find(
+        (c) =>
+          c.target === 'save' &&
+          c.source === 'process_with_new' &&
+          c.targetFilePath.includes('user.rs'),
       );
       expect(correctCall).toBeDefined();
     }
@@ -808,10 +784,7 @@ describe('Rust async .await constructor binding resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-async-binding'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-async-binding'), () => {});
   }, 60000);
 
   it('detects User and Repo structs', () => {
@@ -827,32 +800,36 @@ describe('Rust async .await constructor binding resolution', () => {
 
   it('resolves user.save() after .await to user.rs via return type of get_user()', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'process_user' && c.targetFilePath.includes('user'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'process_user' && c.targetFilePath.includes('user'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('user.save() does NOT resolve to Repo#save in repo.rs', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_user' && c.targetFilePath.includes('repo'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'process_user' && c.targetFilePath.includes('repo'),
     );
     expect(wrongSave).toBeUndefined();
   });
 
   it('resolves repo.save() after .await to repo.rs via return type of get_repo()', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'process_repo' && c.targetFilePath.includes('repo'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'process_repo' && c.targetFilePath.includes('repo'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('repo.save() does NOT resolve to User#save in user.rs', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_repo' && c.targetFilePath.includes('user'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'process_repo' && c.targetFilePath.includes('user'),
     );
     expect(wrongSave).toBeUndefined();
   });
@@ -867,35 +844,34 @@ describe('Rust nullable receiver resolution (Option<T>)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-nullable-receiver'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-nullable-receiver'), () => {});
   }, 60000);
 
   it('detects User and Repo structs, both with save functions', () => {
     expect(getNodesByLabel(result, 'Struct')).toContain('User');
     expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    const saveFns = getNodesByLabel(result, 'Function').filter((m) => m === 'save');
     expect(saveFns.length).toBe(2);
   });
 
   it('resolves user.unwrap().save() to User#save via Option<User> unwrapping', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'process_entities' &&
-      c.targetFilePath?.includes('user'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_entities' &&
+        c.targetFilePath?.includes('user'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves repo.unwrap().save() to Repo#save via Option<Repo> unwrapping', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'process_entities' &&
-      c.targetFilePath?.includes('repo'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_entities' &&
+        c.targetFilePath?.includes('repo'),
     );
     expect(repoSave).toBeDefined();
   });
@@ -909,40 +885,43 @@ describe('Rust assignment chain propagation', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-assignment-chain'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-assignment-chain'), () => {});
   }, 60000);
 
   it('detects User and Repo structs each with a save function', () => {
     expect(getNodesByLabel(result, 'Struct')).toContain('User');
     expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    const saveFns = getNodesByLabel(result, 'Function').filter((m) => m === 'save');
     expect(saveFns.length).toBe(2);
   });
 
   it('resolves alias.save() to User#save via assignment chain', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_entities' && c.targetFilePath?.includes('user.rs'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_entities' &&
+        c.targetFilePath?.includes('user.rs'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves r_alias.save() to Repo#save via assignment chain', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_entities' && c.targetFilePath?.includes('repo.rs'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_entities' &&
+        c.targetFilePath?.includes('repo.rs'),
     );
     expect(repoSave).toBeDefined();
   });
 
   it('alias.save() does NOT resolve to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save' && c.source === 'process_entities');
-    expect(saveCalls.filter(c => c.targetFilePath?.includes('user.rs')).length).toBe(1);
-    expect(saveCalls.filter(c => c.targetFilePath?.includes('repo.rs')).length).toBe(1);
+    const saveCalls = calls.filter((c) => c.target === 'save' && c.source === 'process_entities');
+    expect(saveCalls.filter((c) => c.targetFilePath?.includes('user.rs')).length).toBe(1);
+    expect(saveCalls.filter((c) => c.targetFilePath?.includes('repo.rs')).length).toBe(1);
   });
 });
 
@@ -957,31 +936,34 @@ describe('Rust Option<User> receiver resolution via wrapper unwrapping', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-option-receiver'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-option-receiver'), () => {});
   }, 60000);
 
   it('detects User and Repo structs each with a save function', () => {
     expect(getNodesByLabel(result, 'Struct')).toContain('User');
     expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(m => m === 'save');
+    const saveFns = getNodesByLabel(result, 'Function').filter((m) => m === 'save');
     expect(saveFns.length).toBe(2);
   });
 
   it('resolves alias.save() to User#save via Option<User> → assignment chain', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_entities' && c.targetFilePath?.includes('user.rs'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_entities' &&
+        c.targetFilePath?.includes('user.rs'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves repo.save() to Repo#save alongside Option usage', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_entities' && c.targetFilePath?.includes('repo.rs'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_entities' &&
+        c.targetFilePath?.includes('repo.rs'),
     );
     expect(repoSave).toBeDefined();
   });
@@ -998,35 +980,28 @@ describe('Rust if-let Some(x) = opt pattern binding (Phase 5.2)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-if-let-unwrap'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-if-let-unwrap'), () => {});
   }, 60000);
 
   it('detects User and Repo structs each with a save function', () => {
     expect(getNodesByLabel(result, 'Struct')).toContain('User');
     expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(f => f === 'save');
+    const saveFns = getNodesByLabel(result, 'Function').filter((f) => f === 'save');
     expect(saveFns.length).toBe(2);
   });
 
   it('resolves user.save() inside if-let Some(user) = opt to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'process' &&
-      c.targetFilePath?.includes('user.rs'),
+    const userSave = calls.find(
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('user.rs'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('does NOT resolve user.save() to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'process' &&
-      c.targetFilePath?.includes('repo.rs'),
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('repo.rs'),
     );
     expect(repoSave).toBeUndefined();
   });
@@ -1042,10 +1017,7 @@ describe('Rust if-let Err(e) pattern binding (Phase 5 review fix)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-err-unwrap'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-err-unwrap'), () => {});
   }, 60000);
 
   it('detects User and AppError structs', () => {
@@ -1056,30 +1028,27 @@ describe('Rust if-let Err(e) pattern binding (Phase 5 review fix)', () => {
 
   it('resolves e.report() inside if-let Err(e) to AppError#report', () => {
     const calls = getRelationships(result, 'CALLS');
-    const reportCall = calls.find(c =>
-      c.target === 'report' &&
-      c.source === 'handle_err' &&
-      c.targetFilePath?.includes('error.rs'),
+    const reportCall = calls.find(
+      (c) =>
+        c.target === 'report' &&
+        c.source === 'handle_err' &&
+        c.targetFilePath?.includes('error.rs'),
     );
     expect(reportCall).toBeDefined();
   });
 
   it('resolves user.save() inside if-let Ok(user) to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'handle_ok' &&
-      c.targetFilePath?.includes('user.rs'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'handle_ok' && c.targetFilePath?.includes('user.rs'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('does NOT resolve e.report() to User#save (no cross-contamination)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongCall = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'handle_err',
-    );
+    const wrongCall = calls.find((c) => c.target === 'save' && c.source === 'handle_err');
     expect(wrongCall).toBeUndefined();
   });
 });
@@ -1094,10 +1063,7 @@ describe('Rust chained method call resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-chain-call'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-chain-call'), () => {});
   }, 60000);
 
   it('detects User and Repo structs, and UserService', () => {
@@ -1114,20 +1080,18 @@ describe('Rust chained method call resolution', () => {
 
   it('resolves svc.get_user().save() to User#save via chain resolution', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'process_user' &&
-      c.targetFilePath?.includes('user.rs'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'process_user' && c.targetFilePath?.includes('user.rs'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('does NOT resolve svc.get_user().save() to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'process_user' &&
-      c.targetFilePath?.includes('repo.rs'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'process_user' && c.targetFilePath?.includes('repo.rs'),
     );
     expect(repoSave).toBeUndefined();
   });
@@ -1141,47 +1105,56 @@ describe('Rust for-loop type resolution (Tier 1c)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-for-loop'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-for-loop'), () => {});
   }, 60000);
 
   it('detects User and Repo structs with save functions', () => {
     expect(getNodesByLabel(result, 'Struct')).toContain('User');
     expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(f => f === 'save');
+    const saveFns = getNodesByLabel(result, 'Function').filter((f) => f === 'save');
     expect(saveFns.length).toBe(2);
   });
 
   it('resolves user.save() in for-loop to User#save via Tier 1c', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_users' && c.targetFilePath?.includes('user.rs'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_users' &&
+        c.targetFilePath?.includes('user.rs'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('does NOT resolve user.save() to Repo#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_users' && c.targetFilePath?.includes('repo.rs'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_users' &&
+        c.targetFilePath?.includes('repo.rs'),
     );
     expect(wrongSave).toBeUndefined();
   });
 
   it('resolves repo.save() in for-loop to Repo#save via Tier 1c', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_repos' && c.targetFilePath?.includes('repo.rs'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_repos' &&
+        c.targetFilePath?.includes('repo.rs'),
     );
     expect(repoSave).toBeDefined();
   });
 
   it('does NOT resolve repo.save() to User#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_repos' && c.targetFilePath?.includes('user.rs'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_repos' &&
+        c.targetFilePath?.includes('user.rs'),
     );
     expect(wrongSave).toBeUndefined();
   });
@@ -1195,47 +1168,44 @@ describe('Rust match arm type resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-match-unwrap'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-match-unwrap'), () => {});
   }, 60000);
 
   it('detects User and Repo structs with save functions', () => {
     expect(getNodesByLabel(result, 'Struct')).toContain('User');
     expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(f => f === 'save');
+    const saveFns = getNodesByLabel(result, 'Function').filter((f) => f === 'save');
     expect(saveFns.length).toBe(2);
   });
 
   it('resolves user.save() inside match Some(user) to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('user.rs'),
+    const userSave = calls.find(
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('user.rs'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('does NOT resolve user.save() in match to Repo#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('repo.rs'),
+    const wrongSave = calls.find(
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('repo.rs'),
     );
     expect(wrongSave).toBeUndefined();
   });
 
   it('resolves repo.save() inside if-let Ok(repo) to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'check' && c.targetFilePath?.includes('repo.rs'),
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.source === 'check' && c.targetFilePath?.includes('repo.rs'),
     );
     expect(repoSave).toBeDefined();
   });
 
   it('does NOT resolve repo.save() in if-let to User#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'check' && c.targetFilePath?.includes('user.rs'),
+    const wrongSave = calls.find(
+      (c) => c.target === 'save' && c.source === 'check' && c.targetFilePath?.includes('user.rs'),
     );
     expect(wrongSave).toBeUndefined();
   });
@@ -1249,39 +1219,45 @@ describe('Rust .iter() for-loop call_expression resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-iter-for-loop'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-iter-for-loop'), () => {});
   }, 60000);
 
   it('detects User and Repo structs with save functions', () => {
     expect(getNodesByLabel(result, 'Struct')).toContain('User');
     expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(f => f === 'save');
+    const saveFns = getNodesByLabel(result, 'Function').filter((f) => f === 'save');
     expect(saveFns.length).toBe(2);
   });
 
   it('resolves user.save() via users.iter() to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_users' && c.targetFilePath?.includes('user.rs'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_users' &&
+        c.targetFilePath?.includes('user.rs'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves repo.save() via repos.into_iter() to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_repos' && c.targetFilePath?.includes('repo.rs'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_repos' &&
+        c.targetFilePath?.includes('repo.rs'),
     );
     expect(repoSave).toBeDefined();
   });
 
   it('does NOT cross-resolve user.save() to Repo#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_users' && c.targetFilePath?.includes('repo.rs'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_users' &&
+        c.targetFilePath?.includes('repo.rs'),
     );
     expect(wrongSave).toBeUndefined();
   });
@@ -1297,47 +1273,56 @@ describe('Rust for-loop direct call_expression iterable resolution (Phase 7.3)',
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-for-call-expr'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-for-call-expr'), () => {});
   }, 60000);
 
   it('detects User and Repo structs with competing save functions', () => {
     expect(getNodesByLabel(result, 'Struct')).toContain('User');
     expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter(f => f === 'save');
+    const saveFns = getNodesByLabel(result, 'Function').filter((f) => f === 'save');
     expect(saveFns.length).toBe(2);
   });
 
   it('resolves user.save() in for-loop over get_users() to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_users' && c.targetFilePath?.includes('user.rs'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_users' &&
+        c.targetFilePath?.includes('user.rs'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves repo.save() in for-loop over get_repos() to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_repos' && c.targetFilePath?.includes('repo.rs'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_repos' &&
+        c.targetFilePath?.includes('repo.rs'),
     );
     expect(repoSave).toBeDefined();
   });
 
   it('does NOT resolve user.save() to Repo#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_users' && c.targetFilePath?.includes('repo.rs'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_users' &&
+        c.targetFilePath?.includes('repo.rs'),
     );
     expect(wrongSave).toBeUndefined();
   });
 
   it('does NOT resolve repo.save() to User#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process_repos' && c.targetFilePath?.includes('user.rs'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'process_repos' &&
+        c.targetFilePath?.includes('user.rs'),
     );
     expect(wrongSave).toBeUndefined();
   });
@@ -1351,10 +1336,7 @@ describe('Field type resolution (Rust)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-field-types'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-field-types'), () => {});
   }, 60000);
 
   it('detects structs: Address, User', () => {
@@ -1378,9 +1360,7 @@ describe('Field type resolution (Rust)', () => {
 
   it('resolves user.address.save() → Address#save via field type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(
-      e => e.target === 'save' && e.source === 'process_user',
-    );
+    const saveCalls = calls.filter((e) => e.target === 'save' && e.source === 'process_user');
     expect(saveCalls.length).toBe(1);
     expect(saveCalls[0].targetFilePath).toContain('models');
   });
@@ -1388,14 +1368,14 @@ describe('Field type resolution (Rust)', () => {
   it('populates field metadata (visibility, isReadonly, declaredType) on Property nodes', () => {
     const properties = getNodesByLabelFull(result, 'Property');
 
-    const city = properties.find(p => p.name === 'city');
+    const city = properties.find((p) => p.name === 'city');
     expect(city).toBeDefined();
     expect(city!.properties.visibility).toBe('public');
     expect(city!.properties.isStatic).toBe(false);
     expect(city!.properties.isReadonly).toBe(true);
     expect(city!.properties.declaredType).toBe('String');
 
-    const addr = properties.find(p => p.name === 'address');
+    const addr = properties.find((p) => p.name === 'address');
     expect(addr).toBeDefined();
     expect(addr!.properties.visibility).toBe('public');
     expect(addr!.properties.isReadonly).toBe(true);
@@ -1411,10 +1391,7 @@ describe('Deep field chain resolution (Rust)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-deep-field-chain'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-deep-field-chain'), () => {});
   }, 60000);
 
   it('detects structs: Address, City, User', () => {
@@ -1440,15 +1417,17 @@ describe('Deep field chain resolution (Rust)', () => {
 
   it('resolves 2-level chain: user.address.save() → Address#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(e => e.target === 'save' && e.source === 'process_user');
-    const addressSave = saveCalls.find(e => e.targetFilePath.includes('models'));
+    const saveCalls = calls.filter((e) => e.target === 'save' && e.source === 'process_user');
+    const addressSave = saveCalls.find((e) => e.targetFilePath.includes('models'));
     expect(addressSave).toBeDefined();
   });
 
   it('resolves 3-level chain: user.address.city.get_name() → City#get_name', () => {
     const calls = getRelationships(result, 'CALLS');
-    const getNameCalls = calls.filter(e => e.target === 'get_name' && e.source === 'process_user');
-    const cityGetName = getNameCalls.find(e => e.targetFilePath.includes('models'));
+    const getNameCalls = calls.filter(
+      (e) => e.target === 'get_name' && e.source === 'process_user',
+    );
+    const cityGetName = getNameCalls.find((e) => e.targetFilePath.includes('models'));
     expect(cityGetName).toBeDefined();
   });
 });
@@ -1460,27 +1439,24 @@ describe('Write access tracking (Rust)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-write-access'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-write-access'), () => {});
   }, 60000);
 
   it('emits ACCESSES write edges for field assignments', () => {
     const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter(e => e.rel.reason === 'write');
+    const writes = accesses.filter((e) => e.rel.reason === 'write');
     expect(writes.length).toBe(3);
-    const fieldNames = writes.map(e => e.target);
+    const fieldNames = writes.map((e) => e.target);
     expect(fieldNames).toContain('name');
     expect(fieldNames).toContain('address');
     expect(fieldNames).toContain('score');
-    const sources = writes.map(e => e.source);
+    const sources = writes.map((e) => e.source);
     expect(sources).toContain('update_user');
   });
 
   it('write ACCESSES edges have confidence 1.0', () => {
     const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter(e => e.rel.reason === 'write');
+    const writes = accesses.filter((e) => e.rel.reason === 'write');
     for (const edge of writes) {
       expect(edge.rel.confidence).toBe(1.0);
     }
@@ -1488,8 +1464,8 @@ describe('Write access tracking (Rust)', () => {
 
   it('emits ACCESSES write edge for compound assignment', () => {
     const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter(e => e.rel.reason === 'write');
-    const scoreWrite = writes.find(e => e.target === 'score');
+    const writes = accesses.filter((e) => e.rel.reason === 'write');
+    const scoreWrite = writes.find((e) => e.target === 'score');
     expect(scoreWrite).toBeDefined();
     expect(scoreWrite!.source).toBe('update_user');
   });
@@ -1503,16 +1479,14 @@ describe('Rust call-result variable binding (Tier 2b)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-call-result-binding'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-call-result-binding'), () => {});
   }, 60000);
 
   it('resolves user.save() to User#save via call-result binding', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'process_user' && c.targetFilePath.includes('models')
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'process_user' && c.targetFilePath.includes('models'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -1526,16 +1500,14 @@ describe('Rust method chain binding via unified fixpoint (Phase 9C)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-method-chain-binding'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-method-chain-binding'), () => {});
   }, 60000);
 
   it('resolves city.save() to City#save via method chain', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'process_chain' && c.targetFilePath.includes('models')
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'process_chain' && c.targetFilePath.includes('models'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -1550,10 +1522,7 @@ describe('Rust struct_pattern destructuring resolution (Phase A)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'rust-struct-destructuring'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-struct-destructuring'), () => {});
   }, 60000);
 
   it('detects Point and Vec2 structs', () => {
@@ -1564,15 +1533,15 @@ describe('Rust struct_pattern destructuring resolution (Phase A)', () => {
 
   it('resolves x.save() to Vec2#save via struct destructuring', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('vec2'),
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('vec2'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves both x.save() and y.save() — emits at least 1 CALLS to Vec2#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save' && c.targetFilePath.includes('vec2'));
+    const saveCalls = calls.filter((c) => c.target === 'save' && c.targetFilePath.includes('vec2'));
     // Both x and y are Vec2 — the same function, so calls may deduplicate to 1
     expect(saveCalls.length).toBeGreaterThanOrEqual(1);
   });
@@ -1590,10 +1559,7 @@ describe('Rust cross-file binding propagation', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(CROSS_FILE_FIXTURES, 'rs-cross-file'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(CROSS_FILE_FIXTURES, 'rs-cross-file'), () => {});
   }, 60000);
 
   it('detects User struct with save and get_name methods', () => {
@@ -1609,36 +1575,33 @@ describe('Rust cross-file binding propagation', () => {
 
   it('emits IMPORTS edge from main.rs to factory.rs', () => {
     const imports = getRelationships(result, 'IMPORTS');
-    const edge = imports.find(e =>
-      e.sourceFilePath.includes('main') && e.targetFilePath.includes('factory'),
+    const edge = imports.find(
+      (e) => e.sourceFilePath.includes('main') && e.targetFilePath.includes('factory'),
     );
     expect(edge).toBeDefined();
   });
 
   it('resolves u.save() in process() to User#save via cross-file return type propagation', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'process' &&
-      c.targetFilePath.includes('models'),
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('models'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves u.get_name() in process() to User#get_name via cross-file return type propagation', () => {
     const calls = getRelationships(result, 'CALLS');
-    const getNameCall = calls.find(c =>
-      c.target === 'get_name' &&
-      c.source === 'process' &&
-      c.targetFilePath.includes('models'),
+    const getNameCall = calls.find(
+      (c) =>
+        c.target === 'get_name' && c.source === 'process' && c.targetFilePath.includes('models'),
     );
     expect(getNameCall).toBeDefined();
   });
 
   it('emits HAS_METHOD edges linking save and get_name to User', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const saveEdge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
-    const getNameEdge = hasMethod.find(e => e.source === 'User' && e.target === 'get_name');
+    const saveEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'save');
+    const getNameEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'get_name');
     expect(saveEdge).toBeDefined();
     expect(getNameEdge).toBeDefined();
   });

@@ -39,39 +39,31 @@ function isValidGithubUrl(value: string): boolean {
 
 function ModeTabs({ mode, onChange }: { mode: InputMode; onChange: (m: InputMode) => void }) {
   return (
-    <div className="flex gap-1 p-1 bg-elevated rounded-lg" role="tablist" aria-label="Input type">
+    <div className="flex gap-1 rounded-lg bg-elevated p-1" role="tablist" aria-label="Input type">
       <button
         role="tab"
         aria-selected={mode === 'github'}
         onClick={() => onChange('github')}
-        className={`
-          flex-1 flex items-center justify-center gap-1.5
-          px-3 py-1.5 text-xs font-medium rounded-md
-          transition-all duration-150 cursor-pointer
-          ${mode === 'github'
+        className={`flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-150 ${
+          mode === 'github'
             ? 'bg-accent text-white shadow-sm'
             : 'text-text-muted hover:text-text-secondary'
-          }
-        `}
+        } `}
       >
-        <Github className="w-3 h-3" />
+        <Github className="h-3 w-3" />
         GitHub URL
       </button>
       <button
         role="tab"
         aria-selected={mode === 'local'}
         onClick={() => onChange('local')}
-        className={`
-          flex-1 flex items-center justify-center gap-1.5
-          px-3 py-1.5 text-xs font-medium rounded-md
-          transition-all duration-150 cursor-pointer
-          ${mode === 'local'
+        className={`flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-150 ${
+          mode === 'local'
             ? 'bg-accent text-white shadow-sm'
             : 'text-text-muted hover:text-text-secondary'
-          }
-        `}
+        } `}
       >
-        <FolderOpen className="w-3 h-3" />
+        <FolderOpen className="h-3 w-3" />
         Local Folder
       </button>
     </div>
@@ -80,28 +72,32 @@ function ModeTabs({ mode, onChange }: { mode: InputMode; onChange: (m: InputMode
 
 // ── Analyze button ───────────────────────────────────────────────────────────
 
-function AnalyzeButton({ canSubmit, isLoading, onClick, variant }: {
+function AnalyzeButton({
+  canSubmit,
+  isLoading,
+  onClick,
+  variant,
+}: {
   canSubmit: boolean;
   isLoading: boolean;
   onClick: () => void;
   variant: 'onboarding' | 'sheet';
 }) {
-  const sizeClass = variant === 'onboarding' ? 'w-full px-5 py-3.5 text-sm' : 'w-full px-4 py-3 text-sm';
+  const sizeClass =
+    variant === 'onboarding' ? 'w-full px-5 py-3.5 text-sm' : 'w-full px-4 py-3 text-sm';
   return (
     <button
       onClick={onClick}
       disabled={!canSubmit || isLoading}
-      className={`
-        ${sizeClass} flex items-center justify-center gap-2.5 rounded-xl font-medium transition-all duration-200
-        ${canSubmit && !isLoading
-          ? 'bg-accent hover:bg-accent/90 text-white shadow-glow-soft hover:shadow-glow hover:-translate-y-0.5 cursor-pointer'
-          : 'bg-elevated border border-border-subtle text-text-muted cursor-not-allowed'
-        }
-      `}
+      className={` ${sizeClass} flex items-center justify-center gap-2.5 rounded-xl font-medium transition-all duration-200 ${
+        canSubmit && !isLoading
+          ? 'cursor-pointer bg-accent text-white shadow-glow-soft hover:-translate-y-0.5 hover:bg-accent/90 hover:shadow-glow'
+          : 'cursor-not-allowed border border-border-subtle bg-elevated text-text-muted'
+      } `}
     >
-      {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+      {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
       <span>{isLoading ? 'Starting analysis...' : 'Analyze Repository'}</span>
-      {canSubmit && !isLoading && <ArrowRight className="w-3.5 h-3.5" />}
+      {canSubmit && !isLoading && <ArrowRight className="h-3.5 w-3.5" />}
     </button>
   );
 }
@@ -110,13 +106,17 @@ function AnalyzeButton({ canSubmit, isLoading, onClick, variant }: {
 
 function DoneState({ repoName }: { repoName: string }) {
   return (
-    <div className="py-4 flex flex-col items-center gap-3 animate-fade-in" role="status" aria-live="polite">
-      <div className="w-12 h-12 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center shadow-[0_0_20px_rgba(16,185,129,0.15)]">
-        <Check className="w-6 h-6 text-emerald-400" />
+    <div
+      className="flex animate-fade-in flex-col items-center gap-3 py-4"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/15 shadow-[0_0_20px_rgba(16,185,129,0.15)]">
+        <Check className="h-6 w-6 text-emerald-400" />
       </div>
       <div className="text-center">
         <p className="text-sm font-medium text-emerald-400">Analysis complete</p>
-        <p className="text-xs text-text-muted mt-0.5 font-mono">{repoName}</p>
+        <p className="mt-0.5 font-mono text-xs text-text-muted">{repoName}</p>
       </div>
       <p className="text-xs text-text-secondary">Loading graph...</p>
     </div>
@@ -141,7 +141,11 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   const [localPath, setLocalPath] = useState('');
   const [phase, setPhase] = useState<InternalPhase>('input');
   const [validationError, setValidationError] = useState<string | null>(null);
-  const [progress, setProgress] = useState<JobProgress>({ phase: 'queued', percent: 0, message: 'Queued' });
+  const [progress, setProgress] = useState<JobProgress>({
+    phase: 'queued',
+    percent: 0,
+    message: 'Queued',
+  });
   const [completedRepoName, setCompletedRepoName] = useState('');
 
   const jobIdRef = useRef<string | null>(null);
@@ -168,9 +172,10 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   // browsers don't expose absolute paths for security reasons).
   // For local paths, the user types or pastes the absolute path.
 
-  const canSubmit = mode === 'github'
-    ? isValidGithubUrl(githubUrl) && (phase === 'input' || phase === 'error')
-    : localPath.trim().length > 1 && (phase === 'input' || phase === 'error');
+  const canSubmit =
+    mode === 'github'
+      ? isValidGithubUrl(githubUrl) && (phase === 'input' || phase === 'error')
+      : localPath.trim().length > 1 && (phase === 'input' || phase === 'error');
 
   const handleAnalyze = async () => {
     if (mode === 'github' && !isValidGithubUrl(githubUrl)) {
@@ -186,9 +191,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     setPhase('starting');
 
     try {
-      const request = mode === 'github'
-        ? { url: githubUrl.trim() }
-        : { path: localPath.trim() };
+      const request = mode === 'github' ? { url: githubUrl.trim() } : { path: localPath.trim() };
       const { jobId } = await startAnalyze(request);
       jobIdRef.current = jobId;
       setPhase('analyzing');
@@ -198,9 +201,8 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
         jobId,
         (p) => setProgress(p),
         (data) => {
-          const name = data.repoName
-            ?? nameSource.split(/[/\\]/).filter(Boolean).at(-1)
-            ?? 'repository';
+          const name =
+            data.repoName ?? nameSource.split(/[/\\]/).filter(Boolean).at(-1) ?? 'repository';
           setCompletedRepoName(name);
           setPhase('done');
           sseControllerRef.current = null;
@@ -225,7 +227,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     sseControllerRef.current?.abort();
     sseControllerRef.current = null;
     if (jobIdRef.current) {
-      try { await cancelAnalyze(jobIdRef.current); } catch {}
+      try {
+        await cancelAnalyze(jobIdRef.current);
+      } catch {}
       jobIdRef.current = null;
     }
     setPhase('input');
@@ -244,37 +248,49 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
       {/* GitHub URL input */}
       {showInput && mode === 'github' && (
         <div className="space-y-2">
-          <label htmlFor={inputId} className="block text-xs font-medium text-text-secondary uppercase tracking-wider">
+          <label
+            htmlFor={inputId}
+            className="block text-xs font-medium tracking-wider text-text-secondary uppercase"
+          >
             GitHub Repository URL
           </label>
-          <div className={`
-            flex items-center gap-3 px-4 py-3.5 bg-void border rounded-xl transition-all duration-200
-            ${validationError && phase === 'error'
-              ? 'border-red-500/50'
-              : isValidGithubUrl(githubUrl)
-                ? 'border-accent/50 shadow-[0_0_0_3px_rgba(124,58,237,0.08)]'
-                : 'border-border-default focus-within:border-accent/40'
-            }
-          `}>
-            <Github className="w-4 h-4 text-text-muted shrink-0" />
+          <div
+            className={`flex items-center gap-3 rounded-xl border bg-void px-4 py-3.5 transition-all duration-200 ${
+              validationError && phase === 'error'
+                ? 'border-red-500/50'
+                : isValidGithubUrl(githubUrl)
+                  ? 'border-accent/50 shadow-[0_0_0_3px_rgba(124,58,237,0.08)]'
+                  : 'border-border-default focus-within:border-accent/40'
+            } `}
+          >
+            <Github className="h-4 w-4 shrink-0 text-text-muted" />
             <input
               id={inputId}
               type="url"
               value={githubUrl}
-              onChange={e => { setGithubUrl(e.target.value); if (validationError) setValidationError(null); }}
-              onKeyDown={e => { if (e.key === 'Enter' && canSubmit && !isLoading) { e.preventDefault(); handleAnalyze(); } }}
+              onChange={(e) => {
+                setGithubUrl(e.target.value);
+                if (validationError) setValidationError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && canSubmit && !isLoading) {
+                  e.preventDefault();
+                  handleAnalyze();
+                }
+              }}
               disabled={isLoading}
               placeholder="https://github.com/owner/repo"
               autoComplete="url"
               spellCheck={false}
-              className="flex-1 bg-transparent border-none outline-none text-sm text-text-primary placeholder:text-text-muted disabled:opacity-50 font-mono"
+              className="flex-1 border-none bg-transparent font-mono text-sm text-text-primary outline-none placeholder:text-text-muted disabled:opacity-50"
             />
             {githubUrl.length > 10 && (
               <div className="shrink-0">
-                {isValidGithubUrl(githubUrl)
-                  ? <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  : <AlertCircle className="w-3.5 h-3.5 text-text-muted" />
-                }
+                {isValidGithubUrl(githubUrl) ? (
+                  <Check className="h-3.5 w-3.5 text-emerald-400" />
+                ) : (
+                  <AlertCircle className="h-3.5 w-3.5 text-text-muted" />
+                )}
               </div>
             )}
           </div>
@@ -284,33 +300,44 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
       {/* Local folder input */}
       {showInput && mode === 'local' && (
         <div className="space-y-2">
-          <label htmlFor={`${inputId}-local`} className="block text-xs font-medium text-text-secondary uppercase tracking-wider">
+          <label
+            htmlFor={`${inputId}-local`}
+            className="block text-xs font-medium tracking-wider text-text-secondary uppercase"
+          >
             Local Folder Path
           </label>
-          <div className={`
-            flex items-center gap-3 px-4 py-3.5 bg-void border rounded-xl transition-all duration-200
-            ${validationError && phase === 'error'
-              ? 'border-red-500/50'
-              : localPath.trim().length > 1
-                ? 'border-accent/50 shadow-[0_0_0_3px_rgba(124,58,237,0.08)]'
-                : 'border-border-default focus-within:border-accent/40'
-            }
-          `}>
-            <FolderOpen className="w-4 h-4 text-text-muted shrink-0" />
+          <div
+            className={`flex items-center gap-3 rounded-xl border bg-void px-4 py-3.5 transition-all duration-200 ${
+              validationError && phase === 'error'
+                ? 'border-red-500/50'
+                : localPath.trim().length > 1
+                  ? 'border-accent/50 shadow-[0_0_0_3px_rgba(124,58,237,0.08)]'
+                  : 'border-border-default focus-within:border-accent/40'
+            } `}
+          >
+            <FolderOpen className="h-4 w-4 shrink-0 text-text-muted" />
             <input
               id={`${inputId}-local`}
               type="text"
               value={localPath}
-              onChange={e => { setLocalPath(e.target.value); if (validationError) setValidationError(null); }}
-              onKeyDown={e => { if (e.key === 'Enter' && canSubmit && !isLoading) { e.preventDefault(); handleAnalyze(); } }}
+              onChange={(e) => {
+                setLocalPath(e.target.value);
+                if (validationError) setValidationError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && canSubmit && !isLoading) {
+                  e.preventDefault();
+                  handleAnalyze();
+                }
+              }}
               disabled={isLoading}
               placeholder={isWindows ? 'C:\\Users\\you\\project' : '/home/you/project'}
               autoComplete="off"
               spellCheck={false}
-              className="flex-1 bg-transparent border-none outline-none text-sm text-text-primary placeholder:text-text-muted disabled:opacity-50 font-mono"
+              className="flex-1 border-none bg-transparent font-mono text-sm text-text-primary outline-none placeholder:text-text-muted disabled:opacity-50"
             />
             {localPath.trim().length > 1 && (
-              <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <Check className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
             )}
           </div>
           {/* Native folder picker + Browse button — below the input */}
@@ -320,7 +347,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             // @ts-expect-error -- webkitdirectory is non-standard but widely supported
             webkitdirectory=""
             className="hidden"
-            onChange={e => {
+            onChange={(e) => {
               const files = e.target.files;
               if (files && files.length > 0) {
                 const rel = files[0].webkitRelativePath;
@@ -337,9 +364,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             type="button"
             onClick={() => folderInputRef.current?.click()}
             disabled={isLoading}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-text-secondary hover:text-text-primary bg-elevated hover:bg-hover border border-border-subtle rounded-lg transition-all duration-150 cursor-pointer disabled:opacity-50"
+            className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-border-subtle bg-elevated px-3 py-2 text-xs font-medium text-text-secondary transition-all duration-150 hover:bg-hover hover:text-text-primary disabled:opacity-50"
           >
-            <FolderOpen className="w-3.5 h-3.5" />
+            <FolderOpen className="h-3.5 w-3.5" />
             Browse for folder
           </button>
         </div>
@@ -347,8 +374,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
 
       {/* Error message */}
       {(phase === 'error' || (phase === 'input' && validationError)) && validationError && (
-        <p className="text-xs text-red-400 animate-fade-in flex items-center gap-1.5">
-          <AlertCircle className="w-3 h-3 shrink-0" />{validationError}
+        <p className="flex animate-fade-in items-center gap-1.5 text-xs text-red-400">
+          <AlertCircle className="h-3 w-3 shrink-0" />
+          {validationError}
         </p>
       )}
 
@@ -364,20 +392,31 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
 
       {/* CTA button */}
       {(phase === 'input' || phase === 'starting') && (
-        <AnalyzeButton canSubmit={canSubmit} isLoading={isLoading} onClick={handleAnalyze} variant={variant} />
+        <AnalyzeButton
+          canSubmit={canSubmit}
+          isLoading={isLoading}
+          onClick={handleAnalyze}
+          variant={variant}
+        />
       )}
 
       {/* Error retry */}
       {phase === 'error' && (
         <div className="flex items-center gap-3">
           <button
-            onClick={() => { setValidationError(null); setPhase('input'); }}
-            className="flex-1 px-4 py-2.5 bg-elevated border border-border-subtle text-sm text-text-secondary hover:text-text-primary hover:bg-hover rounded-xl transition-all duration-200 cursor-pointer"
+            onClick={() => {
+              setValidationError(null);
+              setPhase('input');
+            }}
+            className="flex-1 cursor-pointer rounded-xl border border-border-subtle bg-elevated px-4 py-2.5 text-sm text-text-secondary transition-all duration-200 hover:bg-hover hover:text-text-primary"
           >
             Try again
           </button>
           {onCancel && (
-            <button onClick={onCancel} className="px-4 py-2.5 text-sm text-text-muted hover:text-text-secondary transition-colors cursor-pointer">
+            <button
+              onClick={onCancel}
+              className="cursor-pointer px-4 py-2.5 text-sm text-text-muted transition-colors hover:text-text-secondary"
+            >
               Dismiss
             </button>
           )}
@@ -386,7 +425,10 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
 
       {/* Dismiss for sheet variant while analyzing */}
       {phase === 'analyzing' && variant === 'sheet' && onCancel && (
-        <button onClick={onCancel} className="w-full text-xs text-text-muted hover:text-text-secondary transition-colors py-1 cursor-pointer">
+        <button
+          onClick={onCancel}
+          className="w-full cursor-pointer py-1 text-xs text-text-muted transition-colors hover:text-text-secondary"
+        >
           Hide (analysis continues in background)
         </button>
       )}

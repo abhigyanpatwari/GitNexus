@@ -29,8 +29,14 @@ describe('impact: batching and grouping', () => {
     // Prepare backend and a fake repo handle
     const backend = new LocalBackend();
     const repoHandle = {
-      id: 'repo1', name: 'repo1', repoPath: '/tmp/repo', storagePath: '/tmp/repo/.gitnexus',
-      lbugPath: '/tmp/repo/.gitnexus/lbug', indexedAt: 'now', lastCommit: 'c', stats: {},
+      id: 'repo1',
+      name: 'repo1',
+      repoPath: '/tmp/repo',
+      storagePath: '/tmp/repo/.gitnexus',
+      lbugPath: '/tmp/repo/.gitnexus/lbug',
+      indexedAt: 'now',
+      lastCommit: 'c',
+      stats: {},
     } as any;
     (backend as any).repos.set(repoHandle.id, repoHandle);
     (backend as any).ensureInitialized = vi.fn().mockResolvedValue(undefined);
@@ -39,7 +45,8 @@ describe('impact: batching and grouping', () => {
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
       // The initial target-resolution call will not contain STEP_IN_PROCESS
-      if (!query.includes('STEP_IN_PROCESS')) return [{ id: 'sym1', name: 'Target', filePath: 'f' }];
+      if (!query.includes('STEP_IN_PROCESS'))
+        return [{ id: 'sym1', name: 'Target', filePath: 'f' }];
       // For STEP_IN_PROCESS calls, fall through to test's executeQueryMock logic by returning [] here.
       return [];
     });
@@ -51,10 +58,16 @@ describe('impact: batching and grouping', () => {
     executeQueryMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
       // Depth traversal query (find related nodes) -- return 250 impacted ids
-      if (query.includes("r.type IN") && !query.includes('STEP_IN_PROCESS')) {
+      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
         const res: any[] = [];
         for (let i = 0; i < 250; i++) {
-          res.push({ id: `node-${i}`, name: `n${i}`, filePath: `file-${i}.js`, relType: 'CALLS', confidence: null });
+          res.push({
+            id: `node-${i}`,
+            name: `n${i}`,
+            filePath: `file-${i}.js`,
+            relType: 'CALLS',
+            confidence: null,
+          });
         }
         return res;
       }
@@ -77,7 +90,16 @@ describe('impact: batching and grouping', () => {
         const cnt = ids.length;
         chunkSizes.push(cnt);
         const idx = chunkCallIndex++;
-        return [{ entryPointId: `ep-${Math.floor(idx)}`, epName: `epName-${idx}`, epType: 'Function', epFilePath: `/path/${idx}`, hits: cnt, minStep: 1 }];
+        return [
+          {
+            entryPointId: `ep-${Math.floor(idx)}`,
+            epName: `epName-${idx}`,
+            epType: 'Function',
+            epFilePath: `/path/${idx}`,
+            hits: cnt,
+            minStep: 1,
+          },
+        ];
       }
       // Default target resolution
       return [{ id: 'sym1', name: 'Target', filePath: 'f' }];
@@ -99,31 +121,73 @@ describe('impact: batching and grouping', () => {
   it('groups entry points across chunks and deduplicates correctly', async () => {
     const backend = new LocalBackend();
     const repoHandle = {
-      id: 'repo2', name: 'repo2', repoPath: '/tmp/repo2', storagePath: '/tmp/repo2/.gitnexus',
-      lbugPath: '/tmp/repo2/.gitnexus/lbug', indexedAt: 'now', lastCommit: 'c', stats: {},
+      id: 'repo2',
+      name: 'repo2',
+      repoPath: '/tmp/repo2',
+      storagePath: '/tmp/repo2/.gitnexus',
+      lbugPath: '/tmp/repo2/.gitnexus/lbug',
+      indexedAt: 'now',
+      lastCommit: 'c',
+      stats: {},
     } as any;
     (backend as any).repos.set(repoHandle.id, repoHandle);
     (backend as any).ensureInitialized = vi.fn().mockResolvedValue(undefined);
 
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
-      if (!query.includes('STEP_IN_PROCESS')) return [{ id: 'symA', name: 'TargetA', filePath: 'f' }];
+      if (!query.includes('STEP_IN_PROCESS'))
+        return [{ id: 'symA', name: 'TargetA', filePath: 'f' }];
       // For STEP_IN_PROCESS in this test, return grouping rows
       return [
-        { entryPointId: 'ep-1', epName: 'EP1', epType: 'Function', epFilePath: '/p/1', hits: 2, minStep: 1 },
-        { entryPointId: 'ep-2', epName: 'EP2', epType: 'Function', epFilePath: '/p/2', hits: 2, minStep: 2 },
-        { entryPointId: 'ep-1', epName: 'EP1', epType: 'Function', epFilePath: '/p/1', hits: 1, minStep: 3 },
-        { entryPointId: 'ep-3', epName: 'EP3', epType: 'Function', epFilePath: '/p/3', hits: 1, minStep: 1 },
+        {
+          entryPointId: 'ep-1',
+          epName: 'EP1',
+          epType: 'Function',
+          epFilePath: '/p/1',
+          hits: 2,
+          minStep: 1,
+        },
+        {
+          entryPointId: 'ep-2',
+          epName: 'EP2',
+          epType: 'Function',
+          epFilePath: '/p/2',
+          hits: 2,
+          minStep: 2,
+        },
+        {
+          entryPointId: 'ep-1',
+          epName: 'EP1',
+          epType: 'Function',
+          epFilePath: '/p/1',
+          hits: 1,
+          minStep: 3,
+        },
+        {
+          entryPointId: 'ep-3',
+          epName: 'EP3',
+          epType: 'Function',
+          epFilePath: '/p/3',
+          hits: 1,
+          minStep: 1,
+        },
       ];
     });
 
     // Prepare impacted nodes: smaller set for clarity (6 nodes -> chunk size default 100 so single chunk)
     executeQueryMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
-      if (query.includes("r.type IN") && !query.includes('STEP_IN_PROCESS')) {
+      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
         // return 6 nodes
         const res: any[] = [];
-        for (let i = 0; i < 6; i++) res.push({ id: `node-${i}`, name: `n${i}`, filePath: `file-${i}.js`, relType: 'CALLS', confidence: null });
+        for (let i = 0; i < 6; i++)
+          res.push({
+            id: `node-${i}`,
+            name: `n${i}`,
+            filePath: `file-${i}.js`,
+            relType: 'CALLS',
+            confidence: null,
+          });
         return res;
       }
 
@@ -151,8 +215,14 @@ describe('impact: batching and grouping', () => {
 
     const backend = new LocalBackend();
     const repoHandle = {
-      id: 'repo3', name: 'repo3', repoPath: '/tmp/repo3', storagePath: '/tmp/repo3/.gitnexus',
-      lbugPath: '/tmp/repo3/.gitnexus/lbug', indexedAt: 'now', lastCommit: 'c', stats: {},
+      id: 'repo3',
+      name: 'repo3',
+      repoPath: '/tmp/repo3',
+      storagePath: '/tmp/repo3/.gitnexus',
+      lbugPath: '/tmp/repo3/.gitnexus/lbug',
+      indexedAt: 'now',
+      lastCommit: 'c',
+      stats: {},
     } as any;
     (backend as any).repos.set(repoHandle.id, repoHandle);
     (backend as any).ensureInitialized = vi.fn().mockResolvedValue(undefined);
@@ -160,9 +230,16 @@ describe('impact: batching and grouping', () => {
     // Depth traversal returns 500 impacted nodes
     executeQueryMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
-      if (query.includes("r.type IN") && !query.includes('STEP_IN_PROCESS')) {
+      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
         const res: any[] = [];
-        for (let i = 0; i < 500; i++) res.push({ id: `node-${i}`, name: `n${i}`, filePath: `file-${i}.js`, relType: 'CALLS', confidence: null });
+        for (let i = 0; i < 500; i++)
+          res.push({
+            id: `node-${i}`,
+            name: `n${i}`,
+            filePath: `file-${i}.js`,
+            relType: 'CALLS',
+            confidence: null,
+          });
         return res;
       }
       return [];
@@ -176,7 +253,16 @@ describe('impact: batching and grouping', () => {
       if (query.includes('STEP_IN_PROCESS')) {
         const ids = Array.isArray(params.ids) ? params.ids : [];
         chunkSizes.push(ids.length);
-        return [{ entryPointId: 'ep-x', epName: 'EPX', epType: 'Function', epFilePath: '/p/x', hits: ids.length, minStep: 1 }];
+        return [
+          {
+            entryPointId: 'ep-x',
+            epName: 'EPX',
+            epType: 'Function',
+            epFilePath: '/p/x',
+            hits: ids.length,
+            minStep: 1,
+          },
+        ];
       }
 
       if (query.includes('COUNT(DISTINCT s.id)')) {
@@ -215,7 +301,10 @@ describe('impact: batching and grouping', () => {
     // MAX_CHUNKS = 3 in this test, so expect 3 module-enrichment chunk calls
     // DEBUG: print memberCalls and their ids lengths
     expect(memberCalls.length).toBe(3);
-    const totalModuleIds = memberCalls.reduce((sum: number, call: any[]) => sum + ((Array.isArray(call[2]?.ids) ? call[2].ids.length : 0)), 0);
+    const totalModuleIds = memberCalls.reduce(
+      (sum: number, call: any[]) => sum + (Array.isArray(call[2]?.ids) ? call[2].ids.length : 0),
+      0,
+    );
     // eslint-disable-next-line no-console
     expect(totalModuleIds).toBe(300);
 

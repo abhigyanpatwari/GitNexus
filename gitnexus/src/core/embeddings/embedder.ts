@@ -42,7 +42,9 @@ function hasOrtCudaProvider(): boolean {
     // ORT 1.24.x only ships CUDA binaries for linux/x64 (downloaded from NuGet
     // at postinstall). arm64 will correctly return false here until ORT adds support.
     const arch = process.arch;
-    return existsSync(join(ortPath, 'bin', 'napi-v6', 'linux', arch, 'libonnxruntime_providers_cuda.so'));
+    return existsSync(
+      join(ortPath, 'bin', 'napi-v6', 'linux', arch, 'libonnxruntime_providers_cuda.so'),
+    );
   } catch {
     return false;
   }
@@ -80,9 +82,12 @@ function isCudaAvailable(): boolean {
     const val = process.env[envVar];
     if (!val) continue;
     for (const dir of val.split(':').filter(Boolean)) {
-      if (existsSync(join(dir, 'lib64', 'libcublasLt.so.12')) ||
-          existsSync(join(dir, 'lib', 'libcublasLt.so.12')) ||
-          existsSync(join(dir, 'libcublasLt.so.12'))) return true;
+      if (
+        existsSync(join(dir, 'lib64', 'libcublasLt.so.12')) ||
+        existsSync(join(dir, 'lib', 'libcublasLt.so.12')) ||
+        existsSync(join(dir, 'libcublasLt.so.12'))
+      )
+        return true;
     }
   }
 
@@ -108,7 +113,7 @@ export const getCurrentDevice = (): 'dml' | 'cuda' | 'cpu' | 'wasm' | null => cu
 /**
  * Initialize the embedding model
  * Uses singleton pattern - only loads once, subsequent calls return cached instance
- * 
+ *
  * @param onProgress - Optional callback for model download progress
  * @param config - Optional configuration override
  * @param forceDevice - Force a specific device
@@ -117,12 +122,12 @@ export const getCurrentDevice = (): 'dml' | 'cuda' | 'cpu' | 'wasm' | null => cu
 export const initEmbedder = async (
   onProgress?: ModelProgressCallback,
   config: Partial<EmbeddingConfig> = {},
-  forceDevice?: 'dml' | 'cuda' | 'cpu' | 'wasm'
+  forceDevice?: 'dml' | 'cuda' | 'cpu' | 'wasm',
 ): Promise<FeatureExtractionPipeline> => {
   if (isHttpMode()) {
     throw new Error(
       'initEmbedder() should not be called in HTTP mode. ' +
-      'Use embedText()/embedBatch() which handle HTTP transparently.'
+        'Use embedText()/embedBatch() which handle HTTP transparently.',
     );
   }
 
@@ -137,42 +142,45 @@ export const initEmbedder = async (
   }
 
   isInitializing = true;
-  
+
   const finalConfig = { ...DEFAULT_EMBEDDING_CONFIG, ...config };
   // On Windows, use DirectML for GPU acceleration (via DirectX12)
   // CUDA is only available on Linux x64 with onnxruntime-node
   // Probe for CUDA first — ONNX Runtime crashes (uncatchable native error)
   // if we attempt CUDA without the required shared libraries
   const isWindows = process.platform === 'win32';
-  const gpuDevice = isWindows ? 'dml' : (isCudaAvailable() ? 'cuda' : 'cpu');
-  let requestedDevice = forceDevice || (finalConfig.device === 'auto' ? gpuDevice : finalConfig.device);
+  const gpuDevice = isWindows ? 'dml' : isCudaAvailable() ? 'cuda' : 'cpu';
+  let requestedDevice =
+    forceDevice || (finalConfig.device === 'auto' ? gpuDevice : finalConfig.device);
 
   initPromise = (async () => {
     try {
       // Configure transformers.js environment
       env.allowLocalModels = false;
-      
+
       const isDev = process.env.NODE_ENV === 'development';
       if (isDev) {
         console.log(`🧠 Loading embedding model: ${finalConfig.modelId}`);
       }
 
-      const progressCallback = onProgress ? (data: any) => {
-        const progress: ModelProgress = {
-          status: data.status || 'progress',
-          file: data.file,
-          progress: data.progress,
-          loaded: data.loaded,
-          total: data.total,
-        };
-        onProgress(progress);
-      } : undefined;
+      const progressCallback = onProgress
+        ? (data: any) => {
+            const progress: ModelProgress = {
+              status: data.status || 'progress',
+              file: data.file,
+              progress: data.progress,
+              loaded: data.loaded,
+              total: data.total,
+            };
+            onProgress(progress);
+          }
+        : undefined;
 
       // Try GPU first if auto, fall back to CPU
       // Windows: dml (DirectML/DirectX12), Linux: cuda
-      const devicesToTry: Array<'dml' | 'cuda' | 'cpu' | 'wasm'> = 
-        (requestedDevice === 'dml' || requestedDevice === 'cuda') 
-          ? [requestedDevice, 'cpu'] 
+      const devicesToTry: Array<'dml' | 'cuda' | 'cpu' | 'wasm'> =
+        requestedDevice === 'dml' || requestedDevice === 'cuda'
+          ? [requestedDevice, 'cpu']
           : [requestedDevice as 'cpu' | 'wasm'];
 
       for (const device of devicesToTry) {
@@ -187,22 +195,21 @@ export const initEmbedder = async (
             console.log('🔧 Using WASM backend (slower)...');
           }
 
-          embedderInstance = await (pipeline as any)(
-            'feature-extraction',
-            finalConfig.modelId,
-            {
-              device: device,
-              dtype: 'fp32',
-              progress_callback: progressCallback,
-              session_options: { logSeverityLevel: 3 },
-            }
-          );
+          embedderInstance = await (pipeline as any)('feature-extraction', finalConfig.modelId, {
+            device: device,
+            dtype: 'fp32',
+            progress_callback: progressCallback,
+            session_options: { logSeverityLevel: 3 },
+          });
           currentDevice = device;
 
           if (isDev) {
-            const label = device === 'dml' ? 'GPU (DirectML/DirectX12)' 
-                        : device === 'cuda' ? 'GPU (CUDA)' 
-                        : device.toUpperCase();
+            const label =
+              device === 'dml'
+                ? 'GPU (DirectML/DirectX12)'
+                : device === 'cuda'
+                  ? 'GPU (CUDA)'
+                  : device.toUpperCase();
             console.log(`✅ Using ${label} backend`);
             console.log('✅ Embedding model loaded successfully');
           }
@@ -257,7 +264,9 @@ export const getEmbeddingDimensions = (): number => {
  */
 export const getEmbedder = (): FeatureExtractionPipeline => {
   if (isHttpMode()) {
-    throw new Error('getEmbedder() is not available in HTTP embedding mode. Use embedText()/embedBatch() instead.');
+    throw new Error(
+      'getEmbedder() is not available in HTTP embedding mode. Use embedText()/embedBatch() instead.',
+    );
   }
   if (!embedderInstance) {
     throw new Error('Embedder not initialized. Call initEmbedder() first.');
@@ -267,7 +276,7 @@ export const getEmbedder = (): FeatureExtractionPipeline => {
 
 /**
  * Embed a single text string
- * 
+ *
  * @param text - Text to embed
  * @returns Float32Array of embedding vector
  */
@@ -278,12 +287,12 @@ export const embedText = async (text: string): Promise<Float32Array> => {
   }
 
   const embedder = getEmbedder();
-  
+
   const result = await embedder(text, {
     pooling: 'mean',
     normalize: true,
   });
-  
+
   // Result is a Tensor, convert to Float32Array
   return new Float32Array(result.data as ArrayLike<number>);
 };
@@ -291,7 +300,7 @@ export const embedText = async (text: string): Promise<Float32Array> => {
 /**
  * Embed multiple texts in a single batch
  * More efficient than calling embedText multiple times
- * 
+ *
  * @param texts - Array of texts to embed
  * @returns Array of Float32Array embedding vectors
  */
@@ -305,25 +314,25 @@ export const embedBatch = async (texts: string[]): Promise<Float32Array[]> => {
   }
 
   const embedder = getEmbedder();
-  
+
   // Process batch
   const result = await embedder(texts, {
     pooling: 'mean',
     normalize: true,
   });
-  
+
   // Result shape is [batch_size, dimensions]
   // Need to split into individual vectors
   const data = result.data as ArrayLike<number>;
   const dimensions = DEFAULT_EMBEDDING_CONFIG.dimensions;
   const embeddings: Float32Array[] = [];
-  
+
   for (let i = 0; i < texts.length; i++) {
     const start = i * dimensions;
     const end = start + dimensions;
     embeddings.push(new Float32Array(Array.prototype.slice.call(data, start, end)));
   }
-  
+
   return embeddings;
 };
 
@@ -352,4 +361,3 @@ export const disposeEmbedder = async (): Promise<void> => {
     initPromise = null;
   }
 };
-

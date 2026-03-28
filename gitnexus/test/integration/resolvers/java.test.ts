@@ -4,8 +4,14 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, CROSS_FILE_FIXTURES, getRelationships, getNodesByLabel, getNodesByLabelFull, edgeSet,
-  runPipelineFromRepo, type PipelineResult,
+  FIXTURES,
+  CROSS_FILE_FIXTURES,
+  getRelationships,
+  getNodesByLabel,
+  getNodesByLabelFull,
+  edgeSet,
+  runPipelineFromRepo,
+  type PipelineResult,
 } from './helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -16,10 +22,7 @@ describe('Java heritage resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-heritage'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-heritage'), () => {});
   }, 60000);
 
   it('detects exactly 3 classes and 2 interfaces', () => {
@@ -37,10 +40,7 @@ describe('Java heritage resolution', () => {
   it('emits exactly 2 IMPLEMENTS edges: User → Serializable, User → Validatable', () => {
     const implements_ = getRelationships(result, 'IMPLEMENTS');
     expect(implements_.length).toBe(2);
-    expect(edgeSet(implements_)).toEqual([
-      'User → Serializable',
-      'User → Validatable',
-    ]);
+    expect(edgeSet(implements_)).toEqual(['User → Serializable', 'User → Validatable']);
   });
 
   it('resolves exactly 4 IMPORTS edges', () => {
@@ -56,8 +56,8 @@ describe('Java heritage resolution', () => {
 
   it('does not emit EXTENDS edges to interfaces', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
-    expect(extends_.some(e => e.target === 'Serializable')).toBe(false);
-    expect(extends_.some(e => e.target === 'Validatable')).toBe(false);
+    expect(extends_.some((e) => e.target === 'Serializable')).toBe(false);
+    expect(extends_.some((e) => e.target === 'Validatable')).toBe(false);
   });
 
   it('emits exactly 3 CALLS edges', () => {
@@ -88,18 +88,15 @@ describe('Java ambiguous symbol resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-ambiguous'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-ambiguous'), () => {});
   }, 60000);
 
   it('detects 2 Handler classes and 2 Processor interfaces', () => {
     const classes = getNodesByLabel(result, 'Class');
-    expect(classes.filter(n => n === 'Handler').length).toBe(2);
+    expect(classes.filter((n) => n === 'Handler').length).toBe(2);
     expect(classes).toContain('UserHandler');
     const ifaces = getNodesByLabel(result, 'Interface');
-    expect(ifaces.filter(n => n === 'Processor').length).toBe(2);
+    expect(ifaces.filter((n) => n === 'Processor').length).toBe(2);
   });
 
   it('resolves EXTENDS to models/Handler (not other/Handler)', () => {
@@ -120,7 +117,7 @@ describe('Java ambiguous symbol resolution', () => {
 
   it('import edges point to models/ not other/', () => {
     const imports = getRelationships(result, 'IMPORTS');
-    const targets = imports.map(e => e.target).sort();
+    const targets = imports.map((e) => e.target).sort();
     expect(targets).toContain('Handler.java');
     expect(targets).toContain('Processor.java');
     for (const imp of imports) {
@@ -129,7 +126,10 @@ describe('Java ambiguous symbol resolution', () => {
   });
 
   it('all heritage edges point to real graph nodes', () => {
-    for (const edge of [...getRelationships(result, 'EXTENDS'), ...getRelationships(result, 'IMPLEMENTS')]) {
+    for (const edge of [
+      ...getRelationships(result, 'EXTENDS'),
+      ...getRelationships(result, 'IMPLEMENTS'),
+    ]) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
       expect(target!.properties.name).toBe(edge.target);
@@ -141,10 +141,7 @@ describe('Java call resolution with arity filtering', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-calls'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-calls'), () => {});
   }, 60000);
 
   it('resolves processUser → writeAudit to util/OneArg.java via arity narrowing', () => {
@@ -165,15 +162,12 @@ describe('Java member-call resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-member-calls'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-member-calls'), () => {});
   }, 60000);
 
   it('resolves processUser → save as a member call on User', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save');
+    const saveCall = calls.find((c) => c.target === 'save');
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('processUser');
     expect(saveCall!.targetFilePath).toBe('models/User.java');
@@ -186,7 +180,7 @@ describe('Java member-call resolution', () => {
 
   it('emits HAS_METHOD edge from User to save', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const edge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
+    const edge = hasMethod.find((e) => e.source === 'User' && e.target === 'save');
     expect(edge).toBeDefined();
   });
 });
@@ -199,15 +193,12 @@ describe('Java constructor-call resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-constructor-calls'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-constructor-calls'), () => {});
   }, 60000);
 
   it('resolves new User() as a CALLS edge to the User constructor', () => {
     const calls = getRelationships(result, 'CALLS');
-    const ctorCall = calls.find(c => c.target === 'User');
+    const ctorCall = calls.find((c) => c.target === 'User');
     expect(ctorCall).toBeDefined();
     expect(ctorCall!.source).toBe('processUser');
     // Java has explicit constructor_declaration → Constructor node
@@ -217,7 +208,7 @@ describe('Java constructor-call resolution', () => {
 
   it('also resolves user.save() as a member call', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save');
+    const saveCall = calls.find((c) => c.target === 'save');
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('processUser');
   });
@@ -237,26 +228,23 @@ describe('Java receiver-constrained resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-receiver-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-receiver-resolution'), () => {});
   }, 60000);
 
   it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() to User.save and repo.save() to Repo.save via receiver typing', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save');
+    const saveCalls = calls.filter((c) => c.target === 'save');
     expect(saveCalls.length).toBe(2);
 
-    const userSave = saveCalls.find(c => c.targetFilePath === 'models/User.java');
-    const repoSave = saveCalls.find(c => c.targetFilePath === 'models/Repo.java');
+    const userSave = saveCalls.find((c) => c.targetFilePath === 'models/User.java');
+    const repoSave = saveCalls.find((c) => c.targetFilePath === 'models/Repo.java');
 
     expect(userSave).toBeDefined();
     expect(repoSave).toBeDefined();
@@ -266,8 +254,8 @@ describe('Java receiver-constrained resolution', () => {
 
   it('resolves constructor calls for both User and Repo', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userCtor = calls.find(c => c.target === 'User');
-    const repoCtor = calls.find(c => c.target === 'Repo');
+    const userCtor = calls.find((c) => c.target === 'User');
+    const repoCtor = calls.find((c) => c.target === 'Repo');
     expect(userCtor).toBeDefined();
     expect(repoCtor).toBeDefined();
   });
@@ -281,20 +269,17 @@ describe('Java named import disambiguation', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-named-imports'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-named-imports'), () => {});
   }, 60000);
 
   it('detects two User classes in different packages', () => {
-    const users = getNodesByLabel(result, 'Class').filter(n => n === 'User');
+    const users = getNodesByLabel(result, 'Class').filter((n) => n === 'User');
     expect(users.length).toBe(2);
   });
 
   it('resolves user.save() to com/example/models/User.java via named import', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save');
+    const saveCall = calls.find((c) => c.target === 'save');
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('run');
     expect(saveCall!.targetFilePath).toBe('com/example/models/User.java');
@@ -302,7 +287,7 @@ describe('Java named import disambiguation', () => {
 
   it('resolves new User() to com/example/models/User.java, not other/', () => {
     const calls = getRelationships(result, 'CALLS');
-    const ctorCall = calls.find(c => c.target === 'User' && c.source === 'run');
+    const ctorCall = calls.find((c) => c.target === 'User' && c.source === 'run');
     expect(ctorCall).toBeDefined();
     expect(ctorCall!.targetFilePath).toBe('com/example/models/User.java');
   });
@@ -316,15 +301,12 @@ describe('Java variadic call resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-variadic-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-variadic-resolution'), () => {});
   }, 60000);
 
   it('resolves 3-arg call to varargs method record(String...) in Logger.java', () => {
     const calls = getRelationships(result, 'CALLS');
-    const logCall = calls.find(c => c.target === 'record');
+    const logCall = calls.find((c) => c.target === 'record');
     expect(logCall).toBeDefined();
     expect(logCall!.source).toBe('run');
     expect(logCall!.targetFilePath).toBe('com/example/util/Logger.java');
@@ -339,22 +321,22 @@ describe('Java local definition shadows import', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-local-shadow'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-local-shadow'), () => {});
   }, 60000);
 
   it('resolves run → save to same-file definition, not the imported one', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save' && c.source === 'run');
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'run');
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('src/main/java/com/example/app/Main.java');
   });
 
   it('does NOT resolve save to Logger.java', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveToUtils = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/main/java/com/example/utils/Logger.java');
+    const saveToUtils = calls.find(
+      (c) =>
+        c.target === 'save' && c.targetFilePath === 'src/main/java/com/example/utils/Logger.java',
+    );
     expect(saveToUtils).toBeUndefined();
   });
 });
@@ -377,27 +359,31 @@ describe('Java constructor-inferred type resolution', () => {
   it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() to models/User.java via constructor-inferred type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/User.java');
+    const userSave = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'models/User.java',
+    );
     expect(userSave).toBeDefined();
     expect(userSave!.source).toBe('processEntities');
   });
 
   it('resolves repo.save() to models/Repo.java via constructor-inferred type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/Repo.java');
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'models/Repo.java',
+    );
     expect(repoSave).toBeDefined();
     expect(repoSave!.source).toBe('processEntities');
   });
 
   it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save');
+    const saveCalls = calls.filter((c) => c.target === 'save');
     expect(saveCalls.length).toBe(2);
   });
 });
@@ -411,36 +397,37 @@ describe('Java for-each loop element type resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-foreach'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-foreach'), () => {});
   }, 60000);
 
   it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() in for-each to User#save (not Repo#save)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/User.java');
+    const userSave = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'models/User.java',
+    );
     expect(userSave).toBeDefined();
     expect(userSave!.source).toBe('processEntities');
   });
 
   it('resolves repo.save() in for-each to Repo#save (not User#save)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/Repo.java');
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'models/Repo.java',
+    );
     expect(repoSave).toBeDefined();
     expect(repoSave!.source).toBe('processEntities');
   });
 
   it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save');
+    const saveCalls = calls.filter((c) => c.target === 'save');
     expect(saveCalls.length).toBe(2);
   });
 });
@@ -453,21 +440,18 @@ describe('Java this resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-self-this-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-self-this-resolution'), () => {});
   }, 60000);
 
   it('detects User and Repo classes, each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves this.save() inside User.process to User.save, not Repo.save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process');
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'process');
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('src/models/User.java');
   });
@@ -481,10 +465,7 @@ describe('Java parent resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-parent-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-parent-resolution'), () => {});
   }, 60000);
 
   it('detects BaseModel and User classes plus Serializable interface', () => {
@@ -507,7 +488,10 @@ describe('Java parent resolution', () => {
   });
 
   it('all heritage edges point to real graph nodes', () => {
-    for (const edge of [...getRelationships(result, 'EXTENDS'), ...getRelationships(result, 'IMPLEMENTS')]) {
+    for (const edge of [
+      ...getRelationships(result, 'EXTENDS'),
+      ...getRelationships(result, 'IMPLEMENTS'),
+    ]) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
       expect(target!.properties.name).toBe(edge.target);
@@ -523,10 +507,7 @@ describe('Java super resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-super-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-super-resolution'), () => {});
   }, 60000);
 
   it('detects BaseModel, User, and Repo classes', () => {
@@ -535,10 +516,16 @@ describe('Java super resolution', () => {
 
   it('resolves super.save() inside User to BaseModel.save, not Repo.save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const superSave = calls.find(c => c.source === 'save' && c.target === 'save'
-      && c.targetFilePath === 'src/models/BaseModel.java');
+    const superSave = calls.find(
+      (c) =>
+        c.source === 'save' &&
+        c.target === 'save' &&
+        c.targetFilePath === 'src/models/BaseModel.java',
+    );
     expect(superSave).toBeDefined();
-    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/models/Repo.java');
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'src/models/Repo.java',
+    );
     expect(repoSave).toBeUndefined();
   });
 });
@@ -563,10 +550,16 @@ describe('Java generic parent super resolution', () => {
 
   it('resolves super.save() inside User to BaseModel.save, not Repo.save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const superSave = calls.find(c => c.source === 'save' && c.target === 'save'
-      && c.targetFilePath === 'src/models/BaseModel.java');
+    const superSave = calls.find(
+      (c) =>
+        c.source === 'save' &&
+        c.target === 'save' &&
+        c.targetFilePath === 'src/models/BaseModel.java',
+    );
     expect(superSave).toBeDefined();
-    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'src/models/Repo.java');
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'src/models/Repo.java',
+    );
     expect(repoSave).toBeUndefined();
   });
 });
@@ -581,10 +574,7 @@ describe('Java return type inference via explicit method return type', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-return-type-inference'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-return-type-inference'), () => {});
   }, 60000);
 
   it('detects User and UserService classes', () => {
@@ -603,8 +593,9 @@ describe('Java return type inference via explicit method return type', () => {
     // return type of getUser (User), so the subsequent user.save() call resolves
     // to User#save rather than an unresolved target.
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('models')
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('models'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -622,44 +613,45 @@ describe('Java nullable receiver resolution (typed factory return)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-nullable-receiver'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-nullable-receiver'), () => {});
   }, 60000);
 
   it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() to User.save via receiver typing', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/User.java');
+    const userSave = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'models/User.java',
+    );
     expect(userSave).toBeDefined();
     expect(userSave!.source).toBe('processEntities');
   });
 
   it('resolves repo.save() to Repo.save via receiver typing', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'models/Repo.java');
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'models/Repo.java',
+    );
     expect(repoSave).toBeDefined();
     expect(repoSave!.source).toBe('processEntities');
   });
 
   it('user.save() does NOT resolve to Repo.save (negative disambiguation)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save' && c.source === 'processEntities');
+    const saveCalls = calls.filter((c) => c.target === 'save' && c.source === 'processEntities');
     // Each save() call should resolve to exactly one target file
-    expect(saveCalls.filter(c => c.targetFilePath === 'models/User.java').length).toBe(1);
-    expect(saveCalls.filter(c => c.targetFilePath === 'models/Repo.java').length).toBe(1);
+    expect(saveCalls.filter((c) => c.targetFilePath === 'models/User.java').length).toBe(1);
+    expect(saveCalls.filter((c) => c.targetFilePath === 'models/Repo.java').length).toBe(1);
   });
 
   it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save');
+    const saveCalls = calls.filter((c) => c.target === 'save');
     expect(saveCalls.length).toBe(2);
   });
 });
@@ -672,24 +664,24 @@ describe('Java assignment chain propagation', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-assignment-chain'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-assignment-chain'), () => {});
   }, 60000);
 
   it('detects User and Repo classes each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves alias.save() to User#save via assignment chain', () => {
     const calls = getRelationships(result, 'CALLS');
     // Positive: alias.save() must resolve to User#save
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath.includes('User.java'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath.includes('User.java'),
     );
     expect(userSave).toBeDefined();
   });
@@ -697,8 +689,11 @@ describe('Java assignment chain propagation', () => {
   it('alias.save() does NOT resolve to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
     // Negative: alias comes from User, so only one edge to User.java
-    const wrongCall = calls.filter(c =>
-      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath.includes('User.java'),
+    const wrongCall = calls.filter(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath.includes('User.java'),
     );
     expect(wrongCall.length).toBe(1);
   });
@@ -706,19 +701,28 @@ describe('Java assignment chain propagation', () => {
   it('resolves rAlias.save() to Repo#save via assignment chain', () => {
     const calls = getRelationships(result, 'CALLS');
     // Positive: rAlias.save() must resolve to Repo#save
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath.includes('Repo.java'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath.includes('Repo.java'),
     );
     expect(repoSave).toBeDefined();
   });
 
   it('each alias resolves to its own class, not the other', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath.includes('User.java'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath.includes('User.java'),
     );
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath.includes('Repo.java'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath.includes('Repo.java'),
     );
     expect(userSave).toBeDefined();
     expect(repoSave).toBeDefined();
@@ -736,42 +740,51 @@ describe('Java Optional<User> receiver resolution via wrapper unwrapping', () =>
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-optional-receiver'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-optional-receiver'), () => {});
   }, 60000);
 
   it('detects User and Repo classes each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() to User#save with Optional<User> in scope', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath?.includes('User.java'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath?.includes('User.java'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves repo.save() to Repo#save alongside Optional usage', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath?.includes('Repo.java'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath?.includes('Repo.java'),
     );
     expect(repoSave).toBeDefined();
   });
 
   it('disambiguates user.save() and repo.save() to different files', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath?.includes('User.java'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath?.includes('User.java'),
     );
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processEntities' && c.targetFilePath?.includes('Repo.java'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath?.includes('Repo.java'),
     );
     expect(userSave).toBeDefined();
     expect(repoSave).toBeDefined();
@@ -789,10 +802,7 @@ describe('Java chained method call resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-chain-call'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-chain-call'), () => {});
   }, 60000);
 
   it('detects User, Repo and UserService classes', () => {
@@ -803,7 +813,7 @@ describe('Java chained method call resolution', () => {
   });
 
   it('detects save methods on both User and Repo', () => {
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
@@ -814,15 +824,13 @@ describe('Java chained method call resolution', () => {
 
   it('resolves svc.getUser().save() to User#save, NOT Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'processUser' &&
-      c.targetFilePath.includes('User.java'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('User.java'),
     );
-    const repoSave = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'processUser' &&
-      c.targetFilePath.includes('Repo.java'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('Repo.java'),
     );
     expect(userSave).toBeDefined();
     expect(repoSave).toBeUndefined();
@@ -839,35 +847,30 @@ describe('Java instanceof pattern variable resolution (Phase 5.2)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-instanceof-pattern'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-instanceof-pattern'), () => {});
   }, 60000);
 
   it('detects User and Repo classes each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() inside if (obj instanceof User user) to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'process' &&
-      c.targetFilePath.includes('User.java'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User.java'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('does NOT resolve user.save() to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'process' &&
-      c.targetFilePath.includes('Repo.java'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('Repo.java'),
     );
     expect(repoSave).toBeUndefined();
   });
@@ -882,10 +885,7 @@ describe('Java enum static method call resolution (Phase 5 review fix)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-enum-static-call'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-enum-static-call'), () => {});
   }, 60000);
 
   it('detects Status as an Enum and App as a Class', () => {
@@ -901,20 +901,20 @@ describe('Java enum static method call resolution (Phase 5 review fix)', () => {
 
   it('resolves Status.fromCode(200) to Status#fromCode via class-as-receiver', () => {
     const calls = getRelationships(result, 'CALLS');
-    const fromCodeCall = calls.find(c =>
-      c.target === 'fromCode' &&
-      c.source === 'process' &&
-      c.targetFilePath?.includes('Status.java'),
+    const fromCodeCall = calls.find(
+      (c) =>
+        c.target === 'fromCode' &&
+        c.source === 'process' &&
+        c.targetFilePath?.includes('Status.java'),
     );
     expect(fromCodeCall).toBeDefined();
   });
 
   it('resolves s.label() to Status#label', () => {
     const calls = getRelationships(result, 'CALLS');
-    const labelCall = calls.find(c =>
-      c.target === 'label' &&
-      c.source === 'process' &&
-      c.targetFilePath?.includes('Status.java'),
+    const labelCall = calls.find(
+      (c) =>
+        c.target === 'label' && c.source === 'process' && c.targetFilePath?.includes('Status.java'),
     );
     expect(labelCall).toBeDefined();
   });
@@ -928,47 +928,48 @@ describe('Java switch pattern binding', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-switch-pattern'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-switch-pattern'), () => {});
   }, 60000);
 
   it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves user.save() in switch case User to models/User.java', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processAny' && c.targetFilePath === 'models/User.java',
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processAny' && c.targetFilePath === 'models/User.java',
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves repo.save() in switch case Repo to models/Repo.java', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processAny' && c.targetFilePath === 'models/Repo.java',
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processAny' && c.targetFilePath === 'models/Repo.java',
     );
     expect(repoSave).toBeDefined();
   });
 
   it('resolves user.save() in handleUser switch case User to models/User.java', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'handleUser' && c.targetFilePath === 'models/User.java',
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'handleUser' && c.targetFilePath === 'models/User.java',
     );
     expect(userSave).toBeDefined();
   });
 
   it('does NOT cross-resolve handleUser switch case User to Repo.save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'handleUser' && c.targetFilePath === 'models/Repo.java',
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'handleUser' && c.targetFilePath === 'models/Repo.java',
     );
     expect(wrongSave).toBeUndefined();
   });
@@ -982,10 +983,7 @@ describe('Java Map .values() for-loop resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-map-keys-values'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-map-keys-values'), () => {});
   }, 60000);
 
   it('detects User class with save method', () => {
@@ -994,24 +992,27 @@ describe('Java Map .values() for-loop resolution', () => {
 
   it('resolves user.save() via Map.values() to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processValues' && c.targetFilePath?.includes('User'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processValues' && c.targetFilePath?.includes('User'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('does NOT resolve user.save() to Repo#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processValues' && c.targetFilePath?.includes('Repo'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processValues' && c.targetFilePath?.includes('Repo'),
     );
     expect(wrongSave).toBeUndefined();
   });
 
   it('resolves user.save() via List iteration to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processList' && c.targetFilePath?.includes('User'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processList' && c.targetFilePath?.includes('User'),
     );
     expect(userSave).toBeDefined();
   });
@@ -1026,10 +1027,7 @@ describe('Java foreach call_expression iterable resolution (Phase 7.3)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-foreach-call-expr'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-foreach-call-expr'), () => {});
   }, 60000);
 
   it('detects User and Repo classes with competing save methods', () => {
@@ -1039,32 +1037,44 @@ describe('Java foreach call_expression iterable resolution (Phase 7.3)', () => {
 
   it('resolves user.save() in foreach over User.getUsers() to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('User.java'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processUsers' &&
+        c.targetFilePath?.includes('User.java'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves repo.save() in foreach over Repo.getRepos() to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('Repo.java'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processRepos' &&
+        c.targetFilePath?.includes('Repo.java'),
     );
     expect(repoSave).toBeDefined();
   });
 
   it('does NOT resolve user.save() to Repo#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('Repo.java'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processUsers' &&
+        c.targetFilePath?.includes('Repo.java'),
     );
     expect(wrongSave).toBeUndefined();
   });
 
   it('does NOT resolve repo.save() to User#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('User.java'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processRepos' &&
+        c.targetFilePath?.includes('User.java'),
     );
     expect(wrongSave).toBeUndefined();
   });
@@ -1078,10 +1088,7 @@ describe('Field type resolution (Java)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-field-types'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-field-types'), () => {});
   }, 60000);
 
   it('detects classes: Address, App, User', () => {
@@ -1105,16 +1112,16 @@ describe('Field type resolution (Java)', () => {
 
   it('resolves user.address.save() → Address#save via field type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(e => e.target === 'save');
+    const saveCalls = calls.filter((e) => e.target === 'save');
     const addressSave = saveCalls.find(
-      e => e.source === 'processUser' && e.targetFilePath.includes('Address'),
+      (e) => e.source === 'processUser' && e.targetFilePath.includes('Address'),
     );
     expect(addressSave).toBeDefined();
   });
 
   it('emits ACCESSES read edge for user.address field access in chain', () => {
     const accesses = getRelationships(result, 'ACCESSES');
-    const addressReads = accesses.filter(e => e.target === 'address' && e.rel.reason === 'read');
+    const addressReads = accesses.filter((e) => e.target === 'address' && e.rel.reason === 'read');
     expect(addressReads.length).toBe(1);
     expect(addressReads[0].source).toBe('processUser');
     expect(addressReads[0].targetLabel).toBe('Property');
@@ -1123,14 +1130,14 @@ describe('Field type resolution (Java)', () => {
   it('populates field metadata (visibility, isStatic, declaredType) on Property nodes', () => {
     const properties = getNodesByLabelFull(result, 'Property');
 
-    const city = properties.find(p => p.name === 'city');
+    const city = properties.find((p) => p.name === 'city');
     expect(city).toBeDefined();
     expect(city!.properties.visibility).toBe('public');
     expect(city!.properties.isStatic).toBe(false);
     expect(city!.properties.isReadonly).toBe(false);
     expect(city!.properties.declaredType).toBe('String');
 
-    const addr = properties.find(p => p.name === 'address');
+    const addr = properties.find((p) => p.name === 'address');
     expect(addr).toBeDefined();
     expect(addr!.properties.visibility).toBe('public');
     expect(addr!.properties.declaredType).toBe('Address');
@@ -1145,10 +1152,7 @@ describe('Deep field chain resolution (Java)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-deep-field-chain'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-deep-field-chain'), () => {});
   }, 60000);
 
   it('detects classes: Address, App, City, User', () => {
@@ -1171,15 +1175,15 @@ describe('Deep field chain resolution (Java)', () => {
 
   it('resolves 2-level chain: user.address.save() → Address#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(e => e.target === 'save' && e.source === 'processUser');
-    const addressSave = saveCalls.find(e => e.targetFilePath.includes('Address'));
+    const saveCalls = calls.filter((e) => e.target === 'save' && e.source === 'processUser');
+    const addressSave = saveCalls.find((e) => e.targetFilePath.includes('Address'));
     expect(addressSave).toBeDefined();
   });
 
   it('resolves 3-level chain: user.address.city.getName() → City#getName', () => {
     const calls = getRelationships(result, 'CALLS');
-    const getNameCalls = calls.filter(e => e.target === 'getName' && e.source === 'processUser');
-    const cityGetName = getNameCalls.find(e => e.targetFilePath.includes('City'));
+    const getNameCalls = calls.filter((e) => e.target === 'getName' && e.source === 'processUser');
+    const cityGetName = getNameCalls.find((e) => e.targetFilePath.includes('City'));
     expect(cityGetName).toBeDefined();
   });
 });
@@ -1192,14 +1196,17 @@ describe('Mixed field+call chain resolution (Java)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-mixed-chain'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-mixed-chain'), () => {});
   }, 60000);
 
   it('detects classes: Address, App, City, User, UserService', () => {
-    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'App', 'City', 'User', 'UserService']);
+    expect(getNodesByLabel(result, 'Class')).toEqual([
+      'Address',
+      'App',
+      'City',
+      'User',
+      'UserService',
+    ]);
   });
 
   it('detects Property nodes for mixed-chain fields', () => {
@@ -1210,14 +1217,16 @@ describe('Mixed field+call chain resolution (Java)', () => {
 
   it('resolves call→field chain: svc.getUser().address.save() → Address#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(e => e.target === 'save' && e.source === 'processWithService');
+    const saveCalls = calls.filter((e) => e.target === 'save' && e.source === 'processWithService');
     expect(saveCalls.length).toBe(1);
     expect(saveCalls[0].targetFilePath).toContain('Address');
   });
 
   it('resolves field→call chain: user.getAddress().city.getName() → City#getName', () => {
     const calls = getRelationships(result, 'CALLS');
-    const getNameCalls = calls.filter(e => e.target === 'getName' && e.source === 'processWithUser');
+    const getNameCalls = calls.filter(
+      (e) => e.target === 'getName' && e.source === 'processWithUser',
+    );
     expect(getNameCalls.length).toBe(1);
     expect(getNameCalls[0].targetFilePath).toContain('City');
   });
@@ -1231,18 +1240,15 @@ describe('Write access tracking (Java)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-write-access'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-write-access'), () => {});
   }, 60000);
 
   it('emits ACCESSES write edges for field assignments', () => {
     const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter(e => e.rel.reason === 'write');
+    const writes = accesses.filter((e) => e.rel.reason === 'write');
     expect(writes.length).toBe(2);
-    const nameWrite = writes.find(e => e.target === 'name');
-    const addressWrite = writes.find(e => e.target === 'address');
+    const nameWrite = writes.find((e) => e.target === 'name');
+    const addressWrite = writes.find((e) => e.target === 'address');
     expect(nameWrite).toBeDefined();
     expect(nameWrite!.source).toBe('updateUser');
     expect(addressWrite).toBeDefined();
@@ -1258,16 +1264,13 @@ describe('Java call-result variable binding (Tier 2b)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-call-result-binding'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-call-result-binding'), () => {});
   }, 60000);
 
   it('resolves user.save() to User#save via call-result binding', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('User')
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('User'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -1281,16 +1284,14 @@ describe('Java method chain binding via unified fixpoint (Phase 9C)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-method-chain-binding'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-method-chain-binding'), () => {});
   }, 60000);
 
   it('resolves city.save() to City#save via method chain', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processChain' && c.targetFilePath.includes('Models')
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processChain' && c.targetFilePath.includes('Models'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -1327,16 +1328,16 @@ describe('Java grandparent method resolution via MRO (Phase B)', () => {
 
   it('resolves c.greet().save() to Greeting#save via depth-2 MRO lookup', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.targetFilePath.includes('Greeting'),
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath.includes('Greeting'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves c.greet() to A#greet (method found via MRO walk)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const greetCall = calls.find(c =>
-      c.target === 'greet' && c.targetFilePath.includes('A.java'),
+    const greetCall = calls.find(
+      (c) => c.target === 'greet' && c.targetFilePath.includes('A.java'),
     );
     expect(greetCall).toBeDefined();
   });
@@ -1348,15 +1349,12 @@ describe('Java overload disambiguation by parameter types', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-overload-param-types'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-overload-param-types'), () => {});
   }, 60000);
 
   it('detects lookup method with parameterTypes on graph node', () => {
     const methods = getNodesByLabelFull(result, 'Method');
-    const lookupNodes = methods.filter(m => m.name === 'lookup');
+    const lookupNodes = methods.filter((m) => m.name === 'lookup');
     // generateId collision → 1 graph node, first overload's parameterTypes wins
     expect(lookupNodes.length).toBe(1);
     // The node has parameterTypes from whichever overload was registered first
@@ -1365,7 +1363,7 @@ describe('Java overload disambiguation by parameter types', () => {
 
   it('emits CALLS edge from run() → lookup() via overload disambiguation', () => {
     const calls = getRelationships(result, 'CALLS');
-    const lookupCalls = calls.filter(c => c.source === 'run' && c.target === 'lookup');
+    const lookupCalls = calls.filter((c) => c.source === 'run' && c.target === 'lookup');
     // Phase 0 (fileIndex stores both overloads) + Phase 2 (literal type matching)
     // enables resolution where previously 2 same-arity candidates → null.
     // Both calls resolve to same nodeId (ID collision) → 1 CALLS edge after dedup.
@@ -1379,10 +1377,7 @@ describe('Java virtual dispatch via constructor type (same-file)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-virtual-dispatch'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-virtual-dispatch'), () => {});
   }, 60000);
 
   it('detects Animal, Dog, and App classes in same file', () => {
@@ -1394,7 +1389,7 @@ describe('Java virtual dispatch via constructor type (same-file)', () => {
 
   it('detects Dog extends Animal heritage', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
-    const dogExtends = extends_.find(e => e.source === 'Dog' && e.target === 'Animal');
+    const dogExtends = extends_.find((e) => e.source === 'Dog' && e.target === 'Animal');
     expect(dogExtends).toBeDefined();
   });
 
@@ -1405,7 +1400,7 @@ describe('Java virtual dispatch via constructor type (same-file)', () => {
 
   it('resolves fetchBall() calls from run() — proves virtual dispatch override', () => {
     const calls = getRelationships(result, 'CALLS');
-    const fetchCalls = calls.filter(c => c.source === 'run' && c.target === 'fetchBall');
+    const fetchCalls = calls.filter((c) => c.source === 'run' && c.target === 'fetchBall');
     // animal.fetchBall() only resolves if constructorTypeMap overrides
     // receiver from Animal → Dog (since only Dog has fetchBall).
     // dog.fetchBall() resolves directly via Dog type.
@@ -1425,10 +1420,7 @@ describe('Java cross-file binding propagation', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(CROSS_FILE_FIXTURES, 'java-cross-file'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(CROSS_FILE_FIXTURES, 'java-cross-file'), () => {});
   }, 60000);
 
   it('detects User class with save and getName methods', () => {
@@ -1449,36 +1441,32 @@ describe('Java cross-file binding propagation', () => {
 
   it('emits IMPORTS edge from App.java to UserFactory.java', () => {
     const imports = getRelationships(result, 'IMPORTS');
-    const edge = imports.find(e =>
-      e.sourceFilePath.includes('App') && e.targetFilePath.includes('UserFactory'),
+    const edge = imports.find(
+      (e) => e.sourceFilePath.includes('App') && e.targetFilePath.includes('UserFactory'),
     );
     expect(edge).toBeDefined();
   });
 
   it('resolves user.save() in run() to User#save via cross-file return type propagation', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'run' &&
-      c.targetFilePath.includes('User.java'),
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'run' && c.targetFilePath.includes('User.java'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves user.getName() in run() to User#getName via cross-file return type propagation', () => {
     const calls = getRelationships(result, 'CALLS');
-    const getNameCall = calls.find(c =>
-      c.target === 'getName' &&
-      c.source === 'run' &&
-      c.targetFilePath.includes('User.java'),
+    const getNameCall = calls.find(
+      (c) => c.target === 'getName' && c.source === 'run' && c.targetFilePath.includes('User.java'),
     );
     expect(getNameCall).toBeDefined();
   });
 
   it('emits HAS_METHOD edges linking save and getName to User', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const saveEdge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
-    const getNameEdge = hasMethod.find(e => e.source === 'User' && e.target === 'getName');
+    const saveEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'save');
+    const getNameEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'getName');
     expect(saveEdge).toBeDefined();
     expect(getNameEdge).toBeDefined();
   });

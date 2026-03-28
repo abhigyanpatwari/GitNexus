@@ -37,10 +37,7 @@ describe('parseJcl', () => {
 
   describe('EXEC statements', () => {
     it('extracts step with PGM=program', () => {
-      const jcl = [
-        '//MYJOB   JOB (ACCT)',
-        '//STEP1   EXEC PGM=IEFBR14',
-      ].join('\n');
+      const jcl = ['//MYJOB   JOB (ACCT)', '//STEP1   EXEC PGM=IEFBR14'].join('\n');
       const r = parseJcl(jcl, 'test.jcl');
       expect(r.steps).toHaveLength(1);
       expect(r.steps[0].name).toBe('STEP1');
@@ -49,10 +46,7 @@ describe('parseJcl', () => {
     });
 
     it('extracts step with proc name (no PGM= keyword)', () => {
-      const jcl = [
-        '//MYJOB   JOB (ACCT)',
-        '//STEP1   EXEC MYPROC',
-      ].join('\n');
+      const jcl = ['//MYJOB   JOB (ACCT)', '//STEP1   EXEC MYPROC'].join('\n');
       const r = parseJcl(jcl, 'test.jcl');
       expect(r.steps).toHaveLength(1);
       expect(r.steps[0].name).toBe('STEP1');
@@ -119,11 +113,7 @@ describe('parseJcl', () => {
 
   describe('PROC definitions', () => {
     it('extracts in-stream PROC with name', () => {
-      const jcl = [
-        '//MYPROC  PROC',
-        '//STEP1   EXEC PGM=IEFBR14',
-        '// PEND',
-      ].join('\n');
+      const jcl = ['//MYPROC  PROC', '//STEP1   EXEC PGM=IEFBR14', '// PEND'].join('\n');
       const r = parseJcl(jcl, 'test.jcl');
       expect(r.procs).toHaveLength(1);
       expect(r.procs[0].name).toBe('MYPROC');
@@ -219,12 +209,7 @@ describe('parseJcl', () => {
       const padding = ' '.repeat(71 - base.length);
       const line1 = base + padding + 'X'; // col 72 is 'X' (non-blank) -> continuation
       const line2 = '//             DISP=SHR';
-      const jcl = [
-        '//MYJOB   JOB (ACCT)',
-        '//STEP1   EXEC PGM=IEFBR14',
-        line1,
-        line2,
-      ].join('\n');
+      const jcl = ['//MYJOB   JOB (ACCT)', '//STEP1   EXEC PGM=IEFBR14', line1, line2].join('\n');
       const r = parseJcl(jcl, 'test.jcl');
       // The continuation should join the DD line so both DSN and DISP are parsed
       expect(r.ddStatements).toHaveLength(1);
@@ -238,11 +223,9 @@ describe('parseJcl', () => {
 
   describe('Edge cases', () => {
     it('skips JCL comments (//*)', () => {
-      const jcl = [
-        '//* This is a comment',
-        '//MYJOB   JOB (ACCT)',
-        '//* Another comment',
-      ].join('\n');
+      const jcl = ['//* This is a comment', '//MYJOB   JOB (ACCT)', '//* Another comment'].join(
+        '\n',
+      );
       const r = parseJcl(jcl, 'test.jcl');
       expect(r.jobs).toHaveLength(1);
       expect(r.jobs[0].name).toBe('MYJOB');
@@ -275,7 +258,7 @@ describe('parseJcl', () => {
     it('complete JCL job with multiple steps and DDs', () => {
       const jcl = [
         '//* Complete payroll job',
-        '//PAYJOB   JOB (ACCT123),\'PAYROLL RUN\',CLASS=A,MSGCLASS=X',
+        "//PAYJOB   JOB (ACCT123),'PAYROLL RUN',CLASS=A,MSGCLASS=X",
         '// JCLLIB ORDER=(PAY.PROCLIB,SYS1.PROCLIB)',
         '// SET ENV=PROD',
         '// INCLUDE MEMBER=STDPARMS',
@@ -329,10 +312,23 @@ describe('parseJcl', () => {
 
       // DD statements
       expect(r.ddStatements).toHaveLength(4);
-      expect(r.ddStatements[0]).toMatchObject({ ddName: 'INPUT', stepName: 'STEP01', dataset: 'PAY.MASTER', disp: 'SHR' });
-      expect(r.ddStatements[1]).toMatchObject({ ddName: 'OUTPUT', stepName: 'STEP01', disp: 'NEW' });
+      expect(r.ddStatements[0]).toMatchObject({
+        ddName: 'INPUT',
+        stepName: 'STEP01',
+        dataset: 'PAY.MASTER',
+        disp: 'SHR',
+      });
+      expect(r.ddStatements[1]).toMatchObject({
+        ddName: 'OUTPUT',
+        stepName: 'STEP01',
+        disp: 'NEW',
+      });
       expect(r.ddStatements[2]).toMatchObject({ ddName: 'SYSPRINT', stepName: 'STEP01' });
-      expect(r.ddStatements[3]).toMatchObject({ ddName: 'INFILE', stepName: 'STEP02', dataset: 'PAY.EXTRACT' });
+      expect(r.ddStatements[3]).toMatchObject({
+        ddName: 'INFILE',
+        stepName: 'STEP02',
+        dataset: 'PAY.EXTRACT',
+      });
     });
   });
 });

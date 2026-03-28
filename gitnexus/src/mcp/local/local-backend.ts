@@ -1,6 +1,6 @@
 /**
  * Local Backend (Multi-Repo)
- * 
+ *
  * Provides tool implementations using local .gitnexus/ indexes.
  * Supports multiple indexed repositories via a global registry.
  * LadybugDB connections are opened lazily per repo on first query.
@@ -8,7 +8,14 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { initLbug, executeQuery, executeParameterized, closeLbug, isLbugReady, isWriteQuery } from '../core/lbug-adapter.js';
+import {
+  initLbug,
+  executeQuery,
+  executeParameterized,
+  closeLbug,
+  isLbugReady,
+  isWriteQuery,
+} from '../core/lbug-adapter.js';
 export { isWriteQuery };
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -29,28 +36,73 @@ import {
 export function isTestFilePath(filePath: string): boolean {
   const p = filePath.toLowerCase().replace(/\\/g, '/');
   return (
-    p.includes('.test.') || p.includes('.spec.') ||
-    p.includes('__tests__/') || p.includes('__mocks__/') ||
-    p.includes('/test/') || p.includes('/tests/') ||
-    p.includes('/testing/') || p.includes('/fixtures/') ||
-    p.endsWith('_test.go') || p.endsWith('_test.py') ||
-    p.endsWith('_spec.rb') || p.endsWith('_test.rb') || p.includes('/spec/') ||
-    p.includes('/test_') || p.includes('/conftest.')
+    p.includes('.test.') ||
+    p.includes('.spec.') ||
+    p.includes('__tests__/') ||
+    p.includes('__mocks__/') ||
+    p.includes('/test/') ||
+    p.includes('/tests/') ||
+    p.includes('/testing/') ||
+    p.includes('/fixtures/') ||
+    p.endsWith('_test.go') ||
+    p.endsWith('_test.py') ||
+    p.endsWith('_spec.rb') ||
+    p.endsWith('_test.rb') ||
+    p.includes('/spec/') ||
+    p.includes('/test_') ||
+    p.includes('/conftest.')
   );
 }
 
 /** Valid LadybugDB node labels for safe Cypher query construction */
 export const VALID_NODE_LABELS = new Set([
-  'File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement',
-  'Community', 'Process', 'Struct', 'Enum', 'Macro', 'Typedef', 'Union',
-  'Namespace', 'Trait', 'Impl', 'TypeAlias', 'Const', 'Static', 'Property',
-  'Record', 'Delegate', 'Annotation', 'Constructor', 'Template', 'Module',
+  'File',
+  'Folder',
+  'Function',
+  'Class',
+  'Interface',
+  'Method',
+  'CodeElement',
+  'Community',
+  'Process',
+  'Struct',
+  'Enum',
+  'Macro',
+  'Typedef',
+  'Union',
+  'Namespace',
+  'Trait',
+  'Impl',
+  'TypeAlias',
+  'Const',
+  'Static',
+  'Property',
+  'Record',
+  'Delegate',
+  'Annotation',
+  'Constructor',
+  'Template',
+  'Module',
   'Route',
   'Tool',
 ]);
 
 /** Valid relation types for impact analysis filtering */
-export const VALID_RELATION_TYPES = new Set(['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES', 'HANDLES_ROUTE', 'FETCHES', 'HANDLES_TOOL', 'ENTRY_POINT_OF', 'WRAPS']);
+export const VALID_RELATION_TYPES = new Set([
+  'CALLS',
+  'IMPORTS',
+  'EXTENDS',
+  'IMPLEMENTS',
+  'HAS_METHOD',
+  'HAS_PROPERTY',
+  'OVERRIDES',
+  'ACCESSES',
+  'HANDLES_ROUTE',
+  'FETCHES',
+  'HANDLES_TOOL',
+  'ENTRY_POINT_OF',
+  'WRAPS',
+]);
 
 /**
  * Per-relation-type confidence floor for impact analysis.
@@ -90,7 +142,6 @@ export const IMPACT_RELATION_CONFIDENCE: Readonly<Record<string, number>> = {
 const confidenceForRelType = (relType: string | undefined): number =>
   IMPACT_RELATION_CONFIDENCE[relType ?? ''] ?? 0.5;
 
-
 /** Structured error logging for query failures — replaces empty catch blocks */
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
@@ -108,7 +159,7 @@ export interface CodebaseContext {
 }
 
 interface RepoHandle {
-  id: string;          // unique key = repo name (basename)
+  id: string; // unique key = repo name (basename)
   name: string;
   repoPath: string;
   storagePath: string;
@@ -156,7 +207,9 @@ export class LocalBackend {
       // If kuzu exists but lbug doesn't, warn so the user knows to re-analyze.
       const kuzu = await cleanupOldKuzuFiles(storagePath);
       if (kuzu.found && kuzu.needsReindex) {
-        console.error(`GitNexus: "${entry.name}" has a stale KuzuDB index. Run: gitnexus analyze ${entry.path}`);
+        console.error(
+          `GitNexus: "${entry.name}" has a stale KuzuDB index. Run: gitnexus analyze ${entry.path}`,
+        );
       }
 
       const handle: RepoHandle = {
@@ -237,12 +290,12 @@ export class LocalBackend {
       throw new Error('No indexed repositories. Run: gitnexus analyze');
     }
     if (repoParam) {
-      const names = [...this.repos.values()].map(h => h.name);
+      const names = [...this.repos.values()].map((h) => h.name);
       throw new Error(`Repository "${repoParam}" not found. Available: ${names.join(', ')}`);
     }
-    const names = [...this.repos.values()].map(h => h.name);
+    const names = [...this.repos.values()].map((h) => h.name);
     throw new Error(
-      `Multiple repositories indexed. Specify which one with the "repo" parameter. Available: ${names.join(', ')}`
+      `Multiple repositories indexed. Specify which one with the "repo" parameter. Available: ${names.join(', ')}`,
     );
   }
 
@@ -357,9 +410,11 @@ export class LocalBackend {
    * Re-reads the global registry so newly indexed repos are discovered
    * without restarting the MCP server.
    */
-  async listRepos(): Promise<Array<{ name: string; path: string; indexedAt: string; lastCommit: string; stats?: any }>> {
+  async listRepos(): Promise<
+    Array<{ name: string; path: string; indexedAt: string; lastCommit: string; stats?: any }>
+  > {
     await this.refreshRepos();
-    return [...this.repos.values()].map(h => ({
+    return [...this.repos.values()].map((h) => ({
       name: h.name,
       path: h.repoPath,
       indexedAt: h.indexedAt,
@@ -417,31 +472,34 @@ export class LocalBackend {
 
   /**
    * Query tool — process-grouped search.
-   * 
+   *
    * 1. Hybrid search (BM25 + semantic) to find matching symbols
    * 2. Trace each match to its process(es) via STEP_IN_PROCESS
    * 3. Group by process, rank by aggregate relevance + internal cluster cohesion
    * 4. Return: { processes, process_symbols, definitions }
    */
-  private async query(repo: RepoHandle, params: {
-    query: string;
-    task_context?: string;
-    goal?: string;
-    limit?: number;
-    max_symbols?: number;
-    include_content?: boolean;
-  }): Promise<any> {
+  private async query(
+    repo: RepoHandle,
+    params: {
+      query: string;
+      task_context?: string;
+      goal?: string;
+      limit?: number;
+      max_symbols?: number;
+      include_content?: boolean;
+    },
+  ): Promise<any> {
     if (!params.query?.trim()) {
       return { error: 'query parameter is required and cannot be empty.' };
     }
-    
+
     await this.ensureInitialized(repo.id);
-    
+
     const processLimit = params.limit || 5;
     const maxSymbolsPerProcess = params.max_symbols || 10;
     const includeContent = params.include_content ?? false;
     const searchQuery = params.query.trim();
-    
+
     // Step 1: Run hybrid search to get matching symbols
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
     const [bm25SearchResult, semanticResults] = await Promise.all([
@@ -451,10 +509,10 @@ export class LocalBackend {
 
     const bm25Results = bm25SearchResult.results;
     const ftsUsed = bm25SearchResult.ftsUsed;
-    
+
     // Merge via reciprocal rank fusion
     const scoreMap = new Map<string, { score: number; data: any }>();
-    
+
     for (let i = 0; i < bm25Results.length; i++) {
       const result = bm25Results[i];
       const key = result.nodeId || result.filePath;
@@ -466,7 +524,7 @@ export class LocalBackend {
         scoreMap.set(key, { score: rrfScore, data: result });
       }
     }
-    
+
     for (let i = 0; i < semanticResults.length; i++) {
       const result = semanticResults[i];
       const key = result.nodeId || result.filePath;
@@ -478,15 +536,27 @@ export class LocalBackend {
         scoreMap.set(key, { score: rrfScore, data: result });
       }
     }
-    
+
     const merged = Array.from(scoreMap.entries())
       .sort((a, b) => b[1].score - a[1].score)
       .slice(0, searchLimit);
-    
+
     // Step 2: For each match with a nodeId, trace to process(es)
-    const processMap = new Map<string, { id: string; label: string; heuristicLabel: string; processType: string; stepCount: number; totalScore: number; cohesionBoost: number; symbols: any[] }>();
+    const processMap = new Map<
+      string,
+      {
+        id: string;
+        label: string;
+        heuristicLabel: string;
+        processType: string;
+        stepCount: number;
+        totalScore: number;
+        cohesionBoost: number;
+        symbols: any[];
+      }
+    >();
     const definitions: any[] = []; // standalone symbols not in any process
-    
+
     for (const [_, item] of merged) {
       const sym = item.data;
       if (!sym.nodeId) {
@@ -498,43 +568,61 @@ export class LocalBackend {
         });
         continue;
       }
-      
+
       // Find processes this symbol participates in
       let processRows: any[] = [];
       try {
-        processRows = await executeParameterized(repo.id, `
+        processRows = await executeParameterized(
+          repo.id,
+          `
           MATCH (n {id: $nodeId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
           RETURN p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
-        `, { nodeId: sym.nodeId });
-      } catch (e) { logQueryError('query:process-lookup', e); }
+        `,
+          { nodeId: sym.nodeId },
+        );
+      } catch (e) {
+        logQueryError('query:process-lookup', e);
+      }
 
       // Get cluster membership + cohesion (cohesion used as internal ranking signal)
       let cohesion = 0;
       let module: string | undefined;
       try {
-        const cohesionRows = await executeParameterized(repo.id, `
+        const cohesionRows = await executeParameterized(
+          repo.id,
+          `
           MATCH (n {id: $nodeId})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
           RETURN c.cohesion AS cohesion, c.heuristicLabel AS module
           LIMIT 1
-        `, { nodeId: sym.nodeId });
+        `,
+          { nodeId: sym.nodeId },
+        );
         if (cohesionRows.length > 0) {
           cohesion = (cohesionRows[0].cohesion ?? cohesionRows[0][0]) || 0;
           module = cohesionRows[0].module ?? cohesionRows[0][1];
         }
-      } catch (e) { logQueryError('query:cluster-info', e); }
+      } catch (e) {
+        logQueryError('query:cluster-info', e);
+      }
 
       // Optionally fetch content
       let content: string | undefined;
       if (includeContent) {
         try {
-          const contentRows = await executeParameterized(repo.id, `
+          const contentRows = await executeParameterized(
+            repo.id,
+            `
             MATCH (n {id: $nodeId})
             RETURN n.content AS content
-          `, { nodeId: sym.nodeId });
+          `,
+            { nodeId: sym.nodeId },
+          );
           if (contentRows.length > 0) {
             content = contentRows[0].content ?? contentRows[0][0];
           }
-        } catch (e) { logQueryError('query:content-fetch', e); }
+        } catch (e) {
+          logQueryError('query:content-fetch', e);
+        }
       }
 
       const symbolEntry = {
@@ -547,7 +635,7 @@ export class LocalBackend {
         ...(module ? { module } : {}),
         ...(includeContent && content ? { content } : {}),
       };
-      
+
       if (processRows.length === 0) {
         // Symbol not in any process — goes to definitions
         definitions.push(symbolEntry);
@@ -560,7 +648,7 @@ export class LocalBackend {
           const pType = row.processType ?? row[3];
           const stepCount = row.stepCount ?? row[4];
           const step = row.step ?? row[5];
-          
+
           if (!processMap.has(pid)) {
             processMap.set(pid, {
               id: pid,
@@ -573,7 +661,7 @@ export class LocalBackend {
               symbols: [],
             });
           }
-          
+
           const proc = processMap.get(pid)!;
           proc.totalScore += item.score;
           proc.cohesionBoost = Math.max(proc.cohesionBoost, cohesion);
@@ -585,18 +673,18 @@ export class LocalBackend {
         }
       }
     }
-    
+
     // Step 3: Rank processes by aggregate score + internal cohesion boost
     const rankedProcesses = Array.from(processMap.values())
-      .map(p => ({
+      .map((p) => ({
         ...p,
-        priority: p.totalScore + (p.cohesionBoost * 0.1), // cohesion as subtle ranking signal
+        priority: p.totalScore + p.cohesionBoost * 0.1, // cohesion as subtle ranking signal
       }))
       .sort((a, b) => b.priority - a.priority)
       .slice(0, processLimit);
-    
+
     // Step 4: Build response
-    const processes = rankedProcesses.map(p => ({
+    const processes = rankedProcesses.map((p) => ({
       id: p.id,
       summary: p.heuristicLabel || p.label,
       priority: Math.round(p.priority * 1000) / 1000,
@@ -604,34 +692,41 @@ export class LocalBackend {
       process_type: p.processType,
       step_count: p.stepCount,
     }));
-    
-    const processSymbols = rankedProcesses.flatMap(p =>
-      p.symbols.slice(0, maxSymbolsPerProcess).map(s => ({
+
+    const processSymbols = rankedProcesses.flatMap((p) =>
+      p.symbols.slice(0, maxSymbolsPerProcess).map((s) => ({
         ...s,
         // remove internal fields
-      }))
+      })),
     );
-    
+
     // Deduplicate process_symbols by id
     const seen = new Set<string>();
-    const dedupedSymbols = processSymbols.filter(s => {
+    const dedupedSymbols = processSymbols.filter((s) => {
       if (seen.has(s.id)) return false;
       seen.add(s.id);
       return true;
     });
-    
+
     return {
       processes,
       process_symbols: dedupedSymbols,
       definitions: definitions.slice(0, 20), // cap standalone definitions
-      ...(!ftsUsed && { warning: 'FTS extension unavailable - keyword search degraded. Run: gitnexus analyze --force to rebuild indexes.' }),
+      ...(!ftsUsed && {
+        warning:
+          'FTS extension unavailable - keyword search degraded. Run: gitnexus analyze --force to rebuild indexes.',
+      }),
     };
   }
 
   /**
    * BM25 keyword search helper - uses LadybugDB FTS for always-fresh results
    */
-  private async bm25Search(repo: RepoHandle, query: string, limit: number): Promise<{ results: any[]; ftsUsed: boolean }> {
+  private async bm25Search(
+    repo: RepoHandle,
+    query: string,
+    limit: number,
+  ): Promise<{ results: any[]; ftsUsed: boolean }> {
     const { searchFTSFromLbug } = await import('../../core/search/bm25-index.js');
     let bm25Results;
     try {
@@ -641,20 +736,24 @@ export class LocalBackend {
       return { results: [], ftsUsed: false };
     }
 
-    const ftsUsed = bm25Results.length === 0 || (bm25Results[0]?.ftsUsed !== false);
-    
+    const ftsUsed = bm25Results.length === 0 || bm25Results[0]?.ftsUsed !== false;
+
     const results: any[] = [];
-    
+
     for (const bm25Result of bm25Results) {
       const fullPath = bm25Result.filePath;
       try {
-        const symbols = await executeParameterized(repo.id, `
+        const symbols = await executeParameterized(
+          repo.id,
+          `
           MATCH (n)
           WHERE n.filePath = $filePath
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
           LIMIT 3
-        `, { filePath: fullPath });
-        
+        `,
+          { filePath: fullPath },
+        );
+
         if (symbols.length > 0) {
           for (const sym of symbols) {
             results.push({
@@ -686,7 +785,7 @@ export class LocalBackend {
         });
       }
     }
-    
+
     return { results, ftsUsed };
   }
 
@@ -696,14 +795,17 @@ export class LocalBackend {
   private async semanticSearch(repo: RepoHandle, query: string, limit: number): Promise<any[]> {
     try {
       // Check if embedding table exists before loading the model (avoids heavy model init when embeddings are off)
-      const tableCheck = await executeQuery(repo.id, `MATCH (e:CodeEmbedding) RETURN COUNT(*) AS cnt LIMIT 1`);
+      const tableCheck = await executeQuery(
+        repo.id,
+        `MATCH (e:CodeEmbedding) RETURN COUNT(*) AS cnt LIMIT 1`,
+      );
       if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) return [];
 
       const { embedQuery, getEmbeddingDims } = await import('../core/embedder.js');
       const queryVec = await embedQuery(query);
       const dims = getEmbeddingDims();
       const queryVecStr = `[${queryVec.join(',')}]`;
-      
+
       const vectorQuery = `
         CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', 
           CAST(${queryVecStr} AS FLOAT[${dims}]), ${limit})
@@ -713,27 +815,28 @@ export class LocalBackend {
         RETURN emb.nodeId AS nodeId, distance
         ORDER BY distance
       `;
-      
+
       const embResults = await executeQuery(repo.id, vectorQuery);
-      
+
       if (embResults.length === 0) return [];
-      
+
       const results: any[] = [];
-      
+
       for (const embRow of embResults) {
         const nodeId = embRow.nodeId ?? embRow[0];
         const distance = embRow.distance ?? embRow[1];
-        
+
         const labelEndIdx = nodeId.indexOf(':');
         const label = labelEndIdx > 0 ? nodeId.substring(0, labelEndIdx) : 'Unknown';
-        
+
         // Validate label against known node types to prevent Cypher injection
         if (!VALID_NODE_LABELS.has(label)) continue;
-        
+
         try {
-          const nodeQuery = label === 'File'
-            ? `MATCH (n:File {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath`
-            : `MATCH (n:\`${label}\` {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
+          const nodeQuery =
+            label === 'File'
+              ? `MATCH (n:File {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath`
+              : `MATCH (n:\`${label}\` {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
 
           const nodeRows = await executeParameterized(repo.id, nodeQuery, { nodeId });
           if (nodeRows.length > 0) {
@@ -750,7 +853,7 @@ export class LocalBackend {
           }
         } catch {}
       }
-      
+
       return results;
     } catch {
       // Expected when embeddings are disabled — silently fall back to BM25-only
@@ -772,7 +875,10 @@ export class LocalBackend {
 
     // Block write operations (defense-in-depth — DB is already read-only)
     if (isWriteQuery(params.query)) {
-      return { error: 'Write operations (CREATE, DELETE, SET, MERGE, REMOVE, DROP, ALTER, COPY, DETACH) are not allowed. The knowledge graph is read-only.' };
+      return {
+        error:
+          'Write operations (CREATE, DELETE, SET, MERGE, REMOVE, DROP, ALTER, COPY, DETACH) are not allowed. The knowledge graph is read-only.',
+      };
     }
 
     try {
@@ -798,13 +904,18 @@ export class LocalBackend {
 
     const header = '| ' + keys.join(' | ') + ' |';
     const separator = '| ' + keys.map(() => '---').join(' | ') + ' |';
-    const dataRows = result.map((row: any) =>
-      '| ' + keys.map(k => {
-        const v = row[k];
-        if (v === null || v === undefined) return '';
-        if (typeof v === 'object') return JSON.stringify(v);
-        return String(v);
-      }).join(' | ') + ' |'
+    const dataRows = result.map(
+      (row: any) =>
+        '| ' +
+        keys
+          .map((k) => {
+            const v = row[k];
+            if (v === null || v === undefined) return '';
+            if (typeof v === 'object') return JSON.stringify(v);
+            return String(v);
+          })
+          .join(' | ') +
+        ' |',
     );
 
     return {
@@ -819,7 +930,10 @@ export class LocalBackend {
    * Raw communities stay intact in LadybugDB for Cypher queries.
    */
   private aggregateClusters(clusters: any[]): any[] {
-    const groups = new Map<string, { ids: string[]; totalSymbols: number; weightedCohesion: number; largest: any }>();
+    const groups = new Map<
+      string,
+      { ids: string[]; totalSymbols: number; weightedCohesion: number; largest: any }
+    >();
 
     for (const c of clusters) {
       const label = c.heuristicLabel || c.label || 'Unknown';
@@ -828,7 +942,12 @@ export class LocalBackend {
       const existing = groups.get(label);
 
       if (!existing) {
-        groups.set(label, { ids: [c.id], totalSymbols: symbols, weightedCohesion: cohesion * symbols, largest: c });
+        groups.set(label, {
+          ids: [c.id],
+          totalSymbols: symbols,
+          weightedCohesion: cohesion * symbols,
+          largest: c,
+        });
       } else {
         existing.ids.push(c.id);
         existing.totalSymbols += symbols;
@@ -848,13 +967,16 @@ export class LocalBackend {
         cohesion: g.totalSymbols > 0 ? g.weightedCohesion / g.totalSymbols : 0,
         subCommunities: g.ids.length,
       }))
-      .filter(c => c.symbolCount >= 5)
+      .filter((c) => c.symbolCount >= 5)
       .sort((a, b) => b.symbolCount - a.symbolCount);
   }
 
-  private async overview(repo: RepoHandle, params: { showClusters?: boolean; showProcesses?: boolean; limit?: number }): Promise<any> {
+  private async overview(
+    repo: RepoHandle,
+    params: { showClusters?: boolean; showProcesses?: boolean; limit?: number },
+  ): Promise<any> {
     await this.ensureInitialized(repo.id);
-    
+
     const limit = params.limit || 20;
     const result: any = {
       repo: repo.name,
@@ -863,17 +985,20 @@ export class LocalBackend {
       indexedAt: repo.indexedAt,
       lastCommit: repo.lastCommit,
     };
-    
+
     if (params.showClusters !== false) {
       try {
         // Fetch more raw communities than the display limit so aggregation has enough data
         const rawLimit = Math.max(limit * 5, 200);
-        const clusters = await executeQuery(repo.id, `
+        const clusters = await executeQuery(
+          repo.id,
+          `
           MATCH (c:Community)
           RETURN c.id AS id, c.label AS label, c.heuristicLabel AS heuristicLabel, c.cohesion AS cohesion, c.symbolCount AS symbolCount
           ORDER BY c.symbolCount DESC
           LIMIT ${rawLimit}
-        `);
+        `,
+        );
         const rawClusters = clusters.map((c: any) => ({
           id: c.id || c[0],
           label: c.label || c[1],
@@ -886,15 +1011,18 @@ export class LocalBackend {
         result.clusters = [];
       }
     }
-    
+
     if (params.showProcesses !== false) {
       try {
-        const processes = await executeQuery(repo.id, `
+        const processes = await executeQuery(
+          repo.id,
+          `
           MATCH (p:Process)
           RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
           ORDER BY p.stepCount DESC
           LIMIT ${limit}
-        `);
+        `,
+        );
         result.processes = processes.map((p: any) => ({
           id: p.id || p[0],
           label: p.label || p[1],
@@ -906,7 +1034,7 @@ export class LocalBackend {
         result.processes = [];
       }
     }
-    
+
     return result;
   }
 
@@ -915,29 +1043,36 @@ export class LocalBackend {
    * Disambiguation when multiple symbols share a name.
    * UID-based direct lookup. No cluster in output.
    */
-  private async context(repo: RepoHandle, params: {
-    name?: string;
-    uid?: string;
-    file_path?: string;
-    include_content?: boolean;
-  }): Promise<any> {
+  private async context(
+    repo: RepoHandle,
+    params: {
+      name?: string;
+      uid?: string;
+      file_path?: string;
+      include_content?: boolean;
+    },
+  ): Promise<any> {
     await this.ensureInitialized(repo.id);
-    
+
     const { name, uid, file_path, include_content } = params;
-    
+
     if (!name && !uid) {
       return { error: 'Either "name" or "uid" parameter is required.' };
     }
-    
+
     // Step 1: Find the symbol
     let symbols: any[];
-    
+
     if (uid) {
-      symbols = await executeParameterized(repo.id, `
+      symbols = await executeParameterized(
+        repo.id,
+        `
         MATCH (n {id: $uid})
         RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}
         LIMIT 1
-      `, { uid });
+      `,
+        { uid },
+      );
     } else {
       const isQualified = name!.includes('/') || name!.includes(':');
 
@@ -954,17 +1089,21 @@ export class LocalBackend {
         queryParams = { symName: name! };
       }
 
-      symbols = await executeParameterized(repo.id, `
+      symbols = await executeParameterized(
+        repo.id,
+        `
         MATCH (n) ${whereClause}
         RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}
         LIMIT 10
-      `, queryParams);
+      `,
+        queryParams,
+      );
     }
-    
+
     if (symbols.length === 0) {
       return { error: `Symbol '${name || uid}' not found` };
     }
-    
+
     // Step 2: Disambiguation
     // When multiple nodes share the same name (e.g. a Java Class and its
     // Constructor both named 'SessionTracker'), prefer the Class node so
@@ -992,12 +1131,19 @@ export class LocalBackend {
         const PREFER_LABELS = ['Class', 'Interface'];
         let preferred: any = null;
         for (const label of PREFER_LABELS) {
-          const match = await executeParameterized(repo.id, `
+          const match = await executeParameterized(
+            repo.id,
+            `
             MATCH (n:\`${label}\`) WHERE n.id IN $candidateIds RETURN n.id AS id LIMIT 1
-          `, { candidateIds }).catch(() => []);
+          `,
+            { candidateIds },
+          ).catch(() => []);
           if (match.length > 0) {
             preferred = symbols.find((s: any) => (s.id || s[0]) === (match[0].id || match[0][0]));
-            if (preferred) { resolvedLabel = label; break; }
+            if (preferred) {
+              resolvedLabel = label;
+              break;
+            }
           }
         }
         if (preferred) symbols = [preferred];
@@ -1017,18 +1163,22 @@ export class LocalBackend {
         })),
       };
     }
-    
+
     // Step 3: Build full context
     const sym = symbols[0];
     const symId = sym.id || sym[0];
 
     // Categorized incoming refs
-    let incomingRows = await executeParameterized(repo.id, `
+    let incomingRows = await executeParameterized(
+      repo.id,
+      `
       MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES']
       RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       LIMIT 30
-    `, { symId });
+    `,
+      { symId },
+    );
 
     // Fix #480: Class/Interface nodes have no direct CALLS/IMPORTS edges —
     // those point to Constructor and File nodes respectively. Fetch those
@@ -1043,13 +1193,19 @@ export class LocalBackend {
     if (!isClassLike && symRawType === '') {
       try {
         // Single UNION query instead of two serial round-trips.
-        const typeCheck = await executeParameterized(repo.id, `
+        const typeCheck = await executeParameterized(
+          repo.id,
+          `
           MATCH (n:Class) WHERE n.id = $symId RETURN 'Class' AS label LIMIT 1
           UNION ALL
           MATCH (n:Interface) WHERE n.id = $symId RETURN 'Interface' AS label LIMIT 1
-        `, { symId });
+        `,
+          { symId },
+        );
         isClassLike = typeCheck.length > 0;
-      } catch { /* not a Class/Interface node */ }
+      } catch {
+        /* not a Class/Interface node */
+      }
     } else if (!isClassLike) {
       isClassLike = symRawType === 'Class' || symRawType === 'Interface';
     }
@@ -1058,22 +1214,30 @@ export class LocalBackend {
       try {
         // Run both incoming-ref queries in parallel — they are independent.
         const [ctorIncoming, fileIncoming] = await Promise.all([
-          executeParameterized(repo.id, `
+          executeParameterized(
+            repo.id,
+            `
             MATCH (n)-[hm:CodeRelation]->(ctor:Constructor)
             WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
             MATCH (caller)-[r:CodeRelation]->(ctor)
             WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'ACCESSES']
             RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             LIMIT 30
-          `, { symId }),
-          executeParameterized(repo.id, `
+          `,
+            { symId },
+          ),
+          executeParameterized(
+            repo.id,
+            `
             MATCH (f:File)-[rel:CodeRelation]->(n)
             WHERE n.id = $symId AND rel.type = 'DEFINES'
             MATCH (caller)-[r:CodeRelation]->(f)
             WHERE r.type IN ['CALLS', 'IMPORTS']
             RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             LIMIT 30
-          `, { symId }),
+          `,
+            { symId },
+          ),
         ]);
 
         // Deduplicate by (relType, uid) — a caller can have multiple relation
@@ -1084,7 +1248,10 @@ export class LocalBackend {
         );
         for (const r of [...ctorIncoming, ...fileIncoming]) {
           const key = `${r.relType || r[0]}:${r.uid || r[1]}`;
-          if (!seenKeys.has(key)) { seenKeys.add(key); incomingRows.push(r); }
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            incomingRows.push(r);
+          }
         }
       } catch (e) {
         logQueryError('context:class-incoming-expansion', e);
@@ -1092,22 +1259,32 @@ export class LocalBackend {
     }
 
     // Categorized outgoing refs
-    const outgoingRows = await executeParameterized(repo.id, `
+    const outgoingRows = await executeParameterized(
+      repo.id,
+      `
       MATCH (n {id: $symId})-[r:CodeRelation]->(target)
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES']
       RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       LIMIT 30
-    `, { symId });
+    `,
+      { symId },
+    );
 
     // Process participation
     let processRows: any[] = [];
     try {
-      processRows = await executeParameterized(repo.id, `
+      processRows = await executeParameterized(
+        repo.id,
+        `
         MATCH (n {id: $symId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
         RETURN p.id AS pid, p.heuristicLabel AS label, r.step AS step, p.stepCount AS stepCount
-      `, { symId });
-    } catch (e) { logQueryError('context:process-participation', e); }
-    
+      `,
+        { symId },
+      );
+    } catch (e) {
+      logQueryError('context:process-participation', e);
+    }
+
     // Helper to categorize refs
     const categorize = (rows: any[]) => {
       const cats: Record<string, any[]> = {};
@@ -1124,13 +1301,13 @@ export class LocalBackend {
       }
       return cats;
     };
-    
+
     return {
       status: 'found',
       symbol: {
         uid: sym.id || sym[0],
         name: sym.name || sym[1],
-        kind: isClassLike ? (resolvedLabel || 'Class') : (sym.type || sym[2]),
+        kind: isClassLike ? resolvedLabel || 'Class' : sym.type || sym[2],
         filePath: sym.filePath || sym[3],
         startLine: sym.startLine || sym[4],
         endLine: sym.endLine || sym[5],
@@ -1151,41 +1328,56 @@ export class LocalBackend {
    * Legacy explore — kept for backwards compatibility with resources.ts.
    * Routes cluster/process types to direct graph queries.
    */
-  private async explore(repo: RepoHandle, params: { name: string; type: 'symbol' | 'cluster' | 'process' }): Promise<any> {
+  private async explore(
+    repo: RepoHandle,
+    params: { name: string; type: 'symbol' | 'cluster' | 'process' },
+  ): Promise<any> {
     await this.ensureInitialized(repo.id);
     const { name, type } = params;
-    
+
     if (type === 'symbol') {
       return this.context(repo, { name });
     }
-    
+
     if (type === 'cluster') {
-      const clusters = await executeParameterized(repo.id, `
+      const clusters = await executeParameterized(
+        repo.id,
+        `
         MATCH (c:Community)
         WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
         RETURN c.id AS id, c.label AS label, c.heuristicLabel AS heuristicLabel, c.cohesion AS cohesion, c.symbolCount AS symbolCount
-      `, { clusterName: name });
+      `,
+        { clusterName: name },
+      );
       if (clusters.length === 0) return { error: `Cluster '${name}' not found` };
 
       const rawClusters = clusters.map((c: any) => ({
-        id: c.id || c[0], label: c.label || c[1], heuristicLabel: c.heuristicLabel || c[2],
-        cohesion: c.cohesion || c[3], symbolCount: c.symbolCount || c[4],
+        id: c.id || c[0],
+        label: c.label || c[1],
+        heuristicLabel: c.heuristicLabel || c[2],
+        cohesion: c.cohesion || c[3],
+        symbolCount: c.symbolCount || c[4],
       }));
 
-      let totalSymbols = 0, weightedCohesion = 0;
+      let totalSymbols = 0,
+        weightedCohesion = 0;
       for (const c of rawClusters) {
         const s = c.symbolCount || 0;
         totalSymbols += s;
         weightedCohesion += (c.cohesion || 0) * s;
       }
 
-      const members = await executeParameterized(repo.id, `
+      const members = await executeParameterized(
+        repo.id,
+        `
         MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
         WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
         RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
         LIMIT 30
-      `, { clusterName: name });
-      
+      `,
+        { clusterName: name },
+      );
+
       return {
         cluster: {
           id: rawClusters[0].id,
@@ -1196,39 +1388,55 @@ export class LocalBackend {
           subCommunities: rawClusters.length,
         },
         members: members.map((m: any) => ({
-          name: m.name || m[0], type: m.type || m[1], filePath: m.filePath || m[2],
+          name: m.name || m[0],
+          type: m.type || m[1],
+          filePath: m.filePath || m[2],
         })),
       };
     }
-    
+
     if (type === 'process') {
-      const processes = await executeParameterized(repo.id, `
+      const processes = await executeParameterized(
+        repo.id,
+        `
         MATCH (p:Process)
         WHERE p.label = $processName OR p.heuristicLabel = $processName
         RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
         LIMIT 1
-      `, { processName: name });
+      `,
+        { processName: name },
+      );
       if (processes.length === 0) return { error: `Process '${name}' not found` };
 
       const proc = processes[0];
       const procId = proc.id || proc[0];
-      const steps = await executeParameterized(repo.id, `
+      const steps = await executeParameterized(
+        repo.id,
+        `
         MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: $procId})
         RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step
         ORDER BY r.step
-      `, { procId });
-      
+      `,
+        { procId },
+      );
+
       return {
         process: {
-          id: procId, label: proc.label || proc[1], heuristicLabel: proc.heuristicLabel || proc[2],
-          processType: proc.processType || proc[3], stepCount: proc.stepCount || proc[4],
+          id: procId,
+          label: proc.label || proc[1],
+          heuristicLabel: proc.heuristicLabel || proc[2],
+          processType: proc.processType || proc[3],
+          stepCount: proc.stepCount || proc[4],
         },
         steps: steps.map((s: any) => ({
-          step: s.step || s[3], name: s.name || s[0], type: s.type || s[1], filePath: s.filePath || s[2],
+          step: s.step || s[3],
+          name: s.name || s[0],
+          type: s.type || s[1],
+          filePath: s.filePath || s[2],
         })),
       };
     }
-    
+
     return { error: 'Invalid type. Use: symbol, cluster, or process' };
   }
 
@@ -1236,12 +1444,15 @@ export class LocalBackend {
    * Detect changes — git-diff based impact analysis.
    * Maps changed lines to indexed symbols, then finds affected processes.
    */
-  private async detectChanges(repo: RepoHandle, params: {
-    scope?: string;
-    base_ref?: string;
-  }): Promise<any> {
+  private async detectChanges(
+    repo: RepoHandle,
+    params: {
+      scope?: string;
+      base_ref?: string;
+    },
+  ): Promise<any> {
     await this.ensureInitialized(repo.id);
-    
+
     const scope = params.scope || 'unstaged';
     const { execFileSync } = await import('child_process');
 
@@ -1267,29 +1478,41 @@ export class LocalBackend {
     let changedFiles: string[];
     try {
       const output = execFileSync('git', diffArgs, { cwd: repo.repoPath, encoding: 'utf-8' });
-      changedFiles = output.trim().split('\n').filter(f => f.length > 0);
+      changedFiles = output
+        .trim()
+        .split('\n')
+        .filter((f) => f.length > 0);
     } catch (err: any) {
       return { error: `Git diff failed: ${err.message}` };
     }
-    
+
     if (changedFiles.length === 0) {
       return {
-        summary: { changed_count: 0, affected_count: 0, risk_level: 'none', message: 'No changes detected.' },
+        summary: {
+          changed_count: 0,
+          affected_count: 0,
+          risk_level: 'none',
+          message: 'No changes detected.',
+        },
         changed_symbols: [],
         affected_processes: [],
       };
     }
-    
+
     // Map changed files to indexed symbols
     const changedSymbols: any[] = [];
     for (const file of changedFiles) {
       const normalizedFile = file.replace(/\\/g, '/');
       try {
-        const symbols = await executeParameterized(repo.id, `
+        const symbols = await executeParameterized(
+          repo.id,
+          `
           MATCH (n) WHERE n.filePath CONTAINS $filePath
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
           LIMIT 20
-        `, { filePath: normalizedFile });
+        `,
+          { filePath: normalizedFile },
+        );
         for (const sym of symbols) {
           changedSymbols.push({
             id: sym.id || sym[0],
@@ -1299,17 +1522,23 @@ export class LocalBackend {
             change_type: 'Modified',
           });
         }
-      } catch (e) { logQueryError('detect-changes:file-symbols', e); }
+      } catch (e) {
+        logQueryError('detect-changes:file-symbols', e);
+      }
     }
 
     // Find affected processes
     const affectedProcesses = new Map<string, any>();
     for (const sym of changedSymbols) {
       try {
-        const procs = await executeParameterized(repo.id, `
+        const procs = await executeParameterized(
+          repo.id,
+          `
           MATCH (n {id: $nodeId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
           RETURN p.id AS pid, p.heuristicLabel AS label, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
-        `, { nodeId: sym.id });
+        `,
+          { nodeId: sym.id },
+        );
         for (const proc of procs) {
           const pid = proc.pid || proc[0];
           if (!affectedProcesses.has(pid)) {
@@ -1326,12 +1555,21 @@ export class LocalBackend {
             step: proc.step || proc[4],
           });
         }
-      } catch (e) { logQueryError('detect-changes:process-lookup', e); }
+      } catch (e) {
+        logQueryError('detect-changes:process-lookup', e);
+      }
     }
 
     const processCount = affectedProcesses.size;
-    const risk = processCount === 0 ? 'low' : processCount <= 5 ? 'medium' : processCount <= 15 ? 'high' : 'critical';
-    
+    const risk =
+      processCount === 0
+        ? 'low'
+        : processCount <= 5
+          ? 'medium'
+          : processCount <= 15
+            ? 'high'
+            : 'critical';
+
     return {
       summary: {
         changed_count: changedSymbols.length,
@@ -1349,15 +1587,18 @@ export class LocalBackend {
    * Graph refs are tagged "graph" (high confidence).
    * Additional refs found via text search are tagged "text_search" (lower confidence).
    */
-  private async rename(repo: RepoHandle, params: {
-    symbol_name?: string;
-    symbol_uid?: string;
-    new_name: string;
-    file_path?: string;
-    dry_run?: boolean;
-  }): Promise<any> {
+  private async rename(
+    repo: RepoHandle,
+    params: {
+      symbol_name?: string;
+      symbol_uid?: string;
+      new_name: string;
+      file_path?: string;
+      dry_run?: boolean;
+    },
+  ): Promise<any> {
     await this.ensureInitialized(repo.id);
-    
+
     const { new_name, file_path } = params;
     const dry_run = params.dry_run ?? true;
 
@@ -1373,38 +1614,44 @@ export class LocalBackend {
       }
       return full;
     };
-    
+
     // Step 1: Find the target symbol (reuse context's lookup)
     const lookupResult = await this.context(repo, {
       name: params.symbol_name,
       uid: params.symbol_uid,
       file_path,
     });
-    
+
     if (lookupResult.status === 'ambiguous') {
       return lookupResult; // pass disambiguation through
     }
     if (lookupResult.error) {
       return lookupResult;
     }
-    
+
     const sym = lookupResult.symbol;
     const oldName = sym.name;
-    
+
     if (oldName === new_name) {
       return { error: 'New name is the same as the current name.' };
     }
-    
+
     // Step 2: Collect edits from graph (high confidence)
     const changes = new Map<string, { file_path: string; edits: any[] }>();
-    
-    const addEdit = (filePath: string, line: number, oldText: string, newText: string, confidence: string) => {
+
+    const addEdit = (
+      filePath: string,
+      line: number,
+      oldText: string,
+      newText: string,
+      confidence: string,
+    ) => {
       if (!changes.has(filePath)) {
         changes.set(filePath, { file_path: filePath, edits: [] });
       }
       changes.get(filePath)!.edits.push({ line, old_text: oldText, new_text: newText, confidence });
     };
-    
+
     // The definition itself
     if (sym.filePath && sym.startLine) {
       try {
@@ -1412,10 +1659,21 @@ export class LocalBackend {
         const lines = content.split('\n');
         const lineIdx = sym.startLine - 1;
         if (lineIdx >= 0 && lineIdx < lines.length && lines[lineIdx].includes(oldName)) {
-          const defRegex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
-          addEdit(sym.filePath, sym.startLine, lines[lineIdx].trim(), lines[lineIdx].replace(defRegex, new_name).trim(), 'graph');
+          const defRegex = new RegExp(
+            `\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`,
+            'g',
+          );
+          addEdit(
+            sym.filePath,
+            sym.startLine,
+            lines[lineIdx].trim(),
+            lines[lineIdx].replace(defRegex, new_name).trim(),
+            'graph',
+          );
         }
-      } catch (e) { logQueryError('rename:read-definition', e); }
+      } catch (e) {
+        logQueryError('rename:read-definition', e);
+      }
     }
 
     // All incoming refs from graph (callers, importers, etc.)
@@ -1425,9 +1683,9 @@ export class LocalBackend {
       ...(lookupResult.incoming.extends || []),
       ...(lookupResult.incoming.implements || []),
     ];
-    
+
     let graphEdits = changes.size > 0 ? 1 : 0; // count definition edit
-    
+
     for (const ref of allIncoming) {
       if (!ref.filePath) continue;
       try {
@@ -1435,35 +1693,59 @@ export class LocalBackend {
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
           if (lines[i].includes(oldName)) {
-            addEdit(ref.filePath, i + 1, lines[i].trim(), lines[i].replace(new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g'), new_name).trim(), 'graph');
+            addEdit(
+              ref.filePath,
+              i + 1,
+              lines[i].trim(),
+              lines[i]
+                .replace(
+                  new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g'),
+                  new_name,
+                )
+                .trim(),
+              'graph',
+            );
             graphEdits++;
             break; // one edit per file from graph refs
           }
         }
-      } catch (e) { logQueryError('rename:read-ref', e); }
+      } catch (e) {
+        logQueryError('rename:read-ref', e);
+      }
     }
 
     // Step 3: Text search for refs the graph might have missed
     let astSearchEdits = 0;
-    const graphFiles = new Set([sym.filePath, ...allIncoming.map(r => r.filePath)].filter(Boolean));
-    
+    const graphFiles = new Set(
+      [sym.filePath, ...allIncoming.map((r) => r.filePath)].filter(Boolean),
+    );
+
     // Simple text search across the repo for the old name (in files not already covered by graph)
     try {
       const { execFileSync } = await import('child_process');
       const rgArgs = [
         '-l',
-        '--type-add', 'code:*.{ts,tsx,js,jsx,py,go,rs,java,c,h,cpp,cc,cxx,hpp,hxx,hh,cs,php,swift}',
-        '-t', 'code',
+        '--type-add',
+        'code:*.{ts,tsx,js,jsx,py,go,rs,java,c,h,cpp,cc,cxx,hpp,hxx,hh,cs,php,swift}',
+        '-t',
+        'code',
         `\\b${oldName}\\b`,
         '.',
       ];
-      const output = execFileSync('rg', rgArgs, { cwd: repo.repoPath, encoding: 'utf-8', timeout: 5000 });
-      const files = output.trim().split('\n').filter(f => f.length > 0);
-      
+      const output = execFileSync('rg', rgArgs, {
+        cwd: repo.repoPath,
+        encoding: 'utf-8',
+        timeout: 5000,
+      });
+      const files = output
+        .trim()
+        .split('\n')
+        .filter((f) => f.length > 0);
+
       for (const file of files) {
         const normalizedFile = file.replace(/\\/g, '/').replace(/^\.\//, '');
         if (graphFiles.has(normalizedFile)) continue; // already covered by graph
-        
+
         try {
           const content = await fs.readFile(assertSafePath(normalizedFile), 'utf-8');
           const lines = content.split('\n');
@@ -1472,18 +1754,28 @@ export class LocalBackend {
             regex.lastIndex = 0;
             if (regex.test(lines[i])) {
               regex.lastIndex = 0;
-              addEdit(normalizedFile, i + 1, lines[i].trim(), lines[i].replace(regex, new_name).trim(), 'text_search');
+              addEdit(
+                normalizedFile,
+                i + 1,
+                lines[i].trim(),
+                lines[i].replace(regex, new_name).trim(),
+                'text_search',
+              );
               astSearchEdits++;
             }
           }
-        } catch (e) { logQueryError('rename:text-search-read', e); }
+        } catch (e) {
+          logQueryError('rename:text-search-read', e);
+        }
       }
-    } catch (e) { logQueryError('rename:ripgrep', e); }
-    
+    } catch (e) {
+      logQueryError('rename:ripgrep', e);
+    }
+
     // Step 4: Apply or preview
     const allChanges = Array.from(changes.values());
     const totalEdits = allChanges.reduce((sum, c) => sum + c.edits.length, 0);
-    
+
     if (!dry_run) {
       // Apply edits to files
       for (const change of allChanges) {
@@ -1493,10 +1785,12 @@ export class LocalBackend {
           const regex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
           content = content.replace(regex, new_name);
           await fs.writeFile(fullPath, content, 'utf-8');
-        } catch (e) { logQueryError('rename:apply-edit', e); }
+        } catch (e) {
+          logQueryError('rename:apply-edit', e);
+        }
       }
     }
-    
+
     return {
       status: 'success',
       old_name: oldName,
@@ -1510,14 +1804,17 @@ export class LocalBackend {
     };
   }
 
-  private async impact(repo: RepoHandle, params: {
-    target: string;
-    direction: 'upstream' | 'downstream';
-    maxDepth?: number;
-    relationTypes?: string[];
-    includeTests?: boolean;
-    minConfidence?: number;
-  }): Promise<any> {
+  private async impact(
+    repo: RepoHandle,
+    params: {
+      target: string;
+      direction: 'upstream' | 'downstream';
+      maxDepth?: number;
+      relationTypes?: string[];
+      includeTests?: boolean;
+      minConfidence?: number;
+    },
+  ): Promise<any> {
     try {
       return await this._impactImpl(repo, params);
     } catch (err: any) {
@@ -1533,26 +1830,31 @@ export class LocalBackend {
     }
   }
 
-  private async _impactImpl(repo: RepoHandle, params: {
-    target: string;
-    direction: 'upstream' | 'downstream';
-    maxDepth?: number;
-    relationTypes?: string[];
-    includeTests?: boolean;
-    minConfidence?: number;
-  }): Promise<any> {
+  private async _impactImpl(
+    repo: RepoHandle,
+    params: {
+      target: string;
+      direction: 'upstream' | 'downstream';
+      maxDepth?: number;
+      relationTypes?: string[];
+      includeTests?: boolean;
+      minConfidence?: number;
+    },
+  ): Promise<any> {
     await this.ensureInitialized(repo.id);
-    
+
     const { target, direction } = params;
     const maxDepth = params.maxDepth || 3;
-    const rawRelTypes = params.relationTypes && params.relationTypes.length > 0
-      ? params.relationTypes.filter(t => VALID_RELATION_TYPES.has(t))
-      : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
-    const relationTypes = rawRelTypes.length > 0 ? rawRelTypes : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
+    const rawRelTypes =
+      params.relationTypes && params.relationTypes.length > 0
+        ? params.relationTypes.filter((t) => VALID_RELATION_TYPES.has(t))
+        : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
+    const relationTypes =
+      rawRelTypes.length > 0 ? rawRelTypes : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
     const includeTests = params.includeTests ?? false;
     const minConfidence = params.minConfidence ?? 0;
 
-    const relTypeFilter = relationTypes.map(t => `'${t}'`).join(', ');
+    const relTypeFilter = relationTypes.map((t) => `'${t}'`).join(', ');
     const confidenceFilter = minConfidence > 0 ? ` AND r.confidence >= ${minConfidence}` : '';
 
     // Resolve target by name, preferring Class/Interface over Constructor
@@ -1564,7 +1866,9 @@ export class LocalBackend {
     let symType = '';
 
     try {
-      const rows = await executeParameterized(repo.id, `
+      const rows = await executeParameterized(
+        repo.id,
+        `
         MATCH (n:\`Class\`) WHERE n.name = $targetName
         RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 0 AS priority LIMIT 1
         UNION ALL
@@ -1579,7 +1883,9 @@ export class LocalBackend {
         UNION ALL
         MATCH (n:\`Constructor\`) WHERE n.name = $targetName
         RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 4 AS priority LIMIT 1
-      `, { targetName: target }).catch(() => []);
+      `,
+        { targetName: target },
+      ).catch(() => []);
 
       if (rows.length > 0) {
         // Pick the row with the lowest priority value (Class wins over Constructor)
@@ -1590,16 +1896,22 @@ export class LocalBackend {
         const priorityToLabel = ['Class', 'Interface', 'Function', 'Method', 'Constructor'];
         symType = priorityToLabel[best.priority ?? best[3]] ?? '';
       }
-    } catch { /* fall through to unlabeled match */ }
+    } catch {
+      /* fall through to unlabeled match */
+    }
 
     // Fall back to unlabeled match for any other node type
     if (!sym) {
-      const rows = await executeParameterized(repo.id, `
+      const rows = await executeParameterized(
+        repo.id,
+        `
         MATCH (n)
         WHERE n.name = $targetName
         RETURN n.id AS id, n.name AS name, n.filePath AS filePath
         LIMIT 1
-      `, { targetName: target });
+      `,
+        { targetName: target },
+      );
       if (rows.length > 0) sym = rows[0];
     }
 
@@ -1623,23 +1935,34 @@ export class LocalBackend {
       try {
         // Run both seed queries in parallel — they are independent.
         const [ctorRows, fileRows] = await Promise.all([
-          executeParameterized(repo.id, `
+          executeParameterized(
+            repo.id,
+            `
             MATCH (n)-[hm:CodeRelation]->(c:Constructor)
             WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
             RETURN c.id AS id, c.name AS name, labels(c)[0] AS type, c.filePath AS filePath
-          `, { symId }),
+          `,
+            { symId },
+          ),
           // Restrict to DEFINES edges only — other File->Class edge types (if
           // any) should not be treated as the owning file relationship.
-          executeParameterized(repo.id, `
+          executeParameterized(
+            repo.id,
+            `
             MATCH (f:File)-[rel:CodeRelation]->(n)
             WHERE n.id = $symId AND rel.type = 'DEFINES'
             RETURN f.id AS id, f.name AS name, labels(f)[0] AS type, f.filePath AS filePath
-          `, { symId }),
+          `,
+            { symId },
+          ),
         ]);
 
         for (const r of ctorRows) {
           const rid = r.id || r[0];
-          if (rid && !visited.has(rid)) { visited.add(rid); frontier.push(rid); }
+          if (rid && !visited.has(rid)) {
+            visited.add(rid);
+            frontier.push(rid);
+          }
         }
         for (const r of fileRows) {
           const rid = r.id || r[0];
@@ -1652,25 +1975,26 @@ export class LocalBackend {
         logQueryError('impact:class-node-expansion', e);
       }
     }
-    
+
     for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
       const nextFrontier: string[] = [];
-      
+
       // Batch frontier nodes into a single Cypher query per depth level
-      const idList = frontier.map(id => `'${id.replace(/'/g, "''")}'`).join(', ');
-      const query = direction === 'upstream'
-        ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
-        : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
-      
+      const idList = frontier.map((id) => `'${id.replace(/'/g, "''")}'`).join(', ');
+      const query =
+        direction === 'upstream'
+          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
+          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
+
       try {
         const related = await executeQuery(repo.id, query);
-        
+
         for (const rel of related) {
           const relId = rel.id || rel[1];
           const filePath = rel.filePath || rel[4] || '';
-          
+
           if (!includeTests && isTestFilePath(filePath)) continue;
-          
+
           if (!visited.has(relId)) {
             visited.add(relId);
             nextFrontier.push(relId);
@@ -1700,10 +2024,10 @@ export class LocalBackend {
         traversalComplete = false;
         break;
       }
-      
+
       frontier = nextFrontier;
     }
-    
+
     const grouped: Record<number, any[]> = {};
     for (const item of impacted) {
       if (!grouped[item.depth]) grouped[item.depth] = [];
@@ -1725,12 +2049,17 @@ export class LocalBackend {
       // Uses merged Cypher query (WITH + OPTIONAL MATCH) to fetch
       // process + entry point info in 1 round-trip per chunk. Converted to
       // parameterized queries to avoid manual string escaping and long query strings.
-      const entryPointMap = new Map<string, {
-        name: string; type: string; filePath: string;
-        affected_process_count: number;
-        total_hits: number;
-        earliest_broken_step: number;
-      }>();
+      const entryPointMap = new Map<
+        string,
+        {
+          name: string;
+          type: string;
+          filePath: string;
+          affected_process_count: number;
+          total_hits: number;
+          earliest_broken_step: number;
+        }
+      >();
 
       // Map process id -> entryPointId to allow fixing missing minStep values later
       const processToEntryPoint = new Map<string, string>();
@@ -1738,13 +2067,19 @@ export class LocalBackend {
       const processesMissingMinStep = new Set<string>();
 
       let chunksProcessed = 0;
-      for (let i = 0; i < impacted.length && chunksProcessed < MAX_CHUNKS; i += CHUNK_SIZE, chunksProcessed++) {
+      for (
+        let i = 0;
+        i < impacted.length && chunksProcessed < MAX_CHUNKS;
+        i += CHUNK_SIZE, chunksProcessed++
+      ) {
         const chunk = impacted.slice(i, i + CHUNK_SIZE);
-        const ids = chunk.map(item => String(item.id ?? ''));
+        const ids = chunk.map((item) => String(item.id ?? ''));
 
         try {
           // Use parameterized list to avoid building long query strings
-          const rows = await executeParameterized(repo.id, `
+          const rows = await executeParameterized(
+            repo.id,
+            `
             MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
             WHERE s.id IN $ids
             WITH p, COUNT(DISTINCT s.id) AS hits, MIN(r.step) AS minStep
@@ -1752,7 +2087,9 @@ export class LocalBackend {
             RETURN p.id AS pId, p.heuristicLabel AS name, p.processType AS processType,
                    p.entryPointId AS entryPointId, hits, minStep, p.stepCount AS stepCount,
                    ep.name AS epName, labels(ep)[0] AS epType, ep.filePath AS epFilePath
-          `, { ids }).catch(() => []);
+          `,
+            { ids },
+          ).catch(() => []);
 
           for (const row of rows) {
             const pId = row.pId ?? row[0];
@@ -1760,48 +2097,52 @@ export class LocalBackend {
             // Track mapping from process -> entryPoint so we can backfill missing minStep
             if (pId) processToEntryPoint.set(String(pId), String(epId));
 
-             // Normalize epName: prefer epName, fall back to other columns, and
-             // ensure we don't keep an empty string (labels(...) can return "").
-             const epNameRaw = row.epName ?? row[7] ?? row.name ?? row[1] ?? 'unknown';
-             const epName = (typeof epNameRaw === 'string' && epNameRaw.trim().length > 0) ? epNameRaw.trim() : 'unknown';
+            // Normalize epName: prefer epName, fall back to other columns, and
+            // ensure we don't keep an empty string (labels(...) can return "").
+            const epNameRaw = row.epName ?? row[7] ?? row.name ?? row[1] ?? 'unknown';
+            const epName =
+              typeof epNameRaw === 'string' && epNameRaw.trim().length > 0
+                ? epNameRaw.trim()
+                : 'unknown';
 
-             // Normalize epType: labels(ep)[0] can return an empty string in
-             // some DBs (LadybugDB). Using nullish coalescing (??) preserves
-             // empty strings, which results in empty `type` values being
-             // propagated. Treat empty-string labels as missing and fall back
-             // to the next candidate or a sensible default.
-             const epTypeRaw = row.epType ?? row[8] ?? '';
-             const epType = (typeof epTypeRaw === 'string' && epTypeRaw.trim().length > 0)
-               ? epTypeRaw.trim()
-               : 'Function';
+            // Normalize epType: labels(ep)[0] can return an empty string in
+            // some DBs (LadybugDB). Using nullish coalescing (??) preserves
+            // empty strings, which results in empty `type` values being
+            // propagated. Treat empty-string labels as missing and fall back
+            // to the next candidate or a sensible default.
+            const epTypeRaw = row.epType ?? row[8] ?? '';
+            const epType =
+              typeof epTypeRaw === 'string' && epTypeRaw.trim().length > 0
+                ? epTypeRaw.trim()
+                : 'Function';
 
-             const epFilePath = row.epFilePath ?? row[9] ?? '';
-             const hits = row.hits ?? row[4] ?? 0;
-             const minStep = row.minStep ?? row[5];
-             // If the DB returned null for minStep, note the process id so we
-             // can run a follow-up query using a different aggregation strategy.
-             if (minStep === null || minStep === undefined) {
-               if (pId) processesMissingMinStep.add(String(pId));
-             }
-             if (!entryPointMap.has(epId)) {
-               entryPointMap.set(epId, {
-                 name: epName,
-                 type: epType,
-                 filePath: epFilePath,
-                 affected_process_count: 0,
-                 total_hits: 0,
-                 earliest_broken_step: Infinity,
-               });
-             }
-             const ep = entryPointMap.get(epId)!;
-             ep.affected_process_count += 1;
-             ep.total_hits += hits;
-             ep.earliest_broken_step = Math.min(ep.earliest_broken_step, minStep ?? Infinity);
-           }
-         } catch (e) {
-           logQueryError('impact:process-chunk', e);
-         }
-       }
+            const epFilePath = row.epFilePath ?? row[9] ?? '';
+            const hits = row.hits ?? row[4] ?? 0;
+            const minStep = row.minStep ?? row[5];
+            // If the DB returned null for minStep, note the process id so we
+            // can run a follow-up query using a different aggregation strategy.
+            if (minStep === null || minStep === undefined) {
+              if (pId) processesMissingMinStep.add(String(pId));
+            }
+            if (!entryPointMap.has(epId)) {
+              entryPointMap.set(epId, {
+                name: epName,
+                type: epType,
+                filePath: epFilePath,
+                affected_process_count: 0,
+                total_hits: 0,
+                earliest_broken_step: Infinity,
+              });
+            }
+            const ep = entryPointMap.get(epId)!;
+            ep.affected_process_count += 1;
+            ep.total_hits += hits;
+            ep.earliest_broken_step = Math.min(ep.earliest_broken_step, minStep ?? Infinity);
+          }
+        } catch (e) {
+          logQueryError('impact:process-chunk', e);
+        }
+      }
 
       // If some processes returned null minStep, try a batched follow-up query
       // using the full impacted id set. This handles older indexes or DBs
@@ -1809,12 +2150,16 @@ export class LocalBackend {
       if (processesMissingMinStep.size > 0) {
         try {
           const pIds = Array.from(processesMissingMinStep);
-          const allImpactedIds = impacted.map(it => String(it.id ?? ''));
-          const missingRows = await executeParameterized(repo.id, `
+          const allImpactedIds = impacted.map((it) => String(it.id ?? ''));
+          const missingRows = await executeParameterized(
+            repo.id,
+            `
             MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
             WHERE p.id IN $pIds AND s.id IN $ids
             RETURN p.id AS pid, MIN(r.step) AS minStep
-          `, { pIds, ids: allImpactedIds }).catch(() => []);
+          `,
+            { pIds, ids: allImpactedIds },
+          ).catch(() => []);
 
           for (const mr of missingRows) {
             const pid = mr.pid ?? mr[0];
@@ -1837,12 +2182,13 @@ export class LocalBackend {
         traversalComplete = false;
       }
 
-       affectedProcesses = Array.from(entryPointMap.values())
-         .map(ep => ({
-           ...ep,
-           earliest_broken_step: ep.earliest_broken_step === Infinity ? null : ep.earliest_broken_step,
-         }))
-         .sort((a, b) => b.total_hits - a.total_hits);
+      affectedProcesses = Array.from(entryPointMap.values())
+        .map((ep) => ({
+          ...ep,
+          earliest_broken_step:
+            ep.earliest_broken_step === Infinity ? null : ep.earliest_broken_step,
+        }))
+        .sort((a, b) => b.total_hits - a.total_hits);
 
       // ── Module enrichment: use same cap as process enrichment and parameterized queries
       const maxItems = Math.min(impacted.length, MAX_CHUNKS * CHUNK_SIZE);
@@ -1861,13 +2207,17 @@ export class LocalBackend {
       const runModuleChunk = async (idsChunk: string[]) => {
         if (!idsChunk || idsChunk.length === 0) return;
         try {
-          const rows = await executeParameterized(repo.id, `
+          const rows = await executeParameterized(
+            repo.id,
+            `
             MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
             WHERE s.id IN $ids
             RETURN c.heuristicLabel AS name, COUNT(DISTINCT s.id) AS hits
             ORDER BY hits DESC
             LIMIT 20
-          `, { ids: idsChunk }).catch(() => []);
+          `,
+            { ids: idsChunk },
+          ).catch(() => []);
 
           for (const r of rows) {
             const name = r.name ?? r[0] ?? null;
@@ -1890,11 +2240,15 @@ export class LocalBackend {
       const runDirectModuleChunk = async (idsChunk: string[]) => {
         if (!idsChunk || idsChunk.length === 0) return;
         try {
-          const rows = await executeParameterized(repo.id, `
+          const rows = await executeParameterized(
+            repo.id,
+            `
             MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
             WHERE s.id IN $ids
             RETURN DISTINCT c.heuristicLabel AS name
-          `, { ids: idsChunk }).catch(() => []);
+          `,
+            { ids: idsChunk },
+          ).catch(() => []);
           for (const r of rows) {
             const name = r.name ?? r[0] ?? null;
             if (name) directModuleSet.add(name);
@@ -1915,7 +2269,7 @@ export class LocalBackend {
         .sort((a, b) => b.hits - a.hits)
         .slice(0, 20);
 
-      const directModuleRows = Array.from(directModuleSet).map(name => ({ name }));
+      const directModuleRows = Array.from(directModuleSet).map((name) => ({ name }));
 
       // Build affectedModules in the same shape as original implementation
       const directModuleNameSet = new Set(directModuleRows.map((r: any) => r.name || r[0]));
@@ -1928,7 +2282,7 @@ export class LocalBackend {
           impact: directModuleNameSet.has(name) ? 'direct' : 'indirect',
         };
       });
-     }
+    }
 
     // Risk scoring
     const processCount = affectedProcesses.length;
@@ -1936,7 +2290,12 @@ export class LocalBackend {
     let risk = 'LOW';
     if (directCount >= 30 || processCount >= 5 || moduleCount >= 5 || impacted.length >= 200) {
       risk = 'CRITICAL';
-    } else if (directCount >= 15 || processCount >= 3 || moduleCount >= 3 || impacted.length >= 100) {
+    } else if (
+      directCount >= 15 ||
+      processCount >= 3 ||
+      moduleCount >= 3 ||
+      impacted.length >= 100
+    ) {
       risk = 'HIGH';
     } else if (directCount >= 5 || impacted.length >= 30) {
       risk = 'MEDIUM';
@@ -1972,8 +2331,25 @@ export class LocalBackend {
     repoId: string,
     routeFilter: string,
     params: Record<string, string>,
-  ): Promise<Array<{ id: string; name: string; filePath: string; responseKeys: string[] | null; errorKeys: string[] | null; middleware: string[] | null; consumers: Array<{ name: string; filePath: string; accessedKeys?: string[]; fetchCount?: number }> }>> {
-    const rows = await executeParameterized(repoId, `
+  ): Promise<
+    Array<{
+      id: string;
+      name: string;
+      filePath: string;
+      responseKeys: string[] | null;
+      errorKeys: string[] | null;
+      middleware: string[] | null;
+      consumers: Array<{
+        name: string;
+        filePath: string;
+        accessedKeys?: string[];
+        fetchCount?: number;
+      }>;
+    }>
+  > {
+    const rows = await executeParameterized(
+      repoId,
+      `
       MATCH (n:Route)
       WHERE n.id STARTS WITH 'Route:' ${routeFilter}
       OPTIONAL MATCH (consumer)-[r:CodeRelation]->(n)
@@ -1982,14 +2358,32 @@ export class LocalBackend {
              n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware,
              consumer.name AS consumerName, consumer.filePath AS consumerFile,
              r.reason AS fetchReason
-    `, params);
+    `,
+      params,
+    );
 
     // Strip wrapping quotes from DB array elements — CSV COPY stores ['key'] which
     // LadybugDB may return as "'key'" rather than "key"
     const stripQuotes = (keys: string[] | null): string[] | null =>
-      keys ? keys.map(k => k.replace(/^['"]|['"]$/g, '')) : null;
+      keys ? keys.map((k) => k.replace(/^['"]|['"]$/g, '')) : null;
 
-    const routeMap = new Map<string, { id: string; name: string; filePath: string; responseKeys: string[] | null; errorKeys: string[] | null; middleware: string[] | null; consumers: Array<{ name: string; filePath: string; accessedKeys?: string[]; fetchCount?: number }> }>();
+    const routeMap = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        filePath: string;
+        responseKeys: string[] | null;
+        errorKeys: string[] | null;
+        middleware: string[] | null;
+        consumers: Array<{
+          name: string;
+          filePath: string;
+          accessedKeys?: string[];
+          fetchCount?: number;
+        }>;
+      }
+    >();
     for (const row of rows) {
       const id = row.routeId ?? row[0];
       const name = row.routeName ?? row[1];
@@ -2002,7 +2396,15 @@ export class LocalBackend {
       const fetchReason: string | null = row.fetchReason ?? row[8] ?? null;
 
       if (!routeMap.has(id)) {
-        routeMap.set(id, { id, name, filePath, responseKeys, errorKeys, middleware, consumers: [] });
+        routeMap.set(id, {
+          id,
+          name,
+          filePath,
+          responseKeys,
+          errorKeys,
+          middleware,
+          consumers: [],
+        });
       }
       if (consumerName && consumerFile) {
         // Parse accessed keys from reason field: "fetch-url-match|keys:data,pagination|fetches:3"
@@ -2011,7 +2413,7 @@ export class LocalBackend {
         if (fetchReason) {
           const keysMatch = fetchReason.match(/\|keys:([^|]+)/);
           if (keysMatch) {
-            accessedKeys = keysMatch[1].split(',').filter(k => k.length > 0);
+            accessedKeys = keysMatch[1].split(',').filter((k) => k.length > 0);
           }
           const fetchesMatch = fetchReason.match(/\|fetches:(\d+)/);
           if (fetchesMatch) {
@@ -2034,26 +2436,38 @@ export class LocalBackend {
    * Batch-fetch execution flows linked to a set of Route or Tool nodes.
    * Single query instead of N+1.
    */
-  private async fetchLinkedFlowsBatch(repoId: string, nodeIds: string[]): Promise<Map<string, string[]>> {
+  private async fetchLinkedFlowsBatch(
+    repoId: string,
+    nodeIds: string[],
+  ): Promise<Map<string, string[]>> {
     const result = new Map<string, string[]>();
     if (nodeIds.length === 0) return result;
     try {
       // Use list_contains to filter at DB level instead of fetching all and filtering in memory
-      const rows = await executeParameterized(repoId, `
+      const rows = await executeParameterized(
+        repoId,
+        `
         MATCH (source)-[r:CodeRelation]->(proc:Process)
         WHERE r.type = 'ENTRY_POINT_OF'
           AND list_contains($nodeIds, source.id)
         RETURN source.id AS sourceId, proc.label AS name
-      `, { nodeIds });
+      `,
+        { nodeIds },
+      );
       for (const row of rows) {
         const sourceId = row.sourceId ?? row[0];
         const name = row.name ?? row[1];
         if (!name) continue;
         let list = result.get(sourceId);
-        if (!list) { list = []; result.set(sourceId, list); }
+        if (!list) {
+          list = [];
+          result.set(sourceId, list);
+        }
         list.push(name);
       }
-    } catch { /* no ENTRY_POINT_OF edges yet */ }
+    } catch {
+      /* no ENTRY_POINT_OF edges yet */
+    }
     return result;
   }
 
@@ -2065,14 +2479,24 @@ export class LocalBackend {
     const routes = await this.fetchRoutesWithConsumers(repo.id, routeFilter, queryParams);
 
     if (routes.length === 0) {
-      return { routes: [], total: 0, message: params.route ? `No routes matching "${params.route}"` : 'No routes found in this project.' };
+      return {
+        routes: [],
+        total: 0,
+        message: params.route
+          ? `No routes matching "${params.route}"`
+          : 'No routes found in this project.',
+      };
     }
 
-    const flowMap = await this.fetchLinkedFlowsBatch(repo.id, routes.map(r => r.id));
+    const flowMap = await this.fetchLinkedFlowsBatch(
+      repo.id,
+      routes.map((r) => r.id),
+    );
 
     return {
-      routes: routes.map(r => ({
-        route: r.name, handler: r.filePath,
+      routes: routes.map((r) => ({
+        route: r.name,
+        handler: r.filePath,
         middleware: r.middleware || [],
         consumers: r.consumers,
         flows: flowMap.get(r.id) || [],
@@ -2089,8 +2513,13 @@ export class LocalBackend {
     const allRoutes = await this.fetchRoutesWithConsumers(repo.id, routeFilter, queryParams);
 
     const results = allRoutes
-      .filter(r => ((r.responseKeys && r.responseKeys.length > 0) || (r.errorKeys && r.errorKeys.length > 0)) && r.consumers.length > 0)
-      .map(r => {
+      .filter(
+        (r) =>
+          ((r.responseKeys && r.responseKeys.length > 0) ||
+            (r.errorKeys && r.errorKeys.length > 0)) &&
+          r.consumers.length > 0,
+      )
+      .map((r) => {
         // Keys already normalized by fetchRoutesWithConsumers (quotes stripped)
         const responseKeys = r.responseKeys ?? [];
         const errorKeys = r.errorKeys ?? [];
@@ -2099,25 +2528,38 @@ export class LocalBackend {
 
         // Check each consumer's accessed keys against the route's response shape
         const responseKeySet = new Set(responseKeys);
-        const consumers = r.consumers.map(c => {
+        const consumers = r.consumers.map((c) => {
           if (!c.accessedKeys || c.accessedKeys.length === 0) {
             return { name: c.name, filePath: c.filePath };
           }
-          const mismatched = c.accessedKeys.filter(k => !allKnownKeys.has(k));
+          const mismatched = c.accessedKeys.filter((k) => !allKnownKeys.has(k));
           // Keys in allKnownKeys but not in responseKeys — error-path access (e.g., .error from errorKeys)
-          const errorPathKeys = c.accessedKeys.filter(k => allKnownKeys.has(k) && !responseKeySet.has(k));
+          const errorPathKeys = c.accessedKeys.filter(
+            (k) => allKnownKeys.has(k) && !responseKeySet.has(k),
+          );
           const isMultiFetch = (c.fetchCount ?? 1) > 1;
           return {
             name: c.name,
             filePath: c.filePath,
             accessedKeys: c.accessedKeys,
-            ...(mismatched.length > 0 ? { mismatched, mismatchConfidence: isMultiFetch ? 'low' as const : 'high' as const } : {}),
+            ...(mismatched.length > 0
+              ? {
+                  mismatched,
+                  mismatchConfidence: isMultiFetch ? ('low' as const) : ('high' as const),
+                }
+              : {}),
             ...(errorPathKeys.length > 0 ? { errorPathKeys } : {}),
-            ...(isMultiFetch ? { attributionNote: `This file fetches ${c.fetchCount} routes — accessed keys may belong to a different route.` } : {}),
+            ...(isMultiFetch
+              ? {
+                  attributionNote: `This file fetches ${c.fetchCount} routes — accessed keys may belong to a different route.`,
+                }
+              : {}),
           };
         });
 
-        const hasMismatches = consumers.some(c => 'mismatched' in c && (c as any).mismatched.length > 0);
+        const hasMismatches = consumers.some(
+          (c) => 'mismatched' in c && (c as any).mismatched.length > 0,
+        );
 
         return {
           route: r.name,
@@ -2129,18 +2571,19 @@ export class LocalBackend {
         };
       });
 
-    const mismatchCount = results.filter(r => r.status === 'MISMATCH').length;
+    const mismatchCount = results.filter((r) => r.status === 'MISMATCH').length;
 
     return {
       routes: results,
       total: results.length,
       routesWithShapes: results.length,
       ...(mismatchCount > 0 ? { mismatches: mismatchCount } : {}),
-      message: results.length === 0
-        ? 'No routes with both response shapes and consumers found.'
-        : mismatchCount > 0
-          ? `Found ${results.length} route(s) with response shape data. ${mismatchCount} route(s) have consumer/shape mismatches.`
-          : `Found ${results.length} route(s) with response shape data and consumers.`,
+      message:
+        results.length === 0
+          ? 'No routes with both response shapes and consumers found.'
+          : mismatchCount > 0
+            ? `Found ${results.length} route(s) with response shape data. ${mismatchCount} route(s) have consumer/shape mismatches.`
+            : `Found ${results.length} route(s) with response shape data and consumers.`,
     };
   }
 
@@ -2150,14 +2593,22 @@ export class LocalBackend {
     const toolFilter = params.tool ? `AND n.name CONTAINS $tool` : '';
     const queryParams = params.tool ? { tool: params.tool } : {};
 
-    const rows = await executeParameterized(repo.id, `
+    const rows = await executeParameterized(
+      repo.id,
+      `
       MATCH (n:Tool)
       WHERE n.id STARTS WITH 'Tool:' ${toolFilter}
       RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.description AS description
-    `, queryParams);
+    `,
+      queryParams,
+    );
 
     if (rows.length === 0) {
-      return { tools: [], total: 0, message: params.tool ? `No tools matching "${params.tool}"` : 'No tool definitions found.' };
+      return {
+        tools: [],
+        total: 0,
+        message: params.tool ? `No tools matching "${params.tool}"` : 'No tool definitions found.',
+      };
     }
 
     const toolIds = rows.map((r: any) => r.id ?? r[0]);
@@ -2177,7 +2628,10 @@ export class LocalBackend {
     };
   }
 
-  private async apiImpact(repo: RepoHandle, params: { route?: string; file?: string }): Promise<any> {
+  private async apiImpact(
+    repo: RepoHandle,
+    params: { route?: string; file?: string },
+  ): Promise<any> {
     await this.ensureInitialized(repo.id);
 
     if (!params.route && !params.file) {
@@ -2203,7 +2657,10 @@ export class LocalBackend {
       return { error: `No routes found matching "${target}".` };
     }
 
-    const flowMap = await this.fetchLinkedFlowsBatch(repo.id, routes.map(r => r.id));
+    const flowMap = await this.fetchLinkedFlowsBatch(
+      repo.id,
+      routes.map((r) => r.id),
+    );
 
     // Count how many routes share the same handler file (for middleware partial detection)
     const routeCountByHandler = new Map<string, number>();
@@ -2213,22 +2670,31 @@ export class LocalBackend {
       }
     }
 
-    const results = routes.map(r => {
+    const results = routes.map((r) => {
       // Keys already normalized by fetchRoutesWithConsumers (quotes stripped)
       const responseKeys = r.responseKeys ?? [];
       const errorKeys = r.errorKeys ?? [];
       const allKnownKeys = new Set([...responseKeys, ...errorKeys]);
 
       // Build consumer list with mismatch detection
-      const consumers = r.consumers.map(c => ({
+      const consumers = r.consumers.map((c) => ({
         name: c.name,
         file: c.filePath,
         accesses: c.accessedKeys ?? [],
-        ...(c.fetchCount && c.fetchCount > 1 ? { attributionNote: `This file fetches ${c.fetchCount} routes — accessed keys may belong to a different route.` } : {}),
+        ...(c.fetchCount && c.fetchCount > 1
+          ? {
+              attributionNote: `This file fetches ${c.fetchCount} routes — accessed keys may belong to a different route.`,
+            }
+          : {}),
       }));
 
       // Detect mismatches: consumer accesses keys not in response shape
-      const mismatches: Array<{ consumer: string; field: string; reason: string; confidence: 'high' | 'low' }> = [];
+      const mismatches: Array<{
+        consumer: string;
+        field: string;
+        reason: string;
+        confidence: 'high' | 'low';
+      }> = [];
       if (allKnownKeys.size > 0) {
         for (const c of r.consumers) {
           if (!c.accessedKeys) continue;
@@ -2264,9 +2730,10 @@ export class LocalBackend {
         else if (riskLevel === 'MEDIUM') riskLevel = 'HIGH';
       }
 
-      const warning = consumerCount > 0
-        ? `Changing response shape will affect ${consumerCount} component${consumerCount === 1 ? '' : 's'}`
-        : undefined;
+      const warning =
+        consumerCount > 0
+          ? `Changing response shape will affect ${consumerCount} component${consumerCount === 1 ? '' : 's'}`
+          : undefined;
 
       // Flag when middleware was detected but handler exports multiple HTTP methods
       // (middleware chain may only reflect one export)
@@ -2282,10 +2749,13 @@ export class LocalBackend {
           error: errorKeys,
         },
         middleware: middlewareArr,
-        ...(middlewarePartial ? {
-          middlewareDetection: 'partial' as const,
-          middlewareNote: 'Middleware captured from first HTTP method export only — other methods in this handler may use different middleware chains.',
-        } : {}),
+        ...(middlewarePartial
+          ? {
+              middlewareDetection: 'partial' as const,
+              middlewareNote:
+                'Middleware captured from first HTTP method export only — other methods in this handler may use different middleware chains.',
+            }
+          : {}),
         consumers,
         ...(mismatches.length > 0 ? { mismatches } : {}),
         executionFlows: flows,
@@ -2318,12 +2788,15 @@ export class LocalBackend {
 
     try {
       const rawLimit = Math.max(limit * 5, 200);
-      const clusters = await executeQuery(repo.id, `
+      const clusters = await executeQuery(
+        repo.id,
+        `
         MATCH (c:Community)
         RETURN c.id AS id, c.label AS label, c.heuristicLabel AS heuristicLabel, c.cohesion AS cohesion, c.symbolCount AS symbolCount
         ORDER BY c.symbolCount DESC
         LIMIT ${rawLimit}
-      `);
+      `,
+      );
       const rawClusters = clusters.map((c: any) => ({
         id: c.id || c[0],
         label: c.label || c[1],
@@ -2346,12 +2819,15 @@ export class LocalBackend {
     await this.ensureInitialized(repo.id);
 
     try {
-      const processes = await executeQuery(repo.id, `
+      const processes = await executeQuery(
+        repo.id,
+        `
         MATCH (p:Process)
         RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
         ORDER BY p.stepCount DESC
         LIMIT ${limit}
-      `);
+      `,
+      );
       return {
         processes: processes.map((p: any) => ({
           id: p.id || p[0],
@@ -2374,31 +2850,43 @@ export class LocalBackend {
     const repo = await this.resolveRepo(repoName);
     await this.ensureInitialized(repo.id);
 
-    const clusters = await executeParameterized(repo.id, `
+    const clusters = await executeParameterized(
+      repo.id,
+      `
       MATCH (c:Community)
       WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
       RETURN c.id AS id, c.label AS label, c.heuristicLabel AS heuristicLabel, c.cohesion AS cohesion, c.symbolCount AS symbolCount
-    `, { clusterName: name });
+    `,
+      { clusterName: name },
+    );
     if (clusters.length === 0) return { error: `Cluster '${name}' not found` };
 
     const rawClusters = clusters.map((c: any) => ({
-      id: c.id || c[0], label: c.label || c[1], heuristicLabel: c.heuristicLabel || c[2],
-      cohesion: c.cohesion || c[3], symbolCount: c.symbolCount || c[4],
+      id: c.id || c[0],
+      label: c.label || c[1],
+      heuristicLabel: c.heuristicLabel || c[2],
+      cohesion: c.cohesion || c[3],
+      symbolCount: c.symbolCount || c[4],
     }));
 
-    let totalSymbols = 0, weightedCohesion = 0;
+    let totalSymbols = 0,
+      weightedCohesion = 0;
     for (const c of rawClusters) {
       const s = c.symbolCount || 0;
       totalSymbols += s;
       weightedCohesion += (c.cohesion || 0) * s;
     }
 
-    const members = await executeParameterized(repo.id, `
+    const members = await executeParameterized(
+      repo.id,
+      `
       MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
       WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
       RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
       LIMIT 30
-    `, { clusterName: name });
+    `,
+      { clusterName: name },
+    );
 
     return {
       cluster: {
@@ -2410,7 +2898,9 @@ export class LocalBackend {
         subCommunities: rawClusters.length,
       },
       members: members.map((m: any) => ({
-        name: m.name || m[0], type: m.type || m[1], filePath: m.filePath || m[2],
+        name: m.name || m[0],
+        type: m.type || m[1],
+        filePath: m.filePath || m[2],
       })),
     };
   }
@@ -2423,29 +2913,43 @@ export class LocalBackend {
     const repo = await this.resolveRepo(repoName);
     await this.ensureInitialized(repo.id);
 
-    const processes = await executeParameterized(repo.id, `
+    const processes = await executeParameterized(
+      repo.id,
+      `
       MATCH (p:Process)
       WHERE p.label = $processName OR p.heuristicLabel = $processName
       RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
       LIMIT 1
-    `, { processName: name });
+    `,
+      { processName: name },
+    );
     if (processes.length === 0) return { error: `Process '${name}' not found` };
 
     const proc = processes[0];
     const procId = proc.id || proc[0];
-    const steps = await executeParameterized(repo.id, `
+    const steps = await executeParameterized(
+      repo.id,
+      `
       MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: $procId})
       RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step
       ORDER BY r.step
-    `, { procId });
+    `,
+      { procId },
+    );
 
     return {
       process: {
-        id: procId, label: proc.label || proc[1], heuristicLabel: proc.heuristicLabel || proc[2],
-        processType: proc.processType || proc[3], stepCount: proc.stepCount || proc[4],
+        id: procId,
+        label: proc.label || proc[1],
+        heuristicLabel: proc.heuristicLabel || proc[2],
+        processType: proc.processType || proc[3],
+        stepCount: proc.stepCount || proc[4],
       },
       steps: steps.map((s: any) => ({
-        step: s.step || s[3], name: s.name || s[0], type: s.type || s[1], filePath: s.filePath || s[2],
+        step: s.step || s[3],
+        name: s.name || s[0],
+        type: s.type || s[1],
+        filePath: s.filePath || s[2],
       })),
     };
   }

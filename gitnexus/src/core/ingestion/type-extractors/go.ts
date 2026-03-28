@@ -1,6 +1,21 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
-import type { ConstructorBindingScanner, ForLoopExtractor, LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, PendingAssignmentExtractor } from './types.js';
-import { extractSimpleTypeName, extractVarName, extractElementTypeFromString, extractGenericTypeArgs, resolveIterableElementType, methodToTypeArgPosition, type TypeArgPosition } from './shared.js';
+import type {
+  ConstructorBindingScanner,
+  ForLoopExtractor,
+  LanguageTypeConfig,
+  ParameterExtractor,
+  TypeBindingExtractor,
+  PendingAssignmentExtractor,
+} from './types.js';
+import {
+  extractSimpleTypeName,
+  extractVarName,
+  extractElementTypeFromString,
+  extractGenericTypeArgs,
+  resolveIterableElementType,
+  methodToTypeArgPosition,
+  type TypeArgPosition,
+} from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
   'var_declaration',
@@ -61,7 +76,10 @@ const extractGoShortVarDeclaration = (node: SyntaxNode, env: Map<string, string>
   for (let i = 0; i < count; i++) {
     let valueNode = rhsNodes[i];
     // Unwrap &User{} — unary_expression (address-of) wrapping composite_literal
-    if (valueNode.type === 'unary_expression' && valueNode.firstNamedChild?.type === 'composite_literal') {
+    if (
+      valueNode.type === 'unary_expression' &&
+      valueNode.firstNamedChild?.type === 'composite_literal'
+    ) {
       valueNode = valueNode.firstNamedChild;
     }
     // Go built-in new(User) — call_expression with 'new' callee and type argument
@@ -114,7 +132,10 @@ const extractGoShortVarDeclaration = (node: SyntaxNode, env: Map<string, string>
   }
 };
 
-const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+const extractDeclaration: TypeBindingExtractor = (
+  node: SyntaxNode,
+  env: Map<string, string>,
+): void => {
   if (node.type === 'var_declaration' || node.type === 'var_spec') {
     extractGoVarDeclaration(node, env);
   } else if (node.type === 'short_var_declaration') {
@@ -181,13 +202,13 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   return { varName: leftIds[0].text, calleeName };
 };
 
-const FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set([
-  'for_statement',
-]);
+const FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set(['for_statement']);
 
 /** Go function/method node types that carry a parameter list. */
 const GO_FUNCTION_NODE_TYPES = new Set([
-  'function_declaration', 'method_declaration', 'func_literal',
+  'function_declaration',
+  'method_declaration',
+  'func_literal',
 ]);
 
 /**
@@ -197,7 +218,10 @@ const GO_FUNCTION_NODE_TYPES = new Set([
  *   array_type "[10]User" →  element field → type_identifier "User"
  * Falls back to text-based extraction via extractElementTypeFromString.
  */
-const extractGoElementTypeFromTypeNode = (typeNode: SyntaxNode, pos: TypeArgPosition = 'last'): string | undefined => {
+const extractGoElementTypeFromTypeNode = (
+  typeNode: SyntaxNode,
+  pos: TypeArgPosition = 'last',
+): string | undefined => {
   // slice_type: []User — element field is the element type
   if (typeNode.type === 'slice_type' || typeNode.type === 'array_type') {
     const elemNode = typeNode.childForFieldName('element');
@@ -248,7 +272,11 @@ const isChannelType = (
  *   name field: identifier (the parameter name)
  *   type field: the type node (slice_type for []User)
  */
-const findGoParamElementType = (iterableName: string, startNode: SyntaxNode, pos: TypeArgPosition = 'last'): string | undefined => {
+const findGoParamElementType = (
+  iterableName: string,
+  startNode: SyntaxNode,
+  pos: TypeArgPosition = 'last',
+): string | undefined => {
   let current: SyntaxNode | null = startNode.parent;
   while (current) {
     if (GO_FUNCTION_NODE_TYPES.has(current.type)) {
@@ -286,7 +314,10 @@ const findGoParamElementType = (iterableName: string, startNode: SyntaxNode, pos
  * For `_, user := range users`, the loop variable is the second identifier in
  * the `left` expression_list (index is discarded, value is the element).
  */
-const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTypeNodes, scope, returnTypeLookup }): void => {
+const extractForLoopBinding: ForLoopExtractor = (
+  node,
+  { scopeEnv, declarationTypeNodes, scope, returnTypeLookup },
+): void => {
   if (node.type !== 'for_statement') return;
 
   // Find the range_clause child — this distinguishes range loops from other for forms.
@@ -333,8 +364,13 @@ const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTy
     const containerTypeName = scopeEnv.get(iterableName!);
     const typeArgPos = methodToTypeArgPosition(undefined, containerTypeName);
     elementType = resolveIterableElementType(
-      iterableName!, node, scopeEnv, declarationTypeNodes, scope,
-      extractGoElementTypeFromTypeNode, findGoParamElementType,
+      iterableName!,
+      node,
+      scopeEnv,
+      declarationTypeNodes,
+      scope,
+      extractGoElementTypeFromTypeNode,
+      findGoParamElementType,
       typeArgPos,
     );
   }
@@ -441,7 +477,10 @@ const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) =>
       // Check if the last named child is a bare identifier (no type annotation between name and value)
       let exprList: SyntaxNode | null = null;
       for (let i = 0; i < spec.childCount; i++) {
-        if (spec.child(i)?.type === 'expression_list') { exprList = spec.child(i); break; }
+        if (spec.child(i)?.type === 'expression_list') {
+          exprList = spec.child(i);
+          break;
+        }
       }
       const rhsNode = exprList?.firstNamedChild;
       if (rhsNode?.type === 'identifier') return { kind: 'copy', lhs, rhs: rhsNode.text };

@@ -47,7 +47,11 @@ function collectRustBindings(node: SyntaxNode, bindings: NamedBinding[]): void {
     let hasDeeper = false;
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
-      if (child?.type === 'use_list' || child?.type === 'use_as_clause' || child?.type === 'scoped_use_list') {
+      if (
+        child?.type === 'use_list' ||
+        child?.type === 'use_as_clause' ||
+        child?.type === 'scoped_use_list'
+      ) {
         hasDeeper = true;
         break;
       }

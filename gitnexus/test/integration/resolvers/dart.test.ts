@@ -9,8 +9,12 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, getRelationships, getNodesByLabel, edgeSet,
-  runPipelineFromRepo, type PipelineResult,
+  FIXTURES,
+  getRelationships,
+  getNodesByLabel,
+  edgeSet,
+  runPipelineFromRepo,
+  type PipelineResult,
 } from './helpers.js';
 import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
@@ -23,16 +27,11 @@ describe.skipIf(!dartAvailable)('Dart field-type resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'dart-field-types'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-field-types'), () => {});
   }, 60000);
 
   it('detects classes and their properties', () => {
-    expect(getNodesByLabel(result, 'Class')).toEqual(
-      expect.arrayContaining(['Address', 'User']),
-    );
+    expect(getNodesByLabel(result, 'Class')).toEqual(expect.arrayContaining(['Address', 'User']));
     const properties = getNodesByLabel(result, 'Property');
     expect(properties).toContain('address');
     expect(properties).toContain('city');
@@ -42,11 +41,7 @@ describe.skipIf(!dartAvailable)('Dart field-type resolution', () => {
   it('emits HAS_PROPERTY edges from class to field', () => {
     const propEdges = getRelationships(result, 'HAS_PROPERTY');
     expect(edgeSet(propEdges)).toEqual(
-      expect.arrayContaining([
-        'User → address',
-        'User → name',
-        'Address → city',
-      ]),
+      expect.arrayContaining(['User → address', 'User → name', 'Address → city']),
     );
   });
 
@@ -80,9 +75,7 @@ describe.skipIf(!dartAvailable)('Dart field-type resolution', () => {
 
   it('emits ACCESSES edges for field reads in chains', () => {
     const accesses = getRelationships(result, 'ACCESSES');
-    const addressReads = accesses.filter(
-      (e) => e.target === 'address' && e.rel.reason === 'read',
-    );
+    const addressReads = accesses.filter((e) => e.target === 'address' && e.rel.reason === 'read');
     expect(addressReads.length).toBe(1);
     expect(addressReads[0]!.source).toBe('processUser');
     expect(addressReads[0]!.targetLabel).toBe('Property');
@@ -95,10 +88,7 @@ describe.skipIf(!dartAvailable)('Dart call-result binding', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'dart-call-result-binding'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-call-result-binding'), () => {});
   }, 60000);
 
   it('detects classes, methods, and functions', () => {
@@ -128,9 +118,7 @@ describe.skipIf(!dartAvailable)('Dart call-result binding', () => {
 
   it('attributes calls to processUser, not File', () => {
     const calls = getRelationships(result, 'CALLS');
-    const appCalls = calls.filter(
-      (c) => c.sourceFilePath.includes('app.dart'),
-    );
+    const appCalls = calls.filter((c) => c.sourceFilePath.includes('app.dart'));
     for (const call of appCalls) {
       expect(call.source).toBe('processUser');
       expect(call.sourceLabel).toBe('Function');

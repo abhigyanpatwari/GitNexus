@@ -93,9 +93,7 @@ describe('setupClaudeCode', () => {
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand();
 
-    await expect(
-      fs.access(path.join(tempHome, '.claude.json')),
-    ).rejects.toThrow();
+    await expect(fs.access(path.join(tempHome, '.claude.json'))).rejects.toThrow();
   });
 
   it('preserves existing keys in ~/.claude.json', async () => {

@@ -2,7 +2,10 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { walkRepositoryPaths, readFileContents } from '../../src/core/ingestion/filesystem-walker.js';
+import {
+  walkRepositoryPaths,
+  readFileContents,
+} from '../../src/core/ingestion/filesystem-walker.js';
 
 describe('filesystem-walker', () => {
   let tmpDir: string;
@@ -18,43 +21,54 @@ describe('filesystem-walker', () => {
 
     await fs.writeFile(path.join(tmpDir, 'src', 'index.ts'), 'export const main = () => {}');
     await fs.writeFile(path.join(tmpDir, 'src', 'utils.ts'), 'export const helper = () => {}');
-    await fs.writeFile(path.join(tmpDir, 'src', 'components', 'Button.tsx'), 'export const Button = () => <div/>');
-    await fs.writeFile(path.join(tmpDir, 'node_modules', 'lodash', 'index.js'), 'module.exports = {}');
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'components', 'Button.tsx'),
+      'export const Button = () => <div/>',
+    );
+    await fs.writeFile(
+      path.join(tmpDir, 'node_modules', 'lodash', 'index.js'),
+      'module.exports = {}',
+    );
     await fs.writeFile(path.join(tmpDir, '.git', 'HEAD'), 'ref: refs/heads/main');
     await fs.writeFile(path.join(tmpDir, 'package.json'), '{}');
-    await fs.writeFile(path.join(tmpDir, 'src', 'image.png'), Buffer.from([0x89, 0x50, 0x4E, 0x47]));
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'image.png'),
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    );
   });
 
   afterAll(async () => {
     try {
       await fs.rm(tmpDir, { recursive: true, force: true });
-    } catch { /* best-effort */ }
+    } catch {
+      /* best-effort */
+    }
   });
 
   describe('walkRepositoryPaths', () => {
     it('discovers source files', async () => {
       const files = await walkRepositoryPaths(tmpDir);
-      const paths = files.map(f => f.path.replace(/\\/g, '/'));
-      expect(paths.some(p => p.includes('src/index.ts'))).toBe(true);
-      expect(paths.some(p => p.includes('src/utils.ts'))).toBe(true);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+      expect(paths.some((p) => p.includes('src/index.ts'))).toBe(true);
+      expect(paths.some((p) => p.includes('src/utils.ts'))).toBe(true);
     });
 
     it('discovers nested files', async () => {
       const files = await walkRepositoryPaths(tmpDir);
-      const paths = files.map(f => f.path.replace(/\\/g, '/'));
-      expect(paths.some(p => p.includes('components/Button.tsx'))).toBe(true);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+      expect(paths.some((p) => p.includes('components/Button.tsx'))).toBe(true);
     });
 
     it('skips node_modules', async () => {
       const files = await walkRepositoryPaths(tmpDir);
-      const paths = files.map(f => f.path.replace(/\\/g, '/'));
-      expect(paths.every(p => !p.includes('node_modules'))).toBe(true);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+      expect(paths.every((p) => !p.includes('node_modules'))).toBe(true);
     });
 
     it('skips .git directory', async () => {
       const files = await walkRepositoryPaths(tmpDir);
-      const paths = files.map(f => f.path.replace(/\\/g, '/'));
-      expect(paths.every(p => !p.includes('.git/'))).toBe(true);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+      expect(paths.every((p) => !p.includes('.git/'))).toBe(true);
     });
 
     it('returns file sizes', async () => {
@@ -119,8 +133,14 @@ describe('filesystem-walker', () => {
       await fs.mkdir(path.join(gitignoreDir, 'logs'), { recursive: true });
 
       // Source files (should be indexed)
-      await fs.writeFile(path.join(gitignoreDir, 'src', 'index.ts'), 'export const main = () => {}');
-      await fs.writeFile(path.join(gitignoreDir, 'src', 'utils.ts'), 'export const helper = () => {}');
+      await fs.writeFile(
+        path.join(gitignoreDir, 'src', 'index.ts'),
+        'export const main = () => {}',
+      );
+      await fs.writeFile(
+        path.join(gitignoreDir, 'src', 'utils.ts'),
+        'export const helper = () => {}',
+      );
 
       // Data files (should be ignored via .gitignore)
       await fs.writeFile(path.join(gitignoreDir, 'data', 'cache', 'file.json'), '{}');
@@ -136,27 +156,30 @@ describe('filesystem-walker', () => {
 
     it('excludes directories listed in .gitignore', async () => {
       const files = await walkRepositoryPaths(gitignoreDir);
-      const paths = files.map(f => f.path.replace(/\\/g, '/'));
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
 
       // Source files should be present
-      expect(paths.some(p => p.includes('src/index.ts'))).toBe(true);
-      expect(paths.some(p => p.includes('src/utils.ts'))).toBe(true);
+      expect(paths.some((p) => p.includes('src/index.ts'))).toBe(true);
+      expect(paths.some((p) => p.includes('src/utils.ts'))).toBe(true);
 
       // Ignored directories should not be present
-      expect(paths.every(p => !p.includes('data/'))).toBe(true);
-      expect(paths.every(p => !p.includes('logs/'))).toBe(true);
+      expect(paths.every((p) => !p.includes('data/'))).toBe(true);
+      expect(paths.every((p) => !p.includes('logs/'))).toBe(true);
     });
 
     it('still applies hardcoded ignore list alongside .gitignore', async () => {
       // Add node_modules (hardcoded ignore) to verify both work
       await fs.mkdir(path.join(gitignoreDir, 'node_modules', 'pkg'), { recursive: true });
-      await fs.writeFile(path.join(gitignoreDir, 'node_modules', 'pkg', 'index.js'), 'module.exports = {}');
+      await fs.writeFile(
+        path.join(gitignoreDir, 'node_modules', 'pkg', 'index.js'),
+        'module.exports = {}',
+      );
 
       const files = await walkRepositoryPaths(gitignoreDir);
-      const paths = files.map(f => f.path.replace(/\\/g, '/'));
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
 
-      expect(paths.every(p => !p.includes('node_modules'))).toBe(true);
-      expect(paths.every(p => !p.includes('data/'))).toBe(true);
+      expect(paths.every((p) => !p.includes('node_modules'))).toBe(true);
+      expect(paths.every((p) => !p.includes('data/'))).toBe(true);
 
       await fs.rm(path.join(gitignoreDir, 'node_modules'), { recursive: true, force: true });
     });
@@ -171,7 +194,10 @@ describe('filesystem-walker', () => {
       await fs.mkdir(path.join(nexusignoreDir, 'src'), { recursive: true });
       await fs.mkdir(path.join(nexusignoreDir, 'local', 'grafana'), { recursive: true });
 
-      await fs.writeFile(path.join(nexusignoreDir, 'src', 'index.ts'), 'export const main = () => {}');
+      await fs.writeFile(
+        path.join(nexusignoreDir, 'src', 'index.ts'),
+        'export const main = () => {}',
+      );
       await fs.writeFile(path.join(nexusignoreDir, 'local', 'grafana', 'module.js'), 'var x = 1;');
 
       // Only .gitnexusignore, no .gitignore
@@ -184,10 +210,10 @@ describe('filesystem-walker', () => {
 
     it('excludes directories listed in .gitnexusignore', async () => {
       const files = await walkRepositoryPaths(nexusignoreDir);
-      const paths = files.map(f => f.path.replace(/\\/g, '/'));
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
 
-      expect(paths.some(p => p.includes('src/index.ts'))).toBe(true);
-      expect(paths.every(p => !p.includes('local/'))).toBe(true);
+      expect(paths.some((p) => p.includes('src/index.ts'))).toBe(true);
+      expect(paths.every((p) => !p.includes('local/'))).toBe(true);
     });
   });
 
@@ -215,11 +241,11 @@ describe('filesystem-walker', () => {
 
     it('excludes directories from both files', async () => {
       const files = await walkRepositoryPaths(combinedDir);
-      const paths = files.map(f => f.path.replace(/\\/g, '/'));
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
 
-      expect(paths.some(p => p.includes('src/index.ts'))).toBe(true);
-      expect(paths.every(p => !p.includes('data/'))).toBe(true);
-      expect(paths.every(p => !p.includes('local/'))).toBe(true);
+      expect(paths.some((p) => p.includes('src/index.ts'))).toBe(true);
+      expect(paths.every((p) => !p.includes('data/'))).toBe(true);
+      expect(paths.every((p) => !p.includes('local/'))).toBe(true);
     });
   });
 
@@ -244,8 +270,8 @@ describe('filesystem-walker', () => {
 
     it('excludes gitignored directory by default', async () => {
       const files = await walkRepositoryPaths(envDir);
-      const paths = files.map(f => f.path.replace(/\\/g, '/'));
-      expect(paths.every(p => !p.includes('data/'))).toBe(true);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+      expect(paths.every((p) => !p.includes('data/'))).toBe(true);
     });
 
     it('includes gitignored directory when GITNEXUS_NO_GITIGNORE is set', async () => {
@@ -253,8 +279,8 @@ describe('filesystem-walker', () => {
       process.env.GITNEXUS_NO_GITIGNORE = '1';
       try {
         const files = await walkRepositoryPaths(envDir);
-        const paths = files.map(f => f.path.replace(/\\/g, '/'));
-        expect(paths.some(p => p.includes('data/dump.json'))).toBe(true);
+        const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+        expect(paths.some((p) => p.includes('data/dump.json'))).toBe(true);
       } finally {
         if (original === undefined) {
           delete process.env.GITNEXUS_NO_GITIGNORE;

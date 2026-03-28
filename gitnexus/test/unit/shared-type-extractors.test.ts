@@ -340,12 +340,12 @@ describe('extractReturnTypeName', () => {
   });
 
   // --- Rust lifetimes in Result ---
-  it('skips Rust lifetime parameters in Result: Result<\'_, User, Error> is unusual but lifetime in first pos is skipped', () => {
+  it("skips Rust lifetime parameters in Result: Result<'_, User, Error> is unusual but lifetime in first pos is skipped", () => {
     // Lifetime as FIRST arg: Result<'a, User> — extractFirstTypeArg skips lifetimes
     expect(extractReturnTypeName("Result<'a, User>")).toBe('User');
   });
 
-  it('skips Rust anonymous lifetime: Result<\'_, User>', () => {
+  it("skips Rust anonymous lifetime: Result<'_, User>", () => {
     expect(extractReturnTypeName("Result<'_, User>")).toBe('User');
   });
 

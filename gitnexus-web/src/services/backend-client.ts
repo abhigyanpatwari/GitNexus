@@ -13,7 +13,7 @@ import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 export interface BackendRepo {
   name: string;
   path: string;
-  repoPath?: string;          // git HEAD returns "repoPath"; older versions return "path"
+  repoPath?: string; // git HEAD returns "repoPath"; older versions return "path"
   indexedAt: string;
   lastCommit?: string;
   stats?: {
@@ -251,7 +251,8 @@ const fetchWithTimeout = async (
     if (error instanceof TypeError) {
       throw new BackendError(
         `Network error reaching GitNexus backend at ${_backendUrl}: ${error.message}`,
-        0, 'network',
+        0,
+        'network',
       );
     }
     throw error;
@@ -273,14 +274,16 @@ const assertOk = async (response: Response): Promise<void> => {
     // Response body was not JSON
   }
 
-  const code = response.status === 404 ? 'not_found'
-    : response.status >= 400 && response.status < 500 ? 'client'
-    : 'server';
+  const code =
+    response.status === 404
+      ? 'not_found'
+      : response.status >= 400 && response.status < 500
+        ? 'client'
+        : 'server';
   throw new BackendError(message, response.status, code);
 };
 
-const repoParam = (repo?: string): string =>
-  repo ? `repo=${encodeURIComponent(repo)}` : '';
+const repoParam = (repo?: string): string => (repo ? `repo=${encodeURIComponent(repo)}` : '');
 
 // ── API Methods ────────────────────────────────────────────────────────────
 
@@ -303,10 +306,7 @@ export const fetchServerInfo = async (): Promise<ServerInfo> => {
  * server goes down (after one retry to avoid false positives from transient
  * network hiccups). Returns a cleanup function.
  */
-export const connectHeartbeat = (
-  onConnect: () => void,
-  onDisconnect: () => void,
-): (() => void) => {
+export const connectHeartbeat = (onConnect: () => void, onDisconnect: () => void): (() => void) => {
   let closed = false;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let es: EventSource | null = null;
@@ -316,7 +316,12 @@ export const connectHeartbeat = (
   const connect = () => {
     if (closed) return;
     es = new EventSource(`${_backendUrl}/api/heartbeat`);
-    es.onopen = () => { if (!closed) { attempt = 0; onConnect(); } };
+    es.onopen = () => {
+      if (!closed) {
+        attempt = 0;
+        onConnect();
+      }
+    };
     es.onerror = () => {
       es?.close();
       es = null;
@@ -342,9 +347,12 @@ export const connectHeartbeat = (
 
 /** Delete a repo's index and unregister it. */
 export const deleteRepo = async (repoName: string): Promise<void> => {
-  const response = await fetchWithTimeout(`${_backendUrl}/api/repo?repo=${encodeURIComponent(repoName)}`, {
-    method: 'DELETE',
-  });
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/repo?repo=${encodeURIComponent(repoName)}`,
+    {
+      method: 'DELETE',
+    },
+  );
   await assertOk(response);
 };
 
@@ -377,9 +385,15 @@ export const fetchRepoInfo = async (repo?: string): Promise<BackendRepo> => {
 /** Fetch the graph (nodes + relationships). Content stripped by default. */
 export const fetchGraph = async (
   repo?: string,
-  opts?: { includeContent?: boolean; signal?: AbortSignal; onProgress?: (downloaded: number, total: number | null) => void },
+  opts?: {
+    includeContent?: boolean;
+    signal?: AbortSignal;
+    onProgress?: (downloaded: number, total: number | null) => void;
+  },
 ): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
-  const params = [repoParam(repo), opts?.includeContent ? 'includeContent=true' : ''].filter(Boolean).join('&');
+  const params = [repoParam(repo), opts?.includeContent ? 'includeContent=true' : '']
+    .filter(Boolean)
+    .join('&');
   const url = `${_backendUrl}/api/graph${params ? `?${params}` : ''}`;
   const response = await fetchWithTimeout(url, { signal: opts?.signal }, 60_000);
   await assertOk(response);
@@ -458,7 +472,9 @@ export const grep = async (
     `pattern=${encodeURIComponent(pattern)}`,
     repoParam(repo),
     limit ? `limit=${limit}` : '',
-  ].filter(Boolean).join('&');
+  ]
+    .filter(Boolean)
+    .join('&');
   const response = await fetchWithTimeout(`${_backendUrl}/api/grep?${params}`);
   await assertOk(response);
   const body = await response.json();
@@ -483,7 +499,9 @@ export const readFile = async (
     repoParam(options?.repo),
     options?.startLine !== undefined ? `startLine=${options.startLine}` : '',
     options?.endLine !== undefined ? `endLine=${options.endLine}` : '',
-  ].filter(Boolean).join('&');
+  ]
+    .filter(Boolean)
+    .join('&');
   const response = await fetchWithTimeout(`${_backendUrl}/api/file?${params}`);
   await assertOk(response);
   return response.json() as Promise<ReadFileResult>;
@@ -491,7 +509,9 @@ export const readFile = async (
 
 /** Fetch all processes for a repo. */
 export const fetchProcesses = async (repo?: string): Promise<unknown> => {
-  const response = await fetchWithTimeout(`${_backendUrl}/api/processes${repo ? `?${repoParam(repo)}` : ''}`);
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/processes${repo ? `?${repoParam(repo)}` : ''}`,
+  );
   await assertOk(response);
   return response.json();
 };
@@ -507,7 +527,9 @@ export const fetchProcessDetail = async (repo: string, name: string): Promise<un
 
 /** Fetch all clusters for a repo. */
 export const fetchClusters = async (repo?: string): Promise<unknown> => {
-  const response = await fetchWithTimeout(`${_backendUrl}/api/clusters${repo ? `?${repoParam(repo)}` : ''}`);
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/clusters${repo ? `?${repoParam(repo)}` : ''}`,
+  );
   await assertOk(response);
   return response.json();
 };
@@ -524,21 +546,30 @@ export const fetchClusterDetail = async (repo: string, name: string): Promise<un
 // ── Analyze API ────────────────────────────────────────────────────────────
 
 /** Start a server-side analysis job. */
-export const startAnalyze = async (
-  request: { url?: string; path?: string; force?: boolean; embeddings?: boolean },
-): Promise<{ jobId: string; status: string }> => {
-  const response = await fetchWithTimeout(`${_backendUrl}/api/analyze`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
-  }, 30_000);
+export const startAnalyze = async (request: {
+  url?: string;
+  path?: string;
+  force?: boolean;
+  embeddings?: boolean;
+}): Promise<{ jobId: string; status: string }> => {
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/analyze`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    },
+    30_000,
+  );
   await assertOk(response);
   return response.json() as Promise<{ jobId: string; status: string }>;
 };
 
 /** Poll analysis job status. */
 export const getAnalyzeStatus = async (jobId: string): Promise<JobStatus> => {
-  const response = await fetchWithTimeout(`${_backendUrl}/api/analyze/${encodeURIComponent(jobId)}`);
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/analyze/${encodeURIComponent(jobId)}`,
+  );
   await assertOk(response);
   return response.json() as Promise<JobStatus>;
 };
@@ -573,11 +604,15 @@ export const streamAnalyzeProgress = (
 
 /** Start server-side embedding generation. */
 export const startEmbeddings = async (repo: string): Promise<{ jobId: string; status: string }> => {
-  const response = await fetchWithTimeout(`${_backendUrl}/api/embed`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repo }),
-  }, 30_000);
+  const response = await fetchWithTimeout(
+    `${_backendUrl}/api/embed`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo }),
+    },
+    30_000,
+  );
   await assertOk(response);
   return response.json() as Promise<{ jobId: string; status: string }>;
 };
@@ -591,10 +626,9 @@ export const getEmbedStatus = async (jobId: string): Promise<JobStatus> => {
 
 /** Cancel a running embedding job. */
 export const cancelEmbeddings = async (jobId: string): Promise<void> => {
-  const response = await fetchWithTimeout(
-    `${_backendUrl}/api/embed/${encodeURIComponent(jobId)}`,
-    { method: 'DELETE' },
-  );
+  const response = await fetchWithTimeout(`${_backendUrl}/api/embed/${encodeURIComponent(jobId)}`, {
+    method: 'DELETE',
+  });
   await assertOk(response);
 };
 
@@ -605,14 +639,11 @@ export const streamEmbeddingProgress = (
   onComplete: (data: { repoName?: string }) => void,
   onError: (error: string) => void,
 ): AbortController => {
-  return streamSSE<JobProgress>(
-    `${_backendUrl}/api/embed/${encodeURIComponent(jobId)}/progress`,
-    {
-      onMessage: onProgress,
-      onComplete: onComplete as (data: unknown) => void,
-      onError,
-    },
-  );
+  return streamSSE<JobProgress>(`${_backendUrl}/api/embed/${encodeURIComponent(jobId)}/progress`, {
+    onMessage: onProgress,
+    onComplete: onComplete as (data: unknown) => void,
+    onError,
+  });
 };
 
 // ── Convenience: connect to server ─────────────────────────────────────────

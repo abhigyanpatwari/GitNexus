@@ -1,6 +1,6 @@
 /**
  * Wiki Command
- * 
+ *
  * Generates repository documentation from the knowledge graph.
  * Usage: gitnexus wiki [path] [options]
  */
@@ -10,7 +10,12 @@ import readline from 'readline';
 import { execSync, execFileSync } from 'child_process';
 import cliProgress from 'cli-progress';
 import { getGitRoot, isGitRepo } from '../storage/git.js';
-import { getStoragePaths, loadMeta, loadCLIConfig, saveCLIConfig } from '../storage/repo-manager.js';
+import {
+  getStoragePaths,
+  loadMeta,
+  loadCLIConfig,
+  saveCLIConfig,
+} from '../storage/repo-manager.js';
 import { WikiGenerator, type WikiOptions } from '../core/wiki/generator.js';
 import { resolveLLMConfig, type LLMProvider } from '../core/wiki/llm-client.js';
 import { detectCursorCLI } from '../core/wiki/cursor-client.js';
@@ -78,10 +83,7 @@ function prompt(question: string, hide = false): Promise<string> {
   });
 }
 
-export const wikiCommand = async (
-  inputPath?: string,
-  options?: WikiCommandOptions,
-) => {
+export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptions) => {
   // Set verbose mode globally for cursor-client to pick up
   if (options?.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';
@@ -141,8 +143,16 @@ export const wikiCommand = async (
   }
 
   const savedConfig = await loadCLIConfig();
-  const hasSavedConfig = !!(savedConfig.provider === 'cursor' || (savedConfig.apiKey && savedConfig.baseUrl));
-  const hasCLIOverrides = !!(options?.apiKey || options?.model || options?.baseUrl || options?.provider);
+  const hasSavedConfig = !!(
+    savedConfig.provider === 'cursor' ||
+    (savedConfig.apiKey && savedConfig.baseUrl)
+  );
+  const hasCLIOverrides = !!(
+    options?.apiKey ||
+    options?.model ||
+    options?.baseUrl ||
+    options?.provider
+  );
 
   let llmConfig = await resolveLLMConfig({
     model: options?.model,
@@ -165,7 +175,7 @@ export const wikiCommand = async (
       }
       // Non-interactive with env var or cursor — just use it
     } else {
-      console.log('  No LLM configured. Let\'s set it up.\n');
+      console.log("  No LLM configured. Let's set it up.\n");
       console.log('  Supports OpenAI, OpenRouter, any OpenAI-compatible API, or Cursor CLI.\n');
 
       // Check if Cursor CLI is available
@@ -255,16 +265,19 @@ export const wikiCommand = async (
   }
 
   // ── Setup progress bar with elapsed timer ──────────────────────────
-  const bar = new cliProgress.SingleBar({
-    format: '  {bar} {percentage}% | {phase}',
-    barCompleteChar: '\u2588',
-    barIncompleteChar: '\u2591',
-    hideCursor: true,
-    barGlue: '',
-    autopadding: true,
-    clearOnComplete: false,
-    stopOnComplete: false,
-  }, cliProgress.Presets.shades_grey);
+  const bar = new cliProgress.SingleBar(
+    {
+      format: '  {bar} {percentage}% | {phase}',
+      barCompleteChar: '\u2588',
+      barIncompleteChar: '\u2591',
+      hideCursor: true,
+      barGlue: '',
+      autopadding: true,
+      clearOnComplete: false,
+      stopOnComplete: false,
+    },
+    cliProgress.Presets.shades_grey,
+  );
 
   bar.start(100, 0, { phase: 'Initializing...' });
 
@@ -321,13 +334,18 @@ export const wikiCommand = async (
     if (options?.review && result.moduleTree) {
       console.log(`\n  Module structure ready for review (${elapsed}s)\n`);
       console.log('  Modules to generate:\n');
-      
+
       const printTree = (nodes: typeof result.moduleTree, indent = 0) => {
         for (const node of nodes) {
           const prefix = '  '.repeat(indent + 2);
           const fileCount = node.files?.length || 0;
           const childCount = node.children?.length || 0;
-          const suffix = fileCount > 0 ? ` (${fileCount} files)` : childCount > 0 ? ` (${childCount} children)` : '';
+          const suffix =
+            fileCount > 0
+              ? ` (${fileCount} files)`
+              : childCount > 0
+                ? ` (${childCount} children)`
+                : '';
           console.log(`${prefix}- ${node.name}${suffix}`);
           if (node.children && node.children.length > 0) {
             printTree(node.children, indent + 1);
@@ -335,10 +353,10 @@ export const wikiCommand = async (
         }
       };
       printTree(result.moduleTree);
-      
+
       console.log(`\n  Tree saved to: ${treeFile}`);
       console.log('  You can edit this file to remove/rename modules.\n');
-      
+
       // Ask for confirmation (auto-continue in non-interactive environments)
       if (!process.stdin.isTTY) {
         console.log('  Non-interactive mode — auto-continuing with generation.\n');
@@ -347,18 +365,18 @@ export const wikiCommand = async (
         ? await prompt('  Continue with generation? (Y/n/edit): ')
         : 'y';
       const choice = answer.trim().toLowerCase();
-      
+
       if (choice === 'n' || choice === 'no') {
         console.log('\n  Generation cancelled. Run `gitnexus wiki` later to generate.\n');
         return;
       }
-      
+
       if (choice === 'edit' || choice === 'e') {
         // Open editor for the user
         const editor = process.env.EDITOR || process.env.VISUAL || 'vi';
         console.log(`\n  Opening ${treeFile} in ${editor}...`);
         console.log('  Save and close the editor when done.\n');
-        
+
         try {
           execSync(`${editor} "${treeFile}"`, { stdio: 'inherit' });
         } catch {
@@ -367,17 +385,17 @@ export const wikiCommand = async (
           return;
         }
       }
-      
+
       // Continue with generation using the (possibly edited) tree
       console.log('\n  Continuing with wiki generation...\n');
       bar.start(100, 30, { phase: 'Generating pages...' });
-      
+
       // Re-run generator without reviewOnly flag
       const continueOptions: WikiOptions = {
         ...wikiOptions,
         reviewOnly: false,
       };
-      
+
       const continueGenerator = new WikiGenerator(
         repoPath,
         storagePath,
@@ -393,26 +411,26 @@ export const wikiCommand = async (
           bar.update(percent, { phase: label });
         },
       );
-      
+
       const continueResult = await continueGenerator.run();
-      
+
       bar.update(100, { phase: 'Done' });
       bar.stop();
-      
+
       const totalElapsed = ((Date.now() - t0) / 1000).toFixed(1);
       console.log(`\n  Wiki generated successfully (${totalElapsed}s)\n`);
       console.log(`  Mode: ${continueResult.mode}`);
       console.log(`  Pages: ${continueResult.pagesGenerated}`);
       console.log(`  Output: ${wikiDir}`);
       console.log(`  Viewer: ${viewerPath}`);
-      
+
       if (continueResult.failedModules && continueResult.failedModules.length > 0) {
         console.log(`\n  Failed modules (${continueResult.failedModules.length}):`);
         for (const mod of continueResult.failedModules) {
           console.log(`    - ${mod}`);
         }
       }
-      
+
       console.log('');
       await maybePublishGist(viewerPath, options?.gist);
       return;
@@ -454,13 +472,19 @@ export const wikiCommand = async (
       console.log(`\n  LLM Error: ${err.message}\n`);
 
       // Offer to reconfigure on auth-related failures
-      const isAuthError = err.message?.includes('401') || err.message?.includes('403')
-        || err.message?.includes('502') || err.message?.includes('authenticate')
-        || err.message?.includes('Unauthorized');
+      const isAuthError =
+        err.message?.includes('401') ||
+        err.message?.includes('403') ||
+        err.message?.includes('502') ||
+        err.message?.includes('authenticate') ||
+        err.message?.includes('Unauthorized');
       if (isAuthError && process.stdin.isTTY) {
         const answer = await new Promise<string>((resolve) => {
           const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-          rl.question('  Reconfigure LLM settings? (Y/n): ', (ans) => { rl.close(); resolve(ans.trim().toLowerCase()); });
+          rl.question('  Reconfigure LLM settings? (Y/n): ', (ans) => {
+            rl.close();
+            resolve(ans.trim().toLowerCase());
+          });
         });
         if (!answer || answer === 'y' || answer === 'yes') {
           // Clear saved config so next run triggers interactive setup
@@ -491,15 +515,15 @@ function hasGhCLI(): boolean {
 
 function publishGist(htmlPath: string): { url: string; rawUrl: string } | null {
   try {
-    const output = execFileSync('gh', [
-      'gist', 'create', htmlPath,
-      '--desc', 'Repository Wiki — generated by GitNexus',
-      '--public',
-    ], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    const output = execFileSync(
+      'gh',
+      ['gist', 'create', htmlPath, '--desc', 'Repository Wiki — generated by GitNexus', '--public'],
+      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+    ).trim();
 
     // gh gist create prints the gist URL as the last line
     const lines = output.split('\n');
-    const gistUrl = lines.find(l => l.includes('gist.github.com')) || lines[lines.length - 1];
+    const gistUrl = lines.find((l) => l.includes('gist.github.com')) || lines[lines.length - 1];
 
     if (!gistUrl || !gistUrl.includes('gist.github.com')) return null;
 

@@ -63,9 +63,10 @@ export const resolveImportPath = (
       if (importPath.startsWith(aliasPrefix)) {
         const remainder = importPath.slice(aliasPrefix.length);
         // Build the rewritten path relative to baseUrl
-        const rewritten = tsconfigPaths.baseUrl === '.'
-          ? targetPrefix + remainder
-          : tsconfigPaths.baseUrl + '/' + targetPrefix + remainder;
+        const rewritten =
+          tsconfigPaths.baseUrl === '.'
+            ? targetPrefix + remainder
+            : tsconfigPaths.baseUrl + '/' + targetPrefix + remainder;
 
         // Try direct resolution from repo root
         const resolved = tryResolveWithExtensions(rewritten, allFiles);
@@ -94,7 +95,10 @@ export const resolveImportPath = (
       // Rust grouped-import blocks in processImports / processImportsBatch). This fallback
       // handles any path that reaches resolveImportPath directly.
       const inner = importPath.slice(1, -1);
-      const parts = inner.split(',').map(p => p.trim()).filter(Boolean);
+      const parts = inner
+        .split(',')
+        .map((p) => p.trim())
+        .filter(Boolean);
       for (const part of parts) {
         const partResult = resolveRustImportInternal(currentFile, part, allFiles);
         if (partResult) return cache(partResult);
@@ -135,9 +139,7 @@ export const resolveImportPath = (
 
   // C/C++ includes use actual file paths (e.g. "animal.h") — don't convert dots to slashes
   const isCpp = language === SupportedLanguages.C || language === SupportedLanguages.CPlusPlus;
-  const pathLike = importPath.includes('/') || isCpp
-    ? importPath
-    : importPath.replace(/\./g, '/');
+  const pathLike = importPath.includes('/') || isCpp ? importPath : importPath.replace(/\./g, '/');
   const pathParts = pathLike.split('/').filter(Boolean);
 
   const resolved = suffixResolve(pathParts, normalizedFileList, allFileList, index);

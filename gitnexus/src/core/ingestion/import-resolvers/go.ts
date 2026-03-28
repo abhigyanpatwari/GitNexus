@@ -12,10 +12,7 @@ import type { GoModuleConfig } from '../language-config.js';
  * Extract the package directory suffix from a Go import path.
  * Returns the suffix string (e.g., "/internal/auth/") or null if invalid.
  */
-export function resolveGoPackageDir(
-  importPath: string,
-  goModule: GoModuleConfig,
-): string | null {
+export function resolveGoPackageDir(importPath: string, goModule: GoModuleConfig): string | null {
   if (!importPath.startsWith(goModule.modulePath)) return null;
   const relativePkg = importPath.slice(goModule.modulePath.length + 1);
   if (!relativePkg) return null;
@@ -45,7 +42,11 @@ export function resolveGoPackage(
     // Prepend '/' so paths like "internal/auth/service.go" match suffix "/internal/auth/"
     const normalized = '/' + normalizedFileList[i];
     // File must be directly in the package directory (not a subdirectory)
-    if (normalized.includes(pkgSuffix) && normalized.endsWith('.go') && !normalized.endsWith('_test.go')) {
+    if (
+      normalized.includes(pkgSuffix) &&
+      normalized.endsWith('.go') &&
+      !normalized.endsWith('_test.go')
+    ) {
       const afterPkg = normalized.substring(normalized.indexOf(pkgSuffix) + pkgSuffix.length);
       if (!afterPkg.includes('/')) {
         matches.push(allFileList[i]);
@@ -66,7 +67,12 @@ export function resolveGoImport(
   if (goModule && rawImportPath.startsWith(goModule.modulePath)) {
     const pkgSuffix = resolveGoPackageDir(rawImportPath, goModule);
     if (pkgSuffix) {
-      const pkgFiles = resolveGoPackage(rawImportPath, goModule, ctx.normalizedFileList, ctx.allFileList);
+      const pkgFiles = resolveGoPackage(
+        rawImportPath,
+        goModule,
+        ctx.normalizedFileList,
+        ctx.allFileList,
+      );
       if (pkgFiles.length > 0) {
         return { kind: 'package', files: pkgFiles, dirSuffix: pkgSuffix };
       }

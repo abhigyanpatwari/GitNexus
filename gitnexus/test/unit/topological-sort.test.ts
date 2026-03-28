@@ -95,9 +95,7 @@ describe('topologicalLevelSort', () => {
   });
 
   it('handles a single file with no imports', () => {
-    const importMap = new Map<string, Set<string>>([
-      ['only.ts', new Set()],
-    ]);
+    const importMap = new Map<string, Set<string>>([['only.ts', new Set()]]);
     const { levels } = topologicalLevelSort(importMap);
     expect(levels).toHaveLength(1);
     expect(levels[0]).toContain('only.ts');
@@ -105,17 +103,15 @@ describe('topologicalLevelSort', () => {
 
   it('handles a dependency on a file not explicitly in the map', () => {
     // b imports external.ts which is not itself a key in importMap
-    const importMap = new Map<string, Set<string>>([
-      ['b.ts', new Set(['external.ts'])],
-    ]);
+    const importMap = new Map<string, Set<string>>([['b.ts', new Set(['external.ts'])]]);
     const { levels } = topologicalLevelSort(importMap);
     // external.ts has in-degree 0 (no one depends on it as a key), appears first
     // b.ts depends on external.ts so appears after
     const allFiles = levels.flat();
     expect(allFiles).toContain('external.ts');
     expect(allFiles).toContain('b.ts');
-    const externalLevel = levels.findIndex(l => l.includes('external.ts'));
-    const bLevel = levels.findIndex(l => l.includes('b.ts'));
+    const externalLevel = levels.findIndex((l) => l.includes('external.ts'));
+    const bLevel = levels.findIndex((l) => l.includes('b.ts'));
     expect(externalLevel).toBeLessThan(bLevel);
   });
 

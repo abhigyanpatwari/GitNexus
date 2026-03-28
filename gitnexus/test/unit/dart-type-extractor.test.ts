@@ -32,7 +32,11 @@ describe('Dart type extractor', () => {
     it('extracts type from typed variable declaration', async () => {
       if (!(await loadDartOrSkip())) return;
       const env = new Map<string, string>();
-      const nodes = parseAndFindNodes(parser, 'void f() { User admin = User("x"); }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { User admin = User("x"); }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       typeConfig.extractDeclaration(nodes[0], env);
       expect(env.get('admin')).toBe('User');
@@ -41,7 +45,11 @@ describe('Dart type extractor', () => {
     it('extracts type from nullable declaration', async () => {
       if (!(await loadDartOrSkip())) return;
       const env = new Map<string, string>();
-      const nodes = parseAndFindNodes(parser, 'void f() { User? maybeUser = null; }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { User? maybeUser = null; }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       typeConfig.extractDeclaration(nodes[0], env);
       expect(env.get('maybeUser')).toBe('User');
@@ -50,7 +58,11 @@ describe('Dart type extractor', () => {
     it('skips dynamic type', async () => {
       if (!(await loadDartOrSkip())) return;
       const env = new Map<string, string>();
-      const nodes = parseAndFindNodes(parser, 'void f() { dynamic x = 1; }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { dynamic x = 1; }',
+        'initialized_variable_definition',
+      );
       if (nodes.length > 0) {
         typeConfig.extractDeclaration(nodes[0], env);
         expect(env.has('x')).toBe(false);
@@ -82,7 +94,11 @@ describe('Dart type extractor', () => {
       if (!(await loadDartOrSkip())) return;
       const env = new Map<string, string>();
       const classNames = new Set(['User']);
-      const nodes = parseAndFindNodes(parser, 'void f() { var user = User("x"); }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { var user = User("x"); }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       typeConfig.extractInitializer!(nodes[0], env, classNames);
       expect(env.get('user')).toBe('User');
@@ -92,7 +108,11 @@ describe('Dart type extractor', () => {
       if (!(await loadDartOrSkip())) return;
       const env = new Map<string, string>();
       const classNames = new Set(['Dog']);
-      const nodes = parseAndFindNodes(parser, 'void f() { var d = Dog.unknown(); }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { var d = Dog.unknown(); }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       typeConfig.extractInitializer!(nodes[0], env, classNames);
       expect(env.get('d')).toBe('Dog');
@@ -102,7 +122,11 @@ describe('Dart type extractor', () => {
       if (!(await loadDartOrSkip())) return;
       const env = new Map<string, string>();
       const classNames = new Set<string>();
-      const nodes = parseAndFindNodes(parser, 'void f() { var x = getUser(); }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { var x = getUser(); }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       typeConfig.extractInitializer!(nodes[0], env, classNames);
       expect(env.has('x')).toBe(false);
@@ -112,7 +136,11 @@ describe('Dart type extractor', () => {
       if (!(await loadDartOrSkip())) return;
       const env = new Map<string, string>();
       const classNames = new Set(['User']);
-      const nodes = parseAndFindNodes(parser, 'void f() { User user = User("x"); }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { User user = User("x"); }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       typeConfig.extractInitializer!(nodes[0], env, classNames);
       // Should not set — Tier 0 handles this
@@ -123,7 +151,11 @@ describe('Dart type extractor', () => {
   describe('constructor binding scanner', () => {
     it('scans direct constructor call', async () => {
       if (!(await loadDartOrSkip())) return;
-      const nodes = parseAndFindNodes(parser, 'void f() { var user = User(); }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { var user = User(); }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       const result = typeConfig.scanConstructorBinding!(nodes[0]);
       expect(result).toEqual({ varName: 'user', calleeName: 'User' });
@@ -131,7 +163,11 @@ describe('Dart type extractor', () => {
 
     it('scans qualified call (method on receiver)', async () => {
       if (!(await loadDartOrSkip())) return;
-      const nodes = parseAndFindNodes(parser, 'void f() { var u = svc.getUser(); }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { var u = svc.getUser(); }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       const result = typeConfig.scanConstructorBinding!(nodes[0]);
       expect(result?.varName).toBe('u');
@@ -140,7 +176,11 @@ describe('Dart type extractor', () => {
 
     it('returns undefined for non-call assignment', async () => {
       if (!(await loadDartOrSkip())) return;
-      const nodes = parseAndFindNodes(parser, 'void f() { var x = y; }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { var x = y; }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       const result = typeConfig.scanConstructorBinding!(nodes[0]);
       expect(result).toBeUndefined();
@@ -151,7 +191,11 @@ describe('Dart type extractor', () => {
     it('detects constructor type for virtual dispatch', async () => {
       if (!(await loadDartOrSkip())) return;
       const classNames = new Set(['Dog']);
-      const nodes = parseAndFindNodes(parser, 'void f() { var d = Dog(); }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { var d = Dog(); }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       const result = typeConfig.detectConstructorType!(nodes[0], classNames);
       expect(result).toBe('Dog');
@@ -163,7 +207,10 @@ describe('Dart type extractor', () => {
       if (!(await loadDartOrSkip())) return;
       const tree = parser.parse('void f() { var x = 42; }');
       const nodes: any[] = [];
-      function walk(n: any) { if (n.type.includes('integer_literal')) nodes.push(n); for (let i = 0; i < n.namedChildCount; i++) walk(n.namedChild(i)); }
+      function walk(n: any) {
+        if (n.type.includes('integer_literal')) nodes.push(n);
+        for (let i = 0; i < n.namedChildCount; i++) walk(n.namedChild(i));
+      }
       walk(tree.rootNode);
       if (nodes.length > 0) {
         expect(typeConfig.inferLiteralType!(nodes[0])).toBe('int');
@@ -174,7 +221,10 @@ describe('Dart type extractor', () => {
       if (!(await loadDartOrSkip())) return;
       const tree = parser.parse('void f() { var x = "hello"; }');
       const nodes: any[] = [];
-      function walk(n: any) { if (n.type === 'string_literal') nodes.push(n); for (let i = 0; i < n.namedChildCount; i++) walk(n.namedChild(i)); }
+      function walk(n: any) {
+        if (n.type === 'string_literal') nodes.push(n);
+        for (let i = 0; i < n.namedChildCount; i++) walk(n.namedChild(i));
+      }
       walk(tree.rootNode);
       if (nodes.length > 0) {
         expect(typeConfig.inferLiteralType!(nodes[0])).toBe('String');
@@ -185,7 +235,13 @@ describe('Dart type extractor', () => {
       if (!(await loadDartOrSkip())) return;
       const tree = parser.parse('void f() { var x = true; }');
       const nodes: any[] = [];
-      function walk(n: any) { if (n.type === 'true' || n.type === 'false') nodes.push(n); for (let i = 0; i < n.childCount; i++) { const c = n.child(i); if (c) walk(c); } }
+      function walk(n: any) {
+        if (n.type === 'true' || n.type === 'false') nodes.push(n);
+        for (let i = 0; i < n.childCount; i++) {
+          const c = n.child(i);
+          if (c) walk(c);
+        }
+      }
       walk(tree.rootNode);
       if (nodes.length > 0) {
         expect(typeConfig.inferLiteralType!(nodes[0])).toBe('bool');
@@ -196,7 +252,11 @@ describe('Dart type extractor', () => {
   describe('Tier 2: pending assignment extraction', () => {
     it('extracts copy assignment', async () => {
       if (!(await loadDartOrSkip())) return;
-      const nodes = parseAndFindNodes(parser, 'void f() { var copy = original; }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { var copy = original; }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       const result = typeConfig.extractPendingAssignment!(nodes[0], new Map());
       expect(result).toEqual({ kind: 'copy', lhs: 'copy', rhs: 'original' });
@@ -204,7 +264,11 @@ describe('Dart type extractor', () => {
 
     it('extracts field access', async () => {
       if (!(await loadDartOrSkip())) return;
-      const nodes = parseAndFindNodes(parser, 'void f() { var n = user.name; }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { var n = user.name; }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       const result = typeConfig.extractPendingAssignment!(nodes[0], new Map());
       expect(result).toEqual({ kind: 'fieldAccess', lhs: 'n', receiver: 'user', field: 'name' });
@@ -212,7 +276,11 @@ describe('Dart type extractor', () => {
 
     it('extracts call result', async () => {
       if (!(await loadDartOrSkip())) return;
-      const nodes = parseAndFindNodes(parser, 'void f() { var u = getUser(); }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { var u = getUser(); }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       const result = typeConfig.extractPendingAssignment!(nodes[0], new Map());
       expect(result).toEqual({ kind: 'callResult', lhs: 'u', callee: 'getUser' });
@@ -220,16 +288,29 @@ describe('Dart type extractor', () => {
 
     it('extracts method call result', async () => {
       if (!(await loadDartOrSkip())) return;
-      const nodes = parseAndFindNodes(parser, 'void f() { var r = svc.fetch(); }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { var r = svc.fetch(); }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       const result = typeConfig.extractPendingAssignment!(nodes[0], new Map());
-      expect(result).toEqual({ kind: 'methodCallResult', lhs: 'r', receiver: 'svc', method: 'fetch' });
+      expect(result).toEqual({
+        kind: 'methodCallResult',
+        lhs: 'r',
+        receiver: 'svc',
+        method: 'fetch',
+      });
     });
 
     it('skips when lhs already in scope', async () => {
       if (!(await loadDartOrSkip())) return;
       const scope = new Map([['x', 'String']]);
-      const nodes = parseAndFindNodes(parser, 'void f() { var x = y; }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { var x = y; }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       const result = typeConfig.extractPendingAssignment!(nodes[0], scope);
       expect(result).toBeUndefined();
@@ -237,7 +318,11 @@ describe('Dart type extractor', () => {
 
     it('extracts call result from await expression', async () => {
       if (!(await loadDartOrSkip())) return;
-      const nodes = parseAndFindNodes(parser, 'void f() async { var user = await getUser(); }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() async { var user = await getUser(); }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       const result = typeConfig.extractPendingAssignment!(nodes[0], new Map());
       expect(result).toEqual({ kind: 'callResult', lhs: 'user', callee: 'getUser' });
@@ -245,17 +330,30 @@ describe('Dart type extractor', () => {
 
     it('extracts method call result from await expression', async () => {
       if (!(await loadDartOrSkip())) return;
-      const nodes = parseAndFindNodes(parser, 'void f() async { var user = await svc.fetch(); }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() async { var user = await svc.fetch(); }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       const result = typeConfig.extractPendingAssignment!(nodes[0], new Map());
-      expect(result).toEqual({ kind: 'methodCallResult', lhs: 'user', receiver: 'svc', method: 'fetch' });
+      expect(result).toEqual({
+        kind: 'methodCallResult',
+        lhs: 'user',
+        receiver: 'svc',
+        method: 'fetch',
+      });
     });
   });
 
   describe('for-loop element type resolution', () => {
     it('extracts type from explicit for-loop annotation', async () => {
       if (!(await loadDartOrSkip())) return;
-      const nodes = parseAndFindNodes(parser, 'void f(List<User> users) { for (User u in users) {} }', 'for_statement');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f(List<User> users) { for (User u in users) {} }',
+        'for_statement',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       const scopeEnv = new Map<string, string>();
       const ctx = {
@@ -273,7 +371,11 @@ describe('Dart type extractor', () => {
 
     it('infers element type from call iterable return type', async () => {
       if (!(await loadDartOrSkip())) return;
-      const nodes = parseAndFindNodes(parser, 'void f() { for (var u in getUsers()) {} }', 'for_statement');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { for (var u in getUsers()) {} }',
+        'for_statement',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       const scopeEnv = new Map<string, string>();
       const ctx = {
@@ -281,8 +383,8 @@ describe('Dart type extractor', () => {
         declarationTypeNodes: new Map(),
         scope: 'test@0',
         returnTypeLookup: {
-          lookupReturnType: (name: string) => name === 'getUsers' ? 'User' : undefined,
-          lookupRawReturnType: (name: string) => name === 'getUsers' ? 'List<User>' : undefined,
+          lookupReturnType: (name: string) => (name === 'getUsers' ? 'User' : undefined),
+          lookupRawReturnType: (name: string) => (name === 'getUsers' ? 'List<User>' : undefined),
         },
       };
       typeConfig.extractForLoopBinding!(nodes[0], ctx);
@@ -291,14 +393,21 @@ describe('Dart type extractor', () => {
 
     it('skips non-for_statement nodes', async () => {
       if (!(await loadDartOrSkip())) return;
-      const nodes = parseAndFindNodes(parser, 'void f() { var x = 1; }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { var x = 1; }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       const scopeEnv = new Map<string, string>();
       const ctx = {
         scopeEnv,
         declarationTypeNodes: new Map(),
         scope: 'test@0',
-        returnTypeLookup: { lookupReturnType: () => undefined, lookupRawReturnType: () => undefined },
+        returnTypeLookup: {
+          lookupReturnType: () => undefined,
+          lookupRawReturnType: () => undefined,
+        },
       };
       typeConfig.extractForLoopBinding!(nodes[0], ctx);
       expect(scopeEnv.size).toBe(0);
@@ -309,7 +418,11 @@ describe('Dart type extractor', () => {
     it('detects constructor type for named constructor', async () => {
       if (!(await loadDartOrSkip())) return;
       const classNames = new Set(['Dog']);
-      const nodes = parseAndFindNodes(parser, 'void f() { var d = Dog.unknown(); }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { var d = Dog.unknown(); }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       const result = typeConfig.detectConstructorType!(nodes[0], classNames);
       expect(result).toBe('Dog');
@@ -318,7 +431,11 @@ describe('Dart type extractor', () => {
     it('returns undefined when callee is not a known class', async () => {
       if (!(await loadDartOrSkip())) return;
       const classNames = new Set<string>();
-      const nodes = parseAndFindNodes(parser, 'void f() { var x = getUser(); }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { var x = getUser(); }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       const result = typeConfig.detectConstructorType!(nodes[0], classNames);
       expect(result).toBeUndefined();
@@ -330,7 +447,10 @@ describe('Dart type extractor', () => {
       if (!(await loadDartOrSkip())) return;
       const tree = parser.parse('void f() { var x = 3.14; }');
       const nodes: any[] = [];
-      function walk(n: any) { if (n.type.includes('floating_point')) nodes.push(n); for (let i = 0; i < n.namedChildCount; i++) walk(n.namedChild(i)); }
+      function walk(n: any) {
+        if (n.type.includes('floating_point')) nodes.push(n);
+        for (let i = 0; i < n.namedChildCount; i++) walk(n.namedChild(i));
+      }
       walk(tree.rootNode);
       if (nodes.length > 0) expect(typeConfig.inferLiteralType!(nodes[0])).toBe('double');
     });
@@ -339,7 +459,13 @@ describe('Dart type extractor', () => {
       if (!(await loadDartOrSkip())) return;
       const tree = parser.parse('void f() { var x = false; }');
       const nodes: any[] = [];
-      function walk(n: any) { if (n.type === 'false') nodes.push(n); for (let i = 0; i < n.childCount; i++) { const c = n.child(i); if (c) walk(c); } }
+      function walk(n: any) {
+        if (n.type === 'false') nodes.push(n);
+        for (let i = 0; i < n.childCount; i++) {
+          const c = n.child(i);
+          if (c) walk(c);
+        }
+      }
       walk(tree.rootNode);
       if (nodes.length > 0) expect(typeConfig.inferLiteralType!(nodes[0])).toBe('bool');
     });
@@ -348,7 +474,10 @@ describe('Dart type extractor', () => {
       if (!(await loadDartOrSkip())) return;
       const tree = parser.parse('void f() { var x = null; }');
       const nodes: any[] = [];
-      function walk(n: any) { if (n.type === 'null_literal') nodes.push(n); for (let i = 0; i < n.namedChildCount; i++) walk(n.namedChild(i)); }
+      function walk(n: any) {
+        if (n.type === 'null_literal') nodes.push(n);
+        for (let i = 0; i < n.namedChildCount; i++) walk(n.namedChild(i));
+      }
       walk(tree.rootNode);
       if (nodes.length > 0) expect(typeConfig.inferLiteralType!(nodes[0])).toBe('null');
     });
@@ -363,7 +492,11 @@ describe('Dart type extractor', () => {
     it('extracts outer type from generic declaration', async () => {
       if (!(await loadDartOrSkip())) return;
       const env = new Map<string, string>();
-      const nodes = parseAndFindNodes(parser, 'void f() { List<String> names = []; }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { List<String> names = []; }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       typeConfig.extractDeclaration(nodes[0], env);
       expect(env.get('names')).toBe('List');
@@ -373,7 +506,11 @@ describe('Dart type extractor', () => {
       if (!(await loadDartOrSkip())) return;
       const env = new Map<string, string>();
       const classNames = new Set(['Repository']);
-      const nodes = parseAndFindNodes(parser, 'void f() { var repo = Repository(); }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { var repo = Repository(); }',
+        'initialized_variable_definition',
+      );
       expect(nodes.length).toBeGreaterThan(0);
       typeConfig.extractInitializer!(nodes[0], env, classNames);
       expect(env.get('repo')).toBe('Repository');
@@ -383,7 +520,11 @@ describe('Dart type extractor', () => {
       if (!(await loadDartOrSkip())) return;
       const env = new Map<string, string>();
       const classNames = new Set(['Config']);
-      const nodes = parseAndFindNodes(parser, 'void f() { const config = Config(); }', 'initialized_variable_definition');
+      const nodes = parseAndFindNodes(
+        parser,
+        'void f() { const config = Config(); }',
+        'initialized_variable_definition',
+      );
       if (nodes.length > 0) {
         typeConfig.extractInitializer!(nodes[0], env, classNames);
         expect(env.get('config')).toBe('Config');

@@ -14,7 +14,9 @@ describe('path-resolution utilities', () => {
   });
 
   it('prefers exact matches', () => {
-    expect(resolveFilePath(contents, 'src/components/Header.tsx')).toBe('src/components/Header.tsx');
+    expect(resolveFilePath(contents, 'src/components/Header.tsx')).toBe(
+      'src/components/Header.tsx',
+    );
   });
 
   it('resolves ends-with partials', () => {

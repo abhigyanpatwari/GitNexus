@@ -11,10 +11,7 @@ function isCallable(value: unknown): value is (...args: unknown[]) => unknown {
 export function createLazyAction<
   TModule extends Record<string, unknown>,
   TKey extends string & keyof TModule,
->(
-  loader: () => Promise<TModule>,
-  exportName: TKey,
-): (...args: unknown[]) => Promise<void> {
+>(loader: () => Promise<TModule>, exportName: TKey): (...args: unknown[]) => Promise<void> {
   return async (...args: unknown[]): Promise<void> => {
     const module = await loader();
     const action = module[exportName];

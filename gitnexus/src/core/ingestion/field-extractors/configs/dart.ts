@@ -45,8 +45,12 @@ export const dartConfig: FieldExtractionConfig = {
     // declaration > type_identifier (first named child usually)
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
-      if (child && (child.type === 'type_identifier' || child.type === 'generic_type'
-        || child.type === 'function_type')) {
+      if (
+        child &&
+        (child.type === 'type_identifier' ||
+          child.type === 'generic_type' ||
+          child.type === 'function_type')
+      ) {
         return extractSimpleTypeName(child) ?? child.text?.trim();
       }
     }

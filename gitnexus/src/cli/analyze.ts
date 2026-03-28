@@ -18,7 +18,6 @@ import { getGitRoot, hasGitDir } from '../storage/git.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import fs from 'fs/promises';
 
-
 const HEAP_MB = 8192;
 const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
 
@@ -50,10 +49,7 @@ export interface AnalyzeOptions {
   skipGit?: boolean;
 }
 
-export const analyzeCommand = async (
-  inputPath?: string,
-  options?: AnalyzeOptions
-) => {
+export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
   if (ensureHeap()) return;
 
   if (options?.verbose) {
@@ -69,7 +65,9 @@ export const analyzeCommand = async (
     const gitRoot = getGitRoot(process.cwd());
     if (!gitRoot) {
       if (!options?.skipGit) {
-        console.log('  Not inside a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n');
+        console.log(
+          '  Not inside a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n',
+        );
         process.exitCode = 1;
         return;
       }
@@ -82,32 +80,41 @@ export const analyzeCommand = async (
 
   const repoHasGit = hasGitDir(repoPath);
   if (!repoHasGit && !options?.skipGit) {
-    console.log('  Not a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n');
+    console.log(
+      '  Not a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n',
+    );
     process.exitCode = 1;
     return;
   }
   if (!repoHasGit) {
-    console.log('  Warning: no .git directory found \u2014 commit-tracking and incremental updates disabled.\n');
+    console.log(
+      '  Warning: no .git directory found \u2014 commit-tracking and incremental updates disabled.\n',
+    );
   }
 
   // KuzuDB migration cleanup is handled by runFullAnalysis internally.
   // Note: --skills is handled after runFullAnalysis using the returned pipelineResult.
 
   if (process.env.GITNEXUS_NO_GITIGNORE) {
-    console.log('  GITNEXUS_NO_GITIGNORE is set — skipping .gitignore (still reading .gitnexusignore)\n');
+    console.log(
+      '  GITNEXUS_NO_GITIGNORE is set — skipping .gitignore (still reading .gitnexusignore)\n',
+    );
   }
 
   // ── CLI progress bar setup ─────────────────────────────────────────
-  const bar = new cliProgress.SingleBar({
-    format: '  {bar} {percentage}% | {phase}',
-    barCompleteChar: '\u2588',
-    barIncompleteChar: '\u2591',
-    hideCursor: true,
-    barGlue: '',
-    autopadding: true,
-    clearOnComplete: false,
-    stopOnComplete: false,
-  }, cliProgress.Presets.shades_grey);
+  const bar = new cliProgress.SingleBar(
+    {
+      format: '  {bar} {percentage}% | {phase}',
+      barCompleteChar: '\u2588',
+      barIncompleteChar: '\u2591',
+      hideCursor: true,
+      barGlue: '',
+      autopadding: true,
+      clearOnComplete: false,
+      stopOnComplete: false,
+    },
+    cliProgress.Presets.shades_grey,
+  );
 
   bar.start(100, 0, { phase: 'Initializing...' });
 
@@ -118,7 +125,9 @@ export const analyzeCommand = async (
     aborted = true;
     bar.stop();
     console.log('\n  Interrupted — cleaning up...');
-    closeLbug().catch(() => {}).finally(() => process.exit(130));
+    closeLbug()
+      .catch(() => {})
+      .finally(() => process.exit(130));
   };
   process.on('SIGINT', sigintHandler);
 
@@ -128,7 +137,7 @@ export const analyzeCommand = async (
   const origError = console.error.bind(console);
   const barLog = (...args: any[]) => {
     process.stdout.write('\x1b[2K\r');
-    origLog(args.map(a => (typeof a === 'string' ? a : String(a))).join(' '));
+    origLog(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' '));
   };
   console.log = barLog;
   console.warn = barLog;
@@ -139,7 +148,10 @@ export const analyzeCommand = async (
   let phaseStart = Date.now();
 
   const updateBar = (value: number, phaseLabel: string) => {
-    if (phaseLabel !== lastPhaseLabel) { lastPhaseLabel = phaseLabel; phaseStart = Date.now(); }
+    if (phaseLabel !== lastPhaseLabel) {
+      lastPhaseLabel = phaseLabel;
+      phaseStart = Date.now();
+    }
     const elapsed = Math.round((Date.now() - phaseStart) / 1000);
     const display = elapsed >= 3 ? `${phaseLabel} (${elapsed}s)` : phaseLabel;
     bar.update(value, { phase: display });
@@ -190,7 +202,11 @@ export const analyzeCommand = async (
       try {
         const { generateSkillFiles } = await import('./skill-gen.js');
         const { generateAIContextFiles } = await import('./ai-context.js');
-        const skillResult = await generateSkillFiles(repoPath, result.repoName, result.pipelineResult);
+        const skillResult = await generateSkillFiles(
+          repoPath,
+          result.repoName,
+          result.pipelineResult,
+        );
         if (skillResult.skills.length > 0) {
           barLog(`  Generated ${skillResult.skills.length} skill files`);
           // Re-generate AI context files now that we have skill info
@@ -203,19 +219,29 @@ export const analyzeCommand = async (
               const label = c.heuristicLabel || c.label || 'Unknown';
               groups.set(label, (groups.get(label) || 0) + c.symbolCount);
             }
-            aggregatedClusterCount = Array.from(groups.values()).filter((count: number) => count >= 5).length;
+            aggregatedClusterCount = Array.from(groups.values()).filter(
+              (count: number) => count >= 5,
+            ).length;
           }
           const { storagePath: sp } = getStoragePaths(repoPath);
-          await generateAIContextFiles(repoPath, sp, result.repoName, {
-            files: s.files ?? 0,
-            nodes: s.nodes ?? 0,
-            edges: s.edges ?? 0,
-            communities: s.communities,
-            clusters: aggregatedClusterCount,
-            processes: s.processes,
-          }, skillResult.skills);
+          await generateAIContextFiles(
+            repoPath,
+            sp,
+            result.repoName,
+            {
+              files: s.files ?? 0,
+              nodes: s.nodes ?? 0,
+              edges: s.edges ?? 0,
+              communities: s.communities,
+              clusters: aggregatedClusterCount,
+              processes: s.processes,
+            },
+            skillResult.skills,
+          );
         }
-      } catch { /* best-effort */ }
+      } catch {
+        /* best-effort */
+      }
     }
 
     const totalTime = ((Date.now() - t0) / 1000).toFixed(1);
@@ -233,7 +259,9 @@ export const analyzeCommand = async (
     // ── Summary ────────────────────────────────────────────────────
     const s = result.stats;
     console.log(`\n  Repository indexed successfully (${totalTime}s)\n`);
-    console.log(`  ${(s.nodes ?? 0).toLocaleString()} nodes | ${(s.edges ?? 0).toLocaleString()} edges | ${(s.communities ?? 0)} clusters | ${(s.processes ?? 0)} flows`);
+    console.log(
+      `  ${(s.nodes ?? 0).toLocaleString()} nodes | ${(s.edges ?? 0).toLocaleString()} edges | ${s.communities ?? 0} clusters | ${s.processes ?? 0} flows`,
+    );
     console.log(`  ${repoPath}`);
 
     try {
@@ -243,7 +271,6 @@ export const analyzeCommand = async (
     }
 
     console.log('');
-
   } catch (err: any) {
     clearInterval(elapsedTimer);
     process.removeListener('SIGINT', sigintHandler);

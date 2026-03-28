@@ -3,12 +3,12 @@ import { CALL_ARGUMENT_LIST_TYPES } from './ast-helpers.js';
 
 /** Node types representing call expressions across supported languages. */
 export const CALL_EXPRESSION_TYPES = new Set([
-  'call_expression',                   // TS/JS/C/C++/Go/Rust
-  'method_invocation',                 // Java
-  'member_call_expression',            // PHP
-  'nullsafe_member_call_expression',   // PHP ?.
-  'call',                              // Python/Ruby
-  'invocation_expression',             // C#
+  'call_expression', // TS/JS/C/C++/Go/Rust
+  'method_invocation', // Java
+  'member_call_expression', // PHP
+  'nullsafe_member_call_expression', // PHP ?.
+  'call', // Python/Ruby
+  'invocation_expression', // C#
 ]);
 
 /**
@@ -25,8 +25,9 @@ export const countCallArguments = (callNode: SyntaxNode | null | undefined): num
   if (!callNode) return undefined;
 
   // Direct field or direct child (most languages)
-  let argsNode: SyntaxNode | null | undefined = callNode.childForFieldName('arguments')
-    ?? callNode.children.find((child) => CALL_ARGUMENT_LIST_TYPES.has(child.type));
+  let argsNode: SyntaxNode | null | undefined =
+    callNode.childForFieldName('arguments') ??
+    callNode.children.find((child) => CALL_ARGUMENT_LIST_TYPES.has(child.type));
 
   // Kotlin/Swift: call_expression → call_suffix → value_arguments
   // Search one level deeper for languages that wrap arguments in a suffix node
@@ -34,7 +35,10 @@ export const countCallArguments = (callNode: SyntaxNode | null | undefined): num
     for (const child of callNode.children) {
       if (!child.isNamed) continue;
       const nested = child.children.find((gc) => CALL_ARGUMENT_LIST_TYPES.has(gc.type));
-      if (nested) { argsNode = nested; break; }
+      if (nested) {
+        argsNode = nested;
+        break;
+      }
     }
   }
 
@@ -57,13 +61,13 @@ export const countCallArguments = (callNode: SyntaxNode | null | undefined): num
  * When nameNode.parent.type is one of these, the call is a member call.
  */
 const MEMBER_ACCESS_NODE_TYPES = new Set([
-  'member_expression',           // TS/JS: obj.method()
-  'attribute',                   // Python: obj.method()
-  'member_access_expression',    // C#: obj.Method()
-  'field_expression',            // Rust/C++: obj.method() / ptr->method()
-  'selector_expression',         // Go: obj.Method()
-  'navigation_suffix',           // Kotlin/Swift: obj.method() — nameNode sits inside navigation_suffix
-  'member_binding_expression',   // C#: user?.Method() — null-conditional access
+  'member_expression', // TS/JS: obj.method()
+  'attribute', // Python: obj.method()
+  'member_access_expression', // C#: obj.Method()
+  'field_expression', // Rust/C++: obj.method() / ptr->method()
+  'selector_expression', // Go: obj.Method()
+  'navigation_suffix', // Kotlin/Swift: obj.method() — nameNode sits inside navigation_suffix
+  'member_binding_expression', // C#: user?.Method() — null-conditional access
   'unconditional_assignable_selector', // Dart: obj.method() — nameNode inside selector > unconditional_assignable_selector
 ]);
 
@@ -72,20 +76,20 @@ const MEMBER_ACCESS_NODE_TYPES = new Set([
  * Only includes patterns that the tree-sitter queries already capture as @call.
  */
 const CONSTRUCTOR_CALL_NODE_TYPES = new Set([
-  'constructor_invocation',              // Kotlin: Foo()
-  'new_expression',                      // TS/JS/C++: new Foo()
-  'object_creation_expression',          // Java/C#/PHP: new Foo()
+  'constructor_invocation', // Kotlin: Foo()
+  'new_expression', // TS/JS/C++: new Foo()
+  'object_creation_expression', // Java/C#/PHP: new Foo()
   'implicit_object_creation_expression', // C# 9: User u = new(...)
-  'composite_literal',                   // Go: User{...}
-  'struct_expression',                   // Rust: User { ... }
+  'composite_literal', // Go: User{...}
+  'struct_expression', // Rust: User { ... }
 ]);
 
 /**
  * AST node types for scoped/qualified calls (e.g., Foo::new() in Rust, Foo::bar() in C++).
  */
 const SCOPED_CALL_NODE_TYPES = new Set([
-  'scoped_identifier',           // Rust: Foo::new()
-  'qualified_identifier',        // C++: ns::func()
+  'scoped_identifier', // Rust: Foo::new()
+  'qualified_identifier', // C++: ns::func()
 ]);
 
 type CallForm = 'free' | 'member' | 'constructor';
@@ -97,10 +101,7 @@ type CallForm = 'free' | 'member' | 'constructor';
  * Works by inspecting the AST structure between callNode (@call) and nameNode (@call.name).
  * No tree-sitter query changes needed — the distinction is in the node types.
  */
-export const inferCallForm = (
-  callNode: SyntaxNode,
-  nameNode: SyntaxNode,
-): CallForm | undefined => {
+export const inferCallForm = (callNode: SyntaxNode, nameNode: SyntaxNode): CallForm | undefined => {
   // 1. Constructor: callNode itself is a constructor invocation (Kotlin)
   if (CONSTRUCTOR_CALL_NODE_TYPES.has(callNode.type)) {
     return 'constructor';
@@ -113,7 +114,10 @@ export const inferCallForm = (
   }
 
   // 3. PHP: the callNode itself distinguishes member vs free calls
-  if (callNode.type === 'member_call_expression' || callNode.type === 'nullsafe_member_call_expression') {
+  if (
+    callNode.type === 'member_call_expression' ||
+    callNode.type === 'nullsafe_member_call_expression'
+  ) {
     return 'member';
   }
   if (callNode.type === 'scoped_call_expression') {
@@ -152,20 +156,18 @@ export const inferCallForm = (
 const SIMPLE_RECEIVER_TYPES = new Set([
   'identifier',
   'simple_identifier',
-  'variable_name',     // PHP $variable (tree-sitter-php)
-  'name',              // PHP name node
-  'this',              // TS/JS/Java/C# this.method()
-  'self',              // Rust/Python self.method()
-  'super',             // TS/JS/Java/Kotlin/Ruby super.method()
-  'super_expression',  // Kotlin wraps super in super_expression
-  'base',              // C# base.Method()
-  'parent',            // PHP parent::method()
-  'constant',          // Ruby CONSTANT.method() (uppercase identifiers)
+  'variable_name', // PHP $variable (tree-sitter-php)
+  'name', // PHP name node
+  'this', // TS/JS/Java/C# this.method()
+  'self', // Rust/Python self.method()
+  'super', // TS/JS/Java/Kotlin/Ruby super.method()
+  'super_expression', // Kotlin wraps super in super_expression
+  'base', // C# base.Method()
+  'parent', // PHP parent::method()
+  'constant', // Ruby CONSTANT.method() (uppercase identifiers)
 ]);
 
-export const extractReceiverName = (
-  nameNode: SyntaxNode,
-): string | undefined => {
+export const extractReceiverName = (nameNode: SyntaxNode): string | undefined => {
   const parent = nameNode.parent;
   if (!parent) return undefined;
 
@@ -177,11 +179,12 @@ export const extractReceiverName = (
   let receiver: SyntaxNode | null = null;
 
   // Try standard field names used across grammars
-  receiver = parent.childForFieldName('object')       // TS/JS member_expression, Python attribute, PHP, Java
-    ?? parent.childForFieldName('value')               // Rust field_expression
-    ?? parent.childForFieldName('operand')             // Go selector_expression
-    ?? parent.childForFieldName('expression')          // C# member_access_expression
-    ?? parent.childForFieldName('argument');            // C++ field_expression
+  receiver =
+    parent.childForFieldName('object') ?? // TS/JS member_expression, Python attribute, PHP, Java
+    parent.childForFieldName('value') ?? // Rust field_expression
+    parent.childForFieldName('operand') ?? // Go selector_expression
+    parent.childForFieldName('expression') ?? // C# member_access_expression
+    parent.childForFieldName('argument'); // C++ field_expression
 
   // Java method_invocation: 'object' field is on the callNode, not on nameNode's parent
   if (!receiver && callNode.type === 'method_invocation') {
@@ -189,7 +192,11 @@ export const extractReceiverName = (
   }
 
   // PHP: member_call_expression has 'object' on the call node
-  if (!receiver && (callNode.type === 'member_call_expression' || callNode.type === 'nullsafe_member_call_expression')) {
+  if (
+    !receiver &&
+    (callNode.type === 'member_call_expression' ||
+      callNode.type === 'nullsafe_member_call_expression')
+  ) {
     receiver = callNode.childForFieldName('object');
   }
 
@@ -200,7 +207,10 @@ export const extractReceiverName = (
 
   // PHP scoped_call_expression (parent::method(), self::method()):
   // nameNode's direct parent IS the scoped_call_expression (name is a direct child)
-  if (!receiver && (parent.type === 'scoped_call_expression' || callNode.type === 'scoped_call_expression')) {
+  if (
+    !receiver &&
+    (parent.type === 'scoped_call_expression' || callNode.type === 'scoped_call_expression')
+  ) {
     const scopedCall = parent.type === 'scoped_call_expression' ? parent : callNode;
     receiver = scopedCall.childForFieldName('scope');
     // relative_scope wraps 'parent'/'self'/'static' — unwrap to get the keyword
@@ -213,7 +223,7 @@ export const extractReceiverName = (
   // of the receiver in the expression_statement.  For `user.save()`, the previous named
   // sibling of the `selector` is `identifier [user]`.
   if (!receiver && parent.type === 'unconditional_assignable_selector') {
-    const selectorNode = parent.parent;  // selector [.save]
+    const selectorNode = parent.parent; // selector [.save]
     if (selectorNode) {
       receiver = selectorNode.previousNamedSibling;
     }
@@ -266,9 +276,7 @@ export const extractReceiverName = (
  * Returns undefined when the call is not a member call or when no receiver node
  * can be found (e.g. top-level free calls).
  */
-export const extractReceiverNode = (
-  nameNode: SyntaxNode,
-): SyntaxNode | undefined => {
+export const extractReceiverNode = (nameNode: SyntaxNode): SyntaxNode | undefined => {
   const parent = nameNode.parent;
   if (!parent) return undefined;
 
@@ -276,17 +284,22 @@ export const extractReceiverNode = (
 
   let receiver: SyntaxNode | null = null;
 
-  receiver = parent.childForFieldName('object')
-    ?? parent.childForFieldName('value')
-    ?? parent.childForFieldName('operand')
-    ?? parent.childForFieldName('expression')
-    ?? parent.childForFieldName('argument');
+  receiver =
+    parent.childForFieldName('object') ??
+    parent.childForFieldName('value') ??
+    parent.childForFieldName('operand') ??
+    parent.childForFieldName('expression') ??
+    parent.childForFieldName('argument');
 
   if (!receiver && callNode.type === 'method_invocation') {
     receiver = callNode.childForFieldName('object');
   }
 
-  if (!receiver && (callNode.type === 'member_call_expression' || callNode.type === 'nullsafe_member_call_expression')) {
+  if (
+    !receiver &&
+    (callNode.type === 'member_call_expression' ||
+      callNode.type === 'nullsafe_member_call_expression')
+  ) {
     receiver = callNode.childForFieldName('object');
   }
 
@@ -294,7 +307,10 @@ export const extractReceiverNode = (
     receiver = parent.childForFieldName('receiver');
   }
 
-  if (!receiver && (parent.type === 'scoped_call_expression' || callNode.type === 'scoped_call_expression')) {
+  if (
+    !receiver &&
+    (parent.type === 'scoped_call_expression' || callNode.type === 'scoped_call_expression')
+  ) {
     const scopedCall = parent.type === 'scoped_call_expression' ? parent : callNode;
     receiver = scopedCall.childForFieldName('scope');
     if (receiver?.type === 'relative_scope') {
@@ -336,14 +352,14 @@ export const extractReceiverNode = (
 
 /** Node types representing member/field access across languages. */
 const FIELD_ACCESS_NODE_TYPES = new Set([
-  'member_expression',           // TS/JS
-  'member_access_expression',    // C#
-  'selector_expression',         // Go
-  'field_expression',            // Rust/C++
-  'field_access',                // Java
-  'attribute',                   // Python
-  'navigation_expression',       // Kotlin/Swift
-  'member_binding_expression',   // C# null-conditional (user?.Address)
+  'member_expression', // TS/JS
+  'member_access_expression', // C#
+  'selector_expression', // Go
+  'field_expression', // Rust/C++
+  'field_access', // Java
+  'attribute', // Python
+  'navigation_expression', // Kotlin/Swift
+  'member_binding_expression', // C# null-conditional (user?.Address)
 ]);
 
 /** One step in a mixed receiver chain. */
@@ -367,9 +383,10 @@ export function extractCallChain(
 
   while (CALL_EXPRESSION_TYPES.has(current.type) && chain.length < MAX_CHAIN_DEPTH) {
     // Extract the method name from this call node.
-    const funcNode = current.childForFieldName?.('function')
-      ?? current.childForFieldName?.('name')
-      ?? current.childForFieldName?.('method');  // Ruby `call` node
+    const funcNode =
+      current.childForFieldName?.('function') ??
+      current.childForFieldName?.('name') ??
+      current.childForFieldName?.('method'); // Ruby `call` node
     let methodName: string | undefined;
     let innerReceiver: SyntaxNode | null = null;
     if (funcNode) {
@@ -400,17 +417,22 @@ export function extractCallChain(
 
     // Walk into the receiver of this call to continue the chain
     if (!innerReceiver && funcNode) {
-      innerReceiver = funcNode.childForFieldName?.('object')
-        ?? funcNode.childForFieldName?.('value')
-        ?? funcNode.childForFieldName?.('operand')
-        ?? funcNode.childForFieldName?.('expression');
+      innerReceiver =
+        funcNode.childForFieldName?.('object') ??
+        funcNode.childForFieldName?.('value') ??
+        funcNode.childForFieldName?.('operand') ??
+        funcNode.childForFieldName?.('expression');
     }
     // Java method_invocation: object field is on the call node
     if (!innerReceiver && current.type === 'method_invocation') {
       innerReceiver = current.childForFieldName?.('object');
     }
     // PHP member_call_expression
-    if (!innerReceiver && (current.type === 'member_call_expression' || current.type === 'nullsafe_member_call_expression')) {
+    if (
+      !innerReceiver &&
+      (current.type === 'member_call_expression' ||
+        current.type === 'nullsafe_member_call_expression')
+    ) {
       innerReceiver = current.childForFieldName?.('object');
     }
     // Ruby `call` node: receiver field is on the call node itself
@@ -456,9 +478,10 @@ export function extractMixedChain(
   while (chain.length < MAX_CHAIN_DEPTH) {
     if (CALL_EXPRESSION_TYPES.has(current.type)) {
       // ── Call expression: extract method name + inner receiver ────────────
-      const funcNode = current.childForFieldName?.('function')
-        ?? current.childForFieldName?.('name')
-        ?? current.childForFieldName?.('method');
+      const funcNode =
+        current.childForFieldName?.('function') ??
+        current.childForFieldName?.('name') ??
+        current.childForFieldName?.('method');
       let methodName: string | undefined;
       let innerReceiver: SyntaxNode | null = null;
 
@@ -474,7 +497,10 @@ export function extractMixedChain(
             methodName = suffix.lastNamedChild?.text;
             for (let i = 0; i < callee.namedChildCount; i++) {
               const child = callee.namedChild(i);
-              if (child && child.type !== 'navigation_suffix') { innerReceiver = child; break; }
+              if (child && child.type !== 'navigation_suffix') {
+                innerReceiver = child;
+                break;
+              }
             }
           }
         }
@@ -483,17 +509,22 @@ export function extractMixedChain(
       chain.unshift({ kind: 'call', name: methodName });
 
       if (!innerReceiver && funcNode) {
-        innerReceiver = funcNode.childForFieldName?.('object')
-          ?? funcNode.childForFieldName?.('value')
-          ?? funcNode.childForFieldName?.('operand')
-          ?? funcNode.childForFieldName?.('argument')    // C/C++ field_expression
-          ?? funcNode.childForFieldName?.('expression')
-          ?? null;
+        innerReceiver =
+          funcNode.childForFieldName?.('object') ??
+          funcNode.childForFieldName?.('value') ??
+          funcNode.childForFieldName?.('operand') ??
+          funcNode.childForFieldName?.('argument') ?? // C/C++ field_expression
+          funcNode.childForFieldName?.('expression') ??
+          null;
       }
       if (!innerReceiver && current.type === 'method_invocation') {
         innerReceiver = current.childForFieldName?.('object') ?? null;
       }
-      if (!innerReceiver && (current.type === 'member_call_expression' || current.type === 'nullsafe_member_call_expression')) {
+      if (
+        !innerReceiver &&
+        (current.type === 'member_call_expression' ||
+          current.type === 'nullsafe_member_call_expression')
+      ) {
         innerReceiver = current.childForFieldName?.('object') ?? null;
       }
       if (!innerReceiver && current.type === 'call') {
@@ -501,7 +532,10 @@ export function extractMixedChain(
       }
       if (!innerReceiver) break;
 
-      if (CALL_EXPRESSION_TYPES.has(innerReceiver.type) || FIELD_ACCESS_NODE_TYPES.has(innerReceiver.type)) {
+      if (
+        CALL_EXPRESSION_TYPES.has(innerReceiver.type) ||
+        FIELD_ACCESS_NODE_TYPES.has(innerReceiver.type)
+      ) {
         current = innerReceiver;
       } else {
         return { chain, baseReceiverName: innerReceiver.text || undefined };
@@ -515,7 +549,10 @@ export function extractMixedChain(
         for (const child of current.children ?? []) {
           if (child.type === 'navigation_suffix') {
             for (const sc of child.children ?? []) {
-              if (sc.isNamed && sc.type !== '.') { propertyName = sc.text; break; }
+              if (sc.isNamed && sc.type !== '.') {
+                propertyName = sc.text;
+                break;
+              }
             }
           } else if (child.isNamed && !innerObject) {
             innerObject = child;
@@ -525,15 +562,18 @@ export function extractMixedChain(
         innerObject = current.childForFieldName?.('object') ?? null;
         propertyName = current.childForFieldName?.('attribute')?.text;
       } else {
-        innerObject = current.childForFieldName?.('object')
-          ?? current.childForFieldName?.('value')
-          ?? current.childForFieldName?.('operand')
-          ?? current.childForFieldName?.('argument')    // C/C++ field_expression
-          ?? current.childForFieldName?.('expression')
-          ?? null;
-        propertyName = (current.childForFieldName?.('property')
-          ?? current.childForFieldName?.('field')
-          ?? current.childForFieldName?.('name'))?.text;
+        innerObject =
+          current.childForFieldName?.('object') ??
+          current.childForFieldName?.('value') ??
+          current.childForFieldName?.('operand') ??
+          current.childForFieldName?.('argument') ?? // C/C++ field_expression
+          current.childForFieldName?.('expression') ??
+          null;
+        propertyName = (
+          current.childForFieldName?.('property') ??
+          current.childForFieldName?.('field') ??
+          current.childForFieldName?.('name')
+        )?.text;
       }
 
       if (!propertyName) break;
@@ -541,7 +581,10 @@ export function extractMixedChain(
 
       if (!innerObject) break;
 
-      if (CALL_EXPRESSION_TYPES.has(innerObject.type) || FIELD_ACCESS_NODE_TYPES.has(innerObject.type)) {
+      if (
+        CALL_EXPRESSION_TYPES.has(innerObject.type) ||
+        FIELD_ACCESS_NODE_TYPES.has(innerObject.type)
+      ) {
         current = innerObject;
       } else {
         return { chain, baseReceiverName: innerObject.text || undefined };
@@ -569,9 +612,7 @@ export function extractMixedChain(
       }
     } else {
       // Simple identifier — this is the base receiver
-      return chain.length > 0
-        ? { chain, baseReceiverName: current.text || undefined }
-        : undefined;
+      return chain.length > 0 ? { chain, baseReceiverName: current.text || undefined } : undefined;
     }
   }
 

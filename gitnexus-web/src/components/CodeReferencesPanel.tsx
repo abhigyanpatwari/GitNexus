@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Code, PanelLeftClose, PanelLeft, Trash2, X, Target, FileCode, Sparkles, MousePointerClick, Loader2 } from '@/lib/lucide-icons';
+import {
+  Code,
+  PanelLeftClose,
+  PanelLeft,
+  Trash2,
+  X,
+  Target,
+  FileCode,
+  Sparkles,
+  MousePointerClick,
+  Loader2,
+} from '@/lib/lucide-icons';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useAppState } from '../hooks/useAppState';
@@ -47,7 +58,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
 
   const nodeById = useMemo(() => {
     if (!graph) return new Map<string, GraphNode>();
-    return new Map(graph.nodes.map(n => [n.id, n]));
+    return new Map(graph.nodes.map((n) => [n.id, n]));
   }, [graph]);
 
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -85,34 +96,40 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     }
   }, [panelWidth]);
 
-  const startResize = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    resizeRef.current = { startX: e.clientX, startWidth: panelWidth };
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
+  const startResize = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resizeRef.current = { startX: e.clientX, startWidth: panelWidth };
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
 
-    const onMove = (ev: MouseEvent) => {
-      const state = resizeRef.current;
-      if (!state) return;
-      const delta = ev.clientX - state.startX;
-      const next = Math.max(420, Math.min(state.startWidth + delta, 900));
-      setPanelWidth(next);
-    };
+      const onMove = (ev: MouseEvent) => {
+        const state = resizeRef.current;
+        if (!state) return;
+        const delta = ev.clientX - state.startX;
+        const next = Math.max(420, Math.min(state.startWidth + delta, 900));
+        setPanelWidth(next);
+      };
 
-    const onUp = () => {
-      resizeRef.current = null;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
+      const onUp = () => {
+        resizeRef.current = null;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
 
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  }, [panelWidth]);
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    },
+    [panelWidth],
+  );
 
-  const aiReferences = useMemo(() => codeReferences.filter(r => r.source === 'ai'), [codeReferences]);
+  const aiReferences = useMemo(
+    () => codeReferences.filter((r) => r.source === 'ai'),
+    [codeReferences],
+  );
 
   // When the user clicks a citation badge in chat, focus the corresponding snippet card:
   // - expand the panel if collapsed
@@ -126,12 +143,9 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
 
     const { filePath, startLine, endLine } = codeReferenceFocus;
     const target =
-      aiReferences.find(r =>
-        r.filePath === filePath &&
-        r.startLine === startLine &&
-        r.endLine === endLine
-      ) ??
-      aiReferences.find(r => r.filePath === filePath);
+      aiReferences.find(
+        (r) => r.filePath === filePath && r.startLine === startLine && r.endLine === endLine,
+      ) ?? aiReferences.find((r) => r.filePath === filePath);
 
     if (!target) return;
 
@@ -158,13 +172,21 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     rafIds.push(outerRafId);
 
     return () => {
-      rafIds.forEach(id => cancelAnimationFrame(id));
+      rafIds.forEach((id) => cancelAnimationFrame(id));
     };
   }, [codeReferenceFocus?.ts, aiReferences]);
 
   const refsWithSnippets = useMemo(() => {
     return aiReferences.map((ref) => {
-      return { ref, content: null as string | null, start: 0, end: 0, highlightStart: 0, highlightEnd: 0, totalLines: 0 };
+      return {
+        ref,
+        content: null as string | null,
+        start: 0,
+        end: 0,
+        highlightStart: 0,
+        highlightEnd: 0,
+        totalLines: 0,
+      };
     });
   }, [aiReferences]);
 
@@ -207,20 +229,29 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
           endLine: (endLine ?? startLine) + CONTEXT_LINES,
         };
 
-    readFile(selectedFilePath, options).then(result => {
-      if (!cancelled) {
-        setFileResult(result);
-        setIsLoadingFile(false);
-      }
-    }).catch(() => {
-      if (!cancelled) {
-        setFileResult(null);
-        setIsLoadingFile(false);
-      }
-    });
+    readFile(selectedFilePath, options)
+      .then((result) => {
+        if (!cancelled) {
+          setFileResult(result);
+          setIsLoadingFile(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFileResult(null);
+          setIsLoadingFile(false);
+        }
+      });
 
-    return () => { cancelled = true; };
-  }, [selectedFilePath, selectedNode?.properties?.startLine, selectedNode?.properties?.endLine, selectedIsFile]);
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    selectedFilePath,
+    selectedNode?.properties?.startLine,
+    selectedNode?.properties?.endLine,
+    selectedIsFile,
+  ]);
 
   // Scroll to the selected node's startLine after content loads
   useEffect(() => {
@@ -234,8 +265,9 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
         if (cancelled) return;
         const container = selectedViewerRef.current;
         if (!container) return;
-        const lineEl = container.querySelector(`[data-line-number="${startLine + 1}"]`) as HTMLElement
-          ?? container.querySelectorAll('.linenumber')[startLine] as HTMLElement;
+        const lineEl =
+          (container.querySelector(`[data-line-number="${startLine + 1}"]`) as HTMLElement) ??
+          (container.querySelectorAll('.linenumber')[startLine] as HTMLElement);
         if (lineEl) {
           lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         } else {
@@ -247,27 +279,30 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
       rafIds.push(innerRaf);
     });
     const rafIds = [outerRaf];
-    return () => { cancelled = true; rafIds.forEach(id => cancelAnimationFrame(id)); };
+    return () => {
+      cancelled = true;
+      rafIds.forEach((id) => cancelAnimationFrame(id));
+    };
   }, [selectedFileContent, selectedNode?.properties?.startLine]);
 
   if (isCollapsed) {
     return (
-      <aside className="h-full w-12 bg-surface border-r border-border-subtle flex flex-col items-center py-3 gap-2 flex-shrink-0">
+      <aside className="flex h-full w-12 flex-shrink-0 flex-col items-center gap-2 border-r border-border-subtle bg-surface py-3">
         <button
           onClick={() => setIsCollapsed(false)}
-          className="p-2 text-text-secondary hover:text-cyan-400 hover:bg-cyan-500/10 rounded transition-colors"
+          className="rounded p-2 text-text-secondary transition-colors hover:bg-cyan-500/10 hover:text-cyan-400"
           title="Expand Code Panel"
         >
-          <PanelLeft className="w-5 h-5" />
+          <PanelLeft className="h-5 w-5" />
         </button>
-        <div className="w-6 h-px bg-border-subtle my-1" />
+        <div className="my-1 h-px w-6 bg-border-subtle" />
         {showSelectedViewer && (
-          <div className="text-[9px] text-amber-400 rotate-90 whitespace-nowrap font-medium tracking-wide">
+          <div className="rotate-90 text-[9px] font-medium tracking-wide whitespace-nowrap text-amber-400">
             SELECTED
           </div>
         )}
         {showCitations && (
-          <div className="text-[9px] text-cyan-400 rotate-90 whitespace-nowrap font-medium tracking-wide mt-4">
+          <div className="mt-4 rotate-90 text-[9px] font-medium tracking-wide whitespace-nowrap text-cyan-400">
             AI • {aiReferences.length}
           </div>
         )}
@@ -277,67 +312,72 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
 
   return (
     <aside
-      ref={(el) => { panelRef.current = el; }}
-      className="h-full bg-surface/95 backdrop-blur-md border-r border-border-subtle flex flex-col animate-slide-in relative shadow-2xl"
+      ref={(el) => {
+        panelRef.current = el;
+      }}
+      className="relative flex h-full animate-slide-in flex-col border-r border-border-subtle bg-surface/95 shadow-2xl backdrop-blur-md"
       style={{ width: panelWidth }}
     >
       {/* Resize handle */}
       <div
         onMouseDown={startResize}
-        className="absolute top-0 right-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-cyan-500/25 transition-colors"
+        className="absolute top-0 right-0 h-full w-2 cursor-col-resize bg-transparent transition-colors hover:bg-cyan-500/25"
         title="Drag to resize"
       />
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2.5 border-b border-border-subtle bg-gradient-to-r from-elevated/60 to-surface/60">
+      <div className="flex items-center justify-between border-b border-border-subtle bg-gradient-to-r from-elevated/60 to-surface/60 px-3 py-2.5">
         <div className="flex items-center gap-2">
-          <Code className="w-4 h-4 text-cyan-400" />
+          <Code className="h-4 w-4 text-cyan-400" />
           <span className="text-sm font-semibold text-text-primary">Code Inspector</span>
         </div>
         <div className="flex items-center gap-1.5">
           {showCitations && (
             <button
               onClick={() => clearCodeReferences()}
-              className="p-1.5 text-text-muted hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+              className="rounded p-1.5 text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400"
               title="Clear AI citations"
             >
-              <Trash2 className="w-4 h-4" />
+              <Trash2 className="h-4 w-4" />
             </button>
           )}
           <button
             onClick={() => setIsCollapsed(true)}
-            className="p-1.5 text-text-muted hover:text-text-primary hover:bg-hover rounded transition-colors"
+            className="rounded p-1.5 text-text-muted transition-colors hover:bg-hover hover:text-text-primary"
             title="Collapse Panel"
           >
-            <PanelLeftClose className="w-4 h-4" />
+            <PanelLeftClose className="h-4 w-4" />
           </button>
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 flex flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         {/* Top: Selected file viewer (when a node is selected) */}
         {showSelectedViewer && (
-          <div className={`${showCitations ? 'h-[42%]' : 'flex-1'} min-h-0 flex flex-col`}>
-            <div className="px-3 py-2 bg-gradient-to-r from-amber-500/8 to-orange-500/5 border-b border-amber-500/20 flex items-center gap-2">
-              <div className="flex items-center gap-1.5 px-2 py-0.5 bg-amber-500/15 rounded-md border border-amber-500/25">
-                <MousePointerClick className="w-3 h-3 text-amber-400" />
-                <span className="text-[10px] text-amber-300 font-semibold uppercase tracking-wide">Selected</span>
+          <div className={`${showCitations ? 'h-[42%]' : 'flex-1'} flex min-h-0 flex-col`}>
+            <div className="flex items-center gap-2 border-b border-amber-500/20 bg-gradient-to-r from-amber-500/8 to-orange-500/5 px-3 py-2">
+              <div className="flex items-center gap-1.5 rounded-md border border-amber-500/25 bg-amber-500/15 px-2 py-0.5">
+                <MousePointerClick className="h-3 w-3 text-amber-400" />
+                <span className="text-[10px] font-semibold tracking-wide text-amber-300 uppercase">
+                  Selected
+                </span>
               </div>
-              <FileCode className="w-3.5 h-3.5 text-amber-400/70 ml-1" />
-              <span className="text-xs text-text-primary font-mono truncate flex-1">
-                {selectedNode?.properties?.filePath?.split('/').pop() ?? selectedNode?.properties?.name}
+              <FileCode className="ml-1 h-3.5 w-3.5 text-amber-400/70" />
+              <span className="flex-1 truncate font-mono text-xs text-text-primary">
+                {selectedNode?.properties?.filePath?.split('/').pop() ??
+                  selectedNode?.properties?.name}
               </span>
               <button
                 onClick={() => setSelectedNode(null)}
-                className="p-1 text-text-muted hover:text-amber-400 hover:bg-amber-500/10 rounded transition-colors"
+                className="rounded p-1 text-text-muted transition-colors hover:bg-amber-500/10 hover:text-amber-400"
                 title="Clear selection"
               >
-                <X className="w-4 h-4" />
+                <X className="h-4 w-4" />
               </button>
             </div>
-            <div ref={selectedViewerRef} className="flex-1 min-h-0 overflow-auto scrollbar-thin">
+            <div ref={selectedViewerRef} className="scrollbar-thin min-h-0 flex-1 overflow-auto">
               {isLoadingFile ? (
-                <div className="flex items-center justify-center py-8 gap-2 text-text-muted">
-                  <Loader2 className="w-4 h-4 animate-spin" />
+                <div className="flex items-center justify-center gap-2 py-8 text-text-muted">
+                  <Loader2 className="h-4 w-4 animate-spin" />
                   <span className="text-sm">Loading source...</span>
                 </div>
               ) : selectedFileContent ? (
@@ -377,7 +417,10 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
               ) : (
                 <div className="px-3 py-3 text-sm text-text-muted">
                   {selectedIsFile ? (
-                    <>Code not available in memory for <span className="font-mono">{selectedFilePath}</span></>
+                    <>
+                      Code not available in memory for{' '}
+                      <span className="font-mono">{selectedFilePath}</span>
+                    </>
                   ) : (
                     <>Select a file node to preview its contents.</>
                   )}
@@ -394,128 +437,147 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
 
         {/* Bottom: AI citations list */}
         {showCitations && (
-          <div className="flex-1 min-h-0 flex flex-col">
+          <div className="flex min-h-0 flex-1 flex-col">
             {/* AI Citations Section Header */}
-            <div className="px-3 py-2 bg-gradient-to-r from-cyan-500/8 to-teal-500/5 border-b border-cyan-500/20 flex items-center gap-2">
-              <div className="flex items-center gap-1.5 px-2 py-0.5 bg-cyan-500/15 rounded-md border border-cyan-500/25">
-                <Sparkles className="w-3 h-3 text-cyan-400" />
-                <span className="text-[10px] text-cyan-300 font-semibold uppercase tracking-wide">AI Citations</span>
-              </div>
-              <span className="text-xs text-text-muted ml-1">{aiReferences.length} reference{aiReferences.length !== 1 ? 's' : ''}</span>
-            </div>
-            <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin p-3 space-y-3">
-            {refsWithSnippets.map(({ ref, content, start, highlightStart, highlightEnd, totalLines }) => {
-          const nodeColor = ref.label ? (NODE_COLORS as any)[ref.label] || '#6b7280' : '#6b7280';
-          const hasRange = typeof ref.startLine === 'number';
-          const startDisplay = hasRange ? (ref.startLine ?? 0) + 1 : undefined;
-          const endDisplay = hasRange ? (ref.endLine ?? ref.startLine ?? 0) + 1 : undefined;
-          const language = getSyntaxLanguage(ref.filePath);
-
-          const isGlowing = glowRefId === ref.id;
-
-          return (
-            <div
-              key={ref.id}
-              ref={(el) => { refCardEls.current.set(ref.id, el); }}
-              className={[
-                'bg-elevated border border-border-subtle rounded-xl overflow-hidden transition-all',
-                isGlowing ? 'ring-2 ring-cyan-300/70 shadow-[0_0_0_6px_rgba(34,211,238,0.14)] animate-pulse' : '',
-              ].join(' ')}
-            >
-              <div className="px-3 py-2 border-b border-border-subtle bg-surface/40 flex items-start gap-2">
-                <span
-                  className="mt-0.5 px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide flex-shrink-0"
-                  style={{ backgroundColor: nodeColor, color: '#06060a' }}
-                  title={ref.label ?? 'Code'}
-                >
-                  {ref.label ?? 'Code'}
+            <div className="flex items-center gap-2 border-b border-cyan-500/20 bg-gradient-to-r from-cyan-500/8 to-teal-500/5 px-3 py-2">
+              <div className="flex items-center gap-1.5 rounded-md border border-cyan-500/25 bg-cyan-500/15 px-2 py-0.5">
+                <Sparkles className="h-3 w-3 text-cyan-400" />
+                <span className="text-[10px] font-semibold tracking-wide text-cyan-300 uppercase">
+                  AI Citations
                 </span>
-                <div className="min-w-0 flex-1">
-                  <div className="text-xs text-text-primary font-medium truncate">
-                    {ref.name ?? ref.filePath.split('/').pop() ?? ref.filePath}
-                  </div>
-                  <div className="text-[11px] text-text-muted font-mono truncate">
-                    {ref.filePath}
-                    {startDisplay !== undefined && (
-                      <span className="text-text-secondary">
-                        {' '}
-                        • L{startDisplay}
-                        {endDisplay !== startDisplay ? `–${endDisplay}` : ''}
-                      </span>
-                    )}
-                    {totalLines > 0 && <span className="text-text-muted"> • {totalLines} lines</span>}
-                  </div>
-                </div>
-                <div className="flex items-center gap-1">
-                  {ref.nodeId && (
-                    <button
-                      onClick={() => {
-                        const nodeId = ref.nodeId!;
-                        // Sync selection + focus graph
-                        if (graph) {
-                          const node = nodeById.get(nodeId);
-                          if (node) setSelectedNode(node);
-                        }
-                        onFocusNode(nodeId);
-                      }}
-                      className="p-1.5 text-text-muted hover:text-text-primary hover:bg-hover rounded transition-colors"
-                      title="Focus in graph"
-                    >
-                      <Target className="w-4 h-4" />
-                    </button>
-                  )}
-                  <button
-                    onClick={() => removeCodeReference(ref.id)}
-                    className="p-1.5 text-text-muted hover:text-text-primary hover:bg-hover rounded transition-colors"
-                    title="Remove"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
               </div>
-
-              <div className="overflow-x-auto">
-                {content ? (
-                  <SyntaxHighlighter
-                    language={language}
-                    style={customTheme as any}
-                    showLineNumbers
-                    startingLineNumber={start + 1}
-                    lineNumberStyle={{
-                      minWidth: '3em',
-                      paddingRight: '1em',
-                      color: '#5a5a70',
-                      textAlign: 'right',
-                      userSelect: 'none',
-                    }}
-                    lineProps={(lineNumber) => {
-                      const isHighlighted =
-                        hasRange &&
-                        lineNumber >= start + highlightStart + 1 &&
-                        lineNumber <= start + highlightEnd + 1;
-                      return {
-                        style: {
-                          display: 'block',
-                          backgroundColor: isHighlighted ? 'rgba(6, 182, 212, 0.14)' : 'transparent',
-                          borderLeft: isHighlighted ? '3px solid #06b6d4' : '3px solid transparent',
-                          paddingLeft: '12px',
-                          paddingRight: '16px',
-                        },
-                      };
-                    }}
-                    wrapLines
-                  >
-                    {content}
-                  </SyntaxHighlighter>
-                ) : (
-                  <div className="px-3 py-3 text-sm text-text-muted">
-                    Code not available in memory for <span className="font-mono">{ref.filePath}</span>
-                  </div>
-                )}
-              </div>
+              <span className="ml-1 text-xs text-text-muted">
+                {aiReferences.length} reference{aiReferences.length !== 1 ? 's' : ''}
+              </span>
             </div>
-          );
-            })}
+            <div className="scrollbar-thin min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+              {refsWithSnippets.map(
+                ({ ref, content, start, highlightStart, highlightEnd, totalLines }) => {
+                  const nodeColor = ref.label
+                    ? (NODE_COLORS as any)[ref.label] || '#6b7280'
+                    : '#6b7280';
+                  const hasRange = typeof ref.startLine === 'number';
+                  const startDisplay = hasRange ? (ref.startLine ?? 0) + 1 : undefined;
+                  const endDisplay = hasRange ? (ref.endLine ?? ref.startLine ?? 0) + 1 : undefined;
+                  const language = getSyntaxLanguage(ref.filePath);
+
+                  const isGlowing = glowRefId === ref.id;
+
+                  return (
+                    <div
+                      key={ref.id}
+                      ref={(el) => {
+                        refCardEls.current.set(ref.id, el);
+                      }}
+                      className={[
+                        'overflow-hidden rounded-xl border border-border-subtle bg-elevated transition-all',
+                        isGlowing
+                          ? 'animate-pulse shadow-[0_0_0_6px_rgba(34,211,238,0.14)] ring-2 ring-cyan-300/70'
+                          : '',
+                      ].join(' ')}
+                    >
+                      <div className="flex items-start gap-2 border-b border-border-subtle bg-surface/40 px-3 py-2">
+                        <span
+                          className="mt-0.5 flex-shrink-0 rounded px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase"
+                          style={{ backgroundColor: nodeColor, color: '#06060a' }}
+                          title={ref.label ?? 'Code'}
+                        >
+                          {ref.label ?? 'Code'}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-xs font-medium text-text-primary">
+                            {ref.name ?? ref.filePath.split('/').pop() ?? ref.filePath}
+                          </div>
+                          <div className="truncate font-mono text-[11px] text-text-muted">
+                            {ref.filePath}
+                            {startDisplay !== undefined && (
+                              <span className="text-text-secondary">
+                                {' '}
+                                • L{startDisplay}
+                                {endDisplay !== startDisplay ? `–${endDisplay}` : ''}
+                              </span>
+                            )}
+                            {totalLines > 0 && (
+                              <span className="text-text-muted"> • {totalLines} lines</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {ref.nodeId && (
+                            <button
+                              onClick={() => {
+                                const nodeId = ref.nodeId!;
+                                // Sync selection + focus graph
+                                if (graph) {
+                                  const node = nodeById.get(nodeId);
+                                  if (node) setSelectedNode(node);
+                                }
+                                onFocusNode(nodeId);
+                              }}
+                              className="rounded p-1.5 text-text-muted transition-colors hover:bg-hover hover:text-text-primary"
+                              title="Focus in graph"
+                            >
+                              <Target className="h-4 w-4" />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => removeCodeReference(ref.id)}
+                            className="rounded p-1.5 text-text-muted transition-colors hover:bg-hover hover:text-text-primary"
+                            title="Remove"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="overflow-x-auto">
+                        {content ? (
+                          <SyntaxHighlighter
+                            language={language}
+                            style={customTheme as any}
+                            showLineNumbers
+                            startingLineNumber={start + 1}
+                            lineNumberStyle={{
+                              minWidth: '3em',
+                              paddingRight: '1em',
+                              color: '#5a5a70',
+                              textAlign: 'right',
+                              userSelect: 'none',
+                            }}
+                            lineProps={(lineNumber) => {
+                              const isHighlighted =
+                                hasRange &&
+                                lineNumber >= start + highlightStart + 1 &&
+                                lineNumber <= start + highlightEnd + 1;
+                              return {
+                                style: {
+                                  display: 'block',
+                                  backgroundColor: isHighlighted
+                                    ? 'rgba(6, 182, 212, 0.14)'
+                                    : 'transparent',
+                                  borderLeft: isHighlighted
+                                    ? '3px solid #06b6d4'
+                                    : '3px solid transparent',
+                                  paddingLeft: '12px',
+                                  paddingRight: '16px',
+                                },
+                              };
+                            }}
+                            wrapLines
+                          >
+                            {content}
+                          </SyntaxHighlighter>
+                        ) : (
+                          <div className="px-3 py-3 text-sm text-text-muted">
+                            Code not available in memory for{' '}
+                            <span className="font-mono">{ref.filePath}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                },
+              )}
             </div>
           </div>
         )}

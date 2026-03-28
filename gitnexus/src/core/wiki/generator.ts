@@ -1,12 +1,12 @@
 /**
  * Wiki Generator
- * 
+ *
  * Orchestrates the full wiki generation pipeline:
  *   Phase 0: Validate prerequisites + gather graph structure
  *   Phase 1: Build module tree (one LLM call)
  *   Phase 2: Generate module pages (one LLM call per module, bottom-up)
  *   Phase 3: Generate overview page
- * 
+ *
  * Supports incremental updates via git diff + module-file mapping.
  */
 
@@ -38,10 +38,7 @@ import {
   type LLMResponse,
 } from './llm-client.js';
 
-import {
-  callCursorLLM,
-  resolveCursorConfig,
-} from './cursor-client.js';
+import { callCursorLLM, resolveCursorConfig } from './cursor-client.js';
 
 import {
   GROUPING_SYSTEM_PROMPT,
@@ -141,13 +138,13 @@ export class WikiGenerator {
 
   /**
    * Create streaming options that report LLM progress to the progress bar.
-   * 
+   *
    * Progress calculation:
    * - If fixedPercent is provided, we show incremental progress within that phase
    *   based on token generation (e.g., grouping at 15% → 15-28%)
    * - If fixedPercent is NOT provided, we only update the label with token count
    *   but keep the current percentage (avoids fluctuation during module generation)
-   * 
+   *
    * Also touches the DB connection periodically to prevent idle timeout.
    */
   private streamOpts(label: string, fixedPercent?: number, percentRange = 10): CallLLMOptions {
@@ -155,21 +152,21 @@ export class WikiGenerator {
     const startPercent = fixedPercent ?? this.lastPercent;
     const expectedTokens = 2000;
     let lastTouch = Date.now();
-    
+
     return {
       onChunk: (chars: number) => {
         const tokens = Math.round(chars / 4);
-        
+
         if (hasFixedStart) {
           // For fixed phases (like grouping), show incremental progress
           const progress = Math.min(1, tokens / expectedTokens);
-          const pct = Math.round(startPercent + (progress * percentRange));
+          const pct = Math.round(startPercent + progress * percentRange);
           this.onProgress('stream', pct, `${label} (${tokens} tok)`);
         } else {
           // For module generation, only update the label, keep current percent
           this.onProgress('stream', this.lastPercent, `${label} (${tokens} tok)`);
         }
-        
+
         // Touch DB every 60s to prevent idle timeout during long LLM calls
         const now = Date.now();
         if (now - lastTouch > 60_000) {
@@ -217,12 +214,16 @@ export class WikiGenerator {
 
     // Force mode: delete snapshot to force full re-grouping
     if (forceMode) {
-      try { await fs.unlink(path.join(this.wikiDir, 'first_module_tree.json')); } catch {}
+      try {
+        await fs.unlink(path.join(this.wikiDir, 'first_module_tree.json'));
+      } catch {}
       // Delete existing module pages so they get regenerated
       const existingFiles = await fs.readdir(this.wikiDir).catch(() => [] as string[]);
       for (const f of existingFiles) {
         if (f.endsWith('.md')) {
-          try { await fs.unlink(path.join(this.wikiDir, f)); } catch {}
+          try {
+            await fs.unlink(path.join(this.wikiDir, f));
+          } catch {}
         }
       }
     }
@@ -253,7 +254,7 @@ export class WikiGenerator {
   private async ensureHTMLViewer(): Promise<void> {
     // Only generate if there are markdown pages to bundle
     const dirEntries = await fs.readdir(this.wikiDir).catch(() => [] as string[]);
-    const hasMd = dirEntries.some(f => f.endsWith('.md'));
+    const hasMd = dirEntries.some((f) => f.endsWith('.md'));
     if (!hasMd) return;
 
     this.onProgress('html', 98, 'Building HTML viewer...');
@@ -272,14 +273,14 @@ export class WikiGenerator {
     const allFiles = await getAllFiles();
 
     // Filter to source files only
-    const sourceFiles = allFiles.filter(f => !shouldIgnorePath(f));
+    const sourceFiles = allFiles.filter((f) => !shouldIgnorePath(f));
     if (sourceFiles.length === 0) {
       throw new Error('No source files found in the knowledge graph. Nothing to document.');
     }
 
     // Build enriched file list (merge exports into all source files)
-    const exportMap = new Map(filesWithExports.map(f => [f.filePath, f]));
-    const enrichedFiles: FileWithExports[] = sourceFiles.map(fp => {
+    const exportMap = new Map(filesWithExports.map((f) => [f.filePath, f]));
+    const enrichedFiles: FileWithExports[] = sourceFiles.map((fp) => {
       return exportMap.get(fp) || { filePath: fp, symbols: [] };
     });
 
@@ -293,7 +294,12 @@ export class WikiGenerator {
     if (this.options.reviewOnly) {
       await this.saveModuleTree(moduleTree);
       this.onProgress('review', 30, 'Module tree ready for review');
-      const reviewResult: WikiRunResult = { pagesGenerated: 0, mode: 'full', failedModules: [], moduleTree };
+      const reviewResult: WikiRunResult = {
+        pagesGenerated: 0,
+        mode: 'full',
+        failedModules: [],
+        moduleTree,
+      };
       return reviewResult;
     }
 
@@ -402,7 +408,7 @@ export class WikiGenerator {
     this.onProgress('grouping', 15, 'Grouping files into modules (LLM)...');
 
     const fileList = formatFileListForGrouping(files);
-    const dirTree = formatDirectoryTree(files.map(f => f.filePath));
+    const dirTree = formatDirectoryTree(files.map((f) => f.filePath));
 
     const prompt = fillTemplate(GROUPING_USER_PROMPT, {
       FILE_LIST: fileList,
@@ -410,7 +416,8 @@ export class WikiGenerator {
     });
 
     const response = await this.invokeLLM(
-      prompt, GROUPING_SYSTEM_PROMPT,
+      prompt,
+      GROUPING_SYSTEM_PROMPT,
       this.streamOpts('Grouping files', 15, 13),
     );
     const grouping = this.parseGroupingResponse(response.content, files);
@@ -471,13 +478,13 @@ export class WikiGenerator {
     }
 
     // Validate — ensure all files are assigned
-    const allFilePaths = new Set(files.map(f => f.filePath));
+    const allFilePaths = new Set(files.map((f) => f.filePath));
     const assignedFiles = new Set<string>();
     const validGrouping: Record<string, string[]> = {};
 
     for (const [mod, paths] of Object.entries(parsed)) {
       if (!Array.isArray(paths)) continue;
-      const validPaths = paths.filter(p => {
+      const validPaths = paths.filter((p) => {
         if (allFilePaths.has(p) && !assignedFiles.has(p)) {
           assignedFiles.add(p);
           return true;
@@ -490,16 +497,12 @@ export class WikiGenerator {
     }
 
     // Assign unassigned files to a "Miscellaneous" module
-    const unassigned = files
-      .map(f => f.filePath)
-      .filter(fp => !assignedFiles.has(fp));
+    const unassigned = files.map((f) => f.filePath).filter((fp) => !assignedFiles.has(fp));
     if (unassigned.length > 0) {
       validGrouping['Other'] = unassigned;
     }
 
-    return Object.keys(validGrouping).length > 0
-      ? validGrouping
-      : this.fallbackGrouping(files);
+    return Object.keys(validGrouping).length > 0 ? validGrouping : this.fallbackGrouping(files);
   }
 
   /**
@@ -511,7 +514,10 @@ export class WikiGenerator {
       const parts = f.filePath.replace(/\\/g, '/').split('/');
       const topDir = parts.length > 1 ? parts[0] : 'Root';
       let group = groups.get(topDir);
-      if (!group) { group = []; groups.set(topDir, group); }
+      if (!group) {
+        group = [];
+        groups.set(topDir, group);
+      }
       group.push(f.filePath);
     }
     return Object.fromEntries(groups);
@@ -528,12 +534,15 @@ export class WikiGenerator {
       const parts = fp.replace(/\\/g, '/').split('/');
       const subDir = parts.length > 2 ? parts.slice(0, 2).join('/') : parts[0];
       let group = subGroups.get(subDir);
-      if (!group) { group = []; subGroups.set(subDir, group); }
+      if (!group) {
+        group = [];
+        subGroups.set(subDir, group);
+      }
       group.push(fp);
     }
 
     // Check if basenames are unique; if not, use the full subDir path
-    const basenames = Array.from(subGroups.keys()).map(s => path.basename(s));
+    const basenames = Array.from(subGroups.keys()).map((s) => path.basename(s));
     const hasCollisions = new Set(basenames).size < basenames.length;
 
     return Array.from(subGroups.entries()).map(([subDir, subFiles]) => {
@@ -580,10 +589,7 @@ export class WikiGenerator {
       PROCESSES: formatProcesses(processes),
     });
 
-    const response = await this.invokeLLM(
-      prompt, MODULE_SYSTEM_PROMPT,
-      this.streamOpts(node.name),
-    );
+    const response = await this.invokeLLM(prompt, MODULE_SYSTEM_PROMPT, this.streamOpts(node.name));
 
     // Write page with front matter
     const pageContent = `# ${node.name}\n\n${response.content}`;
@@ -604,7 +610,8 @@ export class WikiGenerator {
         const content = await fs.readFile(childPage, 'utf-8');
         // Extract overview section (first ~500 chars or up to "### Architecture")
         const overviewEnd = content.indexOf('### Architecture');
-        const overview = overviewEnd > 0 ? content.slice(0, overviewEnd).trim() : content.slice(0, 800).trim();
+        const overview =
+          overviewEnd > 0 ? content.slice(0, overviewEnd).trim() : content.slice(0, 800).trim();
         childDocs.push(`#### ${child.name}\n${overview}`);
       } catch {
         childDocs.push(`#### ${child.name}\n(Documentation not yet generated)`);
@@ -612,7 +619,7 @@ export class WikiGenerator {
     }
 
     // Get cross-child call edges
-    const allChildFiles = node.children.flatMap(c => c.files);
+    const allChildFiles = node.children.flatMap((c) => c.files);
     const crossCalls = await getIntraModuleCallEdges(allChildFiles);
     const processes = await getProcessesForFiles(allChildFiles, 3);
 
@@ -623,10 +630,7 @@ export class WikiGenerator {
       CROSS_PROCESSES: formatProcesses(processes),
     });
 
-    const response = await this.invokeLLM(
-      prompt, PARENT_SYSTEM_PROMPT,
-      this.streamOpts(node.name),
-    );
+    const response = await this.invokeLLM(prompt, PARENT_SYSTEM_PROMPT, this.streamOpts(node.name));
 
     const pageContent = `# ${node.name}\n\n${response.content}`;
     await fs.writeFile(path.join(this.wikiDir, `${node.slug}.md`), pageContent, 'utf-8');
@@ -642,7 +646,8 @@ export class WikiGenerator {
       try {
         const content = await fs.readFile(pagePath, 'utf-8');
         const overviewEnd = content.indexOf('### Architecture');
-        const overview = overviewEnd > 0 ? content.slice(0, overviewEnd).trim() : content.slice(0, 600).trim();
+        const overview =
+          overviewEnd > 0 ? content.slice(0, overviewEnd).trim() : content.slice(0, 600).trim();
         moduleSummaries.push(`#### ${node.name}\n${overview}`);
       } catch {
         moduleSummaries.push(`#### ${node.name}\n(Documentation pending)`);
@@ -659,9 +664,10 @@ export class WikiGenerator {
     // Read project config
     const projectInfo = await this.readProjectInfo();
 
-    const edgesText = moduleEdges.length > 0
-      ? moduleEdges.map(e => `${e.from} → ${e.to} (${e.count} calls)`).join('\n')
-      : 'No inter-module call edges detected';
+    const edgesText =
+      moduleEdges.length > 0
+        ? moduleEdges.map((e) => `${e.from} → ${e.to} (${e.count} calls)`).join('\n')
+        : 'No inter-module call edges detected';
 
     const prompt = fillTemplate(OVERVIEW_USER_PROMPT, {
       PROJECT_INFO: projectInfo,
@@ -671,7 +677,8 @@ export class WikiGenerator {
     });
 
     const response = await this.invokeLLM(
-      prompt, OVERVIEW_SYSTEM_PROMPT,
+      prompt,
+      OVERVIEW_SYSTEM_PROMPT,
       this.streamOpts('Generating overview', 88),
     );
 
@@ -689,7 +696,7 @@ export class WikiGenerator {
 
     // Get changed files since last generation
     const changedFiles = this.getChangedFiles(existingMeta.fromCommit, currentCommit);
-    
+
     // If null, commits are on divergent branches (e.g., wiki generated on feature branch,
     // now running on main). Fall back to full generation.
     if (changedFiles === null) {
@@ -730,9 +737,15 @@ export class WikiGenerator {
 
     // If significant new files exist, re-run full grouping
     if (newFiles.length > 5) {
-      this.onProgress('incremental', 15, 'Significant new files detected, running full generation...');
+      this.onProgress(
+        'incremental',
+        15,
+        'Significant new files detected, running full generation...',
+      );
       // Delete old snapshot to force re-grouping
-      try { await fs.unlink(path.join(this.wikiDir, 'first_module_tree.json')); } catch {}
+      try {
+        await fs.unlink(path.join(this.wikiDir, 'first_module_tree.json'));
+      } catch {}
       const fullResult = await this.fullGeneration(currentCommit);
       return { ...fullResult, mode: 'incremental' };
     }
@@ -758,7 +771,9 @@ export class WikiGenerator {
       const modSlug = this.slugify(mod);
       const node = this.findNodeBySlug(moduleTree, modSlug);
       if (node) {
-        try { await fs.unlink(path.join(this.wikiDir, `${node.slug}.md`)); } catch {}
+        try {
+          await fs.unlink(path.join(this.wikiDir, `${node.slug}.md`));
+        } catch {}
         affectedNodes.push(node);
       }
     }
@@ -773,7 +788,11 @@ export class WikiGenerator {
         }
         incProcessed++;
         const percent = 20 + Math.round((incProcessed / affectedNodes.length) * 60);
-        this.onProgress('incremental', percent, `${incProcessed}/${affectedNodes.length} — ${node.name}`);
+        this.onProgress(
+          'incremental',
+          percent,
+          `${incProcessed}/${affectedNodes.length} — ${node.name}`,
+        );
         return 1;
       } catch (err: any) {
         this.failedModules.push(node.name);
@@ -818,10 +837,10 @@ export class WikiGenerator {
    */
   private isCommitReachable(fromCommit: string, toCommit: string): boolean {
     try {
-      execFileSync(
-        'git', ['merge-base', '--is-ancestor', fromCommit, toCommit],
-        { cwd: this.repoPath, stdio: 'ignore' },
-      );
+      execFileSync('git', ['merge-base', '--is-ancestor', fromCommit, toCommit], {
+        cwd: this.repoPath,
+        stdio: 'ignore',
+      });
       return true;
     } catch {
       return false;
@@ -836,10 +855,11 @@ export class WikiGenerator {
     }
 
     try {
-      const output = execFileSync(
-        'git', ['diff', `${fromCommit}..${toCommit}`, '--name-only'],
-        { cwd: this.repoPath },
-      ).toString().trim();
+      const output = execFileSync('git', ['diff', `${fromCommit}..${toCommit}`, '--name-only'], {
+        cwd: this.repoPath,
+      })
+        .toString()
+        .trim();
       return output ? output.split('\n').filter(Boolean) : [];
     } catch {
       return null; // Treat git errors as needing full regen
@@ -881,7 +901,14 @@ export class WikiGenerator {
   }
 
   private async readProjectInfo(): Promise<string> {
-    const candidates = ['package.json', 'Cargo.toml', 'pyproject.toml', 'go.mod', 'pom.xml', 'build.gradle'];
+    const candidates = [
+      'package.json',
+      'Cargo.toml',
+      'pyproject.toml',
+      'go.mod',
+      'pom.xml',
+      'build.gradle',
+    ];
     const lines: string[] = [`Project: ${path.basename(this.repoPath)}`];
 
     for (const file of candidates) {
@@ -921,7 +948,7 @@ export class WikiGenerator {
     const result: Record<string, string[]> = {};
     for (const node of tree) {
       if (node.children && node.children.length > 0) {
-        result[node.name] = node.children.flatMap(c => c.files);
+        result[node.name] = node.children.flatMap((c) => c.files);
         for (const child of node.children) {
           result[child.name] = child.files;
         }
@@ -947,7 +974,10 @@ export class WikiGenerator {
    * Flatten the module tree into leaf nodes and parent nodes.
    * Leaves can be processed in parallel; parents must wait for children.
    */
-  private flattenModuleTree(tree: ModuleTreeNode[]): { leaves: ModuleTreeNode[]; parents: ModuleTreeNode[] } {
+  private flattenModuleTree(tree: ModuleTreeNode[]): {
+    leaves: ModuleTreeNode[];
+    parents: ModuleTreeNode[];
+  } {
     const leaves: ModuleTreeNode[] = [];
     const parents: ModuleTreeNode[] = [];
 
@@ -969,10 +999,7 @@ export class WikiGenerator {
    * Run async tasks in parallel with a concurrency limit and adaptive rate limiting.
    * If a 429 rate limit is hit, concurrency is temporarily reduced.
    */
-  private async runParallel<T>(
-    items: T[],
-    fn: (item: T) => Promise<number>,
-  ): Promise<number> {
+  private async runParallel<T>(items: T[], fn: (item: T) => Promise<number>): Promise<number> {
     let total = 0;
     let activeConcurrency = this.concurrency;
     let running = 0;
@@ -999,7 +1026,11 @@ export class WikiGenerator {
               // On rate limit, reduce concurrency temporarily
               if (err.message?.includes('429')) {
                 activeConcurrency = Math.max(1, activeConcurrency - 1);
-                this.onProgress('modules', this.lastPercent, `Rate limited — concurrency → ${activeConcurrency}`);
+                this.onProgress(
+                  'modules',
+                  this.lastPercent,
+                  `Rate limited — concurrency → ${activeConcurrency}`,
+                );
                 // Re-queue the item
                 idx--;
                 setTimeout(next, 5000);

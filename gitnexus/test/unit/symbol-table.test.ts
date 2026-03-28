@@ -69,7 +69,11 @@ describe('SymbolTable', () => {
       table.add('src/b.ts', 'render', 'func:b:render', 'Method');
       const results = table.lookupFuzzy('render');
       expect(results).toHaveLength(2);
-      expect(results[0]).toEqual({ nodeId: 'func:a:render', filePath: 'src/a.ts', type: 'Function' });
+      expect(results[0]).toEqual({
+        nodeId: 'func:a:render',
+        filePath: 'src/a.ts',
+        type: 'Function',
+      });
       expect(results[1]).toEqual({ nodeId: 'func:b:render', filePath: 'src/b.ts', type: 'Method' });
     });
 
@@ -112,7 +116,9 @@ describe('SymbolTable', () => {
     });
 
     it('returnType is available via lookupFuzzy', () => {
-      table.add('src/utils.ts', 'getUser', 'func:getUser', 'Function', { returnType: 'Promise<User>' });
+      table.add('src/utils.ts', 'getUser', 'func:getUser', 'Function', {
+        returnType: 'Promise<User>',
+      });
       const results = table.lookupFuzzy('getUser');
       expect(results).toHaveLength(1);
       expect(results[0].returnType).toBe('Promise<User>');

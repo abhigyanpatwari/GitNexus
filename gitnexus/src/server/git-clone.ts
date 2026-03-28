@@ -28,8 +28,11 @@ export function getCloneDir(repoName: string): string {
  */
 export function validateGitUrl(url: string): void {
   let parsed: URL;
-  try { parsed = new URL(url); }
-  catch { throw new Error('Invalid URL'); }
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error('Invalid URL');
+  }
 
   if (!['https:', 'http:'].includes(parsed.protocol)) {
     throw new Error('Only https:// and http:// git URLs are allowed');
@@ -65,7 +68,10 @@ export async function cloneOrPull(
   targetDir: string,
   onProgress?: (progress: CloneProgress) => void,
 ): Promise<string> {
-  const exists = await fs.access(path.join(targetDir, '.git')).then(() => true, () => false);
+  const exists = await fs.access(path.join(targetDir, '.git')).then(
+    () => true,
+    () => false,
+  );
 
   if (exists) {
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
@@ -88,7 +94,9 @@ function runGit(args: string[], cwd?: string): Promise<void> {
     });
 
     let stderr = '';
-    proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk; });
+    proc.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk;
+    });
 
     proc.on('close', (code) => {
       if (code === 0) resolve();

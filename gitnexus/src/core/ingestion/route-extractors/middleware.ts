@@ -9,11 +9,28 @@ const COMPOSER_NAMES = new Set(['middleware', 'default', 'chain', 'compose']);
 
 /** Keywords that terminate middleware chain walking (not wrapper function names) */
 export const MIDDLEWARE_STOP_KEYWORDS = new Set([
-  'async', 'await', 'function', 'new', 'return', 'if', 'for', 'while', 'switch',
-  'class', 'const', 'let', 'var', 'req', 'res', 'request', 'response',
-  'event', 'ctx', 'context', 'next',
+  'async',
+  'await',
+  'function',
+  'new',
+  'return',
+  'if',
+  'for',
+  'while',
+  'switch',
+  'class',
+  'const',
+  'let',
+  'var',
+  'req',
+  'res',
+  'request',
+  'response',
+  'event',
+  'ctx',
+  'context',
+  'next',
 ]);
-
 
 /** Walk nested wrapper calls starting at `pos` in `content`, returning function names. */
 function walkNestedWrappers(content: string, pos: number): string[] {
@@ -36,8 +53,11 @@ function walkNestedWrappers(content: string, pos: number): string[] {
  * Returns an object with the wrapper function names (outermost-first) and the
  * HTTP method they were captured from, or undefined if no chain found.
  */
-export function extractMiddlewareChain(content: string): { chain: string[]; method: string } | undefined {
-  const mwPattern = /export\s+(?:const\s+(POST|GET|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*=|default)\s+(\w+)\s*\(/g;
+export function extractMiddlewareChain(
+  content: string,
+): { chain: string[]; method: string } | undefined {
+  const mwPattern =
+    /export\s+(?:const\s+(POST|GET|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*=|default)\s+(\w+)\s*\(/g;
   let mwMatch;
   while ((mwMatch = mwPattern.exec(content)) !== null) {
     const method = mwMatch[1] ?? 'default';
@@ -89,7 +109,9 @@ export function extractNextjsMiddlewareConfig(content: string): NextjsMiddleware
   let exportedName = 'middleware';
   const isNamedMw = /export\s+(?:async\s+)?function\s+middleware\b/.test(content);
   const isConstMw = /export\s+const\s+middleware\s*=/.test(content);
-  const defaultFunctionMatch = /export\s+default\s+(?:async\s+)?function(?:\s+(\w+))?/.exec(content);
+  const defaultFunctionMatch = /export\s+default\s+(?:async\s+)?function(?:\s+(\w+))?/.exec(
+    content,
+  );
   const defaultIdentifierMatch = /export\s+default\s+(?!function\b)(\w+)/.exec(content);
 
   if (!isNamedMw && !isConstMw) {
@@ -106,7 +128,10 @@ export function extractNextjsMiddlewareConfig(content: string): NextjsMiddleware
   const chainRe = /(?:chain|compose)\s*\(\s*\[([^\]]+)\]/;
   const chainMatch = chainRe.exec(content);
   if (chainMatch) {
-    const fns = chainMatch[1].split(',').map(s => s.trim()).filter(Boolean);
+    const fns = chainMatch[1]
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     wrappedFunctions.push(...fns);
   }
   // Pattern: export default withA(withB(handler))
@@ -116,7 +141,9 @@ export function extractNextjsMiddlewareConfig(content: string): NextjsMiddleware
     const name = wrapperMatch[1];
     if (name !== 'function' && name !== 'async') {
       wrappedFunctions.push(name);
-      wrappedFunctions.push(...walkNestedWrappers(content, wrapperMatch.index + wrapperMatch[0].length));
+      wrappedFunctions.push(
+        ...walkNestedWrappers(content, wrapperMatch.index + wrapperMatch[0].length),
+      );
     }
   }
 
@@ -144,8 +171,11 @@ export function compileMatcher(matcher: string): CompiledMatcher | null {
   const paramWild = matcher.replace(/\/:path\*$/, '');
   if (paramWild !== matcher) return { type: 'prefix', prefix: paramWild };
   if (matcher.includes('(')) {
-    try { return { type: 'regex', re: new RegExp('^' + matcher + '$') }; }
-    catch { return null; }
+    try {
+      return { type: 'regex', re: new RegExp('^' + matcher + '$') };
+    } catch {
+      return null;
+    }
   }
   return { type: 'exact', value: matcher };
 }
@@ -153,9 +183,12 @@ export function compileMatcher(matcher: string): CompiledMatcher | null {
 /** Test a route URL against a pre-compiled matcher. */
 export function compiledMatcherMatchesRoute(cm: CompiledMatcher, routeURL: string): boolean {
   switch (cm.type) {
-    case 'prefix': return routeURL === cm.prefix || routeURL.startsWith(cm.prefix + '/');
-    case 'regex':  return cm.re.test(routeURL);
-    case 'exact':  return routeURL === cm.value;
+    case 'prefix':
+      return routeURL === cm.prefix || routeURL.startsWith(cm.prefix + '/');
+    case 'regex':
+      return cm.re.test(routeURL);
+    case 'exact':
+      return routeURL === cm.value;
   }
 }
 

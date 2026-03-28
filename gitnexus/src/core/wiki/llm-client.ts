@@ -1,9 +1,9 @@
 /**
  * LLM Client for Wiki Generation
- * 
+ *
  * OpenAI-compatible API client using native fetch.
  * Supports OpenAI, Azure, LiteLLM, Ollama, and any OpenAI-compatible endpoint.
- * 
+ *
  * Config priority: CLI flags > env vars > defaults
  */
 
@@ -27,7 +27,7 @@ export interface LLMResponse {
 /**
  * Resolve LLM configuration from env vars, saved config, and optional overrides.
  * Priority: overrides (CLI flags) > env vars > ~/.gitnexus/config.json > error
- * 
+ *
  * If no API key is found, returns config with empty apiKey (caller should handle).
  */
 export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<LLMConfig> {
@@ -36,24 +36,30 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
 
   const provider = overrides?.provider || savedConfig.provider || 'openai';
 
-  const apiKey = overrides?.apiKey
-    || process.env.GITNEXUS_API_KEY
-    || process.env.OPENAI_API_KEY
-    || savedConfig.apiKey
-    || '';
+  const apiKey =
+    overrides?.apiKey ||
+    process.env.GITNEXUS_API_KEY ||
+    process.env.OPENAI_API_KEY ||
+    savedConfig.apiKey ||
+    '';
 
   // For cursor provider, only use model if explicitly provided (default is 'auto' handled by CLI)
   // For openai provider, use model with fallback to default
-  const model = provider === 'cursor'
-    ? (overrides?.model || savedConfig.cursorModel || '')
-    : (overrides?.model || process.env.GITNEXUS_MODEL || savedConfig.model || 'minimax/minimax-m2.5');
+  const model =
+    provider === 'cursor'
+      ? overrides?.model || savedConfig.cursorModel || ''
+      : overrides?.model ||
+        process.env.GITNEXUS_MODEL ||
+        savedConfig.model ||
+        'minimax/minimax-m2.5';
 
   return {
     apiKey,
-    baseUrl: overrides?.baseUrl
-      || process.env.GITNEXUS_LLM_BASE_URL
-      || savedConfig.baseUrl
-      || 'https://openrouter.ai/api/v1',
+    baseUrl:
+      overrides?.baseUrl ||
+      process.env.GITNEXUS_LLM_BASE_URL ||
+      savedConfig.baseUrl ||
+      'https://openrouter.ai/api/v1',
     model,
     maxTokens: overrides?.maxTokens ?? 16_384,
     temperature: overrides?.temperature ?? 0,
@@ -109,7 +115,7 @@ export async function callLLM(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${config.apiKey}`,
+          Authorization: `Bearer ${config.apiKey}`,
         },
         body: JSON.stringify(body),
       });
@@ -120,7 +126,7 @@ export async function callLLM(
         // Rate limit — wait with exponential backoff and retry
         if (response.status === 429 && attempt < MAX_RETRIES - 1) {
           const retryAfter = parseInt(response.headers.get('retry-after') || '0', 10);
-          const delay = retryAfter > 0 ? retryAfter * 1000 : (2 ** attempt) * 3000;
+          const delay = retryAfter > 0 ? retryAfter * 1000 : 2 ** attempt * 3000;
           await sleep(delay);
           continue;
         }
@@ -140,7 +146,7 @@ export async function callLLM(
       }
 
       // Non-streaming path
-      const json = await response.json() as any;
+      const json = (await response.json()) as any;
       const choice = json.choices?.[0];
       if (!choice?.message?.content) {
         throw new Error('LLM returned empty response');
@@ -155,7 +161,10 @@ export async function callLLM(
       lastError = err;
 
       // Network error — retry with backoff
-      if (attempt < MAX_RETRIES - 1 && (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || err.message?.includes('fetch'))) {
+      if (
+        attempt < MAX_RETRIES - 1 &&
+        (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || err.message?.includes('fetch'))
+      ) {
         await sleep((attempt + 1) * 3000);
         continue;
       }
@@ -214,5 +223,5 @@ async function readSSEStream(
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

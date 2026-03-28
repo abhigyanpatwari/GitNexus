@@ -13,7 +13,7 @@ describe('nodeById Map — O(1) lookup correctness', () => {
       { id: 'Class:b.ts:Bar', label: 'Class', name: 'Bar' },
       { id: 'File:c.ts', label: 'File', name: 'c.ts' },
     ];
-    const nodeById = new Map(nodes.map(n => [n.id, n]));
+    const nodeById = new Map(nodes.map((n) => [n.id, n]));
 
     expect(nodeById.get('Function:a.ts:foo')?.name).toBe('foo');
     expect(nodeById.get('Class:b.ts:Bar')?.name).toBe('Bar');
@@ -26,7 +26,7 @@ describe('nodeById Map — O(1) lookup correctness', () => {
       { id: 'File:a.ts', label: 'File', name: 'first' },
       { id: 'File:a.ts', label: 'File', name: 'second' },
     ];
-    const nodeById = new Map(nodes.map(n => [n.id, n]));
+    const nodeById = new Map(nodes.map((n) => [n.id, n]));
 
     expect(nodeById.get('File:a.ts')?.name).toBe('second');
     expect(nodeById.size).toBe(1);

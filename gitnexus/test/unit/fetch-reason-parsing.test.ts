@@ -11,13 +11,16 @@ import { describe, it, expect } from 'vitest';
  * Extracted parsing logic matching fetchRoutesWithConsumers in local-backend.ts.
  * This mirrors the regex patterns used at runtime.
  */
-function parseReasonField(fetchReason: string | null): { accessedKeys?: string[]; fetchCount?: number } {
+function parseReasonField(fetchReason: string | null): {
+  accessedKeys?: string[];
+  fetchCount?: number;
+} {
   let accessedKeys: string[] | undefined;
   let fetchCount: number | undefined;
   if (fetchReason) {
     const keysMatch = fetchReason.match(/\|keys:([^|]+)/);
     if (keysMatch) {
-      accessedKeys = keysMatch[1].split(',').filter(k => k.length > 0);
+      accessedKeys = keysMatch[1].split(',').filter((k) => k.length > 0);
     }
     const fetchesMatch = fetchReason.match(/\|fetches:(\d+)/);
     if (fetchesMatch) {

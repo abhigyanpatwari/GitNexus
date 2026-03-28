@@ -30,13 +30,13 @@ describe('ORM dataflow detection', () => {
         }
       }
     }
-    const prismaEdges = queryEdges.filter(e => e.source.includes('prisma-service'));
-    const prismaModels = [...new Set(prismaEdges.map(e => e.target))];
+    const prismaEdges = queryEdges.filter((e) => e.source.includes('prisma-service'));
+    const prismaModels = [...new Set(prismaEdges.map((e) => e.target))];
     expect(prismaModels).toContain('user');
     expect(prismaModels).toContain('post');
-    const reasons = prismaEdges.map(e => e.reason);
-    expect(reasons.some(r => r.includes('prisma-findMany'))).toBe(true);
-    expect(reasons.some(r => r.includes('prisma-create'))).toBe(true);
+    const reasons = prismaEdges.map((e) => e.reason);
+    expect(reasons.some((r) => r.includes('prisma-findMany'))).toBe(true);
+    expect(reasons.some((r) => r.includes('prisma-create'))).toBe(true);
   });
 
   it('creates QUERIES edges for Supabase calls', () => {
@@ -54,19 +54,19 @@ describe('ORM dataflow detection', () => {
         }
       }
     }
-    const supabaseEdges = queryEdges.filter(e => e.source.includes('supabase-service'));
-    const supabaseModels = [...new Set(supabaseEdges.map(e => e.target))];
+    const supabaseEdges = queryEdges.filter((e) => e.source.includes('supabase-service'));
+    const supabaseModels = [...new Set(supabaseEdges.map((e) => e.target))];
     expect(supabaseModels).toContain('bookings');
     expect(supabaseModels).toContain('interpreters');
     expect(supabaseModels).toContain('sessions');
-    const reasons = supabaseEdges.map(e => e.reason);
-    expect(reasons.some(r => r.includes('supabase-select'))).toBe(true);
-    expect(reasons.some(r => r.includes('supabase-insert'))).toBe(true);
+    const reasons = supabaseEdges.map((e) => e.reason);
+    expect(reasons.some((r) => r.includes('supabase-select'))).toBe(true);
+    expect(reasons.some((r) => r.includes('supabase-insert'))).toBe(true);
   });
 
   it('creates CodeElement nodes for ORM models', () => {
     const codeElements: string[] = [];
-    result.graph.forEachNode(n => {
+    result.graph.forEachNode((n) => {
       if (n.label === 'CodeElement' && n.properties.description?.includes('model/table')) {
         codeElements.push(n.properties.name);
       }

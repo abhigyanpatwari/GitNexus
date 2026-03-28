@@ -3,7 +3,12 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { BaseFieldExtractor } from '../field-extractor.js';
-import type { FieldExtractorContext, ExtractedFields, FieldInfo, FieldVisibility } from '../field-types.js';
+import type {
+  FieldExtractorContext,
+  ExtractedFields,
+  FieldInfo,
+  FieldVisibility,
+} from '../field-types.js';
 
 /**
  * Hand-written TypeScript field extractor.
@@ -34,9 +39,9 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
    * Node types that contain field definitions within class bodies
    */
   private static readonly FIELD_NODE_TYPES = new Set([
-    'public_field_definition',   // class field: private users: User[]
-    'property_signature',         // interface property: name: string
-    'field_definition',           // fallback field type
+    'public_field_definition', // class field: private users: User[]
+    'property_signature', // interface property: name: string
+    'field_definition', // fallback field type
   ]);
 
   /**
@@ -218,10 +223,7 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
   /**
    * Extract fields from a class body or interface body
    */
-  private extractFieldsFromBody(
-    bodyNode: SyntaxNode,
-    context: FieldExtractorContext,
-  ): FieldInfo[] {
+  private extractFieldsFromBody(bodyNode: SyntaxNode, context: FieldExtractorContext): FieldInfo[] {
     const fields: FieldInfo[] = [];
 
     // Find all field definition nodes within the body
@@ -251,7 +253,7 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
 
     // Find all property_signature nodes within the object type
     const propertySignatures = objectTypeNode.descendantsOfType('property_signature');
-    
+
     for (const propNode of propertySignatures) {
       const field = this.extractField(propNode, context);
       if (field) {
@@ -314,7 +316,7 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
     for (const nested of nestedDeclarations) {
       // Skip the current node itself
       if (nested === node) continue;
-      
+
       const nestedName = nested.childForFieldName('name');
       if (nestedName) {
         nestedTypes.push(nestedName.text);

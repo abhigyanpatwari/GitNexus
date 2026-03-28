@@ -90,9 +90,7 @@ function isContinuationLine(line: string): boolean {
  * Merge continuation lines into their predecessors.
  * Returns an array of logical lines with their original starting line numbers.
  */
-function mergeLogicalLines(
-  rawLines: string[],
-): Array<{ text: string; lineNum: number }> {
+function mergeLogicalLines(rawLines: string[]): Array<{ text: string; lineNum: number }> {
   const logical: Array<{ text: string; lineNum: number }> = [];
 
   for (let i = 0; i < rawLines.length; i++) {
@@ -152,7 +150,10 @@ export function parseReplacingClause(text: string): CopyReplacing[] {
 
   // Tokenize: ==pseudotext==, "quoted strings", or bare words.
   // Pseudotext can contain spaces and single = chars but not ==.
-  interface TokenInfo { value: string; isPseudotext: boolean; }
+  interface TokenInfo {
+    value: string;
+    isPseudotext: boolean;
+  }
   const tokens: TokenInfo[] = [];
   const tokenRe = /==((?:[^=]|=[^=])*)==|"([^"]*)"|(\S+)/g;
   let tm: RegExpExecArray | null;
@@ -203,7 +204,12 @@ export function parseReplacingClause(text: string): CopyReplacing[] {
     const toToken = tokens[i];
     i++;
 
-    replacings.push({ type, from: fromToken.value, to: toToken.value, isPseudotext: fromToken.isPseudotext || undefined });
+    replacings.push({
+      type,
+      from: fromToken.value,
+      to: toToken.value,
+      isPseudotext: fromToken.isPseudotext || undefined,
+    });
   }
 
   return replacings;
@@ -319,7 +325,10 @@ function applyReplacing(content: string, replacings: CopyReplacing[]): string {
   // characters (pseudotext). These cannot be handled by identifier-level matching.
   let result = content;
   for (const r of replacings) {
-    if (r.type === 'EXACT' && (r.isPseudotext || r.from.includes(' ') || !/^[A-Z][A-Z0-9-]*$/i.test(r.from))) {
+    if (
+      r.type === 'EXACT' &&
+      (r.isPseudotext || r.from.includes(' ') || !/^[A-Z][A-Z0-9-]*$/i.test(r.from))
+    ) {
       const escaped = r.from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const re = new RegExp(escaped, 'gi');
       result = result.replace(re, r.to);
@@ -328,7 +337,11 @@ function applyReplacing(content: string, replacings: CopyReplacing[]): string {
 
   // Second pass: identifier-level replacements (LEADING, TRAILING, single-word EXACT)
   const identifierReplacings = replacings.filter(
-    r => !(r.type === 'EXACT' && (r.isPseudotext || r.from.includes(' ') || !/^[A-Z][A-Z0-9-]*$/i.test(r.from))),
+    (r) =>
+      !(
+        r.type === 'EXACT' &&
+        (r.isPseudotext || r.from.includes(' ') || !/^[A-Z][A-Z0-9-]*$/i.test(r.from))
+      ),
   );
   if (identifierReplacings.length === 0) return result;
 
@@ -443,7 +456,7 @@ export function expandCopies(
           warnedCircular.add(resolvedPath);
           console.warn(
             `[cobol-copy-expander] Circular COPY detected: ${cs.target} (${resolvedPath}) ` +
-            `includes itself. Skipping expansion.`,
+              `includes itself. Skipping expansion.`,
           );
         }
         continue;
@@ -453,7 +466,7 @@ export function expandCopies(
       if (depth >= maxDepth) {
         console.warn(
           `[cobol-copy-expander] Max expansion depth (${maxDepth}) reached for ` +
-          `COPY ${cs.target} in ${srcPath}. Skipping expansion.`,
+            `COPY ${cs.target} in ${srcPath}. Skipping expansion.`,
         );
         continue;
       }
@@ -464,7 +477,7 @@ export function expandCopies(
           warnedCircular.add('__max_total__');
           console.warn(
             `[cobol-copy-expander] Max total expansions (${MAX_TOTAL_EXPANSIONS}) reached ` +
-            `in ${srcPath}. Skipping further expansions.`,
+              `in ${srcPath}. Skipping further expansions.`,
           );
         }
         continue;
@@ -482,12 +495,7 @@ export function expandCopies(
       // Recurse into the copybook for nested COPYs
       const nestedVisited = new Set(visited);
       nestedVisited.add(resolvedPath);
-      const expandedCopybook = expandRecursive(
-        replaced,
-        resolvedPath,
-        depth + 1,
-        nestedVisited,
-      );
+      const expandedCopybook = expandRecursive(replaced, resolvedPath, depth + 1, nestedVisited);
 
       // Splice: replace the COPY statement lines with expanded content
       // startLine/endLine are 1-based; convert to 0-based array index

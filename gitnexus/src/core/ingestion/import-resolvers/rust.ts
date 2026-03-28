@@ -94,7 +94,10 @@ export function resolveRustImport(
   // Top-level grouped: use {crate::a, crate::b}
   if (rawImportPath.startsWith('{') && rawImportPath.endsWith('}')) {
     const inner = rawImportPath.slice(1, -1);
-    const parts = inner.split(',').map(p => p.trim()).filter(Boolean);
+    const parts = inner
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean);
     const resolved: string[] = [];
     for (const part of parts) {
       const r = resolveRustImportInternal(filePath, part, ctx.allFilePaths);
@@ -108,7 +111,10 @@ export function resolveRustImport(
   if (braceIdx !== -1 && rawImportPath.endsWith('}')) {
     const pathPrefix = rawImportPath.substring(0, braceIdx);
     const braceContent = rawImportPath.substring(braceIdx + 3, rawImportPath.length - 1);
-    const items = braceContent.split(',').map(s => s.trim()).filter(Boolean);
+    const items = braceContent
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     const resolved: string[] = [];
     for (const item of items) {
       // Handle `use crate::models::{User, Repo as R}` — strip alias for resolution

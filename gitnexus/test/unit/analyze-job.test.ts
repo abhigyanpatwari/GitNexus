@@ -32,8 +32,9 @@ describe('JobManager', () => {
   it('enforces single-slot concurrency', () => {
     const job1 = manager.createJob({ repoUrl: 'https://github.com/user/repo1' });
     manager.updateJob(job1.id, { status: 'analyzing' });
-    expect(() => manager.createJob({ repoUrl: 'https://github.com/user/repo2' }))
-      .toThrow(/already in progress/);
+    expect(() => manager.createJob({ repoUrl: 'https://github.com/user/repo2' })).toThrow(
+      /already in progress/,
+    );
   });
 
   it('allows new job after previous completes', () => {

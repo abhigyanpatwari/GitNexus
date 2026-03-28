@@ -1,6 +1,25 @@
-import { Search, Settings, HelpCircle, Sparkles, Github, Star, FolderOpen, ChevronDown, Trash2, RefreshCw, Loader2 } from '@/lib/lucide-icons';
+import {
+  Search,
+  Settings,
+  HelpCircle,
+  Sparkles,
+  Github,
+  Star,
+  FolderOpen,
+  ChevronDown,
+  Trash2,
+  RefreshCw,
+  Loader2,
+} from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
-import { deleteRepo, fetchRepos, startAnalyze, streamAnalyzeProgress, type BackendRepo, type JobProgress } from '../services/backend-client';
+import {
+  deleteRepo,
+  fetchRepos,
+  startAnalyze,
+  streamAnalyzeProgress,
+  type BackendRepo,
+  type JobProgress,
+} from '../services/backend-client';
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { GraphNode } from 'gitnexus-shared';
 import { EmbeddingStatus } from './EmbeddingStatus';
@@ -29,7 +48,13 @@ interface HeaderProps {
   onReposChanged?: (repos: BackendRepo[]) => void;
 }
 
-export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnalyzeComplete, onReposChanged }: HeaderProps) => {
+export const Header = ({
+  onFocusNode,
+  availableRepos = [],
+  onSwitchRepo,
+  onAnalyzeComplete,
+  onReposChanged,
+}: HeaderProps) => {
   const {
     projectName,
     graph,
@@ -37,7 +62,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
     isRightPanelOpen,
     rightPanelTab,
     setSettingsPanelOpen,
-    setHelpDialogBoxOpen
+    setHelpDialogBoxOpen,
   } = useAppState();
   const [searchQuery, setSearchQuery] = useState('');
   const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
@@ -60,7 +85,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
 
     const query = searchQuery.toLowerCase();
     return graph.nodes
-      .filter(node => node.properties.name.toLowerCase().includes(query))
+      .filter((node) => node.properties.name.toLowerCase().includes(query))
       .slice(0, 10); // Limit to 10 results
   }, [graph, searchQuery]);
 
@@ -81,7 +106,9 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
 
   // Cleanup re-analyze SSE on unmount
   useEffect(() => {
-    return () => { reanalyzeSseRef.current?.abort(); };
+    return () => {
+      reanalyzeSseRef.current?.abort();
+    };
   }, []);
 
   // Keyboard shortcut (Cmd+K / Ctrl+K)
@@ -107,10 +134,10 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
 
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setSelectedIndex(i => Math.min(i + 1, searchResults.length - 1));
+      setSelectedIndex((i) => Math.min(i + 1, searchResults.length - 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setSelectedIndex(i => Math.max(i - 1, 0));
+      setSelectedIndex((i) => Math.max(i - 1, 0));
     } else if (e.key === 'Enter') {
       e.preventDefault();
       const selected = searchResults[selectedIndex];
@@ -129,37 +156,40 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
   };
 
   return (
-    <header className="flex items-center justify-between px-5 py-3 bg-deep border-b border-dashed border-border-subtle">
+    <header className="flex items-center justify-between border-b border-dashed border-border-subtle bg-deep px-5 py-3">
       {/* Left section */}
       <div className="flex items-center gap-4">
         {/* Logo */}
         <div className="flex items-center gap-2.5">
-          <div className="w-7 h-7 flex items-center justify-center bg-gradient-to-br from-accent to-node-interface rounded-md shadow-glow text-white text-sm font-bold">
+          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-accent to-node-interface text-sm font-bold text-white shadow-glow">
             ◇
           </div>
-          <span className="font-semibold text-[15px] tracking-tight">GitNexus</span>
+          <span className="text-[15px] font-semibold tracking-tight">GitNexus</span>
         </div>
 
         {/* Project badge + repo dropdown */}
         {projectName && (
           <div className="relative" ref={repoDropdownRef}>
             <button
-              onClick={() => { setIsRepoDropdownOpen(prev => !prev); setShowAnalyzer(false); }}
-              className={`
-                flex items-center gap-2 px-3 py-1.5 border rounded-lg text-sm transition-all cursor-pointer
-                ${isRepoDropdownOpen
-                  ? 'bg-accent/10 border-accent/40 text-text-primary'
-                  : 'bg-surface border-border-subtle text-text-secondary hover:bg-hover hover:border-border-default'
-                }
-              `}
+              onClick={() => {
+                setIsRepoDropdownOpen((prev) => !prev);
+                setShowAnalyzer(false);
+              }}
+              className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-sm transition-all ${
+                isRepoDropdownOpen
+                  ? 'border-accent/40 bg-accent/10 text-text-primary'
+                  : 'border-border-subtle bg-surface text-text-secondary hover:border-border-default hover:bg-hover'
+              } `}
             >
-              <span className="w-1.5 h-1.5 bg-node-function rounded-full animate-pulse" />
-              <span className="truncate max-w-[160px]">{projectName}</span>
-              <ChevronDown className={`w-3 h-3 text-text-muted transition-transform duration-200 ${isRepoDropdownOpen ? 'rotate-180' : ''}`} />
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-node-function" />
+              <span className="max-w-[160px] truncate">{projectName}</span>
+              <ChevronDown
+                className={`h-3 w-3 text-text-muted transition-transform duration-200 ${isRepoDropdownOpen ? 'rotate-180' : ''}`}
+              />
             </button>
 
             {isRepoDropdownOpen && (
-              <div className="absolute top-full left-0 mt-1.5 w-80 bg-surface border border-border-subtle rounded-xl shadow-xl overflow-hidden z-50 animate-slide-up">
+              <div className="absolute top-full left-0 z-50 mt-1.5 w-80 animate-slide-up overflow-hidden rounded-xl border border-border-subtle bg-surface shadow-xl">
                 {showAnalyzer ? (
                   <div className="p-4">
                     <RepoAnalyzer
@@ -177,15 +207,15 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
                     {/* Repo list */}
                     {availableRepos.length > 0 && (
                       <div>
-                        <div className="px-3 pt-2.5 pb-1.5 text-[10px] font-medium text-text-muted uppercase tracking-wider">
+                        <div className="px-3 pt-2.5 pb-1.5 text-[10px] font-medium tracking-wider text-text-muted uppercase">
                           Repositories
                         </div>
-                        {availableRepos.map(repo => (
+                        {availableRepos.map((repo) => (
                           <div
                             key={repo.name}
                             className={`group flex items-center gap-2 px-4 py-2 transition-colors ${
                               repo.name === projectName
-                                ? 'bg-accent/10 border-l-2 border-accent'
+                                ? 'border-l-2 border-accent bg-accent/10'
                                 : 'hover:bg-hover'
                             }`}
                           >
@@ -194,12 +224,16 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
                                 if (repo.name !== projectName) onSwitchRepo?.(repo.name);
                                 setIsRepoDropdownOpen(false);
                               }}
-                              className="flex-1 flex items-center gap-3 text-left cursor-pointer min-w-0"
+                              className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
                             >
-                              <FolderOpen className="w-3.5 h-3.5 text-node-folder shrink-0" />
-                              <span className="flex-1 truncate text-sm text-text-primary font-mono">{repo.name}</span>
+                              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-node-folder" />
+                              <span className="flex-1 truncate font-mono text-sm text-text-primary">
+                                {repo.name}
+                              </span>
                               {repo.name === projectName && (
-                                <span className="text-[10px] text-accent font-mono shrink-0">active</span>
+                                <span className="shrink-0 font-mono text-[10px] text-accent">
+                                  active
+                                </span>
                               )}
                             </button>
                             {/* Re-analyze */}
@@ -208,9 +242,16 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
                                 e.stopPropagation();
                                 if (reanalyzing) return; // already running
                                 setReanalyzing(repo.name);
-                                setReanalyzeProgress({ phase: 'queued', percent: 0, message: 'Starting...' });
+                                setReanalyzeProgress({
+                                  phase: 'queued',
+                                  percent: 0,
+                                  message: 'Starting...',
+                                });
                                 try {
-                                  const { jobId } = await startAnalyze({ path: repo.path, force: true });
+                                  const { jobId } = await startAnalyze({
+                                    path: repo.path,
+                                    force: true,
+                                  });
                                   reanalyzeSseRef.current = streamAnalyzeProgress(
                                     jobId,
                                     (p) => setReanalyzeProgress(p),
@@ -234,14 +275,20 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
                                 }
                               }}
                               disabled={!!reanalyzing}
-                              className={`p-1 rounded transition-all cursor-pointer ${
+                              className={`cursor-pointer rounded p-1 transition-all ${
                                 reanalyzing === repo.name
                                   ? 'text-accent'
                                   : 'text-text-muted/0 group-hover:text-text-muted hover:!text-accent'
                               }`}
-                              title={reanalyzing === repo.name ? 'Re-analyzing...' : `Re-analyze ${repo.name}`}
+                              title={
+                                reanalyzing === repo.name
+                                  ? 'Re-analyzing...'
+                                  : `Re-analyze ${repo.name}`
+                              }
                             >
-                              <RefreshCw className={`w-3.5 h-3.5 ${reanalyzing === repo.name ? 'animate-spin' : ''}`} />
+                              <RefreshCw
+                                className={`h-3.5 w-3.5 ${reanalyzing === repo.name ? 'animate-spin' : ''}`}
+                              />
                             </button>
                             {/* Delete */}
                             <button
@@ -269,10 +316,10 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
                                   console.error('Failed to delete repo:', err);
                                 }
                               }}
-                              className="p-1 text-text-muted/0 group-hover:text-text-muted hover:!text-red-400 rounded transition-all cursor-pointer"
+                              className="cursor-pointer rounded p-1 text-text-muted/0 transition-all group-hover:text-text-muted hover:!text-red-400"
                               title={`Delete ${repo.name}`}
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              <Trash2 className="h-3.5 w-3.5" />
                             </button>
                           </div>
                         ))}
@@ -281,16 +328,16 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
 
                     {/* Re-analyze progress bar */}
                     {reanalyzing && reanalyzeProgress && (
-                      <div className="px-4 py-2.5 border-t border-border-subtle bg-accent/5">
-                        <div className="flex items-center gap-2 mb-1.5">
-                          <Loader2 className="w-3 h-3 text-accent animate-spin shrink-0" />
-                          <span className="text-xs text-text-secondary truncate">
+                      <div className="border-t border-border-subtle bg-accent/5 px-4 py-2.5">
+                        <div className="mb-1.5 flex items-center gap-2">
+                          <Loader2 className="h-3 w-3 shrink-0 animate-spin text-accent" />
+                          <span className="truncate text-xs text-text-secondary">
                             Re-analyzing {reanalyzing}: {reanalyzeProgress.message}
                           </span>
                         </div>
-                        <div className="h-1 bg-elevated rounded-full overflow-hidden">
+                        <div className="h-1 overflow-hidden rounded-full bg-elevated">
                           <div
-                            className="h-full bg-accent rounded-full transition-all duration-300"
+                            className="h-full rounded-full bg-accent transition-all duration-300"
                             style={{ width: `${Math.max(2, reanalyzeProgress.percent)}%` }}
                           />
                         </div>
@@ -298,14 +345,22 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
                     )}
 
                     {/* Analyze new */}
-                    <div className={availableRepos.length > 0 || reanalyzing ? 'border-t border-border-subtle' : ''}>
+                    <div
+                      className={
+                        availableRepos.length > 0 || reanalyzing
+                          ? 'border-t border-border-subtle'
+                          : ''
+                      }
+                    >
                       <button
                         onClick={() => setShowAnalyzer(true)}
                         disabled={!!reanalyzing}
-                        className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-hover transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-hover disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        <Sparkles className="w-3.5 h-3.5 text-accent shrink-0" />
-                        <span className="text-sm text-text-secondary">Analyze a new repository...</span>
+                        <Sparkles className="h-3.5 w-3.5 shrink-0 text-accent" />
+                        <span className="text-sm text-text-secondary">
+                          Analyze a new repository...
+                        </span>
                       </button>
                     </div>
                   </>
@@ -317,9 +372,9 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
       </div>
 
       {/* Center - Search */}
-      <div className="flex-1 max-w-md mx-6 relative" ref={searchRef}>
-        <div className="flex items-center gap-2.5 px-3.5 py-2 bg-surface border border-border-subtle rounded-lg transition-all focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
-          <Search className="w-4 h-4 text-text-muted flex-shrink-0" />
+      <div className="relative mx-6 max-w-md flex-1" ref={searchRef}>
+        <div className="flex items-center gap-2.5 rounded-lg border border-border-subtle bg-surface px-3.5 py-2 transition-all focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
+          <Search className="h-4 w-4 flex-shrink-0 text-text-muted" />
           <input
             ref={inputRef}
             type="text"
@@ -332,16 +387,16 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
             }}
             onFocus={() => setIsSearchOpen(true)}
             onKeyDown={handleKeyDown}
-            className="flex-1 bg-transparent border-none outline-none text-sm text-text-primary placeholder:text-text-muted"
+            className="flex-1 border-none bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
           />
-          <kbd className="px-1.5 py-0.5 bg-elevated border border-border-subtle rounded text-[10px] text-text-muted font-mono">
+          <kbd className="rounded border border-border-subtle bg-elevated px-1.5 py-0.5 font-mono text-[10px] text-text-muted">
             ⌘K
           </kbd>
         </div>
 
         {/* Search Results Dropdown */}
         {isSearchOpen && searchQuery.trim() && (
-          <div className="absolute top-full left-0 right-0 mt-1 bg-surface border border-border-subtle rounded-xl shadow-xl overflow-hidden z-50">
+          <div className="absolute top-full right-0 left-0 z-50 mt-1 overflow-hidden rounded-xl border border-border-subtle bg-surface shadow-xl">
             {searchResults.length === 0 ? (
               <div className="px-4 py-3 text-sm text-text-muted">
                 No nodes found for &ldquo;{searchQuery}&rdquo;
@@ -352,19 +407,20 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
                   <button
                     key={node.id}
                     onClick={() => handleSelectNode(node)}
-                    className={`w-full px-4 py-2.5 flex items-center gap-3 text-left transition-colors cursor-pointer ${index === selectedIndex
-                      ? 'bg-accent/20 text-text-primary'
-                      : 'hover:bg-hover text-text-secondary'
-                      }`}
+                    className={`flex w-full cursor-pointer items-center gap-3 px-4 py-2.5 text-left transition-colors ${
+                      index === selectedIndex
+                        ? 'bg-accent/20 text-text-primary'
+                        : 'text-text-secondary hover:bg-hover'
+                    }`}
                   >
                     <span
-                      className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                      className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
                       style={{ backgroundColor: NODE_TYPE_COLORS[node.label] || '#6b7280' }}
                     />
                     <span className="flex-1 truncate text-sm font-medium">
                       {node.properties.name}
                     </span>
-                    <span className="text-xs text-text-muted px-2 py-0.5 bg-elevated rounded">
+                    <span className="rounded bg-elevated px-2 py-0.5 text-xs text-text-muted">
                       {node.label}
                     </span>
                   </button>
@@ -382,17 +438,17 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
           href="https://github.com/abhigyanpatwari/GitNexus"
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-2 px-3.5 py-2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 rounded-lg text-white text-sm font-medium shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-all duration-200 group"
+          className="group flex items-center gap-2 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 px-3.5 py-2 text-sm font-medium text-white shadow-lg transition-all duration-200 hover:-translate-y-0.5 hover:from-purple-500 hover:to-pink-500 hover:shadow-xl"
         >
-          <Github className="w-4 h-4" />
+          <Github className="h-4 w-4" />
           <span className="hidden sm:inline">Star if cool</span>
-          <Star className="w-3.5 h-3.5 group-hover:fill-yellow-300 group-hover:text-yellow-300 transition-all" />
+          <Star className="h-3.5 w-3.5 transition-all group-hover:fill-yellow-300 group-hover:text-yellow-300" />
           <span className="hidden sm:inline">✨</span>
         </a>
 
         {/* Stats */}
         {graph && (
-          <div className="flex items-center gap-4 mr-2 text-xs text-text-muted">
+          <div className="mr-2 flex items-center gap-4 text-xs text-text-muted">
             <span>{nodeCount} nodes</span>
             <span>{edgeCount} edges</span>
           </div>
@@ -404,34 +460,32 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo, onAnaly
         {/* Icon buttons */}
         <button
           onClick={() => setSettingsPanelOpen(true)}
-          className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors cursor-pointer"
+          className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
           title="AI Settings"
         >
-          <Settings className="w-4.5 h-4.5" />
+          <Settings className="h-4.5 w-4.5" />
         </button>
         <button
           title="Help"
           onClick={() => setHelpDialogBoxOpen(true)}
-          className="w-9 h-9 flex items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text-primary transition-colors cursor-pointer">
-          <HelpCircle className="w-4.5 h-4.5" />
+          className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
+        >
+          <HelpCircle className="h-4.5 w-4.5" />
         </button>
 
         {/* AI Button */}
         <button
           onClick={openChatPanel}
-          className={`
-            flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-medium transition-all
-            ${isRightPanelOpen && rightPanelTab === 'chat'
+          className={`flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium transition-all ${
+            isRightPanelOpen && rightPanelTab === 'chat'
               ? 'bg-accent text-white shadow-glow'
-              : 'bg-gradient-to-r from-accent to-accent-dim text-white shadow-glow hover:shadow-lg hover:-translate-y-0.5'
-            }
-          `}
+              : 'bg-gradient-to-r from-accent to-accent-dim text-white shadow-glow hover:-translate-y-0.5 hover:shadow-lg'
+          } `}
         >
-          <Sparkles className="w-4 h-4" />
+          <Sparkles className="h-4 w-4" />
           <span>Nexus AI</span>
         </button>
       </div>
     </header>
   );
 };
-

@@ -5,14 +5,14 @@
 #
 # Use this mode to isolate the value of explicit tools without grep augmentation.
 agent:
-  agent_class: "eval.agents.gitnexus_agent.GitNexusAgent"
-  gitnexus_mode: "native"
+  agent_class: 'eval.agents.gitnexus_agent.GitNexusAgent'
+  gitnexus_mode: 'native'
   step_limit: 30
   cost_limit: 3.0
   track_gitnexus_usage: true
 
 environment:
-  environment_class: "eval.environments.gitnexus_docker.GitNexusDockerEnvironment"
+  environment_class: 'eval.environments.gitnexus_docker.GitNexusDockerEnvironment'
   enable_gitnexus: true
   skip_embeddings: true
   gitnexus_timeout: 120

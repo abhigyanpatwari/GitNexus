@@ -37,7 +37,9 @@ export const DEFINITION_CAPTURE_KEYS = [
 ] as const;
 
 /** Extract the definition node from a tree-sitter query capture map. */
-export const getDefinitionNodeFromCaptures = (captureMap: Record<string, any>): SyntaxNode | null => {
+export const getDefinitionNodeFromCaptures = (
+  captureMap: Record<string, any>,
+): SyntaxNode | null => {
   for (const key of DEFINITION_CAPTURE_KEYS) {
     if (captureMap[key]) return captureMap[key];
   }
@@ -80,7 +82,7 @@ export const FUNCTION_NODE_TYPES = new Set([
   'init_declaration',
   'deinit_declaration',
   // Ruby
-  'method',           // def foo
+  'method', // def foo
   'singleton_method', // def self.foo
   // Dart
   'function_signature',
@@ -101,10 +103,17 @@ export const FUNCTION_DECLARATION_TYPES = new Set([
 
 /** AST node types that represent a class-like container (for HAS_METHOD edge extraction) */
 export const CLASS_CONTAINER_TYPES = new Set([
-  'class_declaration', 'abstract_class_declaration',
-  'interface_declaration', 'struct_declaration', 'record_declaration',
-  'class_specifier', 'struct_specifier',
-  'impl_item', 'trait_item', 'struct_item', 'enum_item',
+  'class_declaration',
+  'abstract_class_declaration',
+  'interface_declaration',
+  'struct_declaration',
+  'record_declaration',
+  'class_specifier',
+  'struct_specifier',
+  'impl_item',
+  'trait_item',
+  'struct_item',
+  'enum_item',
   'class_definition',
   'trait_declaration',
   'protocol_declaration',
@@ -203,7 +212,9 @@ export const findEnclosingClassId = (node: any, filePath: string): string | null
       const receiver = current.childForFieldName?.('receiver');
       if (receiver) {
         // receiver is a parameter_list: (u *User) or (u User)
-        const paramDecl = receiver.namedChildren?.find?.((c: any) => c.type === 'parameter_declaration');
+        const paramDecl = receiver.namedChildren?.find?.(
+          (c: any) => c.type === 'parameter_declaration',
+        );
         if (paramDecl) {
           const typeNode = paramDecl.childForFieldName?.('type');
           if (typeNode) {
@@ -237,18 +248,23 @@ export const findEnclosingClassId = (node: any, filePath: string): string | null
         const children = current.children ?? [];
         const forIdx = children.findIndex((c: any) => c.text === 'for');
         if (forIdx !== -1) {
-          const nameNode = children.slice(forIdx + 1).find((c: any) =>
-            c.type === 'type_identifier' || c.type === 'identifier'
-          );
+          const nameNode = children
+            .slice(forIdx + 1)
+            .find((c: any) => c.type === 'type_identifier' || c.type === 'identifier');
           if (nameNode) {
             return generateId('Impl', `${filePath}:${nameNode.text}`);
           }
         }
         // Fall through: plain `impl Struct {}` — use first type_identifier below
       }
-      const nameNode = current.childForFieldName?.('name')
-        ?? current.children?.find((c: any) =>
-          c.type === 'type_identifier' || c.type === 'identifier' || c.type === 'name' || c.type === 'constant'
+      const nameNode =
+        current.childForFieldName?.('name') ??
+        current.children?.find(
+          (c: any) =>
+            c.type === 'type_identifier' ||
+            c.type === 'identifier' ||
+            c.type === 'name' ||
+            c.type === 'constant',
         );
       if (nameNode) {
         const label = CONTAINER_TYPE_TO_LABEL[current.type] || 'Class';
@@ -264,7 +280,11 @@ export const findEnclosingClassId = (node: any, filePath: string): string | null
  * Find a child of `childType` within a sibling node of `siblingType`.
  * Used for Kotlin AST traversal where visibility_modifier lives inside a modifiers sibling.
  */
-export const findSiblingChild = (parent: any, siblingType: string, childType: string): any | null => {
+export const findSiblingChild = (
+  parent: any,
+  siblingType: string,
+  childType: string,
+): any | null => {
   for (let i = 0; i < parent.childCount; i++) {
     const sibling = parent.child(i);
     if (sibling?.type === siblingType) {
@@ -281,7 +301,9 @@ export const findSiblingChild = (parent: any, siblingType: string, childType: st
  * Extract function name and label from a function_definition or similar AST node.
  * Handles C/C++ qualified_identifier (ClassName::MethodName) and other language patterns.
  */
-export const extractFunctionName = (node: SyntaxNode): { funcName: string | null; label: NodeLabel } => {
+export const extractFunctionName = (
+  node: SyntaxNode,
+): { funcName: string | null; label: NodeLabel } => {
   let funcName: string | null = null;
   let label: NodeLabel = 'Function';
 
@@ -300,15 +322,28 @@ export const extractFunctionName = (node: SyntaxNode): { funcName: string | null
     if (!declarator) {
       for (let i = 0; i < node.childCount; i++) {
         const c = node.child(i);
-        if (c?.type === 'function_declarator') { declarator = c; break; }
+        if (c?.type === 'function_declarator') {
+          declarator = c;
+          break;
+        }
       }
     }
-    while (declarator && (declarator.type === 'pointer_declarator' || declarator.type === 'reference_declarator')) {
+    while (
+      declarator &&
+      (declarator.type === 'pointer_declarator' || declarator.type === 'reference_declarator')
+    ) {
       let nextDeclarator = declarator.childForFieldName?.('declarator');
       if (!nextDeclarator) {
         for (let i = 0; i < declarator.childCount; i++) {
           const c = declarator.child(i);
-          if (c?.type === 'function_declarator' || c?.type === 'pointer_declarator' || c?.type === 'reference_declarator') { nextDeclarator = c; break; }
+          if (
+            c?.type === 'function_declarator' ||
+            c?.type === 'pointer_declarator' ||
+            c?.type === 'reference_declarator'
+          ) {
+            nextDeclarator = c;
+            break;
+          }
         }
       }
       declarator = nextDeclarator;
@@ -318,8 +353,15 @@ export const extractFunctionName = (node: SyntaxNode): { funcName: string | null
       if (!innerDeclarator) {
         for (let i = 0; i < declarator.childCount; i++) {
           const c = declarator.child(i);
-          if (c?.type === 'qualified_identifier' || c?.type === 'identifier'
-            || c?.type === 'field_identifier' || c?.type === 'parenthesized_declarator') { innerDeclarator = c; break; }
+          if (
+            c?.type === 'qualified_identifier' ||
+            c?.type === 'identifier' ||
+            c?.type === 'field_identifier' ||
+            c?.type === 'parenthesized_declarator'
+          ) {
+            innerDeclarator = c;
+            break;
+          }
         }
       }
 
@@ -328,14 +370,20 @@ export const extractFunctionName = (node: SyntaxNode): { funcName: string | null
         if (!nameNode) {
           for (let i = 0; i < innerDeclarator.childCount; i++) {
             const c = innerDeclarator.child(i);
-            if (c?.type === 'identifier') { nameNode = c; break; }
+            if (c?.type === 'identifier') {
+              nameNode = c;
+              break;
+            }
           }
         }
         if (nameNode?.text) {
           funcName = nameNode.text;
           label = 'Method';
         }
-      } else if (innerDeclarator?.type === 'identifier' || innerDeclarator?.type === 'field_identifier') {
+      } else if (
+        innerDeclarator?.type === 'identifier' ||
+        innerDeclarator?.type === 'field_identifier'
+      ) {
         // field_identifier is used for method names inside C++ class bodies
         funcName = innerDeclarator.text;
         if (innerDeclarator.type === 'field_identifier') label = 'Method';
@@ -343,14 +391,20 @@ export const extractFunctionName = (node: SyntaxNode): { funcName: string | null
         let nestedId: SyntaxNode | null = null;
         for (let i = 0; i < innerDeclarator.childCount; i++) {
           const c = innerDeclarator.child(i);
-          if (c?.type === 'qualified_identifier' || c?.type === 'identifier') { nestedId = c; break; }
+          if (c?.type === 'qualified_identifier' || c?.type === 'identifier') {
+            nestedId = c;
+            break;
+          }
         }
         if (nestedId?.type === 'qualified_identifier') {
           let nameNode = nestedId.childForFieldName?.('name');
           if (!nameNode) {
             for (let i = 0; i < nestedId.childCount; i++) {
               const c = nestedId.child(i);
-              if (c?.type === 'identifier') { nameNode = c; break; }
+              if (c?.type === 'identifier') {
+                nameNode = c;
+                break;
+              }
             }
           }
           if (nameNode?.text) {
@@ -369,7 +423,14 @@ export const extractFunctionName = (node: SyntaxNode): { funcName: string | null
       if (!nameNode) {
         for (let i = 0; i < node.childCount; i++) {
           const c = node.child(i);
-          if (c?.type === 'identifier' || c?.type === 'property_identifier' || c?.type === 'simple_identifier') { nameNode = c; break; }
+          if (
+            c?.type === 'identifier' ||
+            c?.type === 'property_identifier' ||
+            c?.type === 'simple_identifier'
+          ) {
+            nameNode = c;
+            break;
+          }
         }
       }
       funcName = nameNode?.text;
@@ -378,14 +439,20 @@ export const extractFunctionName = (node: SyntaxNode): { funcName: string | null
     let funcItem: SyntaxNode | null = null;
     for (let i = 0; i < node.childCount; i++) {
       const c = node.child(i);
-      if (c?.type === 'function_item') { funcItem = c; break; }
+      if (c?.type === 'function_item') {
+        funcItem = c;
+        break;
+      }
     }
     if (funcItem) {
       let nameNode = funcItem.childForFieldName?.('name');
       if (!nameNode) {
         for (let i = 0; i < funcItem.childCount; i++) {
           const c = funcItem.child(i);
-          if (c?.type === 'identifier') { nameNode = c; break; }
+          if (c?.type === 'identifier') {
+            nameNode = c;
+            break;
+          }
         }
       }
       funcName = nameNode?.text;
@@ -396,7 +463,10 @@ export const extractFunctionName = (node: SyntaxNode): { funcName: string | null
     if (!nameNode) {
       for (let i = 0; i < node.childCount; i++) {
         const c = node.child(i);
-        if (c?.type === 'property_identifier') { nameNode = c; break; }
+        if (c?.type === 'property_identifier') {
+          nameNode = c;
+          break;
+        }
       }
     }
     funcName = nameNode?.text;
@@ -406,7 +476,10 @@ export const extractFunctionName = (node: SyntaxNode): { funcName: string | null
     if (!nameNode) {
       for (let i = 0; i < node.childCount; i++) {
         const c = node.child(i);
-        if (c?.type === 'identifier') { nameNode = c; break; }
+        if (c?.type === 'identifier') {
+          nameNode = c;
+          break;
+        }
       }
     }
     funcName = nameNode?.text;
@@ -418,7 +491,10 @@ export const extractFunctionName = (node: SyntaxNode): { funcName: string | null
       if (!nameNode) {
         for (let i = 0; i < parent.childCount; i++) {
           const c = parent.child(i);
-          if (c?.type === 'identifier') { nameNode = c; break; }
+          if (c?.type === 'identifier') {
+            nameNode = c;
+            break;
+          }
         }
       }
       funcName = nameNode?.text;
@@ -428,7 +504,10 @@ export const extractFunctionName = (node: SyntaxNode): { funcName: string | null
     if (!nameNode) {
       for (let i = 0; i < node.childCount; i++) {
         const c = node.child(i);
-        if (c?.type === 'identifier') { nameNode = c; break; }
+        if (c?.type === 'identifier') {
+          nameNode = c;
+          break;
+        }
       }
     }
     funcName = nameNode?.text;
@@ -439,7 +518,10 @@ export const extractFunctionName = (node: SyntaxNode): { funcName: string | null
     if (!nameNode) {
       for (let i = 0; i < node.childCount; i++) {
         const c = node.child(i);
-        if (c?.type === 'identifier') { nameNode = c; break; }
+        if (c?.type === 'identifier') {
+          nameNode = c;
+          break;
+        }
       }
     }
     funcName = nameNode?.text ?? null;
@@ -448,14 +530,20 @@ export const extractFunctionName = (node: SyntaxNode): { funcName: string | null
     let funcSig: SyntaxNode | null = null;
     for (let i = 0; i < node.childCount; i++) {
       const c = node.child(i);
-      if (c?.type === 'function_signature') { funcSig = c; break; }
+      if (c?.type === 'function_signature') {
+        funcSig = c;
+        break;
+      }
     }
     if (funcSig) {
       let nameNode = funcSig.childForFieldName?.('name');
       if (!nameNode) {
         for (let i = 0; i < funcSig.childCount; i++) {
           const c = funcSig.child(i);
-          if (c?.type === 'identifier') { nameNode = c; break; }
+          if (c?.type === 'identifier') {
+            nameNode = c;
+            break;
+          }
         }
       }
       funcName = nameNode?.text ?? null;
@@ -480,11 +568,7 @@ export interface MethodSignature {
 }
 
 /** Argument list node types shared between extractMethodSignature and countCallArguments. */
-export const CALL_ARGUMENT_LIST_TYPES = new Set([
-  'arguments',
-  'argument_list',
-  'value_arguments',
-]);
+export const CALL_ARGUMENT_LIST_TYPES = new Set(['arguments', 'argument_list', 'value_arguments']);
 
 /**
  * Extract parameter count and return type text from an AST method/function node.
@@ -497,29 +581,39 @@ export const extractMethodSignature = (node: SyntaxNode | null | undefined): Met
   let isVariadic = false;
   const paramTypes: string[] = [];
 
-  if (!node) return { parameterCount, requiredParameterCount: undefined, parameterTypes: undefined, returnType };
+  if (!node)
+    return {
+      parameterCount,
+      requiredParameterCount: undefined,
+      parameterTypes: undefined,
+      returnType,
+    };
 
   const paramListTypes = new Set([
-    'formal_parameters', 'parameters', 'parameter_list',
-    'function_parameters', 'method_parameters', 'function_value_parameters',
+    'formal_parameters',
+    'parameters',
+    'parameter_list',
+    'function_parameters',
+    'method_parameters',
+    'function_value_parameters',
     'formal_parameter_list', // Dart
   ]);
 
   // Node types that indicate variadic/rest parameters
   const VARIADIC_PARAM_TYPES = new Set([
-    'variadic_parameter_declaration',  // Go: ...string
-    'variadic_parameter',              // Rust: extern "C" fn(...)
-    'spread_parameter',                // Java: Object... args
-    'list_splat_pattern',              // Python: *args
-    'dictionary_splat_pattern',        // Python: **kwargs
+    'variadic_parameter_declaration', // Go: ...string
+    'variadic_parameter', // Rust: extern "C" fn(...)
+    'spread_parameter', // Java: Object... args
+    'list_splat_pattern', // Python: *args
+    'dictionary_splat_pattern', // Python: **kwargs
   ]);
 
   /** AST node types that represent parameters with default values. */
   const OPTIONAL_PARAM_TYPES = new Set([
-    'optional_parameter',                // TypeScript, Ruby: (x?: number), (x: number = 5), def f(x = 5)
-    'default_parameter',                 // Python: def f(x=5)
-    'typed_default_parameter',           // Python: def f(x: int = 5)
-    'optional_parameter_declaration',    // C++: void f(int x = 5)
+    'optional_parameter', // TypeScript, Ruby: (x?: number), (x: number = 5), def f(x = 5)
+    'default_parameter', // Python: def f(x=5)
+    'typed_default_parameter', // Python: def f(x: int = 5)
+    'optional_parameter_declaration', // C++: void f(int x = 5)
   ]);
 
   /** Check if a parameter node has a default value (handles Kotlin, C#, Swift, PHP
@@ -551,26 +645,32 @@ export const extractMethodSignature = (node: SyntaxNode | null | undefined): Met
     return null;
   };
 
-  const parameterList = (
-    paramListTypes.has(node.type) ? node                // node itself IS the parameter list (e.g. C# primary constructors)
-      : node.childForFieldName?.('parameters')
-        ?? findParameterList(node)
-  );
+  const parameterList = paramListTypes.has(node.type)
+    ? node // node itself IS the parameter list (e.g. C# primary constructors)
+    : (node.childForFieldName?.('parameters') ?? findParameterList(node));
 
   if (parameterList && paramListTypes.has(parameterList.type)) {
     for (const param of parameterList.namedChildren) {
       if (param.type === 'comment') continue;
-      if (param.text === 'self' || param.text === '&self' || param.text === '&mut self' ||
-          param.type === 'self_parameter') {
+      if (
+        param.text === 'self' ||
+        param.text === '&self' ||
+        param.text === '&mut self' ||
+        param.type === 'self_parameter'
+      ) {
         continue;
       }
       // Kotlin: default values are siblings of the parameter node inside
       // function_value_parameters, so they appear as named children (e.g.
       // string_literal, integer_literal, boolean_literal, call_expression).
       // Skip any named child that isn't a parameter-like or modifier node.
-      if (param.type.endsWith('_literal') || param.type === 'call_expression'
-        || param.type === 'navigation_expression' || param.type === 'prefix_expression'
-        || param.type === 'parenthesized_expression') {
+      if (
+        param.type.endsWith('_literal') ||
+        param.type === 'call_expression' ||
+        param.type === 'navigation_expression' ||
+        param.type === 'prefix_expression' ||
+        param.type === 'parenthesized_expression'
+      ) {
         continue;
       }
       // Check for variadic parameter types
@@ -609,8 +709,12 @@ export const extractMethodSignature = (node: SyntaxNode | null | undefined): Met
         // Kotlin: parameter → [simple_identifier, user_type|nullable_type]
         let found = false;
         for (const child of param.namedChildren) {
-          if (child.type === 'user_type' || child.type === 'nullable_type'
-            || child.type === 'type_identifier' || child.type === 'predefined_type') {
+          if (
+            child.type === 'user_type' ||
+            child.type === 'nullable_type' ||
+            child.type === 'type_identifier' ||
+            child.type === 'predefined_type'
+          ) {
             const typeName = extractSimpleTypeName(child);
             paramTypes.push(typeName ?? 'unknown');
             found = true;
@@ -722,11 +826,16 @@ export const extractMethodSignature = (node: SyntaxNode | null | undefined): Met
 
   // Only include parameterTypes when at least one type was successfully extracted.
   // Use undefined (not []) to avoid empty array allocations for untyped parameters.
-  const hasTypes = paramTypes.length > 0 && paramTypes.some(t => t !== 'unknown');
+  const hasTypes = paramTypes.length > 0 && paramTypes.some((t) => t !== 'unknown');
   // Only set requiredParameterCount when it differs from total — saves memory on the common case.
-  const requiredParameterCount = (!isVariadic && requiredCount < (parameterCount ?? 0))
-    ? requiredCount : undefined;
-  return { parameterCount, requiredParameterCount, parameterTypes: hasTypes ? paramTypes : undefined, returnType };
+  const requiredParameterCount =
+    !isVariadic && requiredCount < (parameterCount ?? 0) ? requiredCount : undefined;
+  return {
+    parameterCount,
+    requiredParameterCount,
+    parameterTypes: hasTypes ? paramTypes : undefined,
+    returnType,
+  };
 };
 
 // ============================================================================
@@ -736,7 +845,7 @@ export const extractMethodSignature = (node: SyntaxNode | null | undefined): Met
 /** Walk an AST node depth-first, returning the first descendant with the given type. */
 export function findDescendant(node: any, type: string): any {
   if (node.type === type) return node;
-  for (const child of (node.children ?? [])) {
+  for (const child of node.children ?? []) {
     const found = findDescendant(child, type);
     if (found) return found;
   }
@@ -772,4 +881,3 @@ export function findChild(node: SyntaxNode, type: string): SyntaxNode | null {
   }
   return null;
 }
-

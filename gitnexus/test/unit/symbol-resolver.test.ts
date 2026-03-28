@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createResolutionContext, type ResolutionContext } from '../../src/core/ingestion/resolution-context.js';
+import {
+  createResolutionContext,
+  type ResolutionContext,
+} from '../../src/core/ingestion/resolution-context.js';
 import { createSymbolTable } from '../../src/core/ingestion/symbol-table.js';
 import { isFileInPackageDir } from '../../src/core/ingestion/import-processor.js';
 
@@ -16,7 +19,11 @@ const resolveInternal = (ctx: ResolutionContext, name: string, fromFile: string)
   const tiered = ctx.resolve(name, fromFile);
   if (!tiered) return null;
   if (tiered.tier === 'global' && tiered.candidates.length !== 1) return null;
-  return { definition: tiered.candidates[0], tier: tiered.tier, candidateCount: tiered.candidates.length };
+  return {
+    definition: tiered.candidates[0],
+    tier: tiered.tier,
+    candidateCount: tiered.candidates.length,
+  };
 };
 
 describe('ResolutionContext.resolve — resolveSymbol compatibility', () => {
@@ -52,7 +59,12 @@ describe('ResolutionContext.resolve — resolveSymbol compatibility', () => {
 
   describe('Tier 2: Import-scoped resolution', () => {
     it('resolves symbol from an imported file', () => {
-      ctx.symbols.add('src/services/auth.ts', 'AuthService', 'Class:src/services/auth.ts:AuthService', 'Class');
+      ctx.symbols.add(
+        'src/services/auth.ts',
+        'AuthService',
+        'Class:src/services/auth.ts:AuthService',
+        'Class',
+      );
       ctx.importMap.set('src/controllers/login.ts', new Set(['src/services/auth.ts']));
 
       const result = resolveOne(ctx, 'AuthService', 'src/controllers/login.ts');
@@ -63,8 +75,18 @@ describe('ResolutionContext.resolve — resolveSymbol compatibility', () => {
     });
 
     it('prefers imported definition over non-imported with same name', () => {
-      ctx.symbols.add('src/services/logger.ts', 'Logger', 'Class:src/services/logger.ts:Logger', 'Class');
-      ctx.symbols.add('src/testing/mock-logger.ts', 'Logger', 'Class:src/testing/mock-logger.ts:Logger', 'Class');
+      ctx.symbols.add(
+        'src/services/logger.ts',
+        'Logger',
+        'Class:src/services/logger.ts:Logger',
+        'Class',
+      );
+      ctx.symbols.add(
+        'src/testing/mock-logger.ts',
+        'Logger',
+        'Class:src/testing/mock-logger.ts:Logger',
+        'Class',
+      );
       ctx.importMap.set('src/app.ts', new Set(['src/services/logger.ts']));
 
       const result = resolveOne(ctx, 'Logger', 'src/app.ts');
@@ -85,7 +107,12 @@ describe('ResolutionContext.resolve — resolveSymbol compatibility', () => {
 
   describe('Tier 3: Global resolution', () => {
     it('resolves unique global when not in imports', () => {
-      ctx.symbols.add('src/external/base.ts', 'BaseModel', 'Class:src/external/base.ts:BaseModel', 'Class');
+      ctx.symbols.add(
+        'src/external/base.ts',
+        'BaseModel',
+        'Class:src/external/base.ts:BaseModel',
+        'Class',
+      );
       ctx.importMap.set('src/app.ts', new Set(['src/other.ts']));
 
       const result = resolveOne(ctx, 'BaseModel', 'src/app.ts');
@@ -129,7 +156,12 @@ describe('ResolutionContext.resolve — resolveSymbol compatibility', () => {
 
   describe('type preservation', () => {
     it('preserves Interface type for heritage resolution', () => {
-      ctx.symbols.add('src/interfaces.ts', 'ILogger', 'Interface:src/interfaces.ts:ILogger', 'Interface');
+      ctx.symbols.add(
+        'src/interfaces.ts',
+        'ILogger',
+        'Interface:src/interfaces.ts:ILogger',
+        'Interface',
+      );
       ctx.importMap.set('src/app.ts', new Set(['src/interfaces.ts']));
 
       const result = resolveOne(ctx, 'ILogger', 'src/app.ts');
@@ -149,8 +181,18 @@ describe('ResolutionContext.resolve — resolveSymbol compatibility', () => {
 
   describe('heritage-specific scenarios', () => {
     it('resolves C# interface vs class ambiguity via imports', () => {
-      ctx.symbols.add('src/logging/ilogger.cs', 'ILogger', 'Interface:src/logging/ilogger.cs:ILogger', 'Interface');
-      ctx.symbols.add('src/testing/ilogger.cs', 'ILogger', 'Class:src/testing/ilogger.cs:ILogger', 'Class');
+      ctx.symbols.add(
+        'src/logging/ilogger.cs',
+        'ILogger',
+        'Interface:src/logging/ilogger.cs:ILogger',
+        'Interface',
+      );
+      ctx.symbols.add(
+        'src/testing/ilogger.cs',
+        'ILogger',
+        'Class:src/testing/ilogger.cs:ILogger',
+        'Class',
+      );
       ctx.importMap.set('src/services/auth.cs', new Set(['src/logging/ilogger.cs']));
 
       const result = resolveOne(ctx, 'ILogger', 'src/services/auth.cs');
@@ -160,8 +202,18 @@ describe('ResolutionContext.resolve — resolveSymbol compatibility', () => {
     });
 
     it('resolves parent class from imported file for extends', () => {
-      ctx.symbols.add('src/api/controller.ts', 'UserController', 'Class:src/api/controller.ts:UserController', 'Class');
-      ctx.symbols.add('src/base/controller.ts', 'BaseController', 'Class:src/base/controller.ts:BaseController', 'Class');
+      ctx.symbols.add(
+        'src/api/controller.ts',
+        'UserController',
+        'Class:src/api/controller.ts:UserController',
+        'Class',
+      );
+      ctx.symbols.add(
+        'src/base/controller.ts',
+        'BaseController',
+        'Class:src/base/controller.ts:BaseController',
+        'Class',
+      );
       ctx.importMap.set('src/api/controller.ts', new Set(['src/base/controller.ts']));
 
       const result = resolveOne(ctx, 'BaseController', 'src/api/controller.ts');
@@ -244,16 +296,36 @@ describe('negative tests — ambiguous refusal per language family', () => {
   });
 
   it('TS/JS: two Logger definitions with no import → returns null', () => {
-    ctx.symbols.add('src/services/logger.ts', 'Logger', 'Class:src/services/logger.ts:Logger', 'Class');
-    ctx.symbols.add('src/testing/logger.ts', 'Logger', 'Class:src/testing/logger.ts:Logger', 'Class');
+    ctx.symbols.add(
+      'src/services/logger.ts',
+      'Logger',
+      'Class:src/services/logger.ts:Logger',
+      'Class',
+    );
+    ctx.symbols.add(
+      'src/testing/logger.ts',
+      'Logger',
+      'Class:src/testing/logger.ts:Logger',
+      'Class',
+    );
 
     const result = resolveOne(ctx, 'Logger', 'src/app.ts');
     expect(result).toBeNull();
   });
 
   it('Java: same-named class in different packages, no import → returns null', () => {
-    ctx.symbols.add('com/example/models/User.java', 'User', 'Class:com/example/models/User.java:User', 'Class');
-    ctx.symbols.add('com/example/dto/User.java', 'User', 'Class:com/example/dto/User.java:User', 'Class');
+    ctx.symbols.add(
+      'com/example/models/User.java',
+      'User',
+      'Class:com/example/models/User.java:User',
+      'Class',
+    );
+    ctx.symbols.add(
+      'com/example/dto/User.java',
+      'User',
+      'Class:com/example/dto/User.java:User',
+      'Class',
+    );
 
     const result = resolveOne(ctx, 'User', 'com/example/services/UserService.java');
     expect(result).toBeNull();
@@ -269,8 +341,18 @@ describe('negative tests — ambiguous refusal per language family', () => {
   });
 
   it('C#: two IService interfaces in different namespaces, no import → returns null', () => {
-    ctx.symbols.add('src/Services/IService.cs', 'IService', 'Interface:src/Services/IService.cs:IService', 'Interface');
-    ctx.symbols.add('src/Testing/IService.cs', 'IService', 'Interface:src/Testing/IService.cs:IService', 'Interface');
+    ctx.symbols.add(
+      'src/Services/IService.cs',
+      'IService',
+      'Interface:src/Services/IService.cs:IService',
+      'Interface',
+    );
+    ctx.symbols.add(
+      'src/Testing/IService.cs',
+      'IService',
+      'Interface:src/Testing/IService.cs:IService',
+      'Interface',
+    );
 
     const result = resolveOne(ctx, 'IService', 'src/App.cs');
     expect(result).toBeNull();
@@ -285,8 +367,18 @@ describe('heritage false-positive guard', () => {
   });
 
   it('null from resolve prevents false edge — generateId fallback produces synthetic ID, not wrong match', () => {
-    ctx.symbols.add('src/api/base.ts', 'BaseController', 'Class:src/api/base.ts:BaseController', 'Class');
-    ctx.symbols.add('src/testing/base.ts', 'BaseController', 'Class:src/testing/base.ts:BaseController', 'Class');
+    ctx.symbols.add(
+      'src/api/base.ts',
+      'BaseController',
+      'Class:src/api/base.ts:BaseController',
+      'Class',
+    );
+    ctx.symbols.add(
+      'src/testing/base.ts',
+      'BaseController',
+      'Class:src/testing/base.ts:BaseController',
+      'Class',
+    );
 
     const result = resolveOne(ctx, 'BaseController', 'src/routes/admin.ts');
     expect(result).toBeNull();
@@ -337,7 +429,9 @@ describe('lookupExactFull', () => {
 
   it('preserves optional callable metadata on stored definitions', () => {
     const symbolTable = createSymbolTable();
-    symbolTable.add('src/math.ts', 'sum', 'Function:src/math.ts:sum', 'Function', { parameterCount: 2 });
+    symbolTable.add('src/math.ts', 'sum', 'Function:src/math.ts:sum', 'Function', {
+      parameterCount: 2,
+    });
 
     const fromExact = symbolTable.lookupExactFull('src/math.ts', 'sum');
     const fromFuzzy = symbolTable.lookupFuzzy('sum')[0];
@@ -355,7 +449,9 @@ describe('isFileInPackageDir', () => {
 
   it('matches with leading path segments', () => {
     expect(isFileInPackageDir('myrepo/internal/auth/handler.go', '/internal/auth/')).toBe(true);
-    expect(isFileInPackageDir('src/github.com/user/repo/internal/auth/handler.go', '/internal/auth/')).toBe(true);
+    expect(
+      isFileInPackageDir('src/github.com/user/repo/internal/auth/handler.go', '/internal/auth/'),
+    ).toBe(true);
   });
 
   it('rejects files in subdirectories', () => {
@@ -391,7 +487,12 @@ describe('Tier 2b: PackageMap resolution (Go)', () => {
   });
 
   it('resolves symbol via PackageMap when not in ImportMap', () => {
-    ctx.symbols.add('internal/auth/handler.go', 'HandleLogin', 'Function:internal/auth/handler.go:HandleLogin', 'Function');
+    ctx.symbols.add(
+      'internal/auth/handler.go',
+      'HandleLogin',
+      'Function:internal/auth/handler.go:HandleLogin',
+      'Function',
+    );
     ctx.packageMap.set('cmd/server/main.go', new Set(['/internal/auth/']));
 
     const result = ctx.resolve('HandleLogin', 'cmd/server/main.go');
@@ -402,7 +503,12 @@ describe('Tier 2b: PackageMap resolution (Go)', () => {
   });
 
   it('does not resolve symbol from wrong package', () => {
-    ctx.symbols.add('internal/db/connection.go', 'Connect', 'Function:internal/db/connection.go:Connect', 'Function');
+    ctx.symbols.add(
+      'internal/db/connection.go',
+      'Connect',
+      'Function:internal/db/connection.go:Connect',
+      'Function',
+    );
     ctx.packageMap.set('cmd/server/main.go', new Set(['/internal/auth/']));
 
     const result = ctx.resolve('Connect', 'cmd/server/main.go');
@@ -413,8 +519,18 @@ describe('Tier 2b: PackageMap resolution (Go)', () => {
   });
 
   it('Tier 2a (ImportMap) takes precedence over Tier 2b (PackageMap)', () => {
-    ctx.symbols.add('internal/auth/handler.go', 'Validate', 'Function:internal/auth/handler.go:Validate', 'Function');
-    ctx.symbols.add('internal/db/validator.go', 'Validate', 'Function:internal/db/validator.go:Validate', 'Function');
+    ctx.symbols.add(
+      'internal/auth/handler.go',
+      'Validate',
+      'Function:internal/auth/handler.go:Validate',
+      'Function',
+    );
+    ctx.symbols.add(
+      'internal/db/validator.go',
+      'Validate',
+      'Function:internal/db/validator.go:Validate',
+      'Function',
+    );
 
     ctx.importMap.set('cmd/server/main.go', new Set(['internal/db/validator.go']));
     ctx.packageMap.set('cmd/server/main.go', new Set(['/internal/auth/']));
@@ -427,8 +543,18 @@ describe('Tier 2b: PackageMap resolution (Go)', () => {
   });
 
   it('resolves both symbols in same imported package', () => {
-    ctx.symbols.add('internal/auth/handler.go', 'Run', 'Function:internal/auth/handler.go:Run', 'Function');
-    ctx.symbols.add('internal/auth/worker.go', 'Run', 'Function:internal/auth/worker.go:Run', 'Function');
+    ctx.symbols.add(
+      'internal/auth/handler.go',
+      'Run',
+      'Function:internal/auth/handler.go:Run',
+      'Function',
+    );
+    ctx.symbols.add(
+      'internal/auth/worker.go',
+      'Run',
+      'Function:internal/auth/worker.go:Run',
+      'Function',
+    );
     ctx.packageMap.set('cmd/main.go', new Set(['/internal/auth/']));
 
     const result = ctx.resolve('Run', 'cmd/main.go');
@@ -439,7 +565,12 @@ describe('Tier 2b: PackageMap resolution (Go)', () => {
   });
 
   it('returns global without packageMap when ambiguous', () => {
-    ctx.symbols.add('internal/auth/handler.go', 'X', 'Function:internal/auth/handler.go:X', 'Function');
+    ctx.symbols.add(
+      'internal/auth/handler.go',
+      'X',
+      'Function:internal/auth/handler.go:X',
+      'Function',
+    );
     ctx.symbols.add('internal/db/handler.go', 'X', 'Function:internal/db/handler.go:X', 'Function');
 
     const result = resolveInternal(ctx, 'X', 'cmd/main.go');

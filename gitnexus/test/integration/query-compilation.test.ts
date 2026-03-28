@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { loadParser, loadLanguage, isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
+import {
+  loadParser,
+  loadLanguage,
+  isLanguageAvailable,
+} from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
 import Parser from 'tree-sitter';

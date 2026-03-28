@@ -37,7 +37,9 @@ export function resolveCSharpImportInternal(
     }
 
     const dirPrefix = config.projectDir
-      ? (relative ? config.projectDir + '/' + relative : config.projectDir)
+      ? relative
+        ? config.projectDir + '/' + relative
+        : config.projectDir
       : relative;
 
     // 1. Try as single file: relative.cs (e.g., "Models/DlqMessage.cs")
@@ -113,7 +115,9 @@ export function resolveCSharpNamespaceDir(
     }
 
     const dirPrefix = config.projectDir
-      ? (relative ? config.projectDir + '/' + relative : config.projectDir)
+      ? relative
+        ? config.projectDir + '/' + relative
+        : config.projectDir
       : relative;
 
     if (!dirPrefix) continue;
@@ -131,7 +135,13 @@ export function resolveCSharpImport(
 ): ImportResult {
   const csharpConfigs = ctx.configs.csharpConfigs;
   if (csharpConfigs.length > 0) {
-    const resolvedFiles = resolveCSharpImportInternal(rawImportPath, csharpConfigs, ctx.normalizedFileList, ctx.allFileList, ctx.index);
+    const resolvedFiles = resolveCSharpImportInternal(
+      rawImportPath,
+      csharpConfigs,
+      ctx.normalizedFileList,
+      ctx.allFileList,
+      ctx.index,
+    );
     if (resolvedFiles.length > 1) {
       const dirSuffix = resolveCSharpNamespaceDir(rawImportPath, csharpConfigs);
       if (dirSuffix) {

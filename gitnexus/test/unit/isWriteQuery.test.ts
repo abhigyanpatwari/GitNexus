@@ -49,4 +49,3 @@ describe('isWriteQuery regex tests', () => {
     }
   });
 });
-

@@ -35,61 +35,80 @@ const CSHARP_KEY_METHODS: ReadonlySet<string> = new Set(['Keys']);
 const STD_VALUE_METHODS: ReadonlySet<string> = new Set(['values', 'get', 'pop', 'remove']);
 const CSHARP_VALUE_METHODS: ReadonlySet<string> = new Set(['Values', 'TryGetValue']);
 const SINGLE_ELEMENT_METHODS: ReadonlySet<string> = new Set([
-  'iter', 'into_iter', 'iterator', 'get', 'first', 'last', 'pop',
-  'peek', 'poll', 'find', 'filter', 'map',
+  'iter',
+  'into_iter',
+  'iterator',
+  'get',
+  'first',
+  'last',
+  'pop',
+  'peek',
+  'poll',
+  'find',
+  'filter',
+  'map',
 ]);
 
 const CONTAINER_DESCRIPTORS: ReadonlyMap<string, ContainerDescriptor> = new Map([
   // --- Map / Dict types (arity 2: key + value) ---
-  ['Map',           { arity: 2, keyMethods: STD_KEY_METHODS,    valueMethods: STD_VALUE_METHODS }],
-  ['WeakMap',       { arity: 2, keyMethods: STD_KEY_METHODS,    valueMethods: STD_VALUE_METHODS }],
-  ['HashMap',       { arity: 2, keyMethods: STD_KEY_METHODS,    valueMethods: STD_VALUE_METHODS }],
-  ['BTreeMap',      { arity: 2, keyMethods: STD_KEY_METHODS,    valueMethods: STD_VALUE_METHODS }],
-  ['LinkedHashMap', { arity: 2, keyMethods: JAVA_KEY_METHODS,   valueMethods: STD_VALUE_METHODS }],
-  ['TreeMap',       { arity: 2, keyMethods: JAVA_KEY_METHODS,   valueMethods: STD_VALUE_METHODS }],
-  ['dict',          { arity: 2, keyMethods: STD_KEY_METHODS,    valueMethods: STD_VALUE_METHODS }],
-  ['Dict',          { arity: 2, keyMethods: STD_KEY_METHODS,    valueMethods: STD_VALUE_METHODS }],
-  ['Dictionary',    { arity: 2, keyMethods: CSHARP_KEY_METHODS, valueMethods: CSHARP_VALUE_METHODS }],
-  ['SortedDictionary', { arity: 2, keyMethods: CSHARP_KEY_METHODS, valueMethods: CSHARP_VALUE_METHODS }],
-  ['Record',        { arity: 2, keyMethods: STD_KEY_METHODS,    valueMethods: STD_VALUE_METHODS }],
-  ['OrderedDict',   { arity: 2, keyMethods: STD_KEY_METHODS,    valueMethods: STD_VALUE_METHODS }],
-  ['ConcurrentHashMap', { arity: 2, keyMethods: JAVA_KEY_METHODS, valueMethods: STD_VALUE_METHODS }],
-  ['ConcurrentDictionary', { arity: 2, keyMethods: CSHARP_KEY_METHODS, valueMethods: CSHARP_VALUE_METHODS }],
+  ['Map', { arity: 2, keyMethods: STD_KEY_METHODS, valueMethods: STD_VALUE_METHODS }],
+  ['WeakMap', { arity: 2, keyMethods: STD_KEY_METHODS, valueMethods: STD_VALUE_METHODS }],
+  ['HashMap', { arity: 2, keyMethods: STD_KEY_METHODS, valueMethods: STD_VALUE_METHODS }],
+  ['BTreeMap', { arity: 2, keyMethods: STD_KEY_METHODS, valueMethods: STD_VALUE_METHODS }],
+  ['LinkedHashMap', { arity: 2, keyMethods: JAVA_KEY_METHODS, valueMethods: STD_VALUE_METHODS }],
+  ['TreeMap', { arity: 2, keyMethods: JAVA_KEY_METHODS, valueMethods: STD_VALUE_METHODS }],
+  ['dict', { arity: 2, keyMethods: STD_KEY_METHODS, valueMethods: STD_VALUE_METHODS }],
+  ['Dict', { arity: 2, keyMethods: STD_KEY_METHODS, valueMethods: STD_VALUE_METHODS }],
+  ['Dictionary', { arity: 2, keyMethods: CSHARP_KEY_METHODS, valueMethods: CSHARP_VALUE_METHODS }],
+  [
+    'SortedDictionary',
+    { arity: 2, keyMethods: CSHARP_KEY_METHODS, valueMethods: CSHARP_VALUE_METHODS },
+  ],
+  ['Record', { arity: 2, keyMethods: STD_KEY_METHODS, valueMethods: STD_VALUE_METHODS }],
+  ['OrderedDict', { arity: 2, keyMethods: STD_KEY_METHODS, valueMethods: STD_VALUE_METHODS }],
+  [
+    'ConcurrentHashMap',
+    { arity: 2, keyMethods: JAVA_KEY_METHODS, valueMethods: STD_VALUE_METHODS },
+  ],
+  [
+    'ConcurrentDictionary',
+    { arity: 2, keyMethods: CSHARP_KEY_METHODS, valueMethods: CSHARP_VALUE_METHODS },
+  ],
 
   // --- Single-element containers (arity 1) ---
-  ['Array',     { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['List',      { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['Array', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['List', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
   ['ArrayList', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['LinkedList',{ arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['Vec',       { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['VecDeque',  { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['Set',       { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['HashSet',   { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['BTreeSet',  { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['TreeSet',   { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['Queue',     { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['Deque',     { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['Stack',     { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['Sequence',  { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['Iterable',  { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['Iterator',  { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['LinkedList', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['Vec', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['VecDeque', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['Set', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['HashSet', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['BTreeSet', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['TreeSet', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['Queue', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['Deque', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['Stack', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['Sequence', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['Iterable', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['Iterator', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
   ['IEnumerable', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['IList',     { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['IList', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
   ['ICollection', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['Collection',  { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['Collection', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
   ['ObservableCollection', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
   ['IEnumerator', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
   ['SortedSet', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['Stream',    { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['Stream', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
   ['MutableList', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['MutableSet',  { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['MutableSet', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
   ['LinkedHashSet', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['ArrayDeque',  { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['ArrayDeque', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
   ['PriorityQueue', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
   ['MutableMap', { arity: 2, keyMethods: STD_KEY_METHODS, valueMethods: STD_VALUE_METHODS }],
-  ['list',      { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['set',       { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
-  ['tuple',     { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['list', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['set', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
+  ['tuple', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
   ['frozenset', { arity: 1, keyMethods: NO_KEYS, valueMethods: SINGLE_ELEMENT_METHODS }],
 ]);
 
@@ -101,7 +120,10 @@ const CONTAINER_DESCRIPTORS: ReadonlyMap<string, ContainerDescriptor> = new Map(
  *  3. If container is unknown → fall back to method name heuristic
  *  4. Default: 'last' (value type)
  */
-export function methodToTypeArgPosition(methodName: string | undefined, containerTypeName?: string): TypeArgPosition {
+export function methodToTypeArgPosition(
+  methodName: string | undefined,
+  containerTypeName?: string,
+): TypeArgPosition {
   if (containerTypeName) {
     const desc = CONTAINER_DESCRIPTORS.get(containerTypeName);
     if (desc) {
@@ -145,12 +167,17 @@ export function resolveIterableElementType(
   declarationTypeNodes: ReadonlyMap<string, SyntaxNode>,
   scope: string,
   extractFromTypeNode: (typeNode: SyntaxNode, pos?: TypeArgPosition) => string | undefined,
-  findParamElementType?: (name: string, startNode: SyntaxNode, pos?: TypeArgPosition) => string | undefined,
+  findParamElementType?: (
+    name: string,
+    startNode: SyntaxNode,
+    pos?: TypeArgPosition,
+  ) => string | undefined,
   typeArgPos: TypeArgPosition = 'last',
 ): string | undefined {
   // Strategy 1: declarationTypeNodes AST node (check current scope, then file scope)
-  const typeNode = declarationTypeNodes.get(`${scope}\0${iterableName}`)
-    ?? (scope !== '' ? declarationTypeNodes.get(`\0${iterableName}`) : undefined);
+  const typeNode =
+    declarationTypeNodes.get(`${scope}\0${iterableName}`) ??
+    (scope !== '' ? declarationTypeNodes.get(`\0${iterableName}`) : undefined);
   if (typeNode) {
     const t = extractFromTypeNode(typeNode, typeArgPos);
     if (t) return t;
@@ -171,9 +198,9 @@ export function resolveIterableElementType(
  *  Only nullable wrappers — NOT containers (List, Vec) or async wrappers (Promise, Future).
  *  See WRAPPER_GENERICS below for the full set used in return-type inference. */
 const NULLABLE_WRAPPER_TYPES = new Set([
-  'Optional',    // Java
-  'Option',      // Rust, Scala
-  'Maybe',       // Haskell-style, Kotlin Arrow
+  'Optional', // Java
+  'Option', // Rust, Scala
+  'Maybe', // Haskell-style, Kotlin Arrow
 ]);
 
 /**
@@ -185,24 +212,39 @@ const NULLABLE_WRAPPER_TYPES = new Set([
 export const extractSimpleTypeName = (typeNode: SyntaxNode, depth = 0): string | undefined => {
   if (depth > 50 || typeNode.text.length > 2048) return undefined;
   // Direct type identifier (includes Ruby 'constant' for class names)
-  if (typeNode.type === 'type_identifier' || typeNode.type === 'identifier'
-    || typeNode.type === 'simple_identifier' || typeNode.type === 'constant') {
+  if (
+    typeNode.type === 'type_identifier' ||
+    typeNode.type === 'identifier' ||
+    typeNode.type === 'simple_identifier' ||
+    typeNode.type === 'constant'
+  ) {
     return typeNode.text;
   }
 
   // Qualified/scoped names: take the last segment (e.g., models.User → User, Models::User → User)
-  if (typeNode.type === 'scoped_identifier' || typeNode.type === 'qualified_identifier'
-    || typeNode.type === 'scoped_type_identifier' || typeNode.type === 'qualified_name'
-    || typeNode.type === 'qualified_type'
-    || typeNode.type === 'member_expression' || typeNode.type === 'member_access_expression'
-    || typeNode.type === 'attribute'
-    || typeNode.type === 'scope_resolution'
-    || typeNode.type === 'selector_expression') {
+  if (
+    typeNode.type === 'scoped_identifier' ||
+    typeNode.type === 'qualified_identifier' ||
+    typeNode.type === 'scoped_type_identifier' ||
+    typeNode.type === 'qualified_name' ||
+    typeNode.type === 'qualified_type' ||
+    typeNode.type === 'member_expression' ||
+    typeNode.type === 'member_access_expression' ||
+    typeNode.type === 'attribute' ||
+    typeNode.type === 'scope_resolution' ||
+    typeNode.type === 'selector_expression'
+  ) {
     const last = typeNode.lastNamedChild;
-    if (last && (last.type === 'type_identifier' || last.type === 'identifier'
-      || last.type === 'simple_identifier' || last.type === 'name'
-      || last.type === 'constant' || last.type === 'property_identifier'
-      || last.type === 'field_identifier')) {
+    if (
+      last &&
+      (last.type === 'type_identifier' ||
+        last.type === 'identifier' ||
+        last.type === 'simple_identifier' ||
+        last.type === 'name' ||
+        last.type === 'constant' ||
+        last.type === 'property_identifier' ||
+        last.type === 'field_identifier')
+    ) {
       return last.text;
     }
   }
@@ -215,11 +257,15 @@ export const extractSimpleTypeName = (typeNode: SyntaxNode, depth = 0): string |
 
   // Generic types: extract the base type (e.g., List<User> → List)
   // For nullable wrappers (Optional<User>, Option<User>), unwrap to inner type.
-  if (typeNode.type === 'generic_type' || typeNode.type === 'parameterized_type'
-    || typeNode.type === 'generic_name') {
-    const base = typeNode.childForFieldName('name')
-      ?? typeNode.childForFieldName('type')
-      ?? typeNode.firstNamedChild;
+  if (
+    typeNode.type === 'generic_type' ||
+    typeNode.type === 'parameterized_type' ||
+    typeNode.type === 'generic_name'
+  ) {
+    const base =
+      typeNode.childForFieldName('name') ??
+      typeNode.childForFieldName('type') ??
+      typeNode.firstNamedChild;
     if (!base) return undefined;
     const baseName = extractSimpleTypeName(base, depth + 1);
     // Unwrap known nullable wrappers: Optional<User> → User, Option<User> → User
@@ -255,8 +301,11 @@ export const extractSimpleTypeName = (typeNode: SyntaxNode, depth = 0): string |
   }
 
   // Type annotations that wrap the actual type (TS/Python: `: Foo`, Kotlin: user_type)
-  if (typeNode.type === 'type_annotation' || typeNode.type === 'type'
-    || typeNode.type === 'user_type') {
+  if (
+    typeNode.type === 'type_annotation' ||
+    typeNode.type === 'type' ||
+    typeNode.type === 'user_type'
+  ) {
     const inner = typeNode.firstNamedChild;
     if (inner) return extractSimpleTypeName(inner, depth + 1);
   }
@@ -277,9 +326,14 @@ export const extractSimpleTypeName = (typeNode: SyntaxNode, depth = 0): string |
   // PHP: primitive_type; TS/JS: predefined_type
   // Java: integral_type (int/long/short/byte), floating_point_type (float/double),
   //       boolean_type (boolean), void_type (void)
-  if (typeNode.type === 'primitive_type' || typeNode.type === 'predefined_type'
-    || typeNode.type === 'integral_type' || typeNode.type === 'floating_point_type'
-    || typeNode.type === 'boolean_type' || typeNode.type === 'void_type') {
+  if (
+    typeNode.type === 'primitive_type' ||
+    typeNode.type === 'predefined_type' ||
+    typeNode.type === 'integral_type' ||
+    typeNode.type === 'floating_point_type' ||
+    typeNode.type === 'boolean_type' ||
+    typeNode.type === 'void_type'
+  ) {
     return typeNode.text;
   }
 
@@ -302,9 +356,14 @@ export const extractSimpleTypeName = (typeNode: SyntaxNode, depth = 0): string |
  * Returns the simple identifier text, or undefined for destructuring/complex patterns.
  */
 export const extractVarName = (node: SyntaxNode): string | undefined => {
-  if (node.type === 'identifier' || node.type === 'simple_identifier'
-    || node.type === 'variable_name' || node.type === 'name'
-    || node.type === 'constant' || node.type === 'property_identifier') {
+  if (
+    node.type === 'identifier' ||
+    node.type === 'simple_identifier' ||
+    node.type === 'variable_name' ||
+    node.type === 'name' ||
+    node.type === 'constant' ||
+    node.type === 'property_identifier'
+  ) {
     return node.text;
   }
   // variable_declarator (Java/C#): has a 'name' field
@@ -327,15 +386,15 @@ export const extractVarName = (node: SyntaxNode): string | undefined => {
 
 /** Node types for function/method parameters with type annotations */
 export const TYPED_PARAMETER_TYPES = new Set([
-  'required_parameter',      // TS: (x: Foo)
-  'optional_parameter',      // TS: (x?: Foo)
-  'formal_parameter',        // Java/Kotlin
-  'parameter',               // C#/Rust/Go/Python/Swift
-  'typed_parameter',         // Python: def f(x: Foo) — distinct from 'parameter' in tree-sitter-python
-  'parameter_declaration',   // C/C++ void f(Type name)
-  'simple_parameter',        // PHP function(Foo $x)
+  'required_parameter', // TS: (x: Foo)
+  'optional_parameter', // TS: (x?: Foo)
+  'formal_parameter', // Java/Kotlin
+  'parameter', // C#/Rust/Go/Python/Swift
+  'typed_parameter', // Python: def f(x: Foo) — distinct from 'parameter' in tree-sitter-python
+  'parameter_declaration', // C/C++ void f(Type name)
+  'simple_parameter', // PHP function(Foo $x)
   'property_promotion_parameter', // PHP 8.0+ constructor promotion: __construct(private Foo $x)
-  'closure_parameter',       // Rust: |user: User| — typed closure parameters
+  'closure_parameter', // Rust: |user: User| — typed closure parameters
 ]);
 
 /**
@@ -359,17 +418,24 @@ export const TYPED_PARAMETER_TYPES = new Set([
 export const extractGenericTypeArgs = (typeNode: SyntaxNode, depth = 0): string[] => {
   if (depth > 50) return [];
   // Unwrap wrapper nodes that may sit above the generic_type
-  if (typeNode.type === 'type_annotation' || typeNode.type === 'type'
-    || typeNode.type === 'user_type' || typeNode.type === 'nullable_type'
-    || typeNode.type === 'optional_type') {
+  if (
+    typeNode.type === 'type_annotation' ||
+    typeNode.type === 'type' ||
+    typeNode.type === 'user_type' ||
+    typeNode.type === 'nullable_type' ||
+    typeNode.type === 'optional_type'
+  ) {
     const inner = typeNode.firstNamedChild;
     if (inner) return extractGenericTypeArgs(inner, depth + 1);
     return [];
   }
 
   // Only process generic/parameterized type nodes (includes C#'s generic_name)
-  if (typeNode.type !== 'generic_type' && typeNode.type !== 'parameterized_type'
-    && typeNode.type !== 'generic_name') {
+  if (
+    typeNode.type !== 'generic_type' &&
+    typeNode.type !== 'parameterized_type' &&
+    typeNode.type !== 'generic_name'
+  ) {
     return [];
   }
 
@@ -473,9 +539,10 @@ export const stripNullable = (typeName: string): string | undefined => {
 
   // Strip union with null/undefined/None/nil/void
   if (text.includes('|')) {
-    const parts = text.split('|').map(p => p.trim()).filter(p =>
-      p !== '' && !NULLABLE_KEYWORDS.has(p)
-    );
+    const parts = text
+      .split('|')
+      .map((p) => p.trim())
+      .filter((p) => p !== '' && !NULLABLE_KEYWORDS.has(p));
     if (parts.length === 1) return parts[0];
     return undefined; // genuine union or all-nullable — refuse
   }
@@ -533,7 +600,10 @@ function extractFirstArg(args: string): string {
  * based on `pos` ('first' for keys, 'last' for values — default 'last').
  * Returns undefined when the extracted type is not a simple word.
  */
-export function extractElementTypeFromString(typeStr: string, pos: TypeArgPosition = 'last'): string | undefined {
+export function extractElementTypeFromString(
+  typeStr: string,
+  pos: TypeArgPosition = 'last',
+): string | undefined {
   if (!typeStr || typeStr.length === 0 || typeStr.length > 2048) return undefined;
 
   // 1. Array suffix: User[] → User
@@ -622,10 +692,35 @@ export function extractElementTypeFromString(typeStr: string, pos: TypeArgPositi
 
 /** Primitive / built-in types that should NOT produce a receiver binding. */
 const PRIMITIVE_TYPES = new Set([
-  'string', 'number', 'boolean', 'void', 'int', 'float', 'double', 'long',
-  'short', 'byte', 'char', 'bool', 'str', 'i8', 'i16', 'i32', 'i64',
-  'u8', 'u16', 'u32', 'u64', 'f32', 'f64', 'usize', 'isize',
-  'undefined', 'null', 'None', 'nil',
+  'string',
+  'number',
+  'boolean',
+  'void',
+  'int',
+  'float',
+  'double',
+  'long',
+  'short',
+  'byte',
+  'char',
+  'bool',
+  'str',
+  'i8',
+  'i16',
+  'i32',
+  'i64',
+  'u8',
+  'u16',
+  'u32',
+  'u64',
+  'f32',
+  'f64',
+  'usize',
+  'isize',
+  'undefined',
+  'null',
+  'None',
+  'nil',
 ]);
 
 /**
@@ -642,14 +737,28 @@ const PRIMITIVE_TYPES = new Set([
  * Returns undefined for complex types or primitives.
  */
 const WRAPPER_GENERICS = new Set([
-  'Promise', 'Observable', 'Future', 'CompletableFuture', 'Task', 'ValueTask',  // async wrappers
-  'Option', 'Some', 'Optional', 'Maybe',                                         // nullable wrappers
-  'Result', 'Either',                                                             // result wrappers
+  'Promise',
+  'Observable',
+  'Future',
+  'CompletableFuture',
+  'Task',
+  'ValueTask', // async wrappers
+  'Option',
+  'Some',
+  'Optional',
+  'Maybe', // nullable wrappers
+  'Result',
+  'Either', // result wrappers
   // Rust smart pointers (Deref to inner type)
-  'Rc', 'Arc', 'Weak',                                                          // pointer types
-  'MutexGuard', 'RwLockReadGuard', 'RwLockWriteGuard',                          // guard types
-  'Ref', 'RefMut',                                                               // RefCell guards
-  'Cow',                                                                         // copy-on-write
+  'Rc',
+  'Arc',
+  'Weak', // pointer types
+  'MutexGuard',
+  'RwLockReadGuard',
+  'RwLockWriteGuard', // guard types
+  'Ref',
+  'RefMut', // RefCell guards
+  'Cow', // copy-on-write
   // Containers (List, Array, Vec, Set, etc.) are intentionally excluded —
   // methods are called on the container, not the element type.
   // Non-wrapper generics return the base type (e.g., List) via the else branch.
@@ -709,9 +818,12 @@ export const extractReturnTypeName = (raw: string, depth = 0): string | undefine
 
   // Handle union types: "User | null" → "User"
   if (text.includes('|')) {
-    const parts = text.split('|').map(p => p.trim()).filter(p =>
-      p !== 'null' && p !== 'undefined' && p !== 'void' && p !== 'None' && p !== 'nil'
-    );
+    const parts = text
+      .split('|')
+      .map((p) => p.trim())
+      .filter(
+        (p) => p !== 'null' && p !== 'undefined' && p !== 'void' && p !== 'None' && p !== 'nil',
+      );
     if (parts.length === 1) text = parts[0];
     else return undefined; // genuine union — too complex
   }

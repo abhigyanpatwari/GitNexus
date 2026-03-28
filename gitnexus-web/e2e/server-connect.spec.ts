@@ -21,11 +21,17 @@ test.beforeAll(async () => {
       fetch(`${BACKEND_URL}/api/repos`),
       fetch(FRONTEND_URL),
     ]);
-    if (backendRes.status === 'rejected' || (backendRes.status === 'fulfilled' && !backendRes.value.ok)) {
+    if (
+      backendRes.status === 'rejected' ||
+      (backendRes.status === 'fulfilled' && !backendRes.value.ok)
+    ) {
       test.skip(true, 'gitnexus serve not available on :4747');
       return;
     }
-    if (frontendRes.status === 'rejected' || (frontendRes.status === 'fulfilled' && !frontendRes.value.ok)) {
+    if (
+      frontendRes.status === 'rejected' ||
+      (frontendRes.status === 'fulfilled' && !frontendRes.value.ok)
+    ) {
       test.skip(true, 'Vite dev server not available on :5173');
       return;
     }
@@ -85,7 +91,9 @@ test.describe('Processes Panel', () => {
     await page.getByRole('button', { name: 'Nexus AI' }).click();
     await page.getByText('Processes').click();
 
-    await expect(page.locator('[data-testid="process-list-loaded"]')).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('[data-testid="process-list-loaded"]')).toBeVisible({
+      timeout: 15_000,
+    });
     await page.screenshot({ path: testInfo.outputPath('processes-panel.png'), fullPage: true });
 
     const processRow = page.locator('[data-testid="process-row"]').first();
@@ -96,7 +104,10 @@ test.describe('Processes Panel', () => {
     await viewBtn.waitFor({ state: 'visible', timeout: 5_000 });
     await viewBtn.click();
     await expect(page.locator('[data-testid="process-modal"]')).toBeVisible({ timeout: 5_000 });
-    await page.screenshot({ path: testInfo.outputPath('process-view-clicked.png'), fullPage: true });
+    await page.screenshot({
+      path: testInfo.outputPath('process-view-clicked.png'),
+      fullPage: true,
+    });
   });
 
   test('lightbulb highlights nodes in graph', async ({ page }, testInfo) => {
@@ -104,7 +115,9 @@ test.describe('Processes Panel', () => {
 
     await page.getByRole('button', { name: 'Nexus AI' }).click();
     await page.getByText('Processes').click();
-    await expect(page.locator('[data-testid="process-list-loaded"]')).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('[data-testid="process-list-loaded"]')).toBeVisible({
+      timeout: 15_000,
+    });
 
     const processRow = page.locator('[data-testid="process-row"]').first();
     await expect(processRow).toBeVisible({ timeout: 10_000 });
@@ -129,10 +142,14 @@ test.describe('Turn Off All Highlights', () => {
     await fileItem.click();
 
     const highlightToggle = page.locator('[data-testid="ai-highlights-toggle"]');
-    await expect(highlightToggle).toHaveAttribute('title', 'Turn off all highlights', { timeout: 5_000 });
+    await expect(highlightToggle).toHaveAttribute('title', 'Turn off all highlights', {
+      timeout: 5_000,
+    });
 
     await highlightToggle.click();
-    await expect(highlightToggle).toHaveAttribute('title', 'Turn on AI highlights', { timeout: 5_000 });
+    await expect(highlightToggle).toHaveAttribute('title', 'Turn on AI highlights', {
+      timeout: 5_000,
+    });
     await page.screenshot({ path: testInfo.outputPath('highlights-cleared.png'), fullPage: true });
   });
 });

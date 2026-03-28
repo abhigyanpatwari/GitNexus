@@ -4,8 +4,14 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  FIXTURES, CROSS_FILE_FIXTURES, getRelationships, getNodesByLabel, getNodesByLabelFull, edgeSet,
-  runPipelineFromRepo, type PipelineResult,
+  FIXTURES,
+  CROSS_FILE_FIXTURES,
+  getRelationships,
+  getNodesByLabel,
+  getNodesByLabelFull,
+  edgeSet,
+  runPipelineFromRepo,
+  type PipelineResult,
 } from './helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -16,10 +22,7 @@ describe('PHP heritage & import resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-app'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-app'), () => {});
   }, 60000);
 
   // --- Node detection ---
@@ -81,17 +84,17 @@ describe('PHP heritage & import resolution', () => {
   // --- Method/function call edges ---
 
   it('emits CALLS edges from createUser', () => {
-    const calls = getRelationships(result, 'CALLS')
-      .filter(e => e.source === 'createUser');
-    const targets = calls.map(c => c.target).sort();
+    const calls = getRelationships(result, 'CALLS').filter((e) => e.source === 'createUser');
+    const targets = calls.map((c) => c.target).sort();
     expect(targets).toContain('save');
     expect(targets).toContain('touch');
     expect(targets).toContain('label');
   });
 
   it('emits CALLS edge: save → getId', () => {
-    const calls = getRelationships(result, 'CALLS')
-      .filter(e => e.source === 'save' && e.target === 'getId');
+    const calls = getRelationships(result, 'CALLS').filter(
+      (e) => e.source === 'save' && e.target === 'getId',
+    );
     expect(calls.length).toBe(1);
   });
 
@@ -119,7 +122,7 @@ describe('PHP heritage & import resolution', () => {
     expect(props).toContain('email');
     expect(props).toContain('users');
     // $status defined in both HasTimestamps and SoftDeletes traits
-    expect(props.filter(p => p === 'status').length).toBe(2);
+    expect(props.filter((p) => p === 'status').length).toBe(2);
   });
 
   // --- Property OVERRIDES exclusion ---
@@ -139,7 +142,7 @@ describe('PHP heritage & import resolution', () => {
   it('emits OVERRIDES edge for User overriding log (inherited from BaseModel)', () => {
     const overrides = getRelationships(result, 'OVERRIDES');
     expect(overrides.length).toBe(1);
-    const logOverride = overrides.find(e => e.source === 'User' && e.target === 'log');
+    const logOverride = overrides.find((e) => e.source === 'User' && e.target === 'log');
     expect(logOverride).toBeDefined();
   });
 
@@ -165,17 +168,14 @@ describe('PHP ambiguous symbol resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-ambiguous'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-ambiguous'), () => {});
   }, 60000);
 
   it('detects 2 Handler classes and 2 Dispatchable interfaces', () => {
     const classes = getNodesByLabel(result, 'Class');
-    expect(classes.filter(n => n === 'Handler').length).toBe(2);
+    expect(classes.filter((n) => n === 'Handler').length).toBe(2);
     const ifaces = getNodesByLabel(result, 'Interface');
-    expect(ifaces.filter(n => n === 'Dispatchable').length).toBe(2);
+    expect(ifaces.filter((n) => n === 'Dispatchable').length).toBe(2);
   });
 
   it('resolves EXTENDS to app/Models/Handler.php (not app/Other/)', () => {
@@ -202,7 +202,10 @@ describe('PHP ambiguous symbol resolution', () => {
   });
 
   it('all heritage edges point to real graph nodes', () => {
-    for (const edge of [...getRelationships(result, 'EXTENDS'), ...getRelationships(result, 'IMPLEMENTS')]) {
+    for (const edge of [
+      ...getRelationships(result, 'EXTENDS'),
+      ...getRelationships(result, 'IMPLEMENTS'),
+    ]) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
       expect(target!.properties.name).toBe(edge.target);
@@ -214,10 +217,7 @@ describe('PHP call resolution with arity filtering', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-calls'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-calls'), () => {});
   }, 60000);
 
   it('resolves create_user → write_audit to app/Utils/OneArg/log.php via arity narrowing', () => {
@@ -238,15 +238,12 @@ describe('PHP member-call resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-member-calls'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-member-calls'), () => {});
   }, 60000);
 
   it('resolves processUser → save as a member call on User', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save');
+    const saveCall = calls.find((c) => c.target === 'save');
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('processUser');
     expect(saveCall!.targetFilePath).toBe('app/Models/User.php');
@@ -259,7 +256,7 @@ describe('PHP member-call resolution', () => {
 
   it('emits HAS_METHOD edge from User to save', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const edge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
+    const edge = hasMethod.find((e) => e.source === 'User' && e.target === 'save');
     expect(edge).toBeDefined();
   });
 });
@@ -272,15 +269,12 @@ describe('PHP constructor-call resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-constructor-calls'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-constructor-calls'), () => {});
   }, 60000);
 
   it('resolves new User() as a CALLS edge to the User class', () => {
     const calls = getRelationships(result, 'CALLS');
-    const ctorCall = calls.find(c => c.target === 'User');
+    const ctorCall = calls.find((c) => c.target === 'User');
     expect(ctorCall).toBeDefined();
     expect(ctorCall!.source).toBe('processUser');
     expect(ctorCall!.targetLabel).toBe('Class');
@@ -290,7 +284,7 @@ describe('PHP constructor-call resolution', () => {
 
   it('also resolves $user->save() as a member call', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save');
+    const saveCall = calls.find((c) => c.target === 'save');
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('processUser');
   });
@@ -310,26 +304,23 @@ describe('PHP receiver-constrained resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-receiver-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-receiver-resolution'), () => {});
   }, 60000);
 
   it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves $user->save() to User.save and $repo->save() to Repo.save via receiver typing', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save');
+    const saveCalls = calls.filter((c) => c.target === 'save');
     expect(saveCalls.length).toBe(2);
 
-    const userSave = saveCalls.find(c => c.targetFilePath === 'app/Models/User.php');
-    const repoSave = saveCalls.find(c => c.targetFilePath === 'app/Models/Repo.php');
+    const userSave = saveCalls.find((c) => c.targetFilePath === 'app/Models/User.php');
+    const repoSave = saveCalls.find((c) => c.targetFilePath === 'app/Models/Repo.php');
 
     expect(userSave).toBeDefined();
     expect(repoSave).toBeDefined();
@@ -346,10 +337,7 @@ describe('PHP alias import resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-alias-imports'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-alias-imports'), () => {});
   }, 60000);
 
   it('detects Main, Repo, and User classes with save and persist methods', () => {
@@ -360,8 +348,8 @@ describe('PHP alias import resolution', () => {
 
   it('resolves $u->save() to User.php and $r->persist() to Repo.php via alias', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save');
-    const persistCall = calls.find(c => c.target === 'persist');
+    const saveCall = calls.find((c) => c.target === 'save');
+    const persistCall = calls.find((c) => c.target === 'persist');
 
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('run');
@@ -377,10 +365,7 @@ describe('PHP alias import resolution', () => {
   it('emits exactly 2 IMPORTS edges via alias resolution', () => {
     const imports = getRelationships(result, 'IMPORTS');
     expect(imports.length).toBe(2);
-    expect(edgeSet(imports)).toEqual([
-      'Main.php → Repo.php',
-      'Main.php → User.php',
-    ]);
+    expect(edgeSet(imports)).toEqual(['Main.php → Repo.php', 'Main.php → User.php']);
   });
 });
 
@@ -392,10 +377,7 @@ describe('PHP grouped import with alias', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-grouped-imports'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-grouped-imports'), () => {});
   }, 60000);
 
   it('detects Main, Repo, and User classes', () => {
@@ -404,7 +386,7 @@ describe('PHP grouped import with alias', () => {
 
   it('resolves $r->persist() to Repo.php via grouped alias', () => {
     const calls = getRelationships(result, 'CALLS');
-    const persistCall = calls.find(c => c.target === 'persist');
+    const persistCall = calls.find((c) => c.target === 'persist');
 
     expect(persistCall).toBeDefined();
     expect(persistCall!.source).toBe('run');
@@ -413,7 +395,7 @@ describe('PHP grouped import with alias', () => {
 
   it('resolves $u->save() to User.php via grouped import', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save');
+    const saveCall = calls.find((c) => c.target === 'save');
 
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('run');
@@ -423,8 +405,8 @@ describe('PHP grouped import with alias', () => {
   it('resolves non-aliased User via NamedImportMap (not just the aliased Repo)', () => {
     // Both User (non-aliased) and R→Repo (aliased) should resolve through grouped import
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save' && c.source === 'run');
-    const persistCall = calls.find(c => c.target === 'persist' && c.source === 'run');
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'run');
+    const persistCall = calls.find((c) => c.target === 'persist' && c.source === 'run');
     expect(saveCall).toBeDefined();
     expect(persistCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('app/Models/User.php');
@@ -440,15 +422,12 @@ describe('PHP variadic call resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-variadic-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-variadic-resolution'), () => {});
   }, 60000);
 
   it('resolves run → Logger.record despite extra args (variadic)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const recordCall = calls.find(c => c.target === 'record');
+    const recordCall = calls.find((c) => c.target === 'record');
     expect(recordCall).toBeDefined();
     expect(recordCall!.source).toBe('run');
     expect(recordCall!.targetFilePath).toBe('app/Utils/Logger.php');
@@ -468,22 +447,21 @@ describe('PHP local definition shadows import', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-local-shadow'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-local-shadow'), () => {});
   }, 60000);
 
   it('resolves run → save to same-file definition, not the imported one', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save' && c.source === 'run');
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'run');
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('app/Services/Main.php');
   });
 
   it('does NOT resolve save to Logger.php', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveToUtils = calls.find(c => c.target === 'save' && c.targetFilePath === 'app/Utils/Logger.php');
+    const saveToUtils = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'app/Utils/Logger.php',
+    );
     expect(saveToUtils).toBeUndefined();
   });
 });
@@ -506,27 +484,31 @@ describe('PHP constructor-inferred type resolution', () => {
   it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves $user->save() to app/Models/User.php via constructor-inferred type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'app/Models/User.php');
+    const userSave = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'app/Models/User.php',
+    );
     expect(userSave).toBeDefined();
     expect(userSave!.source).toBe('processEntities');
   });
 
   it('resolves $repo->save() to app/Models/Repo.php via constructor-inferred type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'app/Models/Repo.php');
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'app/Models/Repo.php',
+    );
     expect(repoSave).toBeDefined();
     expect(repoSave!.source).toBe('processEntities');
   });
 
   it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save');
+    const saveCalls = calls.filter((c) => c.target === 'save');
     expect(saveCalls.length).toBe(2);
   });
 });
@@ -539,21 +521,18 @@ describe('PHP $this resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-self-this-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-self-this-resolution'), () => {});
   }, 60000);
 
   it('detects User and Repo classes, each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves $this->save() inside User.process to User.save, not Repo.save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process');
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'process');
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('app/Models/User.php');
   });
@@ -567,10 +546,7 @@ describe('PHP parent class resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-parent-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-parent-resolution'), () => {});
   }, 60000);
 
   it('detects BaseModel and User classes plus Serializable interface', () => {
@@ -593,7 +569,10 @@ describe('PHP parent class resolution', () => {
   });
 
   it('all heritage edges point to real graph nodes', () => {
-    for (const edge of [...getRelationships(result, 'EXTENDS'), ...getRelationships(result, 'IMPLEMENTS')]) {
+    for (const edge of [
+      ...getRelationships(result, 'EXTENDS'),
+      ...getRelationships(result, 'IMPLEMENTS'),
+    ]) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
       expect(target!.properties.name).toBe(edge.target);
@@ -609,10 +588,7 @@ describe('PHP parent:: resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-super-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-super-resolution'), () => {});
   }, 60000);
 
   it('detects BaseModel, User, and Repo classes', () => {
@@ -621,10 +597,16 @@ describe('PHP parent:: resolution', () => {
 
   it('resolves parent::save() inside User to BaseModel.save, not Repo.save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const parentSave = calls.find(c => c.source === 'save' && c.target === 'save'
-      && c.targetFilePath === 'app/Models/BaseModel.php');
+    const parentSave = calls.find(
+      (c) =>
+        c.source === 'save' &&
+        c.target === 'save' &&
+        c.targetFilePath === 'app/Models/BaseModel.php',
+    );
     expect(parentSave).toBeDefined();
-    const repoSave = calls.find(c => c.target === 'save' && c.targetFilePath === 'app/Models/Repo.php');
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath === 'app/Models/Repo.php',
+    );
     expect(repoSave).toBeUndefined();
   });
 });
@@ -637,10 +619,7 @@ describe('PHP constructor property promotion resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-property-promotion'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-property-promotion'), () => {});
   }, 60000);
 
   it('detects UserRepo and UserService classes', () => {
@@ -650,7 +629,7 @@ describe('PHP constructor property promotion resolution', () => {
 
   it('resolves $repo->save() inside constructor via promoted parameter type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save' && c.source === '__construct');
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === '__construct');
     expect(saveCall).toBeDefined();
   });
 
@@ -668,10 +647,7 @@ describe('PHP typed class property resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-typed-properties'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-typed-properties'), () => {});
   }, 60000);
 
   it('detects UserRepo and UserService classes', () => {
@@ -690,7 +666,7 @@ describe('PHP typed class property resolution', () => {
 
   it('resolves $repo->save() to UserRepo.php via parameter type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c => c.target === 'save' && c.source === 'process');
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'process');
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('app/Models/UserRepo.php');
   });
@@ -707,10 +683,7 @@ describe('PHP return type inference via member call', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-return-type'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-return-type'), () => {});
   }, 60000);
 
   it('detects User, UserService, and Repo classes', () => {
@@ -729,13 +702,15 @@ describe('PHP return type inference via member call', () => {
 
   it('resolves $user->save() to User#save (not Repo#save) via return type of getUser(): User', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('User.php'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('User.php'),
     );
     expect(saveCall).toBeDefined();
     // Must NOT resolve to Repo.save — that would mean disambiguation failed
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('Repo.php'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('Repo.php'),
     );
     expect(repoSave).toBeUndefined();
   });
@@ -749,10 +724,7 @@ describe('PHP return type inference via PHPDoc @return annotation', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-phpdoc-return-type'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-phpdoc-return-type'), () => {});
   }, 60000);
 
   it('detects User and Repo classes with save methods', () => {
@@ -762,32 +734,40 @@ describe('PHP return type inference via PHPDoc @return annotation', () => {
 
   it('resolves $user->save() to User#save via PHPDoc @return User', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('Models.php'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processUser' &&
+        c.targetFilePath.includes('Models.php'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves $repo->save() to Repo#save via PHPDoc @return Repo', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processRepo' && c.targetFilePath.includes('Models.php'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processRepo' &&
+        c.targetFilePath.includes('Models.php'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves $user->save() via PHPDoc @param User $user in handleUser()', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'handleUser' && c.targetFilePath.includes('Models.php'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'handleUser' && c.targetFilePath.includes('Models.php'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves $repo->save() via PHPDoc @param Repo $repo in handleRepo()', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'handleRepo' && c.targetFilePath.includes('Models.php'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'handleRepo' && c.targetFilePath.includes('Models.php'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -814,32 +794,40 @@ describe('PHP PHPDoc @return with attributes between comment and method', () => 
 
   it('resolves $user->save() to User#save despite #[Route] attribute between PHPDoc and method', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('Models.php'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processUser' &&
+        c.targetFilePath.includes('Models.php'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves $repo->save() to Repo#save despite #[Route] attribute between PHPDoc and method', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processRepo' && c.targetFilePath.includes('Models.php'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processRepo' &&
+        c.targetFilePath.includes('Models.php'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves $user->save() via PHPDoc @param despite #[Validate] attribute', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'handleUser' && c.targetFilePath.includes('Models.php'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'handleUser' && c.targetFilePath.includes('Models.php'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves $repo->save() via PHPDoc @param despite #[Validate] attribute', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'handleRepo' && c.targetFilePath.includes('Models.php'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'handleRepo' && c.targetFilePath.includes('Models.php'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -862,22 +850,28 @@ describe('PHP $this->method() receiver disambiguation', () => {
   it('detects UserService and AdminService classes, both with getUser methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('UserService');
     expect(getNodesByLabel(result, 'Class')).toContain('AdminService');
-    const getUserMethods = getNodesByLabel(result, 'Method').filter(m => m === 'getUser');
+    const getUserMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'getUser');
     expect(getUserMethods.length).toBe(2);
   });
 
   it('resolves $user->save() in UserService to User#save via $this->getUser() disambiguation', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('Models.php'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processUser' &&
+        c.targetFilePath.includes('Models.php'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves $repo->save() in AdminService to Repo#save via $this->getUser() disambiguation', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processAdmin' && c.targetFilePath.includes('Models.php'),
+    const saveCall = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processAdmin' &&
+        c.targetFilePath.includes('Models.php'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -891,10 +885,7 @@ describe('PHP nullable receiver resolution (?Type hint)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-nullable-receiver'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-nullable-receiver'), () => {});
   }, 60000);
 
   it('detects User and Repo classes with competing save methods', () => {
@@ -906,25 +897,25 @@ describe('PHP nullable receiver resolution (?Type hint)', () => {
 
   it('resolves $user->save() to User#save via nullable param type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User.php'),
+    const userSave = calls.find(
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User.php'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves $repo->save() to Repo#save via nullable param type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('Repo.php'),
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('Repo.php'),
     );
     expect(repoSave).toBeDefined();
   });
 
   it('does NOT cross-contaminate (exactly 1 save per receiver file)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(c => c.target === 'save' && c.source === 'process');
-    const userTargeted = saveCalls.filter(c => c.targetFilePath.includes('User.php'));
-    const repoTargeted = saveCalls.filter(c => c.targetFilePath.includes('Repo.php'));
+    const saveCalls = calls.filter((c) => c.target === 'save' && c.source === 'process');
+    const userTargeted = saveCalls.filter((c) => c.targetFilePath.includes('User.php'));
+    const repoTargeted = saveCalls.filter((c) => c.targetFilePath.includes('Repo.php'));
     expect(userTargeted.length).toBe(1);
     expect(repoTargeted.length).toBe(1);
   });
@@ -938,31 +929,28 @@ describe('PHP assignment chain propagation', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-assignment-chain'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-assignment-chain'), () => {});
   }, 60000);
 
   it('detects User and Repo classes each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves alias->save() to User#save via assignment chain', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User.php'),
+    const userSave = calls.find(
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User.php'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves rAlias->save() to Repo#save via assignment chain', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('Repo.php'),
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('Repo.php'),
     );
     expect(repoSave).toBeDefined();
   });
@@ -970,19 +958,19 @@ describe('PHP assignment chain propagation', () => {
   it('alias->save() does NOT resolve to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
     // There should be exactly one save() call targeting User.php from process
-    const userSaves = calls.filter(c =>
-      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User.php'),
+    const userSaves = calls.filter(
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User.php'),
     );
     expect(userSaves.length).toBe(1);
   });
 
   it('each alias resolves to its own class, not the other', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User.php'),
+    const userSave = calls.find(
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User.php'),
     );
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('Repo.php'),
+    const repoSave = calls.find(
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('Repo.php'),
     );
     expect(userSave).toBeDefined();
     expect(repoSave).toBeDefined();
@@ -998,10 +986,7 @@ describe('PHP foreach loop resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-foreach-loop'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-foreach-loop'), () => {});
   }, 60000);
 
   it('detects User class with save method', () => {
@@ -1010,16 +995,18 @@ describe('PHP foreach loop resolution', () => {
 
   it('resolves $user->save() in foreach to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('User'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('User'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('does NOT resolve $user->save() to Repo#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('Repo'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('Repo'),
     );
     expect(wrongSave).toBeUndefined();
   });
@@ -1034,40 +1021,41 @@ describe('PHP foreach with PHPDoc generic Collection<User>', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-foreach-generic'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-foreach-generic'), () => {});
   }, 60000);
 
   it('detects User and Repo classes with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter(m => m === 'save');
+    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
   it('resolves $user->save() in foreach with Collection<User> PHPDoc to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processCollection' && c.targetFilePath?.includes('User'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processCollection' &&
+        c.targetFilePath?.includes('User'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('does NOT resolve Collection<User> foreach to Repo#save (false binding regression)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processCollection' && c.targetFilePath?.includes('Repo'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' &&
+        c.source === 'processCollection' &&
+        c.targetFilePath?.includes('Repo'),
     );
     expect(wrongSave).toBeUndefined();
   });
 
   it('User[] array-style PHPDoc still resolves correctly (regression check)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const arraySave = calls.find(c =>
-      c.target === 'save' && c.source === 'processArray',
-    );
+    const arraySave = calls.find((c) => c.target === 'save' && c.source === 'processArray');
     expect(arraySave).toBeDefined();
   });
 });
@@ -1081,10 +1069,7 @@ describe('PHP foreach with $this->property member access', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-foreach-member-access'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-foreach-member-access'), () => {});
   }, 60000);
 
   it('detects User class with save method', () => {
@@ -1094,16 +1079,18 @@ describe('PHP foreach with $this->property member access', () => {
 
   it('resolves $user->save() in foreach($this->users) to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processMembers' && c.targetFilePath?.includes('User'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processMembers' && c.targetFilePath?.includes('User'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('does NOT resolve $this->users foreach to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processMembers' && c.targetFilePath?.includes('Repo'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processMembers' && c.targetFilePath?.includes('Repo'),
     );
     expect(wrongSave).toBeUndefined();
   });
@@ -1118,10 +1105,7 @@ describe('PHP foreach call_expression iterable resolution (Phase 7.3)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-foreach-call-expr'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-foreach-call-expr'), () => {});
   }, 60000);
 
   it('detects User and Repo classes with competing save methods', () => {
@@ -1131,32 +1115,36 @@ describe('PHP foreach call_expression iterable resolution (Phase 7.3)', () => {
 
   it('resolves $user->save() in foreach over getUsers() to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('User'),
+    const userSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('User'),
     );
     expect(userSave).toBeDefined();
   });
 
   it('resolves $repo->save() in foreach over getRepos() to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('Repo'),
+    const repoSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('Repo'),
     );
     expect(repoSave).toBeDefined();
   });
 
   it('does NOT resolve $user->save() to Repo#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('Repo'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('Repo'),
     );
     expect(wrongSave).toBeUndefined();
   });
 
   it('does NOT resolve $repo->save() to User#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const wrongSave = calls.find(c =>
-      c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('User'),
+    const wrongSave = calls.find(
+      (c) =>
+        c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('User'),
     );
     expect(wrongSave).toBeUndefined();
   });
@@ -1170,10 +1158,7 @@ describe('Field type resolution (PHP)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-field-types'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-field-types'), () => {});
   }, 60000);
 
   it('detects classes: Address, Service, User', () => {
@@ -1194,9 +1179,9 @@ describe('Field type resolution (PHP)', () => {
 
   it('resolves $user->address->save() → Address#save via field type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(e => e.target === 'save');
+    const saveCalls = calls.filter((e) => e.target === 'save');
     const addressSave = saveCalls.find(
-      e => e.source === 'processUser' && e.targetFilePath.includes('Models'),
+      (e) => e.source === 'processUser' && e.targetFilePath.includes('Models'),
     );
     expect(addressSave).toBeDefined();
   });
@@ -1204,13 +1189,13 @@ describe('Field type resolution (PHP)', () => {
   it('populates field metadata (visibility, declaredType) on Property nodes', () => {
     const properties = getNodesByLabelFull(result, 'Property');
 
-    const city = properties.find(p => p.name === 'city');
+    const city = properties.find((p) => p.name === 'city');
     expect(city).toBeDefined();
     expect(city!.properties.visibility).toBe('public');
     expect(city!.properties.isStatic).toBe(false);
     expect(city!.properties.declaredType).toBe('string');
 
-    const addr = properties.find(p => p.name === 'address');
+    const addr = properties.find((p) => p.name === 'address');
     expect(addr).toBeDefined();
     expect(addr!.properties.visibility).toBe('public');
     expect(addr!.properties.declaredType).toBe('Address');
@@ -1225,10 +1210,7 @@ describe('Deep field chain resolution (PHP)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-deep-field-chain'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-deep-field-chain'), () => {});
   }, 60000);
 
   it('detects classes: Address, City, Service, User', () => {
@@ -1254,15 +1236,15 @@ describe('Deep field chain resolution (PHP)', () => {
 
   it('resolves 2-level chain: $user->address->save() → Address#save', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(e => e.target === 'save' && e.source === 'processUser');
-    const addressSave = saveCalls.find(e => e.targetFilePath.includes('Models'));
+    const saveCalls = calls.filter((e) => e.target === 'save' && e.source === 'processUser');
+    const addressSave = saveCalls.find((e) => e.targetFilePath.includes('Models'));
     expect(addressSave).toBeDefined();
   });
 
   it('resolves 3-level chain: $user->address->city->getName() → City#getName', () => {
     const calls = getRelationships(result, 'CALLS');
-    const getNameCalls = calls.filter(e => e.target === 'getName' && e.source === 'processUser');
-    const cityGetName = getNameCalls.find(e => e.targetFilePath.includes('Models'));
+    const getNameCalls = calls.filter((e) => e.target === 'getName' && e.source === 'processUser');
+    const cityGetName = getNameCalls.find((e) => e.targetFilePath.includes('Models'));
     expect(cityGetName).toBeDefined();
   });
 });
@@ -1299,9 +1281,9 @@ describe('PHP constructor promotion property capture', () => {
 
   it('resolves $user->address->save() → Address#save via promoted field type', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCalls = calls.filter(e => e.target === 'save');
+    const saveCalls = calls.filter((e) => e.target === 'save');
     const addressSave = saveCalls.find(
-      e => e.source === 'processUser' && e.targetFilePath.includes('Models'),
+      (e) => e.source === 'processUser' && e.targetFilePath.includes('Models'),
     );
     expect(addressSave).toBeDefined();
   });
@@ -1315,15 +1297,12 @@ describe('PHP default parameter arity resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-default-params'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-default-params'), () => {});
   }, 60000);
 
   it('resolves greet("Alice") with 1 arg to greet with 2 params (1 default)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const greetCalls = calls.filter(c => c.source === 'process' && c.target === 'greet');
+    const greetCalls = calls.filter((c) => c.source === 'process' && c.target === 'greet');
     expect(greetCalls.length).toBe(1);
   });
 });
@@ -1335,19 +1314,16 @@ describe('Write access tracking (PHP)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-write-access'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-write-access'), () => {});
   }, 60000);
 
   it('emits ACCESSES write edges for field assignments', () => {
     const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter(e => e.rel.reason === 'write');
+    const writes = accesses.filter((e) => e.rel.reason === 'write');
     expect(writes.length).toBe(3);
-    const nameWrite = writes.find(e => e.target === 'name');
-    const addressWrite = writes.find(e => e.target === 'address');
-    const countWrite = writes.find(e => e.target === 'count');
+    const nameWrite = writes.find((e) => e.target === 'name');
+    const addressWrite = writes.find((e) => e.target === 'address');
+    const countWrite = writes.find((e) => e.target === 'count');
     expect(nameWrite).toBeDefined();
     expect(nameWrite!.source).toBe('updateUser');
     expect(addressWrite).toBeDefined();
@@ -1358,15 +1334,15 @@ describe('Write access tracking (PHP)', () => {
 
   it('emits ACCESSES write edge for static property assignment', () => {
     const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter(e => e.rel.reason === 'write');
-    const countWrite = writes.find(e => e.target === 'count');
+    const writes = accesses.filter((e) => e.rel.reason === 'write');
+    const countWrite = writes.find((e) => e.target === 'count');
     expect(countWrite).toBeDefined();
     expect(countWrite!.source).toBe('updateUser');
   });
 
   it('write ACCESSES edges have confidence 1.0', () => {
     const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter(e => e.rel.reason === 'write');
+    const writes = accesses.filter((e) => e.rel.reason === 'write');
     for (const edge of writes) {
       expect(edge.rel.confidence).toBe(1.0);
     }
@@ -1381,16 +1357,13 @@ describe('PHP call-result variable binding (Tier 2b)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-call-result-binding'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-call-result-binding'), () => {});
   }, 60000);
 
   it('resolves $user->save() to User#save via call-result binding', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('App')
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('App'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -1404,16 +1377,13 @@ describe('PHP method chain binding via unified fixpoint (Phase 9C)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-method-chain-binding'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-method-chain-binding'), () => {});
   }, 60000);
 
   it('resolves $city->save() to City#save via method chain', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'processChain' && c.targetFilePath.includes('App')
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'processChain' && c.targetFilePath.includes('App'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -1428,10 +1398,7 @@ describe('PHP grandparent method resolution via MRO (Phase B)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-grandparent-resolution'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-grandparent-resolution'), () => {});
   }, 60000);
 
   it('detects A, B, C, Greeting classes', () => {
@@ -1450,17 +1417,15 @@ describe('PHP grandparent method resolution via MRO (Phase B)', () => {
 
   it('resolves $c->greet()->save() to Greeting#save via depth-2 MRO lookup', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.targetFilePath.includes('Greeting'),
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.targetFilePath.includes('Greeting'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves $c->greet() to A#greet (method found via MRO walk)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const greetCall = calls.find(c =>
-      c.target === 'greet' && c.targetFilePath.includes('A.php'),
-    );
+    const greetCall = calls.find((c) => c.target === 'greet' && c.targetFilePath.includes('A.php'));
     expect(greetCall).toBeDefined();
   });
 });
@@ -1476,10 +1441,7 @@ describe('PHP cross-file binding propagation', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(CROSS_FILE_FIXTURES, 'php-cross-file'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(CROSS_FILE_FIXTURES, 'php-cross-file'), () => {});
   }, 60000);
 
   it('detects User class with save and getName methods', () => {
@@ -1496,36 +1458,32 @@ describe('PHP cross-file binding propagation', () => {
 
   it('emits IMPORTS edge from Main.php to UserFactory.php', () => {
     const imports = getRelationships(result, 'IMPORTS');
-    const edge = imports.find(e =>
-      e.sourceFilePath.includes('Main') && e.targetFilePath.includes('UserFactory'),
+    const edge = imports.find(
+      (e) => e.sourceFilePath.includes('Main') && e.targetFilePath.includes('UserFactory'),
     );
     expect(edge).toBeDefined();
   });
 
   it('resolves $u->save() in run() to User#save via cross-file return type propagation', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' &&
-      c.source === 'run' &&
-      c.targetFilePath.includes('User.php'),
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'run' && c.targetFilePath.includes('User.php'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves $u->getName() in run() to User#getName via cross-file return type propagation', () => {
     const calls = getRelationships(result, 'CALLS');
-    const getNameCall = calls.find(c =>
-      c.target === 'getName' &&
-      c.source === 'run' &&
-      c.targetFilePath.includes('User.php'),
+    const getNameCall = calls.find(
+      (c) => c.target === 'getName' && c.source === 'run' && c.targetFilePath.includes('User.php'),
     );
     expect(getNameCall).toBeDefined();
   });
 
   it('emits HAS_METHOD edges linking save and getName to User', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const saveEdge = hasMethod.find(e => e.source === 'User' && e.target === 'save');
-    const getNameEdge = hasMethod.find(e => e.source === 'User' && e.target === 'getName');
+    const saveEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'save');
+    const getNameEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'getName');
     expect(saveEdge).toBeDefined();
     expect(getNameEdge).toBeDefined();
   });
@@ -1541,10 +1499,7 @@ describe('PHP use function / use const filtering', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'php-use-function-const'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-use-function-const'), () => {});
   }, 60000);
 
   it('detects User class with save and getName methods', () => {
@@ -1566,16 +1521,16 @@ describe('PHP use function / use const filtering', () => {
 
   it('emits IMPORTS edge from Calculator.php to User.php (class import)', () => {
     const imports = getRelationships(result, 'IMPORTS');
-    const edge = imports.find(e =>
-      e.sourceFilePath.includes('Calculator') && e.targetFilePath.includes('User'),
+    const edge = imports.find(
+      (e) => e.sourceFilePath.includes('Calculator') && e.targetFilePath.includes('User'),
     );
     expect(edge).toBeDefined();
   });
 
   it('resolves $user->save() to User#save via class import binding', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(c =>
-      c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User'),
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User'),
     );
     expect(saveCall).toBeDefined();
   });

@@ -18,28 +18,29 @@ interface ModuleTreeNode {
 /**
  * Generate the wiki HTML viewer (index.html) from existing markdown pages.
  */
-export async function generateHTMLViewer(
-  wikiDir: string,
-  projectName: string,
-): Promise<string> {
+export async function generateHTMLViewer(wikiDir: string, projectName: string): Promise<string> {
   // Load module tree
   let moduleTree: ModuleTreeNode[] = [];
   try {
     const raw = await fs.readFile(path.join(wikiDir, 'module_tree.json'), 'utf-8');
     moduleTree = JSON.parse(raw);
-  } catch { /* will show empty nav */ }
+  } catch {
+    /* will show empty nav */
+  }
 
   // Load meta
   let meta: Record<string, unknown> | null = null;
   try {
     const raw = await fs.readFile(path.join(wikiDir, 'meta.json'), 'utf-8');
     meta = JSON.parse(raw);
-  } catch { /* no meta */ }
+  } catch {
+    /* no meta */
+  }
 
   // Read all markdown files into a { slug: content } map
   const pages: Record<string, string> = {};
   const dirEntries = await fs.readdir(wikiDir);
-  for (const f of dirEntries.filter(f => f.endsWith('.md'))) {
+  for (const f of dirEntries.filter((f) => f.endsWith('.md'))) {
     const content = await fs.readFile(path.join(wikiDir, f), 'utf-8');
     pages[f.replace(/\.md$/, '')] = content;
   }
@@ -81,7 +82,9 @@ function buildHTML(
   parts.push('<meta name="viewport" content="width=device-width, initial-scale=1.0">');
   parts.push('<title>' + esc(projectName) + ' — Wiki</title>');
   parts.push('<script src="https://cdn.jsdelivr.net/npm/marked@11.0.0/marked.min.js"><\/script>');
-  parts.push('<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"><\/script>');
+  parts.push(
+    '<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"><\/script>',
+  );
   parts.push('<style>');
   parts.push(CSS);
   parts.push('</style>');
@@ -89,7 +92,9 @@ function buildHTML(
 
   // ── Body ──
   parts.push('<body>');
-  parts.push('<button class="menu-toggle" id="menu-toggle" aria-label="Toggle menu">&#9776;</button>');
+  parts.push(
+    '<button class="menu-toggle" id="menu-toggle" aria-label="Toggle menu">&#9776;</button>',
+  );
   parts.push('<div class="layout">');
 
   // Sidebar

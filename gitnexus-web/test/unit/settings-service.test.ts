@@ -19,10 +19,13 @@ describe('loadSettings', () => {
   });
 
   it('merges stored values with defaults', () => {
-    sessionStorage.setItem('gitnexus-llm-settings', JSON.stringify({
-      activeProvider: 'ollama',
-      ollama: { model: 'qwen3-coder:30b' },
-    }));
+    sessionStorage.setItem(
+      'gitnexus-llm-settings',
+      JSON.stringify({
+        activeProvider: 'ollama',
+        ollama: { model: 'qwen3-coder:30b' },
+      }),
+    );
 
     const settings = loadSettings();
     expect(settings.activeProvider).toBe('ollama');
@@ -38,10 +41,13 @@ describe('loadSettings', () => {
   });
 
   it('migrates legacy localStorage to sessionStorage', () => {
-    localStorage.setItem('gitnexus-llm-settings', JSON.stringify({
-      activeProvider: 'ollama',
-      ollama: { model: 'migrated-model' },
-    }));
+    localStorage.setItem(
+      'gitnexus-llm-settings',
+      JSON.stringify({
+        activeProvider: 'ollama',
+        ollama: { model: 'migrated-model' },
+      }),
+    );
 
     const settings = loadSettings();
     expect(settings.ollama.model).toBe('migrated-model');
@@ -111,7 +117,11 @@ describe('getActiveProviderConfig', () => {
 describe('isProviderConfigured', () => {
   it('returns false when provider requires API key and none is set', () => {
     // Manually build a clean openai config with no API key
-    saveSettings({ ...loadSettings(), activeProvider: 'openai', openai: { apiKey: '', model: 'gpt-4o', temperature: 0.1 } });
+    saveSettings({
+      ...loadSettings(),
+      activeProvider: 'openai',
+      openai: { apiKey: '', model: 'gpt-4o', temperature: 0.1 },
+    });
     expect(isProviderConfigured()).toBe(false);
   });
 

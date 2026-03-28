@@ -1,9 +1,9 @@
 /**
  * Cursor CLI Client for Wiki Generation
- * 
+ *
  * Wrapper for the Cursor headless CLI (`agent` command).
  * Uses print mode for non-interactive LLM calls.
- * 
+ *
  * Docs: https://cursor.com/docs/cli/headless
  */
 
@@ -56,7 +56,7 @@ export function resolveCursorConfig(overrides?: Partial<CursorConfig>): CursorCo
 
 /**
  * Call the Cursor CLI in print mode.
- * 
+ *
  * Uses `agent -p --output-format text` for clean non-streaming output.
  * The prompt is passed as the final CLI argument.
  */
@@ -69,21 +69,16 @@ export async function callCursorLLM(
   const cursorBin = detectCursorCLI();
   if (!cursorBin) {
     throw new Error(
-      'Cursor CLI not found. Install it from https://cursor.com/docs/cli/installation'
+      'Cursor CLI not found. Install it from https://cursor.com/docs/cli/installation',
     );
   }
 
   // Always use text format to get clean output without agent narration/thinking.
   // stream-json captures assistant messages which include "Let me explore..." narration
   // that pollutes the actual content when using thinking models.
-  const fullPrompt = systemPrompt 
-    ? `${systemPrompt}\n\n---\n\n${prompt}`
-    : prompt;
+  const fullPrompt = systemPrompt ? `${systemPrompt}\n\n---\n\n${prompt}` : prompt;
 
-  const args = [
-    '-p',
-    '--output-format', 'text',
-  ];
+  const args = ['-p', '--output-format', 'text'];
 
   if (config.model) {
     args.push('--model', config.model);
@@ -92,7 +87,14 @@ export async function callCursorLLM(
   // Add the prompt as the final argument
   args.push(fullPrompt);
 
-  verboseLog('Spawning:', cursorBin, args.slice(0, -1).join(' '), '[prompt length:', fullPrompt.length, 'chars]');
+  verboseLog(
+    'Spawning:',
+    cursorBin,
+    args.slice(0, -1).join(' '),
+    '[prompt length:',
+    fullPrompt.length,
+    'chars]',
+  );
   verboseLog('Working directory:', config.workingDirectory || process.cwd());
   if (config.model) {
     verboseLog('Model:', config.model);
@@ -123,7 +125,7 @@ export async function callCursorLLM(
       const chunkStr = chunk.toString();
       stdout += chunkStr;
       verboseLog(`[stdout] received ${chunkStr.length} chars, total: ${stdout.length}`);
-      
+
       // Report progress if callback provided
       if (options?.onChunk) {
         options.onChunk(stdout.length);
@@ -134,7 +136,7 @@ export async function callCursorLLM(
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       verboseLog(`Process exited with code ${code} after ${elapsed}s`);
       verboseLog(`stdout length: ${stdout.length} chars`);
-      
+
       if (code !== 0) {
         verboseLog('stderr:', stderr);
         reject(new Error(`Cursor CLI exited with code ${code}: ${stderr}`));

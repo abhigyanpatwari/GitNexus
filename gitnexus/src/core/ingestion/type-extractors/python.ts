@@ -1,6 +1,24 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, PendingAssignmentExtractor, PatternBindingExtractor, ForLoopExtractor } from './types.js';
-import { extractSimpleTypeName, extractVarName, extractElementTypeFromString, extractGenericTypeArgs, resolveIterableElementType, methodToTypeArgPosition, type TypeArgPosition } from './shared.js';
+import type {
+  LanguageTypeConfig,
+  ParameterExtractor,
+  TypeBindingExtractor,
+  InitializerExtractor,
+  ClassNameLookup,
+  ConstructorBindingScanner,
+  PendingAssignmentExtractor,
+  PatternBindingExtractor,
+  ForLoopExtractor,
+} from './types.js';
+import {
+  extractSimpleTypeName,
+  extractVarName,
+  extractElementTypeFromString,
+  extractGenericTypeArgs,
+  resolveIterableElementType,
+  methodToTypeArgPosition,
+  type TypeArgPosition,
+} from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
   'assignment',
@@ -22,7 +40,10 @@ const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
  *
  * Both appear at file scope and inside class bodies (PEP 526 class variable annotations).
  */
-const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+const extractDeclaration: TypeBindingExtractor = (
+  node: SyntaxNode,
+  env: Map<string, string>,
+): void => {
   if (node.type === 'expression_statement') {
     // Standalone annotation: expression_statement > type { name: identifier, type: identifier }
     const typeChild = node.firstNamedChild;
@@ -78,7 +99,11 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
  *  Python constructors are syntactically identical to function calls, so we verify
  *  against classNames (which may include cross-file SymbolTable lookups).
  *  Also handles walrus operator: if (user := User("alice")): */
-const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ClassNameLookup): void => {
+const extractInitializer: InitializerExtractor = (
+  node: SyntaxNode,
+  env: Map<string, string>,
+  classNames: ClassNameLookup,
+): void => {
   let left: SyntaxNode | null;
   let right: SyntaxNode | null;
 
@@ -138,14 +163,10 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   return { varName: left.text, calleeName };
 };
 
-const FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set([
-  'for_statement',
-]);
+const FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set(['for_statement']);
 
 /** Python function/method node types that carry a parameters list. */
-const PY_FUNCTION_NODE_TYPES = new Set([
-  'function_definition', 'decorated_definition',
-]);
+const PY_FUNCTION_NODE_TYPES = new Set(['function_definition', 'decorated_definition']);
 
 /**
  * Extract element type from a Python type annotation AST node.
@@ -154,7 +175,10 @@ const PY_FUNCTION_NODE_TYPES = new Set([
  *   generic_type            →  extractGenericTypeArgs → first arg
  * Falls back to text-based extraction.
  */
-const extractPyElementTypeFromAnnotation = (typeNode: SyntaxNode, pos: TypeArgPosition = 'last'): string | undefined => {
+const extractPyElementTypeFromAnnotation = (
+  typeNode: SyntaxNode,
+  pos: TypeArgPosition = 'last',
+): string | undefined => {
   // Unwrap 'type' wrapper node to get to the actual type (e.g., type > generic_type)
   const inner = typeNode.type === 'type' ? (typeNode.firstNamedChild ?? typeNode) : typeNode;
 
@@ -194,7 +218,11 @@ const extractPyElementTypeFromAnnotation = (typeNode: SyntaxNode, pos: TypeArgPo
  * `typed_parameter` may not expose the name as a `name` field — falls back to
  * checking the first identifier-type named child.
  */
-const findPyParamElementType = (iterableName: string, startNode: SyntaxNode, pos: TypeArgPosition = 'last'): string | undefined => {
+const findPyParamElementType = (
+  iterableName: string,
+  startNode: SyntaxNode,
+  pos: TypeArgPosition = 'last',
+): string | undefined => {
   let current: SyntaxNode | null = startNode.parent;
   while (current) {
     if (current.type === 'function_definition') {
@@ -205,12 +233,14 @@ const findPyParamElementType = (iterableName: string, startNode: SyntaxNode, pos
           if (!param) continue;
           // Try named `name` field first (parameter node), then first identifier child
           // (typed_parameter node may store name as first positional child)
-          const nameNode = param.childForFieldName('name')
-            ?? (param.firstNamedChild?.type === 'identifier' ? param.firstNamedChild : null);
+          const nameNode =
+            param.childForFieldName('name') ??
+            (param.firstNamedChild?.type === 'identifier' ? param.firstNamedChild : null);
           if (nameNode?.text !== iterableName) continue;
           // Try `type` field, then last named child (typed_parameter stores type last)
-          const typeAnnotation = param.childForFieldName('type')
-            ?? (param.namedChildCount >= 2 ? param.namedChild(param.namedChildCount - 1) : null);
+          const typeAnnotation =
+            param.childForFieldName('type') ??
+            (param.namedChildCount >= 2 ? param.namedChild(param.namedChildCount - 1) : null);
           if (typeAnnotation && typeAnnotation !== nameNode) {
             return extractPyElementTypeFromAnnotation(typeAnnotation, pos);
           }
@@ -227,13 +257,15 @@ const findPyParamElementType = (iterableName: string, startNode: SyntaxNode, pos
  * Extracts iterableName and methodName from a call expression like `data.items()`.
  * Returns undefined if the call doesn't match the expected pattern.
  */
-const extractMethodCall = (callNode: SyntaxNode): { iterableName: string; methodName?: string } | undefined => {
+const extractMethodCall = (
+  callNode: SyntaxNode,
+): { iterableName: string; methodName?: string } | undefined => {
   const fn = callNode.childForFieldName('function');
   if (fn?.type !== 'attribute') return undefined;
   const obj = fn.firstNamedChild;
   if (obj?.type !== 'identifier') return undefined;
   const method = fn.lastNamedChild;
-  const methodName = (method?.type === 'identifier' && method !== obj) ? method.text : undefined;
+  const methodName = method?.type === 'identifier' && method !== obj ? method.text : undefined;
   return { iterableName: obj.text, methodName };
 };
 
@@ -267,7 +299,10 @@ const collectPatternIdentifiers = (pattern: SyntaxNode): SyntaxNode[] => {
  * Also handles `enumerate(iterable)` — unwraps the outer call and skips the integer
  * index variable so the value variable still resolves to the element type.
  */
-const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTypeNodes, scope, returnTypeLookup }): void => {
+const extractForLoopBinding: ForLoopExtractor = (
+  node,
+  { scopeEnv, declarationTypeNodes, scope, returnTypeLookup },
+): void => {
   if (node.type !== 'for_statement') return;
 
   const rightNode = node.childForFieldName('right');
@@ -313,8 +348,13 @@ const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTy
     const containerTypeName = scopeEnv.get(iterableName!);
     const typeArgPos = methodToTypeArgPosition(methodName, containerTypeName);
     elementType = resolveIterableElementType(
-      iterableName!, node, scopeEnv, declarationTypeNodes, scope,
-      extractPyElementTypeFromAnnotation, findPyParamElementType,
+      iterableName!,
+      node,
+      scopeEnv,
+      declarationTypeNodes,
+      scope,
+      extractPyElementTypeFromAnnotation,
+      findPyParamElementType,
       typeArgPos,
     );
   }
@@ -411,8 +451,7 @@ const extractPatternBinding: PatternBindingExtractor = (node, scopeEnv) => {
   if (node.namedChildCount < 2) return undefined;
 
   const patternChild = node.namedChild(0);
-  const varNameNode = node.childForFieldName('alias')
-    ?? node.namedChild(node.namedChildCount - 1);
+  const varNameNode = node.childForFieldName('alias') ?? node.namedChild(node.namedChildCount - 1);
   if (!patternChild || !varNameNode) return undefined;
   if (varNameNode.type !== 'identifier') return undefined;
 
@@ -437,7 +476,11 @@ const extractPatternBinding: PatternBindingExtractor = (node, scopeEnv) => {
 
   // class_pattern children: dotted_name (the class name) + optional keyword_pattern args.
   const classNameNode = classPattern.firstNamedChild;
-  if (!classNameNode || (classNameNode.type !== 'dotted_name' && classNameNode.type !== 'identifier')) return undefined;
+  if (
+    !classNameNode ||
+    (classNameNode.type !== 'dotted_name' && classNameNode.type !== 'identifier')
+  )
+    return undefined;
   const typeName = classNameNode.text;
   if (!typeName) return undefined;
 

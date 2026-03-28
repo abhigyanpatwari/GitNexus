@@ -18,14 +18,16 @@ describe('git utilities', () => {
     it('returns true when inside a git work tree', () => {
       mockExecSync.mockReturnValueOnce(Buffer.from(''));
       expect(isGitRepo('/project')).toBe(true);
-      expect(mockExecSync).toHaveBeenCalledWith(
-        'git rev-parse --is-inside-work-tree',
-        { cwd: '/project', stdio: 'ignore' }
-      );
+      expect(mockExecSync).toHaveBeenCalledWith('git rev-parse --is-inside-work-tree', {
+        cwd: '/project',
+        stdio: 'ignore',
+      });
     });
 
     it('returns false when not a git repo', () => {
-      mockExecSync.mockImplementationOnce(() => { throw new Error('not a git repo'); });
+      mockExecSync.mockImplementationOnce(() => {
+        throw new Error('not a git repo');
+      });
       expect(isGitRepo('/not-a-repo')).toBe(false);
     });
 
@@ -34,7 +36,7 @@ describe('git utilities', () => {
       isGitRepo('/some/path');
       expect(mockExecSync).toHaveBeenCalledWith(
         expect.any(String),
-        expect.objectContaining({ cwd: '/some/path' })
+        expect.objectContaining({ cwd: '/some/path' }),
       );
     });
   });
@@ -46,7 +48,9 @@ describe('git utilities', () => {
     });
 
     it('returns empty string on error', () => {
-      mockExecSync.mockImplementationOnce(() => { throw new Error('not a git repo'); });
+      mockExecSync.mockImplementationOnce(() => {
+        throw new Error('not a git repo');
+      });
       expect(getCurrentCommit('/not-a-repo')).toBe('');
     });
 
@@ -66,7 +70,9 @@ describe('git utilities', () => {
     });
 
     it('returns null when not in a git repo', () => {
-      mockExecSync.mockImplementationOnce(() => { throw new Error('not a git repo'); });
+      mockExecSync.mockImplementationOnce(() => {
+        throw new Error('not a git repo');
+      });
       expect(getGitRoot('/not-a-repo')).toBeNull();
     });
 
@@ -75,7 +81,7 @@ describe('git utilities', () => {
       getGitRoot('/repo/src');
       expect(mockExecSync).toHaveBeenCalledWith(
         'git rev-parse --show-toplevel',
-        expect.objectContaining({ cwd: '/repo/src' })
+        expect.objectContaining({ cwd: '/repo/src' }),
       );
     });
 

@@ -6,12 +6,12 @@ name: CI Report
 
 on:
   workflow_run:
-    workflows: ["CI"]
+    workflows: ['CI']
     types: [completed]
 
 permissions:
-  actions: read        # needed to list/download workflow run artifacts
-  contents: read       # needed for sparse checkout of vitest.config.ts
+  actions: read # needed to list/download workflow run artifacts
+  contents: read # needed for sparse checkout of vitest.config.ts
   pull-requests: write # needed to post sticky PR comment
 
 jobs:

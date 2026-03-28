@@ -11,13 +11,19 @@ export type ParameterExtractor = (node: SyntaxNode, env: Map<string, string>) =>
 export type ClassNameLookup = { has(name: string): boolean };
 
 /** Extracts type bindings from a constructor-call initializer, with access to known class names */
-export type InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, classNames: ClassNameLookup) => void;
+export type InitializerExtractor = (
+  node: SyntaxNode,
+  env: Map<string, string>,
+  classNames: ClassNameLookup,
+) => void;
 
 /** Scans an AST node for untyped `var = callee()` patterns for return-type inference.
  *  Returns { varName, calleeName } if the node matches, undefined otherwise.
  *  `receiverClassName` — optional hint for method calls on known receivers
  *  (e.g. $this->getUser() in PHP provides the enclosing class name). */
-export type ConstructorBindingScanner = (node: SyntaxNode) => { varName: string; calleeName: string; receiverClassName?: string } | undefined;
+export type ConstructorBindingScanner = (
+  node: SyntaxNode,
+) => { varName: string; calleeName: string; receiverClassName?: string } | undefined;
 
 /** Extracts a return type string from a method/function definition node.
  *  Used for languages where return types are expressed in comments (e.g. YARD @return [Type])
@@ -35,11 +41,17 @@ export type LiteralTypeInferrer = (node: SyntaxNode) => string | undefined;
  *  or undefined otherwise. Used for virtual dispatch in languages like Kotlin
  *  where constructors are syntactically identical to function calls, and C++
  *  where smart pointer factory functions (make_shared/make_unique) wrap constructors. */
-export type ConstructorTypeDetector = (node: SyntaxNode, classNames: ClassNameLookup) => string | undefined;
+export type ConstructorTypeDetector = (
+  node: SyntaxNode,
+  classNames: ClassNameLookup,
+) => string | undefined;
 
 /** Unwrap a declared type name to its inner type for virtual dispatch comparison.
  *  E.g., C++ shared_ptr<Animal> → Animal. Returns undefined if no unwrapping applies. */
-export type DeclaredTypeUnwrapper = (declaredType: string, typeNode: SyntaxNode) => string | undefined;
+export type DeclaredTypeUnwrapper = (
+  declaredType: string,
+  typeNode: SyntaxNode,
+) => string | undefined;
 
 /** Narrow lookup interface for resolving a callee name → return type name.
  *  Backed by SymbolTable.lookupFuzzyCallable; passed via ForLoopExtractorContext.

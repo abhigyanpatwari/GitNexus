@@ -57,7 +57,9 @@ process.on('unhandledRejection', (reason: any) => {
 // Handle graceful shutdown — notify parent before exit
 process.on('SIGTERM', async () => {
   send({ type: 'error', message: 'Analysis cancelled (worker received SIGTERM)' });
-  try { await closeLbug(); } catch {}
+  try {
+    await closeLbug();
+  } catch {}
   process.exit(0);
 });
 

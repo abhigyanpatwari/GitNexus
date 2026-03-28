@@ -29,9 +29,7 @@ import { processJclFiles } from './cobol/jcl-processor.js';
 // File detection
 // ---------------------------------------------------------------------------
 
-const COBOL_EXTENSIONS = new Set([
-  '.cob', '.cbl', '.cobol', '.cpy', '.copybook',
-]);
+const COBOL_EXTENSIONS = new Set(['.cob', '.cbl', '.cobol', '.cpy', '.copybook']);
 
 const JCL_EXTENSIONS = new Set(['.jcl', '.job', '.proc']);
 
@@ -171,7 +169,10 @@ export const processCobol = (
 
     // Expand COPY statements
     const { expandedContent, copyResolutions } = expandCopies(
-      cleaned, file.path, resolveCopy, readCopy,
+      cleaned,
+      file.path,
+      resolveCopy,
+      readCopy,
     );
 
     // Extract symbols from expanded source
@@ -188,7 +189,7 @@ export const processCobol = (
     result.calls += extracted.calls.length;
     result.copies += extracted.copies.length;
     result.execSqlBlocks += extracted.execSqlBlocks.length;
-    result.sqlIncludes += extracted.execSqlBlocks.filter(s => s.includeMember).length;
+    result.sqlIncludes += extracted.execSqlBlocks.filter((s) => s.includeMember).length;
     result.execCicsBlocks += extracted.execCicsBlocks.length;
     result.entryPoints += extracted.entryPoints.length;
     result.moves += extracted.moves.length;
@@ -209,16 +210,20 @@ export const processCobol = (
   // whose targets contain `<unresolved>:`.
   const unresolvedToRemove: string[] = [];
 
-  graph.forEachRelationship(rel => {
+  graph.forEachRelationship((rel) => {
     if (rel.type !== 'CALLS') return;
     const match = rel.targetId.match(/<unresolved>:(.+)/);
     if (!match) return;
     const resolvedId = moduleNodeIds.get(match[1]);
     if (!resolvedId) return;
 
-    if (rel.reason?.startsWith('cobol-call-unresolved') || rel.reason === 'cobol-cancel-unresolved') {
+    if (
+      rel.reason?.startsWith('cobol-call-unresolved') ||
+      rel.reason === 'cobol-cancel-unresolved'
+    ) {
       // Replace unresolved CALL/CANCEL with resolved edge
-      const resolvedReason = rel.reason === 'cobol-cancel-unresolved' ? 'cobol-cancel' : 'cobol-call';
+      const resolvedReason =
+        rel.reason === 'cobol-cancel-unresolved' ? 'cobol-cancel' : 'cobol-call';
       graph.addRelationship({
         id: rel.id + ':resolved',
         type: 'CALLS',
@@ -250,7 +255,7 @@ export const processCobol = (
 
   // ── 5. Process JCL files ───────────────────────────────────────────
   if (jclFiles.length > 0) {
-    const jclPaths = jclFiles.map(f => f.path);
+    const jclPaths = jclFiles.map((f) => f.path);
     const jclContents = new Map<string, string>();
     for (const f of jclFiles) {
       jclContents.set(f.path, f.content);
@@ -313,9 +318,12 @@ function mapToGraph(
     const metaDesc = [
       extracted.programMetadata.author && `author:${extracted.programMetadata.author}`,
       extracted.programMetadata.dateWritten && `date:${extracted.programMetadata.dateWritten}`,
-      extracted.programMetadata.dateCompiled && `compiled:${extracted.programMetadata.dateCompiled}`,
+      extracted.programMetadata.dateCompiled &&
+        `compiled:${extracted.programMetadata.dateCompiled}`,
       extracted.programMetadata.installation && `install:${extracted.programMetadata.installation}`,
-    ].filter(Boolean).join(' ');
+    ]
+      .filter(Boolean)
+      .join(' ');
     graph.addNode({
       id: moduleId,
       label: 'Module',
@@ -365,8 +373,11 @@ function mapToGraph(
       },
     });
     // Find enclosing program by line-range containment
-    const enclosing = extracted.programs.find(p =>
-      p.startLine < prog.startLine && p.endLine > prog.endLine && p.nestingDepth < prog.nestingDepth,
+    const enclosing = extracted.programs.find(
+      (p) =>
+        p.startLine < prog.startLine &&
+        p.endLine > prog.endLine &&
+        p.nestingDepth < prog.nestingDepth,
     );
     const nestedParent = enclosing
       ? (programModuleIds.get(enclosing.name.toUpperCase()) ?? moduleId ?? fileNodeId)
@@ -389,11 +400,13 @@ function mapToGraph(
   const sectionNodeIds = new Map<string, string>();
   for (let i = 0; i < extracted.sections.length; i++) {
     const sec = extracted.sections[i];
-    const nextLine = i + 1 < extracted.sections.length
-      ? extracted.sections[i + 1].line - 1
-      : lines.length;
+    const nextLine =
+      i + 1 < extracted.sections.length ? extracted.sections[i + 1].line - 1 : lines.length;
     const owningPgm = findOwningProgramName(sec.line, extracted.programs);
-    const secId = generateId('Namespace', `${filePath}:${owningPgm ? owningPgm + ':' : ''}${sec.name}`);
+    const secId = generateId(
+      'Namespace',
+      `${filePath}:${owningPgm ? owningPgm + ':' : ''}${sec.name}`,
+    );
     graph.addNode({
       id: secId,
       label: 'Namespace',
@@ -422,11 +435,13 @@ function mapToGraph(
   const paraNodeIds = new Map<string, string>();
   for (let i = 0; i < extracted.paragraphs.length; i++) {
     const para = extracted.paragraphs[i];
-    const nextLine = i + 1 < extracted.paragraphs.length
-      ? extracted.paragraphs[i + 1].line - 1
-      : lines.length;
+    const nextLine =
+      i + 1 < extracted.paragraphs.length ? extracted.paragraphs[i + 1].line - 1 : lines.length;
     const owningPgmPara = findOwningProgramName(para.line, extracted.programs);
-    const paraId = generateId('Function', `${filePath}:${owningPgmPara ? owningPgmPara + ':' : ''}${para.name}`);
+    const paraId = generateId(
+      'Function',
+      `${filePath}:${owningPgmPara ? owningPgmPara + ':' : ''}${para.name}`,
+    );
     graph.addNode({
       id: paraId,
       label: 'Function',
@@ -440,8 +455,10 @@ function mapToGraph(
       },
     });
     // Parent: find the containing section, or fall back to module/file
-    const containerId = findContainingSection(para.line, extracted.sections, sectionNodeIds, extracted.programs)
-      ?? (programModuleIds.get(owningPgmPara ?? '') ?? parentId);
+    const containerId =
+      findContainingSection(para.line, extracted.sections, sectionNodeIds, extracted.programs) ??
+      programModuleIds.get(owningPgmPara ?? '') ??
+      parentId;
     graph.addRelationship({
       id: generateId('CONTAINS', `${containerId}->${paraId}`),
       type: 'CONTAINS',
@@ -504,14 +521,19 @@ function mapToGraph(
   // Helper: look up paragraph/section by name scoped to the owning program
   const scopedParaLookup = (name: string, lineNum: number): string | undefined => {
     const pgm = findOwningProgramName(lineNum, extracted.programs);
-    return paraNodeIds.get(`${pgm ?? ''}:${name.toUpperCase()}`)
-      ?? sectionNodeIds.get(`${pgm ?? ''}:${name.toUpperCase()}`);
+    return (
+      paraNodeIds.get(`${pgm ?? ''}:${name.toUpperCase()}`) ??
+      sectionNodeIds.get(`${pgm ?? ''}:${name.toUpperCase()}`)
+    );
   };
   const scopedCallerLookup = (name: string | null, lineNum: number): string => {
     if (!name) return owningModuleId(lineNum);
     const pgm = findOwningProgramName(lineNum, extracted.programs);
-    return paraNodeIds.get(`${pgm ?? ''}:${name.toUpperCase()}`)
-      ?? (programModuleIds.get(pgm ?? '') ?? parentId);
+    return (
+      paraNodeIds.get(`${pgm ?? ''}:${name.toUpperCase()}`) ??
+      programModuleIds.get(pgm ?? '') ??
+      parentId
+    );
   };
   /** Resolve the owning program's module ID for a given line (for nested program edge attribution). */
   const owningModuleId = (lineNum: number): string => {
@@ -574,7 +596,10 @@ function mapToGraph(
         id: generateId('CONTAINS', `${dynCallOwner}->dynamic-call:${call.target}:L${call.line}`),
         type: 'CONTAINS',
         sourceId: dynCallOwner,
-        targetId: generateId('CodeElement', `${filePath}:dynamic-call:${call.target}:L${call.line}`),
+        targetId: generateId(
+          'CodeElement',
+          `${filePath}:dynamic-call:${call.target}:L${call.line}`,
+        ),
         confidence: 1.0,
         reason: 'cobol-dynamic-call',
       });
@@ -600,7 +625,10 @@ function mapToGraph(
         const retPropId = dataItemMap.get(call.returning.toUpperCase());
         if (retPropId) {
           graph.addRelationship({
-            id: generateId('ACCESSES', `${dynCallOwner}->call-returning->${call.returning}:L${call.line}`),
+            id: generateId(
+              'ACCESSES',
+              `${dynCallOwner}->call-returning->${call.returning}:L${call.line}`,
+            ),
             type: 'ACCESSES',
             sourceId: dynCallOwner,
             targetId: retPropId,
@@ -614,8 +642,8 @@ function mapToGraph(
 
     const targetModuleId = moduleNodeIds.get(call.target.toUpperCase());
     // Create edge even if target not yet known — use a synthetic target id
-    const targetId = targetModuleId
-      ?? generateId('Module', `<unresolved>:${call.target.toUpperCase()}`);
+    const targetId =
+      targetModuleId ?? generateId('Module', `<unresolved>:${call.target.toUpperCase()}`);
 
     const callOwner = owningModuleId(call.line);
     graph.addRelationship({
@@ -648,7 +676,10 @@ function mapToGraph(
       const retPropId = dataItemMap.get(call.returning.toUpperCase());
       if (retPropId) {
         graph.addRelationship({
-          id: generateId('ACCESSES', `${callOwner}->call-returning->${call.returning}:L${call.line}`),
+          id: generateId(
+            'ACCESSES',
+            `${callOwner}->call-returning->${call.returning}:L${call.line}`,
+          ),
           type: 'ACCESSES',
           sourceId: callOwner,
           targetId: retPropId,
@@ -760,14 +791,18 @@ function mapToGraph(
         startLine: cics.line,
         endLine: cics.line,
         language: SupportedLanguages.Cobol,
-        description: [
-          cics.mapName && `map:${cics.mapName}`,
-          cics.programName && `program:${cics.programName}${cics.programIsLiteral === false ? ' (dynamic)' : ''}`,
-          cics.transId && `transid:${cics.transId}`,
-          cics.fileName && `file:${cics.fileName}`,
-          cics.queueName && `queue:${cics.queueName}`,
-          cics.labelName && `label:${cics.labelName}`,
-        ].filter(Boolean).join(' ') || undefined,
+        description:
+          [
+            cics.mapName && `map:${cics.mapName}`,
+            cics.programName &&
+              `program:${cics.programName}${cics.programIsLiteral === false ? ' (dynamic)' : ''}`,
+            cics.transId && `transid:${cics.transId}`,
+            cics.fileName && `file:${cics.fileName}`,
+            cics.queueName && `queue:${cics.queueName}`,
+            cics.labelName && `label:${cics.labelName}`,
+          ]
+            .filter(Boolean)
+            .join(' ') || undefined,
       },
     });
     const cicsOwner = owningModuleId(cics.line);
@@ -784,29 +819,48 @@ function mapToGraph(
       if (cics.programIsLiteral === false) {
         // Dynamic PROGRAM reference via variable — annotate, don't resolve
         graph.addNode({
-          id: generateId('CodeElement', `${filePath}:cics-dynamic-pgm:${cics.programName}:L${cics.line}`),
+          id: generateId(
+            'CodeElement',
+            `${filePath}:cics-dynamic-pgm:${cics.programName}:L${cics.line}`,
+          ),
           label: 'CodeElement',
           properties: {
             name: `CICS ${cics.command} ${cics.programName}`,
-            filePath, startLine: cics.line, endLine: cics.line,
+            filePath,
+            startLine: cics.line,
+            endLine: cics.line,
             language: SupportedLanguages.Cobol,
             description: `cics-dynamic-program (target is data item ${cics.programName})`,
           },
         });
         graph.addRelationship({
-          id: generateId('CONTAINS', `${cicsOwner}->cics-dynamic-pgm:${cics.programName}:L${cics.line}`),
-          type: 'CONTAINS', sourceId: cicsOwner,
-          targetId: generateId('CodeElement', `${filePath}:cics-dynamic-pgm:${cics.programName}:L${cics.line}`),
-          confidence: 1.0, reason: 'cics-dynamic-program',
+          id: generateId(
+            'CONTAINS',
+            `${cicsOwner}->cics-dynamic-pgm:${cics.programName}:L${cics.line}`,
+          ),
+          type: 'CONTAINS',
+          sourceId: cicsOwner,
+          targetId: generateId(
+            'CodeElement',
+            `${filePath}:cics-dynamic-pgm:${cics.programName}:L${cics.line}`,
+          ),
+          confidence: 1.0,
+          reason: 'cics-dynamic-program',
         });
       } else {
         const cicsTargetModuleId = moduleNodeIds.get(cics.programName.toUpperCase());
-        const targetId = cicsTargetModuleId
-          ?? generateId('Module', `<unresolved>:${cics.programName.toUpperCase()}`);
+        const targetId =
+          cicsTargetModuleId ??
+          generateId('Module', `<unresolved>:${cics.programName.toUpperCase()}`);
         const cicsReason = `cics-${cics.command.toLowerCase()}`;
         graph.addRelationship({
-          id: generateId('CALLS', `${cicsOwner}->cics-${cics.command.toLowerCase()}->${cics.programName}:L${cics.line}`),
-          type: 'CALLS', sourceId: cicsOwner, targetId,
+          id: generateId(
+            'CALLS',
+            `${cicsOwner}->cics-${cics.command.toLowerCase()}->${cics.programName}:L${cics.line}`,
+          ),
+          type: 'CALLS',
+          sourceId: cicsOwner,
+          targetId,
           confidence: cicsTargetModuleId ? 0.95 : 0.5,
           reason: cicsTargetModuleId ? cicsReason : `${cicsReason}-unresolved`,
         });
@@ -817,13 +871,24 @@ function mapToGraph(
     if (cics.fileName) {
       const fileRecordId = generateId('Record', `<cics-file>:${cics.fileName.toUpperCase()}`);
       const ioCommand = cics.command.toUpperCase();
-      const isRead = ['READ', 'STARTBR', 'READNEXT', 'READPREV', 'READ NEXT', 'READ PREV', 'ENDBR'].includes(ioCommand);
+      const isRead = [
+        'READ',
+        'STARTBR',
+        'READNEXT',
+        'READPREV',
+        'READ NEXT',
+        'READ PREV',
+        'ENDBR',
+      ].includes(ioCommand);
       const isWrite = ['WRITE', 'REWRITE', 'DELETE'].includes(ioCommand);
       const reason = isRead ? 'cics-file-read' : isWrite ? 'cics-file-write' : 'cics-file-access';
       graph.addRelationship({
         id: generateId('ACCESSES', `${cicsId}->file->${cics.fileName}:L${cics.line}`),
-        type: 'ACCESSES', sourceId: cicsId, targetId: fileRecordId,
-        confidence: 0.9, reason,
+        type: 'ACCESSES',
+        sourceId: cicsId,
+        targetId: fileRecordId,
+        confidence: 0.9,
+        reason,
       });
     }
 
@@ -831,14 +896,20 @@ function mapToGraph(
     if (cics.queueName) {
       const queueId = generateId('Record', `<queue>:${cics.queueName}`);
       const qCmd = cics.command.toUpperCase();
-      const qReason = qCmd.startsWith('READQ') ? 'cics-queue-read'
-        : qCmd.startsWith('WRITEQ') ? 'cics-queue-write'
-        : qCmd.startsWith('DELETEQ') ? 'cics-queue-delete'
-        : 'cics-queue';
+      const qReason = qCmd.startsWith('READQ')
+        ? 'cics-queue-read'
+        : qCmd.startsWith('WRITEQ')
+          ? 'cics-queue-write'
+          : qCmd.startsWith('DELETEQ')
+            ? 'cics-queue-delete'
+            : 'cics-queue';
       graph.addRelationship({
         id: generateId('ACCESSES', `${cicsId}->queue->${cics.queueName}:L${cics.line}`),
-        type: 'ACCESSES', sourceId: cicsId, targetId: queueId,
-        confidence: 0.85, reason: qReason,
+        type: 'ACCESSES',
+        sourceId: cicsId,
+        targetId: queueId,
+        confidence: 0.85,
+        reason: qReason,
       });
     }
 
@@ -848,8 +919,13 @@ function mapToGraph(
       if (cmd === 'RETURN' || cmd.startsWith('START')) {
         const transNodeId = generateId('CodeElement', `<transid>:${cics.transId}`);
         graph.addRelationship({
-          id: generateId('CALLS', `${cicsOwner}->${cmd === 'RETURN' ? 'return' : 'start'}-transid->${cics.transId}:L${cics.line}`),
-          type: 'CALLS', sourceId: cicsOwner, targetId: transNodeId,
+          id: generateId(
+            'CALLS',
+            `${cicsOwner}->${cmd === 'RETURN' ? 'return' : 'start'}-transid->${cics.transId}:L${cics.line}`,
+          ),
+          type: 'CALLS',
+          sourceId: cicsOwner,
+          targetId: transNodeId,
           confidence: 0.8,
           reason: cmd === 'RETURN' ? 'cics-return-transid' : 'cics-start-transid',
         });
@@ -861,8 +937,11 @@ function mapToGraph(
       const mapId = generateId('Record', `<map>:${cics.mapName}`);
       graph.addRelationship({
         id: generateId('ACCESSES', `${cicsId}->map->${cics.mapName}:L${cics.line}`),
-        type: 'ACCESSES', sourceId: cicsId, targetId: mapId,
-        confidence: 0.85, reason: 'cics-map',
+        type: 'ACCESSES',
+        sourceId: cicsId,
+        targetId: mapId,
+        confidence: 0.85,
+        reason: 'cics-map',
       });
     }
 
@@ -872,8 +951,11 @@ function mapToGraph(
       if (intoPropId) {
         graph.addRelationship({
           id: generateId('ACCESSES', `${cicsId}->into->${cics.intoField}:L${cics.line}`),
-          type: 'ACCESSES', sourceId: cicsId, targetId: intoPropId,
-          confidence: 0.9, reason: 'cics-receive-into',
+          type: 'ACCESSES',
+          sourceId: cicsId,
+          targetId: intoPropId,
+          confidence: 0.9,
+          reason: 'cics-receive-into',
         });
       }
     }
@@ -884,8 +966,11 @@ function mapToGraph(
       if (fromPropId) {
         graph.addRelationship({
           id: generateId('ACCESSES', `${cicsId}->from->${cics.fromField}:L${cics.line}`),
-          type: 'ACCESSES', sourceId: cicsId, targetId: fromPropId,
-          confidence: 0.9, reason: 'cics-send-from',
+          type: 'ACCESSES',
+          sourceId: cicsId,
+          targetId: fromPropId,
+          confidence: 0.9,
+          reason: 'cics-send-from',
         });
       }
     }
@@ -896,8 +981,11 @@ function mapToGraph(
       if (labelTargetId) {
         graph.addRelationship({
           id: generateId('CALLS', `${cicsOwner}->abend-label->${cics.labelName}:L${cics.line}`),
-          type: 'CALLS', sourceId: cicsOwner, targetId: labelTargetId,
-          confidence: 0.9, reason: 'cics-handle-abend',
+          type: 'CALLS',
+          sourceId: cicsOwner,
+          targetId: labelTargetId,
+          confidence: 0.9,
+          reason: 'cics-handle-abend',
         });
       }
     }
@@ -916,7 +1004,8 @@ function mapToGraph(
         endLine: entry.line,
         language: SupportedLanguages.Cobol,
         isExported: true,
-        description: entry.parameters.length > 0 ? `using:${entry.parameters.join(',')}` : undefined,
+        description:
+          entry.parameters.length > 0 ? `using:${entry.parameters.join(',')}` : undefined,
       },
     });
     const entryOwner = owningModuleId(entry.line);
@@ -991,7 +1080,10 @@ function mapToGraph(
     if (inspFieldId) {
       // Read edge (always — INSPECT reads the field)
       graph.addRelationship({
-        id: generateId('ACCESSES', `${callerId}->inspect-read->${insp.inspectedField}:L${insp.line}`),
+        id: generateId(
+          'ACCESSES',
+          `${callerId}->inspect-read->${insp.inspectedField}:L${insp.line}`,
+        ),
         type: 'ACCESSES',
         sourceId: callerId,
         targetId: inspFieldId,
@@ -1001,7 +1093,10 @@ function mapToGraph(
       // Write edge (if REPLACING or CONVERTING — modifies the field in-place)
       if (insp.form !== 'tallying') {
         graph.addRelationship({
-          id: generateId('ACCESSES', `${callerId}->inspect-write->${insp.inspectedField}:L${insp.line}`),
+          id: generateId(
+            'ACCESSES',
+            `${callerId}->inspect-write->${insp.inspectedField}:L${insp.line}`,
+          ),
           type: 'ACCESSES',
           sourceId: callerId,
           targetId: inspFieldId,
@@ -1055,11 +1150,14 @@ function mapToGraph(
         startLine: dli.line,
         endLine: dli.line,
         language: SupportedLanguages.Cobol,
-        description: [
-          dli.segmentName && `segment:${dli.segmentName}`,
-          dli.pcbNumber !== undefined && `pcb:${dli.pcbNumber}`,
-          dli.psbName && `psb:${dli.psbName}`,
-        ].filter(Boolean).join(' ') || undefined,
+        description:
+          [
+            dli.segmentName && `segment:${dli.segmentName}`,
+            dli.pcbNumber !== undefined && `pcb:${dli.pcbNumber}`,
+            dli.psbName && `psb:${dli.psbName}`,
+          ]
+            .filter(Boolean)
+            .join(' ') || undefined,
       },
     });
     graph.addRelationship({
@@ -1235,27 +1333,40 @@ function mapToGraph(
     if (!cancel.isQuoted) {
       // Dynamic CANCEL via data item — annotate, don't resolve
       graph.addNode({
-        id: generateId('CodeElement', `${filePath}:dynamic-cancel:${cancel.target}:L${cancel.line}`),
+        id: generateId(
+          'CodeElement',
+          `${filePath}:dynamic-cancel:${cancel.target}:L${cancel.line}`,
+        ),
         label: 'CodeElement',
         properties: {
           name: `CANCEL ${cancel.target}`,
-          filePath, startLine: cancel.line, endLine: cancel.line,
+          filePath,
+          startLine: cancel.line,
+          endLine: cancel.line,
           language: SupportedLanguages.Cobol,
           description: 'dynamic-cancel (target is a data item, not resolvable statically)',
         },
       });
       const cancelOwner = owningModuleId(cancel.line);
       graph.addRelationship({
-        id: generateId('CONTAINS', `${cancelOwner}->dynamic-cancel:${cancel.target}:L${cancel.line}`),
-        type: 'CONTAINS', sourceId: cancelOwner,
-        targetId: generateId('CodeElement', `${filePath}:dynamic-cancel:${cancel.target}:L${cancel.line}`),
-        confidence: 1.0, reason: 'cobol-dynamic-cancel',
+        id: generateId(
+          'CONTAINS',
+          `${cancelOwner}->dynamic-cancel:${cancel.target}:L${cancel.line}`,
+        ),
+        type: 'CONTAINS',
+        sourceId: cancelOwner,
+        targetId: generateId(
+          'CodeElement',
+          `${filePath}:dynamic-cancel:${cancel.target}:L${cancel.line}`,
+        ),
+        confidence: 1.0,
+        reason: 'cobol-dynamic-cancel',
       });
       continue;
     }
     const targetModuleId = moduleNodeIds.get(cancel.target.toUpperCase());
-    const targetId = targetModuleId
-      ?? generateId('Module', `<unresolved>:${cancel.target.toUpperCase()}`);
+    const targetId =
+      targetModuleId ?? generateId('Module', `<unresolved>:${cancel.target.toUpperCase()}`);
     const cancelCallOwner = owningModuleId(cancel.line);
     graph.addRelationship({
       id: generateId('CALLS', `${cancelCallOwner}->cancel->${cancel.target}:L${cancel.line}`),
@@ -1277,7 +1388,7 @@ function findOwningProgramName(
   lineNum: number,
   programs: Array<{ name: string; startLine: number; endLine: number; nestingDepth: number }>,
 ): string | undefined {
-  let best: typeof programs[0] | undefined;
+  let best: (typeof programs)[0] | undefined;
   for (const p of programs) {
     if (p.startLine <= lineNum && p.endLine >= lineNum) {
       if (!best || p.nestingDepth > best.nestingDepth) best = p;

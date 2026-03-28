@@ -2,10 +2,22 @@
  * Unit tests for route extractors, tool detection patterns, and response shape parsing.
  */
 import { describe, it, expect } from 'vitest';
-import { nextjsFileToRouteURL, normalizeFetchURL, routeMatches } from '../../src/core/ingestion/route-extractors/nextjs.js';
+import {
+  nextjsFileToRouteURL,
+  normalizeFetchURL,
+  routeMatches,
+} from '../../src/core/ingestion/route-extractors/nextjs.js';
 import { phpFileToRouteURL } from '../../src/core/ingestion/route-extractors/php.js';
-import { extractMiddlewareChain, extractNextjsMiddlewareConfig, middlewareMatcherMatchesRoute } from '../../src/core/ingestion/route-extractors/middleware.js';
-import { detectStatusCode, extractResponseShapes, extractPHPResponseShapes } from '../../src/core/ingestion/route-extractors/response-shapes.js';
+import {
+  extractMiddlewareChain,
+  extractNextjsMiddlewareConfig,
+  middlewareMatcherMatchesRoute,
+} from '../../src/core/ingestion/route-extractors/middleware.js';
+import {
+  detectStatusCode,
+  extractResponseShapes,
+  extractPHPResponseShapes,
+} from '../../src/core/ingestion/route-extractors/response-shapes.js';
 
 // ---------------------------------------------------------------------------
 // Next.js route extractor
@@ -19,10 +31,10 @@ describe('nextjsFileToRouteURL', () => {
   });
 
   it('handles dynamic segments', () => {
-    expect(nextjsFileToRouteURL('app/api/organizations/[slug]/grants/route.ts'))
-      .toBe('/api/organizations/[slug]/grants');
-    expect(nextjsFileToRouteURL('app/api/users/[id]/route.ts'))
-      .toBe('/api/users/[id]');
+    expect(nextjsFileToRouteURL('app/api/organizations/[slug]/grants/route.ts')).toBe(
+      '/api/organizations/[slug]/grants',
+    );
+    expect(nextjsFileToRouteURL('app/api/users/[id]/route.ts')).toBe('/api/users/[id]');
   });
 
   it('only matches api/ routes in App Router', () => {
@@ -113,8 +125,9 @@ describe('normalizeFetchURL', () => {
   });
 
   it('replaces template expressions with [param]', () => {
-    expect(normalizeFetchURL('/api/organizations/${slug}/grants'))
-      .toBe('/api/organizations/[param]/grants');
+    expect(normalizeFetchURL('/api/organizations/${slug}/grants')).toBe(
+      '/api/organizations/[param]/grants',
+    );
   });
 
   it('strips backticks from template literals', () => {
@@ -199,13 +212,26 @@ describe('response shape extraction edge cases', () => {
       for (let j = i; j < content.length; j++) {
         const ch = content[j];
         if (inString) {
-          if (ch === '\\') { j++; continue; }
+          if (ch === '\\') {
+            j++;
+            continue;
+          }
           if (ch === inString) inString = null;
           continue;
         }
-        if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue; }
-        if (ch === '{') { depth++; continue; }
-        if (ch === '}') { depth--; if (depth === 0) break; continue; }
+        if (ch === '"' || ch === "'" || ch === '`') {
+          inString = ch;
+          continue;
+        }
+        if (ch === '{') {
+          depth++;
+          continue;
+        }
+        if (ch === '}') {
+          depth--;
+          if (depth === 0) break;
+          continue;
+        }
         if (depth !== 1) continue;
         if (keyStart === -1 && /[a-zA-Z_$]/.test(ch)) {
           keyStart = j;
@@ -238,7 +264,7 @@ describe('response shape extraction edge cases', () => {
 
   it('handles nested objects without extracting inner keys', () => {
     const keys = extractKeysFromContent(
-      'res.json({ data: grants, pagination: { page: 1, total: 10 }, meta: "ok" })'
+      'res.json({ data: grants, pagination: { page: 1, total: 10 }, meta: "ok" })',
     );
     expect(keys).toContain('data');
     expect(keys).toContain('pagination');
@@ -248,9 +274,7 @@ describe('response shape extraction edge cases', () => {
   });
 
   it('handles braces inside string literals', () => {
-    const keys = extractKeysFromContent(
-      'res.json({ message: "Use { and } carefully", count: 5 })'
-    );
+    const keys = extractKeysFromContent('res.json({ message: "Use { and } carefully", count: 5 })');
     expect(keys).toContain('message');
     expect(keys).toContain('count');
     expect(keys).not.toContain('and');
@@ -258,16 +282,14 @@ describe('response shape extraction edge cases', () => {
   });
 
   it('handles escaped quotes in strings', () => {
-    const keys = extractKeysFromContent(
-      'res.json({ msg: "He said \\"hello\\"", ok: true })'
-    );
+    const keys = extractKeysFromContent('res.json({ msg: "He said \\"hello\\"", ok: true })');
     expect(keys).toContain('msg');
     expect(keys).toContain('ok');
   });
 
   it('handles NextResponse.json pattern', () => {
     const keys = extractKeysFromContent(
-      'return NextResponse.json({ data: grants, pagination: { page: 1 } })'
+      'return NextResponse.json({ data: grants, pagination: { page: 1 } })',
     );
     expect(keys).toContain('data');
     expect(keys).toContain('pagination');
@@ -287,12 +309,18 @@ describe('response shape extraction edge cases', () => {
 describe('middleware chain extraction', () => {
   it('extracts triple-nested middleware chain', () => {
     const content = `export const POST = withRateLimit(withCSRF(withAuth(async (req) => { return NextResponse.json({ ok: true }); })));`;
-    expect(extractMiddlewareChain(content)).toEqual({ chain: ['withRateLimit', 'withCSRF', 'withAuth'], method: 'POST' });
+    expect(extractMiddlewareChain(content)).toEqual({
+      chain: ['withRateLimit', 'withCSRF', 'withAuth'],
+      method: 'POST',
+    });
   });
 
   it('extracts double-nested middleware chain', () => {
     const content = `export const GET = withAuth(withCache(handler));`;
-    expect(extractMiddlewareChain(content)).toEqual({ chain: ['withAuth', 'withCache'], method: 'GET' });
+    expect(extractMiddlewareChain(content)).toEqual({
+      chain: ['withAuth', 'withCache'],
+      method: 'GET',
+    });
   });
 
   it('extracts single withX wrapper', () => {
@@ -307,7 +335,10 @@ describe('middleware chain extraction', () => {
 
   it('extracts from export default with nesting', () => {
     const content = `export default withRateLimit(withAuth(handler));`;
-    expect(extractMiddlewareChain(content)).toEqual({ chain: ['withRateLimit', 'withAuth'], method: 'default' });
+    expect(extractMiddlewareChain(content)).toEqual({
+      chain: ['withRateLimit', 'withAuth'],
+      method: 'default',
+    });
   });
 
   it('stops at async keyword (arrow function body)', () => {
@@ -336,12 +367,18 @@ describe('middleware chain extraction', () => {
 
   it('handles whitespace and newlines in chain', () => {
     const content = `export const POST = withRateLimit(\n  withAuth(\n    async (req) => {}\n  )\n);`;
-    expect(extractMiddlewareChain(content)).toEqual({ chain: ['withRateLimit', 'withAuth'], method: 'POST' });
+    expect(extractMiddlewareChain(content)).toEqual({
+      chain: ['withRateLimit', 'withAuth'],
+      method: 'POST',
+    });
   });
 
   it('handles DELETE method', () => {
     const content = `export const DELETE = withAuth(withAdmin(handler));`;
-    expect(extractMiddlewareChain(content)).toEqual({ chain: ['withAuth', 'withAdmin'], method: 'DELETE' });
+    expect(extractMiddlewareChain(content)).toEqual({
+      chain: ['withAuth', 'withAdmin'],
+      method: 'DELETE',
+    });
   });
 
   it('returns undefined when no export pattern exists', () => {
@@ -384,7 +421,8 @@ describe('detectStatusCode', () => {
   });
 
   it('detects .status(500).json() for server error', () => {
-    const content = 'res.status(500).json({ error: "Internal server error", code: "SERVER_ERROR" })';
+    const content =
+      'res.status(500).json({ error: "Internal server error", code: "SERVER_ERROR" })';
     const jsonPos = content.indexOf('.json');
     expect(detectStatusCode(content, jsonPos, -1)).toBe(500);
   });

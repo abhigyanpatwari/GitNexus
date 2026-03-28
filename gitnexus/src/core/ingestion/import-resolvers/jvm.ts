@@ -40,11 +40,11 @@ export function resolveJvmWildcard(
   const packagePath = importPath.slice(0, -2).replace(/\./g, '/');
 
   if (index) {
-    const candidates = extensions.flatMap(ext => index.getFilesInDir(packagePath, ext));
+    const candidates = extensions.flatMap((ext) => index.getFilesInDir(packagePath, ext));
     // Filter to only direct children (no subdirectories)
     const packageSuffix = '/' + packagePath + '/';
     const packagePrefix = packagePath + '/';
-    return candidates.filter(f => {
+    return candidates.filter((f) => {
       const normalized = f.replace(/\\/g, '/');
       // Match both nested (src/models/User.kt) and root-level (models/User.kt) packages
       let afterPkg: string;
@@ -66,11 +66,13 @@ export function resolveJvmWildcard(
   const matches: string[] = [];
   for (let i = 0; i < normalizedFileList.length; i++) {
     const normalized = normalizedFileList[i];
-    if (!extensions.some(ext => normalized.endsWith(ext))) continue;
+    if (!extensions.some((ext) => normalized.endsWith(ext))) continue;
     // Match both nested (src/models/User.kt) and root-level (models/User.kt) packages
     let afterPackage: string | null = null;
     if (normalized.includes(packageSuffix)) {
-      afterPackage = normalized.substring(normalized.lastIndexOf(packageSuffix) + packageSuffix.length);
+      afterPackage = normalized.substring(
+        normalized.lastIndexOf(packageSuffix) + packageSuffix.length,
+      );
     } else if (normalized.startsWith(packagePrefix)) {
       afterPackage = normalized.substring(packagePrefix.length);
     }
@@ -110,8 +112,10 @@ export function resolveJvmMemberImport(
       } else {
         const fullSuffix = '/' + classSuffix;
         for (let i = 0; i < normalizedFileList.length; i++) {
-          if (normalizedFileList[i].endsWith(fullSuffix) ||
-              normalizedFileList[i].toLowerCase().endsWith(fullSuffix.toLowerCase())) {
+          if (
+            normalizedFileList[i].endsWith(fullSuffix) ||
+            normalizedFileList[i].toLowerCase().endsWith(fullSuffix.toLowerCase())
+          ) {
             return allFileList[i];
           }
         }
@@ -129,10 +133,22 @@ export function resolveJavaImport(
   ctx: ResolveCtx,
 ): ImportResult {
   if (rawImportPath.endsWith('.*')) {
-    const matchedFiles = resolveJvmWildcard(rawImportPath, ctx.normalizedFileList, ctx.allFileList, ['.java'], ctx.index);
+    const matchedFiles = resolveJvmWildcard(
+      rawImportPath,
+      ctx.normalizedFileList,
+      ctx.allFileList,
+      ['.java'],
+      ctx.index,
+    );
     if (matchedFiles.length > 0) return { kind: 'files', files: matchedFiles };
   } else {
-    const memberResolved = resolveJvmMemberImport(rawImportPath, ctx.normalizedFileList, ctx.allFileList, ['.java'], ctx.index);
+    const memberResolved = resolveJvmMemberImport(
+      rawImportPath,
+      ctx.normalizedFileList,
+      ctx.allFileList,
+      ['.java'],
+      ctx.index,
+    );
     if (memberResolved) return { kind: 'files', files: [memberResolved] };
   }
   return resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Java);
@@ -148,16 +164,40 @@ export function resolveKotlinImport(
   ctx: ResolveCtx,
 ): ImportResult {
   if (rawImportPath.endsWith('.*')) {
-    const matchedFiles = resolveJvmWildcard(rawImportPath, ctx.normalizedFileList, ctx.allFileList, KOTLIN_EXTENSIONS, ctx.index);
+    const matchedFiles = resolveJvmWildcard(
+      rawImportPath,
+      ctx.normalizedFileList,
+      ctx.allFileList,
+      KOTLIN_EXTENSIONS,
+      ctx.index,
+    );
     if (matchedFiles.length === 0) {
-      const javaMatches = resolveJvmWildcard(rawImportPath, ctx.normalizedFileList, ctx.allFileList, ['.java'], ctx.index);
+      const javaMatches = resolveJvmWildcard(
+        rawImportPath,
+        ctx.normalizedFileList,
+        ctx.allFileList,
+        ['.java'],
+        ctx.index,
+      );
       if (javaMatches.length > 0) return { kind: 'files', files: javaMatches };
     }
     if (matchedFiles.length > 0) return { kind: 'files', files: matchedFiles };
   } else {
-    let memberResolved = resolveJvmMemberImport(rawImportPath, ctx.normalizedFileList, ctx.allFileList, KOTLIN_EXTENSIONS, ctx.index);
+    let memberResolved = resolveJvmMemberImport(
+      rawImportPath,
+      ctx.normalizedFileList,
+      ctx.allFileList,
+      KOTLIN_EXTENSIONS,
+      ctx.index,
+    );
     if (!memberResolved) {
-      memberResolved = resolveJvmMemberImport(rawImportPath, ctx.normalizedFileList, ctx.allFileList, ['.java'], ctx.index);
+      memberResolved = resolveJvmMemberImport(
+        rawImportPath,
+        ctx.normalizedFileList,
+        ctx.allFileList,
+        ['.java'],
+        ctx.index,
+      );
     }
     if (memberResolved) return { kind: 'files', files: [memberResolved] };
 
@@ -169,9 +209,21 @@ export function resolveKotlinImport(
     const lastSeg = segments[segments.length - 1];
     if (segments.length >= 2 && lastSeg[0] && lastSeg[0] === lastSeg[0].toLowerCase()) {
       const pkgWildcard = segments.slice(0, -1).join('.') + '.*';
-      let dirFiles = resolveJvmWildcard(pkgWildcard, ctx.normalizedFileList, ctx.allFileList, KOTLIN_EXTENSIONS, ctx.index);
+      let dirFiles = resolveJvmWildcard(
+        pkgWildcard,
+        ctx.normalizedFileList,
+        ctx.allFileList,
+        KOTLIN_EXTENSIONS,
+        ctx.index,
+      );
       if (dirFiles.length === 0) {
-        dirFiles = resolveJvmWildcard(pkgWildcard, ctx.normalizedFileList, ctx.allFileList, ['.java'], ctx.index);
+        dirFiles = resolveJvmWildcard(
+          pkgWildcard,
+          ctx.normalizedFileList,
+          ctx.allFileList,
+          ['.java'],
+          ctx.index,
+        );
       }
       if (dirFiles.length > 0) return { kind: 'files', files: dirFiles };
     }

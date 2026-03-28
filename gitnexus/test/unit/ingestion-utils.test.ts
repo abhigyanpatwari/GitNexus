@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
 import { extractFunctionName } from '../../src/core/ingestion/utils/ast-helpers.js';
-import { getTreeSitterBufferSize, TREE_SITTER_BUFFER_SIZE, TREE_SITTER_MAX_BUFFER } from '../../src/core/ingestion/constants.js';
+import {
+  getTreeSitterBufferSize,
+  TREE_SITTER_BUFFER_SIZE,
+  TREE_SITTER_MAX_BUFFER,
+} from '../../src/core/ingestion/constants.js';
 import Parser from 'tree-sitter';
 import C from 'tree-sitter-c';
 import CPP from 'tree-sitter-cpp';
@@ -53,12 +57,9 @@ describe('getLanguageFromFilename', () => {
   });
 
   describe('C++', () => {
-    it.each(['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh'])(
-      'detects %s files',
-      (ext) => {
-        expect(getLanguageFromFilename(`file${ext}`)).toBe(SupportedLanguages.CPlusPlus);
-      }
-    );
+    it.each(['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh'])('detects %s files', (ext) => {
+      expect(getLanguageFromFilename(`file${ext}`)).toBe(SupportedLanguages.CPlusPlus);
+    });
   });
 
   describe('C#', () => {
@@ -80,12 +81,9 @@ describe('getLanguageFromFilename', () => {
   });
 
   describe('PHP', () => {
-    it.each(['.php', '.phtml', '.php3', '.php4', '.php5', '.php8'])(
-      'detects %s files',
-      (ext) => {
-        expect(getLanguageFromFilename(`file${ext}`)).toBe(SupportedLanguages.PHP);
-      }
-    );
+    it.each(['.php', '.phtml', '.php3', '.php4', '.php5', '.php8'])('detects %s files', (ext) => {
+      expect(getLanguageFromFilename(`file${ext}`)).toBe(SupportedLanguages.PHP);
+    });
   });
 
   describe('Swift', () => {
@@ -95,12 +93,9 @@ describe('getLanguageFromFilename', () => {
   });
 
   describe('Ruby', () => {
-    it.each(['.rb', '.rake', '.gemspec'])(
-      'detects %s files',
-      (ext) => {
-        expect(getLanguageFromFilename(`file${ext}`)).toBe(SupportedLanguages.Ruby);
-      }
-    );
+    it.each(['.rb', '.rake', '.gemspec'])('detects %s files', (ext) => {
+      expect(getLanguageFromFilename(`file${ext}`)).toBe(SupportedLanguages.Ruby);
+    });
 
     it('detects extensionless Rakefile', () => {
       expect(getLanguageFromFilename('Rakefile')).toBe(SupportedLanguages.Ruby);
@@ -112,12 +107,9 @@ describe('getLanguageFromFilename', () => {
   });
 
   describe('Kotlin', () => {
-    it.each(['.kt', '.kts'])(
-      'detects %s files',
-      (ext) => {
-        expect(getLanguageFromFilename(`file${ext}`)).toBe(SupportedLanguages.Kotlin);
-      }
-    );
+    it.each(['.kt', '.kts'])('detects %s files', (ext) => {
+      expect(getLanguageFromFilename(`file${ext}`)).toBe(SupportedLanguages.Kotlin);
+    });
   });
 
   describe('unsupported', () => {
@@ -125,7 +117,7 @@ describe('getLanguageFromFilename', () => {
       'returns null for %s files',
       (ext) => {
         expect(getLanguageFromFilename(`file${ext}`)).toBeNull();
-      }
+      },
     );
 
     it('returns null for files without extension', () => {

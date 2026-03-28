@@ -91,8 +91,9 @@ function makeHeritageCallNode(
     leaf = wrapper;
   }
 
-  const nameNode: MockNode | undefined =
-    enclosingName ? { type: 'constant', text: enclosingName } : undefined;
+  const nameNode: MockNode | undefined = enclosingName
+    ? { type: 'constant', text: enclosingName }
+    : undefined;
 
   const classNode: MockNode = {
     type: enclosingType,
@@ -134,10 +135,7 @@ function makeSimpleSymbol(name: string, row = 0): MockNode {
  * Build a call node for attr_accessor/attr_reader/attr_writer with optional
  * preceding comment siblings.
  */
-function makeAccessorCallNode(
-  symbolArgs: MockNode[],
-  previousSiblings: MockNode[] = [],
-): MockNode {
+function makeAccessorCallNode(symbolArgs: MockNode[], previousSiblings: MockNode[] = []): MockNode {
   const argList: MockNode = { type: 'argument_list', text: '', children: symbolArgs };
 
   // Link previousSiblings as a chain (last element is the direct previousSibling)
@@ -266,12 +264,18 @@ describe('routeRubyCall — include / extend / prepend', () => {
   });
 
   it('extend with a scope_resolution arg (Foo::Bar) returns heritage', () => {
-    const node = makeHeritageCallNode([makeScopeResolutionArg('ActiveSupport::Concern')], 'class', 'Post');
+    const node = makeHeritageCallNode(
+      [makeScopeResolutionArg('ActiveSupport::Concern')],
+      'class',
+      'Post',
+    );
     const result = routeRubyCall('extend', node);
 
     expect(result).toEqual({
       kind: 'heritage',
-      items: [{ enclosingClass: 'Post', mixinName: 'ActiveSupport::Concern', heritageKind: 'extend' }],
+      items: [
+        { enclosingClass: 'Post', mixinName: 'ActiveSupport::Concern', heritageKind: 'extend' },
+      ],
     });
   });
 
@@ -291,7 +295,9 @@ describe('routeRubyCall — include / extend / prepend', () => {
 
     expect(result).toEqual({
       kind: 'heritage',
-      items: [{ enclosingClass: 'ApplicationHelper', mixinName: 'Helpers', heritageKind: 'include' }],
+      items: [
+        { enclosingClass: 'ApplicationHelper', mixinName: 'Helpers', heritageKind: 'include' },
+      ],
     });
   });
 
@@ -317,7 +323,11 @@ describe('routeRubyCall — include / extend / prepend', () => {
 
   it('returns skip when enclosing class node has no name child', () => {
     // nameNode is undefined — childForFieldName('name') returns undefined
-    const argList: MockNode = { type: 'argument_list', text: '', children: [makeConstantArg('Mod')] };
+    const argList: MockNode = {
+      type: 'argument_list',
+      text: '',
+      children: [makeConstantArg('Mod')],
+    };
     const classNode: MockNode = {
       type: 'class',
       text: '',
@@ -413,7 +423,9 @@ describe('routeRubyCall — include / extend / prepend', () => {
     const result = routeRubyCall('include', callNode);
     expect(result).toEqual({
       kind: 'heritage',
-      items: [{ enclosingClass: 'BoundaryClass', mixinName: 'BoundaryMixin', heritageKind: 'include' }],
+      items: [
+        { enclosingClass: 'BoundaryClass', mixinName: 'BoundaryMixin', heritageKind: 'include' },
+      ],
     });
   });
 
@@ -495,7 +507,11 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
   });
 
   it('multiple symbols produce one item each', () => {
-    const args = [makeSimpleSymbol('first_name', 10), makeSimpleSymbol('last_name', 10), makeSimpleSymbol('dob', 10)];
+    const args = [
+      makeSimpleSymbol('first_name', 10),
+      makeSimpleSymbol('last_name', 10),
+      makeSimpleSymbol('dob', 10),
+    ];
     const node = makeAccessorCallNode(args);
     const result = routeRubyCall('attr_accessor', node);
 
@@ -504,7 +520,7 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
       items: [
         { propName: 'first_name', accessorType: 'attr_accessor', startLine: 10, endLine: 10 },
         { propName: 'last_name', accessorType: 'attr_accessor', startLine: 10, endLine: 10 },
-        { propName: 'dob',        accessorType: 'attr_accessor', startLine: 10, endLine: 10 },
+        { propName: 'dob', accessorType: 'attr_accessor', startLine: 10, endLine: 10 },
       ],
     });
   });

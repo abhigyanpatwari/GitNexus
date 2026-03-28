@@ -64,10 +64,26 @@ function extractPattern(toolName, toolInput) {
     const tokens = cmd.split(/\s+/);
     let foundCmd = false;
     let skipNext = false;
-    const flagsWithValues = new Set(['-e', '-f', '-m', '-A', '-B', '-C', '-g', '--glob', '-t', '--type', '--include', '--exclude']);
+    const flagsWithValues = new Set([
+      '-e',
+      '-f',
+      '-m',
+      '-A',
+      '-B',
+      '-C',
+      '-g',
+      '--glob',
+      '-t',
+      '--type',
+      '--include',
+      '--exclude',
+    ]);
 
     for (const token of tokens) {
-      if (skipNext) { skipNext = false; continue; }
+      if (skipNext) {
+        skipNext = false;
+        continue;
+      }
       if (!foundCmd) {
         if (/\brg$|\bgrep$/.test(token)) foundCmd = true;
         continue;
@@ -110,18 +126,20 @@ function resolveCliPath() {
 function runGitNexusCli(cliPath, args, cwd, timeout) {
   const isWin = process.platform === 'win32';
   if (cliPath) {
-    return spawnSync(
-      process.execPath,
-      [cliPath, ...args],
-      { encoding: 'utf-8', timeout, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
-    );
+    return spawnSync(process.execPath, [cliPath, ...args], {
+      encoding: 'utf-8',
+      timeout,
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
   }
   // On Windows, invoke npx.cmd directly (no shell needed)
-  return spawnSync(
-    isWin ? 'npx.cmd' : 'npx',
-    ['-y', 'gitnexus', ...args],
-    { encoding: 'utf-8', timeout: timeout + 5000, cwd, stdio: ['pipe', 'pipe', 'pipe'] }
-  );
+  return spawnSync(isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...args], {
+    encoding: 'utf-8',
+    timeout: timeout + 5000,
+    cwd,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
 }
 
 /**
@@ -147,7 +165,9 @@ function handlePreToolUse(input) {
     if (!child.error && child.status === 0) {
       result = child.stderr || '';
     }
-  } catch { /* graceful failure */ }
+  } catch {
+    /* graceful failure */
+  }
 
   if (result && result.trim()) {
     sendHookResponse('PreToolUse', result.trim());
@@ -158,9 +178,11 @@ function handlePreToolUse(input) {
  * Emit a PostToolUse hook response with additional context for the agent.
  */
 function sendHookResponse(hookEventName, message) {
-  console.log(JSON.stringify({
-    hookSpecificOutput: { hookEventName, additionalContext: message }
-  }));
+  console.log(
+    JSON.stringify({
+      hookSpecificOutput: { hookEventName, additionalContext: message },
+    }),
+  );
 }
 
 /**
@@ -192,10 +214,15 @@ function handlePostToolUse(input) {
   let currentHead = '';
   try {
     const headResult = spawnSync('git', ['rev-parse', 'HEAD'], {
-      encoding: 'utf-8', timeout: 3000, cwd, stdio: ['pipe', 'pipe', 'pipe'],
+      encoding: 'utf-8',
+      timeout: 3000,
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
     currentHead = (headResult.stdout || '').trim();
-  } catch { return; }
+  } catch {
+    return;
+  }
 
   if (!currentHead) return;
 
@@ -204,16 +231,19 @@ function handlePostToolUse(input) {
   try {
     const meta = JSON.parse(fs.readFileSync(path.join(gitNexusDir, 'meta.json'), 'utf-8'));
     lastCommit = meta.lastCommit || '';
-    hadEmbeddings = (meta.stats && meta.stats.embeddings > 0);
-  } catch { /* no meta — treat as stale */ }
+    hadEmbeddings = meta.stats && meta.stats.embeddings > 0;
+  } catch {
+    /* no meta — treat as stale */
+  }
 
   // If HEAD matches last indexed commit, no reindex needed
   if (currentHead && currentHead === lastCommit) return;
 
   const analyzeCmd = `npx gitnexus analyze${hadEmbeddings ? ' --embeddings' : ''}`;
-  sendHookResponse('PostToolUse',
+  sendHookResponse(
+    'PostToolUse',
     `GitNexus index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +
-    `Run \`${analyzeCmd}\` to update the knowledge graph.`
+      `Run \`${analyzeCmd}\` to update the knowledge graph.`,
   );
 }
 

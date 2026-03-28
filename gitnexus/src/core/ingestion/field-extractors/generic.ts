@@ -12,7 +12,12 @@ import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { BaseFieldExtractor } from '../field-extractor.js';
 import type { FieldExtractor } from '../field-extractor.js';
-import type { FieldExtractorContext, ExtractedFields, FieldInfo, FieldVisibility } from '../field-types.js';
+import type {
+  FieldExtractorContext,
+  ExtractedFields,
+  FieldInfo,
+  FieldVisibility,
+} from '../field-types.js';
 
 // ---------------------------------------------------------------------------
 // Config interface
@@ -142,10 +147,7 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
       }
     }
 
-    private extractSingleField(
-      node: SyntaxNode,
-      context: FieldExtractorContext,
-    ): FieldInfo | null {
+    private extractSingleField(node: SyntaxNode, context: FieldExtractorContext): FieldInfo | null {
       const name = config.extractName(node);
       if (!name) return null;
       return this.buildField(node, name, context);

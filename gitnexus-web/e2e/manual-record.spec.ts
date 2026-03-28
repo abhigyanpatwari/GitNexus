@@ -12,16 +12,16 @@ import { test } from '@playwright/test';
  */
 test.skip(
   !!process.env.CI || process.env.PWDEBUG !== '1',
-  'Manual recording requires --headed and PWDEBUG=1. Run: PWDEBUG=1 npx playwright test e2e/manual-record.spec.ts --headed --timeout=0'
+  'Manual recording requires --headed and PWDEBUG=1. Run: PWDEBUG=1 npx playwright test e2e/manual-record.spec.ts --headed --timeout=0',
 );
 
 test('manual recording session', async ({ page }) => {
-  page.on('console', msg => {
+  page.on('console', (msg) => {
     if (msg.type() === 'error' || msg.type() === 'warning') {
       console.log(`[${msg.type()}] ${msg.text()}`);
     }
   });
-  page.on('pageerror', err => console.log(`[crash] ${err.message}`));
+  page.on('pageerror', (err) => console.log(`[crash] ${err.message}`));
 
   await page.goto('http://localhost:5173');
   await page.pause();

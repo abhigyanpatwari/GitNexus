@@ -8,8 +8,8 @@
 #
 # The agent decides when to use explicit tools vs rely on enriched grep results.
 agent:
-  agent_class: "eval.agents.gitnexus_agent.GitNexusAgent"
-  gitnexus_mode: "native_augment"
+  agent_class: 'eval.agents.gitnexus_agent.GitNexusAgent'
+  gitnexus_mode: 'native_augment'
   step_limit: 30
   cost_limit: 3.0
   augment_timeout: 5.0
@@ -17,7 +17,7 @@ agent:
   track_gitnexus_usage: true
 
 environment:
-  environment_class: "eval.environments.gitnexus_docker.GitNexusDockerEnvironment"
+  environment_class: 'eval.environments.gitnexus_docker.GitNexusDockerEnvironment'
   enable_gitnexus: true
   skip_embeddings: true
   gitnexus_timeout: 120

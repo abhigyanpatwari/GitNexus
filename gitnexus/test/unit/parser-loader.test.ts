@@ -60,7 +60,9 @@ describe('parser-loader', () => {
 
     it('loads TSX grammar for .tsx files', async () => {
       // TSX uses a different grammar (TypeScript.tsx vs TypeScript.typescript)
-      await expect(loadLanguage(SupportedLanguages.TypeScript, 'Component.tsx')).resolves.not.toThrow();
+      await expect(
+        loadLanguage(SupportedLanguages.TypeScript, 'Component.tsx'),
+      ).resolves.not.toThrow();
     });
 
     it('loads TS grammar for .ts files', async () => {
@@ -72,7 +74,9 @@ describe('parser-loader', () => {
     });
 
     it('throws for unsupported language', async () => {
-      await expect(loadLanguage('erlang' as SupportedLanguages)).rejects.toThrow('Unsupported language');
+      await expect(loadLanguage('erlang' as SupportedLanguages)).rejects.toThrow(
+        'Unsupported language',
+      );
     });
   });
 

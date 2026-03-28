@@ -53,7 +53,7 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-      actions: read         # required for Claude to read CI results on PRs
+      actions: read # required for Claude to read CI results on PRs
     steps:
       # For PR-related triggers, resolve the fork repo so we can checkout correctly.
       - name: Resolve PR context

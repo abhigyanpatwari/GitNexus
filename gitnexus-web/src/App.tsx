@@ -11,7 +11,15 @@ import { FileTreePanel } from './components/FileTreePanel';
 import { CodeReferencesPanel } from './components/CodeReferencesPanel';
 import { getActiveProviderConfig } from './core/llm/settings-service';
 import { createKnowledgeGraph } from './core/graph/graph';
-import { connectToServer, fetchRepos, normalizeServerUrl, connectHeartbeat, BackendError, type ConnectResult, type BackendRepo } from './services/backend-client';
+import {
+  connectToServer,
+  fetchRepos,
+  normalizeServerUrl,
+  connectHeartbeat,
+  BackendError,
+  type ConnectResult,
+  type BackendRepo,
+} from './services/backend-client';
 import { ERROR_RESET_DELAY_MS } from './config/ui-constants';
 
 const AppContent = () => {
@@ -41,36 +49,39 @@ const AppContent = () => {
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
 
-  const handleServerConnect = useCallback(async (result: ConnectResult): Promise<void> => {
-    // Extract project name from repoPath
-    const repoPath = result.repoInfo.repoPath ?? result.repoInfo.path;
-    const parts = (repoPath || '').split('/').filter(p => p && !p.startsWith('.'));
-    const projectName = parts[parts.length - 1] || parts[0] || 'server-project';
-    setProjectName(projectName);
+  const handleServerConnect = useCallback(
+    async (result: ConnectResult): Promise<void> => {
+      // Extract project name from repoPath
+      const repoPath = result.repoInfo.repoPath ?? result.repoInfo.path;
+      const parts = (repoPath || '').split('/').filter((p) => p && !p.startsWith('.'));
+      const projectName = parts[parts.length - 1] || parts[0] || 'server-project';
+      setProjectName(projectName);
 
-    // Build KnowledgeGraph from server data for visualization
-    const graph = createKnowledgeGraph();
-    for (const node of result.nodes) {
-      graph.addNode(node);
-    }
-    for (const rel of result.relationships) {
-      graph.addRelationship(rel);
-    }
-    setGraph(graph);
-
-    // Transition directly to exploring view
-    setViewMode('exploring');
-
-    // Initialize agent with backend queries, then start embeddings
-    try {
-      if (getActiveProviderConfig()) {
-        await initializeAgent(projectName);
+      // Build KnowledgeGraph from server data for visualization
+      const graph = createKnowledgeGraph();
+      for (const node of result.nodes) {
+        graph.addNode(node);
       }
-      startEmbeddingsWithFallback();
-    } catch (err) {
-      console.warn('Failed to initialize agent:', err);
-    }
-  }, [setViewMode, setGraph, setProjectName, initializeAgent, startEmbeddingsWithFallback]);
+      for (const rel of result.relationships) {
+        graph.addRelationship(rel);
+      }
+      setGraph(graph);
+
+      // Transition directly to exploring view
+      setViewMode('exploring');
+
+      // Initialize agent with backend queries, then start embeddings
+      try {
+        if (getActiveProviderConfig()) {
+          await initializeAgent(projectName);
+        }
+        startEmbeddingsWithFallback();
+      } catch (err) {
+        console.warn('Failed to initialize agent:', err);
+      }
+    },
+    [setViewMode, setGraph, setProjectName, initializeAgent, startEmbeddingsWithFallback],
+  );
 
   // Auto-connect when ?server query param is present (bookmarkable shortcut)
   const autoConnectRan = useRef(false);
@@ -84,7 +95,12 @@ const AppContent = () => {
     const cleanUrl = window.location.pathname + window.location.hash;
     window.history.replaceState(null, '', cleanUrl);
 
-    setProgress({ phase: 'extracting', percent: 0, message: 'Connecting to server...', detail: 'Validating server' });
+    setProgress({
+      phase: 'extracting',
+      percent: 0,
+      message: 'Connecting to server...',
+      detail: 'Validating server',
+    });
     setViewMode('loading');
 
     const serverUrl = params.get('server') || window.location.origin;
@@ -93,34 +109,51 @@ const AppContent = () => {
 
     connectToServer(serverUrl, (phase, downloaded, total) => {
       if (phase === 'validating') {
-        setProgress({ phase: 'extracting', percent: 5, message: 'Connecting to server...', detail: 'Validating server' });
+        setProgress({
+          phase: 'extracting',
+          percent: 5,
+          message: 'Connecting to server...',
+          detail: 'Validating server',
+        });
       } else if (phase === 'downloading') {
         const pct = total ? Math.round((downloaded / total) * 90) + 5 : 50;
         const mb = (downloaded / (1024 * 1024)).toFixed(1);
-        setProgress({ phase: 'extracting', percent: pct, message: 'Downloading graph...', detail: `${mb} MB downloaded` });
+        setProgress({
+          phase: 'extracting',
+          percent: pct,
+          message: 'Downloading graph...',
+          detail: `${mb} MB downloaded`,
+        });
       } else if (phase === 'extracting') {
-        setProgress({ phase: 'extracting', percent: 97, message: 'Processing...', detail: 'Extracting file contents' });
+        setProgress({
+          phase: 'extracting',
+          percent: 97,
+          message: 'Processing...',
+          detail: 'Extracting file contents',
+        });
       }
-    }).then(async (result) => {
-      await handleServerConnect(result);
-      setProgress(null);
-      setServerBaseUrl(baseUrl);
-      fetchRepos()
-        .then((repos) => setAvailableRepos(repos))
-        .catch((e) => console.warn('Failed to fetch repo list:', e));
-    }).catch((err) => {
-      console.error('Auto-connect failed:', err);
-      setProgress({
-        phase: 'error',
-        percent: 0,
-        message: 'Failed to connect to server',
-        detail: err instanceof Error ? err.message : 'Unknown error',
-      });
-      setTimeout(() => {
-        setViewMode('onboarding');
+    })
+      .then(async (result) => {
+        await handleServerConnect(result);
         setProgress(null);
-      }, ERROR_RESET_DELAY_MS);
-    });
+        setServerBaseUrl(baseUrl);
+        fetchRepos()
+          .then((repos) => setAvailableRepos(repos))
+          .catch((e) => console.warn('Failed to fetch repo list:', e));
+      })
+      .catch((err) => {
+        console.error('Auto-connect failed:', err);
+        setProgress({
+          phase: 'error',
+          percent: 0,
+          message: 'Failed to connect to server',
+          detail: err instanceof Error ? err.message : 'Unknown error',
+        });
+        setTimeout(() => {
+          setViewMode('onboarding');
+          setProgress(null);
+        }, ERROR_RESET_DELAY_MS);
+      });
   }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos]);
 
   const handleFocusNode = useCallback((nodeId: string) => {
@@ -176,7 +209,7 @@ const AppContent = () => {
 
   // Exploring view
   return (
-    <div className="flex flex-col h-screen bg-void overflow-hidden">
+    <div className="flex h-screen flex-col overflow-hidden bg-void">
       <Header
         onFocusNode={handleFocusNode}
         availableRepos={availableRepos}
@@ -200,28 +233,30 @@ const AppContent = () => {
             } catch (err: unknown) {
               if (attempt === 0 && err instanceof BackendError && err.status === 404) {
                 // Server may still be reinitializing — wait and retry
-                await new Promise(r => setTimeout(r, 1500));
+                await new Promise((r) => setTimeout(r, 1500));
                 continue;
               }
               console.error('Failed to connect after analyze:', err);
-              fetchRepos().then(repos => setAvailableRepos(repos)).catch(() => {});
+              fetchRepos()
+                .then((repos) => setAvailableRepos(repos))
+                .catch(() => {});
               return;
             }
           }
         }}
       />
 
-      <main className="flex-1 flex min-h-0">
+      <main className="flex min-h-0 flex-1">
         {/* Left Panel - File Tree */}
         <FileTreePanel onFocusNode={handleFocusNode} />
 
         {/* Graph area - takes remaining space */}
-        <div className="flex-1 relative min-w-0">
+        <div className="relative min-w-0 flex-1">
           <GraphCanvas ref={graphCanvasRef} />
 
           {/* Code References Panel (overlay) - does NOT resize the graph, it overlaps on top */}
           {isCodePanelOpen && (codeReferences.length > 0 || !!selectedNode) && (
-            <div className="absolute inset-y-0 left-0 z-30 pointer-events-auto">
+            <div className="pointer-events-auto absolute inset-y-0 left-0 z-30">
               <CodeReferencesPanel onFocusNode={handleFocusNode} />
             </div>
           )}
@@ -239,7 +274,6 @@ const AppContent = () => {
         onClose={() => setSettingsPanelOpen(false)}
         onSettingsSaved={handleSettingsSaved}
       />
-
     </div>
   );
 };

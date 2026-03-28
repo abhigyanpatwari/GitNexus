@@ -19,7 +19,7 @@ describe('setupCommand skills integration', () => {
   beforeAll(async () => {
     tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-setup-home-'));
     process.env.HOME = tempHome;
-    process.env.USERPROFILE = tempHome;  // os.homedir() checks USERPROFILE on Windows
+    process.env.USERPROFILE = tempHome; // os.homedir() checks USERPROFILE on Windows
     await fs.mkdir(path.join(tempHome, '.cursor'), { recursive: true });
 
     // Create temporary source skills to verify both supported source layouts:
@@ -57,7 +57,7 @@ describe('setupCommand skills integration', () => {
 
     const cursorSkillsRoot = path.join(tempHome, '.cursor', 'skills');
     const entries = await fs.readdir(cursorSkillsRoot, { withFileTypes: true });
-    const skillDirs = entries.filter(e => e.isDirectory()).map(e => e.name);
+    const skillDirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
 
     expect(skillDirs.length).toBeGreaterThan(0);
     expect(skillDirs).toContain('gitnexus-cli');
@@ -94,10 +94,7 @@ describe('setupCommand skills integration', () => {
 
     await setupCommand();
 
-    const codexConfig = await fs.readFile(
-      path.join(tempHome, '.codex', 'config.toml'),
-      'utf-8',
-    );
+    const codexConfig = await fs.readFile(path.join(tempHome, '.codex', 'config.toml'), 'utf-8');
     expect(codexConfig).toContain('[mcp_servers.gitnexus]');
     expect(codexConfig).toContain('gitnexus@latest');
 
@@ -115,10 +112,7 @@ describe('setupCommand skills integration', () => {
     await setupCommand();
     await setupCommand();
 
-    const codexConfig = await fs.readFile(
-      path.join(tempHome, '.codex', 'config.toml'),
-      'utf-8',
-    );
+    const codexConfig = await fs.readFile(path.join(tempHome, '.codex', 'config.toml'), 'utf-8');
     const sectionMatches = codexConfig.match(/\[mcp_servers\.gitnexus\]/g) ?? [];
 
     expect(sectionMatches).toHaveLength(1);

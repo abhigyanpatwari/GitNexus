@@ -8,7 +8,10 @@ export const normalizePath = (p: string): string => {
  * Follows the same heuristics previously embedded in useAppState:
  * 1) exact match, 2) ends-with match (prefers shorter paths), 3) segment containment.
  */
-export const resolveFilePath = (fileContents: Map<string, string>, requestedPath: string): string | null => {
+export const resolveFilePath = (
+  fileContents: Map<string, string>,
+  requestedPath: string,
+): string | null => {
   const req = normalizePath(requestedPath).toLowerCase();
   if (!req) return null;
 
@@ -35,7 +38,10 @@ export const resolveFilePath = (fileContents: Map<string, string>, requestedPath
     let idx = 0;
     for (const s of segs) {
       const found = normSegs.findIndex((x, i) => i >= idx && x.includes(s));
-      if (found === -1) { idx = -1; break; }
+      if (found === -1) {
+        idx = -1;
+        break;
+      }
       idx = found + 1;
     }
     if (idx !== -1) return key;

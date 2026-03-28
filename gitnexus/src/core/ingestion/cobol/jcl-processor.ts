@@ -47,7 +47,7 @@ export function processJclFiles(
 
   // Collect all Module names for step -> program linking
   const moduleNames = new Map<string, string>(); // uppercase name -> node id
-  graph.forEachNode(node => {
+  graph.forEachNode((node) => {
     if (node.label === 'Module') {
       const nodeName = node.properties.name;
       if (typeof nodeName === 'string') {

@@ -34,7 +34,9 @@ describe('parseReplacingClause', () => {
 
   it('parses pseudotext with spaces: ==SOME TEXT== BY ==OTHER TEXT==', () => {
     const result = parseReplacingClause(' ==WORKING STORAGE== BY ==LOCAL STORAGE== ');
-    expect(result).toEqual([{ type: 'EXACT', from: 'WORKING STORAGE', to: 'LOCAL STORAGE', isPseudotext: true }]);
+    expect(result).toEqual([
+      { type: 'EXACT', from: 'WORKING STORAGE', to: 'LOCAL STORAGE', isPseudotext: true },
+    ]);
   });
 
   it('parses pseudotext with single = inside: ==A=B== BY ==C=D==', () => {
@@ -43,9 +45,7 @@ describe('parseReplacingClause', () => {
   });
 
   it('parses mixed quoted + pseudotext in one clause', () => {
-    const result = parseReplacingClause(
-      ' "OLD-NAME" BY "NEW-NAME" ==DEL-PREFIX== BY ==== ',
-    );
+    const result = parseReplacingClause(' "OLD-NAME" BY "NEW-NAME" ==DEL-PREFIX== BY ==== ');
     expect(result).toEqual([
       { type: 'EXACT', from: 'OLD-NAME', to: 'NEW-NAME' },
       { type: 'EXACT', from: 'DEL-PREFIX', to: '', isPseudotext: true },

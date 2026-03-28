@@ -18,7 +18,10 @@ export function resolveSwiftImport(
       const dirPrefix = targetDir + '/';
       const files: string[] = [];
       for (let i = 0; i < ctx.normalizedFileList.length; i++) {
-        if (ctx.normalizedFileList[i].startsWith(dirPrefix) && ctx.normalizedFileList[i].endsWith('.swift')) {
+        if (
+          ctx.normalizedFileList[i].startsWith(dirPrefix) &&
+          ctx.normalizedFileList[i].endsWith('.swift')
+        ) {
           files.push(ctx.allFileList[i]);
         }
       }

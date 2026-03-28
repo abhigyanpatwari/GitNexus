@@ -48,8 +48,13 @@ function extractFieldType(node: SyntaxNode): string | undefined {
   if (typeNode) return extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
   // fallback: first child that is a type node
   const first = node.firstNamedChild;
-  if (first && (first.type === 'type_identifier' || first.type === 'primitive_type'
-    || first.type === 'sized_type_specifier' || first.type === 'template_type')) {
+  if (
+    first &&
+    (first.type === 'type_identifier' ||
+      first.type === 'primitive_type' ||
+      first.type === 'sized_type_specifier' ||
+      first.type === 'template_type')
+  ) {
     return extractSimpleTypeName(first) ?? first.text?.trim();
   }
   return undefined;
@@ -61,11 +66,7 @@ function extractFieldType(node: SyntaxNode): string | undefined {
 
 export const cppConfig: FieldExtractionConfig = {
   language: SupportedLanguages.CPlusPlus,
-  typeDeclarationNodes: [
-    'struct_specifier',
-    'class_specifier',
-    'union_specifier',
-  ],
+  typeDeclarationNodes: ['struct_specifier', 'class_specifier', 'union_specifier'],
   fieldNodeTypes: ['field_declaration'],
   bodyNodeTypes: ['field_declaration_list'],
   defaultVisibility: 'private', // C++ class default is private
@@ -96,10 +97,7 @@ export const cppConfig: FieldExtractionConfig = {
 
 export const cConfig: FieldExtractionConfig = {
   language: SupportedLanguages.C,
-  typeDeclarationNodes: [
-    'struct_specifier',
-    'union_specifier',
-  ],
+  typeDeclarationNodes: ['struct_specifier', 'union_specifier'],
   fieldNodeTypes: ['field_declaration'],
   bodyNodeTypes: ['field_declaration_list'],
   defaultVisibility: 'public', // C structs are always public

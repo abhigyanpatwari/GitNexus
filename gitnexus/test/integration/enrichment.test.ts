@@ -55,7 +55,8 @@ describe('enrichment', () => {
 
     it('populates enrichments when LLM returns valid JSON', async () => {
       const mockLLM: LLMClient = {
-        generate: vi.fn()
+        generate: vi
+          .fn()
           .mockResolvedValueOnce('{"name": "Auth Module", "description": "Handles authentication"}')
           .mockResolvedValueOnce('{"name": "Utility Helpers", "description": "Common utilities"}'),
       };
@@ -172,7 +173,13 @@ describe('enrichment', () => {
 
   describe('enrichClustersBatch', () => {
     const communities: CommunityNode[] = [
-      { id: 'comm_0', label: 'Auth', heuristicLabel: 'Authentication', cohesion: 0.8, symbolCount: 3 },
+      {
+        id: 'comm_0',
+        label: 'Auth',
+        heuristicLabel: 'Authentication',
+        cohesion: 0.8,
+        symbolCount: 3,
+      },
       { id: 'comm_1', label: 'Utils', heuristicLabel: 'Utilities', cohesion: 0.5, symbolCount: 2 },
       { id: 'comm_2', label: 'Router', heuristicLabel: 'Routing', cohesion: 0.6, symbolCount: 2 },
     ];
@@ -185,15 +192,31 @@ describe('enrichment', () => {
 
     it('processes all clusters in batches and returns enrichments', async () => {
       const batchResponse = JSON.stringify([
-        { id: 'comm_0', name: 'Auth Module', keywords: ['auth', 'login'], description: 'Authentication logic' },
-        { id: 'comm_1', name: 'Utility Helpers', keywords: ['utils'], description: 'Common utilities' },
+        {
+          id: 'comm_0',
+          name: 'Auth Module',
+          keywords: ['auth', 'login'],
+          description: 'Authentication logic',
+        },
+        {
+          id: 'comm_1',
+          name: 'Utility Helpers',
+          keywords: ['utils'],
+          description: 'Common utilities',
+        },
       ]);
       const batchResponse2 = JSON.stringify([
-        { id: 'comm_2', name: 'HTTP Router', keywords: ['routing'], description: 'Request routing' },
+        {
+          id: 'comm_2',
+          name: 'HTTP Router',
+          keywords: ['routing'],
+          description: 'Request routing',
+        },
       ]);
 
       const mockLLM: LLMClient = {
-        generate: vi.fn()
+        generate: vi
+          .fn()
           .mockResolvedValueOnce(batchResponse)
           .mockResolvedValueOnce(batchResponse2),
       };

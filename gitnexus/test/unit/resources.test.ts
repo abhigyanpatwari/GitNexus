@@ -20,16 +20,22 @@ import {
 function createMockBackend(overrides: Partial<Record<string, any>> = {}): any {
   return {
     listRepos: vi.fn().mockResolvedValue(overrides.repos ?? []),
-    resolveRepo: vi.fn().mockResolvedValue(overrides.resolvedRepo ?? {
-      name: 'test-repo',
-      repoPath: '/tmp/test-repo',
-      lastCommit: 'abc1234',
-    }),
+    resolveRepo: vi.fn().mockResolvedValue(
+      overrides.resolvedRepo ?? {
+        name: 'test-repo',
+        repoPath: '/tmp/test-repo',
+        lastCommit: 'abc1234',
+      },
+    ),
     getContext: vi.fn().mockReturnValue(overrides.context ?? null),
     queryClusters: vi.fn().mockResolvedValue(overrides.clusters ?? { clusters: [] }),
     queryProcesses: vi.fn().mockResolvedValue(overrides.processes ?? { processes: [] }),
-    queryClusterDetail: vi.fn().mockResolvedValue(overrides.clusterDetail ?? { error: 'Not found' }),
-    queryProcessDetail: vi.fn().mockResolvedValue(overrides.processDetail ?? { error: 'Not found' }),
+    queryClusterDetail: vi
+      .fn()
+      .mockResolvedValue(overrides.clusterDetail ?? { error: 'Not found' }),
+    queryProcessDetail: vi
+      .fn()
+      .mockResolvedValue(overrides.processDetail ?? { error: 'Not found' }),
     ...overrides,
   };
 }
@@ -44,14 +50,14 @@ describe('getResourceDefinitions', () => {
 
   it('includes repos resource', () => {
     const defs = getResourceDefinitions();
-    const repos = defs.find(d => d.uri === 'gitnexus://repos');
+    const repos = defs.find((d) => d.uri === 'gitnexus://repos');
     expect(repos).toBeDefined();
     expect(repos!.mimeType).toBe('text/yaml');
   });
 
   it('includes setup resource', () => {
     const defs = getResourceDefinitions();
-    const setup = defs.find(d => d.uri === 'gitnexus://setup');
+    const setup = defs.find((d) => d.uri === 'gitnexus://setup');
     expect(setup).toBeDefined();
     expect(setup!.mimeType).toBe('text/markdown');
   });
@@ -74,7 +80,7 @@ describe('getResourceTemplates', () => {
 
   it('includes context, clusters, processes, schema, cluster detail, process detail', () => {
     const templates = getResourceTemplates();
-    const uris = templates.map(t => t.uriTemplate);
+    const uris = templates.map((t) => t.uriTemplate);
     expect(uris).toContain('gitnexus://repo/{name}/context');
     expect(uris).toContain('gitnexus://repo/{name}/clusters');
     expect(uris).toContain('gitnexus://repo/{name}/processes');
@@ -99,7 +105,13 @@ describe('readResource', () => {
   it('routes gitnexus://repos to listRepos', async () => {
     const backend = createMockBackend({
       repos: [
-        { name: 'my-project', path: '/home/me/my-project', indexedAt: '2024-01-01', lastCommit: 'abc1234', stats: { files: 10, nodes: 50, processes: 5 } },
+        {
+          name: 'my-project',
+          path: '/home/me/my-project',
+          indexedAt: '2024-01-01',
+          lastCommit: 'abc1234',
+          stats: { files: 10, nodes: 50, processes: 5 },
+        },
       ],
     });
 
@@ -117,7 +129,13 @@ describe('readResource', () => {
   it('routes gitnexus://setup to setup resource', async () => {
     const backend = createMockBackend({
       repos: [
-        { name: 'proj', path: '/tmp/proj', indexedAt: '2024-01-01', lastCommit: 'abc', stats: { nodes: 10, edges: 20, processes: 3 } },
+        {
+          name: 'proj',
+          path: '/tmp/proj',
+          indexedAt: '2024-01-01',
+          lastCommit: 'abc',
+          stats: { nodes: 10, edges: 20, processes: 3 },
+        },
       ],
     });
     const result = await readResource('gitnexus://setup', backend);
@@ -162,9 +180,7 @@ describe('readResource', () => {
   it('routes gitnexus://repo/{name}/clusters correctly', async () => {
     const backend = createMockBackend({
       clusters: {
-        clusters: [
-          { heuristicLabel: 'Auth', symbolCount: 10, cohesion: 0.9 },
-        ],
+        clusters: [{ heuristicLabel: 'Auth', symbolCount: 10, cohesion: 0.9 }],
       },
     });
     const result = await readResource('gitnexus://repo/test/clusters', backend);
@@ -188,9 +204,7 @@ describe('readResource', () => {
   it('routes gitnexus://repo/{name}/processes correctly', async () => {
     const backend = createMockBackend({
       processes: {
-        processes: [
-          { heuristicLabel: 'LoginFlow', processType: 'intra_community', stepCount: 3 },
-        ],
+        processes: [{ heuristicLabel: 'LoginFlow', processType: 'intra_community', stepCount: 3 }],
       },
     });
     const result = await readResource('gitnexus://repo/test/processes', backend);
@@ -209,9 +223,7 @@ describe('readResource', () => {
     const backend = createMockBackend({
       clusterDetail: {
         cluster: { heuristicLabel: 'Auth', symbolCount: 5, cohesion: 0.85 },
-        members: [
-          { name: 'login', type: 'Function', filePath: 'src/auth.ts' },
-        ],
+        members: [{ name: 'login', type: 'Function', filePath: 'src/auth.ts' }],
       },
     });
     const result = await readResource('gitnexus://repo/test/cluster/Auth', backend);
@@ -255,14 +267,16 @@ describe('readResource', () => {
 
   it('throws for unknown resource URI', async () => {
     const backend = createMockBackend();
-    await expect(readResource('gitnexus://unknown', backend))
-      .rejects.toThrow('Unknown resource URI');
+    await expect(readResource('gitnexus://unknown', backend)).rejects.toThrow(
+      'Unknown resource URI',
+    );
   });
 
   it('throws for unknown repo-scoped resource type', async () => {
     const backend = createMockBackend();
-    await expect(readResource('gitnexus://repo/test/nonexistent', backend))
-      .rejects.toThrow('Unknown resource');
+    await expect(readResource('gitnexus://repo/test/nonexistent', backend)).rejects.toThrow(
+      'Unknown resource',
+    );
   });
 
   it('decodes URI-encoded repo names', async () => {

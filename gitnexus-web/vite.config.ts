@@ -8,10 +8,7 @@ const _require = createRequire(import.meta.url);
 const gitnexusPkg = _require('../gitnexus/package.json');
 
 export default defineConfig({
-  plugins: [
-    react(),
-    tailwindcss(),
-  ],
+  plugins: [react(), tailwindcss()],
   define: {
     __REQUIRED_NODE_VERSION__: JSON.stringify(gitnexusPkg.engines.node.replace(/[>=^~\s]/g, '')),
   },
@@ -20,9 +17,12 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
       '@shared': path.resolve(__dirname, '../shared'),
       // Fix for Rollup failing to resolve this deep import from @langchain/anthropic
-      '@anthropic-ai/sdk/lib/transform-json-schema': path.resolve(__dirname, 'node_modules/@anthropic-ai/sdk/lib/transform-json-schema.mjs'),
+      '@anthropic-ai/sdk/lib/transform-json-schema': path.resolve(
+        __dirname,
+        'node_modules/@anthropic-ai/sdk/lib/transform-json-schema.mjs',
+      ),
       // Fix for mermaid d3-color prototype crash on Vercel (known issue with mermaid 10.9.0+ and Vite)
-      'mermaid': path.resolve(__dirname, 'node_modules/mermaid/dist/mermaid.esm.min.mjs'),
+      mermaid: path.resolve(__dirname, 'node_modules/mermaid/dist/mermaid.esm.min.mjs'),
     },
   },
   server: {

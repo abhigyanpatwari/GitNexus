@@ -9,23 +9,41 @@ import type { SyntaxNode } from '../utils/ast-helpers.js';
 export const EXTENSIONS = [
   '',
   // TypeScript/JavaScript
-  '.tsx', '.ts', '.jsx', '.js', '/index.tsx', '/index.ts', '/index.jsx', '/index.js',
+  '.tsx',
+  '.ts',
+  '.jsx',
+  '.js',
+  '/index.tsx',
+  '/index.ts',
+  '/index.jsx',
+  '/index.js',
   // Python
-  '.py', '/__init__.py',
+  '.py',
+  '/__init__.py',
   // Java
   '.java',
   // Kotlin
-  '.kt', '.kts',
+  '.kt',
+  '.kts',
   // C/C++
-  '.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.hxx', '.hh',
+  '.c',
+  '.h',
+  '.cpp',
+  '.hpp',
+  '.cc',
+  '.cxx',
+  '.hxx',
+  '.hh',
   // C#
   '.cs',
   // Go
   '.go',
   // Rust
-  '.rs', '/mod.rs',
+  '.rs',
+  '/mod.rs',
   // PHP
-  '.php', '.phtml',
+  '.php',
+  '.phtml',
   // Swift
   '.swift',
   // Ruby
@@ -36,10 +54,7 @@ export const EXTENSIONS = [
  * Try to match a path (with extensions) against the known file set.
  * Returns the matched file path or null.
  */
-export function tryResolveWithExtensions(
-  basePath: string,
-  allFiles: Set<string>,
-): string | null {
+export function tryResolveWithExtensions(basePath: string, allFiles: Set<string>): string | null {
   for (const ext of EXTENSIONS) {
     const candidate = basePath + ext;
     if (allFiles.has(candidate)) return candidate;
@@ -157,8 +172,10 @@ export function suffixResolve(
     for (const ext of EXTENSIONS) {
       const suffixWithExt = suffix + ext;
       const suffixPattern = '/' + suffixWithExt;
-      const matchIdx = normalizedFileList.findIndex(filePath =>
-        filePath.endsWith(suffixPattern) || filePath.toLowerCase().endsWith(suffixPattern.toLowerCase())
+      const matchIdx = normalizedFileList.findIndex(
+        (filePath) =>
+          filePath.endsWith(suffixPattern) ||
+          filePath.toLowerCase().endsWith(suffixPattern.toLowerCase()),
       );
       if (matchIdx !== -1) {
         return allFileList[matchIdx];
@@ -167,4 +184,3 @@ export function suffixResolve(
   }
   return null;
 }
-

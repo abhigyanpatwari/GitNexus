@@ -8,14 +8,8 @@ import { WebGPUFallbackDialog } from './WebGPUFallbackDialog';
  * Shows in header when graph is loaded
  */
 export const EmbeddingStatus = () => {
-  const {
-    embeddingStatus,
-    embeddingProgress,
-    startEmbeddings,
-    graph,
-    viewMode,
-    serverBaseUrl,
-  } = useAppState();
+  const { embeddingStatus, embeddingProgress, startEmbeddings, graph, viewMode, serverBaseUrl } =
+    useAppState();
 
   const [showFallbackDialog, setShowFallbackDialog] = useState(false);
 
@@ -29,8 +23,10 @@ export const EmbeddingStatus = () => {
       await startEmbeddings();
     } catch (error: any) {
       // Check if it's a WebGPU not available error
-      if (error?.name === 'WebGPUNotAvailableError' || 
-          error?.message?.includes('WebGPU not available')) {
+      if (
+        error?.name === 'WebGPUNotAvailableError' ||
+        error?.message?.includes('WebGPU not available')
+      ) {
         setShowFallbackDialog(true);
       } else {
         console.error('Embedding failed:', error);
@@ -47,7 +43,7 @@ export const EmbeddingStatus = () => {
     setShowFallbackDialog(false);
     // Just close - user can try again later if they want
   };
-  
+
   // WebGPU fallback dialog - rendered independently of state
   const fallbackDialog = (
     <WebGPUFallbackDialog
@@ -66,12 +62,12 @@ export const EmbeddingStatus = () => {
         <div className="flex items-center gap-2">
           <button
             onClick={() => handleStartEmbeddings()}
-            className="flex items-center gap-2 px-3 py-1.5 bg-surface border border-border-subtle rounded-lg text-sm text-text-secondary hover:bg-hover hover:text-text-primary hover:border-accent/50 transition-all group"
+            className="group flex items-center gap-2 rounded-lg border border-border-subtle bg-surface px-3 py-1.5 text-sm text-text-secondary transition-all hover:border-accent/50 hover:bg-hover hover:text-text-primary"
             title="Generate embeddings for semantic search"
           >
-            <Brain className="w-4 h-4 text-node-interface group-hover:text-accent transition-colors" />
+            <Brain className="h-4 w-4 text-node-interface transition-colors group-hover:text-accent" />
             <span className="hidden sm:inline">Enable Semantic Search</span>
-            <Zap className="w-3 h-3 text-text-muted" />
+            <Zap className="h-3 w-3 text-text-muted" />
           </button>
         </div>
         {fallbackDialog}
@@ -84,13 +80,13 @@ export const EmbeddingStatus = () => {
     const downloadPercent = embeddingProgress?.percent ?? 0;
     return (
       <>
-        <div className="flex items-center gap-2.5 px-3 py-1.5 bg-surface border border-accent/30 rounded-lg text-sm">
-          <Loader2 className="w-4 h-4 text-accent animate-spin" />
+        <div className="flex items-center gap-2.5 rounded-lg border border-accent/30 bg-surface px-3 py-1.5 text-sm">
+          <Loader2 className="h-4 w-4 animate-spin text-accent" />
           <div className="flex flex-col gap-0.5">
-            <span className="text-text-secondary text-xs">Loading AI model...</span>
-            <div className="w-24 h-1 bg-elevated rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-gradient-to-r from-accent to-node-interface rounded-full transition-all duration-300"
+            <span className="text-xs text-text-secondary">Loading AI model...</span>
+            <div className="h-1 w-24 overflow-hidden rounded-full bg-elevated">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-accent to-node-interface transition-all duration-300"
                 style={{ width: `${downloadPercent}%` }}
               />
             </div>
@@ -106,17 +102,17 @@ export const EmbeddingStatus = () => {
     const processed = 0;
     const total = 0;
     const percent = embeddingProgress?.percent ?? 0;
-    
+
     return (
-      <div className="flex items-center gap-2.5 px-3 py-1.5 bg-surface border border-node-function/30 rounded-lg text-sm">
-        <Loader2 className="w-4 h-4 text-node-function animate-spin" />
+      <div className="flex items-center gap-2.5 rounded-lg border border-node-function/30 bg-surface px-3 py-1.5 text-sm">
+        <Loader2 className="h-4 w-4 animate-spin text-node-function" />
         <div className="flex flex-col gap-0.5">
-          <span className="text-text-secondary text-xs">
+          <span className="text-xs text-text-secondary">
             Embedding {processed}/{total} nodes
           </span>
-          <div className="w-24 h-1 bg-elevated rounded-full overflow-hidden">
-            <div 
-              className="h-full bg-gradient-to-r from-node-function to-accent rounded-full transition-all duration-300"
+          <div className="h-1 w-24 overflow-hidden rounded-full bg-elevated">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-node-function to-accent transition-all duration-300"
               style={{ width: `${percent}%` }}
             />
           </div>
@@ -128,8 +124,8 @@ export const EmbeddingStatus = () => {
   // Indexing
   if (embeddingStatus === 'indexing') {
     return (
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-surface border border-node-interface/30 rounded-lg text-sm text-text-secondary">
-        <Loader2 className="w-4 h-4 text-node-interface animate-spin" />
+      <div className="flex items-center gap-2 rounded-lg border border-node-interface/30 bg-surface px-3 py-1.5 text-sm text-text-secondary">
+        <Loader2 className="h-4 w-4 animate-spin text-node-interface" />
         <span className="text-xs">Creating vector index...</span>
       </div>
     );
@@ -138,11 +134,11 @@ export const EmbeddingStatus = () => {
   // Ready
   if (embeddingStatus === 'ready') {
     return (
-      <div 
-        className="flex items-center gap-2 px-3 py-1.5 bg-node-function/10 border border-node-function/30 rounded-lg text-sm text-node-function"
+      <div
+        className="flex items-center gap-2 rounded-lg border border-node-function/30 bg-node-function/10 px-3 py-1.5 text-sm text-node-function"
         title="Semantic search is ready! Use natural language in the AI chat."
       >
-        <Check className="w-4 h-4" />
+        <Check className="h-4 w-4" />
         <span className="text-xs font-medium">Semantic Ready</span>
       </div>
     );
@@ -154,10 +150,10 @@ export const EmbeddingStatus = () => {
       <>
         <button
           onClick={() => handleStartEmbeddings()}
-          className="flex items-center gap-2 px-3 py-1.5 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400 hover:bg-red-500/20 transition-colors"
+          className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-sm text-red-400 transition-colors hover:bg-red-500/20"
           title="Embedding failed. Click to retry."
         >
-          <AlertCircle className="w-4 h-4" />
+          <AlertCircle className="h-4 w-4" />
           <span className="text-xs">Failed - Retry</span>
         </button>
         {fallbackDialog}
@@ -167,4 +163,3 @@ export const EmbeddingStatus = () => {
 
   return null;
 };
-

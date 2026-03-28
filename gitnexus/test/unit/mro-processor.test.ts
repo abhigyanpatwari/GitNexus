@@ -8,7 +8,12 @@ import { generateId } from '../../src/lib/utils.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
-function addClass(graph: KnowledgeGraph, name: string, language: string, label: 'Class' | 'Interface' | 'Struct' | 'Trait' = 'Class') {
+function addClass(
+  graph: KnowledgeGraph,
+  name: string,
+  language: string,
+  label: 'Class' | 'Interface' | 'Struct' | 'Trait' = 'Class',
+) {
   const id = generateId(label, name);
   graph.addNode({
     id,
@@ -18,7 +23,12 @@ function addClass(graph: KnowledgeGraph, name: string, language: string, label: 
   return id;
 }
 
-function addMethod(graph: KnowledgeGraph, className: string, methodName: string, classLabel: 'Class' | 'Interface' | 'Struct' | 'Trait' = 'Class') {
+function addMethod(
+  graph: KnowledgeGraph,
+  className: string,
+  methodName: string,
+  classLabel: 'Class' | 'Interface' | 'Struct' | 'Trait' = 'Class',
+) {
   const classId = generateId(classLabel, className);
   const methodId = generateId('Method', `${className}.${methodName}`);
   graph.addNode({
@@ -37,7 +47,13 @@ function addMethod(graph: KnowledgeGraph, className: string, methodName: string,
   return methodId;
 }
 
-function addExtends(graph: KnowledgeGraph, childName: string, parentName: string, childLabel: 'Class' | 'Struct' = 'Class', parentLabel: 'Class' | 'Interface' | 'Trait' = 'Class') {
+function addExtends(
+  graph: KnowledgeGraph,
+  childName: string,
+  parentName: string,
+  childLabel: 'Class' | 'Struct' = 'Class',
+  parentLabel: 'Class' | 'Interface' | 'Trait' = 'Class',
+) {
   const childId = generateId(childLabel, childName);
   const parentId = generateId(parentLabel, parentName);
   graph.addRelationship({
@@ -50,7 +66,13 @@ function addExtends(graph: KnowledgeGraph, childName: string, parentName: string
   });
 }
 
-function addImplements(graph: KnowledgeGraph, childName: string, parentName: string, childLabel: 'Class' | 'Struct' = 'Class', parentLabel: 'Interface' | 'Trait' = 'Interface') {
+function addImplements(
+  graph: KnowledgeGraph,
+  childName: string,
+  parentName: string,
+  childLabel: 'Class' | 'Struct' = 'Class',
+  parentLabel: 'Interface' | 'Trait' = 'Interface',
+) {
   const childId = generateId(childLabel, childName);
   const parentId = generateId(parentLabel, parentName);
   graph.addRelationship({
@@ -68,7 +90,6 @@ function addImplements(graph: KnowledgeGraph, childName: string, parentName: str
 // ---------------------------------------------------------------------------
 
 describe('computeMRO', () => {
-
   // ---- C++ diamond --------------------------------------------------------
   describe('C++ diamond inheritance', () => {
     it('leftmost base wins when both B and C override foo', () => {
@@ -92,11 +113,11 @@ describe('computeMRO', () => {
       const result = computeMRO(graph);
 
       // D should have an entry with ambiguity on foo
-      const dEntry = result.entries.find(e => e.className === 'D');
+      const dEntry = result.entries.find((e) => e.className === 'D');
       expect(dEntry).toBeDefined();
       expect(dEntry!.language).toBe('cpp');
 
-      const fooAmbiguity = dEntry!.ambiguities.find(a => a.methodName === 'foo');
+      const fooAmbiguity = dEntry!.ambiguities.find((a) => a.methodName === 'foo');
       expect(fooAmbiguity).toBeDefined();
       expect(fooAmbiguity!.definedIn.length).toBeGreaterThanOrEqual(2);
 
@@ -107,8 +128,8 @@ describe('computeMRO', () => {
 
       // OVERRIDES edge emitted
       expect(result.overrideEdges).toBeGreaterThanOrEqual(1);
-      const overrides = graph.relationships.filter(r => r.type === 'OVERRIDES');
-      expect(overrides.some(r => r.sourceId === dId && r.targetId === bFoo)).toBe(true);
+      const overrides = graph.relationships.filter((r) => r.type === 'OVERRIDES');
+      expect(overrides.some((r) => r.sourceId === dId && r.targetId === bFoo)).toBe(true);
     });
 
     it('no ambiguity when foo only in A (diamond no override)', () => {
@@ -129,11 +150,11 @@ describe('computeMRO', () => {
 
       const result = computeMRO(graph);
 
-      const dEntry = result.entries.find(e => e.className === 'D');
+      const dEntry = result.entries.find((e) => e.className === 'D');
       expect(dEntry).toBeDefined();
       // A::foo appears only once across ancestors — no collision
       // (B and C don't have their own foo, the duplicate is A::foo seen through both paths)
-      const fooAmbiguity = dEntry!.ambiguities.find(a => a.methodName === 'foo');
+      const fooAmbiguity = dEntry!.ambiguities.find((a) => a.methodName === 'foo');
       expect(fooAmbiguity).toBeUndefined();
     });
   });
@@ -154,10 +175,10 @@ describe('computeMRO', () => {
 
       const result = computeMRO(graph);
 
-      const entry = result.entries.find(e => e.className === 'MyClass');
+      const entry = result.entries.find((e) => e.className === 'MyClass');
       expect(entry).toBeDefined();
 
-      const doItAmbiguity = entry!.ambiguities.find(a => a.methodName === 'doIt');
+      const doItAmbiguity = entry!.ambiguities.find((a) => a.methodName === 'doIt');
       expect(doItAmbiguity).toBeDefined();
       // Class method wins
       expect(doItAmbiguity!.resolvedTo).toBe(baseDoIt);
@@ -178,10 +199,10 @@ describe('computeMRO', () => {
 
       const result = computeMRO(graph);
 
-      const entry = result.entries.find(e => e.className === 'MyClass');
+      const entry = result.entries.find((e) => e.className === 'MyClass');
       expect(entry).toBeDefined();
 
-      const processAmbiguity = entry!.ambiguities.find(a => a.methodName === 'process');
+      const processAmbiguity = entry!.ambiguities.find((a) => a.methodName === 'process');
       expect(processAmbiguity).toBeDefined();
       expect(processAmbiguity!.resolvedTo).toBeNull();
       expect(processAmbiguity!.reason).toContain('ambiguous');
@@ -211,10 +232,10 @@ describe('computeMRO', () => {
 
       const result = computeMRO(graph);
 
-      const dEntry = result.entries.find(e => e.className === 'D');
+      const dEntry = result.entries.find((e) => e.className === 'D');
       expect(dEntry).toBeDefined();
 
-      const fooAmbiguity = dEntry!.ambiguities.find(a => a.methodName === 'foo');
+      const fooAmbiguity = dEntry!.ambiguities.find((a) => a.methodName === 'foo');
       expect(fooAmbiguity).toBeDefined();
       // C3 linearization for D(B, C): B comes first
       expect(fooAmbiguity!.resolvedTo).toBe(bFoo);
@@ -238,10 +259,10 @@ describe('computeMRO', () => {
 
       const result = computeMRO(graph);
 
-      const entry = result.entries.find(e => e.className === 'Service');
+      const entry = result.entries.find((e) => e.className === 'Service');
       expect(entry).toBeDefined();
 
-      const runAmbiguity = entry!.ambiguities.find(a => a.methodName === 'run');
+      const runAmbiguity = entry!.ambiguities.find((a) => a.methodName === 'run');
       expect(runAmbiguity).toBeDefined();
       expect(runAmbiguity!.resolvedTo).toBe(baseRun);
       expect(runAmbiguity!.reason).toContain('class method wins');
@@ -264,10 +285,10 @@ describe('computeMRO', () => {
 
       const result = computeMRO(graph);
 
-      const entry = result.entries.find(e => e.className === 'MyStruct');
+      const entry = result.entries.find((e) => e.className === 'MyStruct');
       expect(entry).toBeDefined();
 
-      const execAmbiguity = entry!.ambiguities.find(a => a.methodName === 'execute');
+      const execAmbiguity = entry!.ambiguities.find((a) => a.methodName === 'execute');
       expect(execAmbiguity).toBeDefined();
       expect(execAmbiguity!.resolvedTo).toBeNull();
       expect(execAmbiguity!.reason).toContain('qualified syntax');
@@ -275,7 +296,7 @@ describe('computeMRO', () => {
 
       // No OVERRIDES edge emitted for Rust ambiguity
       const overrides = graph.relationships.filter(
-        r => r.type === 'OVERRIDES' && r.sourceId === generateId('Struct', 'MyStruct')
+        (r) => r.type === 'OVERRIDES' && r.sourceId === generateId('Struct', 'MyStruct'),
       );
       expect(overrides).toHaveLength(0);
     });
@@ -294,23 +315,39 @@ describe('computeMRO', () => {
 
       // Add Property nodes (same name 'name') to both parents via HAS_PROPERTY
       const propA = generateId('Property', 'ParentA.name');
-      graph.addNode({ id: propA, label: 'Property', properties: { name: 'name', filePath: 'src/ParentA.ts' } });
+      graph.addNode({
+        id: propA,
+        label: 'Property',
+        properties: { name: 'name', filePath: 'src/ParentA.ts' },
+      });
       graph.addRelationship({
         id: generateId('HAS_PROPERTY', `${parentA}->${propA}`),
-        sourceId: parentA, targetId: propA, type: 'HAS_PROPERTY', confidence: 1.0, reason: '',
+        sourceId: parentA,
+        targetId: propA,
+        type: 'HAS_PROPERTY',
+        confidence: 1.0,
+        reason: '',
       });
 
       const propB = generateId('Property', 'ParentB.name');
-      graph.addNode({ id: propB, label: 'Property', properties: { name: 'name', filePath: 'src/ParentB.ts' } });
+      graph.addNode({
+        id: propB,
+        label: 'Property',
+        properties: { name: 'name', filePath: 'src/ParentB.ts' },
+      });
       graph.addRelationship({
         id: generateId('HAS_PROPERTY', `${parentB}->${propB}`),
-        sourceId: parentB, targetId: propB, type: 'HAS_PROPERTY', confidence: 1.0, reason: '',
+        sourceId: parentB,
+        targetId: propB,
+        type: 'HAS_PROPERTY',
+        confidence: 1.0,
+        reason: '',
       });
 
       const result = computeMRO(graph);
 
       // No OVERRIDES edge should be emitted for properties
-      const overrides = graph.relationships.filter(r => r.type === 'OVERRIDES');
+      const overrides = graph.relationships.filter((r) => r.type === 'OVERRIDES');
       expect(overrides).toHaveLength(0);
       expect(result.overrideEdges).toBe(0);
     });
@@ -330,23 +367,39 @@ describe('computeMRO', () => {
 
       // Property collision (should NOT trigger OVERRIDES — properties use HAS_PROPERTY, not HAS_METHOD)
       const propA = generateId('Property', 'PA.id');
-      graph.addNode({ id: propA, label: 'Property', properties: { name: 'id', filePath: 'src/PA.ts' } });
+      graph.addNode({
+        id: propA,
+        label: 'Property',
+        properties: { name: 'id', filePath: 'src/PA.ts' },
+      });
       graph.addRelationship({
         id: generateId('HAS_PROPERTY', `${parentA}->${propA}`),
-        sourceId: parentA, targetId: propA, type: 'HAS_PROPERTY', confidence: 1.0, reason: '',
+        sourceId: parentA,
+        targetId: propA,
+        type: 'HAS_PROPERTY',
+        confidence: 1.0,
+        reason: '',
       });
 
       const propB = generateId('Property', 'PB.id');
-      graph.addNode({ id: propB, label: 'Property', properties: { name: 'id', filePath: 'src/PB.ts' } });
+      graph.addNode({
+        id: propB,
+        label: 'Property',
+        properties: { name: 'id', filePath: 'src/PB.ts' },
+      });
       graph.addRelationship({
         id: generateId('HAS_PROPERTY', `${parentB}->${propB}`),
-        sourceId: parentB, targetId: propB, type: 'HAS_PROPERTY', confidence: 1.0, reason: '',
+        sourceId: parentB,
+        targetId: propB,
+        type: 'HAS_PROPERTY',
+        confidence: 1.0,
+        reason: '',
       });
 
       const result = computeMRO(graph);
 
       // Only 1 OVERRIDES edge (for the method, not the property)
-      const overrides = graph.relationships.filter(r => r.type === 'OVERRIDES');
+      const overrides = graph.relationships.filter((r) => r.type === 'OVERRIDES');
       expect(overrides).toHaveLength(1);
       expect(overrides[0].targetId).toBe(methodA); // leftmost base wins for C++
       expect(result.overrideEdges).toBe(1);
@@ -367,7 +420,7 @@ describe('computeMRO', () => {
 
       const result = computeMRO(graph);
 
-      const entry = result.entries.find(e => e.className === 'Child');
+      const entry = result.entries.find((e) => e.className === 'Child');
       expect(entry).toBeDefined();
       expect(entry!.ambiguities).toHaveLength(0);
     });
@@ -382,7 +435,7 @@ describe('computeMRO', () => {
 
       const result = computeMRO(graph);
 
-      const entry = result.entries.find(e => e.className === 'Standalone');
+      const entry = result.entries.find((e) => e.className === 'Standalone');
       expect(entry).toBeUndefined();
       expect(result.overrideEdges).toBe(0);
       expect(result.ambiguityCount).toBe(0);
@@ -406,10 +459,10 @@ describe('computeMRO', () => {
 
       const result = computeMRO(graph);
 
-      const entry = result.entries.find(e => e.className === 'Child');
+      const entry = result.entries.find((e) => e.className === 'Child');
       expect(entry).toBeDefined();
       // No ambiguity because Child defines its own foo
-      const fooAmbiguity = entry!.ambiguities.find(a => a.methodName === 'foo');
+      const fooAmbiguity = entry!.ambiguities.find((a) => a.methodName === 'foo');
       expect(fooAmbiguity).toBeUndefined();
     });
   });

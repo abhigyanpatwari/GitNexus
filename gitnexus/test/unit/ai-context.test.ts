@@ -17,7 +17,9 @@ describe('generateAIContextFiles', () => {
   afterAll(async () => {
     try {
       await fs.rm(tmpDir, { recursive: true, force: true });
-    } catch { /* best-effort */ }
+    } catch {
+      /* best-effort */
+    }
   });
 
   it('generates context files', async () => {

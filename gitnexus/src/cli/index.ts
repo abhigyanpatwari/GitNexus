@@ -11,16 +11,12 @@ const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
 const program = new Command();
 
-program
-  .name('gitnexus')
-  .description('GitNexus local CLI and MCP server')
-  .version(pkg.version);
+program.name('gitnexus').description('GitNexus local CLI and MCP server').version(pkg.version);
 
 program
   .command('setup')
   .description('One-time setup: configure MCP for Cursor, Claude Code, OpenCode, Codex')
   .action(createLazyAction(() => import('./setup.js'), 'setupCommand'));
-
 
 program
   .command('analyze [path]')
@@ -29,13 +25,18 @@ program
   .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
   .option('--skills', 'Generate repo-specific skill files from detected communities')
   .option('--skip-git', 'Index a folder without requiring a .git directory')
-   .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')
-   .addHelpText('after', '\nEnvironment variables:\n  GITNEXUS_NO_GITIGNORE=1  Skip .gitignore parsing (still reads .gitnexusignore)')
-   .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
+  .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')
+  .addHelpText(
+    'after',
+    '\nEnvironment variables:\n  GITNEXUS_NO_GITIGNORE=1  Skip .gitignore parsing (still reads .gitnexusignore)',
+  )
+  .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
 
 program
   .command('index [path...]')
-  .description('Register an existing .gitnexus/ folder into the global registry (no re-analysis needed)')
+  .description(
+    'Register an existing .gitnexus/ folder into the global registry (no re-analysis needed)',
+  )
   .option('-f, --force', 'Register even if meta.json is missing (stats will be empty)')
   .option('--allow-non-git', 'Allow registering folders that are not Git repositories')
   .action(createLazyAction(() => import('./index-repo.js'), 'indexCommand'));

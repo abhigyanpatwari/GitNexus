@@ -81,12 +81,18 @@ const resolveHeritageId = (
   if (resolved && resolved.candidates.length > 0) {
     // For global with multiple candidates, refuse (a wrong edge is worse than no edge)
     if (resolved.tier === 'global' && resolved.candidates.length > 1) {
-      return { id: generateId(fallbackLabel, fallbackKey ?? name), confidence: TIER_CONFIDENCE['global'] };
+      return {
+        id: generateId(fallbackLabel, fallbackKey ?? name),
+        confidence: TIER_CONFIDENCE['global'],
+      };
     }
     return { id: resolved.candidates[0].nodeId, confidence: TIER_CONFIDENCE[resolved.tier] };
   }
   // Unresolved: use global-tier confidence as fallback
-  return { id: generateId(fallbackLabel, fallbackKey ?? name), confidence: TIER_CONFIDENCE['global'] };
+  return {
+    id: generateId(fallbackLabel, fallbackKey ?? name),
+    confidence: TIER_CONFIDENCE['global'],
+  };
 };
 
 export const processHeritage = async (
@@ -127,7 +133,9 @@ export const processHeritage = async (
     if (!tree) {
       // Use larger bufferSize for files > 32KB
       try {
-        tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
+        tree = parser.parse(file.content, undefined, {
+          bufferSize: getTreeSitterBufferSize(file.content.length),
+        });
       } catch (parseError) {
         // Skip files that can't be parsed
         continue;
@@ -148,9 +156,9 @@ export const processHeritage = async (
     }
 
     // 4. Process heritage matches
-    matches.forEach(match => {
+    matches.forEach((match) => {
       const captureMap: Record<string, any> = {};
-      match.captures.forEach(c => {
+      match.captures.forEach((c) => {
         captureMap[c.name] = c.node;
       });
 
@@ -167,9 +175,20 @@ export const processHeritage = async (
         const className = captureMap['heritage.class'].text;
         const parentClassName = captureMap['heritage.extends'].text;
 
-        const { type: relType, idPrefix } = resolveExtendsType(parentClassName, file.path, ctx, language);
+        const { type: relType, idPrefix } = resolveExtendsType(
+          parentClassName,
+          file.path,
+          ctx,
+          language,
+        );
 
-        const child = resolveHeritageId(className, file.path, ctx, 'Class', `${file.path}:${className}`);
+        const child = resolveHeritageId(
+          className,
+          file.path,
+          ctx,
+          'Class',
+          `${file.path}:${className}`,
+        );
         const parent = resolveHeritageId(parentClassName, file.path, ctx, idPrefix);
 
         if (child.id && parent.id && child.id !== parent.id) {
@@ -189,7 +208,13 @@ export const processHeritage = async (
         const className = captureMap['heritage.class'].text;
         const interfaceName = captureMap['heritage.implements'].text;
 
-        const cls = resolveHeritageId(className, file.path, ctx, 'Class', `${file.path}:${className}`);
+        const cls = resolveHeritageId(
+          className,
+          file.path,
+          ctx,
+          'Class',
+          `${file.path}:${className}`,
+        );
         const iface = resolveHeritageId(interfaceName, file.path, ctx, 'Interface');
 
         if (cls.id && iface.id) {
@@ -209,7 +234,13 @@ export const processHeritage = async (
         const structName = captureMap['heritage.class'].text;
         const traitName = captureMap['heritage.trait'].text;
 
-        const strct = resolveHeritageId(structName, file.path, ctx, 'Struct', `${file.path}:${structName}`);
+        const strct = resolveHeritageId(
+          structName,
+          file.path,
+          ctx,
+          'Struct',
+          `${file.path}:${structName}`,
+        );
         const trait = resolveHeritageId(traitName, file.path, ctx, 'Trait');
 
         if (strct.id && trait.id) {
@@ -231,7 +262,7 @@ export const processHeritage = async (
   if (skippedByLang && skippedByLang.size > 0) {
     for (const [lang, count] of skippedByLang.entries()) {
       console.warn(
-        `[ingestion] Skipped ${count} ${lang} file(s) in heritage processing — ${lang} parser not available.`
+        `[ingestion] Skipped ${count} ${lang} file(s) in heritage processing — ${lang} parser not available.`,
       );
     }
   }
@@ -260,9 +291,20 @@ export const processHeritageFromExtracted = async (
     if (h.kind === 'extends') {
       const fileLanguage = getLanguageFromFilename(h.filePath);
       if (!fileLanguage) continue;
-      const { type: relType, idPrefix } = resolveExtendsType(h.parentName, h.filePath, ctx, fileLanguage);
+      const { type: relType, idPrefix } = resolveExtendsType(
+        h.parentName,
+        h.filePath,
+        ctx,
+        fileLanguage,
+      );
 
-      const child = resolveHeritageId(h.className, h.filePath, ctx, 'Class', `${h.filePath}:${h.className}`);
+      const child = resolveHeritageId(
+        h.className,
+        h.filePath,
+        ctx,
+        'Class',
+        `${h.filePath}:${h.className}`,
+      );
       const parent = resolveHeritageId(h.parentName, h.filePath, ctx, idPrefix);
 
       if (child.id && parent.id && child.id !== parent.id) {
@@ -276,7 +318,13 @@ export const processHeritageFromExtracted = async (
         });
       }
     } else if (h.kind === 'implements') {
-      const cls = resolveHeritageId(h.className, h.filePath, ctx, 'Class', `${h.filePath}:${h.className}`);
+      const cls = resolveHeritageId(
+        h.className,
+        h.filePath,
+        ctx,
+        'Class',
+        `${h.filePath}:${h.className}`,
+      );
       const iface = resolveHeritageId(h.parentName, h.filePath, ctx, 'Interface');
 
       if (cls.id && iface.id) {
@@ -289,8 +337,19 @@ export const processHeritageFromExtracted = async (
           reason: '',
         });
       }
-    } else if (h.kind === 'trait-impl' || h.kind === 'include' || h.kind === 'extend' || h.kind === 'prepend') {
-      const strct = resolveHeritageId(h.className, h.filePath, ctx, 'Struct', `${h.filePath}:${h.className}`);
+    } else if (
+      h.kind === 'trait-impl' ||
+      h.kind === 'include' ||
+      h.kind === 'extend' ||
+      h.kind === 'prepend'
+    ) {
+      const strct = resolveHeritageId(
+        h.className,
+        h.filePath,
+        ctx,
+        'Struct',
+        `${h.filePath}:${h.className}`,
+      );
       const trait = resolveHeritageId(h.parentName, h.filePath, ctx, 'Trait');
 
       if (strct.id && trait.id) {

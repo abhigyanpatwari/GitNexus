@@ -25,7 +25,11 @@ function buildShapeResult(
 /**
  * Detect an HTTP status code associated with a .json() call.
  */
-export function detectStatusCode(content: string, jsonMatchPos: number, closingBracePos: number): number | undefined {
+export function detectStatusCode(
+  content: string,
+  jsonMatchPos: number,
+  closingBracePos: number,
+): number | undefined {
   const lookbackStart = Math.max(0, jsonMatchPos - 200);
   const before = content.slice(lookbackStart, jsonMatchPos);
   const statusChainMatch = before.match(/\.status\s*\(\s*(\d{3})\s*\)\s*$/);
@@ -53,7 +57,10 @@ export function detectStatusCode(content: string, jsonMatchPos: number, closingB
 /**
  * Extract response shapes from JS/TS handler file content.
  */
-export function extractResponseShapes(content: string): { responseKeys?: string[]; errorKeys?: string[] } {
+export function extractResponseShapes(content: string): {
+  responseKeys?: string[];
+  errorKeys?: string[];
+} {
   const successKeys: string[] = [];
   const errKeys: string[] = [];
   const jsonPattern = /\.json\s*\(/g;
@@ -72,7 +79,10 @@ export function extractResponseShapes(content: string): { responseKeys?: string[
     for (let j = i; j < content.length; j++) {
       const ch = content[j];
       if (inString) {
-        if (ch === '\\') { j++; continue; }
+        if (ch === '\\') {
+          j++;
+          continue;
+        }
         if (ch === inString) inString = null;
         continue;
       }
@@ -84,13 +94,26 @@ export function extractResponseShapes(content: string): { responseKeys?: string[
           const strStart = j + 1;
           let strEnd = -1;
           for (let s = strStart; s < content.length; s++) {
-            if (content[s] === '\\') { s++; continue; }
-            if (content[s] === quote) { strEnd = s; break; }
+            if (content[s] === '\\') {
+              s++;
+              continue;
+            }
+            if (content[s] === quote) {
+              strEnd = s;
+              break;
+            }
           }
           if (strEnd !== -1) {
             // Scan forward for ':' without allocating a substring
             let p = strEnd + 1;
-            while (p < content.length && (content[p] === ' ' || content[p] === '\t' || content[p] === '\n' || content[p] === '\r')) p++;
+            while (
+              p < content.length &&
+              (content[p] === ' ' ||
+                content[p] === '\t' ||
+                content[p] === '\n' ||
+                content[p] === '\r')
+            )
+              p++;
             if (content[p] === ':') {
               callKeys.push(content.slice(strStart, strEnd));
             }
@@ -101,8 +124,18 @@ export function extractResponseShapes(content: string): { responseKeys?: string[
         inString = ch;
         continue;
       }
-      if (ch === '{') { depth++; continue; }
-      if (ch === '}') { depth--; if (depth === 0) { closingBracePos = j; break; } continue; }
+      if (ch === '{') {
+        depth++;
+        continue;
+      }
+      if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          closingBracePos = j;
+          break;
+        }
+        continue;
+      }
       if (depth !== 1) continue;
       if (keyStart === -1 && /[a-zA-Z_$]/.test(ch)) {
         keyStart = j;
@@ -148,25 +181,45 @@ function detectPHPStatusCode(content: string, jsonEncodePos: number): number | u
   if (boundaryEnd !== -1) {
     before = before.slice(boundaryEnd);
   }
-  return lastMatchGroup(before, /http_response_code\s*\(\s*(\d{3})\s*\)/g)
-    ?? lastMatchGroup(before, /header\s*\(\s*['"]HTTP\/[\d.]+\s+(\d{3})/g)
+  return (
+    lastMatchGroup(before, /http_response_code\s*\(\s*(\d{3})\s*\)/g) ??
+    lastMatchGroup(before, /header\s*\(\s*['"]HTTP\/[\d.]+\s+(\d{3})/g) ??
     // CGI/FastCGI format
-    ?? lastMatchGroup(before, /header\s*\(\s*['"]Status:\s*(\d{3})/g);
+    lastMatchGroup(before, /header\s*\(\s*['"]Status:\s*(\d{3})/g)
+  );
 }
 
-function findMatchingBracket(content: string, openPos: number, open: string, close: string): number {
+function findMatchingBracket(
+  content: string,
+  openPos: number,
+  open: string,
+  close: string,
+): number {
   let depth = 0;
   let inString: string | null = null;
   for (let j = openPos; j < content.length; j++) {
     const ch = content[j];
     if (inString) {
-      if (ch === '\\') { j++; continue; }
+      if (ch === '\\') {
+        j++;
+        continue;
+      }
       if (ch === inString) inString = null;
       continue;
     }
-    if (ch === '"' || ch === "'") { inString = ch; continue; }
-    if (ch === open) { depth++; continue; }
-    if (ch === close) { depth--; if (depth === 0) return j; continue; }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === open) {
+      depth++;
+      continue;
+    }
+    if (ch === close) {
+      depth--;
+      if (depth === 0) return j;
+      continue;
+    }
   }
   return -1;
 }
@@ -180,11 +233,17 @@ function extractPHPArrayKeys(arrayContent: string): string[] {
   for (let i = 0; i < arrayContent.length; i++) {
     const ch = arrayContent[i];
     if (inString) {
-      if (ch === '\\') { i++; continue; }
+      if (ch === '\\') {
+        i++;
+        continue;
+      }
       if (ch === inString) inString = null;
       continue;
     }
-    if (ch === '"' || ch === "'") { inString = ch; continue; }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
     if (ch === '[' || ch === '(' || ch === '{') {
       if (depth === 0) topLevelRanges.push([rangeStart, i]);
       depth++;
@@ -205,7 +264,10 @@ function extractPHPArrayKeys(arrayContent: string): string[] {
   return keys;
 }
 
-export function extractPHPResponseShapes(content: string): { responseKeys?: string[]; errorKeys?: string[] } {
+export function extractPHPResponseShapes(content: string): {
+  responseKeys?: string[];
+  errorKeys?: string[];
+} {
   const successKeys: string[] = [];
   const errKeys: string[] = [];
   const jsonEncodePattern = /json_encode\s*\(/g;

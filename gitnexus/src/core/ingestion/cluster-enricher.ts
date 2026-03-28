@@ -1,6 +1,6 @@
 /**
  * Cluster Enricher
- * 
+ *
  * LLM-based enrichment for community clusters.
  * Generates semantic names, keywords, and descriptions using an LLM.
  */
@@ -36,43 +36,35 @@ export interface ClusterMemberInfo {
 // PROMPT TEMPLATE
 // ============================================================================
 
-const buildEnrichmentPrompt = (
-  members: ClusterMemberInfo[],
-  heuristicLabel: string
-): string => {
+const buildEnrichmentPrompt = (members: ClusterMemberInfo[], heuristicLabel: string): string => {
   // Limit to first 20 members to control token usage
   const limitedMembers = members.slice(0, 20);
-  
-  const memberList = limitedMembers
-    .map(m => `${m.name} (${m.type})`)
-    .join(', ');
-  
+
+  const memberList = limitedMembers.map((m) => `${m.name} (${m.type})`).join(', ');
+
   return `Analyze this code cluster and provide a semantic name and short description.
 
 Heuristic: "${heuristicLabel}"
 Members: ${memberList}${members.length > 20 ? ` (+${members.length - 20} more)` : ''}
 
 Reply with JSON only:
-{"name": "2-4 word semantic name", "description": "One sentence describing purpose"}`
+{"name": "2-4 word semantic name", "description": "One sentence describing purpose"}`;
 };
 
 // ============================================================================
 // PARSE LLM RESPONSE
 // ============================================================================
 
-const parseEnrichmentResponse = (
-  response: string,
-  fallbackLabel: string
-): ClusterEnrichment => {
+const parseEnrichmentResponse = (response: string, fallbackLabel: string): ClusterEnrichment => {
   try {
     // Extract JSON from response (handles markdown code blocks)
     const jsonMatch = response.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       throw new Error('No JSON found in response');
     }
-    
+
     const parsed = JSON.parse(jsonMatch[0]);
-    
+
     return {
       name: parsed.name || fallbackLabel,
       keywords: Array.isArray(parsed.keywords) ? parsed.keywords : [],
@@ -94,7 +86,7 @@ const parseEnrichmentResponse = (
 
 /**
  * Enrich clusters with LLM-generated names, keywords, and descriptions
- * 
+ *
  * @param communities - Community nodes to enrich
  * @param memberMap - Map of communityId -> member info
  * @param llmClient - LLM client for generation
@@ -104,17 +96,17 @@ export const enrichClusters = async (
   communities: CommunityNode[],
   memberMap: Map<string, ClusterMemberInfo[]>,
   llmClient: LLMClient,
-  onProgress?: (current: number, total: number) => void
+  onProgress?: (current: number, total: number) => void,
 ): Promise<EnrichmentResult> => {
   const enrichments = new Map<string, ClusterEnrichment>();
   let tokensUsed = 0;
-  
+
   for (let i = 0; i < communities.length; i++) {
     const community = communities[i];
     const members = memberMap.get(community.id) || [];
-    
+
     onProgress?.(i + 1, communities.length);
-    
+
     if (members.length === 0) {
       // No members, use heuristic
       enrichments.set(community.id, {
@@ -124,14 +116,14 @@ export const enrichClusters = async (
       });
       continue;
     }
-    
+
     try {
       const prompt = buildEnrichmentPrompt(members, community.heuristicLabel);
       const response = await llmClient.generate(prompt);
-      
+
       // Rough token estimate
       tokensUsed += prompt.length / 4 + response.length / 4;
-      
+
       const enrichment = parseEnrichmentResponse(response, community.heuristicLabel);
       enrichments.set(community.id, enrichment);
     } catch (error) {
@@ -144,7 +136,7 @@ export const enrichClusters = async (
       });
     }
   }
-  
+
   return { enrichments, tokensUsed };
 };
 
@@ -161,30 +153,30 @@ export const enrichClustersBatch = async (
   memberMap: Map<string, ClusterMemberInfo[]>,
   llmClient: LLMClient,
   batchSize: number = 5,
-  onProgress?: (current: number, total: number) => void
+  onProgress?: (current: number, total: number) => void,
 ): Promise<EnrichmentResult> => {
   const enrichments = new Map<string, ClusterEnrichment>();
   let tokensUsed = 0;
-  
+
   // Process in batches
   for (let i = 0; i < communities.length; i += batchSize) {
     // Report progress
     onProgress?.(Math.min(i + batchSize, communities.length), communities.length);
 
     const batch = communities.slice(i, i + batchSize);
-    
-    const batchPrompt = batch.map((community, idx) => {
-      const members = memberMap.get(community.id) || [];
-      const limitedMembers = members.slice(0, 15);
-      const memberList = limitedMembers
-        .map(m => `${m.name} (${m.type})`)
-        .join(', ');
-      
-      return `Cluster ${idx + 1} (id: ${community.id}):
+
+    const batchPrompt = batch
+      .map((community, idx) => {
+        const members = memberMap.get(community.id) || [];
+        const limitedMembers = members.slice(0, 15);
+        const memberList = limitedMembers.map((m) => `${m.name} (${m.type})`).join(', ');
+
+        return `Cluster ${idx + 1} (id: ${community.id}):
 Heuristic: "${community.heuristicLabel}"
 Members: ${memberList}`;
-    }).join('\n\n');
-    
+      })
+      .join('\n\n');
+
     const prompt = `Analyze these code clusters and generate semantic names, keywords, and descriptions.
 
 ${batchPrompt}
@@ -194,11 +186,11 @@ Output JSON array:
   {"id": "comm_X", "name": "...", "keywords": [...], "description": "..."},
   ...
 ]`;
-    
+
     try {
       const response = await llmClient.generate(prompt);
       tokensUsed += prompt.length / 4 + response.length / 4;
-      
+
       // Parse batch response
       const jsonMatch = response.match(/\[[\s\S]*\]/);
       if (jsonMatch) {
@@ -208,7 +200,7 @@ Output JSON array:
           keywords: string[];
           description: string;
         }>;
-        
+
         for (const item of parsed) {
           enrichments.set(item.id, {
             name: item.name,
@@ -229,7 +221,7 @@ Output JSON array:
       }
     }
   }
-  
+
   // Fill in any missing communities
   for (const community of communities) {
     if (!enrichments.has(community.id)) {
@@ -240,6 +232,6 @@ Output JSON array:
       });
     }
   }
-  
+
   return { enrichments, tokensUsed };
 };

@@ -2,8 +2,8 @@
 # Via OpenRouter (set OPENROUTER_API_KEY in .env)
 # To use Anthropic directly, change to: anthropic/claude-opus-4-20250514
 model:
-  model_name: "openrouter/anthropic/claude-opus-4"
-  cost_tracking: "ignore_errors"
+  model_name: 'openrouter/anthropic/claude-opus-4'
+  cost_tracking: 'ignore_errors'
   model_kwargs:
     max_tokens: 16384
     temperature: 0

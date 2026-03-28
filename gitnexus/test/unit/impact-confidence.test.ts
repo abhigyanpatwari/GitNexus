@@ -10,7 +10,10 @@
  *   4. Confidence values are in the valid 0–1 range.
  */
 import { describe, it, expect } from 'vitest';
-import { IMPACT_RELATION_CONFIDENCE, VALID_RELATION_TYPES } from '../../src/mcp/local/local-backend.js';
+import {
+  IMPACT_RELATION_CONFIDENCE,
+  VALID_RELATION_TYPES,
+} from '../../src/mcp/local/local-backend.js';
 
 // ─── IMPACT_RELATION_CONFIDENCE — value assertions ────────────────────────
 
@@ -134,7 +137,9 @@ describe('IMPACT_RELATION_CONFIDENCE vs VALID_RELATION_TYPES', () => {
     const skipInValid = new Set(['CONTAINS']);
     for (const type of Object.keys(IMPACT_RELATION_CONFIDENCE)) {
       if (skipInValid.has(type)) continue;
-      expect(VALID_RELATION_TYPES.has(type), `${type} missing from VALID_RELATION_TYPES`).toBe(true);
+      expect(VALID_RELATION_TYPES.has(type), `${type} missing from VALID_RELATION_TYPES`).toBe(
+        true,
+      );
     }
   });
 });

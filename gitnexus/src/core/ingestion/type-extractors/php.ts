@@ -1,12 +1,28 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, ReturnTypeExtractor, PendingAssignmentExtractor, ForLoopExtractor } from './types.js';
-import { extractSimpleTypeName, extractVarName, extractCalleeName, resolveIterableElementType, extractElementTypeFromString } from './shared.js';
+import type {
+  LanguageTypeConfig,
+  ParameterExtractor,
+  TypeBindingExtractor,
+  InitializerExtractor,
+  ClassNameLookup,
+  ConstructorBindingScanner,
+  ReturnTypeExtractor,
+  PendingAssignmentExtractor,
+  ForLoopExtractor,
+} from './types.js';
+import {
+  extractSimpleTypeName,
+  extractVarName,
+  extractCalleeName,
+  resolveIterableElementType,
+  extractElementTypeFromString,
+} from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
-  'assignment_expression',   // For constructor inference: $x = new User()
-  'property_declaration',    // PHP 7.4+ typed properties: private UserRepo $repo;
-  'method_declaration',      // PHPDoc @param on class methods
-  'function_definition',     // PHPDoc @param on top-level functions
+  'assignment_expression', // For constructor inference: $x = new User()
+  'property_declaration', // PHP 7.4+ typed properties: private UserRepo $repo;
+  'method_declaration', // PHPDoc @param on class methods
+  'function_definition', // PHPDoc @param on top-level functions
 ]);
 
 /** Walk up the AST to find the enclosing class declaration. */
@@ -53,14 +69,23 @@ const normalizePhpType = (raw: string): string | undefined => {
   // Strip array suffix: User[] → User
   type = type.replace(/\[\]$/, '');
   // Strip union with null/false/void: User|null → User
-  const parts = type.split('|').filter(p => p !== 'null' && p !== 'false' && p !== 'void' && p !== 'mixed');
+  const parts = type
+    .split('|')
+    .filter((p) => p !== 'null' && p !== 'false' && p !== 'void' && p !== 'mixed');
   if (parts.length !== 1) return undefined;
   type = parts[0];
   // Strip namespace: \App\Models\User → User
   const segments = type.split('\\');
   type = segments[segments.length - 1];
   // Skip uninformative types
-  if (type === 'mixed' || type === 'void' || type === 'self' || type === 'static' || type === 'object') return undefined;
+  if (
+    type === 'mixed' ||
+    type === 'void' ||
+    type === 'self' ||
+    type === 'static' ||
+    type === 'object'
+  )
+    return undefined;
   // Extract element type from generic: Collection<User> → User
   // PHPDoc generics encode the element type in angle brackets. Since PHP's Strategy B
   // uses the scopeEnv value directly as the element type, we must store the inner type,
@@ -122,11 +147,15 @@ const extractClassPropertyElementType = (propDecl: SyntaxNode): string | undefin
  * where Strategy A (resolveIterableElementType) and Strategy B (scopeEnv lookup)
  * both fail to find the type.
  */
-const findClassPropertyElementType = (propName: string, classNode: SyntaxNode): string | undefined => {
-  const declList = classNode.childForFieldName('body')
-    ?? (classNode.namedChild(classNode.namedChildCount - 1)?.type === 'declaration_list'
-        ? classNode.namedChild(classNode.namedChildCount - 1)
-        : null); // fallback: last named child, only if it's a declaration_list
+const findClassPropertyElementType = (
+  propName: string,
+  classNode: SyntaxNode,
+): string | undefined => {
+  const declList =
+    classNode.childForFieldName('body') ??
+    (classNode.namedChild(classNode.namedChildCount - 1)?.type === 'declaration_list'
+      ? classNode.namedChild(classNode.namedChildCount - 1)
+      : null); // fallback: last named child, only if it's a declaration_list
   if (!declList) return undefined;
   for (let i = 0; i < declList.namedChildCount; i++) {
     const child = declList.namedChild(i);
@@ -191,7 +220,10 @@ const collectPhpDocParams = (methodNode: SyntaxNode): Map<string, string> => {
  * PHP: typed class properties (PHP 7.4+): private UserRepo $repo;
  * Also: PHPDoc @param annotations on method/function definitions.
  */
-const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+const extractDeclaration: TypeBindingExtractor = (
+  node: SyntaxNode,
+  env: Map<string, string>,
+): void => {
   // PHPDoc @param on methods/functions — pre-populate env with param types
   if (node.type === 'method_declaration' || node.type === 'function_definition') {
     const phpDocParams = collectPhpDocParams(node);
@@ -224,7 +256,11 @@ const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
 };
 
 /** PHP: $x = new User() — infer type from object_creation_expression */
-const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<string, string>, _classNames: ClassNameLookup): void => {
+const extractInitializer: InitializerExtractor = (
+  node: SyntaxNode,
+  env: Map<string, string>,
+  _classNames: ClassNameLookup,
+): void => {
   if (node.type !== 'assignment_expression') return;
   const left = node.childForFieldName('left');
   const right = node.childForFieldName('right');
@@ -237,9 +273,10 @@ const extractInitializer: InitializerExtractor = (node: SyntaxNode, env: Map<str
   const typeName = extractSimpleTypeName(ctorType);
   if (!typeName) return;
   // Resolve PHP self/static/parent to actual class names
-  const resolvedType = (typeName === 'self' || typeName === 'static' || typeName === 'parent')
-    ? resolvePhpKeyword(typeName, node)
-    : typeName;
+  const resolvedType =
+    typeName === 'self' || typeName === 'static' || typeName === 'parent'
+      ? resolvePhpKeyword(typeName, node)
+      : typeName;
   if (!resolvedType) return;
   const varName = extractVarName(left);
   if (varName) env.set(varName, resolvedType);
@@ -315,14 +352,24 @@ const normalizePhpReturnType = (raw: string): string | undefined => {
   // Strip nullable prefix: ?User[] → User[]
   let type = raw.startsWith('?') ? raw.slice(1) : raw;
   // Strip union with null/false/void: User[]|null → User[]
-  const parts = type.split('|').filter(p => p !== 'null' && p !== 'false' && p !== 'void' && p !== 'mixed');
+  const parts = type
+    .split('|')
+    .filter((p) => p !== 'null' && p !== 'false' && p !== 'void' && p !== 'mixed');
   if (parts.length !== 1) return undefined;
   type = parts[0];
   // Strip namespace: \App\Models\User[] → User[]
   const segments = type.split('\\');
   type = segments[segments.length - 1];
   // Skip uninformative types
-  if (type === 'mixed' || type === 'void' || type === 'self' || type === 'static' || type === 'object' || type === 'array') return undefined;
+  if (
+    type === 'mixed' ||
+    type === 'void' ||
+    type === 'self' ||
+    type === 'static' ||
+    type === 'object' ||
+    type === 'array'
+  )
+    return undefined;
   if (/^\w+(\[\])?$/.test(type) || /^\w+\s*</.test(type)) return type;
   return undefined;
 };
@@ -384,9 +431,7 @@ const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) =>
   return undefined;
 };
 
-const FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set([
-  'foreach_statement',
-]);
+const FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set(['foreach_statement']);
 
 /** Extract element type from a PHP type annotation AST node.
  *  PHP has limited AST-level container types — `array` is a primitive_type with no generic args.
@@ -399,7 +444,10 @@ const extractPhpElementTypeFromTypeNode = (_typeNode: SyntaxNode): string | unde
 
 /** Walk up from a foreach to the enclosing function and search parameter type annotations.
  *  PHP parameter type hints are limited (array, ClassName) — this extracts element type when possible. */
-const findPhpParamElementType = (iterableName: string, startNode: SyntaxNode): string | undefined => {
+const findPhpParamElementType = (
+  iterableName: string,
+  startNode: SyntaxNode,
+): string | undefined => {
   let current: SyntaxNode | null = startNode.parent;
   while (current) {
     if (current.type === 'method_declaration' || current.type === 'function_definition') {
@@ -435,7 +483,10 @@ const findPhpParamElementType = (iterableName: string, startNode: SyntaxNode): s
  * constructor-binding cases that retain container types), then fall back to direct
  * scopeEnv lookup (for PHPDoc-normalized types).
  */
-const extractForLoopBinding: ForLoopExtractor = (node,  { scopeEnv, declarationTypeNodes, scope, returnTypeLookup }): void => {
+const extractForLoopBinding: ForLoopExtractor = (
+  node,
+  { scopeEnv, declarationTypeNodes, scope, returnTypeLookup },
+): void => {
   if (node.type !== 'foreach_statement') return;
 
   // Collect non-body named children: first is the iterable, second is value or pair
@@ -458,10 +509,12 @@ const extractForLoopBinding: ForLoopExtractor = (node,  { scopeEnv, declarationT
     const lastChild = valueOrPair.namedChild(valueOrPair.namedChildCount - 1);
     if (!lastChild) return;
     // Handle by_ref: foreach ($arr as $k => &$v)
-    loopVarNode = lastChild.type === 'by_ref' ? (lastChild.firstNamedChild ?? lastChild) : lastChild;
+    loopVarNode =
+      lastChild.type === 'by_ref' ? (lastChild.firstNamedChild ?? lastChild) : lastChild;
   } else {
     // Simple: foreach ($users as $user) or foreach ($users as &$user)
-    loopVarNode = valueOrPair.type === 'by_ref' ? (valueOrPair.firstNamedChild ?? valueOrPair) : valueOrPair;
+    loopVarNode =
+      valueOrPair.type === 'by_ref' ? (valueOrPair.firstNamedChild ?? valueOrPair) : valueOrPair;
   }
 
   const varName = extractVarName(loopVarNode);
@@ -502,8 +555,13 @@ const extractForLoopBinding: ForLoopExtractor = (node,  { scopeEnv, declarationT
 
   // Strategy A: try resolveIterableElementType (handles constructor-binding container types)
   const elementType = resolveIterableElementType(
-    iterableName, node, scopeEnv, declarationTypeNodes, scope,
-    extractPhpElementTypeFromTypeNode, findPhpParamElementType,
+    iterableName,
+    node,
+    scopeEnv,
+    declarationTypeNodes,
+    scope,
+    extractPhpElementTypeFromTypeNode,
+    findPhpParamElementType,
     undefined,
   );
   if (elementType) {
