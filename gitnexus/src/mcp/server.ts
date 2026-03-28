@@ -64,6 +64,9 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
     case 'cypher':
       return `\n\n---\n**Next:** To explore a result symbol, use context({name: "<name>"${repoParam}}). For schema reference, READ gitnexus://repo/${repoPath}/schema.`;
 
+    case 'source_sink':
+      return '\n\n---\n**Next:** Use context() on flagged source or sink functions to understand the full call chain and check for sanitizers.';
+
     // Legacy tool names — still return useful hints
     case 'search':
       return `\n\n---\n**Next:** To understand a result in context, use context({name: "<symbol_name>"${repoParam}}).`;

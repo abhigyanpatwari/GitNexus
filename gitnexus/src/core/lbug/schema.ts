@@ -18,7 +18,8 @@ export const NODE_TABLES = [
   'Struct', 'Enum', 'Macro', 'Typedef', 'Union', 'Namespace', 'Trait', 'Impl',
   'TypeAlias', 'Const', 'Static', 'Property', 'Record', 'Delegate', 'Annotation', 'Constructor', 'Template', 'Module',
   'Route',
-  'Tool'
+  'Tool',
+  'Parameter'
 ] as const;
 export type NodeTableName = typeof NODE_TABLES[number];
 
@@ -29,7 +30,7 @@ export const REL_TABLE_NAME = 'CodeRelation';
 
 // Valid relation types
 // Note: WRAPS is reserved for future middleware graph traversal (not yet emitted)
-export const REL_TYPES = ['CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'ACCESSES', 'OVERRIDES', 'MEMBER_OF', 'STEP_IN_PROCESS', 'HANDLES_ROUTE', 'FETCHES', 'HANDLES_TOOL', 'ENTRY_POINT_OF', 'WRAPS', 'QUERIES'] as const;
+export const REL_TYPES = ['CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'ACCESSES', 'OVERRIDES', 'MEMBER_OF', 'STEP_IN_PROCESS', 'HANDLES_ROUTE', 'FETCHES', 'HANDLES_TOOL', 'ENTRY_POINT_OF', 'WRAPS', 'QUERIES', 'PASSES_TO', 'DATA_FLOWS_TO'] as const;
 export type RelType = typeof REL_TYPES[number];
 
 // ============================================================================
@@ -217,6 +218,18 @@ CREATE NODE TABLE Tool (
   PRIMARY KEY (id)
 )`;
 
+// Function/method parameters (first-class for data flow tracking)
+export const PARAMETER_SCHEMA = `
+CREATE NODE TABLE Parameter (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  paramIndex INT32,
+  declaredType STRING,
+  isRest BOOLEAN,
+  PRIMARY KEY (id)
+)`;
+
 // Markdown heading sections
 export const SECTION_SCHEMA = `
 CREATE NODE TABLE Section (
@@ -338,6 +351,9 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM File TO Tool,
   FROM Function TO Tool,
   FROM Method TO Tool,
+  FROM Function TO Parameter,
+  FROM Method TO Parameter,
+  FROM Parameter TO Parameter,
   FROM CodeElement TO Community,
   FROM Interface TO Community,
   FROM Interface TO Function,
@@ -513,6 +529,8 @@ export const NODE_SCHEMA_QUERIES = [
   ROUTE_SCHEMA,
   // MCP tools
   TOOL_SCHEMA,
+  // Parameters (data flow tracking)
+  PARAMETER_SCHEMA,
 ];
 
 export const REL_SCHEMA_QUERIES = [

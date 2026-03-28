@@ -16,7 +16,7 @@ import { phpFileToRouteURL } from './route-extractors/php.js';
 import { extractResponseShapes, extractPHPResponseShapes } from './route-extractors/response-shapes.js';
 import { extractMiddlewareChain, extractNextjsMiddlewareConfig, compileMatcher, compiledMatcherMatchesRoute } from './route-extractors/middleware.js';
 import { generateId } from '../../lib/utils.js';
-import type { ExtractedFetchCall, ExtractedRoute, ExtractedDecoratorRoute, ExtractedToolDef, ExtractedORMQuery } from './workers/parse-worker.js';
+import type { ExtractedFetchCall, ExtractedRoute, ExtractedDecoratorRoute, ExtractedToolDef, ExtractedORMQuery, ExtractedParameter } from './workers/parse-worker.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
 import { computeMRO } from './mro-processor.js';
 import { processCommunities } from './community-processor.js';
@@ -544,6 +544,7 @@ async function runChunkedParseAndResolve(
   allDecoratorRoutes: ExtractedDecoratorRoute[];
   allToolDefs: ExtractedToolDef[];
   allORMQueries: ExtractedORMQuery[];
+  allParameters: ExtractedParameter[];
 }> {
   const symbolTable = ctx.symbols;
 
@@ -664,7 +665,8 @@ async function runChunkedParseAndResolve(
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
   // Accumulate MCP/RPC tool definitions (@mcp.tool(), @app.tool(), etc.)
   const allToolDefs: ExtractedToolDef[] = [];
-    const allORMQueries: ExtractedORMQuery[] = [];
+  const allORMQueries: ExtractedORMQuery[] = [];
+  const allParameters: ExtractedParameter[] = [];
 
   try {
     for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
@@ -796,6 +798,9 @@ async function runChunkedParseAndResolve(
         if (chunkWorkerData.ormQueries?.length) {
           allORMQueries.push(...chunkWorkerData.ormQueries);
         }
+        if (chunkWorkerData.parameters?.length) {
+          allParameters.push(...chunkWorkerData.parameters);
+        }
       } else {
         await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
         sequentialChunkPaths.push(chunkPaths);
@@ -891,7 +896,7 @@ async function runChunkedParseAndResolve(
   importCtx.index = EMPTY_INDEX; // Release suffix index memory (~30MB for large repos)
   importCtx.normalizedFileList = [];
 
-  return { exportedTypeMap, allFetchCalls, allExtractedRoutes, allDecoratorRoutes, allToolDefs, allORMQueries };
+  return { exportedTypeMap, allFetchCalls, allExtractedRoutes, allDecoratorRoutes, allToolDefs, allORMQueries, allParameters };
 }
 
 /**
@@ -1113,7 +1118,7 @@ export const runPipelineFromRepo = async (
     const { scannedFiles, allPaths, totalFiles } = await runScanAndStructure(repoPath, graph, onProgress);
 
     // Phase 3+4: Chunked parse + resolve (imports, calls, heritage, routes)
-    const { exportedTypeMap, allFetchCalls, allExtractedRoutes, allDecoratorRoutes, allToolDefs, allORMQueries } = await runChunkedParseAndResolve(
+    const { exportedTypeMap, allFetchCalls, allExtractedRoutes, allDecoratorRoutes, allToolDefs, allORMQueries, allParameters } = await runChunkedParseAndResolve(
       graph, ctx, scannedFiles, allPaths, totalFiles, repoPath, pipelineStart, onProgress,
     );
 
@@ -1375,6 +1380,73 @@ export const runPipelineFromRepo = async (
 
       if (isDev) {
         console.log(`🔧 Tool registry: ${toolDefs.length} tools detected`);
+      }
+    }
+
+    // ── Phase 3.6b: Parameter Nodes + PASSES_TO ──────────────────────
+    if (allParameters.length > 0) {
+      const { createParameterNodes, buildPassesToEdges } = await import('./parameter-processor.js');
+
+      // Create Parameter nodes
+      const paramNodes = createParameterNodes(allParameters);
+      for (const pn of paramNodes) {
+        graph.addNode({
+          id: pn.id,
+          label: 'Parameter',
+          properties: {
+            name: pn.name,
+            filePath: pn.filePath,
+            paramIndex: pn.paramIndex,
+            declaredType: pn.declaredType,
+            isRest: pn.isRest,
+          },
+        });
+
+        // DEFINES edge from function to parameter
+        graph.addRelationship({
+          id: generateId('DEFINES', `${pn.ownerId}->${pn.id}`),
+          sourceId: pn.ownerId,
+          targetId: pn.id,
+          type: 'DEFINES',
+          confidence: 1.0,
+          reason: 'parameter-definition',
+        });
+      }
+
+      // Build PASSES_TO edges from existing CALLS edges
+      const callEdgesWithArgs: Array<{ sourceId: string; targetId: string; argCount: number }> = [];
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'CALLS') {
+          callEdgesWithArgs.push({
+            sourceId: rel.sourceId,
+            targetId: rel.targetId,
+            argCount: (rel as any).argCount || 0,
+          });
+        }
+      }
+
+      // Group parameters by function ID
+      const paramsByFunction = new Map<string, ExtractedParameter[]>();
+      for (const p of allParameters) {
+        const existing = paramsByFunction.get(p.functionId) || [];
+        existing.push(p);
+        paramsByFunction.set(p.functionId, existing);
+      }
+
+      const passesToEdges = buildPassesToEdges(callEdgesWithArgs, paramsByFunction);
+      for (const edge of passesToEdges) {
+        graph.addRelationship({
+          id: edge.id,
+          sourceId: edge.callerId,
+          targetId: edge.targetParamId,
+          type: 'PASSES_TO',
+          confidence: edge.confidence,
+          reason: `arg-${edge.sourceParamIndex}`,
+        });
+      }
+
+      if (isDev) {
+        console.log(`📎 Parameters: ${paramNodes.length} parameter nodes, ${passesToEdges.length} PASSES_TO edges`);
       }
     }
 

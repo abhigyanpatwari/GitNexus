@@ -35,7 +35,8 @@ export type NodeLabel =
   | 'Template'
   | 'Section'
   | 'Route'        // API route endpoint (e.g., /api/grants)
-  | 'Tool';        // MCP tool definition
+  | 'Tool'         // MCP tool definition
+  | 'Parameter';   // Function/method parameter (first-class for data flow tracking)
 
 
 import { SupportedLanguages } from '../../config/supported-languages.js';
@@ -82,6 +83,9 @@ export type NodeProperties = {
   errorKeys?: string[],
   // Middleware wrapper chain (outermost first): ['withRateLimit', 'withCSRF', 'withAuth']
   middleware?: string[],
+  // Parameter-specific properties
+  paramIndex?: number,         // 0-indexed position in parameter list
+  isRest?: boolean,            // ...args rest parameter
 }
 
 export type RelationshipType =
@@ -106,6 +110,8 @@ export type RelationshipType =
   | 'ENTRY_POINT_OF'  // Route/Tool → Process (this endpoint starts this execution flow)
   | 'WRAPS'           // Function → Function (middleware wrapper chain) — Reserved: future middleware graph traversal (not yet emitted)
   | 'QUERIES'          // File/Function → CodeElement (ORM query to model/table)
+  | 'PASSES_TO'       // Call-site argument maps to callee parameter
+  | 'DATA_FLOWS_TO'   // Variable assignment / data propagation within function
 
 export interface GraphNode {
   id:  string,

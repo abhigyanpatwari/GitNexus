@@ -408,6 +408,8 @@ export class LocalBackend {
         return this.toolMap(repo, params);
       case 'api_impact':
         return this.apiImpact(repo, params);
+      case 'source_sink':
+        return this.sourceSinkScan(repo, params);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -2447,6 +2449,117 @@ export class LocalBackend {
       steps: steps.map((s: any) => ({
         step: s.step || s[3], name: s.name || s[0], type: s.type || s[1], filePath: s.filePath || s[2],
       })),
+    };
+  }
+
+  private async sourceSinkScan(repo: RepoHandle, params: {
+    max_depth?: number;
+    owasp?: string;
+    source_category?: string;
+  }): Promise<any> {
+    await this.ensureInitialized(repo.id);
+    const maxDepth = params.max_depth ?? 5;
+
+    // Step 1: Find all Function and Method nodes with their content.
+    const nodesResult = await executeQuery(repo.id, `
+      MATCH (n:Function)
+      WHERE n.id IS NOT NULL
+      RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.content AS content
+      UNION ALL
+      MATCH (n:Method)
+      WHERE n.id IS NOT NULL
+      RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.content AS content
+    `);
+
+    // Step 2: Load user-defined catalog extensions (if any) and merge with built-in catalogs
+    const { getMatchingSources, getMatchingSinks, loadUserSecurityConfig, mergeCatalogs, compilePatterns } = await import('../../security/catalogs.js');
+
+    const userConfig = await loadUserSecurityConfig(repo.repoPath);
+    const merged = mergeCatalogs(userConfig);
+    const compiledSources = compilePatterns(merged.sources);
+    const compiledSinks = compilePatterns(merged.sinks);
+
+    // Step 3: Tag source-adjacent and sink-adjacent functions
+    const sources: Array<{ id: string; name: string; filePath: string; sourcePatterns: string[] }> = [];
+    const sinks: Array<{ id: string; name: string; filePath: string; sinkPatterns: string[]; owasp: string }> = [];
+    const nodeNameMap = new Map<string, { name: string; filePath: string }>();
+
+    for (const row of nodesResult) {
+      const content = row.content ?? row[3] ?? '';
+      const name = row.name ?? row[1] ?? '';
+      const filePath = row.filePath ?? row[2] ?? '';
+      const id = row.id ?? row[0] ?? '';
+
+      nodeNameMap.set(id, { name, filePath });
+
+      const matchedSources = getMatchingSources(content, undefined, compiledSources);
+      if (matchedSources.length > 0) {
+        if (!params.source_category || matchedSources.some((s: any) => s.category === params.source_category)) {
+          sources.push({
+            id, name, filePath,
+            sourcePatterns: matchedSources.map((s: any) => s.pattern),
+          });
+        }
+      }
+
+      const matchedSinks = getMatchingSinks(content, undefined, compiledSinks);
+      if (matchedSinks.length > 0) {
+        if (!params.owasp || matchedSinks.some((s: any) => s.owasp === params.owasp)) {
+          sinks.push({
+            id, name, filePath,
+            sinkPatterns: matchedSinks.map((s: any) => s.pattern),
+            owasp: matchedSinks[0]?.owasp || 'unknown',
+          });
+        }
+      }
+    }
+
+    // Step 4: Build CALLS adjacency map via Cypher
+    const callsResult = await executeQuery(repo.id, `
+      MATCH (a)-[r:CodeRelation {type: 'CALLS'}]->(b)
+      RETURN a.id AS sourceId, b.id AS targetId
+    `);
+
+    const callsGraph = new Map<string, string[]>();
+    for (const row of callsResult) {
+      const sourceId = row.sourceId ?? row[0];
+      const targetId = row.targetId ?? row[1];
+      let callees = callsGraph.get(sourceId);
+      if (!callees) { callees = []; callsGraph.set(sourceId, callees); }
+      callees.push(targetId);
+    }
+
+    // Step 5: BFS from sources to sinks
+    const { buildSourceSinkPaths } = await import('../../security/source-sink-scanner.js');
+    const paths = buildSourceSinkPaths(sources, sinks, callsGraph, maxDepth);
+
+    // Step 6: Format results
+    const findings = paths.map((p: any) => ({
+      risk: p.risk,
+      owasp: p.owasp,
+      source: { name: p.source.name, file: p.source.filePath, patterns: p.source.sourcePatterns },
+      sink: { name: p.sink.name, file: p.sink.filePath, patterns: p.sink.sinkPatterns },
+      depth: p.depth,
+      path: p.path.map((id: string) => {
+        const info = nodeNameMap.get(id);
+        return info ? `${info.name} (${info.filePath})` : id;
+      }),
+    }));
+
+    const riskCounts = { critical: 0, high: 0, medium: 0 };
+    for (const f of findings) {
+      if (f.risk in riskCounts) riskCounts[f.risk as keyof typeof riskCounts]++;
+    }
+
+    return {
+      summary: {
+        sources_found: sources.length,
+        sinks_found: sinks.length,
+        paths_found: findings.length,
+        ...riskCounts,
+      },
+      findings,
+      note: 'Structural reachability scan — paths may contain sanitizers. Use context() on flagged functions to verify.',
     };
   }
 

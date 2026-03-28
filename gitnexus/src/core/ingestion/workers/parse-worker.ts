@@ -194,6 +194,22 @@ export interface ExtractedToolDef {
   lineNumber: number;
 }
 
+export interface ExtractedParameter {
+  filePath: string;
+  /** Name of the enclosing function/method */
+  functionName: string;
+  /** generateId of the enclosing function/method */
+  functionId: string;
+  /** Parameter name */
+  paramName: string;
+  /** 0-indexed position */
+  paramIndex: number;
+  /** Declared type annotation (e.g., 'NextRequest', 'string') */
+  declaredType?: string;
+  /** Whether this is a rest parameter (...args) */
+  isRest: boolean;
+}
+
 export interface ExtractedORMQuery {
   filePath: string;
   orm: 'prisma' | 'supabase';
@@ -231,6 +247,8 @@ export interface ParseWorkerResult {
   constructorBindings: FileConstructorBindings[];
   /** File-scope type bindings from TypeEnv fixpoint for exported symbol collection. */
   typeEnvBindings: FileTypeEnvBindings[];
+  /** Extracted function/method parameters for data flow tracking */
+  parameters: ExtractedParameter[];
   skippedLanguages: Record<string, number>;
   fileCount: number;
 }
@@ -437,6 +455,46 @@ const cachedExportCheck = (checker: (node: any, name: string) => boolean, node: 
 
 
 // ============================================================================
+// Parameter name extraction helper
+// ============================================================================
+
+/**
+ * Extract the parameter name from various AST node types.
+ * Handles: simple identifiers, typed parameters, rest parameters, destructured patterns.
+ */
+function extractParamName(paramNode: Parser.SyntaxNode): string | undefined {
+  // Simple identifier: function foo(x)
+  if (paramNode.type === 'identifier' || paramNode.type === 'simple_identifier') return paramNode.text;
+  // Typed parameter: function foo(x: string) — required_parameter or optional_parameter
+  const pattern = paramNode.childForFieldName('pattern') || paramNode.childForFieldName('name');
+  if (pattern) {
+    // pattern might be a rest_pattern — delegate to rest handling below
+    if (pattern.type === 'rest_pattern' || pattern.type === 'rest_element') {
+      return pattern.namedChildren[0]?.text;
+    }
+    return pattern.text;
+  }
+  // Rest parameter: function foo(...args)
+  if (paramNode.type === 'rest_pattern' || paramNode.type === 'rest_element') {
+    return paramNode.namedChildren[0]?.text;
+  }
+  // Destructured: function foo({ a, b }) — use the full text as name
+  if (paramNode.type === 'object_pattern' || paramNode.type === 'array_pattern') {
+    return paramNode.text;
+  }
+  // Generic parameter with name child (Java, C#, Go, etc.)
+  const nameChild = paramNode.childForFieldName('name');
+  if (nameChild) return nameChild.text;
+  // Fallback: first named child that looks like an identifier
+  for (const child of paramNode.namedChildren) {
+    if (child.type === 'identifier' || child.type === 'simple_identifier') {
+      return child.text;
+    }
+  }
+  return undefined;
+}
+
+// ============================================================================
 // Process a batch of files
 // ============================================================================
 
@@ -456,6 +514,7 @@ const processBatch = (files: ParseWorkerInput[], onProgress?: (filesProcessed: n
     ormQueries: [],
     constructorBindings: [],
     typeEnvBindings: [],
+    parameters: [],
     skippedLanguages: {},
     fileCount: 0,
   };
@@ -1439,6 +1498,47 @@ const processFileGroup = (
             if (docReturn) returnType = docReturn;
           }
         }
+        // ── Extract individual parameters for data flow tracking ──
+        if (definitionNode) {
+          const paramListTypes = new Set([
+            'formal_parameters', 'parameters', 'parameter_list',
+            'function_parameters', 'method_parameters', 'function_value_parameters',
+          ]);
+          const paramsNode = definitionNode.childForFieldName('parameters')
+            || definitionNode.children?.find((c: any) => paramListTypes.has(c.type));
+          if (paramsNode && paramListTypes.has(paramsNode.type)) {
+            let paramIdx = 0;
+            for (const paramChild of paramsNode.namedChildren) {
+              if (paramChild.type === 'comment') continue;
+              // Skip self/this parameters
+              if (paramChild.text === 'self' || paramChild.text === '&self' || paramChild.text === '&mut self'
+                  || paramChild.type === 'self_parameter') continue;
+              // Skip Kotlin default-value literals that appear as siblings
+              if (paramChild.type.endsWith('_literal') || paramChild.type === 'call_expression'
+                || paramChild.type === 'navigation_expression' || paramChild.type === 'prefix_expression'
+                || paramChild.type === 'parenthesized_expression') continue;
+
+              const pName = extractParamName(paramChild);
+              if (!pName) { paramIdx++; continue; }
+
+              const isRest = paramChild.type === 'rest_pattern' || paramChild.type === 'rest_element'
+                || (paramChild.type === 'required_parameter' && paramChild.children?.some((c: any) => c.type === 'rest_pattern'));
+              const typeNode = paramChild.childForFieldName('type');
+              const pDeclaredType = typeNode?.text?.replace(/^:\s*/, '') || undefined;
+
+              result.parameters.push({
+                filePath: file.path,
+                functionName: nodeName,
+                functionId: nodeId,
+                paramName: pName,
+                paramIndex: paramIdx,
+                declaredType: pDeclaredType,
+                isRest,
+              });
+              paramIdx++;
+            }
+          }
+        }
       } else if (nodeLabel === 'Property' && definitionNode) {
         // FieldExtractor is the single source of truth when available
         if (provider.fieldExtractor && typeEnv) {
@@ -1548,7 +1648,7 @@ const processFileGroup = (
 /** Accumulated result across sub-batches */
 let accumulated: ParseWorkerResult = {
   nodes: [], relationships: [], symbols: [],
-  imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], decoratorRoutes: [], toolDefs: [], ormQueries: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0,
+  imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], decoratorRoutes: [], toolDefs: [], ormQueries: [], constructorBindings: [], typeEnvBindings: [], parameters: [], skippedLanguages: {}, fileCount: 0,
 };
 let cumulativeProcessed = 0;
 
@@ -1567,6 +1667,7 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   target.ormQueries.push(...src.ormQueries);
   target.constructorBindings.push(...src.constructorBindings);
   target.typeEnvBindings.push(...src.typeEnvBindings);
+  target.parameters.push(...src.parameters);
   for (const [lang, count] of Object.entries(src.skippedLanguages)) {
     target.skippedLanguages[lang] = (target.skippedLanguages[lang] || 0) + count;
   }
@@ -1591,7 +1692,7 @@ parentPort!.on('message', (msg: any) => {
     if (msg && msg.type === 'flush') {
       parentPort!.postMessage({ type: 'result', data: accumulated });
       // Reset for potential reuse
-      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], decoratorRoutes: [], toolDefs: [], ormQueries: [], constructorBindings: [], typeEnvBindings: [], skippedLanguages: {}, fileCount: 0 };
+      accumulated = { nodes: [], relationships: [], symbols: [], imports: [], calls: [], assignments: [], heritage: [], routes: [], fetchCalls: [], decoratorRoutes: [], toolDefs: [], ormQueries: [], constructorBindings: [], typeEnvBindings: [], parameters: [], skippedLanguages: {}, fileCount: 0 };
       cumulativeProcessed = 0;
       return;
     }

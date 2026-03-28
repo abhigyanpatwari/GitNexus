@@ -295,4 +295,36 @@ Returns: single route object when one match, or { routes: [...], total: N } for 
       required: [],
     },
   },
+  {
+    name: 'source_sink',
+    description: `Scan for security-relevant data paths: find functions that read user input (sources) and trace whether they can reach dangerous operations (sinks) through the CALLS graph.
+
+WHEN TO USE: Security review, pre-deployment audit, checking if user input reaches dangerous operations (SQL injection, command injection, XSS, SSRF).
+AFTER THIS: Use context() on flagged functions to understand the full call chain, then verify if sanitizers exist in between.
+
+Returns paths from source functions to sink functions, ranked by risk level.
+Uses BFS over existing CALLS edges — structural reachability, not taint tracking.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+        max_depth: {
+          type: 'number',
+          description: 'Maximum BFS depth from source to sink (default: 5). Lower = fewer false positives, higher = more coverage.',
+        },
+        owasp: {
+          type: 'string',
+          description: 'Filter by OWASP category: "A03-injection", "A07-xss", "A10-ssrf". Omit for all.',
+        },
+        source_category: {
+          type: 'string',
+          description: 'Filter sources by category: "user_input", "environment", "file_read", "network". Omit for all.',
+        },
+      },
+      required: [],
+    },
+  },
 ];
