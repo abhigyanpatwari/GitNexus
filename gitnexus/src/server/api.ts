@@ -24,7 +24,7 @@ import { hybridSearch } from '../core/search/hybrid-search.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { mountMCPEndpoints } from './mcp-http.js';
 import { fork } from 'child_process';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
 
@@ -804,11 +804,31 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
           jobManager.updateJob(job.id, { repoPath: targetPath, status: 'analyzing' });
 
-          // Fork child process with 8GB heap
-          const workerPath = fileURLToPath(new URL('./analyze-worker.js', import.meta.url));
+          // Fork child process with 8GB heap.
+          // In dev mode (tsx), import.meta.url points to .ts source — resolve to .ts and
+          // register the tsx ESM hook so the worker can compile TypeScript on-the-fly.
+          //
+          // --import requires a file:// URL on Windows (bare specifiers are resolved
+          // relative to the forked process's CWD, which may not have tsx in its
+          // node_modules). Using an absolute file:// URL bypasses CWD lookup and
+          // works identically on Windows, macOS, and Linux.
+          const callerPath = fileURLToPath(import.meta.url);
+          const isDev = callerPath.endsWith('.ts');
+          const workerFile = isDev ? 'analyze-worker.ts' : 'analyze-worker.js';
+          const workerPath = path.join(path.dirname(callerPath), workerFile);
+          const tsxHookArgs: string[] = isDev
+            ? ['--import', pathToFileURL(_require.resolve('tsx/esm')).href]
+            : [];
           const child = fork(workerPath, [], {
-            execArgv: ['--max-old-space-size=8192'],
+            execArgv: [...tsxHookArgs, '--max-old-space-size=8192'],
             stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+          });
+
+          // Capture stderr for better error reporting on crash
+          let stderrChunks = '';
+          child.stderr?.on('data', (chunk: Buffer) => {
+            stderrChunks += chunk.toString();
+            if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
           });
 
           child.on('message', (msg: any) => {
@@ -848,7 +868,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               releaseRepoLock(analyzeLockKey);
               jobManager.updateJob(job.id, {
                 status: 'failed',
-                error: `Worker exited unexpectedly (code ${code})`,
+                error: `Worker exited unexpectedly (code ${code})${stderrChunks ? ': ' + stderrChunks.trim().split('\n').pop() : ''}`,
               });
             }
           });
