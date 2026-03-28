@@ -1,4 +1,5 @@
 import { createKnowledgeGraph } from '../graph/graph.js';
+import type { GraphRelationship } from '../graph/types.js';
 import { processStructure } from './structure-processor.js';
 import { processMarkdown } from './markdown-processor.js';
 import { processCobol, isCobolFile, isJclFile } from './cobol-processor.js';
@@ -15,6 +16,7 @@ import { expoFileToRouteURL } from './route-extractors/expo.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';
 import { extractResponseShapes, extractPHPResponseShapes } from './route-extractors/response-shapes.js';
 import { extractMiddlewareChain, extractNextjsMiddlewareConfig, compileMatcher, compiledMatcherMatchesRoute } from './route-extractors/middleware.js';
+import { extractGuards } from './guard-extractor.js';
 import { generateId } from '../../lib/utils.js';
 import type { ExtractedFetchCall, ExtractedRoute, ExtractedDecoratorRoute, ExtractedToolDef, ExtractedORMQuery } from './workers/parse-worker.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
@@ -1318,6 +1320,87 @@ export const runPipelineFromRepo = async (
       processNextjsFetchRoutes(graph, allFetchCalls, routeURLToFile, consumerContents);
       if (isDev) {
         console.log(`🔗 Processed ${allFetchCalls.length} fetch() calls against ${routeRegistry.size} routes`);
+      }
+    }
+
+    // ── Phase 3.55: Guard Clause Extraction ──────────────────────────
+    // Enrich Function/Method nodes with guard clause metadata,
+    // and enrich CALLS edges with guard conditions.
+    {
+      // Build file→nodes map without materializing the full node array
+      const fileGroups = new Map<string, { label: string; id: string; name: string }[]>();
+      graph.forEachNode(n => {
+        if (n.label !== 'Function' && n.label !== 'Method') return;
+        const fp = n.properties.filePath;
+        if (!fp) return;
+        let group = fileGroups.get(fp);
+        if (!group) { group = []; fileGroups.set(fp, group); }
+        group.push({ label: n.label, id: n.id, name: n.properties.name });
+      });
+
+      if (fileGroups.size > 0) {
+        // Pre-index CALLS edges by source file path for O(1) lookup per file
+        const callsBySourceFile = new Map<string, { rel: GraphRelationship; targetName: string; sourceName: string }[]>();
+        graph.forEachRelationship(rel => {
+          if (rel.type !== 'CALLS') return;
+          const sourceNode = graph.getNode(rel.sourceId);
+          const targetNode = graph.getNode(rel.targetId);
+          if (!sourceNode || !targetNode) return;
+          const fp = sourceNode.properties.filePath;
+          if (!fp) return;
+          let bucket = callsBySourceFile.get(fp);
+          if (!bucket) { bucket = []; callsBySourceFile.set(fp, bucket); }
+          bucket.push({ rel, targetName: targetNode.properties.name, sourceName: sourceNode.properties.name });
+        });
+
+        const filePaths = [...fileGroups.keys()];
+        const fileContents = await readFileContents(repoPath, filePaths);
+        let guardCount = 0;
+        let guardedCallCount = 0;
+
+        for (const [filePath, content] of fileContents) {
+          const language = getLanguageFromFilename(filePath);
+          if (!language) continue;
+
+          // Single parse pass extracts both guard clauses and guarded calls
+          const { clauses, calls: guardedCalls } = extractGuards(content, language);
+
+          if (clauses.length > 0) {
+            const nodes = fileGroups.get(filePath) || [];
+            for (const nodeRef of nodes) {
+              const nodeGuards = clauses.filter(g => g.functionName === nodeRef.name && g.confidence >= 0.5);
+              if (nodeGuards.length > 0) {
+                const node = graph.getNode(nodeRef.id);
+                if (node) {
+                  (node.properties as any).guardClauses = nodeGuards.map(g => ({
+                    condition: g.condition,
+                    returnStatus: g.returnStatus,
+                    confidence: g.confidence,
+                    line: g.line,
+                  }));
+                  guardCount += nodeGuards.length;
+                }
+              }
+            }
+          }
+
+          // Match guarded calls to pre-indexed CALLS edges for this file
+          const fileCalls = callsBySourceFile.get(filePath);
+          if (fileCalls && guardedCalls.length > 0) {
+            for (const gc of guardedCalls) {
+              for (const { rel, targetName, sourceName } of fileCalls) {
+                if (targetName !== gc.calledName) continue;
+                if (gc.functionName && sourceName !== gc.functionName) continue;
+                (rel as any).guard = gc.guard;
+                guardedCallCount++;
+              }
+            }
+          }
+        }
+
+        if (isDev && (guardCount > 0 || guardedCallCount > 0)) {
+          console.log(`🛡️ Guard detection: ${guardCount} guard clauses, ${guardedCallCount} guarded call edges`);
+        }
       }
     }
 

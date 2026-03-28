@@ -82,6 +82,8 @@ export type NodeProperties = {
   errorKeys?: string[],
   // Middleware wrapper chain (outermost first): ['withRateLimit', 'withCSRF', 'withAuth']
   middleware?: string[],
+  // Guard clauses: early-return conditions before business logic (e.g., auth checks in route handlers)
+  guardClauses?: { condition: string; returnStatus?: number; line: number }[],
 }
 
 export type RelationshipType =
@@ -124,6 +126,8 @@ export interface GraphRelationship {
   reason: string,
   /** Step number for STEP_IN_PROCESS relationships (1-indexed) */
   step?: number,
+  /** Condition under which this call is made (e.g., "grant.status === 'submitted'") */
+  guard?: string,
 }
 
 export interface KnowledgeGraph {
