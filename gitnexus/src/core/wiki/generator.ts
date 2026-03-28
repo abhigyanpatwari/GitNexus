@@ -20,7 +20,6 @@ import {
   touchWikiDb,
   getFilesWithExports,
   getAllFiles,
-  getInterFileCallEdges,
   getIntraModuleCallEdges,
   getInterModuleCallEdges,
   getProcessesForFiles,

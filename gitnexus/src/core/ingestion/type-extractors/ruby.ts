@@ -3,7 +3,6 @@ import type {
   ParameterExtractor,
   TypeBindingExtractor,
   InitializerExtractor,
-  ClassNameLookup,
   ConstructorBindingScanner,
   ReturnTypeExtractor,
   PendingAssignmentExtractor,

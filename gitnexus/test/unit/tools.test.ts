@@ -8,7 +8,7 @@
  * - Optional repo parameter is present on tools that need it
  */
 import { describe, it, expect } from 'vitest';
-import { GITNEXUS_TOOLS, type ToolDefinition } from '../../src/mcp/tools.js';
+import { GITNEXUS_TOOLS } from '../../src/mcp/tools.js';
 
 describe('GITNEXUS_TOOLS', () => {
   it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact)', () => {

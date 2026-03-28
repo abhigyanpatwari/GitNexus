@@ -1,4 +1,4 @@
-import { test, expect, type TestInfo } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 
 /**
  * Debug harnesses for investigating specific UI issues.

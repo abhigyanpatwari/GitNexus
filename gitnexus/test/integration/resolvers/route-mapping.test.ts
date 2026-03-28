@@ -5,7 +5,6 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
-  edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';

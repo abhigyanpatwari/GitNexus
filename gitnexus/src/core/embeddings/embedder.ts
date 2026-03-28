@@ -150,7 +150,7 @@ export const initEmbedder = async (
   // if we attempt CUDA without the required shared libraries
   const isWindows = process.platform === 'win32';
   const gpuDevice = isWindows ? 'dml' : isCudaAvailable() ? 'cuda' : 'cpu';
-  let requestedDevice =
+  const requestedDevice =
     forceDevice || (finalConfig.device === 'auto' ? gpuDevice : finalConfig.device);
 
   initPromise = (async () => {

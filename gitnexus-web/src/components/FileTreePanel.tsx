@@ -19,13 +19,7 @@ import {
   Type,
 } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
-import {
-  FILTERABLE_LABELS,
-  NODE_COLORS,
-  ALL_EDGE_TYPES,
-  EDGE_INFO,
-  type EdgeType,
-} from '../lib/constants';
+import { FILTERABLE_LABELS, NODE_COLORS, ALL_EDGE_TYPES, EDGE_INFO } from '../lib/constants';
 import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 
 // Tree node structure

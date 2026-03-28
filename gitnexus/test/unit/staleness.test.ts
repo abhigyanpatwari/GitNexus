@@ -6,7 +6,7 @@
  * - HEAD differs → stale with commit count
  * - Git failure → fail open (not stale)
  */
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'child_process';
 import { checkStaleness } from '../../src/mcp/staleness.js';
 

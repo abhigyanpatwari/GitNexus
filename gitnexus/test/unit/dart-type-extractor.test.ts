@@ -3,7 +3,6 @@ import Parser from 'tree-sitter';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
 import { typeConfig } from '../../src/core/ingestion/type-extractors/dart.js';
-import { findChild } from '../../src/core/ingestion/utils/ast-helpers.js';
 
 function loadDartOrSkip() {
   return loadLanguage(SupportedLanguages.Dart).catch(() => null);

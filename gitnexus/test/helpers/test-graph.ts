@@ -5,12 +5,7 @@
  * without touching the filesystem or LadybugDB.
  */
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import type {
-  KnowledgeGraph,
-  GraphNode,
-  NodeLabel,
-  RelationshipType,
-} from '../../src/core/graph/types.js';
+import type { KnowledgeGraph, NodeLabel, RelationshipType } from '../../src/core/graph/types.js';
 
 export interface TestNodeInput {
   id: string;

@@ -14,7 +14,6 @@ import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
 import {
   findEnclosingClassId,
-  DEFINITION_CAPTURE_KEYS,
   getDefinitionNodeFromCaptures,
 } from '../../src/core/ingestion/utils/ast-helpers.js';
 

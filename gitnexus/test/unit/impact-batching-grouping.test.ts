@@ -305,7 +305,7 @@ describe('impact: batching and grouping', () => {
       (sum: number, call: any[]) => sum + (Array.isArray(call[2]?.ids) ? call[2].ids.length : 0),
       0,
     );
-    // eslint-disable-next-line no-console
+
     expect(totalModuleIds).toBe(300);
 
     // Affected modules should include ModuleA

@@ -6,10 +6,7 @@ import { pythonConfig } from '../../src/core/ingestion/field-extractors/configs/
 import { goConfig } from '../../src/core/ingestion/field-extractors/configs/go.js';
 import { cppConfig } from '../../src/core/ingestion/field-extractors/configs/c-cpp.js';
 import { rubyConfig } from '../../src/core/ingestion/field-extractors/configs/ruby.js';
-import type {
-  FieldExtractorContext,
-  ExtractedFields,
-} from '../../src/core/ingestion/field-types.js';
+import type { FieldExtractorContext } from '../../src/core/ingestion/field-types.js';
 import type { TypeEnvironment } from '../../src/core/ingestion/type-env.js';
 import { createSymbolTable } from '../../src/core/ingestion/symbol-table.js';
 import Parser from 'tree-sitter';

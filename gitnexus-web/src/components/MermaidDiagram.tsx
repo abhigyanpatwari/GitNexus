@@ -2,7 +2,6 @@ import { Suspense, useEffect, useRef, useState, lazy } from 'react';
 import mermaid from 'mermaid';
 import DOMPurify from 'dompurify';
 import { AlertTriangle, Maximize2 } from '@/lib/lucide-icons';
-import type { ProcessData } from '../lib/mermaid-generator';
 
 const ProcessFlowModal = lazy(() =>
   import('./ProcessFlowModal').then((m) => ({ default: m.ProcessFlowModal })),

@@ -15,7 +15,7 @@
 import fs from 'fs/promises';
 import { createWriteStream, WriteStream } from 'fs';
 import path from 'path';
-import type { GraphNode, NodeLabel } from 'gitnexus-shared';
+import type { GraphNode } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import { NodeTableName } from './schema.js';
 

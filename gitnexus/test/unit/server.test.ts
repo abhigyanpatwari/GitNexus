@@ -12,7 +12,7 @@
  * NOTE: We test the server handler logic by calling the request handlers
  * directly through the MCP Server's handler dispatch.
  */
-import { describe, it, expect, vi, beforeAll } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createMCPServer } from '../../src/mcp/server.js';
 
 // ─── Mock backend ──────────────────────────────────────────────────

@@ -19,7 +19,6 @@
  * Cypher: MATCH (c:Class)-[r:CodeRelation {type: 'OVERRIDES'}]->(m:Method)
  */
 
-import type { GraphRelationship } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import { generateId } from '../../lib/utils.js';
 import { SupportedLanguages } from 'gitnexus-shared';

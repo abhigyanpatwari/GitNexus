@@ -1169,7 +1169,7 @@ export class LocalBackend {
     const symId = sym.id || sym[0];
 
     // Categorized incoming refs
-    let incomingRows = await executeParameterized(
+    const incomingRows = await executeParameterized(
       repo.id,
       `
       MATCH (caller)-[r:CodeRelation]->(n {id: $symId})

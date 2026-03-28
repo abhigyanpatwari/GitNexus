@@ -20,7 +20,6 @@ import {
   inferCallForm,
   extractReceiverName,
   extractReceiverNode,
-  CALL_EXPRESSION_TYPES,
   extractMixedChain,
   type MixedChainStep,
 } from './utils/call-analysis.js';

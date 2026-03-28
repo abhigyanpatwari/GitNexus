@@ -54,7 +54,7 @@ import { PipelineResult } from '../../types/pipeline.js';
 import { walkRepositoryPaths, readFileContents } from './filesystem-walker.js';
 import { isLanguageAvailable } from '../tree-sitter/parser-loader.js';
 import { SupportedLanguages } from 'gitnexus-shared';
-import { providers, getProvider, getProviderForFile } from './languages/index.js';
+import { providers, getProviderForFile } from './languages/index.js';
 import { createWorkerPool, WorkerPool } from './workers/worker-pool.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -376,7 +376,7 @@ async function runCrossFileBindingPropagation(
 
   let crossFileResolved = 0;
   const crossFileStart = Date.now();
-  let astCache = createASTCache(AST_CACHE_CAP);
+  const astCache = createASTCache(AST_CACHE_CAP);
 
   for (const level of levels) {
     const levelCandidates: {

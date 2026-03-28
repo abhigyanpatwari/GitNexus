@@ -8,12 +8,11 @@ import {
   useMemo,
   ReactNode,
 } from 'react';
-import type { GraphNode, GraphRelationship, NodeLabel, PipelineProgress } from 'gitnexus-shared';
+import type { GraphNode, NodeLabel, PipelineProgress } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../core/graph/types';
 import { createKnowledgeGraph } from '../core/graph/graph';
 import type {
   LLMSettings,
-  ProviderConfig,
   AgentStreamChunk,
   ChatMessage,
   ToolCallInfo,
@@ -23,7 +22,6 @@ import { loadSettings, getActiveProviderConfig, saveSettings } from '../core/llm
 import type { AgentMessage } from '../core/llm/agent';
 import { type EdgeType } from '../lib/constants';
 import {
-  fetchRepos,
   connectToServer,
   runQuery as backendRunQuery,
   search as backendSearch,

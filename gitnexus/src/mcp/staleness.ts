@@ -6,7 +6,6 @@
  */
 
 import { execFileSync } from 'child_process';
-import path from 'path';
 
 export interface StalenessInfo {
   isStale: boolean;

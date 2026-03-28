@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { X, GitBranch, Copy, Focus, Layers, ZoomIn, ZoomOut } from 'lucide-react';
+import { Copy, Focus, ZoomIn, ZoomOut } from 'lucide-react';
 import mermaid from 'mermaid';
 import DOMPurify from 'dompurify';
 import { ProcessData, generateProcessMermaid } from '../lib/mermaid-generator';

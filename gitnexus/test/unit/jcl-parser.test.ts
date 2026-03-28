@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { parseJcl } from '../../src/core/ingestion/cobol/jcl-parser.js';
-import type { JclParseResults } from '../../src/core/ingestion/cobol/jcl-parser.js';
 
 describe('parseJcl', () => {
   // ── JOB statements ──────────────────────────────────────────────────

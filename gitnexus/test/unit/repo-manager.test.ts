@@ -4,7 +4,7 @@
  * Tests: getStoragePath, getStoragePaths, readRegistry, registerRepo, unregisterRepo
  * Covers hardening fixes #29 (API key file permissions) and #30 (case-insensitive paths on Windows)
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'path';
 import os from 'os';
 import fs from 'fs/promises';
@@ -12,7 +12,6 @@ import {
   getStoragePath,
   getStoragePaths,
   readRegistry,
-  saveCLIConfig,
   loadCLIConfig,
 } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';

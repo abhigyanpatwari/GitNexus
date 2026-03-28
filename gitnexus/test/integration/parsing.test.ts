@@ -6,10 +6,9 @@
  * PHP export detection (#20), symbol ID with startLine (#19),
  * definition node range (#22).
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
-import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';

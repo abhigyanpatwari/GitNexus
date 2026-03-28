@@ -883,7 +883,7 @@ export const buildTypeEnv = (
       // Most languages use 'name' field; Rust uses 'pattern'; TS uses 'pattern' for some param types.
       // Kotlin `parameter` nodes use positional children instead of named fields,
       // so we fall back to scanning children by type when childForFieldName returns null.
-      let typeNode = node.childForFieldName('type');
+      const typeNode = node.childForFieldName('type');
       if (typeNode) {
         const nameNode =
           node.childForFieldName('name') ??

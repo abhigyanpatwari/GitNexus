@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 // Mock all the heavy imports before importing index
 vi.mock('../../src/cli/analyze.js', () => ({

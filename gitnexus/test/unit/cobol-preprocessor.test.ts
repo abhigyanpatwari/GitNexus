@@ -3,7 +3,6 @@ import {
   preprocessCobolSource,
   extractCobolSymbolsWithRegex,
 } from '../../src/core/ingestion/cobol/cobol-preprocessor.js';
-import type { CobolRegexResults } from '../../src/core/ingestion/cobol/cobol-preprocessor.js';
 import { parseReplacingClause } from '../../src/core/ingestion/cobol/cobol-copy-expander.js';
 
 // ---------------------------------------------------------------------------
