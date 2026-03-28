@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
-# Pre-commit hook: format staged files, then typecheck + unit tests.
-# Mirrors CI checks from ci-quality.yml and ci-tests.yml.
+# Pre-commit hook: format staged files + typecheck.
+# Tests run in CI (ci-tests.yml), not here.
 # Skip with: git commit --no-verify
-#
-# CI coverage:
-#   quality / typecheck      → tsc --noEmit in gitnexus/
-#   quality / typecheck-web  → tsc -b --noEmit in gitnexus-web/
-#   tests / ubuntu+coverage  → vitest run in gitnexus/ (all projects)
-#   e2e / chromium           → playwright (requires servers — skipped)
 
 ROOT="$(git rev-parse --show-toplevel)"
 
@@ -15,29 +9,18 @@ ROOT="$(git rev-parse --show-toplevel)"
 echo "pre-commit: formatting staged files..."
 "$ROOT/node_modules/.bin/lint-staged" || exit 1
 
-# 2. Typecheck + test changed packages
+# 2. Typecheck changed packages
 WEB_CHANGED=$(git diff --cached --name-only -- 'gitnexus-web/' | head -1)
 CLI_CHANGED=$(git diff --cached --name-only -- 'gitnexus/' | head -1)
 
-WEB_FILES=$(git diff --cached --name-only -- 'gitnexus-web/')
-CLI_FILES=$(git diff --cached --name-only -- 'gitnexus/')
-
-if [ -n "$WEB_FILES" ]; then
+if [ -n "$WEB_CHANGED" ]; then
   echo "pre-commit: typechecking gitnexus-web (tsc -b)..."
   cd "$ROOT/gitnexus-web" && ./node_modules/.bin/tsc -b --noEmit || exit 1
-
-  echo "pre-commit: running related gitnexus-web tests..."
-  WEB_RELATED=$(echo "$WEB_FILES" | sed "s|^|$ROOT/|" | tr '\n' ' ')
-  ./node_modules/.bin/vitest run --related $WEB_RELATED --reporter=dot || exit 1
 fi
 
-if [ -n "$CLI_FILES" ]; then
+if [ -n "$CLI_CHANGED" ]; then
   echo "pre-commit: typechecking gitnexus..."
   cd "$ROOT/gitnexus" && ./node_modules/.bin/tsc --noEmit || exit 1
-
-  echo "pre-commit: running related gitnexus tests..."
-  CLI_RELATED=$(echo "$CLI_FILES" | sed "s|^|$ROOT/|" | tr '\n' ' ')
-  ./node_modules/.bin/vitest run --project default --related $CLI_RELATED --reporter=dot || exit 1
 fi
 
 echo "pre-commit: all checks passed"
