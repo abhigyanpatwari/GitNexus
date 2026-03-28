@@ -11,7 +11,7 @@ import { FileTreePanel } from './components/FileTreePanel';
 import { CodeReferencesPanel } from './components/CodeReferencesPanel';
 import { getActiveProviderConfig } from './core/llm/settings-service';
 import { createKnowledgeGraph } from './core/graph/graph';
-import { connectToServer, fetchRepos, normalizeServerUrl, type ConnectResult } from './services/backend-client';
+import { connectToServer, fetchRepos, normalizeServerUrl, connectHeartbeat, type ConnectResult } from './services/backend-client';
 import { ERROR_RESET_DELAY_MS } from './config/ui-constants';
 
 const AppContent = () => {
@@ -134,6 +134,24 @@ const AppContent = () => {
     initializeAgent();
   }, [refreshLLMSettings, initializeAgent]);
 
+  // ── Server heartbeat: detect when server goes down while exploring ────────
+  // Uses SSE (EventSource) for instant detection — no polling delay.
+  useEffect(() => {
+    if (viewMode !== 'exploring') return;
+
+    const cleanup = connectHeartbeat(
+      () => {}, // onConnect — already connected, no action needed
+      () => {
+        // Server went down — return to onboarding
+        setViewMode('onboarding');
+        setGraph(null);
+        setProgress(null);
+      },
+    );
+
+    return cleanup;
+  }, [viewMode, setViewMode, setGraph, setProgress]);
+
   // Render based on view mode
   if (viewMode === 'onboarding') {
     return (
@@ -147,34 +165,6 @@ const AppContent = () => {
             fetchRepos()
               .then((repos) => setAvailableRepos(repos))
               .catch((e) => console.warn('Failed to fetch repo list:', e));
-          }
-        }}
-        onServerAnalyze={async (serverUrl, repoName) => {
-          // Analysis completed on server — now connect and load the graph
-          setViewMode('loading');
-          setProgress({ phase: 'extracting', percent: 5, message: 'Loading analyzed graph...', detail: 'Connecting to server' });
-          try {
-            const baseUrl = normalizeServerUrl(serverUrl);
-            const result = await connectToServer(serverUrl, (phase, downloaded, total) => {
-              if (phase === 'downloading') {
-                const pct = total ? Math.round((downloaded / total) * 90) + 5 : 50;
-                const mb = (downloaded / (1024 * 1024)).toFixed(1);
-                setProgress({ phase: 'extracting', percent: pct, message: 'Downloading graph...', detail: `${mb} MB downloaded` });
-              }
-            }, undefined, repoName);
-            await handleServerConnect(result);
-            setProgress(null);
-            setServerBaseUrl(baseUrl);
-            fetchRepos()
-              .then((repos) => setAvailableRepos(repos))
-              .catch((e) => console.warn('Failed to fetch repo list:', e));
-          } catch (err) {
-            setProgress({
-              phase: 'error', percent: 0,
-              message: 'Failed to load analyzed graph',
-              detail: err instanceof Error ? err.message : 'Unknown error',
-            });
-            setTimeout(() => { setViewMode('onboarding'); setProgress(null); }, ERROR_RESET_DELAY_MS);
           }
         }}
       />

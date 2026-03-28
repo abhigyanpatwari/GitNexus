@@ -12,6 +12,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
+import { createRequire } from 'node:module';
 import { loadMeta, listRegisteredRepos, getStoragePath } from '../storage/repo-manager.js';
 import { executeQuery, executePrepared, executeWithReusedStatement, closeLbug, withLbugDb } from '../core/lbug/lbug-adapter.js';
 import { isWriteQuery } from '../mcp/core/lbug-adapter.js';
@@ -26,6 +27,9 @@ import { fork } from 'child_process';
 import { fileURLToPath } from 'url';
 import { JobManager } from './analyze-job.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
+
+const _require = createRequire(import.meta.url);
+const pkg = _require('../../package.json');
 
 /**
  * Determine whether an HTTP Origin header value is allowed by CORS policy.
@@ -260,6 +264,7 @@ const requestedRepo = (req: express.Request): string | undefined => {
 
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
   const app = express();
+  app.disable('x-powered-by');
 
   // CORS: allow localhost, private/LAN networks, and the deployed site.
   // Non-browser requests (curl, server-to-server) have no origin and are allowed.
@@ -303,6 +308,41 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     if (repoName) return repos.find(r => r.name === repoName) || null;
     return repos[0]; // default to first
   };
+
+  // SSE heartbeat — clients connect to detect server liveness instantly.
+  // When the server shuts down, the TCP connection drops and the client's
+  // EventSource fires onerror immediately (no polling delay).
+  app.get('/api/heartbeat', (_req, res) => {
+    // Use res.set() instead of res.writeHead() to preserve CORS headers from middleware
+    res.set({
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    });
+    res.flushHeaders();
+    // Send initial ping so the client knows it connected
+    res.write(':ok\n\n');
+
+    // Keep-alive ping every 15s to prevent proxy/firewall timeout
+    const interval = setInterval(() => res.write(':ping\n\n'), 15_000);
+
+    _req.on('close', () => clearInterval(interval));
+  });
+
+  // Server info: version and launch context (npx / global / local dev)
+  app.get('/api/info', (_req, res) => {
+    const execPath = process.env.npm_execpath ?? '';
+    const argv0 = process.argv[1] ?? '';
+    let launchContext: 'npx' | 'global' | 'local';
+    if (execPath.includes('npx') || argv0.includes('_npx') || process.env.npm_config_prefix?.includes('_npx')) {
+      launchContext = 'npx';
+    } else if (argv0.includes('node_modules')) {
+      launchContext = 'local';
+    } else {
+      launchContext = 'global';
+    }
+    res.json({ version: pkg.version, launchContext, nodeVersion: process.version });
+  });
 
   // List all registered repos
   app.get('/api/repos', async (_req, res) => {

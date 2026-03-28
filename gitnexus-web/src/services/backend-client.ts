@@ -284,6 +284,60 @@ const repoParam = (repo?: string): string =>
 
 // ── API Methods ────────────────────────────────────────────────────────────
 
+/** Server info from /api/info. */
+export interface ServerInfo {
+  version: string;
+  launchContext: 'npx' | 'global' | 'local';
+  nodeVersion: string;
+}
+
+/** Fetch server info (version, launch context). */
+export const fetchServerInfo = async (): Promise<ServerInfo> => {
+  const response = await fetchWithTimeout(`${_backendUrl}/api/info`);
+  await assertOk(response);
+  return response.json() as Promise<ServerInfo>;
+};
+
+/**
+ * Connect an SSE heartbeat to the backend. Fires `onDisconnect` when the
+ * server goes down (after one retry to avoid false positives from transient
+ * network hiccups). Returns a cleanup function.
+ */
+export const connectHeartbeat = (
+  onConnect: () => void,
+  onDisconnect: () => void,
+): (() => void) => {
+  let closed = false;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let es: EventSource | null = null;
+
+  const connect = (isRetry: boolean) => {
+    if (closed) return;
+    es = new EventSource(`${_backendUrl}/api/heartbeat`);
+    es.onopen = () => { if (!closed) onConnect(); };
+    es.onerror = () => {
+      es?.close();
+      es = null;
+      if (closed) return;
+      if (!isRetry) {
+        // First failure — retry once after 1s to avoid false positives
+        retryTimer = setTimeout(() => connect(true), 1_000);
+      } else {
+        // Second consecutive failure — server is truly down
+        onDisconnect();
+      }
+    };
+  };
+
+  connect(false);
+
+  return () => {
+    closed = true;
+    es?.close();
+    if (retryTimer) clearTimeout(retryTimer);
+  };
+};
+
 /** Probe the backend. Returns true if reachable. */
 export const probeBackend = async (): Promise<boolean> => {
   try {

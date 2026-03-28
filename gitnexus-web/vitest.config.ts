@@ -1,9 +1,16 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import { createRequire } from 'module';
+
+const _require = createRequire(import.meta.url);
+const gitnexusPkg = _require('../gitnexus/package.json');
 
 export default defineConfig({
   plugins: [react()],
+  define: {
+    __REQUIRED_NODE_VERSION__: JSON.stringify(gitnexusPkg.engines.node.replace(/[>=^~\s]/g, '')),
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
