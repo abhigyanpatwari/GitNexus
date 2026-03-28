@@ -5,7 +5,7 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useAppState } from '../hooks/useAppState';
 import { type GraphNode, getSyntaxLanguageFromFilename } from 'gitnexus-shared';
 import { NODE_COLORS } from '../lib/constants';
-import { readFile } from '../services/backend-client';
+import { readFile, type ReadFileResult } from '../services/backend-client';
 
 const getSyntaxLanguage = (filePath: string | undefined): string => {
   if (!filePath) return 'text';
@@ -173,56 +173,81 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
   const showSelectedViewer = !!selectedNode && !!selectedFilePath;
   const showCitations = aiReferences.length > 0;
 
-  // Fetch file content from the server when a node with a filePath is selected
-  const [selectedFileContent, setSelectedFileContent] = useState<string | undefined>(undefined);
+  // Fetch file content from the server when a node with a filePath is selected.
+  // For non-File nodes (functions, classes, etc.), fetch a buffer around the symbol
+  // instead of the entire file. For File nodes, fetch the whole file.
+  const CONTEXT_LINES = 50; // lines of context above and below the symbol
+
+  const [fileResult, setFileResult] = useState<ReadFileResult | null>(null);
   const [isLoadingFile, setIsLoadingFile] = useState(false);
   const selectedViewerRef = useRef<HTMLDivElement>(null);
 
+  const selectedFileContent = fileResult?.content;
+  const fileStartLine = fileResult?.startLine ?? 0;
+
   useEffect(() => {
     if (!selectedFilePath) {
-      setSelectedFileContent(undefined);
+      setFileResult(null);
       return;
     }
 
     let cancelled = false;
     setIsLoadingFile(true);
-    setSelectedFileContent(undefined);
+    setFileResult(null);
 
-    readFile(selectedFilePath).then(content => {
+    // Determine read range: full file for File nodes, buffered for symbols
+    const startLine = selectedNode?.properties?.startLine as number | undefined;
+    const endLine = selectedNode?.properties?.endLine as number | undefined;
+    const isWholeFile = selectedIsFile || startLine === undefined;
+
+    const options = isWholeFile
+      ? undefined
+      : {
+          startLine: Math.max(0, startLine - CONTEXT_LINES),
+          endLine: (endLine ?? startLine) + CONTEXT_LINES,
+        };
+
+    readFile(selectedFilePath, options).then(result => {
       if (!cancelled) {
-        setSelectedFileContent(content);
+        setFileResult(result);
         setIsLoadingFile(false);
       }
     }).catch(() => {
       if (!cancelled) {
-        setSelectedFileContent(undefined);
+        setFileResult(null);
         setIsLoadingFile(false);
       }
     });
 
     return () => { cancelled = true; };
-  }, [selectedFilePath]);
+  }, [selectedFilePath, selectedNode?.properties?.startLine, selectedNode?.properties?.endLine, selectedIsFile]);
 
   // Scroll to the selected node's startLine after content loads
   useEffect(() => {
     if (!selectedFileContent || !selectedNode?.properties?.startLine) return;
     const startLine = selectedNode.properties.startLine as number;
 
-    // Wait for SyntaxHighlighter to render, then scroll
-    requestAnimationFrame(() => {
-      const container = selectedViewerRef.current;
-      if (!container) return;
-      // Each line is a span with a line number. Find the target line element.
-      const lineEl = container.querySelector(`[data-line-number="${startLine + 1}"]`) as HTMLElement
-        ?? container.querySelectorAll('.linenumber')[startLine] as HTMLElement;
-      if (lineEl) {
-        lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      } else {
-        // Fallback: estimate scroll position based on line height
-        const lineHeight = 20.8; // 13px font * 1.6 line-height
-        container.scrollTop = Math.max(0, startLine * lineHeight - container.clientHeight / 3);
-      }
+    // Double rAF: wait for SyntaxHighlighter to fully render before scrolling
+    let cancelled = false;
+    const outerRaf = requestAnimationFrame(() => {
+      const innerRaf = requestAnimationFrame(() => {
+        if (cancelled) return;
+        const container = selectedViewerRef.current;
+        if (!container) return;
+        const lineEl = container.querySelector(`[data-line-number="${startLine + 1}"]`) as HTMLElement
+          ?? container.querySelectorAll('.linenumber')[startLine] as HTMLElement;
+        if (lineEl) {
+          lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
+          // Fallback: estimate scroll position based on line height
+          const lineHeight = 20.8; // 13px font * 1.6 line-height
+          container.scrollTop = Math.max(0, startLine * lineHeight - container.clientHeight / 3);
+        }
+      });
+      rafIds.push(innerRaf);
     });
+    const rafIds = [outerRaf];
+    return () => { cancelled = true; rafIds.forEach(id => cancelAnimationFrame(id)); };
   }, [selectedFileContent, selectedNode?.properties?.startLine]);
 
   if (isCollapsed) {
@@ -320,7 +345,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                   language={getSyntaxLanguage(selectedFilePath)}
                   style={customTheme as any}
                   showLineNumbers
-                  startingLineNumber={1}
+                  startingLineNumber={fileStartLine + 1}
                   lineNumberStyle={{
                     minWidth: '3em',
                     paddingRight: '1em',
@@ -329,12 +354,12 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                     userSelect: 'none',
                   }}
                   lineProps={(lineNumber) => {
-                    const startLine = selectedNode?.properties?.startLine;
-                    const endLine = selectedNode?.properties?.endLine ?? startLine;
+                    const symStart = selectedNode?.properties?.startLine;
+                    const symEnd = selectedNode?.properties?.endLine ?? symStart;
                     const isHighlighted =
-                      typeof startLine === 'number' &&
-                      lineNumber >= startLine + 1 &&
-                      lineNumber <= (endLine ?? startLine) + 1;
+                      typeof symStart === 'number' &&
+                      lineNumber >= symStart + 1 &&
+                      lineNumber <= (symEnd ?? symStart) + 1;
                     return {
                       style: {
                         display: 'block',

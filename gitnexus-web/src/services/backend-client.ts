@@ -457,13 +457,28 @@ export const grep = async (
   return (body.results ?? []) as GrepResult[];
 };
 
-/** Read a file's content. */
-export const readFile = async (filePath: string, repo?: string): Promise<string> => {
-  const params = [`path=${encodeURIComponent(filePath)}`, repoParam(repo)].filter(Boolean).join('&');
+/** Result from reading a file, optionally with line range. */
+export interface ReadFileResult {
+  content: string;
+  startLine?: number;
+  endLine?: number;
+  totalLines: number;
+}
+
+/** Read a file's content. Supports optional line range (0-indexed). */
+export const readFile = async (
+  filePath: string,
+  options?: { startLine?: number; endLine?: number; repo?: string },
+): Promise<ReadFileResult> => {
+  const params = [
+    `path=${encodeURIComponent(filePath)}`,
+    repoParam(options?.repo),
+    options?.startLine !== undefined ? `startLine=${options.startLine}` : '',
+    options?.endLine !== undefined ? `endLine=${options.endLine}` : '',
+  ].filter(Boolean).join('&');
   const response = await fetchWithTimeout(`${_backendUrl}/api/file?${params}`);
   await assertOk(response);
-  const body = (await response.json()) as { content: string };
-  return body.content;
+  return response.json() as Promise<ReadFileResult>;
 };
 
 /** Fetch all processes for a repo. */

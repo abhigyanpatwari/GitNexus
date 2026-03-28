@@ -575,8 +575,23 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      const content = await fs.readFile(fullPath, 'utf-8');
-      res.json({ content });
+      const raw = await fs.readFile(fullPath, 'utf-8');
+
+      // Optional line-range support: ?startLine=10&endLine=50
+      // Returns only the requested slice (0-indexed), plus metadata.
+      const startLine = req.query.startLine !== undefined ? Number(req.query.startLine) : undefined;
+      const endLine = req.query.endLine !== undefined ? Number(req.query.endLine) : undefined;
+
+      if (startLine !== undefined && Number.isFinite(startLine)) {
+        const lines = raw.split('\n');
+        const start = Math.max(0, startLine);
+        const end = endLine !== undefined && Number.isFinite(endLine)
+          ? Math.min(lines.length, endLine + 1)
+          : lines.length;
+        res.json({ content: lines.slice(start, end).join('\n'), startLine: start, endLine: end - 1, totalLines: lines.length });
+      } else {
+        res.json({ content: raw, totalLines: raw.split('\n').length });
+      }
     } catch (err: any) {
       if (err.code === 'ENOENT') {
         res.status(404).json({ error: 'File not found' });
