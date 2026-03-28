@@ -332,7 +332,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
   const readTool = tool(
     async ({ filePath }: { filePath: string }) => {
       try {
-        const { content } = await readFile(filePath);
+        const content = await readFile(filePath);
 
         // Truncate large files
         const MAX_CONTENT = 50000;
@@ -1215,7 +1215,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         if (!n.filePath || !n.startLine) return null;
 
         try {
-          const { content } = await readFile(n.filePath);
+          const content = await readFile(n.filePath);
           const lines = content.split('\n');
           const lineIdx = n.startLine - 1;
           if (lineIdx < 0 || lineIdx >= lines.length) return null;

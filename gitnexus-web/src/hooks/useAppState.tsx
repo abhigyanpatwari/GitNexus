@@ -555,7 +555,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         executeQuery,
         search: (query: string, opts?: any) => backendSearch(query, { ...opts, repo }),
         grep: (pattern: string, limit?: number) => backendGrep(pattern, repo, limit),
-        readFile: (filePath: string) => backendReadFile(filePath, repo),
+        readFile: (filePath: string) => backendReadFile(filePath, { repo }).then(r => r.content),
       };
 
       agentRef.current = createGraphRAGAgent(config, backend, codebaseContext);
