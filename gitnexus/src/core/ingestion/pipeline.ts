@@ -787,8 +787,6 @@ async function runChunkedParseAndResolve(
   // Accumulate MCP/RPC tool definitions (@mcp.tool(), @app.tool(), etc.)
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
-  // Interface dispatch: maps interface name → implementor file paths (accumulated across chunks)
-  const globalImplementorMap = new Map<string, Set<string>>();
   const deferredWorkerCalls: ExtractedCall[] = [];
   const deferredWorkerHeritage: ExtractedHeritage[] = [];
   const deferredConstructorBindings: FileConstructorBindings[] = [];
@@ -949,7 +947,6 @@ async function runChunkedParseAndResolve(
       deferredWorkerHeritage.length > 0
         ? buildImplementorMap(deferredWorkerHeritage, ctx)
         : new Map<string, Set<string>>();
-    mergeImplementorMaps(globalImplementorMap, fullWorkerImplementorMap);
 
     if (deferredWorkerCalls.length > 0) {
       await processCallsFromExtracted(
@@ -990,6 +987,9 @@ async function runChunkedParseAndResolve(
   // Synthesize wildcard import bindings once after ALL imports are processed,
   // before any call resolution — same rationale as the worker-path inline synthesis.
   if (sequentialChunkPaths.length > 0) synthesizeWildcardImportBindings(graph, ctx);
+  // Merge implementor-map deltas per chunk (O(heritage per chunk)), not O(|edges|) graph scans
+  // per chunk — mirrors worker-path deferred heritage without re-iterating all relationships.
+  const sequentialImplementorMap = new Map<string, Set<string>>();
   for (const chunkPaths of sequentialChunkPaths) {
     const chunkContents = await readFileContents(repoPath, chunkPaths);
     const chunkFiles = chunkPaths
@@ -997,7 +997,7 @@ async function runChunkedParseAndResolve(
       .map((p) => ({ path: p, content: chunkContents.get(p)! }));
     astCache = createASTCache(chunkFiles.length);
     const sequentialHeritage = await extractExtractedHeritageFromFiles(chunkFiles, astCache);
-    const sequentialImplementorMap = buildImplementorMap(sequentialHeritage, ctx);
+    mergeImplementorMaps(sequentialImplementorMap, buildImplementorMap(sequentialHeritage, ctx));
     const rubyHeritage = await processCalls(
       graph,
       chunkFiles,
