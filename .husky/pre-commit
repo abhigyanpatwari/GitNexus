@@ -19,20 +19,25 @@ echo "pre-commit: formatting staged files..."
 WEB_CHANGED=$(git diff --cached --name-only -- 'gitnexus-web/' | head -1)
 CLI_CHANGED=$(git diff --cached --name-only -- 'gitnexus/' | head -1)
 
-if [ -n "$WEB_CHANGED" ]; then
+WEB_FILES=$(git diff --cached --name-only -- 'gitnexus-web/')
+CLI_FILES=$(git diff --cached --name-only -- 'gitnexus/')
+
+if [ -n "$WEB_FILES" ]; then
   echo "pre-commit: typechecking gitnexus-web (tsc -b)..."
   cd "$ROOT/gitnexus-web" && ./node_modules/.bin/tsc -b --noEmit || exit 1
 
-  echo "pre-commit: running gitnexus-web unit tests..."
-  ./node_modules/.bin/vitest run --reporter=dot || exit 1
+  echo "pre-commit: running related gitnexus-web tests..."
+  WEB_RELATED=$(echo "$WEB_FILES" | sed "s|^|$ROOT/|" | tr '\n' ' ')
+  ./node_modules/.bin/vitest run --related $WEB_RELATED --reporter=dot || exit 1
 fi
 
-if [ -n "$CLI_CHANGED" ]; then
+if [ -n "$CLI_FILES" ]; then
   echo "pre-commit: typechecking gitnexus..."
   cd "$ROOT/gitnexus" && ./node_modules/.bin/tsc --noEmit || exit 1
 
-  echo "pre-commit: running gitnexus unit tests (default project)..."
-  ./node_modules/.bin/vitest run --project default --reporter=dot || exit 1
+  echo "pre-commit: running related gitnexus tests..."
+  CLI_RELATED=$(echo "$CLI_FILES" | sed "s|^|$ROOT/|" | tr '\n' ' ')
+  ./node_modules/.bin/vitest run --project default --related $CLI_RELATED --reporter=dot || exit 1
 fi
 
 echo "pre-commit: all checks passed"
