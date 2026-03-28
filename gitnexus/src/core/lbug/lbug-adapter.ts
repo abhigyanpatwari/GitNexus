@@ -394,6 +394,9 @@ const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   if (table === 'Tool') {
     return `COPY ${t}(id, name, filePath, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
+  if (table === 'StatusType') {
+    return `COPY ${t}(id, name, filePath, statusValues, statusKind) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
   if (table === 'Method') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
@@ -441,6 +444,10 @@ export const insertNodeToLbug = async (
     } else if (label === 'Section') {
       const descPart = properties.description ? `, description: ${escapeValue(properties.description)}` : '';
       query = `CREATE (n:Section {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, level: ${properties.level || 1}, content: ${escapeValue(properties.content || '')}${descPart}})`;
+    } else if (label === 'StatusType') {
+      const valuesArr = Array.isArray(properties.statusValues) ? properties.statusValues : [];
+      const valuesStr = `[${valuesArr.map((v: string) => escapeValue(v)).join(',')}]`;
+      query = `CREATE (n:StatusType {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, statusValues: ${valuesStr}, statusKind: ${escapeValue(properties.statusKind || '')}})`;
     } else if (TABLES_WITH_EXPORTED.has(label)) {
       const descPart = properties.description ? `, description: ${escapeValue(properties.description)}` : '';
       query = `CREATE (n:${t} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${escapeValue(properties.content || '')}${descPart}})`;
@@ -515,6 +522,10 @@ export const batchInsertNodesToLbug = async (
         } else if (label === 'Section') {
           const descPart = properties.description ? `, n.description = ${escapeValue(properties.description)}` : '';
           query = `MERGE (n:Section {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.level = ${properties.level || 1}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
+        } else if (label === 'StatusType') {
+          const valuesArr = Array.isArray(properties.statusValues) ? properties.statusValues : [];
+          const valuesStr = `[${valuesArr.map((v: string) => escapeValue(v)).join(',')}]`;
+          query = `MERGE (n:StatusType {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.statusValues = ${valuesStr}, n.statusKind = ${escapeValue(properties.statusKind || '')}`;
         } else if (TABLES_WITH_EXPORTED.has(label)) {
           const descPart = properties.description ? `, n.description = ${escapeValue(properties.description)}` : '';
           query = `MERGE (n:${t} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${escapeValue(properties.content || '')}${descPart}`;

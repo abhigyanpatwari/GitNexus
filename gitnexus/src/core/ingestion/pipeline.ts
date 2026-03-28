@@ -15,6 +15,7 @@ import { expoFileToRouteURL } from './route-extractors/expo.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';
 import { extractResponseShapes, extractPHPResponseShapes } from './route-extractors/response-shapes.js';
 import { extractMiddlewareChain, extractNextjsMiddlewareConfig, compileMatcher, compiledMatcherMatchesRoute } from './route-extractors/middleware.js';
+import { extractStatusTypes, extractStatusTransitions, type DetectedStatusType } from './workflow-detector.js';
 import { generateId } from '../../lib/utils.js';
 import type { ExtractedFetchCall, ExtractedRoute, ExtractedDecoratorRoute, ExtractedToolDef, ExtractedORMQuery } from './workers/parse-worker.js';
 import { processHeritage, processHeritageFromExtracted } from './heritage-processor.js';
@@ -1381,6 +1382,117 @@ export const runPipelineFromRepo = async (
     // ── Phase 3.7: ORM Dataflow Detection (Prisma + Supabase) ──────────
     if (allORMQueries.length > 0) {
       processORMQueries(graph, allORMQueries, isDev);
+    }
+
+    // ── Phase 3.8: Workflow / State Machine Detection ──────────────────
+    {
+      const tsCandidates = allPaths.filter(p =>
+        (p.endsWith('.ts') || p.endsWith('.tsx')) &&
+        !p.includes('node_modules') && !p.includes('.test.') && !p.includes('.spec.')
+      );
+
+      const tsContents = await readFileContents(repoPath, tsCandidates);
+      const allStatusTypes: DetectedStatusType[] = [];
+
+      for (const [filePath, content] of tsContents) {
+        const detected = extractStatusTypes(content, 'typescript', filePath);
+        allStatusTypes.push(...detected);
+      }
+
+      // Create StatusType nodes + lookup maps for transition matching
+      const statusTypeNodeIds = new Map<string, string>(); // typeName -> nodeId
+      const valueToType = new Map<string, DetectedStatusType>(); // statusValue -> type (fallback)
+      const entityToType = new Map<string, DetectedStatusType>(); // lowercase entity name -> type
+      for (const st of allStatusTypes) {
+        const nodeId = generateId('StatusType', st.name);
+        statusTypeNodeIds.set(st.name, nodeId);
+        // Map entity name from type name: GrantStatus -> grant, ApprovalInstanceStatus -> approvalinstance
+        const entityName = st.name.replace(/Status$|State$|Phase$|Stage$/i, '').toLowerCase();
+        if (entityName) entityToType.set(entityName, st);
+        for (const v of st.values) {
+          // First type wins if multiple types share a value
+          if (!valueToType.has(v)) valueToType.set(v, st);
+        }
+        graph.addNode({
+          id: nodeId,
+          label: 'StatusType',
+          properties: {
+            name: st.name,
+            filePath: st.filePath,
+            statusValues: st.values,
+            statusKind: st.kind,
+          },
+        });
+
+        // DEFINES edge from file
+        const fileId = generateId('File', st.filePath);
+        graph.addRelationship({
+          id: generateId('DEFINES', `${fileId}->${nodeId}`),
+          sourceId: fileId,
+          targetId: nodeId,
+          type: 'DEFINES',
+          confidence: 1.0,
+          reason: `status-type-${st.kind}`,
+        });
+      }
+
+      // Scan TS files for status transitions (Prisma .update patterns)
+      let transitionCount = 0;
+      if (allStatusTypes.length > 0) {
+        for (const [filePath, content] of tsContents) {
+          const transitions = extractStatusTransitions(content, 'typescript', filePath);
+          for (const t of transitions) {
+            // Match transition to StatusType: prefer entity name, fall back to value
+            let matchingType: DetectedStatusType | undefined;
+            if (t.entityType) {
+              matchingType = entityToType.get(t.entityType.toLowerCase());
+            }
+            if (!matchingType) {
+              matchingType = valueToType.get(t.toStatus)
+                ?? (t.fromStatus ? valueToType.get(t.fromStatus) : undefined);
+            }
+            if (!matchingType) continue;
+
+            const statusNodeId = statusTypeNodeIds.get(matchingType.name);
+            if (!statusNodeId) continue;
+
+            // Find source function/method by generated ID (O(1) via graph.getNode)
+            let sourceId: string | undefined;
+            if (t.functionName) {
+              const funcNode = graph.getNode(generateId('Function', `${filePath}::${t.functionName}`))
+                ?? graph.getNode(generateId('Method', `${filePath}::${t.functionName}`));
+              if (funcNode) sourceId = funcNode.id;
+            }
+            if (!sourceId) {
+              sourceId = generateId('File', filePath);
+            }
+
+            const fromPart = t.fromStatus || '*';
+            const reasonStr = t.isTransactional
+              ? `transactional-update:${t.entityType || ''}:${fromPart}->${t.toStatus}`
+              : `direct-update:${t.entityType || ''}:${fromPart}->${t.toStatus}`;
+
+            graph.addRelationship({
+              id: generateId('TRANSITIONS', `${sourceId}->${statusNodeId}:${t.toStatus}`),
+              sourceId,
+              targetId: statusNodeId,
+              type: 'TRANSITIONS',
+              confidence: 0.9,
+              reason: reasonStr,
+              fromStatus: t.fromStatus,
+              toStatus: t.toStatus,
+              entityType: t.entityType,
+              isTransactional: t.isTransactional,
+            });
+
+            transitionCount++;
+          }
+        }
+      }
+
+      if (isDev && (allStatusTypes.length > 0 || transitionCount > 0)) {
+        console.log(`🔄 Workflow detection: ${allStatusTypes.length} status types, ${transitionCount} transitions`);
+      }
     }
 
     // ── Phase 14: Cross-file binding propagation (topological level sort) ──

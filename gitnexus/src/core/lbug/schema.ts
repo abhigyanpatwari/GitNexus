@@ -18,7 +18,8 @@ export const NODE_TABLES = [
   'Struct', 'Enum', 'Macro', 'Typedef', 'Union', 'Namespace', 'Trait', 'Impl',
   'TypeAlias', 'Const', 'Static', 'Property', 'Record', 'Delegate', 'Annotation', 'Constructor', 'Template', 'Module',
   'Route',
-  'Tool'
+  'Tool',
+  'StatusType'
 ] as const;
 export type NodeTableName = typeof NODE_TABLES[number];
 
@@ -29,7 +30,7 @@ export const REL_TABLE_NAME = 'CodeRelation';
 
 // Valid relation types
 // Note: WRAPS is reserved for future middleware graph traversal (not yet emitted)
-export const REL_TYPES = ['CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'ACCESSES', 'OVERRIDES', 'MEMBER_OF', 'STEP_IN_PROCESS', 'HANDLES_ROUTE', 'FETCHES', 'HANDLES_TOOL', 'ENTRY_POINT_OF', 'WRAPS', 'QUERIES'] as const;
+export const REL_TYPES = ['CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'ACCESSES', 'OVERRIDES', 'MEMBER_OF', 'STEP_IN_PROCESS', 'HANDLES_ROUTE', 'FETCHES', 'HANDLES_TOOL', 'ENTRY_POINT_OF', 'WRAPS', 'QUERIES', 'TRANSITIONS'] as const;
 export type RelType = typeof REL_TYPES[number];
 
 // ============================================================================
@@ -217,6 +218,17 @@ CREATE NODE TABLE Tool (
   PRIMARY KEY (id)
 )`;
 
+// Status/state type definitions (workflow detection)
+export const STATUS_TYPE_SCHEMA = `
+CREATE NODE TABLE StatusType (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  statusValues STRING[],
+  statusKind STRING,
+  PRIMARY KEY (id)
+)`;
+
 // Markdown heading sections
 export const SECTION_SCHEMA = `
 CREATE NODE TABLE Section (
@@ -338,6 +350,9 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM File TO Tool,
   FROM Function TO Tool,
   FROM Method TO Tool,
+  FROM File TO StatusType,
+  FROM Function TO StatusType,
+  FROM Method TO StatusType,
   FROM CodeElement TO Community,
   FROM Interface TO Community,
   FROM Interface TO Function,
@@ -438,6 +453,7 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM CodeElement TO Process,
   FROM Route TO Process,
   FROM Tool TO Process,
+  FROM StatusType TO Process,
   type STRING,
   confidence DOUBLE,
   reason STRING,
@@ -513,6 +529,8 @@ export const NODE_SCHEMA_QUERIES = [
   ROUTE_SCHEMA,
   // MCP tools
   TOOL_SCHEMA,
+  // Workflow state detection
+  STATUS_TYPE_SCHEMA,
 ];
 
 export const REL_SCHEMA_QUERIES = [

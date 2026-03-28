@@ -35,7 +35,8 @@ export type NodeLabel =
   | 'Template'
   | 'Section'
   | 'Route'        // API route endpoint (e.g., /api/grants)
-  | 'Tool';        // MCP tool definition
+  | 'Tool'         // MCP tool definition
+  | 'StatusType';  // Status/state type definition (e.g., GrantStatus)
 
 
 import { SupportedLanguages } from '../../config/supported-languages.js';
@@ -82,6 +83,9 @@ export type NodeProperties = {
   errorKeys?: string[],
   // Middleware wrapper chain (outermost first): ['withRateLimit', 'withCSRF', 'withAuth']
   middleware?: string[],
+  // StatusType-specific
+  statusValues?: string[],   // All possible status values
+  statusKind?: string,       // 'union' | 'enum'
 }
 
 export type RelationshipType =
@@ -106,6 +110,7 @@ export type RelationshipType =
   | 'ENTRY_POINT_OF'  // Route/Tool → Process (this endpoint starts this execution flow)
   | 'WRAPS'           // Function → Function (middleware wrapper chain) — Reserved: future middleware graph traversal (not yet emitted)
   | 'QUERIES'          // File/Function → CodeElement (ORM query to model/table)
+  | 'TRANSITIONS'      // Function/File → StatusType (status transition)
 
 export interface GraphNode {
   id:  string,
@@ -124,6 +129,11 @@ export interface GraphRelationship {
   reason: string,
   /** Step number for STEP_IN_PROCESS relationships (1-indexed) */
   step?: number,
+  /** TRANSITIONS-specific: from/to status values and entity context */
+  fromStatus?: string,
+  toStatus?: string,
+  entityType?: string,
+  isTransactional?: boolean,
 }
 
 export interface KnowledgeGraph {
