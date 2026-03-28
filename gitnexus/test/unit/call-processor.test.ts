@@ -4,6 +4,8 @@ import {
   seedCrossFileReceiverTypes,
   extractConsumerAccessedKeys,
   processNextjsFetchRoutes,
+  buildImplementorMap,
+  mergeImplementorMaps,
 } from '../../src/core/ingestion/call-processor.js';
 import { extractReturnTypeName } from '../../src/core/ingestion/type-extractors/shared.js';
 import {
@@ -14,6 +16,7 @@ import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type {
   ExtractedCall,
   ExtractedFetchCall,
+  ExtractedHeritage,
   FileConstructorBindings,
 } from '../../src/core/ingestion/workers/parse-worker.js';
 
@@ -1391,5 +1394,137 @@ describe('processNextjsFetchRoutes', () => {
     const rels = graph.relationships.filter((r) => r.type === 'FETCHES');
     expect(rels).toHaveLength(1);
     expect(rels[0].reason).not.toContain('|fetches:');
+  });
+});
+
+describe('buildImplementorMap / mergeImplementorMaps', () => {
+  it('records direct implements edges per interface name', () => {
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'a.java', className: 'C', parentName: 'Runnable', kind: 'implements' },
+      { filePath: 'b.java', className: 'D', parentName: 'Runnable', kind: 'implements' },
+    ];
+    const map = buildImplementorMap(heritage);
+    expect(map.get('Runnable')).toEqual(new Set(['a.java', 'b.java']));
+  });
+
+  it('ignores extends and other heritage kinds', () => {
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'a.java', className: 'C', parentName: 'Base', kind: 'extends' },
+      { filePath: 'a.java', className: 'C', parentName: 'I', kind: 'implements' },
+    ];
+    const map = buildImplementorMap(heritage);
+    expect(map.has('Base')).toBe(false);
+    expect(map.get('I')).toEqual(new Set(['a.java']));
+  });
+
+  it('mergeImplementorMaps unions files per interface and adds new keys', () => {
+    const acc = new Map<string, Set<string>>();
+    mergeImplementorMaps(acc, new Map([['I', new Set(['a.java'])]]));
+    mergeImplementorMaps(
+      acc,
+      new Map([
+        ['I', new Set(['b.java'])],
+        ['J', new Set(['c.java'])],
+      ]),
+    );
+    expect(acc.get('I')).toEqual(new Set(['a.java', 'b.java']));
+    expect(acc.get('J')).toEqual(new Set(['c.java']));
+  });
+
+  it('heritage merged across disjoint lists matches single buildImplementorMap (chunk-order invariant)', () => {
+    const chunk1: ExtractedHeritage[] = [
+      { filePath: 'a.java', className: 'A', parentName: 'Iface', kind: 'implements' },
+    ];
+    const chunk2: ExtractedHeritage[] = [
+      { filePath: 'b.java', className: 'B', parentName: 'Iface', kind: 'implements' },
+    ];
+    const oneShot = buildImplementorMap([...chunk1, ...chunk2]);
+    const acc = new Map<string, Set<string>>();
+    mergeImplementorMaps(acc, buildImplementorMap(chunk1));
+    mergeImplementorMaps(acc, buildImplementorMap(chunk2));
+    expect(oneShot.get('Iface')).toEqual(acc.get('Iface'));
+    expect(oneShot.get('Iface')).toEqual(new Set(['a.java', 'b.java']));
+  });
+});
+
+describe('processCallsFromExtracted — interface dispatch', () => {
+  let graph: ReturnType<typeof createKnowledgeGraph>;
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    graph = createKnowledgeGraph();
+    ctx = createResolutionContext();
+    const ifaceFile = 'contracts/Action.java';
+    const runnerFile = 'runner.java';
+    const implA = 'impl/A.java';
+    const implB = 'impl/B.java';
+    const actionIfaceId = 'Interface:contracts/Action.java:Action';
+    const ifaceExecuteId = 'Method:contracts/Action.java:execute';
+    const implAExecuteId = 'Method:impl/A.java:execute';
+    const implBExecuteId = 'Method:impl/B.java:execute';
+
+    ctx.symbols.add(ifaceFile, 'Action', actionIfaceId, 'Interface');
+    ctx.symbols.add(ifaceFile, 'execute', ifaceExecuteId, 'Method', { ownerId: actionIfaceId });
+    ctx.symbols.add(implA, 'execute', implAExecuteId, 'Method');
+    ctx.symbols.add(implB, 'execute', implBExecuteId, 'Method');
+    ctx.importMap.set(runnerFile, new Set([ifaceFile]));
+
+    graph.addNode({
+      id: 'Function:runner.java:run',
+      label: 'Function',
+      properties: { name: 'run', filePath: runnerFile },
+    });
+    graph.addNode({
+      id: actionIfaceId,
+      label: 'Interface',
+      properties: { name: 'Action', filePath: ifaceFile },
+    });
+    graph.addNode({
+      id: ifaceExecuteId,
+      label: 'Method',
+      properties: { name: 'execute', filePath: ifaceFile },
+    });
+    graph.addNode({
+      id: implAExecuteId,
+      label: 'Method',
+      properties: { name: 'execute', filePath: implA },
+    });
+    graph.addNode({
+      id: implBExecuteId,
+      label: 'Method',
+      properties: { name: 'execute', filePath: implB },
+    });
+  });
+
+  it('adds CALLS to interface method plus lower-confidence edges to implementing methods', async () => {
+    const implementorMap = new Map<string, ReadonlySet<string>>([
+      ['Action', new Set(['impl/A.java', 'impl/B.java'])],
+    ]);
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'runner.java',
+        calledName: 'execute',
+        sourceId: 'Function:runner.java:run',
+        callForm: 'member',
+        receiverName: 'action',
+        receiverTypeName: 'Action',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx, undefined, undefined, implementorMap);
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(3);
+
+    const primary = rels.find((r) => r.targetId === 'Method:contracts/Action.java:execute');
+    const toA = rels.find((r) => r.targetId === 'Method:impl/A.java:execute');
+    const toB = rels.find((r) => r.targetId === 'Method:impl/B.java:execute');
+    expect(primary).toBeDefined();
+    expect(primary!.confidence).toBeGreaterThan(0.7);
+    expect(toA?.confidence).toBe(0.7);
+    expect(toA?.reason).toBe('interface-dispatch');
+    expect(toB?.confidence).toBe(0.7);
+    expect(toB?.reason).toBe('interface-dispatch');
   });
 });

@@ -46,22 +46,24 @@ describe('C# heritage resolution', () => {
 
   it('emits CALLS edges from CreateUser (constructor + member calls)', () => {
     const calls = getRelationships(result, 'CALLS');
-    expect(calls.length).toBe(4);
+    // _repo.Save() → IRepository.Save (primary) plus interface-dispatch → User.Save (impl)
+    expect(calls.length).toBe(5);
     const targets = edgeSet(calls);
     expect(targets).toContain('CreateUser → User'); // new User() constructor
     expect(targets).toContain('CreateUser → Validate'); // user.Validate() — receiver-typed
-    expect(targets).toContain('CreateUser → Save'); // _repo.Save() — receiver-typed
+    expect(targets).toContain('CreateUser → Save'); // _repo.Save() — IRepository + User (dispatch)
     expect(targets).toContain('CreateUser → Log'); // _logger.Log() — receiver-typed
   });
 
-  it('resolves all CALLS from CreateUser via import-resolved or unique-global', () => {
+  it('resolves all CALLS from CreateUser via import-resolved, unique-global, or interface-dispatch', () => {
     const calls = getRelationships(result, 'CALLS');
     // C# non-aliased `using Namespace;` imports don't populate NamedImportMap
     // (namespace-scoped imports can't bind to individual symbols).
     // Calls resolve via directory-based PackageMap (import-resolved) when ambiguous,
     // or via unique-global when the symbol name is globally unique.
+    // _repo.Save() also emits interface-dispatch to User.Save (IRepository has one impl in-repo).
     for (const call of calls) {
-      expect(['import-resolved', 'global']).toContain(call.rel.reason);
+      expect(['import-resolved', 'global', 'interface-dispatch']).toContain(call.rel.reason);
     }
   });
 

@@ -56,8 +56,10 @@ import {
   extractReceiverName,
   extractReceiverNode,
   extractMixedChain,
+  extractCallArgTypes,
   type MixedChainStep,
 } from '../utils/call-analysis.js';
+import { extractParsedCallSite } from '../call-sites/extract-language-call-site.js';
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
@@ -134,6 +136,7 @@ export interface ExtractedCall {
   calledName: string;
   /** generateId of enclosing function, or generateId('File', filePath) for top-level */
   sourceId: string;
+  /** From call AST; omitted for some seeds (e.g. Java `::`) so arity filter is skipped */
   argCount?: number;
   /** Discriminates free function calls from member/constructor calls */
   callForm?: 'free' | 'member' | 'constructor';
@@ -150,6 +153,7 @@ export interface ExtractedCall {
    * Length is capped at MAX_CHAIN_DEPTH (3).
    */
   receiverMixedChain?: MixedChainStep[];
+  argTypes?: (string | undefined)[];
 }
 
 export interface ExtractedAssignment {
@@ -1327,6 +1331,42 @@ const processFileGroup = (
 
       // Extract call sites
       if (captureMap['call']) {
+        const callNode0 = captureMap['call'];
+        const languageSeed = extractParsedCallSite(language, callNode0);
+        if (languageSeed) {
+          if (!provider.isBuiltInName(languageSeed.calledName)) {
+            const sourceId =
+              findEnclosingFunctionId(callNode0, file.path, provider) ||
+              generateId('File', file.path);
+            const receiverName =
+              languageSeed.callForm === 'member' ? languageSeed.receiverName : undefined;
+            let receiverTypeName = receiverName
+              ? typeEnv.lookup(receiverName, callNode0)
+              : undefined;
+            // Type-as-receiver (e.g. Java `User::getName`): no TypeEnv binding for the class name
+            if (
+              receiverName !== undefined &&
+              receiverTypeName === undefined &&
+              languageSeed.callForm === 'member' &&
+              (language === SupportedLanguages.Java ||
+                language === SupportedLanguages.CSharp ||
+                language === SupportedLanguages.Kotlin)
+            ) {
+              const c0 = receiverName.charCodeAt(0);
+              if (c0 >= 65 && c0 <= 90) receiverTypeName = receiverName;
+            }
+            result.calls.push({
+              filePath: file.path,
+              calledName: languageSeed.calledName,
+              sourceId,
+              callForm: languageSeed.callForm,
+              ...(receiverName !== undefined ? { receiverName } : {}),
+              ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
+            });
+          }
+          continue;
+        }
+
         const callNameNode = captureMap['call.name'];
         if (callNameNode) {
           const calledName = callNameNode.text;
@@ -1485,6 +1525,18 @@ const processFileGroup = (
               }
             }
 
+            const inferLiteralType = provider.typeConfig?.inferLiteralType;
+            const argCountForOverloadHints = countCallArguments(callNode);
+            // Skip when no arg list / zero args: nothing to infer for overload typing; saves AST walks + payload size.
+            const argTypes =
+              inferLiteralType &&
+              argCountForOverloadHints !== undefined &&
+              argCountForOverloadHints > 0
+                ? extractCallArgTypes(callNode, inferLiteralType, (varName, cn) =>
+                    typeEnv.lookup(varName, cn),
+                  )
+                : undefined;
+
             result.calls.push({
               filePath: file.path,
               calledName,
@@ -1494,6 +1546,7 @@ const processFileGroup = (
               ...(receiverName !== undefined ? { receiverName } : {}),
               ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
               ...(receiverMixedChain !== undefined ? { receiverMixedChain } : {}),
+              ...(argTypes !== undefined ? { argTypes } : {}),
             });
           }
         }
