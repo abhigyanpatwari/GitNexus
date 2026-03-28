@@ -83,7 +83,7 @@ export type NodeProperties = {
   errorKeys?: string[];
   middleware?: string[];
   // Extensible
-  [key: string]: any;
+  [key: string]: unknown;
 };
 
 export type RelationshipType =

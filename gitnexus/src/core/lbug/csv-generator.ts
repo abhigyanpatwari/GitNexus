@@ -344,7 +344,7 @@ export const streamAllCSVsToDisk = async (
         );
         break;
       case 'Community': {
-        const keywords = (node.properties as any).keywords || [];
+        const keywords = node.properties.keywords || [];
         const keywordsStr = `[${keywords.map((k: string) => `'${k.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/,/g, '\\,')}'`).join(',')}]`;
         await communityWriter.addRow(
           [
@@ -352,8 +352,8 @@ export const streamAllCSVsToDisk = async (
             escapeCSVField(node.properties.name || ''),
             escapeCSVField(node.properties.heuristicLabel || ''),
             keywordsStr,
-            escapeCSVField((node.properties as any).description || ''),
-            escapeCSVField((node.properties as any).enrichedBy || 'heuristic'),
+            escapeCSVField(node.properties.description || ''),
+            escapeCSVField(node.properties.enrichedBy || 'heuristic'),
             escapeCSVNumber(node.properties.cohesion, 0),
             escapeCSVNumber(node.properties.symbolCount, 0),
           ].join(','),
@@ -361,18 +361,18 @@ export const streamAllCSVsToDisk = async (
         break;
       }
       case 'Process': {
-        const communities = (node.properties as any).communities || [];
+        const communities = node.properties.communities || [];
         const communitiesStr = `[${communities.map((c: string) => `'${c.replace(/'/g, "''")}'`).join(',')}]`;
         await processWriter.addRow(
           [
             escapeCSVField(node.id),
             escapeCSVField(node.properties.name || ''),
-            escapeCSVField((node.properties as any).heuristicLabel || ''),
-            escapeCSVField((node.properties as any).processType || ''),
-            escapeCSVNumber((node.properties as any).stepCount, 0),
+            escapeCSVField(node.properties.heuristicLabel || ''),
+            escapeCSVField(node.properties.processType || ''),
+            escapeCSVNumber(node.properties.stepCount, 0),
             escapeCSVField(communitiesStr),
-            escapeCSVField((node.properties as any).entryPointId || ''),
-            escapeCSVField((node.properties as any).terminalId || ''),
+            escapeCSVField(node.properties.entryPointId || ''),
+            escapeCSVField(node.properties.terminalId || ''),
           ].join(','),
         );
         break;
@@ -388,7 +388,7 @@ export const streamAllCSVsToDisk = async (
             escapeCSVNumber(node.properties.endLine, -1),
             node.properties.isExported ? 'true' : 'false',
             escapeCSVField(content),
-            escapeCSVField((node.properties as any).description || ''),
+            escapeCSVField(node.properties.description || ''),
             escapeCSVNumber(node.properties.parameterCount, 0),
             escapeCSVField(node.properties.returnType || ''),
           ].join(','),
@@ -404,21 +404,21 @@ export const streamAllCSVsToDisk = async (
             escapeCSVField(node.properties.filePath || ''),
             escapeCSVNumber(node.properties.startLine, -1),
             escapeCSVNumber(node.properties.endLine, -1),
-            escapeCSVNumber((node.properties as any).level, 1),
+            escapeCSVNumber(node.properties.level, 1),
             escapeCSVField(content),
-            escapeCSVField((node.properties as any).description || ''),
+            escapeCSVField(node.properties.description || ''),
           ].join(','),
         );
         break;
       }
       case 'Route': {
-        const responseKeys = (node.properties as any).responseKeys || [];
+        const responseKeys = node.properties.responseKeys || [];
         // LadybugDB array literal inside a quoted CSV field: escapeCSVField wraps in "..."
         // and the array uses single-quoted elements
         const keysStr = `[${responseKeys.map((k: string) => `'${k.replace(/'/g, "''")}'`).join(',')}]`;
-        const errorKeys = (node.properties as any).errorKeys || [];
+        const errorKeys = node.properties.errorKeys || [];
         const errorKeysStr = `[${errorKeys.map((k: string) => `'${k.replace(/'/g, "''")}'`).join(',')}]`;
-        const middleware = (node.properties as any).middleware || [];
+        const middleware = node.properties.middleware || [];
         const middlewareStr = `[${middleware.map((m: string) => `'${m.replace(/'/g, "''")}'`).join(',')}]`;
         await routeWriter.addRow(
           [
@@ -438,7 +438,7 @@ export const streamAllCSVsToDisk = async (
             escapeCSVField(node.id),
             escapeCSVField(node.properties.name || ''),
             escapeCSVField(node.properties.filePath || ''),
-            escapeCSVField((node.properties as any).description || ''),
+            escapeCSVField(node.properties.description || ''),
           ].join(','),
         );
         break;
@@ -456,7 +456,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVNumber(node.properties.endLine, -1),
               node.properties.isExported ? 'true' : 'false',
               escapeCSVField(content),
-              escapeCSVField((node.properties as any).description || ''),
+              escapeCSVField(node.properties.description || ''),
             ].join(','),
           );
         } else {
@@ -472,7 +472,7 @@ export const streamAllCSVsToDisk = async (
                 escapeCSVNumber(node.properties.startLine, -1),
                 escapeCSVNumber(node.properties.endLine, -1),
                 escapeCSVField(content),
-                escapeCSVField((node.properties as any).description || ''),
+                escapeCSVField(node.properties.description || ''),
               ].join(','),
             );
           }
