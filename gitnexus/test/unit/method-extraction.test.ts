@@ -1004,4 +1004,30 @@ describe('C# MethodExtractor', () => {
       expect(params[0].type).toBe('in double');
     });
   });
+
+  describe('compound visibility', () => {
+    it('detects protected internal', () => {
+      const tree = parseCSharp(`
+        public class Foo {
+          protected internal void SharedMethod() { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      expect(result!.methods[0].visibility).toBe('protected internal');
+    });
+
+    it('detects private protected', () => {
+      const tree = parseCSharp(`
+        public class Foo {
+          private protected void RestrictedMethod() { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      expect(result!.methods[0].visibility).toBe('private protected');
+    });
+  });
 });

@@ -5,8 +5,21 @@ import type { FieldExtractionConfig } from '../generic.js';
 import { findVisibility, hasKeyword, hasModifier } from './helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { FieldVisibility } from '../../field-types.js';
+import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 const CSHARP_VIS = new Set<FieldVisibility>(['public', 'private', 'protected', 'internal']);
+
+/** Collect all modifier keyword texts from a declaration node's modifier children. */
+function collectModifierTexts(node: SyntaxNode): Set<string> {
+  const result = new Set<string>();
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child && child.type === 'modifier') {
+      result.add(child.text.trim());
+    }
+  }
+  return result;
+}
 
 /**
  * C# field extraction config.
@@ -67,6 +80,10 @@ export const csharpConfig: FieldExtractionConfig = {
   },
 
   extractVisibility(node) {
+    // Detect compound C# visibilities: protected internal, private protected
+    const mods = collectModifierTexts(node);
+    if (mods.has('protected') && mods.has('internal')) return 'protected internal';
+    if (mods.has('private') && mods.has('protected')) return 'private protected';
     return findVisibility(node, CSHARP_VIS, 'private', 'modifier');
   },
 

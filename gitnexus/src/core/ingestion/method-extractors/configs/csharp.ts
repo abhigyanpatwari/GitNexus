@@ -16,6 +16,18 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 const CSHARP_VIS = new Set<MethodVisibility>(['public', 'private', 'protected', 'internal']);
 
+/** Collect all modifier keyword texts from a declaration node's modifier children. */
+function collectModifierTexts(node: SyntaxNode): Set<string> {
+  const result = new Set<string>();
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child && child.type === 'modifier') {
+      result.add(child.text.trim());
+    }
+  }
+  return result;
+}
+
 /**
  * Walk the parameter_list of a method or constructor and return typed ParameterInfo
  * entries.
@@ -206,8 +218,10 @@ export const csharpMethodConfig: MethodExtractionConfig = {
   extractParameters: extractCSharpParameters,
 
   extractVisibility(node) {
-    // Note: compound C# visibilities (protected internal, private protected) resolve
-    // to the first modifier found. The MethodVisibility type does not support compounds.
+    // Detect compound C# visibilities: protected internal, private protected
+    const mods = collectModifierTexts(node);
+    if (mods.has('protected') && mods.has('internal')) return 'protected internal';
+    if (mods.has('private') && mods.has('protected')) return 'private protected';
     return findVisibility(node, CSHARP_VIS, 'private', 'modifier');
   },
 
