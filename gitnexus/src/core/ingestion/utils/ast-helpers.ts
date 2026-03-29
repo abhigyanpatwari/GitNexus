@@ -142,6 +142,7 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   enum_item: 'Enum',
   trait_declaration: 'Trait',
   record_declaration: 'Record',
+  record_struct_declaration: 'Struct',
   protocol_declaration: 'Interface',
   class: 'Class',
   module: 'Module',

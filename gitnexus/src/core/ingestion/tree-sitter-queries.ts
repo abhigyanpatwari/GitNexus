@@ -558,6 +558,7 @@ export const CSHARP_QUERIES = `
 (struct_declaration name: (identifier) @name) @definition.struct
 (enum_declaration name: (identifier) @name) @definition.enum
 (record_declaration name: (identifier) @name) @definition.record
+(record_struct_declaration name: (identifier) @name) @definition.record
 (delegate_declaration name: (identifier) @name) @definition.delegate
 
 ; Namespaces (block form and C# 10+ file-scoped form)
@@ -575,6 +576,7 @@ export const CSHARP_QUERIES = `
 ; Primary constructors (C# 12): class User(string name, int age) { }
 (class_declaration name: (identifier) @name (parameter_list) @definition.constructor)
 (record_declaration name: (identifier) @name (parameter_list) @definition.constructor)
+(record_struct_declaration name: (identifier) @name (parameter_list) @definition.constructor)
 
 ; Using
 (using_directive (qualified_name) @import.source) @import

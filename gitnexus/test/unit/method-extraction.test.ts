@@ -743,6 +743,7 @@ describe('C# MethodExtractor', () => {
       const result = extractor.extract(classNode, csharpCtx);
 
       expect(result!.methods[0].isFinal).toBe(true);
+      expect(result!.methods[0].isOverride).toBe(true);
     });
   });
 
