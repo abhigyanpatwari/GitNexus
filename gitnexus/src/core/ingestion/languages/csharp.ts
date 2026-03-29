@@ -15,6 +15,8 @@ import { extractCSharpNamedBindings } from '../named-bindings/csharp.js';
 import { CSHARP_QUERIES } from '../tree-sitter-queries.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { csharpConfig as csharpFieldConfig } from '../field-extractors/configs/csharp.js';
+import { createMethodExtractor } from '../method-extractors/generic.js';
+import { csharpMethodConfig } from '../method-extractors/configs/csharp.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'Console',
@@ -122,5 +124,6 @@ export const csharpProvider = defineLanguage({
   interfaceNamePattern: /^I[A-Z]/,
   mroStrategy: 'implements-split',
   fieldExtractor: createFieldExtractor(csharpFieldConfig),
+  methodExtractor: createMethodExtractor(csharpMethodConfig),
   builtInNames: BUILT_INS,
 });
