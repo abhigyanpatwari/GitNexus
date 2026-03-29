@@ -2,24 +2,12 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { FieldExtractionConfig } from '../generic.js';
-import { findVisibility, hasKeyword, hasModifier } from './helpers.js';
+import { findVisibility, hasKeyword, hasModifier, collectModifierTexts } from './helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
-import type { FieldVisibility } from '../../field-types.js';
+import type { FieldVisibility, FieldInfo, FieldExtractorContext } from '../../field-types.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 const CSHARP_VIS = new Set<FieldVisibility>(['public', 'private', 'protected', 'internal']);
-
-/** Collect all modifier keyword texts from a declaration node's modifier children. */
-function collectModifierTexts(node: SyntaxNode): Set<string> {
-  const result = new Set<string>();
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child && child.type === 'modifier') {
-      result.add(child.text.trim());
-    }
-  }
-  return result;
-}
 
 /**
  * C# field extraction config.
@@ -93,5 +81,45 @@ export const csharpConfig: FieldExtractionConfig = {
 
   isReadonly(node) {
     return hasKeyword(node, 'readonly') || hasModifier(node, 'modifier', 'readonly');
+  },
+
+  extractPrimaryFields(ownerNode: SyntaxNode, context: FieldExtractorContext): FieldInfo[] {
+    // C# record positional parameters become public init-only properties.
+    // C# 12 class primary constructor parameters are captured as private fields.
+    // The parameter_list has no field name — find it by type.
+    let paramList: SyntaxNode | null = null;
+    for (let i = 0; i < ownerNode.namedChildCount; i++) {
+      const child = ownerNode.namedChild(i);
+      if (child?.type === 'parameter_list') {
+        paramList = child;
+        break;
+      }
+    }
+    if (!paramList) return [];
+
+    const isRecord = ownerNode.type === 'record_declaration';
+    const fields: FieldInfo[] = [];
+
+    for (let i = 0; i < paramList.namedChildCount; i++) {
+      const param = paramList.namedChild(i);
+      if (!param || param.type !== 'parameter') continue;
+
+      const nameNode = param.childForFieldName('name');
+      const typeNode = param.childForFieldName('type');
+      if (!nameNode) continue;
+
+      fields.push({
+        name: nameNode.text,
+        type: typeNode ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null) : null,
+        // Record params are public init-only properties; class params are private captured fields
+        visibility: isRecord ? 'public' : 'private',
+        isStatic: false,
+        isReadonly: isRecord, // record properties are init-only (readonly)
+        sourceFile: context.filePath,
+        line: param.startPosition.row + 1,
+      });
+    }
+
+    return fields;
   },
 };

@@ -15,6 +15,8 @@ import Python from 'tree-sitter-python';
 import Go from 'tree-sitter-go';
 import Cpp from 'tree-sitter-cpp';
 import Ruby from 'tree-sitter-ruby';
+import CSharp from 'tree-sitter-c-sharp';
+import { csharpConfig as csharpFieldConfig } from '../../src/core/ingestion/field-extractors/configs/csharp.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
 const parser = new Parser();
@@ -927,5 +929,80 @@ end`);
 
     expect(result).not.toBeNull();
     expect(result!.fields[0].isStatic).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C# config — primary constructor fields
+// ---------------------------------------------------------------------------
+
+describe('GenericFieldExtractor — C# primary constructor fields', () => {
+  const parser = new Parser();
+  const extractor = createFieldExtractor(csharpFieldConfig);
+  const mockContext = createMockContext();
+  mockContext.language = SupportedLanguages.CSharp;
+  mockContext.filePath = 'test.cs';
+
+  it('extracts record positional parameters as public readonly fields', () => {
+    parser.setLanguage(CSharp);
+    const tree = parser.parse('public record Person(string Name, int Age);');
+    const classNode = tree.rootNode.child(0);
+    expect(classNode).toBeDefined();
+
+    const result = extractor.extract(classNode!, mockContext);
+    expect(result).not.toBeNull();
+    expect(result!.ownerFqn).toBe('Person');
+    expect(result!.fields).toHaveLength(2);
+
+    const nameField = result!.fields.find((f) => f.name === 'Name');
+    expect(nameField).toBeDefined();
+    expect(nameField!.type).toBe('string');
+    expect(nameField!.visibility).toBe('public');
+    expect(nameField!.isReadonly).toBe(true);
+    expect(nameField!.isStatic).toBe(false);
+
+    const ageField = result!.fields.find((f) => f.name === 'Age');
+    expect(ageField).toBeDefined();
+    expect(ageField!.type).toBe('int');
+    expect(ageField!.visibility).toBe('public');
+    expect(ageField!.isReadonly).toBe(true);
+  });
+
+  it('extracts class primary constructor parameters as private fields', () => {
+    parser.setLanguage(CSharp);
+    const tree = parser.parse(`public class Point(int x, int y) {
+      public int X => x;
+    }`);
+    const classNode = tree.rootNode.child(0);
+    expect(classNode).toBeDefined();
+
+    const result = extractor.extract(classNode!, mockContext);
+    expect(result).not.toBeNull();
+
+    const xField = result!.fields.find((f) => f.name === 'x');
+    expect(xField).toBeDefined();
+    expect(xField!.type).toBe('int');
+    expect(xField!.visibility).toBe('private');
+    expect(xField!.isReadonly).toBe(false);
+  });
+
+  it('combines body fields with primary constructor fields', () => {
+    parser.setLanguage(CSharp);
+    const tree = parser.parse(`public class Service(string name) {
+      public int Count;
+    }`);
+    const classNode = tree.rootNode.child(0);
+
+    const result = extractor.extract(classNode!, mockContext);
+    expect(result).not.toBeNull();
+    // Body field + primary constructor field
+    expect(result!.fields.length).toBeGreaterThanOrEqual(2);
+
+    const nameField = result!.fields.find((f) => f.name === 'name');
+    expect(nameField).toBeDefined();
+    expect(nameField!.visibility).toBe('private');
+
+    const countField = result!.fields.find((f) => f.name === 'Count');
+    expect(countField).toBeDefined();
   });
 });

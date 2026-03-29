@@ -63,6 +63,12 @@ export function createMethodExtractor(config: MethodExtractionConfig): MethodExt
         extractMethodsFromBody(body, node, context, config, methodNodeSet, methods);
       }
 
+      // Extract primary constructor from the owner node itself (e.g. C# 12)
+      if (config.extractPrimaryConstructor) {
+        const primaryCtor = config.extractPrimaryConstructor(node, context);
+        if (primaryCtor) methods.push(primaryCtor);
+      }
+
       return { ownerName, methods };
     },
   };
@@ -160,6 +166,9 @@ function buildMethod(
     isStatic,
     isAbstract,
     isFinal,
+    ...(config.isVirtual?.(node) ? { isVirtual: true } : {}),
+    ...(config.isOverride?.(node) ? { isOverride: true } : {}),
+    ...(config.isAsync?.(node) ? { isAsync: true } : {}),
     annotations: config.extractAnnotations?.(node) ?? [],
     sourceFile: context.filePath,
     line: node.startPosition.row + 1,

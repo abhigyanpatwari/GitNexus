@@ -53,6 +53,9 @@ export interface FieldExtractionConfig {
   isStatic: (node: SyntaxNode) => boolean;
   /** Check if a field is readonly/final/const */
   isReadonly: (node: SyntaxNode) => boolean;
+  /** Extract fields from primary constructor parameters on the owner node itself
+   *  (e.g. C# record positional parameters, C# 12 class primary constructors). */
+  extractPrimaryFields?: (ownerNode: SyntaxNode, context: FieldExtractorContext) => FieldInfo[];
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +94,12 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
       const bodies = this.findBodies(node);
       for (const body of bodies) {
         this.extractFieldsFromBody(body, context, fields);
+      }
+
+      // Extract fields from primary constructor parameters (e.g. C# records)
+      if (config.extractPrimaryFields) {
+        const primaryFields = config.extractPrimaryFields(node, context);
+        for (const f of primaryFields) fields.push(f);
       }
 
       return { ownerFqn, fields, nestedTypes: [] };

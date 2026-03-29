@@ -149,3 +149,18 @@ export function typeFromDescendant(
   }
   return undefined;
 }
+
+/**
+ * Collect all modifier keyword texts from a declaration node's named `modifier` children.
+ * Used by C# configs to detect compound visibilities (protected internal, private protected).
+ */
+export function collectModifierTexts(node: SyntaxNode): Set<string> {
+  const result = new Set<string>();
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child && child.type === 'modifier') {
+      result.add(child.text.trim());
+    }
+  }
+  return result;
+}

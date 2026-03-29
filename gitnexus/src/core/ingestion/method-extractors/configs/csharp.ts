@@ -3,10 +3,17 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type {
   MethodExtractionConfig,
+  MethodInfo,
+  MethodExtractorContext,
   ParameterInfo,
   MethodVisibility,
 } from '../../method-types.js';
-import { findVisibility, hasModifier, hasKeyword } from '../../field-extractors/configs/helpers.js';
+import {
+  findVisibility,
+  hasModifier,
+  hasKeyword,
+  collectModifierTexts,
+} from '../../field-extractors/configs/helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
@@ -15,18 +22,6 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
 // ---------------------------------------------------------------------------
 
 const CSHARP_VIS = new Set<MethodVisibility>(['public', 'private', 'protected', 'internal']);
-
-/** Collect all modifier keyword texts from a declaration node's modifier children. */
-function collectModifierTexts(node: SyntaxNode): Set<string> {
-  const result = new Set<string>();
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child && child.type === 'modifier') {
-      result.add(child.text.trim());
-    }
-  }
-  return result;
-}
 
 /**
  * Walk the parameter_list of a method or constructor and return typed ParameterInfo
@@ -44,9 +39,14 @@ function collectModifierTexts(node: SyntaxNode): Set<string> {
  *   - isOptional: an '=' token appears among the children (indicates a default value)
  */
 function extractCSharpParameters(node: SyntaxNode): ParameterInfo[] {
-  const params: ParameterInfo[] = [];
   const paramList = node.childForFieldName('parameters');
-  if (!paramList) return params;
+  if (!paramList) return [];
+  return extractParametersFromList(paramList);
+}
+
+/** Extract parameters from a parameter_list node directly. */
+function extractParametersFromList(paramList: SyntaxNode): ParameterInfo[] {
+  const params: ParameterInfo[] = [];
 
   let i = 0;
   while (i < paramList.childCount) {
@@ -180,6 +180,11 @@ export const csharpMethodConfig: MethodExtractionConfig = {
   bodyNodeTypes: ['declaration_list'],
 
   extractName(node) {
+    // destructor_declaration: prefix with ~ to distinguish from constructor
+    if (node.type === 'destructor_declaration') {
+      const name = node.childForFieldName('name')?.text;
+      return name ? `~${name}` : undefined;
+    }
     // operator_declaration: no 'name' field — use 'operator' field (e.g., +, ==)
     if (node.type === 'operator_declaration') {
       const op = node.childForFieldName('operator');
@@ -245,4 +250,62 @@ export const csharpMethodConfig: MethodExtractionConfig = {
   },
 
   extractAnnotations: extractCSharpAnnotations,
+
+  isVirtual(node) {
+    return hasKeyword(node, 'virtual') || hasModifier(node, 'modifier', 'virtual');
+  },
+
+  isOverride(node) {
+    return hasKeyword(node, 'override') || hasModifier(node, 'modifier', 'override');
+  },
+
+  isAsync(node) {
+    return hasKeyword(node, 'async') || hasModifier(node, 'modifier', 'async');
+  },
+
+  extractPrimaryConstructor(
+    ownerNode: SyntaxNode,
+    context: MethodExtractorContext,
+  ): MethodInfo | null {
+    // C# 12 primary constructors: class Point(int x, int y) { }
+    // The parameter_list is a direct named child of class_declaration/record_declaration
+    // but has NO field name — it must be found by iterating named children.
+    let paramList: SyntaxNode | null = null;
+    for (let i = 0; i < ownerNode.namedChildCount; i++) {
+      const child = ownerNode.namedChild(i);
+      if (child?.type === 'parameter_list') {
+        paramList = child;
+        break;
+      }
+    }
+    if (!paramList) return null;
+
+    const name = ownerNode.childForFieldName('name')?.text;
+    if (!name) return null;
+
+    const parameters = extractParametersFromList(paramList);
+
+    // Detect compound visibility on the owner declaration
+    const mods = collectModifierTexts(ownerNode);
+    let visibility: MethodVisibility = 'private';
+    if (mods.has('protected') && mods.has('internal')) visibility = 'protected internal';
+    else if (mods.has('private') && mods.has('protected')) visibility = 'private protected';
+    else if (mods.has('public')) visibility = 'public';
+    else if (mods.has('internal')) visibility = 'internal';
+    else if (mods.has('protected')) visibility = 'protected';
+
+    return {
+      name,
+      receiverType: null,
+      returnType: null,
+      parameters,
+      visibility,
+      isStatic: false,
+      isAbstract: false,
+      isFinal: false,
+      annotations: extractCSharpAnnotations(ownerNode),
+      sourceFile: context.filePath,
+      line: ownerNode.startPosition.row + 1,
+    };
+  },
 };

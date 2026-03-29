@@ -945,7 +945,7 @@ describe('C# MethodExtractor', () => {
       const result = extractor.extract(classNode, csharpCtx);
 
       expect(result).not.toBeNull();
-      const dtor = result!.methods.find((m) => m.name === 'Resource');
+      const dtor = result!.methods.find((m) => m.name === '~Resource');
       expect(dtor).toBeDefined();
       expect(dtor!.returnType).toBeNull();
     });
@@ -1028,6 +1028,122 @@ describe('C# MethodExtractor', () => {
       const result = extractor.extract(classNode, csharpCtx);
 
       expect(result!.methods[0].visibility).toBe('private protected');
+    });
+  });
+
+  describe('expression-bodied members', () => {
+    it('extracts expression-bodied method', () => {
+      const tree = parseCSharp(`
+        public class MathUtils {
+          public int Double(int x) => x * 2;
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('Double');
+      expect(result!.methods[0].returnType).toBe('int');
+      expect(result!.methods[0].parameters).toHaveLength(1);
+    });
+  });
+
+  describe('primary constructor (C# 12)', () => {
+    it('extracts primary constructor from class declaration', () => {
+      const tree = parseCSharp(`
+        public class Point(int x, int y) {
+          public double Distance() => 0;
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.methods).toHaveLength(2);
+
+      const ctor = result!.methods.find((m) => m.name === 'Point');
+      expect(ctor).toBeDefined();
+      expect(ctor!.returnType).toBeNull();
+      expect(ctor!.parameters).toHaveLength(2);
+      expect(ctor!.parameters[0]).toEqual({
+        name: 'x',
+        type: 'int',
+        isOptional: false,
+        isVariadic: false,
+      });
+
+      const method = result!.methods.find((m) => m.name === 'Distance');
+      expect(method).toBeDefined();
+    });
+
+    it('extracts primary constructor from record declaration', () => {
+      const tree = parseCSharp(`
+        public record Person(string Name, int Age);
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      expect(result).not.toBeNull();
+      const ctor = result!.methods.find((m) => m.name === 'Person');
+      expect(ctor).toBeDefined();
+      expect(ctor!.parameters).toHaveLength(2);
+      expect(ctor!.parameters[0].name).toBe('Name');
+      expect(ctor!.parameters[1].name).toBe('Age');
+    });
+  });
+
+  describe('virtual / override / async modifiers', () => {
+    it('detects virtual method', () => {
+      const tree = parseCSharp(`
+        public class Base {
+          public virtual void Process() { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      expect(result!.methods[0].isVirtual).toBe(true);
+      expect(result!.methods[0].isOverride).toBeUndefined();
+    });
+
+    it('detects override method', () => {
+      const tree = parseCSharp(`
+        public class Derived {
+          public override void Process() { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      expect(result!.methods[0].isOverride).toBe(true);
+      expect(result!.methods[0].isVirtual).toBeUndefined();
+    });
+
+    it('detects async method', () => {
+      const tree = parseCSharp(`
+        public class Service {
+          public async Task<string> FetchData() { return ""; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      expect(result!.methods[0].isAsync).toBe(true);
+    });
+
+    it('regular method has no virtual/override/async', () => {
+      const tree = parseCSharp(`
+        public class Foo {
+          public void Bar() { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      expect(result!.methods[0].isVirtual).toBeUndefined();
+      expect(result!.methods[0].isOverride).toBeUndefined();
+      expect(result!.methods[0].isAsync).toBeUndefined();
     });
   });
 });

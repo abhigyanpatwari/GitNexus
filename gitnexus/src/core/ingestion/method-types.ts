@@ -23,6 +23,9 @@ export interface MethodInfo {
   isStatic: boolean;
   isAbstract: boolean;
   isFinal: boolean;
+  isVirtual?: boolean;
+  isOverride?: boolean;
+  isAsync?: boolean;
   annotations: string[];
   sourceFile: string;
   line: number;
@@ -58,4 +61,12 @@ export interface MethodExtractionConfig {
   isFinal: (node: SyntaxNode) => boolean;
   extractAnnotations?: (node: SyntaxNode) => string[];
   extractReceiverType?: (node: SyntaxNode) => string | undefined;
+  isVirtual?: (node: SyntaxNode) => boolean;
+  isOverride?: (node: SyntaxNode) => boolean;
+  isAsync?: (node: SyntaxNode) => boolean;
+  /** Extract a primary constructor from the owner node itself (e.g. C# 12 class Point(int x, int y)). */
+  extractPrimaryConstructor?: (
+    ownerNode: SyntaxNode,
+    context: MethodExtractorContext,
+  ) => MethodInfo | null;
 }
