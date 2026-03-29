@@ -206,6 +206,8 @@ export const csharpMethodConfig: MethodExtractionConfig = {
   extractParameters: extractCSharpParameters,
 
   extractVisibility(node) {
+    // Note: compound C# visibilities (protected internal, private protected) resolve
+    // to the first modifier found. The MethodVisibility type does not support compounds.
     return findVisibility(node, CSHARP_VIS, 'private', 'modifier');
   },
 

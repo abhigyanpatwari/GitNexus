@@ -818,6 +818,21 @@ describe('C# MethodExtractor', () => {
       expect(params[1].name).toBe('result');
       expect(params[1].type).toBe('out int');
     });
+
+    it('handles ref parameter', () => {
+      const tree = parseCSharp(`
+        public class Swapper {
+          public void Swap(ref int a, ref int b) { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+      const params = result!.methods[0].parameters;
+
+      expect(params).toHaveLength(2);
+      expect(params[0].type).toBe('ref int');
+      expect(params[1].type).toBe('ref int');
+    });
   });
 
   describe('extract optional parameters', () => {
