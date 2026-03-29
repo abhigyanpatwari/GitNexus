@@ -27,10 +27,10 @@ const CSHARP_VIS = new Set<MethodVisibility>(['public', 'private', 'protected', 
  * Walk the parameter_list of a method or constructor and return typed ParameterInfo
  * entries.
  *
- * In tree-sitter-c-sharp, the `params` variadic keyword is NOT wrapped inside a
- * `parameter` node.  It appears as a bare unnamed `params` token at the
- * `parameter_list` level, followed by a type node and an identifier node that are
- * also direct children of `parameter_list` (not of a `parameter` node).
+ * In tree-sitter-c-sharp (verified against ^0.23.1), the `params` variadic keyword
+ * is NOT wrapped inside a `parameter` node.  It appears as a bare unnamed `params`
+ * token at the `parameter_list` level, followed by a type node and an identifier
+ * node that are also direct children of `parameter_list` (not of a `parameter` node).
  *
  * All other parameters are normal `parameter` named children of `parameter_list`:
  *   - name comes from field 'name'
@@ -169,6 +169,7 @@ export const csharpMethodConfig: MethodExtractionConfig = {
     'struct_declaration',
     'interface_declaration',
     'record_declaration',
+    'record_struct_declaration',
   ],
   methodNodeTypes: [
     'method_declaration',
@@ -303,7 +304,7 @@ export const csharpMethodConfig: MethodExtractionConfig = {
       isStatic: false,
       isAbstract: false,
       isFinal: false,
-      annotations: extractCSharpAnnotations(ownerNode),
+      annotations: [], // C# has no syntax for attributes on primary constructors
       sourceFile: context.filePath,
       line: ownerNode.startPosition.row + 1,
     };

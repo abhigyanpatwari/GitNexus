@@ -110,6 +110,7 @@ export const CLASS_CONTAINER_TYPES = new Set([
   'interface_declaration',
   'struct_declaration',
   'record_declaration',
+  'record_struct_declaration',
   'class_specifier',
   'struct_specifier',
   'impl_item',
