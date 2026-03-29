@@ -316,8 +316,8 @@ Or run locally:
 
 ```bash
 git clone https://github.com/abhigyanpatwari/gitnexus.git
-cd gitnexus/gitnexus-web
-npm install
+cd gitnexus/gitnexus-shared && npm install && npm run build
+cd ../gitnexus-web && npm install
 npm run dev
 ```
 
