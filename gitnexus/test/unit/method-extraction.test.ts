@@ -918,4 +918,75 @@ describe('C# MethodExtractor', () => {
       expect(result!.methods[0].visibility).toBe('internal');
     });
   });
+
+  describe('extract destructor', () => {
+    it('extracts destructor declaration', () => {
+      const tree = parseCSharp(`
+        public class Resource {
+          ~Resource() { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      expect(result).not.toBeNull();
+      const dtor = result!.methods.find((m) => m.name === 'Resource');
+      expect(dtor).toBeDefined();
+      expect(dtor!.returnType).toBeNull();
+    });
+  });
+
+  describe('extract operator overload', () => {
+    it('extracts operator+ declaration', () => {
+      const tree = parseCSharp(`
+        public class Vector {
+          public static Vector operator +(Vector a, Vector b) { return a; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      expect(result).not.toBeNull();
+      const op = result!.methods.find((m) => m.name === 'operator +');
+      expect(op).toBeDefined();
+      expect(op!.isStatic).toBe(true);
+      expect(op!.returnType).toBe('Vector');
+      expect(op!.parameters).toHaveLength(2);
+    });
+  });
+
+  describe('extract conversion operator', () => {
+    it('extracts implicit conversion operator', () => {
+      const tree = parseCSharp(`
+        public class Celsius {
+          public static implicit operator double(Celsius c) { return 0; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      expect(result).not.toBeNull();
+      const conv = result!.methods.find((m) => m.name === 'implicit operator double');
+      expect(conv).toBeDefined();
+      expect(conv!.isStatic).toBe(true);
+      expect(conv!.parameters).toHaveLength(1);
+    });
+  });
+
+  describe('extract in parameter modifier', () => {
+    it('handles in parameter (read-only ref)', () => {
+      const tree = parseCSharp(`
+        public class Calculator {
+          public double Calculate(in double value) { return value; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+      const params = result!.methods[0].parameters;
+
+      expect(params).toHaveLength(1);
+      expect(params[0].name).toBe('value');
+      expect(params[0].type).toBe('in double');
+    });
+  });
 });

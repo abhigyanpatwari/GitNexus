@@ -95,7 +95,7 @@ function extractCSharpParameters(node: SyntaxNode): ParameterInfo[] {
           const c = child.namedChild(j);
           if (!c || c.type !== 'modifier') continue;
           const modText = c.text.trim();
-          if (modText === 'out' || modText === 'ref') {
+          if (modText === 'out' || modText === 'ref' || modText === 'in') {
             typeName = typeName ? `${modText} ${typeName}` : modText;
             break;
           }
@@ -158,18 +158,49 @@ export const csharpMethodConfig: MethodExtractionConfig = {
     'interface_declaration',
     'record_declaration',
   ],
-  methodNodeTypes: ['method_declaration', 'constructor_declaration'],
+  methodNodeTypes: [
+    'method_declaration',
+    'constructor_declaration',
+    'destructor_declaration',
+    'operator_declaration',
+    'conversion_operator_declaration',
+  ],
   bodyNodeTypes: ['declaration_list'],
 
   extractName(node) {
+    // operator_declaration: no 'name' field — use 'operator' field (e.g., +, ==)
+    if (node.type === 'operator_declaration') {
+      const op = node.childForFieldName('operator');
+      return op ? `operator ${op.text.trim()}` : undefined;
+    }
+    // conversion_operator_declaration: no 'name' field — implicit/explicit + target type
+    if (node.type === 'conversion_operator_declaration') {
+      const typeNode = node.childForFieldName('type');
+      const typeName = typeNode
+        ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim())
+        : undefined;
+      for (let i = 0; i < node.childCount; i++) {
+        const c = node.child(i);
+        if (c && !c.isNamed && (c.text === 'implicit' || c.text === 'explicit')) {
+          return typeName ? `${c.text} operator ${typeName}` : undefined;
+        }
+      }
+      return typeName ? `operator ${typeName}` : undefined;
+    }
     return node.childForFieldName('name')?.text;
   },
 
   extractReturnType(node) {
-    // Constructors have no return type — tree-sitter-c-sharp has no 'returns' field on them
+    // Constructors and destructors have no return type
+    // operator_declaration and conversion_operator_declaration use 'type' field, not 'returns'
     const returnsNode = node.childForFieldName('returns');
-    if (!returnsNode) return undefined;
-    return extractSimpleTypeName(returnsNode) ?? returnsNode.text?.trim();
+    if (returnsNode) return extractSimpleTypeName(returnsNode) ?? returnsNode.text?.trim();
+    // Fallback for operator/conversion declarations that use 'type' as return type field
+    if (node.type === 'operator_declaration' || node.type === 'conversion_operator_declaration') {
+      const typeNode = node.childForFieldName('type');
+      if (typeNode) return extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
+    }
+    return undefined;
   },
 
   extractParameters: extractCSharpParameters,
