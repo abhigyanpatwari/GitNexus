@@ -125,6 +125,11 @@ export const CLASS_CONTAINER_TYPES = new Set([
   // Kotlin
   'object_declaration',
   'companion_object',
+  // Objective-C
+  'class_interface_declaration',
+  'class_implementation_declaration',
+  'protocol_declaration',
+  'category_interface_declaration',
 ]);
 
 export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
@@ -146,6 +151,10 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   module: 'Module',
   object_declaration: 'Class',
   companion_object: 'Class',
+  // Objective-C
+  class_interface_declaration: 'Class',
+  class_implementation_declaration: 'Class',
+  category_interface_declaration: 'Class',
 };
 
 /** Check if a Kotlin function_declaration capture is inside a class_body (i.e., a method).
@@ -157,6 +166,30 @@ export function isKotlinClassMethod(
   let ancestor = captureNode?.parent;
   while (ancestor) {
     if (ancestor.type === 'class_body') return true;
+    ancestor = ancestor.parent;
+  }
+  return false;
+}
+
+/** Check if an OC function_definition capture is inside @interface/@implementation/@protocol body
+ *  (i.e., a method, not a top-level function).
+ *  OC grammar uses method_declaration inside class bodies; function_definition only appears
+ *  at top level in Obj-C. This guard is a defensive catch-all. */
+export function isObjcInsideContainer(functionNode: SyntaxNode): boolean {
+  let ancestor: SyntaxNode | null = functionNode?.parent ?? null;
+  while (ancestor) {
+    if (
+      ancestor.type === 'class_interface_declaration' ||
+      ancestor.type === 'class_implementation_declaration' ||
+      ancestor.type === 'protocol_declaration' ||
+      ancestor.type === 'category_interface_declaration' ||
+      ancestor.type === 'class_interface_body' ||
+      ancestor.type === 'class_implementation_body' ||
+      ancestor.type === 'protocol_body' ||
+      ancestor.type === 'category_interface_body'
+    ) {
+      return true;
+    }
     ancestor = ancestor.parent;
   }
   return false;

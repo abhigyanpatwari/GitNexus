@@ -38,6 +38,12 @@ let Kotlin: TreeSitterLanguage | null = null;
 try {
   Kotlin = _require('tree-sitter-kotlin');
 } catch {}
+
+// tree-sitter-objc is an optionalDependency — may not be installed
+let Objc: TreeSitterLanguage | null = null;
+try {
+  Objc = _require('tree-sitter-objc');
+} catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
   FUNCTION_NODE_TYPES,
@@ -285,6 +291,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   [SupportedLanguages.Ruby]: Ruby,
   ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
+  ...(Objc ? { [SupportedLanguages.ObjectiveC]: Objc } : {}),
 };
 
 /**

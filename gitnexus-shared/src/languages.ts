@@ -21,4 +21,5 @@ export enum SupportedLanguages {
   Dart = 'dart',
   /** Standalone regex processor — no tree-sitter, no LanguageProvider. */
   Cobol = 'cobol',
+  ObjectiveC = 'objectivec',
 }

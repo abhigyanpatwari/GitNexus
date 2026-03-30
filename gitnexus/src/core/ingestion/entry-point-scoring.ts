@@ -227,6 +227,27 @@ export const ENTRY_POINT_PATTERNS = {
     /^mapEventToState$/, // Legacy BLoC pattern
   ],
   [SupportedLanguages.Cobol]: [], // Standalone regex processor — no tree-sitter entry points
+  [SupportedLanguages.ObjectiveC]: [
+    // Cocoa/UIKit AppDelegate entry points
+    /^applicationDidFinishLaunching$/,
+    /^application:didFinishLaunchingWithOptions$/,
+    /^applicationWillFinishLaunching$/,
+    // View controller lifecycle
+    /^viewDidLoad$/,
+    /^viewWillAppear$/,
+    /^viewDidAppear$/,
+    /^viewWillDisappear$/,
+    /^viewDidDisappear$/,
+    /^didReceiveMemoryWarning$/,
+    // Initialisation
+    /^initWithNibName:bundle:$/,
+    /^initWithCoder:$/,
+    /^ awakeFromNib$/,
+    // UIApplicationMain entry
+    /^sharedApplication$/,
+    /alloc$/,
+    /^init$/,
+  ],
 } satisfies Record<SupportedLanguages, RegExp[]>;
 
 /** Pre-computed merged patterns (universal + language-specific) to avoid per-call array allocation. */

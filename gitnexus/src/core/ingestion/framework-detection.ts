@@ -623,6 +623,24 @@ export const FRAMEWORK_AST_PATTERNS = {
   ],
   vapor: ['app.get', 'app.post', 'req.content.decode', 'Vapor'],
 
+  // Objective-C/Cocoa Touch
+  cocoaTouch: [
+    '@interface',
+    '@implementation',
+    '@protocol',
+    '@property',
+    'UIViewController',
+    'UIApplication',
+    'NSObject',
+    'alloc',
+    'initWith',
+    'ViewController',
+    '@synthesize',
+    '@dynamic',
+    '#import <UIKit',
+    '#import <Foundation',
+  ],
+
   // Ruby patterns (class-level macros in definition text)
   rails: [
     'ApplicationController',
@@ -892,6 +910,15 @@ export const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE = {
     },
   ],
   [SupportedLanguages.Cobol]: [], // Standalone regex processor — no AST framework patterns
+  [SupportedLanguages.ObjectiveC]: [
+    // Cocoa/AppKit/UIKit patterns
+    {
+      framework: 'cocoa-touch',
+      entryPointMultiplier: 2.0,
+      reason: 'cocoa-touch-lifecycle',
+      patterns: FRAMEWORK_AST_PATTERNS.cocoaTouch ?? [],
+    },
+  ],
 } satisfies Record<SupportedLanguages, AstFrameworkPatternConfig[]>;
 
 /** Pre-lowercased patterns for O(1) pattern matching at runtime */

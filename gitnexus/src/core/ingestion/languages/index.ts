@@ -24,6 +24,7 @@ import { rubyProvider } from './ruby.js';
 import { swiftProvider } from './swift.js';
 import { dartProvider } from './dart.js';
 import { cobolProvider } from './cobol.js';
+import { objectiveCProvider } from './objective-c.js';
 
 export const providers = {
   [SupportedLanguages.JavaScript]: javascriptProvider,
@@ -41,6 +42,7 @@ export const providers = {
   [SupportedLanguages.Swift]: swiftProvider,
   [SupportedLanguages.Dart]: dartProvider,
   [SupportedLanguages.Cobol]: cobolProvider,
+  [SupportedLanguages.ObjectiveC]: objectiveCProvider,
 } satisfies Record<SupportedLanguages, LanguageProvider>;
 
 /** Get provider by language enum (always succeeds for SupportedLanguages). */
