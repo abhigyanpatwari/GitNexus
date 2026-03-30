@@ -17,6 +17,11 @@ import { TYPESCRIPT_QUERIES, JAVASCRIPT_QUERIES } from '../tree-sitter-queries.j
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { javascriptConfig } from '../field-extractors/configs/typescript-javascript.js';
+import { createMethodExtractor } from '../method-extractors/generic.js';
+import {
+  typescriptMethodConfig,
+  javascriptMethodConfig,
+} from '../method-extractors/configs/typescript-javascript.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'console',
@@ -124,6 +129,7 @@ export const typescriptProvider = defineLanguage({
   importResolver: resolveTypescriptImport,
   namedBindingExtractor: extractTsNamedBindings,
   fieldExtractor: typescriptFieldExtractor,
+  methodExtractor: createMethodExtractor(typescriptMethodConfig),
   builtInNames: BUILT_INS,
 });
 
@@ -136,5 +142,6 @@ export const javascriptProvider = defineLanguage({
   importResolver: resolveJavascriptImport,
   namedBindingExtractor: extractTsNamedBindings,
   fieldExtractor: createFieldExtractor(javascriptConfig),
+  methodExtractor: createMethodExtractor(javascriptMethodConfig),
   builtInNames: BUILT_INS,
 });

@@ -5,10 +5,16 @@ import {
   kotlinMethodConfig,
 } from '../../src/core/ingestion/method-extractors/configs/jvm.js';
 import { csharpMethodConfig } from '../../src/core/ingestion/method-extractors/configs/csharp.js';
+import {
+  typescriptMethodConfig,
+  javascriptMethodConfig,
+} from '../../src/core/ingestion/method-extractors/configs/typescript-javascript.js';
 import type { MethodExtractorContext } from '../../src/core/ingestion/method-types.js';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import CSharp from 'tree-sitter-c-sharp';
+import TypeScript from 'tree-sitter-typescript';
+import JavaScript from 'tree-sitter-javascript';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
 let Kotlin: unknown;
@@ -1294,6 +1300,362 @@ describe('C# MethodExtractor', () => {
       const result = extractor.extract(classNode, csharpCtx);
 
       expect(result!.methods[0].name).toBe('GetValue');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TypeScript
+// ---------------------------------------------------------------------------
+
+const parseTypeScript = (code: string) => {
+  parser.setLanguage(TypeScript.typescript);
+  return parser.parse(code);
+};
+
+const tsCtx: MethodExtractorContext = {
+  filePath: 'Test.ts',
+  language: SupportedLanguages.TypeScript,
+};
+
+describe('TypeScript MethodExtractor', () => {
+  const extractor = createMethodExtractor(typescriptMethodConfig);
+
+  describe('isTypeDeclaration', () => {
+    it('recognizes class_declaration', () => {
+      const tree = parseTypeScript('class Foo { }');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(true);
+    });
+
+    it('recognizes abstract_class_declaration', () => {
+      const tree = parseTypeScript('abstract class Foo { }');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(true);
+    });
+
+    it('recognizes interface_declaration', () => {
+      const tree = parseTypeScript('interface Bar { }');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(true);
+    });
+
+    it('rejects function_declaration', () => {
+      const tree = parseTypeScript('function hello() {}');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(false);
+    });
+  });
+
+  describe('extract', () => {
+    it('extracts typed method with return type and parameters', () => {
+      const tree = parseTypeScript(`
+        class UserService {
+          greet(name: string, age: number): string {
+            return name;
+          }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('UserService');
+      expect(result!.methods).toHaveLength(1);
+
+      const m = result!.methods[0];
+      expect(m.name).toBe('greet');
+      expect(m.returnType).toBe('string');
+      expect(m.visibility).toBe('public');
+      expect(m.isStatic).toBe(false);
+      expect(m.isAbstract).toBe(false);
+      expect(m.parameters).toHaveLength(2);
+      expect(m.parameters[0]).toEqual({
+        name: 'name',
+        type: 'string',
+        isOptional: false,
+        isVariadic: false,
+      });
+      expect(m.parameters[1]).toEqual({
+        name: 'age',
+        type: 'number',
+        isOptional: false,
+        isVariadic: false,
+      });
+    });
+
+    it('extracts static method', () => {
+      const tree = parseTypeScript(`
+        class MathUtils {
+          static add(a: number, b: number): number { return a + b; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      expect(result!.methods[0].isStatic).toBe(true);
+      expect(result!.methods[0].name).toBe('add');
+    });
+
+    it('extracts abstract class with abstract and concrete methods', () => {
+      const tree = parseTypeScript(`
+        abstract class Shape {
+          abstract area(): number;
+          describe(): string { return "shape"; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.methods).toHaveLength(2);
+
+      const abstractMethod = result!.methods.find((m) => m.name === 'area');
+      const concreteMethod = result!.methods.find((m) => m.name === 'describe');
+      expect(abstractMethod!.isAbstract).toBe(true);
+      expect(abstractMethod!.returnType).toBe('number');
+      expect(concreteMethod!.isAbstract).toBe(false);
+      expect(concreteMethod!.returnType).toBe('string');
+    });
+
+    it('extracts interface methods as abstract', () => {
+      const tree = parseTypeScript(`
+        interface Printable {
+          print(format: string): void;
+          getLabel(): string;
+        }
+      `);
+      const interfaceNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(interfaceNode, tsCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('Printable');
+      expect(result!.methods).toHaveLength(2);
+      expect(result!.methods.every((m) => m.isAbstract)).toBe(true);
+
+      const printMethod = result!.methods.find((m) => m.name === 'print');
+      expect(printMethod!.parameters[0]).toEqual({
+        name: 'format',
+        type: 'string',
+        isOptional: false,
+        isVariadic: false,
+      });
+      expect(printMethod!.returnType).toBe('void');
+    });
+
+    it('extracts private and protected visibility', () => {
+      const tree = parseTypeScript(`
+        class Account {
+          private secret(): void {}
+          protected validate(): boolean { return true; }
+          public display(): void {}
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      expect(result!.methods).toHaveLength(3);
+      const secret = result!.methods.find((m) => m.name === 'secret');
+      const validate = result!.methods.find((m) => m.name === 'validate');
+      const display = result!.methods.find((m) => m.name === 'display');
+      expect(secret!.visibility).toBe('private');
+      expect(validate!.visibility).toBe('protected');
+      expect(display!.visibility).toBe('public');
+    });
+
+    it('extracts optional and rest parameters', () => {
+      const tree = parseTypeScript(`
+        class Logger {
+          log(message: string, level?: string, ...tags: string[]): void {}
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      const params = result!.methods[0].parameters;
+      expect(params).toHaveLength(3);
+      expect(params[0]).toEqual({
+        name: 'message',
+        type: 'string',
+        isOptional: false,
+        isVariadic: false,
+      });
+      expect(params[1].name).toBe('level');
+      expect(params[1].isOptional).toBe(true);
+      expect(params[1].isVariadic).toBe(false);
+      expect(params[2].name).toBe('tags');
+      expect(params[2].isOptional).toBe(false);
+      expect(params[2].isVariadic).toBe(true);
+    });
+
+    it('extracts default parameter as optional', () => {
+      const tree = parseTypeScript(`
+        class Formatter {
+          format(value: string, prefix: string = ">>") { return prefix + value; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      const params = result!.methods[0].parameters;
+      expect(params).toHaveLength(2);
+      expect(params[1].name).toBe('prefix');
+      expect(params[1].isOptional).toBe(true);
+    });
+
+    it('extracts decorators as annotations', () => {
+      const tree = parseTypeScript(`
+        class Controller {
+          @Log
+          @deprecated("use newMethod")
+          handle(req: Request): void {}
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      const annotations = result!.methods[0].annotations;
+      expect(annotations).toContain('@Log');
+      expect(annotations).toContain('@deprecated');
+    });
+
+    it('extracts async method', () => {
+      const tree = parseTypeScript(`
+        class ApiClient {
+          async fetch(url: string): Promise<Response> { return new Response(); }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      expect(result!.methods[0].isAsync).toBe(true);
+      expect(result!.methods[0].name).toBe('fetch');
+    });
+
+    it('extracts constructor', () => {
+      const tree = parseTypeScript(`
+        class Person {
+          constructor(public name: string, private age: number) {}
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      expect(result!.methods).toHaveLength(1);
+      const ctor = result!.methods[0];
+      expect(ctor.name).toBe('constructor');
+      expect(ctor.parameters.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// JavaScript
+// ---------------------------------------------------------------------------
+
+const parseJavaScript = (code: string) => {
+  parser.setLanguage(JavaScript);
+  return parser.parse(code);
+};
+
+const jsCtx: MethodExtractorContext = {
+  filePath: 'Test.js',
+  language: SupportedLanguages.JavaScript,
+};
+
+describe('JavaScript MethodExtractor', () => {
+  const extractor = createMethodExtractor(javascriptMethodConfig);
+
+  describe('extract', () => {
+    it('extracts class method with default public visibility and null types', () => {
+      const tree = parseJavaScript(`
+        class Greeter {
+          greet(name) { return "Hello " + name; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, jsCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('Greeter');
+      expect(result!.methods).toHaveLength(1);
+
+      const m = result!.methods[0];
+      expect(m.name).toBe('greet');
+      expect(m.returnType).toBeNull();
+      expect(m.visibility).toBe('public');
+      expect(m.isAbstract).toBe(false);
+      expect(m.parameters).toHaveLength(1);
+      expect(m.parameters[0]).toEqual({
+        name: 'name',
+        type: null,
+        isOptional: false,
+        isVariadic: false,
+      });
+    });
+
+    it('extracts static method and constructor', () => {
+      const tree = parseJavaScript(`
+        class Factory {
+          constructor(type) { this.type = type; }
+          static create(type) { return new Factory(type); }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, jsCtx);
+
+      expect(result!.methods).toHaveLength(2);
+      const ctor = result!.methods.find((m) => m.name === 'constructor');
+      const create = result!.methods.find((m) => m.name === 'create');
+      expect(ctor).toBeDefined();
+      expect(create!.isStatic).toBe(true);
+    });
+
+    it('extracts default parameter as optional and rest as variadic', () => {
+      const tree = parseJavaScript(`
+        class EventEmitter {
+          emit(event, data = null, ...listeners) {}
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, jsCtx);
+
+      const params = result!.methods[0].parameters;
+      expect(params).toHaveLength(3);
+      expect(params[0]).toEqual({
+        name: 'event',
+        type: null,
+        isOptional: false,
+        isVariadic: false,
+      });
+      expect(params[1].name).toBe('data');
+      expect(params[1].isOptional).toBe(true);
+      expect(params[2].name).toBe('listeners');
+      expect(params[2].isVariadic).toBe(true);
+    });
+
+    it('does not detect abstract or interface types (JS has neither)', () => {
+      const tree = parseJavaScript(`
+        class Shape {
+          area() { return 0; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, jsCtx);
+
+      expect(result!.methods[0].isAbstract).toBe(false);
+      expect(result!.methods[0].isFinal).toBe(false);
+    });
+
+    it('extracts private field method with # prefix', () => {
+      const tree = parseJavaScript(`
+        class Encapsulated {
+          #internal() { return 42; }
+          expose() { return this.#internal(); }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, jsCtx);
+
+      const internal = result!.methods.find((m) => m.name.includes('internal'));
+      expect(internal).toBeDefined();
+      expect(internal!.name).toContain('#');
     });
   });
 });
