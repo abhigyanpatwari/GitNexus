@@ -20,8 +20,9 @@ program
 
 program
   .command('analyze [path]')
-  .description('Index a repository (full analysis)')
+  .description('Index a repository (full or incremental analysis)')
   .option('-f, --force', 'Force full re-index even if up to date')
+  .option('-i, --incremental', 'Only re-parse files changed since last index (uses SHA-256 hashes)')
   .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
   .option('--skills', 'Generate repo-specific skill files from detected communities')
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')

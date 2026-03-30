@@ -22,6 +22,8 @@ export interface RepoMeta {
     processes?: number;
     embeddings?: number;
   };
+  /** Per-file SHA-256 hashes for incremental scanning. Keys are repo-relative paths. */
+  fileHashes?: Record<string, string>;
 }
 
 export interface IndexedRepo {

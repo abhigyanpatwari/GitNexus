@@ -69,6 +69,7 @@ import { createWorkerPool, WorkerPool } from './workers/worker-pool.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { computeFileHashes, diffFileHashes } from '../../storage/file-hasher.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -1322,6 +1323,8 @@ export const runPipelineFromRepo = async (
   repoPath: string,
   onProgress: (progress: PipelineProgress) => void,
   options?: PipelineOptions,
+  /** Previous file hashes for incremental mode. When provided, only files with changed hashes are re-parsed. */
+  previousFileHashes?: Record<string, string>,
 ): Promise<PipelineResult> => {
   const graph = createKnowledgeGraph();
   const ctx = createResolutionContext();
@@ -1335,6 +1338,23 @@ export const runPipelineFromRepo = async (
       onProgress,
     );
 
+    // ── Incremental: compute hashes and filter to changed files ────────
+    const allFilePaths = scannedFiles.map((f) => f.path);
+    const currentFileHashes = await computeFileHashes(repoPath, allFilePaths);
+    const hashDiff = diffFileHashes(currentFileHashes, previousFileHashes);
+    const changedFileSet = previousFileHashes ? new Set(hashDiff.changed) : undefined;
+
+    if (changedFileSet) {
+      console.log(
+        `  Incremental: ${hashDiff.changed.length} changed, ${hashDiff.removed.length} removed, ${hashDiff.unchanged} unchanged`,
+      );
+    }
+
+    // In incremental mode, only parse files with changed hashes
+    const parseableScannedFiles = changedFileSet
+      ? scannedFiles.filter((f) => changedFileSet.has(f.path))
+      : scannedFiles;
+
     // Phase 3+4: Chunked parse + resolve (imports, calls, heritage, routes)
     const {
       exportedTypeMap,
@@ -1346,7 +1366,7 @@ export const runPipelineFromRepo = async (
     } = await runChunkedParseAndResolve(
       graph,
       ctx,
-      scannedFiles,
+      parseableScannedFiles,
       allPaths,
       totalFiles,
       repoPath,
@@ -1706,7 +1726,14 @@ export const runPipelineFromRepo = async (
       },
     });
 
-    return { graph, repoPath, totalFileCount: totalFiles, communityResult, processResult };
+    return {
+      graph,
+      repoPath,
+      totalFileCount: totalFiles,
+      communityResult,
+      processResult,
+      fileHashes: currentFileHashes,
+    };
   } catch (error) {
     ctx.clear();
     throw error;

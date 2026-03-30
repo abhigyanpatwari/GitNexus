@@ -42,6 +42,7 @@ function ensureHeap(): boolean {
 
 export interface AnalyzeOptions {
   force?: boolean;
+  incremental?: boolean;
   embeddings?: boolean;
   skills?: boolean;
   verbose?: boolean;
@@ -174,6 +175,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       repoPath,
       {
         force: options?.force || options?.skills,
+        incremental: options?.incremental,
         embeddings: options?.embeddings,
         skipGit: options?.skipGit,
         skipAgentsMd: options?.skipAgentsMd,

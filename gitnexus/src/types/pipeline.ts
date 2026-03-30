@@ -11,4 +11,6 @@ export interface PipelineResult {
   totalFileCount: number;
   communityResult?: CommunityDetectionResult;
   processResult?: ProcessDetectionResult;
+  /** Per-file SHA-256 hashes computed during this run (for incremental scanning) */
+  fileHashes?: Record<string, string>;
 }

@@ -21,6 +21,7 @@ import {
   closeLbug,
   createFTSIndex,
   loadCachedEmbeddings,
+  deleteNodesForFile,
 } from './lbug/lbug-adapter.js';
 import {
   getStoragePaths,
@@ -32,6 +33,7 @@ import {
 } from '../storage/repo-manager.js';
 import { getCurrentCommit, hasGitDir } from '../storage/git.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
+import { diffFileHashes } from '../storage/file-hasher.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -44,6 +46,7 @@ export interface AnalyzeCallbacks {
 
 export interface AnalyzeOptions {
   force?: boolean;
+  incremental?: boolean;
   embeddings?: boolean;
   skipGit?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
@@ -155,27 +158,67 @@ export async function runFullAnalysis(
     }
   }
 
+  // ── Incremental: pass previous hashes to pipeline if applicable ───
+  const isIncremental = !!(options.incremental && existingMeta?.fileHashes && !options.force);
+  const previousFileHashes = isIncremental ? existingMeta!.fileHashes : undefined;
+
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
-  const pipelineResult = await runPipelineFromRepo(repoPath, (p) => {
-    const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
-    const scaled = Math.round(p.percent * 0.6);
-    progress(p.phase, scaled, phaseLabel);
-  });
+  const pipelineResult = await runPipelineFromRepo(
+    repoPath,
+    (p) => {
+      const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
+      const scaled = Math.round(p.percent * 0.6);
+      progress(p.phase, scaled, phaseLabel);
+    },
+    undefined,
+    previousFileHashes,
+  );
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
   progress('lbug', 60, 'Loading into LadybugDB...');
 
-  await closeLbug();
-  const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
-  for (const f of lbugFiles) {
-    try {
-      await fs.rm(f, { recursive: true, force: true });
-    } catch {
-      /* swallow */
+  let incrementalDeletedNodes = 0;
+  let incrementalDeletedFiles = 0;
+
+  if (isIncremental) {
+    // Incremental path: open existing DB, delete stale nodes, append new ones
+    const hashDiff = diffFileHashes(pipelineResult.fileHashes ?? {}, existingMeta!.fileHashes);
+    const filesToDelete = [...hashDiff.changed, ...hashDiff.removed];
+
+    await initLbug(lbugPath);
+
+    for (const filePath of filesToDelete) {
+      try {
+        const { deletedNodes } = await deleteNodesForFile(filePath);
+        incrementalDeletedNodes += deletedNodes;
+        incrementalDeletedFiles++;
+      } catch {
+        /* file may not have been indexed — skip */
+      }
     }
+
+    // Merge file hashes: keep previous for unchanged, update for changed, drop removed
+    const mergedHashes: Record<string, string> = { ...existingMeta!.fileHashes };
+    for (const f of hashDiff.removed) delete mergedHashes[f];
+    for (const [file, hash] of Object.entries(pipelineResult.fileHashes ?? {})) {
+      mergedHashes[file] = hash;
+    }
+    // Overwrite pipeline fileHashes with merged so saveMeta stores the full set
+    (pipelineResult as any).fileHashes = mergedHashes;
+  } else {
+    // Full rebuild path: wipe and recreate LadybugDB
+    await closeLbug();
+    const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
+    for (const f of lbugFiles) {
+      try {
+        await fs.rm(f, { recursive: true, force: true });
+      } catch {
+        /* swallow */
+      }
+    }
+    await initLbug(lbugPath);
   }
 
-  await initLbug(lbugPath);
   try {
     // All work after initLbug is wrapped in try/finally to ensure closeLbug()
     // is called even if an error occurs — the module-level singleton DB handle
@@ -279,6 +322,12 @@ export async function runFullAnalysis(
       /* table may not exist if embeddings never ran */
     }
 
+    if (isIncremental && incrementalDeletedFiles > 0) {
+      log(
+        `  Incremental: deleted ${incrementalDeletedNodes} nodes from ${incrementalDeletedFiles} files, re-parsed ${incrementalDeletedFiles} files`,
+      );
+    }
+
     const meta = {
       repoPath,
       lastCommit: currentCommit,
@@ -291,6 +340,7 @@ export async function runFullAnalysis(
         processes: pipelineResult.processResult?.stats.totalProcesses,
         embeddings: embeddingCount,
       },
+      fileHashes: pipelineResult.fileHashes,
     };
     await saveMeta(storagePath, meta);
     await registerRepo(repoPath, meta);
