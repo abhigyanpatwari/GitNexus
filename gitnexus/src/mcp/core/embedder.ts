@@ -6,12 +6,32 @@
  */
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import { mkdirSync } from 'fs';
+import { join } from 'path';
 import {
   isHttpMode,
   getHttpDimensions,
   httpEmbedQuery,
 } from '../../core/embeddings/http-client.js';
 import { applyOnnxruntimeNodeBindingOverride } from '../../core/embeddings/onnxruntime-node-loader.js';
+
+const configureTransformersCache = () => {
+  const cacheRoot =
+    process.env.GITNEXUS_CACHE_DIR ??
+    process.env.XDG_CACHE_HOME ??
+    (process.env.HOME ? join(process.env.HOME, '.cache') : null);
+
+  if (!cacheRoot) return;
+
+  const cacheDir = join(cacheRoot, 'gitnexus', 'transformers');
+  try {
+    mkdirSync(cacheDir, { recursive: true });
+    env.cacheDir = cacheDir;
+    env.useFSCache = true;
+  } catch {
+    // If cache setup fails, fall back to transformers.js defaults.
+  }
+};
 
 // Model config
 const MODEL_ID = 'Snowflake/snowflake-arctic-embed-xs';
@@ -34,6 +54,7 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
   }
 
   applyOnnxruntimeNodeBindingOverride();
+  configureTransformersCache();
 
   if (isInitializing && initPromise) {
     return initPromise;

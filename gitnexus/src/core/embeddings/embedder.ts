@@ -15,13 +15,31 @@ if (!process.env.ORT_LOG_LEVEL) {
 }
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
-import { existsSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join, dirname } from 'path';
 import { createRequire } from 'module';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
 import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
 import { applyOnnxruntimeNodeBindingOverride } from './onnxruntime-node-loader.js';
+
+const configureTransformersCache = () => {
+  const cacheRoot =
+    process.env.GITNEXUS_CACHE_DIR ??
+    process.env.XDG_CACHE_HOME ??
+    (process.env.HOME ? join(process.env.HOME, '.cache') : null);
+
+  if (!cacheRoot) return;
+
+  const cacheDir = join(cacheRoot, 'gitnexus', 'transformers');
+  try {
+    mkdirSync(cacheDir, { recursive: true });
+    env.cacheDir = cacheDir;
+    env.useFSCache = true;
+  } catch {
+    // If cache setup fails, fall back to transformers.js defaults.
+  }
+};
 
 /**
  * Check whether the onnxruntime-node package that @huggingface/transformers
@@ -138,6 +156,7 @@ export const initEmbedder = async (
   }
 
   applyOnnxruntimeNodeBindingOverride();
+  configureTransformersCache();
 
   // If already initializing, wait for that promise
   if (isInitializing && initPromise) {
