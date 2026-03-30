@@ -1016,6 +1016,7 @@ describe('C# MethodExtractor', () => {
       const conv = result!.methods.find((m) => m.name === 'implicit operator double');
       expect(conv).toBeDefined();
       expect(conv!.isStatic).toBe(true);
+      expect(conv!.returnType).toBe('double');
       expect(conv!.parameters).toHaveLength(1);
     });
   });
@@ -1034,6 +1035,23 @@ describe('C# MethodExtractor', () => {
       expect(params).toHaveLength(1);
       expect(params[0].name).toBe('value');
       expect(params[0].type).toBe('in double');
+    });
+  });
+
+  describe('extract this parameter (extension methods)', () => {
+    it('prefixes type with this for extension method parameter', () => {
+      const tree = parseCSharp(`
+        public static class StringExtensions {
+          public static bool IsNullOrEmpty(this string s) { return false; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+      const params = result!.methods[0].parameters;
+
+      expect(params).toHaveLength(1);
+      expect(params[0].name).toBe('s');
+      expect(params[0].type).toBe('this string');
     });
   });
 
@@ -1180,7 +1198,9 @@ describe('C# MethodExtractor', () => {
   });
 
   describe('record struct', () => {
-    it('recognizes record_struct_declaration', () => {
+    // tree-sitter-c-sharp ^0.23.1 emits record_declaration for 'record struct' —
+    // there is no separate record_struct_declaration node type.
+    it('recognizes record struct via record_declaration', () => {
       const tree = parseCSharp('public record struct Point { }');
       expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(true);
     });

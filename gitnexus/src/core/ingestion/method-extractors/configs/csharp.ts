@@ -107,7 +107,7 @@ function extractParametersFromList(paramList: SyntaxNode): ParameterInfo[] {
           const c = child.namedChild(j);
           if (!c || c.type !== 'modifier') continue;
           const modText = c.text.trim();
-          if (modText === 'out' || modText === 'ref' || modText === 'in') {
+          if (modText === 'out' || modText === 'ref' || modText === 'in' || modText === 'this') {
             typeName = typeName ? `${modText} ${typeName}` : modText;
             break;
           }
@@ -299,21 +299,13 @@ export const csharpMethodConfig: MethodExtractionConfig = {
 
     const parameters = extractParametersFromList(paramList);
 
-    // Detect compound visibility on the owner declaration
-    const mods = collectModifierTexts(ownerNode);
-    let visibility: MethodVisibility = 'private';
-    if (mods.has('protected') && mods.has('internal')) visibility = 'protected internal';
-    else if (mods.has('private') && mods.has('protected')) visibility = 'private protected';
-    else if (mods.has('public')) visibility = 'public';
-    else if (mods.has('internal')) visibility = 'internal';
-    else if (mods.has('protected')) visibility = 'protected';
-
     return {
       name,
       receiverType: null,
       returnType: null,
       parameters,
-      visibility,
+      // Reuse the config's extractVisibility on the owner declaration node
+      visibility: csharpMethodConfig.extractVisibility(ownerNode),
       isStatic: false,
       isAbstract: false,
       isFinal: false,
