@@ -152,8 +152,8 @@ function extractTsJsVisibility(node: SyntaxNode): MethodVisibility {
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (child && child.type === 'accessibility_modifier') {
-      const t = child.text.trim() as MethodVisibility;
-      if (VISIBILITY_KEYWORDS.has(t)) return t;
+      const t = child.text.trim();
+      if (VISIBILITY_KEYWORDS.has(t as MethodVisibility)) return t as MethodVisibility;
     }
   }
   // No accessibility_modifier found — default to public.

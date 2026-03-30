@@ -1589,6 +1589,50 @@ describe('TypeScript MethodExtractor', () => {
       expect(params[0].name).toBe('{ method, path }');
       expect(params[0].type).toBe('Request');
     });
+
+    it('extracts generator method as method_definition', () => {
+      const tree = parseTypeScript(`
+        class Stream {
+          *items(): Generator<number> { yield 1; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('items');
+      expect(result!.methods[0].returnType).toBe('Generator');
+    });
+
+    it('extracts computed property name with brackets', () => {
+      const tree = parseTypeScript(`
+        class Iterable {
+          [Symbol.iterator](): Iterator<number> { return this; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      expect(result!.methods).toHaveLength(1);
+      // Computed names include brackets — this is intentional for static analysis disambiguation
+      expect(result!.methods[0].name).toBe('[Symbol.iterator]');
+    });
+
+    it('extracts class-level method overloads', () => {
+      const tree = parseTypeScript(`
+        class Parser {
+          parse(input: string): string;
+          parse(input: number): number;
+          parse(input: string | number): string | number { return input; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      // Two overload signatures (method_signature) + one implementation (method_definition)
+      const parseMethods = result!.methods.filter((m) => m.name === 'parse');
+      expect(parseMethods.length).toBeGreaterThanOrEqual(2);
+    });
   });
 });
 
