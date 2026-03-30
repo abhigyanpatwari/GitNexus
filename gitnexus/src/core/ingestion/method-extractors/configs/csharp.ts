@@ -96,7 +96,7 @@ function extractParametersFromList(paramList: SyntaxNode): ParameterInfo[] {
     // Regular named `parameter` node
     if (child.isNamed && child.type === 'parameter') {
       const nameNode = child.childForFieldName('name');
-      if (nameNode) {
+      if (nameNode && nameNode.text.trim()) {
         const typeNode = child.childForFieldName('type');
         let typeName: string | null = typeNode
           ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
@@ -311,7 +311,7 @@ export const csharpMethodConfig: MethodExtractionConfig = {
       isFinal: false,
       annotations: [], // C# has no syntax for attributes on primary constructors
       sourceFile: context.filePath,
-      line: ownerNode.startPosition.row + 1,
+      line: paramList.startPosition.row + 1,
     };
   },
 };
