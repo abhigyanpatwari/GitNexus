@@ -156,6 +156,9 @@ function extractTsJsVisibility(node: SyntaxNode): MethodVisibility {
       if (VISIBILITY_KEYWORDS.has(t as MethodVisibility)) return t as MethodVisibility;
     }
   }
+  // Pass 2: ES2022 private methods (#name) are inherently private
+  const nameNode = node.childForFieldName('name');
+  if (nameNode && nameNode.type === 'private_property_identifier') return 'private';
   // No accessibility_modifier found — default to public.
   // Note: tree-sitter-typescript does not wrap modifiers in a 'modifiers' node
   // (unlike JVM), so there is no wrapper to scan.

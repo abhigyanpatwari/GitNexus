@@ -1747,6 +1747,8 @@ describe('JavaScript MethodExtractor', () => {
       const internal = result!.methods.find((m) => m.name === '#internal');
       expect(internal).toBeDefined();
       expect(internal!.name).toBe('#internal');
+      // ES2022 private methods (#name) are inherently private
+      expect(internal!.visibility).toBe('private');
     });
   });
 });
