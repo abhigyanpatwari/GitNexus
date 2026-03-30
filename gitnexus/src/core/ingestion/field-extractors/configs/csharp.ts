@@ -22,7 +22,6 @@ export const csharpConfig: FieldExtractionConfig = {
     'struct_declaration',
     'interface_declaration',
     'record_declaration',
-    'record_struct_declaration',
   ],
   fieldNodeTypes: ['field_declaration', 'property_declaration'],
   bodyNodeTypes: ['declaration_list'],
@@ -98,8 +97,7 @@ export const csharpConfig: FieldExtractionConfig = {
     }
     if (!paramList) return [];
 
-    const isRecord =
-      ownerNode.type === 'record_declaration' || ownerNode.type === 'record_struct_declaration';
+    const isRecord = ownerNode.type === 'record_declaration';
     const fields: FieldInfo[] = [];
 
     for (let i = 0; i < paramList.namedChildCount; i++) {

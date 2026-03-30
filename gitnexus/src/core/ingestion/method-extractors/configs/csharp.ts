@@ -169,7 +169,6 @@ export const csharpMethodConfig: MethodExtractionConfig = {
     'struct_declaration',
     'interface_declaration',
     'record_declaration',
-    'record_struct_declaration',
   ],
   methodNodeTypes: [
     'method_declaration',
