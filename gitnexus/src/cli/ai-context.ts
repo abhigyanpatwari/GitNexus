@@ -9,7 +9,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { type GeneratedSkillInfo } from './skill-gen.js';
+import { GENERATED_SKILL_DIR_PREFIX, type GeneratedSkillInfo } from './skill-gen.js';
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -30,6 +30,8 @@ export interface AIContextOptions {
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
 const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
+const MANAGED_BLOCK_PATTERN =
+  /^[ \t]*<!-- gitnexus:start -->[ \t]*\r?\n[\s\S]*?^[ \t]*<!-- gitnexus:end -->[ \t]*(?:\r?\n)?/m;
 
 /**
  * Generate the full GitNexus context content.
@@ -52,19 +54,19 @@ function generateGitNexusContent(
       ? generatedSkills
           .map(
             (s) =>
-              `| Work in the ${s.label} area (${s.symbolCount} symbols) | \`.claude/skills/generated/${s.name}/SKILL.md\` |`,
+              `| Work in the ${s.label} area (${s.symbolCount} symbols) | \`.claude/skills/${GENERATED_SKILL_DIR_PREFIX}${s.name}/SKILL.md\` |`,
           )
           .join('\n')
       : '';
 
   const skillsTable = `| Task | Read this skill file |
 |------|---------------------|
-| Understand architecture / "How does X work?" | \`.claude/skills/gitnexus/gitnexus-exploring/SKILL.md\` |
-| Blast radius / "What breaks if I change X?" | \`.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md\` |
-| Trace bugs / "Why is X failing?" | \`.claude/skills/gitnexus/gitnexus-debugging/SKILL.md\` |
-| Rename / extract / split / refactor | \`.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md\` |
-| Tools, resources, schema reference | \`.claude/skills/gitnexus/gitnexus-guide/SKILL.md\` |
-| Index, status, clean, wiki CLI commands | \`.claude/skills/gitnexus/gitnexus-cli/SKILL.md\` |${generatedRows ? '\n' + generatedRows : ''}`;
+| Understand architecture / "How does X work?" | \`.claude/skills/gitnexus-exploring/SKILL.md\` |
+| Blast radius / "What breaks if I change X?" | \`.claude/skills/gitnexus-impact-analysis/SKILL.md\` |
+| Trace bugs / "Why is X failing?" | \`.claude/skills/gitnexus-debugging/SKILL.md\` |
+| Rename / extract / split / refactor | \`.claude/skills/gitnexus-refactoring/SKILL.md\` |
+| Tools, resources, schema reference | \`.claude/skills/gitnexus-guide/SKILL.md\` |
+| Index, status, clean, wiki CLI commands | \`.claude/skills/gitnexus-cli/SKILL.md\` |${generatedRows ? '\n' + generatedRows : ''}`;
 
   return `${GITNEXUS_START_MARKER}
 # GitNexus — Code Intelligence
@@ -193,14 +195,10 @@ async function upsertGitNexusSection(
 
   const existingContent = await fs.readFile(filePath, 'utf-8');
 
-  // Check if GitNexus section already exists
-  const startIdx = existingContent.indexOf(GITNEXUS_START_MARKER);
-  const endIdx = existingContent.indexOf(GITNEXUS_END_MARKER);
-
-  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-    // Replace existing section
-    const before = existingContent.substring(0, startIdx);
-    const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
+  const match = MANAGED_BLOCK_PATTERN.exec(existingContent);
+  if (match && match.index !== undefined) {
+    const before = existingContent.slice(0, match.index);
+    const after = existingContent.slice(match.index + match[0].length);
     const newContent = before + content + after;
     await fs.writeFile(filePath, newContent.trim() + '\n', 'utf-8');
     return 'updated';
@@ -213,12 +211,16 @@ async function upsertGitNexusSection(
 }
 
 /**
- * Install GitNexus skills to .claude/skills/gitnexus/
+ * Install GitNexus skills to .claude/skills/
  * Works natively with Claude Code, Cursor, and GitHub Copilot
  */
 async function installSkills(repoPath: string): Promise<string[]> {
-  const skillsDir = path.join(repoPath, '.claude', 'skills', 'gitnexus');
+  const skillsDir = path.join(repoPath, '.claude', 'skills');
   const installedSkills: string[] = [];
+
+  await fs.mkdir(skillsDir, { recursive: true });
+  await fs.rm(path.join(skillsDir, 'gitnexus'), { recursive: true, force: true });
+  await fs.rm(path.join(skillsDir, 'generated'), { recursive: true, force: true });
 
   // Skill definitions bundled with the package
   const skills = [
@@ -323,10 +325,10 @@ export async function generateAIContextFiles(
     createdFiles.push('CLAUDE.md (skipped via --skip-agents-md)');
   }
 
-  // Install skills to .claude/skills/gitnexus/
+  // Install skills to .claude/skills/
   const installedSkills = await installSkills(repoPath);
   if (installedSkills.length > 0) {
-    createdFiles.push(`.claude/skills/gitnexus/ (${installedSkills.length} skills)`);
+    createdFiles.push(`.claude/skills/ (${installedSkills.length} skills)`);
   }
 
   return { files: createdFiles };

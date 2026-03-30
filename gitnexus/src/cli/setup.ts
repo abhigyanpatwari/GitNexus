@@ -308,7 +308,7 @@ async function setupCodex(result: SetupResult): Promise<void> {
 
 /**
  * Install GitNexus skills to a target directory.
- * Each skill is installed as {targetDir}/gitnexus-{skillName}/SKILL.md
+ * Each skill is installed as {targetDir}/{skillName}/SKILL.md
  * following the Agent Skills standard (Cursor, Claude Code, and Codex).
  *
  * Supports two source layouts:
@@ -383,7 +383,7 @@ async function copyDirRecursive(src: string, dest: string): Promise<void> {
 }
 
 /**
- * Install global Cursor skills to ~/.cursor/skills/gitnexus/
+ * Install global Cursor skills to ~/.cursor/skills/
  */
 async function installCursorSkills(result: SetupResult): Promise<void> {
   const cursorDir = path.join(os.homedir(), '.cursor');
@@ -401,7 +401,7 @@ async function installCursorSkills(result: SetupResult): Promise<void> {
 }
 
 /**
- * Install global OpenCode skills to ~/.config/opencode/skill/gitnexus/
+ * Install global OpenCode skills to ~/.config/opencode/skill/
  */
 async function installOpenCodeSkills(result: SetupResult): Promise<void> {
   const opencodeDir = path.join(os.homedir(), '.config', 'opencode');
@@ -421,7 +421,7 @@ async function installOpenCodeSkills(result: SetupResult): Promise<void> {
 }
 
 /**
- * Install global Codex skills to ~/.agents/skills/gitnexus/
+ * Install global Codex skills to ~/.agents/skills/
  */
 async function installCodexSkills(result: SetupResult): Promise<void> {
   const codexDir = path.join(os.homedir(), '.codex');

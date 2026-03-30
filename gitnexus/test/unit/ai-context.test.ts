@@ -66,18 +66,83 @@ describe('generateAIContextFiles', () => {
     expect(starts).toBe(1);
   });
 
-  it('installs skills files', async () => {
+  it('replaces only the managed GitNexus block when marker text appears in prose', async () => {
+    const stats = { nodes: 10 };
+    const claudeMdPath = path.join(tmpDir, 'CLAUDE.md');
+
+    await fs.writeFile(
+      claudeMdPath,
+      [
+        '# CLAUDE',
+        '',
+        'GitNexus MCP rules are in the `<!-- gitnexus:start -->` ... `<!-- gitnexus:end -->` block in AGENTS.md.',
+        '',
+        '<!-- gitnexus:start -->',
+        'old managed block',
+        '<!-- gitnexus:end -->',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+
+    const content = await fs.readFile(claudeMdPath, 'utf-8');
+    expect(content).toContain(
+      'GitNexus MCP rules are in the `<!-- gitnexus:start -->` ... `<!-- gitnexus:end -->` block in AGENTS.md.',
+    );
+    expect(content).not.toContain('old managed block');
+    expect((content.match(/gitnexus:start/g) || []).length).toBe(2);
+  });
+
+  it('installs bundled skills as flat Claude skills', async () => {
     const stats = { nodes: 10 };
     const result = await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
-    // Should have installed skill files
-    const skillsDir = path.join(tmpDir, '.claude', 'skills', 'gitnexus');
-    try {
-      const entries = await fs.readdir(skillsDir, { recursive: true });
-      expect(entries.length).toBeGreaterThan(0);
-    } catch {
-      // Skills dir may not be created if skills source doesn't exist in test context
-    }
+    expect(result.files).toContain('.claude/skills/ (6 skills)');
+
+    const skillPath = path.join(tmpDir, '.claude', 'skills', 'gitnexus-exploring', 'SKILL.md');
+    const nestedSkillPath = path.join(
+      tmpDir,
+      '.claude',
+      'skills',
+      'gitnexus',
+      'gitnexus-exploring',
+      'SKILL.md',
+    );
+
+    expect(await fs.readFile(skillPath, 'utf-8')).toContain('# Exploring Codebases with GitNexus');
+    await expect(fs.access(nestedSkillPath)).rejects.toThrow();
+  });
+
+  it('removes legacy nested skill directories when installing flat Claude skills', async () => {
+    const stats = { nodes: 10 };
+    const legacyBundledPath = path.join(
+      tmpDir,
+      '.claude',
+      'skills',
+      'gitnexus',
+      'gitnexus-exploring',
+      'SKILL.md',
+    );
+    const legacyGeneratedPath = path.join(
+      tmpDir,
+      '.claude',
+      'skills',
+      'generated',
+      'legacy-area',
+      'SKILL.md',
+    );
+
+    await fs.mkdir(path.dirname(legacyBundledPath), { recursive: true });
+    await fs.mkdir(path.dirname(legacyGeneratedPath), { recursive: true });
+    await fs.writeFile(legacyBundledPath, 'legacy bundled', 'utf-8');
+    await fs.writeFile(legacyGeneratedPath, 'legacy generated', 'utf-8');
+
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+
+    await expect(fs.access(legacyBundledPath)).rejects.toThrow();
+    await expect(fs.access(legacyGeneratedPath)).rejects.toThrow();
   });
 
   it('preserves manual AGENTS.md and CLAUDE.md edits when skipAgentsMd is enabled', async () => {
