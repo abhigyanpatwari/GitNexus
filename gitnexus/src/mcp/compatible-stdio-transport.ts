@@ -220,10 +220,12 @@ export class CompatibleStdioServerTransport implements Transport {
         return;
       }
 
-      const payload =
-        this._framing === 'newline'
-          ? serializeNewlineMessage(message)
-          : serializeContentLengthMessage(message);
+      const framing = this._framing ?? 'content-length';
+
+const payload =
+  framing === 'newline'
+    ? serializeNewlineMessage(message)
+    : serializeContentLengthMessage(message);
 
       const onError = (error: Error) => {
         this._stdout.removeListener('error', onError);
