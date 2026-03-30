@@ -21,6 +21,7 @@ import { join, dirname } from 'path';
 import { createRequire } from 'module';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
 import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
+import { applyOnnxruntimeNodeBindingOverride } from './onnxruntime-node-loader.js';
 
 /**
  * Check whether the onnxruntime-node package that @huggingface/transformers
@@ -135,6 +136,8 @@ export const initEmbedder = async (
   if (embedderInstance) {
     return embedderInstance;
   }
+
+  applyOnnxruntimeNodeBindingOverride();
 
   // If already initializing, wait for that promise
   if (isInitializing && initPromise) {

@@ -11,6 +11,7 @@ import {
   getHttpDimensions,
   httpEmbedQuery,
 } from '../../core/embeddings/http-client.js';
+import { applyOnnxruntimeNodeBindingOverride } from '../../core/embeddings/onnxruntime-node-loader.js';
 
 // Model config
 const MODEL_ID = 'Snowflake/snowflake-arctic-embed-xs';
@@ -31,6 +32,8 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
   if (embedderInstance) {
     return embedderInstance;
   }
+
+  applyOnnxruntimeNodeBindingOverride();
 
   if (isInitializing && initPromise) {
     return initPromise;
