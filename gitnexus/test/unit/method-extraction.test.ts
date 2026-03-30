@@ -1540,7 +1540,54 @@ describe('TypeScript MethodExtractor', () => {
       expect(result!.methods).toHaveLength(1);
       const ctor = result!.methods[0];
       expect(ctor.name).toBe('constructor');
-      expect(ctor.parameters.length).toBeGreaterThanOrEqual(2);
+      expect(ctor.parameters).toHaveLength(2);
+      expect(ctor.parameters[0].name).toBe('name');
+      expect(ctor.parameters[1].name).toBe('age');
+    });
+
+    it('extracts override method', () => {
+      const tree = parseTypeScript(`
+        class Child extends Parent {
+          override toString(): string { return "child"; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      expect(result!.methods[0].name).toBe('toString');
+      expect(result!.methods[0].isOverride).toBe(true);
+    });
+
+    it('extracts getter and setter as methods', () => {
+      const tree = parseTypeScript(`
+        class Config {
+          get value(): number { return 1; }
+          set value(v: number) {}
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      // Getter and setter both have name 'value' (no get/set prefix from extractName)
+      expect(result!.methods).toHaveLength(2);
+      expect(result!.methods[0].name).toBe('value');
+      expect(result!.methods[1].name).toBe('value');
+    });
+
+    it('extracts destructured parameter', () => {
+      const tree = parseTypeScript(`
+        class Handler {
+          handle({ method, path }: Request): void {}
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      const params = result!.methods[0].parameters;
+      expect(params).toHaveLength(1);
+      // Destructured params extract the pattern text and type from annotation
+      expect(params[0].name).toBe('{ method, path }');
+      expect(params[0].type).toBe('Request');
     });
   });
 });
@@ -1653,9 +1700,9 @@ describe('JavaScript MethodExtractor', () => {
       const classNode = tree.rootNode.child(0)!;
       const result = extractor.extract(classNode, jsCtx);
 
-      const internal = result!.methods.find((m) => m.name.includes('internal'));
+      const internal = result!.methods.find((m) => m.name === '#internal');
       expect(internal).toBeDefined();
-      expect(internal!.name).toContain('#');
+      expect(internal!.name).toBe('#internal');
     });
   });
 });
