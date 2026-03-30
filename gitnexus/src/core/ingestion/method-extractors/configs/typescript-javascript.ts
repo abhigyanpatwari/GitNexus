@@ -6,11 +6,7 @@ import type {
   ParameterInfo,
   MethodVisibility,
 } from '../../method-types.js';
-import {
-  hasKeyword,
-  findVisibility,
-  typeFromAnnotation,
-} from '../../field-extractors/configs/helpers.js';
+import { hasKeyword, typeFromAnnotation } from '../../field-extractors/configs/helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
@@ -160,8 +156,10 @@ function extractTsJsVisibility(node: SyntaxNode): MethodVisibility {
       if (VISIBILITY_KEYWORDS.has(t)) return t;
     }
   }
-  // Pass 2: fallback to findVisibility helper
-  return findVisibility(node, VISIBILITY_KEYWORDS, 'public', 'modifiers');
+  // No accessibility_modifier found — default to public.
+  // Note: tree-sitter-typescript does not wrap modifiers in a 'modifiers' node
+  // (unlike JVM), so there is no wrapper to scan.
+  return 'public';
 }
 
 /**
@@ -173,27 +171,14 @@ function extractTsJsVisibility(node: SyntaxNode): MethodVisibility {
  */
 function extractTsJsDecorators(node: SyntaxNode): string[] {
   const decorators: string[] = [];
-  const parent = node.parent;
-  if (!parent) return decorators;
-
-  // Find this node's index among parent's children, then collect preceding decorator siblings
-  let nodeIndex = -1;
-  for (let i = 0; i < parent.namedChildCount; i++) {
-    if (parent.namedChild(i) === node) {
-      nodeIndex = i;
-      break;
-    }
-  }
-  if (nodeIndex < 0) return decorators;
-
-  // Walk backwards from the method node to collect consecutive decorator siblings
-  for (let i = nodeIndex - 1; i >= 0; i--) {
-    const sibling = parent.namedChild(i);
-    if (!sibling || sibling.type !== 'decorator') break;
+  // Walk backwards via previousNamedSibling to collect consecutive decorator siblings.
+  // This avoids the O(N) index-finding scan through the parent's children.
+  let sibling = node.previousNamedSibling;
+  while (sibling && sibling.type === 'decorator') {
     const name = extractDecoratorName(sibling);
     if (name) decorators.unshift(name);
+    sibling = sibling.previousNamedSibling;
   }
-
   return decorators;
 }
 
@@ -227,6 +212,10 @@ const shared: Omit<MethodExtractionConfig, 'language'> = {
     'abstract_class_declaration',
     'interface_declaration',
   ],
+  // Note: TS constructors are method_definition nodes (name = 'constructor'), so no
+  // explicit constructor_declaration entry is needed (unlike JVM/C# configs).
+  // Known gap: call_signature and construct_signature (e.g., interface Fn { (x: string): void; })
+  // are not extracted — they have no name field and are uncommon in practice.
   methodNodeTypes: ['method_definition', 'method_signature', 'abstract_method_signature'],
   bodyNodeTypes: ['class_body', 'interface_body'],
 
