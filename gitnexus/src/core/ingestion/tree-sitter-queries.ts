@@ -558,7 +558,7 @@ export const CSHARP_QUERIES = `
 (struct_declaration name: (identifier) @name) @definition.struct
 (enum_declaration name: (identifier) @name) @definition.enum
 (record_declaration name: (identifier) @name) @definition.record
-(record_struct_declaration name: (identifier) @name) @definition.record
+(record_struct_declaration name: (identifier) @name) @definition.struct
 (delegate_declaration name: (identifier) @name) @definition.delegate
 
 ; Namespaces (block form and C# 10+ file-scoped form)

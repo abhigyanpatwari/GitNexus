@@ -1147,4 +1147,69 @@ describe('C# MethodExtractor', () => {
       expect(result!.methods[0].isAsync).toBeUndefined();
     });
   });
+
+  describe('record struct', () => {
+    it('recognizes record_struct_declaration', () => {
+      const tree = parseCSharp('public record struct Point { }');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(true);
+    });
+
+    it('extracts methods from record struct', () => {
+      const tree = parseCSharp(`
+        public record struct Measurement(double Value) {
+          public string Format() { return ""; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('Measurement');
+      expect(result!.methods.find((m) => m.name === 'Format')).toBeDefined();
+    });
+
+    it('extracts primary constructor from record struct', () => {
+      const tree = parseCSharp('public record struct Point(int X, int Y);');
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      const ctor = result!.methods.find((m) => m.name === 'Point');
+      expect(ctor).toBeDefined();
+      expect(ctor!.parameters).toHaveLength(2);
+    });
+  });
+
+  describe('documented limitations', () => {
+    // partial method declarations: isAbstract is false because 'partial' is not
+    // modeled as abstract. Declaration-only partial methods are not distinguished
+    // from implemented ones in the current schema.
+    it('partial method declaration returns isAbstract: false', () => {
+      const tree = parseCSharp(`
+        public partial class Foo {
+          partial void OnChanged();
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      const m = result!.methods.find((m) => m.name === 'OnChanged');
+      expect(m).toBeDefined();
+      expect(m!.isAbstract).toBe(false);
+    });
+
+    // Generic method type parameters are stripped from the name.
+    // public T GetValue<T>() → name: 'GetValue' (no <T>).
+    // This is intentional — the call graph uses names, not signatures.
+    it('generic method type parameters are stripped from name', () => {
+      const tree = parseCSharp(`
+        public class Repo {
+          public T GetValue<T>() { return default; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      expect(result!.methods[0].name).toBe('GetValue');
+    });
+  });
 });
