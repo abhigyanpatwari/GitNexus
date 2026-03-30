@@ -868,6 +868,22 @@ describe('C# MethodExtractor', () => {
       expect(result!.methods[0].annotations).toContain('@HttpGet');
       expect(result!.methods[0].annotations).toContain('@Authorize');
     });
+
+    it('skips targeted attributes like [return: NotNull]', () => {
+      const tree = parseCSharp(`
+        public class Service {
+          [return: MarshalAs(UnmanagedType.Bool)]
+          [Obsolete]
+          public bool Check() { return true; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      // [Obsolete] is a method attribute, [return: MarshalAs(...)] targets the return value
+      expect(result!.methods[0].annotations).toContain('@Obsolete');
+      expect(result!.methods[0].annotations).not.toContain('@MarshalAs');
+    });
   });
 
   describe('extract constructor', () => {
@@ -886,6 +902,21 @@ describe('C# MethodExtractor', () => {
       expect(ctor!.returnType).toBeNull();
       expect(ctor!.parameters).toHaveLength(1);
       expect(ctor!.parameters[0].name).toBe('name');
+    });
+
+    it('extracts static constructor as isStatic: true with same name as class', () => {
+      const tree = parseCSharp(`
+        public class Config {
+          static Config() { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      const ctor = result!.methods.find((m) => m.name === 'Config');
+      expect(ctor).toBeDefined();
+      expect(ctor!.isStatic).toBe(true);
+      expect(ctor!.parameters).toHaveLength(0);
     });
   });
 
@@ -1179,11 +1210,8 @@ describe('C# MethodExtractor', () => {
     });
   });
 
-  describe('documented limitations', () => {
-    // partial method declarations: isAbstract is false because 'partial' is not
-    // modeled as abstract. Declaration-only partial methods are not distinguished
-    // from implemented ones in the current schema.
-    it('partial method declaration returns isAbstract: false', () => {
+  describe('partial methods', () => {
+    it('detects partial method declaration (no body)', () => {
       const tree = parseCSharp(`
         public partial class Foo {
           partial void OnChanged();
@@ -1194,7 +1222,43 @@ describe('C# MethodExtractor', () => {
 
       const m = result!.methods.find((m) => m.name === 'OnChanged');
       expect(m).toBeDefined();
+      expect(m!.isPartial).toBe(true);
+      // partial declaration-only is not abstract — it's a compile-time slot
       expect(m!.isAbstract).toBe(false);
+    });
+
+    it('detects partial method implementation (with body)', () => {
+      const tree = parseCSharp(`
+        public partial class Foo {
+          partial void OnChanged() { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      const m = result!.methods.find((m) => m.name === 'OnChanged');
+      expect(m).toBeDefined();
+      expect(m!.isPartial).toBe(true);
+    });
+
+    // When both declaration and implementation coexist in the same
+    // declaration_list, two MethodInfo entries are produced (one per node).
+    // Deduplication across partial class files is the caller's responsibility.
+    it('produces two entries when declaration and implementation coexist', () => {
+      const tree = parseCSharp(`
+        public partial class Foo {
+          partial void OnChanged();
+          partial void OnChanged() { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, csharpCtx);
+
+      const partials = result!.methods.filter((m) => m.name === 'OnChanged');
+      expect(partials).toHaveLength(2);
+      for (const m of partials) {
+        expect(m.isPartial).toBe(true);
+      }
     });
 
     // Generic method type parameters are stripped from the name.

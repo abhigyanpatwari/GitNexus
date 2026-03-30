@@ -140,14 +140,24 @@ function extractParametersFromList(paramList: SyntaxNode): ParameterInfo[] {
 
 /**
  * Collect C# attributes from attribute_list nodes on a method or constructor.
- * Each attribute_list contains one or more attribute nodes whose name field gives
- * the attribute name.  Names are prefixed with '@' to mirror the JVM convention.
+ * Skips attribute lists with a target specifier (e.g. [return: NotNull],
+ * [param: Required]) — those target a different declaration element.
+ * Names are prefixed with '@' to mirror the JVM convention.
  */
 function extractCSharpAnnotations(node: SyntaxNode): string[] {
   const annotations: string[] = [];
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (!child || child.type !== 'attribute_list') continue;
+    // Skip targeted attribute lists (e.g. [return: ...], [method: ...])
+    let hasTarget = false;
+    for (let j = 0; j < child.namedChildCount; j++) {
+      if (child.namedChild(j)?.type === 'attribute_target_specifier') {
+        hasTarget = true;
+        break;
+      }
+    }
+    if (hasTarget) continue;
     for (let j = 0; j < child.namedChildCount; j++) {
       const attr = child.namedChild(j);
       if (!attr || attr.type !== 'attribute') continue;
@@ -261,6 +271,10 @@ export const csharpMethodConfig: MethodExtractionConfig = {
 
   isAsync(node) {
     return hasKeyword(node, 'async') || hasModifier(node, 'modifier', 'async');
+  },
+
+  isPartial(node) {
+    return hasKeyword(node, 'partial') || hasModifier(node, 'modifier', 'partial');
   },
 
   extractPrimaryConstructor(

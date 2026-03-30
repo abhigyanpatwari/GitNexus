@@ -83,6 +83,7 @@ export type NodeProperties = {
   isVirtual?: boolean;
   isOverride?: boolean;
   isAsync?: boolean;
+  isPartial?: boolean;
   annotations?: string[];
   // Route/response
   responseKeys?: string[];
