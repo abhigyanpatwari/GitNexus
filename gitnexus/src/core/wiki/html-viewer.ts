@@ -68,9 +68,15 @@ function buildHTML(
   meta: Record<string, unknown> | null,
 ): string {
   // Embed data as JSON inside the HTML
-  const pagesJSON = JSON.stringify(pages);
-  const treeJSON = JSON.stringify(moduleTree);
-  const metaJSON = JSON.stringify(meta);
+  // Unicode-escape HTML-significant chars so the HTML parser can't misinterpret them
+  const safeJSON = (v: unknown) =>
+    JSON.stringify(v)
+      .replace(/</g, '\\u003c')
+      .replace(/>/g, '\\u003e')
+      .replace(/&/g, '\\u0026');
+  const pagesJSON = safeJSON(pages);
+  const treeJSON = safeJSON(moduleTree);
+  const metaJSON = safeJSON(meta);
 
   const parts: string[] = [];
 
@@ -80,6 +86,7 @@ function buildHTML(
   parts.push('<head>');
   parts.push('<meta charset="UTF-8">');
   parts.push('<meta name="viewport" content="width=device-width, initial-scale=1.0">');
+  parts.push('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\' https://cdn.jsdelivr.net; style-src \'unsafe-inline\'; img-src data: https:;">');
   parts.push('<title>' + esc(projectName) + ' — Wiki</title>');
   parts.push('<script src="https://cdn.jsdelivr.net/npm/marked@11.0.0/marked.min.js"><\/script>');
   parts.push(

@@ -210,6 +210,18 @@ export async function callLLM(
           continue;
         }
 
+        // Auto-switch max_tokens → max_completion_tokens when the model rejects max_tokens
+        if (
+          response.status === 400 &&
+          errorText.includes('max_completion_tokens') &&
+          body.max_tokens !== undefined
+        ) {
+          body.max_completion_tokens = body.max_tokens;
+          delete body.max_tokens;
+          // Retry immediately with the corrected parameter
+          continue;
+        }
+
         throw new Error(`LLM API error (${response.status}): ${errorText.slice(0, 500)}`);
       }
 
