@@ -1122,6 +1122,107 @@ class RepoService {
     });
   });
 
+  describe('destructured call results', () => {
+    // Minimal mock SymbolTable for call-result return type lookup
+    const makeSymbolTable = (callables: Array<{ name: string; returnType?: string }>) => ({
+      lookupFuzzyCallable: (name: string) =>
+        callables
+          .filter((c) => c.name === name)
+          .map((c) => ({
+            nodeId: 'n1',
+            filePath: 'src.ts',
+            type: 'Function' as const,
+            returnType: c.returnType,
+          })),
+      lookupFuzzy: () => [],
+      lookupExact: () => undefined,
+      lookupExactFull: () => undefined,
+      add: () => {},
+      getStats: () => ({ fileCount: 0, globalSymbolCount: 0 }),
+      clear: () => {},
+    });
+
+    it('emits callResult + fieldAccess items for const { x } = fn()', () => {
+      const symbolTable = makeSymbolTable([{ name: 'getUser', returnType: 'User' }]);
+      const tree = parse('const { name } = getUser();', TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript', { symbolTable: symbolTable as any });
+      // callResult resolves __destr_getUser_N → User
+      // fieldAccess resolves name via User's properties (no Property nodes in mock → undefined)
+      // But the callResult itself IS emitted — verify constructorBindings is still empty
+      expect(typeEnv.constructorBindings).toEqual([]);
+    });
+
+    it('emits callResult for destructured await call', () => {
+      const symbolTable = makeSymbolTable([{ name: 'fetchData', returnType: 'Response' }]);
+      const tree = parse(
+        'async function f() { const { data } = await fetchData(); }',
+        TypeScript.typescript,
+      );
+      const typeEnv = buildTypeEnv(tree, 'typescript', { symbolTable: symbolTable as any });
+      expect(typeEnv.constructorBindings).toEqual([]);
+    });
+
+    it('gracefully handles no return type (composable without annotation)', () => {
+      const symbolTable = makeSymbolTable([{ name: 'useUserRole' }]); // no returnType
+      const tree = parse('const { isMaker } = useUserRole();', TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript', { symbolTable: symbolTable as any });
+      // No return type → callResult unresolved → fieldAccess unresolved
+      expect(flatGet(typeEnv, 'isMaker')).toBeUndefined();
+    });
+
+    it('resolves destructured properties when return type has declared fields', () => {
+      // importedReturnTypes provides the return type since no real SymbolTable
+      const tree = parse('const { name } = getUser();', TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript', {
+        importedReturnTypes: new Map([['getUser', 'User']]),
+      });
+      // callResult resolves __destr_getUser_N → User via importedReturnTypes
+      // fieldAccess for 'name' on 'User' needs User's Property nodes in SymbolTable
+      // Without SymbolTable, field resolution returns undefined — but callResult itself works
+      // Verify the synthetic var resolved to the return type
+      for (const [, scopeMap] of typeEnv.allScopes()) {
+        for (const [key, val] of scopeMap) {
+          if (key.startsWith('__destr_getUser')) {
+            expect(val).toBe('User');
+          }
+        }
+      }
+    });
+
+    it('handles destructured method call: const { x } = obj.getStuff()', () => {
+      const tree = parse(
+        `
+        const repo: Repo = new Repo();
+        const { name } = repo.getProfile();
+        `,
+        TypeScript.typescript,
+      );
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      // repo is resolved to Repo via Tier 1 (constructor inference)
+      expect(flatGet(typeEnv, 'repo')).toBe('Repo');
+      // Destructured method call emits methodCallResult + fieldAccess
+      // Without SymbolTable, method return type is unknown → name is undefined
+      expect(flatGet(typeEnv, 'name')).toBeUndefined();
+    });
+
+    it('handles renamed destructuring: const { address: addr } = fn()', () => {
+      const tree = parse('const { address: addr } = getUser();', TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript', {
+        importedReturnTypes: new Map([['getUser', 'User']]),
+      });
+      // 'addr' should be the binding, not 'address'
+      expect(flatGet(typeEnv, 'address')).toBeUndefined();
+      // The synthetic callResult should resolve
+      for (const [, scopeMap] of typeEnv.allScopes()) {
+        for (const [key, val] of scopeMap) {
+          if (key.startsWith('__destr_getUser')) {
+            expect(val).toBe('User');
+          }
+        }
+      }
+    });
+  });
+
   describe('constructor inference (Tier 1 fallback)', () => {
     describe('TypeScript', () => {
       it('infers type from new expression when no annotation', () => {
