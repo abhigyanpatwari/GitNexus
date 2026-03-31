@@ -297,7 +297,18 @@ export const loadGraphToLbug = async (
       pairIdx++;
       const [fromLabel, toLabel] = pairKey.split('|');
       const pairCsvPath = path.join(csvDir, `rel_${fromLabel}_${toLabel}.csv`);
-      await fs.writeFile(pairCsvPath, relHeader + '\n' + lines.join('\n'), 'utf-8');
+      // Write in chunks to avoid V8 max string length limit
+      const { createWriteStream } = await import('fs');
+      await new Promise<void>((resolveWrite, rejectWrite) => {
+        const ws = createWriteStream(pairCsvPath, 'utf-8');
+        ws.on('error', rejectWrite);
+        ws.write(relHeader + '\n');
+        const CHUNK = 50000;
+        for (let ci = 0; ci < lines.length; ci += CHUNK) {
+          ws.write(lines.slice(ci, ci + CHUNK).join('\n') + '\n');
+        }
+        ws.end(() => resolveWrite());
+      });
       const normalizedPath = normalizeCopyPath(pairCsvPath);
       const copyQuery = `COPY ${REL_TABLE_NAME} FROM "${normalizedPath}" (from="${fromLabel}", to="${toLabel}", HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=false, auto_detect=false)`;
 
