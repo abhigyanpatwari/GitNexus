@@ -285,6 +285,144 @@ describe('callLLM — Azure content_filter error', () => {
   });
 });
 
+describe('callLLM — max_tokens auto-switch', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('retries with max_completion_tokens when model rejects max_tokens', async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens' instead.",
+            },
+          }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ choices: [{ message: { content: 'ok' } }], usage: {} }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const { callLLM } = await import('../../src/core/wiki/llm-client.js');
+    const result = await callLLM('test', {
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4.1',
+      maxTokens: 1000,
+      temperature: 0,
+    });
+
+    expect(result.content).toBe('ok');
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    // Second request should have max_completion_tokens, not max_tokens
+    const secondBody = JSON.parse(fetchSpy.mock.calls[1][1].body as string);
+    expect(secondBody.max_completion_tokens).toBe(1000);
+    expect(secondBody.max_tokens).toBeUndefined();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('max_completion_tokens'),
+    );
+  });
+
+  it('does not trigger on unrelated 400 errors', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: { message: 'Invalid model: no-such-model' } }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { callLLM } = await import('../../src/core/wiki/llm-client.js');
+    await expect(
+      callLLM('test', {
+        apiKey: 'sk-test',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'no-such-model',
+        maxTokens: 100,
+        temperature: 0,
+      }),
+    ).rejects.toThrow('LLM API error (400)');
+
+    // Should only have been called once — no retry
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not trigger when already using max_completion_tokens (reasoning model)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: { message: "Unsupported parameter: use 'max_completion_tokens'" },
+        }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { callLLM } = await import('../../src/core/wiki/llm-client.js');
+    await expect(
+      callLLM('test', {
+        apiKey: 'sk-test',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'o3-mini',
+        maxTokens: 100,
+        temperature: 0,
+      }),
+    ).rejects.toThrow('LLM API error (400)');
+
+    // Reasoning models already send max_completion_tokens — guard prevents switch
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not consume a retry attempt — full retries remain after switch', async () => {
+    const fetchSpy = vi
+      .fn()
+      // 1st call: 400 triggers auto-switch
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: { message: "Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens' instead." },
+          }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      // 2nd call: succeeds
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ choices: [{ message: { content: 'done' } }], usage: {} }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+    vi.stubGlobal('fetch', fetchSpy);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const { callLLM } = await import('../../src/core/wiki/llm-client.js');
+    const result = await callLLM('test', {
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4.1',
+      maxTokens: 500,
+      temperature: 0,
+    });
+
+    expect(result.content).toBe('done');
+    // Only 2 fetch calls: the rejected one + the successful retry
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('readSSEStream — content_filter handling', () => {
   afterEach(() => vi.unstubAllGlobals());
 

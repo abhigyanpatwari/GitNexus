@@ -169,6 +169,7 @@ export async function callLLM(
 
   const MAX_RETRIES = 3;
   let lastError: Error | null = null;
+  let switchedTokenParam = false;
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
@@ -212,13 +213,18 @@ export async function callLLM(
 
         // Auto-switch max_tokens → max_completion_tokens when the model rejects max_tokens
         if (
+          !switchedTokenParam &&
           response.status === 400 &&
-          errorText.includes('max_completion_tokens') &&
+          (errorText.includes("'max_tokens'") || errorText.includes('"max_tokens"')) &&
           body.max_tokens !== undefined
         ) {
+          console.warn(
+            '[gitnexus] Warning: model rejected max_tokens; retrying with max_completion_tokens.',
+          );
+          switchedTokenParam = true;
           body.max_completion_tokens = body.max_tokens;
           delete body.max_tokens;
-          // Retry immediately with the corrected parameter
+          attempt--;
           continue;
         }
 
