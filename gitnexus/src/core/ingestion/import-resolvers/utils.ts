@@ -11,6 +11,7 @@ export const EXTENSIONS = [
   '.ts',
   '.jsx',
   '.js',
+  '.vue',
   '/index.tsx',
   '/index.ts',
   '/index.jsx',
