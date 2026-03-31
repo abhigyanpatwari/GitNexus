@@ -1,12 +1,12 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
     // Shared settings — inherited by all projects via extends: true
-    globalSetup: ['test/global-setup.ts'],
+    globalSetup: ["test/global-setup.ts"],
     testTimeout: 30000,
     hookTimeout: 120000,
-    pool: 'forks',
+    pool: "forks",
     globals: true,
     teardownTimeout: 3000,
     // N-API destructors can crash worker forks on macOS during process exit.
@@ -18,12 +18,12 @@ export default defineConfig({
 
     // Coverage stays at root (not supported in project configs)
     coverage: {
-      provider: 'v8',
-      include: ['src/**/*.ts'],
+      provider: "v8",
+      include: ["src/**/*.ts"],
       exclude: [
-        'src/cli/index.ts',          // CLI entry point (commander wiring)
-        'src/server/**',              // HTTP server (requires network)
-        'src/core/wiki/**',           // Wiki generation (requires LLM)
+        "src/cli/index.ts", // CLI entry point (commander wiring)
+        "src/server/**", // HTTP server (requires network)
+        "src/core/wiki/**", // Wiki generation (requires LLM)
       ],
       // Auto-ratchet: vitest bumps thresholds when coverage exceeds them.
       // CI will fail if a PR drops below these floors.
@@ -49,18 +49,18 @@ export default defineConfig({
       {
         extends: true,
         test: {
-          name: 'lbug-db',
+          name: "lbug-db",
           include: [
-            'test/integration/lbug-core-adapter.test.ts',
-            'test/integration/lbug-pool.test.ts',
-            'test/integration/lbug-pool-stability.test.ts',
-            'test/integration/local-backend.test.ts',
-            'test/integration/local-backend-calltool.test.ts',
-            'test/integration/search-core.test.ts',
-            'test/integration/search-pool.test.ts',
-            'test/integration/augmentation.test.ts',
-            'test/integration/staleness-and-stability.test.ts',
-            'test/integration/lbug-lock-retry.test.ts',
+            "test/integration/lbug-core-adapter.test.ts",
+            "test/integration/lbug-pool.test.ts",
+            "test/integration/lbug-pool-stability.test.ts",
+            "test/integration/local-backend.test.ts",
+            "test/integration/local-backend-calltool.test.ts",
+            "test/integration/search-core.test.ts",
+            "test/integration/search-pool.test.ts",
+            "test/integration/augmentation.test.ts",
+            "test/integration/staleness-and-stability.test.ts",
+            "test/integration/lbug-lock-retry.test.ts",
           ],
           fileParallelism: false,
           sequence: { groupOrder: 1 },
@@ -69,21 +69,21 @@ export default defineConfig({
       {
         extends: true,
         test: {
-          name: 'default',
+          name: "default",
           sequence: { groupOrder: 2 },
-          include: ['test/**/*.test.ts'],
+          include: ["test/**/*.test.ts"],
           exclude: [
-            'test/integration/lbug-core-adapter.test.ts',
-            'test/integration/lbug-pool.test.ts',
-            'test/integration/lbug-pool-stability.test.ts',
-            'test/integration/local-backend.test.ts',
-            'test/integration/local-backend-calltool.test.ts',
-            'test/integration/search-core.test.ts',
-            'test/integration/search-pool.test.ts',
-            'test/integration/augmentation.test.ts',
-            'test/integration/staleness-and-stability.test.ts',
-            'test/integration/lbug-lock-retry.test.ts',
-            'test/integration/lbug-lock-retry.test.ts',
+            "test/integration/lbug-core-adapter.test.ts",
+            "test/integration/lbug-pool.test.ts",
+            "test/integration/lbug-pool-stability.test.ts",
+            "test/integration/local-backend.test.ts",
+            "test/integration/local-backend-calltool.test.ts",
+            "test/integration/search-core.test.ts",
+            "test/integration/search-pool.test.ts",
+            "test/integration/augmentation.test.ts",
+            "test/integration/staleness-and-stability.test.ts",
+            "test/integration/lbug-lock-retry.test.ts",
+            "test/integration/lbug-lock-retry.test.ts",
           ],
         },
       },

@@ -5,7 +5,7 @@ inputs:
   build:
     description: Whether to run npm run build after install
     required: false
-    default: 'false'
+    default: "false"
 
 runs:
   using: composite

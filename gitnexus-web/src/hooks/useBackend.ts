@@ -1,17 +1,17 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   probeBackend,
   fetchRepos,
   setBackendUrl as setServiceUrl,
   getBackendUrl,
   type BackendRepo,
-} from '../services/backend';
+} from "../services/backend";
 
 // ── localStorage keys ────────────────────────────────────────────────────────
 
-const LS_URL_KEY = 'gitnexus-backend-url';
-const LS_REPO_KEY = 'gitnexus-backend-repo';
-const DEFAULT_URL = 'http://localhost:4747';
+const LS_URL_KEY = "gitnexus-backend-url";
+const LS_REPO_KEY = "gitnexus-backend-repo";
+const DEFAULT_URL = "http://localhost:4747";
 
 // ── Debounce delay ───────────────────────────────────────────────────────────
 

@@ -1,4 +1,4 @@
-import { UserService } from './services/UserService';
+import { UserService } from "./services/UserService";
 
 // Chain base is a class name, not a variable.
 // Requires class-as-receiver fallback on the chain base resolution.

@@ -1,7 +1,7 @@
-import { Worker } from 'node:worker_threads';
-import os from 'node:os';
-import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { Worker } from "node:worker_threads";
+import os from "node:os";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 
 export interface WorkerPool {
   /**
@@ -9,7 +9,10 @@ export interface WorkerPool {
    * each worker processes its chunk via sub-batches to limit peak memory,
    * and results are concatenated back in order.
    */
-  dispatch<TInput, TResult>(items: TInput[], onProgress?: (filesProcessed: number) => void): Promise<TResult[]>;
+  dispatch<TInput, TResult>(
+    items: TInput[],
+    onProgress?: (filesProcessed: number) => void,
+  ): Promise<TResult[]>;
 
   /** Terminate all workers. Must be called when done. */
   terminate(): Promise<void>;
@@ -31,7 +34,10 @@ const SUB_BATCH_TIMEOUT_MS = 30_000;
 /**
  * Create a pool of worker threads.
  */
-export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool => {
+export const createWorkerPool = (
+  workerUrl: URL,
+  poolSize?: number,
+): WorkerPool => {
   // Validate worker script exists before spawning to prevent uncaught
   // MODULE_NOT_FOUND crashes in worker threads (e.g. when running from src/ via vitest)
   const workerPath = fileURLToPath(workerUrl);
@@ -46,7 +52,10 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
     workers.push(new Worker(workerUrl));
   }
 
-  const dispatch = <TInput, TResult>(items: TInput[], onProgress?: (filesProcessed: number) => void): Promise<TResult[]> => {
+  const dispatch = <TInput, TResult>(
+    items: TInput[],
+    onProgress?: (filesProcessed: number) => void,
+  ): Promise<TResult[]> => {
     if (items.length === 0) return Promise.resolve([]);
 
     const chunkSize = Math.ceil(items.length / size);
@@ -65,9 +74,9 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
 
         const cleanup = () => {
           if (subBatchTimer) clearTimeout(subBatchTimer);
-          worker.removeListener('message', handler);
-          worker.removeListener('error', errorHandler);
-          worker.removeListener('exit', exitHandler);
+          worker.removeListener("message", handler);
+          worker.removeListener("error", errorHandler);
+          worker.removeListener("exit", exitHandler);
         };
 
         const resetSubBatchTimer = () => {
@@ -76,7 +85,11 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
             if (!settled) {
               settled = true;
               cleanup();
-              reject(new Error(`Worker ${i} sub-batch timed out after ${SUB_BATCH_TIMEOUT_MS / 1000}s (chunk: ${chunk.length} items).`));
+              reject(
+                new Error(
+                  `Worker ${i} sub-batch timed out after ${SUB_BATCH_TIMEOUT_MS / 1000}s (chunk: ${chunk.length} items).`,
+                ),
+              );
             }
           }, SUB_BATCH_TIMEOUT_MS);
         };
@@ -86,30 +99,30 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
         const sendNextSubBatch = () => {
           const start = subBatchIdx * SUB_BATCH_SIZE;
           if (start >= chunk.length) {
-            worker.postMessage({ type: 'flush' });
+            worker.postMessage({ type: "flush" });
             return;
           }
           const subBatch = chunk.slice(start, start + SUB_BATCH_SIZE);
           subBatchIdx++;
           resetSubBatchTimer();
-          worker.postMessage({ type: 'sub-batch', files: subBatch });
+          worker.postMessage({ type: "sub-batch", files: subBatch });
         };
 
         const handler = (msg: any) => {
           if (settled) return;
-          if (msg && msg.type === 'progress') {
+          if (msg && msg.type === "progress") {
             workerProgress[i] = msg.filesProcessed;
             if (onProgress) {
               const total = workerProgress.reduce((a, b) => a + b, 0);
               onProgress(total);
             }
-          } else if (msg && msg.type === 'sub-batch-done') {
+          } else if (msg && msg.type === "sub-batch-done") {
             sendNextSubBatch();
-          } else if (msg && msg.type === 'error') {
+          } else if (msg && msg.type === "error") {
             settled = true;
             cleanup();
             reject(new Error(`Worker ${i} error: ${msg.error}`));
-          } else if (msg && msg.type === 'result') {
+          } else if (msg && msg.type === "result") {
             settled = true;
             cleanup();
             resolve(msg.data);
@@ -121,20 +134,28 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
         };
 
         const errorHandler = (err: any) => {
-          if (!settled) { settled = true; cleanup(); reject(err); }
+          if (!settled) {
+            settled = true;
+            cleanup();
+            reject(err);
+          }
         };
 
         const exitHandler = (code: number) => {
           if (!settled) {
             settled = true;
             cleanup();
-            reject(new Error(`Worker ${i} exited with code ${code}. Likely OOM or native addon failure.`));
+            reject(
+              new Error(
+                `Worker ${i} exited with code ${code}. Likely OOM or native addon failure.`,
+              ),
+            );
           }
         };
 
-        worker.on('message', handler);
-        worker.once('error', errorHandler);
-        worker.once('exit', exitHandler);
+        worker.on("message", handler);
+        worker.once("error", errorHandler);
+        worker.once("exit", exitHandler);
         sendNextSubBatch();
       });
     });
@@ -143,7 +164,7 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
   };
 
   const terminate = async (): Promise<void> => {
-    await Promise.all(workers.map(w => w.terminate()));
+    await Promise.all(workers.map((w) => w.terminate()));
     workers.length = 0;
   };
 

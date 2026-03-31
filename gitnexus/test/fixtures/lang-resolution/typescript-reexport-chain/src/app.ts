@@ -1,4 +1,4 @@
-import { User, Repo } from './models';
+import { User, Repo } from "./models";
 
 function main(): void {
   const user = new User();

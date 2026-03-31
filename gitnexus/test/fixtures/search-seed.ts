@@ -1,4 +1,4 @@
-import type { FTSIndexDef } from '../helpers/test-indexed-db.js';
+import type { FTSIndexDef } from "../helpers/test-indexed-db.js";
 
 export const SEARCH_SEED_DATA = [
   // File nodes — content is the searchable field
@@ -23,9 +23,25 @@ export const SEARCH_SEED_DATA = [
 ];
 
 export const SEARCH_FTS_INDEXES: FTSIndexDef[] = [
-  { table: 'File', indexName: 'file_fts', columns: ['name', 'content'] },
-  { table: 'Function', indexName: 'function_fts', columns: ['name', 'content', 'description'] },
-  { table: 'Class', indexName: 'class_fts', columns: ['name', 'content', 'description'] },
-  { table: 'Method', indexName: 'method_fts', columns: ['name', 'content', 'description'] },
-  { table: 'Interface', indexName: 'interface_fts', columns: ['name', 'content', 'description'] },
+  { table: "File", indexName: "file_fts", columns: ["name", "content"] },
+  {
+    table: "Function",
+    indexName: "function_fts",
+    columns: ["name", "content", "description"],
+  },
+  {
+    table: "Class",
+    indexName: "class_fts",
+    columns: ["name", "content", "description"],
+  },
+  {
+    table: "Method",
+    indexName: "method_fts",
+    columns: ["name", "content", "description"],
+  },
+  {
+    table: "Interface",
+    indexName: "interface_fts",
+    columns: ["name", "content", "description"],
+  },
 ];

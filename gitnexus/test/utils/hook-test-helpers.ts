@@ -1,7 +1,7 @@
 /**
  * Shared helpers for hook test files (unit + integration).
  */
-import { spawnSync } from 'child_process';
+import { spawnSync } from "child_process";
 
 export function runHook(
   hookPath: string,
@@ -10,14 +10,14 @@ export function runHook(
 ): { stdout: string; stderr: string; status: number | null } {
   const result = spawnSync(process.execPath, [hookPath], {
     input: JSON.stringify(input),
-    encoding: 'utf-8',
+    encoding: "utf-8",
     timeout: 10000,
     cwd,
-    stdio: ['pipe', 'pipe', 'pipe'],
+    stdio: ["pipe", "pipe", "pipe"],
   });
   return {
-    stdout: result.stdout || '',
-    stderr: result.stderr || '',
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
     status: result.status,
   };
 }

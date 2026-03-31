@@ -1,6 +1,6 @@
 ---
 name: gitnexus-pr-review
-description: "Use when the user wants to review a pull request, understand what a PR changes, assess risk of merging, or check for missing test coverage. Examples: \"Review this PR\", \"What does PR #42 change?\", \"Is this PR safe to merge?\""
+description: 'Use when the user wants to review a pull request, understand what a PR changes, assess risk of merging, or check for missing test coverage. Examples: "Review this PR", "What does PR #42 change?", "Is this PR safe to merge?"'
 ---
 
 # PR Review with GitNexus
@@ -43,23 +43,23 @@ description: "Use when the user wants to review a pull request, understand what 
 
 ## Review Dimensions
 
-| Dimension | How GitNexus Helps |
-| --- | --- |
-| **Correctness** | `context` shows callers — are they all compatible with the change? |
-| **Blast radius** | `impact` shows d=1/d=2/d=3 dependents — anything missed? |
-| **Completeness** | `detect_changes` shows all affected flows — are they all handled? |
-| **Test coverage** | `impact({includeTests: true})` shows which tests touch changed code |
+| Dimension            | How GitNexus Helps                                                    |
+| -------------------- | --------------------------------------------------------------------- |
+| **Correctness**      | `context` shows callers — are they all compatible with the change?    |
+| **Blast radius**     | `impact` shows d=1/d=2/d=3 dependents — anything missed?              |
+| **Completeness**     | `detect_changes` shows all affected flows — are they all handled?     |
+| **Test coverage**    | `impact({includeTests: true})` shows which tests touch changed code   |
 | **Breaking changes** | d=1 upstream items that aren't updated in the PR = potential breakage |
 
 ## Risk Assessment
 
-| Signal | Risk |
-| --- | --- |
-| Changes touch <3 symbols, 0-1 processes | LOW |
-| Changes touch 3-10 symbols, 2-5 processes | MEDIUM |
-| Changes touch >10 symbols or many processes | HIGH |
-| Changes touch auth, payments, or data integrity code | CRITICAL |
-| d=1 callers exist outside the PR diff | Potential breakage — flag it |
+| Signal                                               | Risk                         |
+| ---------------------------------------------------- | ---------------------------- |
+| Changes touch <3 symbols, 0-1 processes              | LOW                          |
+| Changes touch 3-10 symbols, 2-5 processes            | MEDIUM                       |
+| Changes touch >10 symbols or many processes          | HIGH                         |
+| Changes touch auth, payments, or data integrity code | CRITICAL                     |
+| d=1 callers exist outside the PR diff                | Potential breakage — flag it |
 
 ## Tools
 
@@ -146,18 +146,22 @@ Structure your review as:
 **Risk: LOW / MEDIUM / HIGH / CRITICAL**
 
 ### Changes Summary
+
 - <N> symbols changed across <M> files
 - <P> execution flows affected
 
 ### Findings
+
 1. **[severity]** Description of finding
    - Evidence from GitNexus tools
    - Affected callers/flows
 
 ### Missing Coverage
+
 - Callers not updated in PR: ...
 - Untested flows: ...
 
 ### Recommendation
+
 APPROVE / REQUEST CHANGES / NEEDS DISCUSSION
 ```

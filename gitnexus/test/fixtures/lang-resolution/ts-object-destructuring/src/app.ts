@@ -1,4 +1,4 @@
-import { getUser } from './service';
+import { getUser } from "./service";
 
 function processDestructured() {
   const user = getUser();

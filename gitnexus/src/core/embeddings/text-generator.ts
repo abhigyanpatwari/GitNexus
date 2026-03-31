@@ -1,18 +1,18 @@
 /**
  * Text Generator Module
- * 
+ *
  * Pure functions to generate embedding text from code nodes.
  * Combines node metadata with code snippets for semantic matching.
  */
 
-import type { EmbeddableNode, EmbeddingConfig } from './types.js';
-import { DEFAULT_EMBEDDING_CONFIG } from './types.js';
+import type { EmbeddableNode, EmbeddingConfig } from "./types.js";
+import { DEFAULT_EMBEDDING_CONFIG } from "./types.js";
 
 /**
  * Extract the filename from a file path
  */
 const getFileName = (filePath: string): string => {
-  const parts = filePath.split('/');
+  const parts = filePath.split("/");
   return parts[parts.length - 1] || filePath;
 };
 
@@ -20,9 +20,9 @@ const getFileName = (filePath: string): string => {
  * Extract the directory path from a file path
  */
 const getDirectory = (filePath: string): string => {
-  const parts = filePath.split('/');
+  const parts = filePath.split("/");
   parts.pop();
-  return parts.join('/') || '';
+  return parts.join("/") || "";
 };
 
 /**
@@ -32,16 +32,16 @@ const truncateContent = (content: string, maxLength: number): string => {
   if (content.length <= maxLength) {
     return content;
   }
-  
+
   // Find last space before maxLength to avoid cutting words
   const truncated = content.slice(0, maxLength);
-  const lastSpace = truncated.lastIndexOf(' ');
-  
+  const lastSpace = truncated.lastIndexOf(" ");
+
   if (lastSpace > maxLength * 0.8) {
-    return truncated.slice(0, lastSpace) + '...';
+    return truncated.slice(0, lastSpace) + "...";
   }
-  
-  return truncated + '...';
+
+  return truncated + "...";
 };
 
 /**
@@ -49,16 +49,18 @@ const truncateContent = (content: string, maxLength: number): string => {
  * Removes excessive whitespace while preserving structure
  */
 const cleanContent = (content: string): string => {
-  return content
-    // Normalize line endings
-    .replace(/\r\n/g, '\n')
-    // Remove excessive blank lines (more than 2)
-    .replace(/\n{3,}/g, '\n\n')
-    // Trim each line
-    .split('\n')
-    .map(line => line.trimEnd())
-    .join('\n')
-    .trim();
+  return (
+    content
+      // Normalize line endings
+      .replace(/\r\n/g, "\n")
+      // Remove excessive blank lines (more than 2)
+      .replace(/\n{3,}/g, "\n\n")
+      // Trim each line
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .join("\n")
+      .trim()
+  );
 };
 
 /**
@@ -66,7 +68,7 @@ const cleanContent = (content: string): string => {
  */
 const generateFunctionText = (
   node: EmbeddableNode,
-  maxSnippetLength: number
+  maxSnippetLength: number,
 ): string => {
   const parts: string[] = [
     `Function: ${node.name}`,
@@ -81,10 +83,10 @@ const generateFunctionText = (
   if (node.content) {
     const cleanedContent = cleanContent(node.content);
     const snippet = truncateContent(cleanedContent, maxSnippetLength);
-    parts.push('', snippet);
+    parts.push("", snippet);
   }
 
-  return parts.join('\n');
+  return parts.join("\n");
 };
 
 /**
@@ -92,7 +94,7 @@ const generateFunctionText = (
  */
 const generateClassText = (
   node: EmbeddableNode,
-  maxSnippetLength: number
+  maxSnippetLength: number,
 ): string => {
   const parts: string[] = [
     `Class: ${node.name}`,
@@ -107,10 +109,10 @@ const generateClassText = (
   if (node.content) {
     const cleanedContent = cleanContent(node.content);
     const snippet = truncateContent(cleanedContent, maxSnippetLength);
-    parts.push('', snippet);
+    parts.push("", snippet);
   }
 
-  return parts.join('\n');
+  return parts.join("\n");
 };
 
 /**
@@ -118,7 +120,7 @@ const generateClassText = (
  */
 const generateMethodText = (
   node: EmbeddableNode,
-  maxSnippetLength: number
+  maxSnippetLength: number,
 ): string => {
   const parts: string[] = [
     `Method: ${node.name}`,
@@ -133,10 +135,10 @@ const generateMethodText = (
   if (node.content) {
     const cleanedContent = cleanContent(node.content);
     const snippet = truncateContent(cleanedContent, maxSnippetLength);
-    parts.push('', snippet);
+    parts.push("", snippet);
   }
 
-  return parts.join('\n');
+  return parts.join("\n");
 };
 
 /**
@@ -144,7 +146,7 @@ const generateMethodText = (
  */
 const generateInterfaceText = (
   node: EmbeddableNode,
-  maxSnippetLength: number
+  maxSnippetLength: number,
 ): string => {
   const parts: string[] = [
     `Interface: ${node.name}`,
@@ -159,10 +161,10 @@ const generateInterfaceText = (
   if (node.content) {
     const cleanedContent = cleanContent(node.content);
     const snippet = truncateContent(cleanedContent, maxSnippetLength);
-    parts.push('', snippet);
+    parts.push("", snippet);
   }
 
-  return parts.join('\n');
+  return parts.join("\n");
 };
 
 /**
@@ -171,47 +173,48 @@ const generateInterfaceText = (
  */
 const generateFileText = (
   node: EmbeddableNode,
-  maxSnippetLength: number
+  maxSnippetLength: number,
 ): string => {
-  const parts: string[] = [
-    `File: ${node.name}`,
-    `Path: ${node.filePath}`,
-  ];
+  const parts: string[] = [`File: ${node.name}`, `Path: ${node.filePath}`];
 
   if (node.content) {
     const cleanedContent = cleanContent(node.content);
     // For files, use a shorter snippet since they can be very long
-    const snippet = truncateContent(cleanedContent, Math.min(maxSnippetLength, 300));
-    parts.push('', snippet);
+    const snippet = truncateContent(
+      cleanedContent,
+      Math.min(maxSnippetLength, 300),
+    );
+    parts.push("", snippet);
   }
 
-  return parts.join('\n');
+  return parts.join("\n");
 };
 
 /**
  * Generate embedding text for any embeddable node
  * Dispatches to the appropriate generator based on node label
- * 
+ *
  * @param node - The node to generate text for
  * @param config - Optional configuration for max snippet length
  * @returns Text suitable for embedding
  */
 export const generateEmbeddingText = (
   node: EmbeddableNode,
-  config: Partial<EmbeddingConfig> = {}
+  config: Partial<EmbeddingConfig> = {},
 ): string => {
-  const maxSnippetLength = config.maxSnippetLength ?? DEFAULT_EMBEDDING_CONFIG.maxSnippetLength;
+  const maxSnippetLength =
+    config.maxSnippetLength ?? DEFAULT_EMBEDDING_CONFIG.maxSnippetLength;
 
   switch (node.label) {
-    case 'Function':
+    case "Function":
       return generateFunctionText(node, maxSnippetLength);
-    case 'Class':
+    case "Class":
       return generateClassText(node, maxSnippetLength);
-    case 'Method':
+    case "Method":
       return generateMethodText(node, maxSnippetLength);
-    case 'Interface':
+    case "Interface":
       return generateInterfaceText(node, maxSnippetLength);
-    case 'File':
+    case "File":
       return generateFileText(node, maxSnippetLength);
     default:
       // Fallback for any other embeddable type
@@ -221,15 +224,14 @@ export const generateEmbeddingText = (
 
 /**
  * Generate embedding texts for a batch of nodes
- * 
+ *
  * @param nodes - Array of nodes to generate text for
  * @param config - Optional configuration
  * @returns Array of texts in the same order as input nodes
  */
 export const generateBatchEmbeddingTexts = (
   nodes: EmbeddableNode[],
-  config: Partial<EmbeddingConfig> = {}
+  config: Partial<EmbeddingConfig> = {},
 ): string[] => {
-  return nodes.map(node => generateEmbeddingText(node, config));
+  return nodes.map((node) => generateEmbeddingText(node, config));
 };
-

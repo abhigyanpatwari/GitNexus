@@ -1,5 +1,5 @@
-const { User } = require('./user');
-const { Repo } = require('./repo');
+const { User } = require("./user");
+const { Repo } = require("./repo");
 
 /**
  * @returns {User}
@@ -16,12 +16,12 @@ function getRepo(path) {
 }
 
 function processUser() {
-  const user = getUser('alice');
+  const user = getUser("alice");
   user.save();
 }
 
 function processRepo() {
-  const repo = getRepo('/data');
+  const repo = getRepo("/data");
   repo.save();
 }
 

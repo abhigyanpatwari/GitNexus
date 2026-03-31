@@ -1,6 +1,8 @@
 export class User {
   save() {}
-  getName() { return ''; }
+  getName() {
+    return "";
+  }
 }
 
 export function getUser() {

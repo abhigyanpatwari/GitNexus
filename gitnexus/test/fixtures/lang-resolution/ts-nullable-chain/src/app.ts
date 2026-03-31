@@ -1,8 +1,12 @@
-import { User } from './user';
-import { Repo } from './repo';
+import { User } from "./user";
+import { Repo } from "./repo";
 
-function findUser(): User | null { return new User(); }
-function findRepo(): Repo | undefined { return new Repo(); }
+function findUser(): User | null {
+  return new User();
+}
+function findRepo(): Repo | undefined {
+  return new Repo();
+}
 
 // Nullable type + assignment chain: the nullable union must be stripped
 // before the alias can resolve to User.

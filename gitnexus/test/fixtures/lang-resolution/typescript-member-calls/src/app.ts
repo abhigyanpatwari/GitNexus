@@ -1,4 +1,4 @@
-import { User } from './user';
+import { User } from "./user";
 
 export function processUser(): boolean {
   const user = new User();

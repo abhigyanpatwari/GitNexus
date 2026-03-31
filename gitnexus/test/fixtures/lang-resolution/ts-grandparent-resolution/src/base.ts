@@ -1,5 +1,7 @@
-import { Greeting } from './greeting';
+import { Greeting } from "./greeting";
 
 export class A {
-  greet(): Greeting { return new Greeting(); }
+  greet(): Greeting {
+    return new Greeting();
+  }
 }

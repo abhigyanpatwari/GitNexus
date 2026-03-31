@@ -1,4 +1,4 @@
-const { getUsers } = require('./models');
+const { getUsers } = require("./models");
 
 function process() {
   const users = getUsers();

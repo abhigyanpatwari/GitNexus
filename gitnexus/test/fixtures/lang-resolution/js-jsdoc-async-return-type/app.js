@@ -1,5 +1,5 @@
-const { User } = require('./user');
-const { Repo } = require('./repo');
+const { User } = require("./user");
+const { Repo } = require("./repo");
 
 /**
  * @returns {Promise<User>}
@@ -16,11 +16,11 @@ async function fetchRepo(path) {
 }
 
 async function processUser() {
-  const user = await fetchUser('alice');
+  const user = await fetchUser("alice");
   user.save();
 }
 
 async function processRepo() {
-  const repo = await fetchRepo('/data');
+  const repo = await fetchRepo("/data");
   repo.save();
 }

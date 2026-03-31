@@ -6,8 +6,8 @@
  *   - Non-matching pattern returns empty string
  *   - Pattern shorter than 3 chars returns empty string
  */
-import { describe, it, expect, vi } from 'vitest';
-import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+import { describe, it, expect, vi } from "vitest";
+import { withTestLbugDB } from "../helpers/test-indexed-db.js";
 
 // ─── Seed data & FTS indexes for augmentation ────────
 
@@ -44,86 +44,107 @@ const AUGMENT_SEED_DATA = [
 ];
 
 const AUGMENT_FTS_INDEXES = [
-  { table: 'File', indexName: 'file_fts', columns: ['name', 'content'] },
-  { table: 'Function', indexName: 'function_fts', columns: ['name', 'content', 'description'] },
-  { table: 'Class', indexName: 'class_fts', columns: ['name', 'content', 'description'] },
-  { table: 'Method', indexName: 'method_fts', columns: ['name', 'content', 'description'] },
-  { table: 'Interface', indexName: 'interface_fts', columns: ['name', 'content', 'description'] },
+  { table: "File", indexName: "file_fts", columns: ["name", "content"] },
+  {
+    table: "Function",
+    indexName: "function_fts",
+    columns: ["name", "content", "description"],
+  },
+  {
+    table: "Class",
+    indexName: "class_fts",
+    columns: ["name", "content", "description"],
+  },
+  {
+    table: "Method",
+    indexName: "method_fts",
+    columns: ["name", "content", "description"],
+  },
+  {
+    table: "Interface",
+    indexName: "interface_fts",
+    columns: ["name", "content", "description"],
+  },
 ];
 
 // Mock repo-manager so augment() finds our test DB
-vi.mock('../../src/storage/repo-manager.js', () => ({
+vi.mock("../../src/storage/repo-manager.js", () => ({
   listRegisteredRepos: vi.fn(),
 }));
 
 let augment: (pattern: string, cwd?: string) => Promise<string>;
 
-withTestLbugDB('augment', (handle) => {
-  describe('augment()', () => {
-    it('returns non-empty string with relationship info for a matching pattern', async () => {
-      const result = await augment('login', handle.dbPath);
+withTestLbugDB(
+  "augment",
+  (handle) => {
+    describe("augment()", () => {
+      it("returns non-empty string with relationship info for a matching pattern", async () => {
+        const result = await augment("login", handle.dbPath);
 
-      expect(result.length).toBeGreaterThan(0);
-      expect(result).toContain('[GitNexus]');
-      expect(result).toContain('login');
+        expect(result.length).toBeGreaterThan(0);
+        expect(result).toContain("[GitNexus]");
+        expect(result).toContain("login");
+      });
+
+      it("returns empty string for a non-matching pattern", async () => {
+        const result = await augment("nonexistent_xyz", handle.dbPath);
+        expect(result).toBe("");
+      });
+
+      it("returns empty string for patterns shorter than 3 characters", async () => {
+        const result = await augment("ab", handle.dbPath);
+        expect(result).toBe("");
+      });
+
+      it("returns empty string for empty pattern", async () => {
+        const result = await augment("", handle.dbPath);
+        expect(result).toBe("");
+      });
+
+      // ─── Unhappy paths ────────────────────────────────────────────────
+
+      it("returns empty string for whitespace-only pattern", async () => {
+        const result = await augment("   ", handle.dbPath);
+        expect(result).toBe("");
+      });
+
+      it("handles special regex characters in pattern without throwing", async () => {
+        const result = await augment("func()", handle.dbPath);
+        expect(typeof result).toBe("string");
+      });
+
+      it("handles very long pattern without throwing", async () => {
+        const result = await augment("a".repeat(500), handle.dbPath);
+        expect(typeof result).toBe("string");
+      });
+
+      it("handles unicode pattern without throwing", async () => {
+        const result = await augment("日本語テスト", handle.dbPath);
+        expect(typeof result).toBe("string");
+      });
     });
-
-    it('returns empty string for a non-matching pattern', async () => {
-      const result = await augment('nonexistent_xyz', handle.dbPath);
-      expect(result).toBe('');
-    });
-
-    it('returns empty string for patterns shorter than 3 characters', async () => {
-      const result = await augment('ab', handle.dbPath);
-      expect(result).toBe('');
-    });
-
-    it('returns empty string for empty pattern', async () => {
-      const result = await augment('', handle.dbPath);
-      expect(result).toBe('');
-    });
-
-    // ─── Unhappy paths ────────────────────────────────────────────────
-
-    it('returns empty string for whitespace-only pattern', async () => {
-      const result = await augment('   ', handle.dbPath);
-      expect(result).toBe('');
-    });
-
-    it('handles special regex characters in pattern without throwing', async () => {
-      const result = await augment('func()', handle.dbPath);
-      expect(typeof result).toBe('string');
-    });
-
-    it('handles very long pattern without throwing', async () => {
-      const result = await augment('a'.repeat(500), handle.dbPath);
-      expect(typeof result).toBe('string');
-    });
-
-    it('handles unicode pattern without throwing', async () => {
-      const result = await augment('日本語テスト', handle.dbPath);
-      expect(typeof result).toBe('string');
-    });
-  });
-}, {
-  seed: AUGMENT_SEED_DATA,
-  ftsIndexes: AUGMENT_FTS_INDEXES,
-  poolAdapter: true,
-  afterSetup: async (handle) => {
-    // Configure mock to return our test DB so augment() can find it
-    const { listRegisteredRepos } = await import('../../src/storage/repo-manager.js');
-    (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
-      {
-        name: handle.repoId,
-        path: handle.dbPath,
-        storagePath: handle.tmpHandle.dbPath,
-        indexedAt: new Date().toISOString(),
-        lastCommit: 'abc123',
-      },
-    ]);
-
-    // Dynamically import augment after mocks are in place
-    const engine = await import('../../src/core/augmentation/engine.js');
-    augment = engine.augment;
   },
-});
+  {
+    seed: AUGMENT_SEED_DATA,
+    ftsIndexes: AUGMENT_FTS_INDEXES,
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      // Configure mock to return our test DB so augment() can find it
+      const { listRegisteredRepos } =
+        await import("../../src/storage/repo-manager.js");
+      (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
+        {
+          name: handle.repoId,
+          path: handle.dbPath,
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: "abc123",
+        },
+      ]);
+
+      // Dynamically import augment after mocks are in place
+      const engine = await import("../../src/core/augmentation/engine.js");
+      augment = engine.augment;
+    },
+  },
+);

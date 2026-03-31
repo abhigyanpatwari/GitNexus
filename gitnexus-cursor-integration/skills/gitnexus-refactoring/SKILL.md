@@ -6,6 +6,7 @@ description: Plan safe refactors using blast radius and dependency mapping
 # Refactoring with GitNexus
 
 ## When to Use
+
 - "Rename this function safely"
 - "Extract this into a module"
 - "Split this service"
@@ -26,6 +27,7 @@ description: Plan safe refactors using blast radius and dependency mapping
 ## Checklists
 
 ### Rename Symbol
+
 ```
 - [ ] gitnexus_rename({symbol_name: "oldName", new_name: "newName", dry_run: true}) — preview all edits
 - [ ] Review graph edits (high confidence) and ast_search edits (review carefully)
@@ -35,6 +37,7 @@ description: Plan safe refactors using blast radius and dependency mapping
 ```
 
 ### Extract Module
+
 ```
 - [ ] gitnexus_context({name: target}) — see all incoming/outgoing refs
 - [ ] gitnexus_impact({target, direction: "upstream"}) — find all external callers
@@ -45,6 +48,7 @@ description: Plan safe refactors using blast radius and dependency mapping
 ```
 
 ### Split Function/Service
+
 ```
 - [ ] gitnexus_context({name: target}) — understand all callees
 - [ ] Group callees by responsibility
@@ -58,6 +62,7 @@ description: Plan safe refactors using blast radius and dependency mapping
 ## Tools
 
 **gitnexus_rename** — automated multi-file rename:
+
 ```
 gitnexus_rename({symbol_name: "validateUser", new_name: "authenticateUser", dry_run: true})
 → 12 edits across 8 files
@@ -66,6 +71,7 @@ gitnexus_rename({symbol_name: "validateUser", new_name: "authenticateUser", dry_
 ```
 
 **gitnexus_impact** — map all dependents first:
+
 ```
 gitnexus_impact({target: "validateUser", direction: "upstream"})
 → d=1: loginHandler, apiMiddleware, testUtils
@@ -73,6 +79,7 @@ gitnexus_impact({target: "validateUser", direction: "upstream"})
 ```
 
 **gitnexus_detect_changes** — verify your changes after refactoring:
+
 ```
 gitnexus_detect_changes({scope: "all"})
 → Changed: 8 files, 12 symbols
@@ -81,6 +88,7 @@ gitnexus_detect_changes({scope: "all"})
 ```
 
 **gitnexus_cypher** — custom reference queries:
+
 ```cypher
 MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(f:Function {name: "validateUser"})
 RETURN caller.name, caller.filePath ORDER BY caller.filePath
@@ -88,12 +96,12 @@ RETURN caller.name, caller.filePath ORDER BY caller.filePath
 
 ## Risk Rules
 
-| Risk Factor | Mitigation |
-|-------------|------------|
-| Many callers (>5) | Use gitnexus_rename for automated updates |
-| Cross-area refs | Use detect_changes after to verify scope |
-| String/dynamic refs | gitnexus_query to find them |
-| External/public API | Version and deprecate properly |
+| Risk Factor         | Mitigation                                |
+| ------------------- | ----------------------------------------- |
+| Many callers (>5)   | Use gitnexus_rename for automated updates |
+| Cross-area refs     | Use detect_changes after to verify scope  |
+| String/dynamic refs | gitnexus_query to find them               |
+| External/public API | Version and deprecate properly            |
 
 ## Example: Rename `validateUser` to `authenticateUser`
 

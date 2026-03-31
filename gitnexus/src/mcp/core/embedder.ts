@@ -1,14 +1,18 @@
 /**
  * Embedder Module (Read-Only)
- * 
+ *
  * Singleton factory for transformers.js embedding pipeline.
  * For MCP, we only need to compute query embeddings, not batch embed.
  */
 
-import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import {
+  pipeline,
+  env,
+  type FeatureExtractionPipeline,
+} from "@huggingface/transformers";
 
 // Model config
-const MODEL_ID = 'Snowflake/snowflake-arctic-embed-xs';
+const MODEL_ID = "Snowflake/snowflake-arctic-embed-xs";
 const EMBEDDING_DIMS = 384;
 
 // Module-level state for singleton pattern
@@ -33,14 +37,16 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
   initPromise = (async () => {
     try {
       env.allowLocalModels = false;
-      
-      console.error('GitNexus: Loading embedding model (first search may take a moment)...');
+
+      console.error(
+        "GitNexus: Loading embedding model (first search may take a moment)...",
+      );
 
       // Try GPU first (DirectML on Windows, CUDA on Linux), fall back to CPU
-      const isWindows = process.platform === 'win32';
-      const gpuDevice = isWindows ? 'dml' : 'cuda';
-      const devicesToTry: Array<'dml' | 'cuda' | 'cpu'> = [gpuDevice, 'cpu'];
-      
+      const isWindows = process.platform === "win32";
+      const gpuDevice = isWindows ? "dml" : "cuda";
+      const devicesToTry: Array<"dml" | "cuda" | "cpu"> = [gpuDevice, "cpu"];
+
       for (const device of devicesToTry) {
         try {
           // Silence stdout and stderr during model load — ONNX Runtime and transformers.js
@@ -52,12 +58,12 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
           process.stderr.write = (() => true) as any;
           try {
             embedderInstance = await (pipeline as any)(
-              'feature-extraction',
+              "feature-extraction",
               MODEL_ID,
               {
                 device: device,
-                dtype: 'fp32',
-              }
+                dtype: "fp32",
+              },
             );
           } finally {
             process.stdout.write = origStdout;
@@ -66,11 +72,12 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
           console.error(`GitNexus: Embedding model loaded (${device})`);
           return embedderInstance!;
         } catch {
-          if (device === 'cpu') throw new Error('Failed to load embedding model');
+          if (device === "cpu")
+            throw new Error("Failed to load embedding model");
         }
       }
 
-      throw new Error('No suitable device found');
+      throw new Error("No suitable device found");
     } catch (error) {
       isInitializing = false;
       initPromise = null;
@@ -94,12 +101,12 @@ export const isEmbedderReady = (): boolean => embedderInstance !== null;
  */
 export const embedQuery = async (query: string): Promise<number[]> => {
   const embedder = await initEmbedder();
-  
+
   const result = await embedder(query, {
-    pooling: 'mean',
+    pooling: "mean",
     normalize: true,
   });
-  
+
   return Array.from(result.data as ArrayLike<number>);
 };
 
@@ -114,7 +121,10 @@ export const getEmbeddingDims = (): number => EMBEDDING_DIMS;
 export const disposeEmbedder = async (): Promise<void> => {
   if (embedderInstance) {
     try {
-      if ('dispose' in embedderInstance && typeof embedderInstance.dispose === 'function') {
+      if (
+        "dispose" in embedderInstance &&
+        typeof embedderInstance.dispose === "function"
+      ) {
         await embedderInstance.dispose();
       }
     } catch {}

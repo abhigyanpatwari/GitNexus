@@ -1,6 +1,6 @@
-import 'vitest';
+import "vitest";
 
-declare module 'vitest' {
+declare module "vitest" {
   export interface ProvidedContext {
     lbugDbPath: string;
   }

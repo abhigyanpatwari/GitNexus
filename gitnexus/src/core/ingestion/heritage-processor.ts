@@ -14,18 +14,26 @@
  *   - All other languages: default to EXTENDS
  */
 
-import { KnowledgeGraph } from '../graph/types.js';
-import { ASTCache } from './ast-cache.js';
-import Parser from 'tree-sitter';
-import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
-import { LANGUAGE_QUERIES } from './tree-sitter-queries.js';
-import { generateId } from '../../lib/utils.js';
-import { getLanguageFromFilename, isVerboseIngestionEnabled, yieldToEventLoop } from './utils.js';
-import { SupportedLanguages } from '../../config/supported-languages.js';
-import { getTreeSitterBufferSize } from './constants.js';
-import type { ExtractedHeritage } from './workers/parse-worker.js';
-import type { ResolutionContext } from './resolution-context.js';
-import { TIER_CONFIDENCE } from './resolution-context.js';
+import { KnowledgeGraph } from "../graph/types.js";
+import { ASTCache } from "./ast-cache.js";
+import Parser from "tree-sitter";
+import {
+  isLanguageAvailable,
+  loadParser,
+  loadLanguage,
+} from "../tree-sitter/parser-loader.js";
+import { LANGUAGE_QUERIES } from "./tree-sitter-queries.js";
+import { generateId } from "../../lib/utils.js";
+import {
+  getLanguageFromFilename,
+  isVerboseIngestionEnabled,
+  yieldToEventLoop,
+} from "./utils.js";
+import { SupportedLanguages } from "../../config/supported-languages.js";
+import { getTreeSitterBufferSize } from "./constants.js";
+import type { ExtractedHeritage } from "./workers/parse-worker.js";
+import type { ResolutionContext } from "./resolution-context.js";
+import { TIER_CONFIDENCE } from "./resolution-context.js";
 
 /** C#/Java convention: interfaces start with I followed by an uppercase letter */
 const INTERFACE_NAME_RE = /^I[A-Z]/;
@@ -43,24 +51,27 @@ const resolveExtendsType = (
   currentFilePath: string,
   ctx: ResolutionContext,
   language: SupportedLanguages,
-): { type: 'EXTENDS' | 'IMPLEMENTS'; idPrefix: string } => {
+): { type: "EXTENDS" | "IMPLEMENTS"; idPrefix: string } => {
   const resolved = ctx.resolve(parentName, currentFilePath);
   if (resolved && resolved.candidates.length > 0) {
-    const isInterface = resolved.candidates[0].type === 'Interface';
+    const isInterface = resolved.candidates[0].type === "Interface";
     return isInterface
-      ? { type: 'IMPLEMENTS', idPrefix: 'Interface' }
-      : { type: 'EXTENDS', idPrefix: 'Class' };
+      ? { type: "IMPLEMENTS", idPrefix: "Interface" }
+      : { type: "EXTENDS", idPrefix: "Class" };
   }
   // Unresolved symbol — fall back to language-specific heuristic
-  if (language === SupportedLanguages.CSharp || language === SupportedLanguages.Java) {
+  if (
+    language === SupportedLanguages.CSharp ||
+    language === SupportedLanguages.Java
+  ) {
     if (INTERFACE_NAME_RE.test(parentName)) {
-      return { type: 'IMPLEMENTS', idPrefix: 'Interface' };
+      return { type: "IMPLEMENTS", idPrefix: "Interface" };
     }
   } else if (language === SupportedLanguages.Swift) {
     // Protocol conformance is far more common than class inheritance in Swift
-    return { type: 'IMPLEMENTS', idPrefix: 'Interface' };
+    return { type: "IMPLEMENTS", idPrefix: "Interface" };
   }
-  return { type: 'EXTENDS', idPrefix: 'Class' };
+  return { type: "EXTENDS", idPrefix: "Class" };
 };
 
 /**
@@ -82,13 +93,22 @@ const resolveHeritageId = (
   const resolved = ctx.resolve(name, filePath);
   if (resolved && resolved.candidates.length > 0) {
     // For global with multiple candidates, refuse (a wrong edge is worse than no edge)
-    if (resolved.tier === 'global' && resolved.candidates.length > 1) {
-      return { id: generateId(fallbackLabel, fallbackKey ?? name), confidence: TIER_CONFIDENCE['global'] };
+    if (resolved.tier === "global" && resolved.candidates.length > 1) {
+      return {
+        id: generateId(fallbackLabel, fallbackKey ?? name),
+        confidence: TIER_CONFIDENCE["global"],
+      };
     }
-    return { id: resolved.candidates[0].nodeId, confidence: TIER_CONFIDENCE[resolved.tier] };
+    return {
+      id: resolved.candidates[0].nodeId,
+      confidence: TIER_CONFIDENCE[resolved.tier],
+    };
   }
   // Unresolved: use global-tier confidence as fallback
-  return { id: generateId(fallbackLabel, fallbackKey ?? name), confidence: TIER_CONFIDENCE['global'] };
+  return {
+    id: generateId(fallbackLabel, fallbackKey ?? name),
+    confidence: TIER_CONFIDENCE["global"],
+  };
 };
 
 export const processHeritage = async (
@@ -128,7 +148,9 @@ export const processHeritage = async (
     if (!tree) {
       // Use larger bufferSize for files > 32KB
       try {
-        tree = parser.parse(file.content, undefined, { bufferSize: getTreeSitterBufferSize(file.content.length) });
+        tree = parser.parse(file.content, undefined, {
+          bufferSize: getTreeSitterBufferSize(file.content.length),
+        });
       } catch (parseError) {
         // Skip files that can't be parsed
         continue;
@@ -149,29 +171,48 @@ export const processHeritage = async (
     }
 
     // 4. Process heritage matches
-    matches.forEach(match => {
+    matches.forEach((match) => {
       const captureMap: Record<string, any> = {};
-      match.captures.forEach(c => {
+      match.captures.forEach((c) => {
         captureMap[c.name] = c.node;
       });
 
       // EXTENDS or IMPLEMENTS: resolve via symbol table for languages where
       // the tree-sitter query can't distinguish classes from interfaces (C#, Java)
-      if (captureMap['heritage.class'] && captureMap['heritage.extends']) {
+      if (captureMap["heritage.class"] && captureMap["heritage.extends"]) {
         // Go struct embedding: skip named fields (only anonymous fields are embedded)
-        const extendsNode = captureMap['heritage.extends'];
+        const extendsNode = captureMap["heritage.extends"];
         const fieldDecl = extendsNode.parent;
-        if (fieldDecl?.type === 'field_declaration' && fieldDecl.childForFieldName('name')) {
+        if (
+          fieldDecl?.type === "field_declaration" &&
+          fieldDecl.childForFieldName("name")
+        ) {
           return; // Named field, not struct embedding
         }
 
-        const className = captureMap['heritage.class'].text;
-        const parentClassName = captureMap['heritage.extends'].text;
+        const className = captureMap["heritage.class"].text;
+        const parentClassName = captureMap["heritage.extends"].text;
 
-        const { type: relType, idPrefix } = resolveExtendsType(parentClassName, file.path, ctx, language);
+        const { type: relType, idPrefix } = resolveExtendsType(
+          parentClassName,
+          file.path,
+          ctx,
+          language,
+        );
 
-        const child = resolveHeritageId(className, file.path, ctx, 'Class', `${file.path}:${className}`);
-        const parent = resolveHeritageId(parentClassName, file.path, ctx, idPrefix);
+        const child = resolveHeritageId(
+          className,
+          file.path,
+          ctx,
+          "Class",
+          `${file.path}:${className}`,
+        );
+        const parent = resolveHeritageId(
+          parentClassName,
+          file.path,
+          ctx,
+          idPrefix,
+        );
 
         if (child.id && parent.id && child.id !== parent.id) {
           graph.addRelationship({
@@ -180,47 +221,64 @@ export const processHeritage = async (
             targetId: parent.id,
             type: relType,
             confidence: Math.sqrt(child.confidence * parent.confidence),
-            reason: '',
+            reason: "",
           });
         }
       }
 
       // IMPLEMENTS: Class implements Interface (TypeScript only)
-      if (captureMap['heritage.class'] && captureMap['heritage.implements']) {
-        const className = captureMap['heritage.class'].text;
-        const interfaceName = captureMap['heritage.implements'].text;
+      if (captureMap["heritage.class"] && captureMap["heritage.implements"]) {
+        const className = captureMap["heritage.class"].text;
+        const interfaceName = captureMap["heritage.implements"].text;
 
-        const cls = resolveHeritageId(className, file.path, ctx, 'Class', `${file.path}:${className}`);
-        const iface = resolveHeritageId(interfaceName, file.path, ctx, 'Interface');
+        const cls = resolveHeritageId(
+          className,
+          file.path,
+          ctx,
+          "Class",
+          `${file.path}:${className}`,
+        );
+        const iface = resolveHeritageId(
+          interfaceName,
+          file.path,
+          ctx,
+          "Interface",
+        );
 
         if (cls.id && iface.id) {
           graph.addRelationship({
-            id: generateId('IMPLEMENTS', `${cls.id}->${iface.id}`),
+            id: generateId("IMPLEMENTS", `${cls.id}->${iface.id}`),
             sourceId: cls.id,
             targetId: iface.id,
-            type: 'IMPLEMENTS',
+            type: "IMPLEMENTS",
             confidence: Math.sqrt(cls.confidence * iface.confidence),
-            reason: '',
+            reason: "",
           });
         }
       }
 
       // IMPLEMENTS (Rust): impl Trait for Struct
-      if (captureMap['heritage.trait'] && captureMap['heritage.class']) {
-        const structName = captureMap['heritage.class'].text;
-        const traitName = captureMap['heritage.trait'].text;
+      if (captureMap["heritage.trait"] && captureMap["heritage.class"]) {
+        const structName = captureMap["heritage.class"].text;
+        const traitName = captureMap["heritage.trait"].text;
 
-        const strct = resolveHeritageId(structName, file.path, ctx, 'Struct', `${file.path}:${structName}`);
-        const trait = resolveHeritageId(traitName, file.path, ctx, 'Trait');
+        const strct = resolveHeritageId(
+          structName,
+          file.path,
+          ctx,
+          "Struct",
+          `${file.path}:${structName}`,
+        );
+        const trait = resolveHeritageId(traitName, file.path, ctx, "Trait");
 
         if (strct.id && trait.id) {
           graph.addRelationship({
-            id: generateId('IMPLEMENTS', `${strct.id}->${trait.id}`),
+            id: generateId("IMPLEMENTS", `${strct.id}->${trait.id}`),
             sourceId: strct.id,
             targetId: trait.id,
-            type: 'IMPLEMENTS',
+            type: "IMPLEMENTS",
             confidence: Math.sqrt(strct.confidence * trait.confidence),
-            reason: 'trait-impl',
+            reason: "trait-impl",
           });
         }
       }
@@ -232,7 +290,7 @@ export const processHeritage = async (
   if (skippedByLang && skippedByLang.size > 0) {
     for (const [lang, count] of skippedByLang.entries()) {
       console.warn(
-        `[ingestion] Skipped ${count} ${lang} file(s) in heritage processing — ${lang} parser not available.`
+        `[ingestion] Skipped ${count} ${lang} file(s) in heritage processing — ${lang} parser not available.`,
       );
     }
   }
@@ -258,12 +316,23 @@ export const processHeritageFromExtracted = async (
 
     const h = extractedHeritage[i];
 
-    if (h.kind === 'extends') {
+    if (h.kind === "extends") {
       const fileLanguage = getLanguageFromFilename(h.filePath);
       if (!fileLanguage) continue;
-      const { type: relType, idPrefix } = resolveExtendsType(h.parentName, h.filePath, ctx, fileLanguage);
+      const { type: relType, idPrefix } = resolveExtendsType(
+        h.parentName,
+        h.filePath,
+        ctx,
+        fileLanguage,
+      );
 
-      const child = resolveHeritageId(h.className, h.filePath, ctx, 'Class', `${h.filePath}:${h.className}`);
+      const child = resolveHeritageId(
+        h.className,
+        h.filePath,
+        ctx,
+        "Class",
+        `${h.filePath}:${h.className}`,
+      );
       const parent = resolveHeritageId(h.parentName, h.filePath, ctx, idPrefix);
 
       if (child.id && parent.id && child.id !== parent.id) {
@@ -273,33 +342,55 @@ export const processHeritageFromExtracted = async (
           targetId: parent.id,
           type: relType,
           confidence: Math.sqrt(child.confidence * parent.confidence),
-          reason: '',
+          reason: "",
         });
       }
-    } else if (h.kind === 'implements') {
-      const cls = resolveHeritageId(h.className, h.filePath, ctx, 'Class', `${h.filePath}:${h.className}`);
-      const iface = resolveHeritageId(h.parentName, h.filePath, ctx, 'Interface');
+    } else if (h.kind === "implements") {
+      const cls = resolveHeritageId(
+        h.className,
+        h.filePath,
+        ctx,
+        "Class",
+        `${h.filePath}:${h.className}`,
+      );
+      const iface = resolveHeritageId(
+        h.parentName,
+        h.filePath,
+        ctx,
+        "Interface",
+      );
 
       if (cls.id && iface.id) {
         graph.addRelationship({
-          id: generateId('IMPLEMENTS', `${cls.id}->${iface.id}`),
+          id: generateId("IMPLEMENTS", `${cls.id}->${iface.id}`),
           sourceId: cls.id,
           targetId: iface.id,
-          type: 'IMPLEMENTS',
+          type: "IMPLEMENTS",
           confidence: Math.sqrt(cls.confidence * iface.confidence),
-          reason: '',
+          reason: "",
         });
       }
-    } else if (h.kind === 'trait-impl' || h.kind === 'include' || h.kind === 'extend' || h.kind === 'prepend') {
-      const strct = resolveHeritageId(h.className, h.filePath, ctx, 'Struct', `${h.filePath}:${h.className}`);
-      const trait = resolveHeritageId(h.parentName, h.filePath, ctx, 'Trait');
+    } else if (
+      h.kind === "trait-impl" ||
+      h.kind === "include" ||
+      h.kind === "extend" ||
+      h.kind === "prepend"
+    ) {
+      const strct = resolveHeritageId(
+        h.className,
+        h.filePath,
+        ctx,
+        "Struct",
+        `${h.filePath}:${h.className}`,
+      );
+      const trait = resolveHeritageId(h.parentName, h.filePath, ctx, "Trait");
 
       if (strct.id && trait.id) {
         graph.addRelationship({
-          id: generateId('IMPLEMENTS', `${strct.id}->${trait.id}:${h.kind}`),
+          id: generateId("IMPLEMENTS", `${strct.id}->${trait.id}:${h.kind}`),
           sourceId: strct.id,
           targetId: trait.id,
-          type: 'IMPLEMENTS',
+          type: "IMPLEMENTS",
           confidence: Math.sqrt(strct.confidence * trait.confidence),
           reason: h.kind,
         });

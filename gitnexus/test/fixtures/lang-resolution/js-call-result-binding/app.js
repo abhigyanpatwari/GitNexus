@@ -1,6 +1,6 @@
-const { getUser } = require('./service');
+const { getUser } = require("./service");
 
 function processUser() {
-  const user = getUser('alice');
+  const user = getUser("alice");
   user.save();
 }

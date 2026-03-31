@@ -7,8 +7,8 @@
  * Shared between parse-worker.ts (worker pool) and parsing-processor.ts (sequential fallback).
  */
 
-import { findSiblingChild, SyntaxNode } from './utils.js';
-import { SupportedLanguages } from '../../config/supported-languages.js';
+import { findSiblingChild, SyntaxNode } from "./utils.js";
+import { SupportedLanguages } from "../../config/supported-languages.js";
 
 /** Handler type: given a node and symbol name, return true if the symbol is exported/public. */
 type ExportChecker = (node: SyntaxNode, name: string) => boolean;
@@ -22,13 +22,16 @@ const tsExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
   while (current) {
     const type = current.type;
-    if (type === 'export_statement' ||
-        type === 'export_specifier' ||
-        (type === 'lexical_declaration' && current.parent?.type === 'export_statement')) {
+    if (
+      type === "export_statement" ||
+      type === "export_specifier" ||
+      (type === "lexical_declaration" &&
+        current.parent?.type === "export_statement")
+    ) {
       return true;
     }
     // Fallback: check if node text starts with 'export ' for edge cases
-    if (current.text?.startsWith('export ')) {
+    if (current.text?.startsWith("export ")) {
       return true;
     }
     current = current.parent;
@@ -37,7 +40,8 @@ const tsExportChecker: ExportChecker = (node, _name) => {
 };
 
 /** Python: public if no leading underscore (convention). */
-const pythonExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
+const pythonExportChecker: ExportChecker = (_node, name) =>
+  !name.startsWith("_");
 
 /** Java: check for 'public' modifier — modifiers are siblings of the name node, not parents. */
 const javaExportChecker: ExportChecker = (node, _name) => {
@@ -47,12 +51,15 @@ const javaExportChecker: ExportChecker = (node, _name) => {
       const parent = current.parent;
       for (let i = 0; i < parent.childCount; i++) {
         const child = parent.child(i);
-        if (child?.type === 'modifiers' && child.text?.includes('public')) {
+        if (child?.type === "modifiers" && child.text?.includes("public")) {
           return true;
         }
       }
-      if (parent.type === 'method_declaration' || parent.type === 'constructor_declaration') {
-        if (parent.text?.trimStart().startsWith('public')) {
+      if (
+        parent.type === "method_declaration" ||
+        parent.type === "constructor_declaration"
+      ) {
+        if (parent.text?.trimStart().startsWith("public")) {
           return true;
         }
       }
@@ -64,12 +71,22 @@ const javaExportChecker: ExportChecker = (node, _name) => {
 
 /** C# declaration node types for sibling modifier scanning. */
 const CSHARP_DECL_TYPES = new Set([
-  'method_declaration', 'local_function_statement', 'constructor_declaration',
-  'class_declaration', 'interface_declaration', 'struct_declaration',
-  'enum_declaration', 'record_declaration', 'record_struct_declaration',
-  'record_class_declaration', 'delegate_declaration',
-  'property_declaration', 'field_declaration', 'event_declaration',
-  'namespace_declaration', 'file_scoped_namespace_declaration',
+  "method_declaration",
+  "local_function_statement",
+  "constructor_declaration",
+  "class_declaration",
+  "interface_declaration",
+  "struct_declaration",
+  "enum_declaration",
+  "record_declaration",
+  "record_struct_declaration",
+  "record_class_declaration",
+  "delegate_declaration",
+  "property_declaration",
+  "field_declaration",
+  "event_declaration",
+  "namespace_declaration",
+  "file_scoped_namespace_declaration",
 ]);
 
 /**
@@ -82,7 +99,7 @@ const csharpExportChecker: ExportChecker = (node, _name) => {
     if (CSHARP_DECL_TYPES.has(current.type)) {
       for (let i = 0; i < current.childCount; i++) {
         const child = current.child(i);
-        if (child?.type === 'modifier' && child.text === 'public') return true;
+        if (child?.type === "modifier" && child.text === "public") return true;
       }
       return false;
     }
@@ -100,9 +117,19 @@ const goExportChecker: ExportChecker = (_node, name) => {
 
 /** Rust declaration node types for sibling visibility_modifier scanning. */
 const RUST_DECL_TYPES = new Set([
-  'function_item', 'struct_item', 'enum_item', 'trait_item', 'impl_item',
-  'union_item', 'type_item', 'const_item', 'static_item', 'mod_item',
-  'use_declaration', 'associated_type', 'function_signature_item',
+  "function_item",
+  "struct_item",
+  "enum_item",
+  "trait_item",
+  "impl_item",
+  "union_item",
+  "type_item",
+  "const_item",
+  "static_item",
+  "mod_item",
+  "use_declaration",
+  "associated_type",
+  "function_signature_item",
 ]);
 
 /**
@@ -116,7 +143,11 @@ const rustExportChecker: ExportChecker = (node, _name) => {
     if (RUST_DECL_TYPES.has(current.type)) {
       for (let i = 0; i < current.childCount; i++) {
         const child = current.child(i);
-        if (child?.type === 'visibility_modifier' && child.text?.startsWith('pub')) return true;
+        if (
+          child?.type === "visibility_modifier" &&
+          child.text?.startsWith("pub")
+        )
+          return true;
       }
       return false;
     }
@@ -133,11 +164,16 @@ const kotlinExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
   while (current) {
     if (current.parent) {
-      const visMod = findSiblingChild(current.parent, 'modifiers', 'visibility_modifier');
+      const visMod = findSiblingChild(
+        current.parent,
+        "modifiers",
+        "visibility_modifier",
+      );
       if (visMod) {
         const text = visMod.text;
-        if (text === 'private' || text === 'internal' || text === 'protected') return false;
-        if (text === 'public') return true;
+        if (text === "private" || text === "internal" || text === "protected")
+          return false;
+        if (text === "public") return true;
       }
     }
     current = current.parent;
@@ -155,17 +191,21 @@ const kotlinExportChecker: ExportChecker = (node, _name) => {
 const cCppExportChecker: ExportChecker = (node, _name) => {
   let cur: SyntaxNode | null = node;
   while (cur) {
-    if (cur.type === 'function_definition' || cur.type === 'declaration') {
+    if (cur.type === "function_definition" || cur.type === "declaration") {
       // Check for 'static' storage class specifier as a direct child node.
       // This avoids reading the full function text (which can be very large).
       for (let i = 0; i < cur.childCount; i++) {
         const child = cur.child(i);
-        if (child?.type === 'storage_class_specifier' && child.text === 'static') return false;
+        if (
+          child?.type === "storage_class_specifier" &&
+          child.text === "static"
+        )
+          return false;
       }
     }
     // C++ anonymous namespace: namespace_definition with no name child = internal linkage
-    if (cur.type === 'namespace_definition') {
-      const hasName = cur.childForFieldName?.('name');
+    if (cur.type === "namespace_definition") {
+      const hasName = cur.childForFieldName?.("name");
       if (!hasName) return false;
     }
     cur = cur.parent;
@@ -177,14 +217,16 @@ const cCppExportChecker: ExportChecker = (node, _name) => {
 const phpExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
   while (current) {
-    if (current.type === 'class_declaration' ||
-        current.type === 'interface_declaration' ||
-        current.type === 'trait_declaration' ||
-        current.type === 'enum_declaration') {
+    if (
+      current.type === "class_declaration" ||
+      current.type === "interface_declaration" ||
+      current.type === "trait_declaration" ||
+      current.type === "enum_declaration"
+    ) {
       return true;
     }
-    if (current.type === 'visibility_modifier') {
-      return current.text === 'public';
+    if (current.type === "visibility_modifier") {
+      return current.text === "public";
     }
     current = current.parent;
   }
@@ -196,9 +238,12 @@ const phpExportChecker: ExportChecker = (node, _name) => {
 const swiftExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
   while (current) {
-    if (current.type === 'modifiers' || current.type === 'visibility_modifier') {
-      const text = current.text || '';
-      if (text.includes('public') || text.includes('open')) return true;
+    if (
+      current.type === "modifiers" ||
+      current.type === "visibility_modifier"
+    ) {
+      const text = current.text || "";
+      if (text.includes("public") || text.includes("open")) return true;
     }
     current = current.parent;
   }
@@ -236,7 +281,11 @@ const exportCheckers = {
  * @param language - The programming language
  * @returns true if the symbol is exported/public
  */
-export const isNodeExported = (node: SyntaxNode, name: string, language: SupportedLanguages): boolean => {
+export const isNodeExported = (
+  node: SyntaxNode,
+  name: string,
+  language: SupportedLanguages,
+): boolean => {
   const checker = exportCheckers[language];
   if (!checker) return false;
   return checker(node, name);

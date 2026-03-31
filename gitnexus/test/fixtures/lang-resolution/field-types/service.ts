@@ -1,4 +1,4 @@
-import { User, Config } from './models';
+import { User, Config } from "./models";
 
 function processUser(user: User) {
   // Field-access chain: user.address resolves to Address, then .save() resolves to Address#save

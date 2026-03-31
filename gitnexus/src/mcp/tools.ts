@@ -1,6 +1,6 @@
 /**
  * MCP Tool Definitions
- * 
+ *
  * Defines the tools that GitNexus exposes to external AI agents.
  * All tools support an optional `repo` parameter for multi-repo setups.
  */
@@ -9,21 +9,24 @@ export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema: {
-    type: 'object';
-    properties: Record<string, {
-      type: string;
-      description?: string;
-      default?: any;
-      items?: { type: string };
-      enum?: string[];
-    }>;
+    type: "object";
+    properties: Record<
+      string,
+      {
+        type: string;
+        description?: string;
+        default?: any;
+        items?: { type: string };
+        enum?: string[];
+      }
+    >;
     required: string[];
   };
 }
 
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
   {
-    name: 'list_repos',
+    name: "list_repos",
     description: `List all indexed repositories available to GitNexus.
 
 Returns each repo's name, path, indexed date, last commit, and stats.
@@ -34,13 +37,13 @@ AFTER THIS: READ gitnexus://repo/{name}/context for the repo you want to work wi
 When multiple repos are indexed, you MUST specify the "repo" parameter
 on other tools (query, context, impact, etc.) to target the correct one.`,
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {},
       required: [],
     },
   },
   {
-    name: 'query',
+    name: "query",
     description: `Query the code knowledge graph for execution flows related to a concept.
 Returns processes (call chains) ranked by relevance, each with its symbols and file locations.
 
@@ -54,21 +57,48 @@ Returns results grouped by process (execution flow):
 
 Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank Fusion.`,
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        query: { type: 'string', description: 'Natural language or keyword search query' },
-        task_context: { type: 'string', description: 'What you are working on (e.g., "adding OAuth support"). Helps ranking.' },
-        goal: { type: 'string', description: 'What you want to find (e.g., "existing auth validation logic"). Helps ranking.' },
-        limit: { type: 'number', description: 'Max processes to return (default: 5)', default: 5 },
-        max_symbols: { type: 'number', description: 'Max symbols per process (default: 10)', default: 10 },
-        include_content: { type: 'boolean', description: 'Include full symbol source code (default: false)', default: false },
-        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+        query: {
+          type: "string",
+          description: "Natural language or keyword search query",
+        },
+        task_context: {
+          type: "string",
+          description:
+            'What you are working on (e.g., "adding OAuth support"). Helps ranking.',
+        },
+        goal: {
+          type: "string",
+          description:
+            'What you want to find (e.g., "existing auth validation logic"). Helps ranking.',
+        },
+        limit: {
+          type: "number",
+          description: "Max processes to return (default: 5)",
+          default: 5,
+        },
+        max_symbols: {
+          type: "number",
+          description: "Max symbols per process (default: 10)",
+          default: 10,
+        },
+        include_content: {
+          type: "boolean",
+          description: "Include full symbol source code (default: false)",
+          default: false,
+        },
+        repo: {
+          type: "string",
+          description:
+            "Repository name or path. Omit if only one repo is indexed.",
+        },
       },
-      required: ['query'],
+      required: ["query"],
     },
   },
   {
-    name: 'cypher',
+    name: "cypher",
     description: `Execute Cypher query against the code knowledge graph.
 
 WHEN TO USE: Complex structural queries that search/explore can't answer. READ gitnexus://repo/{name}/schema first for the full schema.
@@ -114,16 +144,20 @@ TIPS:
 - Process = execution flow trace from entry point to terminal. Properties: heuristicLabel, processType, stepCount, communities, entryPointId, terminalId
 - Use heuristicLabel (not label) for human-readable community/process names`,
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        query: { type: 'string', description: 'Cypher query to execute' },
-        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+        query: { type: "string", description: "Cypher query to execute" },
+        repo: {
+          type: "string",
+          description:
+            "Repository name or path. Omit if only one repo is indexed.",
+        },
       },
-      required: ['query'],
+      required: ["query"],
     },
   },
   {
-    name: 'context',
+    name: "context",
     description: `360-degree view of a single code symbol.
 Shows categorized incoming/outgoing references (calls, imports, extends, implements, methods, properties, overrides), process participation, and file location.
 
@@ -134,19 +168,37 @@ Handles disambiguation: if multiple symbols share the same name, returns candida
 
 NOTE: ACCESSES edges (field read/write tracking) are included in context results with reason 'read' or 'write'. CALLS edges resolve through field access chains and method-call chains (e.g., user.address.getCity().save() produces CALLS edges at each step).`,
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        name: { type: 'string', description: 'Symbol name (e.g., "validateUser", "AuthService")' },
-        uid: { type: 'string', description: 'Direct symbol UID from prior tool results (zero-ambiguity lookup)' },
-        file_path: { type: 'string', description: 'File path to disambiguate common names' },
-        include_content: { type: 'boolean', description: 'Include full symbol source code (default: false)', default: false },
-        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+        name: {
+          type: "string",
+          description: 'Symbol name (e.g., "validateUser", "AuthService")',
+        },
+        uid: {
+          type: "string",
+          description:
+            "Direct symbol UID from prior tool results (zero-ambiguity lookup)",
+        },
+        file_path: {
+          type: "string",
+          description: "File path to disambiguate common names",
+        },
+        include_content: {
+          type: "boolean",
+          description: "Include full symbol source code (default: false)",
+          default: false,
+        },
+        repo: {
+          type: "string",
+          description:
+            "Repository name or path. Omit if only one repo is indexed.",
+        },
       },
       required: [],
     },
   },
   {
-    name: 'detect_changes',
+    name: "detect_changes",
     description: `Analyze uncommitted git changes and find affected execution flows.
 Maps git diff hunks to indexed symbols, then traces which processes are impacted.
 
@@ -155,17 +207,30 @@ AFTER THIS: Review affected processes. Use context() on high-risk symbols. READ 
 
 Returns: changed symbols, affected processes, and a risk summary.`,
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        scope: { type: 'string', description: 'What to analyze: "unstaged" (default), "staged", "all", or "compare"', enum: ['unstaged', 'staged', 'all', 'compare'], default: 'unstaged' },
-        base_ref: { type: 'string', description: 'Branch/commit for "compare" scope (e.g., "main")' },
-        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+        scope: {
+          type: "string",
+          description:
+            'What to analyze: "unstaged" (default), "staged", "all", or "compare"',
+          enum: ["unstaged", "staged", "all", "compare"],
+          default: "unstaged",
+        },
+        base_ref: {
+          type: "string",
+          description: 'Branch/commit for "compare" scope (e.g., "main")',
+        },
+        repo: {
+          type: "string",
+          description:
+            "Repository name or path. Omit if only one repo is indexed.",
+        },
       },
       required: [],
     },
   },
   {
-    name: 'rename',
+    name: "rename",
     description: `Multi-file coordinated rename using the knowledge graph + text search.
 Finds all references via graph (high confidence) and regex text search (lower confidence). Preview by default.
 
@@ -176,20 +241,41 @@ Each edit is tagged with confidence:
 - "graph": found via knowledge graph relationships (high confidence, safe to accept)
 - "text_search": found via regex text search (lower confidence, review carefully)`,
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        symbol_name: { type: 'string', description: 'Current symbol name to rename' },
-        symbol_uid: { type: 'string', description: 'Direct symbol UID from prior tool results (zero-ambiguity)' },
-        new_name: { type: 'string', description: 'The new name for the symbol' },
-        file_path: { type: 'string', description: 'File path to disambiguate common names' },
-        dry_run: { type: 'boolean', description: 'Preview edits without modifying files (default: true)', default: true },
-        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+        symbol_name: {
+          type: "string",
+          description: "Current symbol name to rename",
+        },
+        symbol_uid: {
+          type: "string",
+          description:
+            "Direct symbol UID from prior tool results (zero-ambiguity)",
+        },
+        new_name: {
+          type: "string",
+          description: "The new name for the symbol",
+        },
+        file_path: {
+          type: "string",
+          description: "File path to disambiguate common names",
+        },
+        dry_run: {
+          type: "boolean",
+          description: "Preview edits without modifying files (default: true)",
+          default: true,
+        },
+        repo: {
+          type: "string",
+          description:
+            "Repository name or path. Omit if only one repo is indexed.",
+        },
       },
-      required: ['new_name'],
+      required: ["new_name"],
     },
   },
   {
-    name: 'impact',
+    name: "impact",
     description: `Analyze the blast radius of changing a code symbol.
 Returns affected symbols grouped by depth, plus risk assessment, affected execution flows, and affected modules.
 
@@ -213,17 +299,43 @@ TIP: Default traversal uses CALLS/IMPORTS/EXTENDS/IMPLEMENTS. For class members,
 EdgeType: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, OVERRIDES, ACCESSES
 Confidence: 1.0 = certain, <0.8 = fuzzy match`,
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        target: { type: 'string', description: 'Name of function, class, or file to analyze' },
-        direction: { type: 'string', description: 'upstream (what depends on this) or downstream (what this depends on)' },
-        maxDepth: { type: 'number', description: 'Max relationship depth (default: 3)', default: 3 },
-        relationTypes: { type: 'array', items: { type: 'string' }, description: 'Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, OVERRIDES, ACCESSES (default: usage-based, ACCESSES excluded by default)' },
-        includeTests: { type: 'boolean', description: 'Include test files (default: false)' },
-        minConfidence: { type: 'number', description: 'Minimum confidence 0-1 (default: 0.7)' },
-        repo: { type: 'string', description: 'Repository name or path. Omit if only one repo is indexed.' },
+        target: {
+          type: "string",
+          description: "Name of function, class, or file to analyze",
+        },
+        direction: {
+          type: "string",
+          description:
+            "upstream (what depends on this) or downstream (what this depends on)",
+        },
+        maxDepth: {
+          type: "number",
+          description: "Max relationship depth (default: 3)",
+          default: 3,
+        },
+        relationTypes: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, OVERRIDES, ACCESSES (default: usage-based, ACCESSES excluded by default)",
+        },
+        includeTests: {
+          type: "boolean",
+          description: "Include test files (default: false)",
+        },
+        minConfidence: {
+          type: "number",
+          description: "Minimum confidence 0-1 (default: 0.7)",
+        },
+        repo: {
+          type: "string",
+          description:
+            "Repository name or path. Omit if only one repo is indexed.",
+        },
       },
-      required: ['target', 'direction'],
+      required: ["target", "direction"],
     },
   },
 ];

@@ -5,7 +5,7 @@
  */
 
 function isCallable(value: unknown): value is (...args: unknown[]) => unknown {
-  return typeof value === 'function';
+  return typeof value === "function";
 }
 
 export function createLazyAction<

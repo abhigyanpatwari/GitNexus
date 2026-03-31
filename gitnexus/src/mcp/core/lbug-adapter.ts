@@ -13,8 +13,8 @@
  * from the same Database is the officially supported concurrency pattern.
  */
 
-import fs from 'fs/promises';
-import lbug from '@ladybugdb/core';
+import fs from "fs/promises";
+import lbug from "@ladybugdb/core";
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
@@ -75,7 +75,7 @@ function ensureIdleTimer(): void {
       }
     }
   }, 60_000);
-  if (idleTimer && typeof idleTimer === 'object' && 'unref' in idleTimer) {
+  if (idleTimer && typeof idleTimer === "object" && "unref" in idleTimer) {
     (idleTimer as NodeJS.Timeout).unref();
   }
 }
@@ -201,7 +201,10 @@ const initPromises = new Map<string, Promise<void>>();
  * Concurrent calls for the same repoId are deduplicated — the second caller
  * awaits the first's in-progress init rather than starting a redundant one.
  */
-export const initLbug = async (repoId: string, dbPath: string): Promise<void> => {
+export const initLbug = async (
+  repoId: string,
+  dbPath: string,
+): Promise<void> => {
   const existing = pool.get(repoId);
   if (existing) {
     existing.lastUsed = Date.now();
@@ -251,9 +254,9 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
       try {
         const db = new lbug.Database(
           dbPath,
-          0,     // bufferManagerSize (default)
+          0, // bufferManagerSize (default)
           false, // enableCompression (default)
-          true,  // readOnly
+          true, // readOnly
         );
         restoreStdout();
         shared = { db, refCount: 0, ftsLoaded: false };
@@ -262,17 +265,20 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
       } catch (err: any) {
         restoreStdout();
         lastError = err instanceof Error ? err : new Error(String(err));
-        const isLockError = lastError.message.includes('Could not set lock')
-          || lastError.message.includes('lock');
+        const isLockError =
+          lastError.message.includes("Could not set lock") ||
+          lastError.message.includes("lock");
         if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
-        await new Promise(resolve => setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt));
+        await new Promise((resolve) =>
+          setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt),
+        );
       }
     }
 
     if (!shared) {
       throw new Error(
         `LadybugDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
-        `Retry later. (${lastError?.message || 'unknown error'})`
+          `Retry later. (${lastError?.message || "unknown error"})`,
       );
     }
   }
@@ -298,7 +304,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // the connection while the async FTS load is in progress.
   if (!shared.ftsLoaded) {
     try {
-      await available[0].query('LOAD EXTENSION fts');
+      await available[0].query("LOAD EXTENSION fts");
       shared.ftsLoaded = true;
     } catch {
       // Extension may not be installed — FTS queries will fail gracefully
@@ -308,7 +314,15 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // Register pool entry only after all connections are pre-warmed and FTS is
   // loaded.  Concurrent executeQuery calls see either "not initialized"
   // (and throw cleanly) or a fully ready pool — never a half-built one.
-  pool.set(repoId, { db, available, checkedOut: 0, waiters: [], lastUsed: Date.now(), dbPath, closed: false });
+  pool.set(repoId, {
+    db,
+    available,
+    checkedOut: 0,
+    waiters: [],
+    lastUsed: Date.now(),
+    dbPath,
+    closed: false,
+  });
   ensureIdleTimer();
 }
 
@@ -357,19 +371,19 @@ export async function initLbugWithDb(
 
   // Load FTS extension if not already loaded on this Database
   try {
-    await available[0].query('LOAD EXTENSION fts');
+    await available[0].query("LOAD EXTENSION fts");
   } catch {
     // Extension may already be loaded or not installed
   }
 
-  pool.set(repoId, { 
+  pool.set(repoId, {
     db: existingDb,
     available,
     checkedOut: 0,
     waiters: [],
     lastUsed: Date.now(),
     dbPath,
-    closed: false 
+    closed: false,
   });
   ensureIdleTimer();
 }
@@ -393,8 +407,8 @@ function checkout(entry: PoolEntry): Promise<lbug.Connection> {
   if (totalConns < MAX_CONNS_PER_REPO) {
     throw new Error(
       `Connection pool integrity error: expected ${MAX_CONNS_PER_REPO} ` +
-      `connections but found ${totalConns} (${entry.available.length} available, ` +
-      `${entry.checkedOut} checked out)`
+        `connections but found ${totalConns} (${entry.available.length} available, ` +
+        `${entry.checkedOut} checked out)`,
     );
   }
 
@@ -407,7 +421,11 @@ function checkout(entry: PoolEntry): Promise<lbug.Connection> {
     const timer = setTimeout(() => {
       const idx = entry.waiters.indexOf(waiter);
       if (idx !== -1) entry.waiters.splice(idx, 1);
-      reject(new Error(`Connection pool exhausted: timed out after ${WAITER_TIMEOUT_MS}ms waiting for a free connection`));
+      reject(
+        new Error(
+          `Connection pool exhausted: timed out after ${WAITER_TIMEOUT_MS}ms waiting for a free connection`,
+        ),
+      );
     }, WAITER_TIMEOUT_MS);
     entry.waiters.push(waiter);
   });
@@ -441,22 +459,36 @@ function checkin(entry: PoolEntry, conn: lbug.Connection): void {
  * Automatically checks out a connection, runs the query, and returns it.
  */
 /** Race a promise against a timeout */
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms,
+    );
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-export const executeQuery = async (repoId: string, cypher: string): Promise<any[]> => {
+export const executeQuery = async (
+  repoId: string,
+  cypher: string,
+): Promise<any[]> => {
   const entry = pool.get(repoId);
   if (!entry) {
-    throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
+    throw new Error(
+      `LadybugDB not initialized for repo "${repoId}". Call initLbug first.`,
+    );
   }
 
   if (isWriteQuery(cypher)) {
-    throw new Error('Write operations are not allowed. The pool adapter is read-only.');
+    throw new Error(
+      "Write operations are not allowed. The pool adapter is read-only.",
+    );
   }
 
   entry.lastUsed = Date.now();
@@ -465,7 +497,11 @@ export const executeQuery = async (repoId: string, cypher: string): Promise<any[
   silenceStdout();
   activeQueryCount++;
   try {
-    const queryResult = await withTimeout(conn.query(cypher), QUERY_TIMEOUT_MS, 'Query');
+    const queryResult = await withTimeout(
+      conn.query(cypher),
+      QUERY_TIMEOUT_MS,
+      "Query",
+    );
     const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
     const rows = await result.getAll();
     return rows;
@@ -487,7 +523,9 @@ export const executeParameterized = async (
 ): Promise<any[]> => {
   const entry = pool.get(repoId);
   if (!entry) {
-    throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
+    throw new Error(
+      `LadybugDB not initialized for repo "${repoId}". Call initLbug first.`,
+    );
   }
 
   entry.lastUsed = Date.now();
@@ -496,12 +534,20 @@ export const executeParameterized = async (
   silenceStdout();
   activeQueryCount++;
   try {
-    const stmt = await withTimeout(conn.prepare(cypher), QUERY_TIMEOUT_MS, 'Prepare');
+    const stmt = await withTimeout(
+      conn.prepare(cypher),
+      QUERY_TIMEOUT_MS,
+      "Prepare",
+    );
     if (!stmt.isSuccess()) {
       const errMsg = await stmt.getErrorMessage();
       throw new Error(`Prepare failed: ${errMsg}`);
     }
-    const queryResult = await withTimeout(conn.execute(stmt, params), QUERY_TIMEOUT_MS, 'Execute');
+    const queryResult = await withTimeout(
+      conn.execute(stmt, params),
+      QUERY_TIMEOUT_MS,
+      "Execute",
+    );
     const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
     const rows = await result.getAll();
     return rows;
@@ -533,14 +579,14 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
   }
 };
 
-
 /**
  * Check if a specific repo's pool is active
  */
 export const isLbugReady = (repoId: string): boolean => pool.has(repoId);
 
 /** Regex to detect write operations in user-supplied Cypher queries */
-export const CYPHER_WRITE_RE = /\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH)\b/i;
+export const CYPHER_WRITE_RE =
+  /\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH)\b/i;
 
 /** Check if a Cypher query contains write operations */
 export function isWriteQuery(query: string): boolean {

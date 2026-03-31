@@ -13,14 +13,14 @@
  * 3. Global (all candidates — consumers must check candidate count)
  */
 
-import type { SymbolTable, SymbolDefinition } from './symbol-table.js';
-import { createSymbolTable } from './symbol-table.js';
-import type { NamedImportBinding } from './import-processor.js';
-import { isFileInPackageDir } from './import-processor.js';
-import { walkBindingChain } from './named-binding-extraction.js';
+import type { SymbolTable, SymbolDefinition } from "./symbol-table.js";
+import { createSymbolTable } from "./symbol-table.js";
+import type { NamedImportBinding } from "./import-processor.js";
+import { isFileInPackageDir } from "./import-processor.js";
+import { walkBindingChain } from "./named-binding-extraction.js";
 
 /** Resolution tier for tracking, logging, and test assertions. */
-export type ResolutionTier = 'same-file' | 'import-scoped' | 'global';
+export type ResolutionTier = "same-file" | "import-scoped" | "global";
 
 /** Tier-selected candidates with metadata. */
 export interface TieredCandidates {
@@ -30,9 +30,9 @@ export interface TieredCandidates {
 
 /** Confidence scores per resolution tier. */
 export const TIER_CONFIDENCE: Record<ResolutionTier, number> = {
-  'same-file': 0.95,
-  'import-scoped': 0.9,
-  'global': 0.5,
+  "same-file": 0.95,
+  "import-scoped": 0.9,
+  global: 0.5,
 };
 
 // --- Map types ---
@@ -62,7 +62,12 @@ export interface ResolutionContext {
   clearCache(): void;
 
   // --- Operational ---
-  getStats(): { fileCount: number; globalSymbolCount: number; cacheHits: number; cacheMisses: number };
+  getStats(): {
+    fileCount: number;
+    globalSymbolCount: number;
+    cacheHits: number;
+    cacheMisses: number;
+  };
   clear(): void;
 }
 
@@ -80,11 +85,14 @@ export const createResolutionContext = (): ResolutionContext => {
 
   // --- Core resolution (single implementation of tier logic) ---
 
-  const resolveUncached = (name: string, fromFile: string): TieredCandidates | null => {
+  const resolveUncached = (
+    name: string,
+    fromFile: string,
+  ): TieredCandidates | null => {
     // Tier 1: Same file — authoritative match (returns all overloads)
     const localDefs = symbols.lookupExactAll(fromFile, name);
     if (localDefs.length > 0) {
-      return { candidates: localDefs, tier: 'same-file' };
+      return { candidates: localDefs, tier: "same-file" };
     }
 
     // Get all global definitions for subsequent tiers
@@ -93,9 +101,15 @@ export const createResolutionContext = (): ResolutionContext => {
     // Tier 2a-named: Check named bindings BEFORE empty-allDefs early return
     // because aliased imports mean lookupFuzzy('U') returns empty but we
     // can resolve via the exported name.
-    const chainResult = walkBindingChain(name, fromFile, symbols, namedImportMap, allDefs);
+    const chainResult = walkBindingChain(
+      name,
+      fromFile,
+      symbols,
+      namedImportMap,
+      allDefs,
+    );
     if (chainResult && chainResult.length > 0) {
-      return { candidates: chainResult, tier: 'import-scoped' };
+      return { candidates: chainResult, tier: "import-scoped" };
     }
 
     if (allDefs.length === 0) return null;
@@ -103,29 +117,31 @@ export const createResolutionContext = (): ResolutionContext => {
     // Tier 2a: Import-scoped — definition in a file imported by fromFile
     const importedFiles = importMap.get(fromFile);
     if (importedFiles) {
-      const importedDefs = allDefs.filter(def => importedFiles.has(def.filePath));
+      const importedDefs = allDefs.filter((def) =>
+        importedFiles.has(def.filePath),
+      );
       if (importedDefs.length > 0) {
-        return { candidates: importedDefs, tier: 'import-scoped' };
+        return { candidates: importedDefs, tier: "import-scoped" };
       }
     }
 
     // Tier 2b: Package-scoped — definition in a package dir imported by fromFile
     const importedPackages = packageMap.get(fromFile);
     if (importedPackages) {
-      const packageDefs = allDefs.filter(def => {
+      const packageDefs = allDefs.filter((def) => {
         for (const dirSuffix of importedPackages) {
           if (isFileInPackageDir(def.filePath, dirSuffix)) return true;
         }
         return false;
       });
       if (packageDefs.length > 0) {
-        return { candidates: packageDefs, tier: 'import-scoped' };
+        return { candidates: packageDefs, tier: "import-scoped" };
       }
     }
 
     // Tier 3: Global — pass all candidates through.
     // Consumers must check candidate count and refuse ambiguous matches.
-    return { candidates: allDefs, tier: 'global' };
+    return { candidates: allDefs, tier: "global" };
   };
 
   const resolve = (name: string, fromFile: string): TieredCandidates | null => {

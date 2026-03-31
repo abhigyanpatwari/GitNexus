@@ -65,22 +65,22 @@ The `TypeEnvironment` is built once per file. `call-processor.ts` then uses `loo
 
 ### Main files
 
-| File | Purpose |
-|------|---------|
-| `type-env.ts` | Core engine. Walks the AST once, tracks scopes, collects bindings, and exposes `buildTypeEnv()` plus the `TypeEnvironment` interface. |
-| `types.ts` | TypeScript interfaces for extractor hooks such as `TypeBindingExtractor`, `ForLoopExtractor`, and `PatternBindingExtractor`. |
-| `shared.ts` | Language-agnostic helpers such as `extractSimpleTypeName`, `extractElementTypeFromString`, `resolveIterableElementType`, `CONTAINER_DESCRIPTORS`, and `TYPED_PARAMETER_TYPES`. |
-| `index.ts` | Dispatch map from `SupportedLanguages` to `LanguageTypeConfig`. |
-| `typescript.ts` | TypeScript and JavaScript extractors, including JSDoc support. |
-| `jvm.ts` | Java and Kotlin extractors. |
-| `csharp.ts` | C# extractors. |
-| `go.ts` | Go extractors, including range semantics. |
-| `rust.ts` | Rust extractors, including `if let`, match-related handling, and `Self` resolution. |
-| `python.ts` | Python extractors, including `match` / `case` handling. |
-| `php.ts` | PHP extractors, including PHPDoc support. |
-| `ruby.ts` | Ruby extractors, including YARD support. |
-| `swift.ts` | Swift extractors. Currently the most minimal configuration. |
-| `c-cpp.ts` | Shared C / C++ extractors. |
+| File            | Purpose                                                                                                                                                                        |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `type-env.ts`   | Core engine. Walks the AST once, tracks scopes, collects bindings, and exposes `buildTypeEnv()` plus the `TypeEnvironment` interface.                                          |
+| `types.ts`      | TypeScript interfaces for extractor hooks such as `TypeBindingExtractor`, `ForLoopExtractor`, and `PatternBindingExtractor`.                                                   |
+| `shared.ts`     | Language-agnostic helpers such as `extractSimpleTypeName`, `extractElementTypeFromString`, `resolveIterableElementType`, `CONTAINER_DESCRIPTORS`, and `TYPED_PARAMETER_TYPES`. |
+| `index.ts`      | Dispatch map from `SupportedLanguages` to `LanguageTypeConfig`.                                                                                                                |
+| `typescript.ts` | TypeScript and JavaScript extractors, including JSDoc support.                                                                                                                 |
+| `jvm.ts`        | Java and Kotlin extractors.                                                                                                                                                    |
+| `csharp.ts`     | C# extractors.                                                                                                                                                                 |
+| `go.ts`         | Go extractors, including range semantics.                                                                                                                                      |
+| `rust.ts`       | Rust extractors, including `if let`, match-related handling, and `Self` resolution.                                                                                            |
+| `python.ts`     | Python extractors, including `match` / `case` handling.                                                                                                                        |
+| `php.ts`        | PHP extractors, including PHPDoc support.                                                                                                                                      |
+| `ruby.ts`       | Ruby extractors, including YARD support.                                                                                                                                       |
+| `swift.ts`      | Swift extractors. Currently the most minimal configuration.                                                                                                                    |
+| `c-cpp.ts`      | Shared C / C++ extractors.                                                                                                                                                     |
 
 ---
 
@@ -293,24 +293,24 @@ In those cases the system records an unverified binding candidate and later vali
 Bindings can propagate through simple identifier assignments.
 
 ```typescript
-const user: User = getUser()
-const alias = user
-const other = alias
+const user: User = getUser();
+const alias = user;
+const other = alias;
 ```
 
 This is handled after the main walk through a unified fixpoint loop over all pending assignments (copy, callResult, fieldAccess, methodCallResult). The loop iterates until no new bindings are produced (max 10 iterations), enabling arbitrary-depth mixed chains and reverse-order resolution:
 
 ```typescript
-const b = a              // iteration 2: b → User (a now resolved)
-const a: User = getUser()  // iteration 1: a → User
+const b = a; // iteration 2: b → User (a now resolved)
+const a: User = getUser(); // iteration 1: a → User
 ```
 
 Both `a` and `b` resolve correctly. The fixpoint also handles chains mixing field access and method calls:
 
 ```typescript
-const user = getUser()       // callResult → User
-const addr = user.address    // fieldAccess → Address
-const city = addr.getCity()  // methodCallResult → City
+const user = getUser(); // callResult → User
+const addr = user.address; // fieldAccess → Address
+const city = addr.getCity(); // methodCallResult → City
 ```
 
 ---
@@ -375,27 +375,27 @@ So return-type-aware receiver inference already exists in a constrained downstre
 
 ## Language Feature Matrix
 
-| Feature | TS | JS | Java | Kotlin | C# | Go | Rust | Python | PHP | Ruby | Swift | C++ | C |
-|---------|:--:|:--:|:----:|:------:|:--:|:--:|:----:|:------:|:---:|:----:|:-----:|:---:|:-:|
-| Declarations | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Parameters | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Initializer / constructor inference | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Constructor binding scan | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| For-loop element types | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes |
-| Pattern binding | Yes | Yes | Yes | Yes | No | Yes | Yes | No | No | No | No | No | No |
-| Assignment chains | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes | Yes |
-| Field/property type resolution | Yes | No† | Yes | Yes | Yes | Yes | Yes | Yes* | Yes | YARD | No | Yes | No‡ |
-| Comment-based types | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No |
-| Return type extraction | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No |
-| Call-result variable binding | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes¶ | No | Yes | No |
-| Field access binding | Yes | No† | Yes | Yes | Yes | Yes | Yes | No‖ | Yes | N/A | No | Yes | No |
-| Method-call-result binding | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes¶ | No | Yes | No |
-| Write access (ACCESSES write) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes§ | Yes | Yes | Yes | No |
-| Parameter types extracted | Yes** | No | Yes | Yes | Yes | Yes | Yes | Partial†† | No | No | No | Yes | No |
-| Method overload disambiguation | Yes** | No | Yes | Yes | Yes | No | No | No | No | No | No | Yes | No |
-| Constructor-visible virtual dispatch | Yes | No | Yes | Yes‡‡ | Yes | No | No | No | No | No | No | Yes§§ | No |
-| Optional parameter arity resolution | Yes | No | No | Yes | Yes | No | No | Yes | Yes | Yes | No | Yes | No |
-| Cross-file binding propagation | Yes | Yes | Yes‖‖ | Yes | Yes¶¶ | Yes*** | Yes | Yes | Partial | Yes*** | Yes*** | Yes*** | Yes*** |
+| Feature                              |   TS    |  JS   | Java  | Kotlin |  C#   |    Go     | Rust |  Python   |   PHP   |   Ruby    |   Swift   |    C++    |     C     |
+| ------------------------------------ | :-----: | :---: | :---: | :----: | :---: | :-------: | :--: | :-------: | :-----: | :-------: | :-------: | :-------: | :-------: |
+| Declarations                         |   Yes   |  Yes  |  Yes  |  Yes   |  Yes  |    Yes    | Yes  |    Yes    |   Yes   |    Yes    |    Yes    |    Yes    |    Yes    |
+| Parameters                           |   Yes   |  Yes  |  Yes  |  Yes   |  Yes  |    Yes    | Yes  |    Yes    |   Yes   |    Yes    |    Yes    |    Yes    |    Yes    |
+| Initializer / constructor inference  |   Yes   |  Yes  |  Yes  |  Yes   |  Yes  |    Yes    | Yes  |    Yes    |   Yes   |    Yes    |    Yes    |    Yes    |    Yes    |
+| Constructor binding scan             |   Yes   |  Yes  |  Yes  |  Yes   |  Yes  |    Yes    | Yes  |    Yes    |   Yes   |    Yes    |    Yes    |    Yes    |    Yes    |
+| For-loop element types               |   Yes   |  Yes  |  Yes  |  Yes   |  Yes  |    Yes    | Yes  |    Yes    |   Yes   |    Yes    |    No     |    Yes    |    Yes    |
+| Pattern binding                      |   Yes   |  Yes  |  Yes  |  Yes   |  No   |    Yes    | Yes  |    No     |   No    |    No     |    No     |    No     |    No     |
+| Assignment chains                    |   Yes   |  Yes  |  Yes  |  Yes   |  Yes  |    Yes    | Yes  |    Yes    |   Yes   |    No     |    Yes    |    Yes    |    Yes    |
+| Field/property type resolution       |   Yes   |  No†  |  Yes  |  Yes   |  Yes  |    Yes    | Yes  |   Yes\*   |   Yes   |   YARD    |    No     |    Yes    |    No‡    |
+| Comment-based types                  |  JSDoc  | JSDoc |  No   |   No   |  No   |    No     |  No  |    No     | PHPDoc  |   YARD    |    No     |    No     |    No     |
+| Return type extraction               |  JSDoc  | JSDoc |  No   |   No   |  No   |    No     |  No  |    No     | PHPDoc  |   YARD    |    No     |    No     |    No     |
+| Call-result variable binding         |   Yes   |  Yes  |  Yes  |  Yes   |  Yes  |    Yes    | Yes  |    Yes    |   Yes   |   Yes¶    |    No     |    Yes    |    No     |
+| Field access binding                 |   Yes   |  No†  |  Yes  |  Yes   |  Yes  |    Yes    | Yes  |    No‖    |   Yes   |    N/A    |    No     |    Yes    |    No     |
+| Method-call-result binding           |   Yes   |  Yes  |  Yes  |  Yes   |  Yes  |    Yes    | Yes  |    Yes    |   Yes   |   Yes¶    |    No     |    Yes    |    No     |
+| Write access (ACCESSES write)        |   Yes   |  Yes  |  Yes  |  Yes   |  Yes  |    Yes    | Yes  |    Yes    |  Yes§   |    Yes    |    Yes    |    Yes    |    No     |
+| Parameter types extracted            | Yes\*\* |  No   |  Yes  |  Yes   |  Yes  |    Yes    | Yes  | Partial†† |   No    |    No     |    No     |    Yes    |    No     |
+| Method overload disambiguation       | Yes\*\* |  No   |  Yes  |  Yes   |  Yes  |    No     |  No  |    No     |   No    |    No     |    No     |    Yes    |    No     |
+| Constructor-visible virtual dispatch |   Yes   |  No   |  Yes  | Yes‡‡  |  Yes  |    No     |  No  |    No     |   No    |    No     |    No     |   Yes§§   |    No     |
+| Optional parameter arity resolution  |   Yes   |  No   |  No   |  Yes   |  Yes  |    No     |  No  |    Yes    |   Yes   |    Yes    |    No     |    Yes    |    No     |
+| Cross-file binding propagation       |   Yes   |  Yes  | Yes‖‖ |  Yes   | Yes¶¶ | Yes\*\*\* | Yes  |    Yes    | Partial | Yes\*\*\* | Yes\*\*\* | Yes\*\*\* | Yes\*\*\* |
 
 \* Python class-level annotated attributes (`address: Address`) now resolve `declaredType` correctly. The `self.x` instance attribute pattern is not yet supported.
 

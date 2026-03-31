@@ -1,8 +1,12 @@
-import { User } from './user';
-import { Repo } from './repo';
+import { User } from "./user";
+import { Repo } from "./repo";
 
-function getUser(): User { return new User(); }
-function getRepo(): Repo { return new Repo(); }
+function getUser(): User {
+  return new User();
+}
+function getRepo(): Repo {
+  return new Repo();
+}
 
 export function processEntities(): void {
   const u: User = getUser();

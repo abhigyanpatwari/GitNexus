@@ -11,13 +11,13 @@
  * Seed data is NOT included — each test provides its own via options.seed.
  */
 /// <reference path="../vitest.d.ts" />
-import path from 'path';
-import { describe, beforeAll, afterAll, inject } from 'vitest';
-import type { TestDBHandle } from './test-db.js';
+import path from "path";
+import { describe, beforeAll, afterAll, inject } from "vitest";
+import type { TestDBHandle } from "./test-db.js";
 import {
   NODE_TABLES,
   EMBEDDING_TABLE_NAME,
-} from '../../src/core/lbug/schema.js';
+} from "../../src/core/lbug/schema.js";
 
 export interface IndexedDBHandle {
   /** Path to the LadybugDB database file */
@@ -79,10 +79,10 @@ export function withTestLbugDB(
 
   const setup = async () => {
     // Get shared DB path from globalSetup (created once with full schema)
-    const dbPath = inject<'lbugDbPath'>('lbugDbPath');
+    const dbPath = inject<"lbugDbPath">("lbugDbPath");
     const repoId = `test-${prefix}-${Date.now()}-${repoCounter++}`;
 
-    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const adapter = await import("../../src/core/lbug/lbug-adapter.js");
 
     // 1. Init core adapter (writable) — reuses existing connection if
     //    already open for this dbPath (no new native objects created).
@@ -94,7 +94,11 @@ export function withTestLbugDB(
     // 3. Drop stale FTS indexes from previous test file
     if (options?.ftsIndexes?.length) {
       for (const idx of options.ftsIndexes) {
-        try { await adapter.dropFTSIndex(idx.table, idx.indexName); } catch { /* may not exist */ }
+        try {
+          await adapter.dropFTSIndex(idx.table, idx.indexName);
+        } catch {
+          /* may not exist */
+        }
       }
     }
 
@@ -126,14 +130,16 @@ export function withTestLbugDB(
     //    rather than at the native DB level.
     if (options?.poolAdapter) {
       const coreDb = adapter.getDatabase();
-      if (!coreDb) throw new Error('withTestLbugDB: core adapter has no open Database');
-      const { initLbugWithDb } = await import('../../src/mcp/core/lbug-adapter.js');
+      if (!coreDb)
+        throw new Error("withTestLbugDB: core adapter has no open Database");
+      const { initLbugWithDb } =
+        await import("../../src/mcp/core/lbug-adapter.js");
       await initLbugWithDb(repoId, coreDb, dbPath);
     }
 
     const cleanup = async () => {
       if (options?.poolAdapter) {
-        const poolAdapter = await import('../../src/mcp/core/lbug-adapter.js');
+        const poolAdapter = await import("../../src/mcp/core/lbug-adapter.js");
         await poolAdapter.closeLbug(repoId);
       }
       await adapter.closeLbug();
@@ -153,7 +159,10 @@ export function withTestLbugDB(
 
   const lazyHandle = new Proxy({} as IndexedDBHandle, {
     get(_target, prop) {
-      if (!ref.handle) throw new Error('withTestLbugDB: handle not initialized — beforeAll has not run yet');
+      if (!ref.handle)
+        throw new Error(
+          "withTestLbugDB: handle not initialized — beforeAll has not run yet",
+        );
       return (ref.handle as any)[prop];
     },
   });
@@ -162,7 +171,9 @@ export function withTestLbugDB(
   // collisions when multiple withTestLbugDB calls share the same file.
   describe(`withTestLbugDB(${prefix})`, () => {
     beforeAll(setup, timeout);
-    afterAll(async () => { if (ref.handle) await ref.handle.cleanup(); });
+    afterAll(async () => {
+      if (ref.handle) await ref.handle.cleanup();
+    });
     fn(lazyHandle);
   });
 }

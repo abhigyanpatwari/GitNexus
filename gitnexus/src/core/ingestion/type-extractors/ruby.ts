@@ -1,6 +1,22 @@
-import type { LanguageTypeConfig, ParameterExtractor, TypeBindingExtractor, InitializerExtractor, ClassNameLookup, ConstructorBindingScanner, ReturnTypeExtractor, PendingAssignmentExtractor, ForLoopExtractor } from './types.js';
-import { extractRubyConstructorAssignment, extractSimpleTypeName, extractElementTypeFromString, extractVarName, resolveIterableElementType } from './shared.js';
-import type { SyntaxNode } from '../utils.js';
+import type {
+  LanguageTypeConfig,
+  ParameterExtractor,
+  TypeBindingExtractor,
+  InitializerExtractor,
+  ClassNameLookup,
+  ConstructorBindingScanner,
+  ReturnTypeExtractor,
+  PendingAssignmentExtractor,
+  ForLoopExtractor,
+} from "./types.js";
+import {
+  extractRubyConstructorAssignment,
+  extractSimpleTypeName,
+  extractElementTypeFromString,
+  extractVarName,
+  resolveIterableElementType,
+} from "./shared.js";
+import type { SyntaxNode } from "../utils.js";
 
 /**
  * Ruby type extractor — YARD annotation parsing.
@@ -46,23 +62,24 @@ const extractYardTypeName = (yardType: string): string | undefined => {
   // Handle nullable: "Type, nil" or "nil, Type"
   // Use bracket-balanced split to avoid breaking on commas inside generics like Hash<Symbol, User>
   const parts: string[] = [];
-  let depth = 0, start = 0;
+  let depth = 0,
+    start = 0;
   for (let i = 0; i < trimmed.length; i++) {
-    if (trimmed[i] === '<') depth++;
-    else if (trimmed[i] === '>') depth--;
-    else if (trimmed[i] === ',' && depth === 0) {
+    if (trimmed[i] === "<") depth++;
+    else if (trimmed[i] === ">") depth--;
+    else if (trimmed[i] === "," && depth === 0) {
       parts.push(trimmed.slice(start, i).trim());
       start = i + 1;
     }
   }
   parts.push(trimmed.slice(start).trim());
-  const filtered = parts.filter(p => p !== '' && p !== 'nil');
+  const filtered = parts.filter((p) => p !== "" && p !== "nil");
   if (filtered.length !== 1) return undefined; // ambiguous union
 
   const typePart = filtered[0];
 
   // Handle qualified: "Models::User" → "User"
-  const segments = typePart.split('::');
+  const segments = typePart.split("::");
   const last = segments[segments.length - 1];
 
   // Handle generic: "Array<User>" → "Array"
@@ -104,7 +121,7 @@ const collectYardParams = (methodNode: SyntaxNode): Map<string, string> => {
   const collectComments = (startNode: SyntaxNode): void => {
     let sibling = startNode.previousSibling;
     while (sibling) {
-      if (sibling.type === 'comment') {
+      if (sibling.type === "comment") {
         commentTexts.unshift(sibling.text);
       } else if (sibling.isNamed) {
         break;
@@ -117,12 +134,15 @@ const collectYardParams = (methodNode: SyntaxNode): Map<string, string> => {
   collectComments(methodNode);
 
   // If no comments found and parent is body_statement, check parent's siblings
-  if (commentTexts.length === 0 && methodNode.parent?.type === 'body_statement') {
+  if (
+    commentTexts.length === 0 &&
+    methodNode.parent?.type === "body_statement"
+  ) {
     collectComments(methodNode.parent);
   }
 
   // Parse all comment lines for @param annotations
-  const commentBlock = commentTexts.join('\n');
+  const commentBlock = commentTexts.join("\n");
   let match: RegExpExecArray | null;
 
   // Reset regex state
@@ -158,9 +178,9 @@ const collectYardParams = (methodNode: SyntaxNode): Map<string, string> => {
  *   extractDeclaration returns early for these nodes)
  */
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
-  'method',
-  'singleton_method',
-  'assignment',
+  "method",
+  "singleton_method",
+  "assignment",
 ]);
 
 /**
@@ -168,8 +188,11 @@ const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
  * Pre-populates the scope env with parameter types before the
  * standard parameter walk (which won't find types since Ruby has none).
  */
-const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
-  if (node.type !== 'method' && node.type !== 'singleton_method') return;
+const extractDeclaration: TypeBindingExtractor = (
+  node: SyntaxNode,
+  env: Map<string, string>,
+): void => {
+  if (node.type !== "method" && node.type !== "singleton_method") return;
 
   const yardParams = collectYardParams(node);
   if (yardParams.size === 0) return;
@@ -188,7 +211,10 @@ const extractDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: Map<str
  *
  * We still register this to maintain the LanguageTypeConfig contract.
  */
-const extractParameter: ParameterExtractor = (_node: SyntaxNode, _env: Map<string, string>): void => {
+const extractParameter: ParameterExtractor = (
+  _node: SyntaxNode,
+  _env: Map<string, string>,
+): void => {
   // Ruby parameters have no type annotations.
   // YARD types are pre-populated by extractDeclaration.
 };
@@ -198,7 +224,11 @@ const extractParameter: ParameterExtractor = (_node: SyntaxNode, _env: Map<strin
  * Uses the shared extractRubyConstructorAssignment helper for AST matching,
  * then resolves against locally-known class names.
  */
-const extractInitializer: InitializerExtractor = (node, env, classNames): void => {
+const extractInitializer: InitializerExtractor = (
+  node,
+  env,
+  classNames,
+): void => {
   const result = extractRubyConstructorAssignment(node);
   if (!result) return;
   if (env.has(result.varName)) return;
@@ -216,7 +246,7 @@ const extractReturnType: ReturnTypeExtractor = (node) => {
   const search = (startNode: SyntaxNode): string | undefined => {
     let sibling = startNode.previousSibling;
     while (sibling) {
-      if (sibling.type === 'comment') {
+      if (sibling.type === "comment") {
         const match = YARD_RETURN_RE.exec(sibling.text);
         if (match) return extractYardTypeName(match[1]);
       } else if (sibling.isNamed) {
@@ -230,7 +260,7 @@ const extractReturnType: ReturnTypeExtractor = (node) => {
   const result = search(node);
   if (result) return result;
 
-  if (node.parent?.type === 'body_statement') {
+  if (node.parent?.type === "body_statement") {
     return search(node.parent);
   }
   return undefined;
@@ -248,13 +278,13 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   if (newResult) return newResult;
 
   // Plain call assignment: user = get_user() / user = Models.create()
-  if (node.type !== 'assignment') return undefined;
-  const left = node.childForFieldName('left');
-  const right = node.childForFieldName('right');
+  if (node.type !== "assignment") return undefined;
+  const left = node.childForFieldName("left");
+  const right = node.childForFieldName("right");
   if (!left || !right) return undefined;
-  if (left.type !== 'identifier' && left.type !== 'constant') return undefined;
-  if (right.type !== 'call') return undefined;
-  const method = right.childForFieldName('method');
+  if (left.type !== "identifier" && left.type !== "constant") return undefined;
+  if (right.type !== "call") return undefined;
+  const method = right.childForFieldName("method");
   if (!method) return undefined;
   const calleeName = extractSimpleTypeName(method);
   if (!calleeName) return undefined;
@@ -262,9 +292,9 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
 };
 
 /** Ruby method node types that carry a parameter list. */
-const RUBY_METHOD_NODE_TYPES = new Set(['method', 'singleton_method']);
+const RUBY_METHOD_NODE_TYPES = new Set(["method", "singleton_method"]);
 
-const FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set(['for']);
+const FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set(["for"]);
 
 /**
  * Collect raw YARD @param type strings from comment nodes preceding a method.
@@ -278,7 +308,7 @@ const collectYardRawParams = (methodNode: SyntaxNode): Map<string, string> => {
   const collectComments = (startNode: SyntaxNode): void => {
     let sibling = startNode.previousSibling;
     while (sibling) {
-      if (sibling.type === 'comment') {
+      if (sibling.type === "comment") {
         commentTexts.unshift(sibling.text);
       } else if (sibling.isNamed) {
         break;
@@ -288,11 +318,14 @@ const collectYardRawParams = (methodNode: SyntaxNode): Map<string, string> => {
   };
 
   collectComments(methodNode);
-  if (commentTexts.length === 0 && methodNode.parent?.type === 'body_statement') {
+  if (
+    commentTexts.length === 0 &&
+    methodNode.parent?.type === "body_statement"
+  ) {
     collectComments(methodNode.parent);
   }
 
-  const commentBlock = commentTexts.join('\n');
+  const commentBlock = commentTexts.join("\n");
   let match: RegExpExecArray | null;
 
   YARD_PARAM_RE.lastIndex = 0;
@@ -314,7 +347,10 @@ const collectYardRawParams = (methodNode: SyntaxNode): Map<string, string> => {
  *
  * Example: `@param users [Array<User>]` → extracts "User" from "Array<User>".
  */
-const findRubyParamElementType = (iterableName: string, startNode: SyntaxNode): string | undefined => {
+const findRubyParamElementType = (
+  iterableName: string,
+  startNode: SyntaxNode,
+): string | undefined => {
   let current: SyntaxNode | null = startNode.parent;
   while (current) {
     if (RUBY_METHOD_NODE_TYPES.has(current.type)) {
@@ -342,24 +378,27 @@ const findRubyParamElementType = (iterableName: string, startNode: SyntaxNode): 
  * Ruby has no static types on loop variables, so this mainly works when the
  * iterable has a YARD-annotated container type (e.g., `@param users [Array<User>]`).
  */
-const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTypeNodes, scope }): void => {
-  if (node.type !== 'for') return;
+const extractForLoopBinding: ForLoopExtractor = (
+  node,
+  { scopeEnv, declarationTypeNodes, scope },
+): void => {
+  if (node.type !== "for") return;
 
   // The loop variable is the `pattern` field (identifier).
-  const patternNode = node.childForFieldName('pattern');
+  const patternNode = node.childForFieldName("pattern");
   if (!patternNode) return;
   const loopVarName = extractVarName(patternNode);
   if (!loopVarName) return;
 
   // The iterable is inside the `value` field which is an `in` node wrapping the expression.
-  const inNode = node.childForFieldName('value');
+  const inNode = node.childForFieldName("value");
   if (!inNode) return;
   const iterableNode = inNode.firstNamedChild;
   let iterableName: string | undefined;
-  if (iterableNode?.type === 'identifier') {
+  if (iterableNode?.type === "identifier") {
     iterableName = iterableNode.text;
-  } else if (iterableNode?.type === 'call') {
-    const method = iterableNode.childForFieldName('method');
+  } else if (iterableNode?.type === "call") {
+    const method = iterableNode.childForFieldName("method");
     if (method) iterableName = method.text;
   }
   if (!iterableName) return;
@@ -368,8 +407,13 @@ const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTy
   const noopExtractFromTypeNode = (): string | undefined => undefined;
 
   const elementType = resolveIterableElementType(
-    iterableName, node, scopeEnv, declarationTypeNodes, scope,
-    noopExtractFromTypeNode, findRubyParamElementType,
+    iterableName,
+    node,
+    scopeEnv,
+    declarationTypeNodes,
+    scope,
+    noopExtractFromTypeNode,
+    findRubyParamElementType,
     undefined,
   );
   if (!elementType) return;
@@ -382,26 +426,38 @@ const extractForLoopBinding: ForLoopExtractor = (node, { scopeEnv, declarationTy
  * Only handles plain identifier RHS (not calls, not literals).
  * Skips if LHS already has a resolved type in scopeEnv.
  */
-const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
-  if (node.type !== 'assignment') return undefined;
-  const lhsNode = node.childForFieldName('left');
-  if (!lhsNode || lhsNode.type !== 'identifier') return undefined;
+const extractPendingAssignment: PendingAssignmentExtractor = (
+  node,
+  scopeEnv,
+) => {
+  if (node.type !== "assignment") return undefined;
+  const lhsNode = node.childForFieldName("left");
+  if (!lhsNode || lhsNode.type !== "identifier") return undefined;
   const varName = lhsNode.text;
   if (scopeEnv.has(varName)) return undefined;
-  const rhsNode = node.childForFieldName('right');
+  const rhsNode = node.childForFieldName("right");
   if (!rhsNode) return undefined;
-  if (rhsNode.type === 'identifier') return { kind: 'copy', lhs: varName, rhs: rhsNode.text };
+  if (rhsNode.type === "identifier")
+    return { kind: "copy", lhs: varName, rhs: rhsNode.text };
   // call/method_call RHS — Ruby uses method calls for both field access and method calls
-  if (rhsNode.type === 'call' || rhsNode.type === 'method_call') {
-    const methodNode = rhsNode.childForFieldName('method');
-    const receiverNode = rhsNode.childForFieldName('receiver');
-    if (!receiverNode && methodNode?.type === 'identifier') {
+  if (rhsNode.type === "call" || rhsNode.type === "method_call") {
+    const methodNode = rhsNode.childForFieldName("method");
+    const receiverNode = rhsNode.childForFieldName("receiver");
+    if (!receiverNode && methodNode?.type === "identifier") {
       // No receiver → callResult (bare function call)
-      return { kind: 'callResult', lhs: varName, callee: methodNode.text };
+      return { kind: "callResult", lhs: varName, callee: methodNode.text };
     }
-    if (receiverNode?.type === 'identifier' && methodNode?.type === 'identifier') {
+    if (
+      receiverNode?.type === "identifier" &&
+      methodNode?.type === "identifier"
+    ) {
       // With receiver → methodCallResult (a.method)
-      return { kind: 'methodCallResult', lhs: varName, receiver: receiverNode.text, method: methodNode.text };
+      return {
+        kind: "methodCallResult",
+        lhs: varName,
+        receiver: receiverNode.text,
+        method: methodNode.text,
+      };
     }
   }
   return undefined;

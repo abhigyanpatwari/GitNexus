@@ -1,4 +1,4 @@
-import { getB } from './b';
+import { getB } from "./b";
 export class A {
   doA(): void {}
 }

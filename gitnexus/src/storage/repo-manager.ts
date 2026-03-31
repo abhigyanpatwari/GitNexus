@@ -1,14 +1,14 @@
 /**
  * Repository Manager
- * 
+ *
  * Manages GitNexus index storage in .gitnexus/ at repo root.
  * Also maintains a global registry at ~/.gitnexus/registry.json
  * so the MCP server can discover indexed repos from any cwd.
  */
 
-import fs from 'fs/promises';
-import path from 'path';
-import os from 'os';
+import fs from "fs/promises";
+import path from "path";
+import os from "os";
 
 export interface RepoMeta {
   repoPath: string;
@@ -41,10 +41,10 @@ export interface RegistryEntry {
   storagePath: string;
   indexedAt: string;
   lastCommit: string;
-  stats?: RepoMeta['stats'];
+  stats?: RepoMeta["stats"];
 }
 
-const GITNEXUS_DIR = '.gitnexus';
+const GITNEXUS_DIR = ".gitnexus";
 
 // ─── Local Storage Helpers ─────────────────────────────────────────────
 
@@ -62,8 +62,8 @@ export const getStoragePaths = (repoPath: string) => {
   const storagePath = getStoragePath(repoPath);
   return {
     storagePath,
-    lbugPath: path.join(storagePath, 'lbug'),
-    metaPath: path.join(storagePath, 'meta.json'),
+    lbugPath: path.join(storagePath, "lbug"),
+    metaPath: path.join(storagePath, "meta.json"),
   };
 };
 
@@ -73,7 +73,7 @@ export const getStoragePaths = (repoPath: string) => {
  */
 export const hasKuzuIndex = async (storagePath: string): Promise<boolean> => {
   try {
-    await fs.stat(path.join(storagePath, 'kuzu'));
+    await fs.stat(path.join(storagePath, "kuzu"));
     return true;
   } catch {
     return false;
@@ -92,8 +92,8 @@ export const hasKuzuIndex = async (storagePath: string): Promise<boolean> => {
 export const cleanupOldKuzuFiles = async (
   storagePath: string,
 ): Promise<{ found: boolean; needsReindex: boolean }> => {
-  const oldPath = path.join(storagePath, 'kuzu');
-  const newPath = path.join(storagePath, 'lbug');
+  const oldPath = path.join(storagePath, "kuzu");
+  const newPath = path.join(storagePath, "lbug");
   try {
     await fs.stat(oldPath);
     // Old kuzu file/dir exists — determine if lbug is already present
@@ -104,11 +104,15 @@ export const cleanupOldKuzuFiles = async (
       needsReindex = true;
     }
     // Delete kuzu database file and its sidecars (.wal, .lock)
-    for (const suffix of ['', '.wal', '.lock']) {
-      try { await fs.unlink(oldPath + suffix); } catch {}
+    for (const suffix of ["", ".wal", ".lock"]) {
+      try {
+        await fs.unlink(oldPath + suffix);
+      } catch {}
     }
     // Also handle the case where kuzu was stored as a directory
-    try { await fs.rm(oldPath, { recursive: true, force: true }); } catch {}
+    try {
+      await fs.rm(oldPath, { recursive: true, force: true });
+    } catch {}
     return { found: true, needsReindex };
   } catch {
     // Old path doesn't exist — nothing to do
@@ -119,10 +123,12 @@ export const cleanupOldKuzuFiles = async (
 /**
  * Load metadata from an indexed repo
  */
-export const loadMeta = async (storagePath: string): Promise<RepoMeta | null> => {
+export const loadMeta = async (
+  storagePath: string,
+): Promise<RepoMeta | null> => {
   try {
-    const metaPath = path.join(storagePath, 'meta.json');
-    const raw = await fs.readFile(metaPath, 'utf-8');
+    const metaPath = path.join(storagePath, "meta.json");
+    const raw = await fs.readFile(metaPath, "utf-8");
     return JSON.parse(raw) as RepoMeta;
   } catch {
     return null;
@@ -132,10 +138,13 @@ export const loadMeta = async (storagePath: string): Promise<RepoMeta | null> =>
 /**
  * Save metadata to storage
  */
-export const saveMeta = async (storagePath: string, meta: RepoMeta): Promise<void> => {
+export const saveMeta = async (
+  storagePath: string,
+  meta: RepoMeta,
+): Promise<void> => {
   await fs.mkdir(storagePath, { recursive: true });
-  const metaPath = path.join(storagePath, 'meta.json');
-  await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf-8');
+  const metaPath = path.join(storagePath, "meta.json");
+  await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), "utf-8");
 };
 
 /**
@@ -154,11 +163,13 @@ export const hasIndex = async (repoPath: string): Promise<boolean> => {
 /**
  * Load an indexed repo from a path
  */
-export const loadRepo = async (repoPath: string): Promise<IndexedRepo | null> => {
+export const loadRepo = async (
+  repoPath: string,
+): Promise<IndexedRepo | null> => {
   const paths = getStoragePaths(repoPath);
   const meta = await loadMeta(paths.storagePath);
   if (!meta) return null;
-  
+
   return {
     repoPath: path.resolve(repoPath),
     ...paths,
@@ -169,16 +180,18 @@ export const loadRepo = async (repoPath: string): Promise<IndexedRepo | null> =>
 /**
  * Find .gitnexus by walking up from a starting path
  */
-export const findRepo = async (startPath: string): Promise<IndexedRepo | null> => {
+export const findRepo = async (
+  startPath: string,
+): Promise<IndexedRepo | null> => {
   let current = path.resolve(startPath);
   const root = path.parse(current).root;
-  
+
   while (current !== root) {
     const repo = await loadRepo(current);
     if (repo) return repo;
     current = path.dirname(current);
   }
-  
+
   return null;
 };
 
@@ -186,19 +199,19 @@ export const findRepo = async (startPath: string): Promise<IndexedRepo | null> =
  * Add .gitnexus to .gitignore if not already present
  */
 export const addToGitignore = async (repoPath: string): Promise<void> => {
-  const gitignorePath = path.join(repoPath, '.gitignore');
-  
+  const gitignorePath = path.join(repoPath, ".gitignore");
+
   try {
-    const content = await fs.readFile(gitignorePath, 'utf-8');
+    const content = await fs.readFile(gitignorePath, "utf-8");
     if (content.includes(GITNEXUS_DIR)) return;
-    
-    const newContent = content.endsWith('\n') 
+
+    const newContent = content.endsWith("\n")
       ? `${content}${GITNEXUS_DIR}\n`
       : `${content}\n${GITNEXUS_DIR}\n`;
-    await fs.writeFile(gitignorePath, newContent, 'utf-8');
+    await fs.writeFile(gitignorePath, newContent, "utf-8");
   } catch {
     // .gitignore doesn't exist, create it
-    await fs.writeFile(gitignorePath, `${GITNEXUS_DIR}\n`, 'utf-8');
+    await fs.writeFile(gitignorePath, `${GITNEXUS_DIR}\n`, "utf-8");
   }
 };
 
@@ -208,14 +221,14 @@ export const addToGitignore = async (repoPath: string): Promise<void> => {
  * Get the path to the global GitNexus directory
  */
 export const getGlobalDir = (): string => {
-  return path.join(os.homedir(), '.gitnexus');
+  return path.join(os.homedir(), ".gitnexus");
 };
 
 /**
  * Get the path to the global registry file
  */
 export const getGlobalRegistryPath = (): string => {
-  return path.join(getGlobalDir(), 'registry.json');
+  return path.join(getGlobalDir(), "registry.json");
 };
 
 /**
@@ -223,7 +236,7 @@ export const getGlobalRegistryPath = (): string => {
  */
 export const readRegistry = async (): Promise<RegistryEntry[]> => {
   try {
-    const raw = await fs.readFile(getGlobalRegistryPath(), 'utf-8');
+    const raw = await fs.readFile(getGlobalRegistryPath(), "utf-8");
     const data = JSON.parse(raw);
     return Array.isArray(data) ? data : [];
   } catch {
@@ -237,14 +250,21 @@ export const readRegistry = async (): Promise<RegistryEntry[]> => {
 const writeRegistry = async (entries: RegistryEntry[]): Promise<void> => {
   const dir = getGlobalDir();
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(getGlobalRegistryPath(), JSON.stringify(entries, null, 2), 'utf-8');
+  await fs.writeFile(
+    getGlobalRegistryPath(),
+    JSON.stringify(entries, null, 2),
+    "utf-8",
+  );
 };
 
 /**
  * Register (add or update) a repo in the global registry.
  * Called after `gitnexus analyze` completes.
  */
-export const registerRepo = async (repoPath: string, meta: RepoMeta): Promise<void> => {
+export const registerRepo = async (
+  repoPath: string,
+  meta: RepoMeta,
+): Promise<void> => {
   const resolved = path.resolve(repoPath);
   const name = path.basename(resolved);
   const { storagePath } = getStoragePaths(resolved);
@@ -253,7 +273,7 @@ export const registerRepo = async (repoPath: string, meta: RepoMeta): Promise<vo
   const existing = entries.findIndex((e) => {
     const a = path.resolve(e.path);
     const b = resolved;
-    return process.platform === 'win32'
+    return process.platform === "win32"
       ? a.toLowerCase() === b.toLowerCase()
       : a === b;
   });
@@ -283,9 +303,7 @@ export const registerRepo = async (repoPath: string, meta: RepoMeta): Promise<vo
 export const unregisterRepo = async (repoPath: string): Promise<void> => {
   const resolved = path.resolve(repoPath);
   const entries = await readRegistry();
-  const filtered = entries.filter(
-    (e) => path.resolve(e.path) !== resolved
-  );
+  const filtered = entries.filter((e) => path.resolve(e.path) !== resolved);
   await writeRegistry(filtered);
 };
 
@@ -293,7 +311,9 @@ export const unregisterRepo = async (repoPath: string): Promise<void> => {
  * List all registered repos from the global registry.
  * Optionally validates that each entry's .gitnexus/ still exists.
  */
-export const listRegisteredRepos = async (opts?: { validate?: boolean }): Promise<RegistryEntry[]> => {
+export const listRegisteredRepos = async (opts?: {
+  validate?: boolean;
+}): Promise<RegistryEntry[]> => {
   const entries = await readRegistry();
   if (!opts?.validate) return entries;
 
@@ -301,7 +321,7 @@ export const listRegisteredRepos = async (opts?: { validate?: boolean }): Promis
   const valid: RegistryEntry[] = [];
   for (const entry of entries) {
     try {
-      await fs.access(path.join(entry.storagePath, 'meta.json'));
+      await fs.access(path.join(entry.storagePath, "meta.json"));
       valid.push(entry);
     } catch {
       // Index no longer exists — skip
@@ -328,7 +348,7 @@ export interface CLIConfig {
  * Get the path to the global CLI config file
  */
 export const getGlobalConfigPath = (): string => {
-  return path.join(getGlobalDir(), 'config.json');
+  return path.join(getGlobalDir(), "config.json");
 };
 
 /**
@@ -336,7 +356,7 @@ export const getGlobalConfigPath = (): string => {
  */
 export const loadCLIConfig = async (): Promise<CLIConfig> => {
   try {
-    const raw = await fs.readFile(getGlobalConfigPath(), 'utf-8');
+    const raw = await fs.readFile(getGlobalConfigPath(), "utf-8");
     return JSON.parse(raw) as CLIConfig;
   } catch {
     return {};
@@ -350,9 +370,13 @@ export const saveCLIConfig = async (config: CLIConfig): Promise<void> => {
   const dir = getGlobalDir();
   await fs.mkdir(dir, { recursive: true });
   const configPath = getGlobalConfigPath();
-  await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+  await fs.writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
   // Restrict file permissions on Unix (config may contain API keys)
-  if (process.platform !== 'win32') {
-    try { await fs.chmod(configPath, 0o600); } catch { /* best-effort */ }
+  if (process.platform !== "win32") {
+    try {
+      await fs.chmod(configPath, 0o600);
+    } catch {
+      /* best-effort */
+    }
   }
 };

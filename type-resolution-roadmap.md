@@ -85,6 +85,7 @@ The goal is not to build a compiler. The goal is to support high-value static an
 #### Integration Test Coverage
 
 17 fixture directories, 23 describe blocks, 705 lines of test code covering all 11 languages:
+
 - Grandparent MRO (depth-2 C→B→A): TS, JS, Kotlin, C#, C++, Java, PHP, Python, Ruby
 - Object destructuring: TS, JS
 - Struct destructuring: Rust
@@ -101,6 +102,7 @@ The goal is not to build a compiler. The goal is to support high-value static an
 **Plan:** `docs/plans/2026-03-19-feat-polymorphism-overloading-type-resolution-plan.md`
 
 Four incremental phases:
+
 1. **Parameter type metadata** — extend `SymbolDefinition` with `parameterTypes: string[]` extracted during parsing — **DELIVERED**
 2. **Overload disambiguation** — filter overloaded methods by argument literal types at call sites — **DELIVERED** (Java, Kotlin, C#, C++, TypeScript)
 3. **Constructor-visible virtual dispatch** — `Base b = new Derived(); b.method()` resolves to `Derived#method` when constructor type is a known subclass — **DELIVERED** (Java, C#, TS, C++, Kotlin via `detectConstructorType` hook, C++ smart pointers via `make_shared`/`make_unique`)
@@ -130,11 +132,13 @@ Languages benefiting: Java, Kotlin, C#, C++, TypeScript (overloading). All OOP l
 **Shipped in** `feat/phase14-cross-file-binding-propagation`.
 
 Three enrichment mechanisms:
+
 - **E1:** `seedCrossFileReceiverTypes` — pre-seeds `receiverTypeName` for single-hop imported receivers (zero re-parse)
 - **E2:** `ExportedTypeMap` seeded into `importedBindings` for re-resolution pass
 - **E3:** `buildImportedReturnTypes` — cross-file return types for imported callables (local-first, SymbolTable takes precedence)
 
 Architecture:
+
 - Topological import ordering via Kahn's BFS (`topologicalLevelSort`, returns `{ levels, cycleCount }`)
 - Cycle-safe: files in cycles grouped in final level, no cross-cycle propagation
 - `runCrossFileBindingPropagation()` extracted as standalone pipeline phase
@@ -161,10 +165,12 @@ Architecture:
 ¹ Whole-module import languages: namedImportMap entries synthesized from graph-exported symbols via `synthesizeWildcardImportBindings()` (capped at 1000 per file)
 
 **Named binding extraction details:**
+
 - Java: `import static X.Y.method` now captured (static modifier detection). Ambiguous static imports (same method from multiple classes) fall through to Tier 2a for arity narrowing.
 - C#: `using static NS.Type;` now captured (last segment as class binding). Non-alias `using NS;` remains unsupported (namespace import requires type inference).
 
 **Resolved limitations (this PR):**
+
 - ~~Worker path vs sequential path quality split~~ — workers now return file-scope TypeEnv bindings; main thread merges fixpoint-inferred exports into ExportedTypeMap (filtered by graph `isExported`)
 - ~~`lookupRawReturnType` no cross-file fallback~~ — separate `importedRawReturnTypes` map stores raw declared types (e.g., `User[]`) for for-loop element extraction via `extractElementTypeFromString`
 - ~~C++ header method declarations~~ — tree-sitter query fix: `field_identifier` added to declaration pattern alongside `identifier`, plus pointer/reference return type variants
@@ -192,14 +198,17 @@ Phase 14 is delivered. Remaining open: Phase P.5, Phase S.
 ## Language-Specific Gaps (remaining)
 
 ### Swift
+
 - For-loop element binding → Phase S
 - Assignment chains (copy, callResult, fieldAccess, methodCallResult) → Phase S
 - `guard let` narrowing → Phase S
 
 ### Kotlin
+
 - ~~Virtual dispatch: `Dog()` uses `call_expression` (no `new` keyword)~~ — **RESOLVED** via `detectConstructorType` hook
 
 ### All languages
+
 - ~~Cross-file binding propagation → Phase 14~~ — **DELIVERED** for all 13 languages via two mechanisms: (1) named import extraction (TS/JS/Python/Kotlin/Rust/PHP/Java/C#), (2) wildcard import synthesis from graph-exported symbols (Go/Ruby/C/C++/Swift). Remaining gap: C# non-alias `using NS;` (namespace import, requires type inference).
 
 ---
@@ -238,14 +247,14 @@ For-loop binding, assignment chains, `guard let` narrowing. Blocked on tree-sitt
 
 ## Open Design Questions
 
-| # | Question | Status |
-|---|----------|--------|
-| 1 | Where should field-type metadata live? | ✅ Resolved: `fieldByOwner` index in SymbolTable |
-| 2 | How should ambiguity be represented? | ✅ Resolved: keep `undefined`. Conservative approach proven through 9 phases. |
-| 3 | How much receiver context for return types? | ✅ Resolved: Phase 9C `resolveMethodReturnType` filters by `ownerId`. |
-| 4 | How much branch sensitivity? | ✅ Resolved: type predicates + null checks only. No control-flow graph. (Phase 13) |
-| 5 | Field typing and chain typing — one phase or two? | ✅ Resolved: incremental delivery within phases (Phase 8/8A precedent). |
-| 6 | Phase 9B vs Phase 10? | ✅ Resolved: Phase 10 supersedes 9B via post-fixpoint replay. |
+| #   | Question                                          | Status                                                                             |
+| --- | ------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| 1   | Where should field-type metadata live?            | ✅ Resolved: `fieldByOwner` index in SymbolTable                                   |
+| 2   | How should ambiguity be represented?              | ✅ Resolved: keep `undefined`. Conservative approach proven through 9 phases.      |
+| 3   | How much receiver context for return types?       | ✅ Resolved: Phase 9C `resolveMethodReturnType` filters by `ownerId`.              |
+| 4   | How much branch sensitivity?                      | ✅ Resolved: type predicates + null checks only. No control-flow graph. (Phase 13) |
+| 5   | Field typing and chain typing — one phase or two? | ✅ Resolved: incremental delivery within phases (Phase 8/8A precedent).            |
+| 6   | Phase 9B vs Phase 10?                             | ✅ Resolved: Phase 10 supersedes 9B via post-fixpoint replay.                      |
 
 ---
 

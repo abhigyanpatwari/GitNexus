@@ -2,7 +2,7 @@ export class City {
   zipCode: string;
 
   getName(): string {
-    return 'city';
+    return "city";
   }
 }
 

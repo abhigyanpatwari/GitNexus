@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { X, Snail, Rocket, SkipForward } from 'lucide-react';
+import { useState, useEffect } from "react";
+import { X, Snail, Rocket, SkipForward } from "lucide-react";
 
 interface WebGPUFallbackDialogProps {
   isOpen: boolean;
@@ -41,14 +41,14 @@ export const WebGPUFallbackDialog = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       {/* Backdrop */}
-      <div 
-        className={`absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity duration-200 ${isVisible ? 'opacity-100' : 'opacity-0'}`}
+      <div
+        className={`absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity duration-200 ${isVisible ? "opacity-100" : "opacity-0"}`}
         onClick={onClose}
       />
-      
+
       {/* Dialog */}
-      <div 
-        className={`relative bg-surface border border-border-subtle rounded-2xl shadow-2xl max-w-md w-full mx-4 overflow-hidden transition-all duration-200 ${isVisible ? 'opacity-100 scale-100' : 'opacity-0 scale-95'}`}
+      <div
+        className={`relative bg-surface border border-border-subtle rounded-2xl shadow-2xl max-w-md w-full mx-4 overflow-hidden transition-all duration-200 ${isVisible ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}
       >
         {/* Header with scratching emoji */}
         <div className="relative bg-gradient-to-r from-amber-500/20 to-orange-500/20 px-6 py-5 border-b border-border-subtle">
@@ -58,11 +58,11 @@ export const WebGPUFallbackDialog = ({
           >
             <X className="w-5 h-5" />
           </button>
-          
+
           <div className="flex items-center gap-4">
             {/* Animated emoji */}
-            <div 
-              className={`text-5xl ${isAnimating ? 'animate-bounce' : ''}`}
+            <div
+              className={`text-5xl ${isAnimating ? "animate-bounce" : ""}`}
               onAnimationEnd={() => setIsAnimating(false)}
               onClick={() => setIsAnimating(true)}
             >
@@ -82,28 +82,35 @@ export const WebGPUFallbackDialog = ({
         {/* Content */}
         <div className="px-6 py-5 space-y-4">
           <p className="text-sm text-text-secondary leading-relaxed">
-            Couldn't create embeddings with WebGPU, so semantic search (Graph RAG) 
-            won't be as smart. The graph still works fine though! 
+            Couldn't create embeddings with WebGPU, so semantic search (Graph
+            RAG) won't be as smart. The graph still works fine though!
           </p>
-          
+
           <div className="bg-elevated/50 rounded-lg p-4 border border-border-subtle">
             <p className="text-sm text-text-secondary">
-              <span className="font-medium text-text-primary">Your options:</span>
+              <span className="font-medium text-text-primary">
+                Your options:
+              </span>
             </p>
             <ul className="mt-2 space-y-1.5 text-sm text-text-muted">
               <li className="flex items-start gap-2">
                 <Snail className="w-4 h-4 mt-0.5 text-amber-400 flex-shrink-0" />
                 <span>
-                  <strong className="text-text-secondary">Use CPU</strong> — Works but {isSmallCodebase ? 'a bit' : 'way'} slower
+                  <strong className="text-text-secondary">Use CPU</strong> —
+                  Works but {isSmallCodebase ? "a bit" : "way"} slower
                   {nodeCount > 0 && (
-                    <span className="text-text-muted"> (~{estimatedMinutes} min for {nodeCount} nodes)</span>
+                    <span className="text-text-muted">
+                      {" "}
+                      (~{estimatedMinutes} min for {nodeCount} nodes)
+                    </span>
                   )}
                 </span>
               </li>
               <li className="flex items-start gap-2">
                 <SkipForward className="w-4 h-4 mt-0.5 text-blue-400 flex-shrink-0" />
                 <span>
-                  <strong className="text-text-secondary">Skip it</strong> — Graph works, just no AI semantic search
+                  <strong className="text-text-secondary">Skip it</strong> —
+                  Graph works, just no AI semantic search
                 </span>
               </li>
             </ul>
@@ -134,16 +141,15 @@ export const WebGPUFallbackDialog = ({
             onClick={onUseCPU}
             className={`flex-1 px-4 py-2.5 text-sm font-medium rounded-lg transition-all flex items-center justify-center gap-2 ${
               isSmallCodebase
-                ? 'bg-node-function text-white hover:bg-node-function/90'
-                : 'bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30'
+                ? "bg-node-function text-white hover:bg-node-function/90"
+                : "bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30"
             }`}
           >
             <Snail className="w-4 h-4" />
-            Use CPU {isSmallCodebase ? '(Recommended)' : '(Slow)'}
+            Use CPU {isSmallCodebase ? "(Recommended)" : "(Slow)"}
           </button>
         </div>
       </div>
     </div>
   );
 };
-

@@ -1,3 +1,5 @@
 export class Repo {
-  save() { return true; }
+  save() {
+    return true;
+  }
 }

@@ -1,4 +1,4 @@
-import { getUsers } from './models';
+import { getUsers } from "./models";
 
 function process() {
   const users = getUsers();

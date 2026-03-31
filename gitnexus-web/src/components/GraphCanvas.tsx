@@ -1,10 +1,32 @@
-import { useEffect, useCallback, useMemo, useState, forwardRef, useImperativeHandle } from 'react';
-import { ZoomIn, ZoomOut, Maximize2, Focus, RotateCcw, Play, Pause, Lightbulb, LightbulbOff } from 'lucide-react';
-import { useSigma } from '../hooks/useSigma';
-import { useAppState } from '../hooks/useAppState';
-import { knowledgeGraphToGraphology, filterGraphByDepth, SigmaNodeAttributes, SigmaEdgeAttributes } from '../lib/graph-adapter';
-import { QueryFAB } from './QueryFAB';
-import Graph from 'graphology';
+import {
+  useEffect,
+  useCallback,
+  useMemo,
+  useState,
+  forwardRef,
+  useImperativeHandle,
+} from "react";
+import {
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  Focus,
+  RotateCcw,
+  Play,
+  Pause,
+  Lightbulb,
+  LightbulbOff,
+} from "lucide-react";
+import { useSigma } from "../hooks/useSigma";
+import { useAppState } from "../hooks/useAppState";
+import {
+  knowledgeGraphToGraphology,
+  filterGraphByDepth,
+  SigmaNodeAttributes,
+  SigmaEdgeAttributes,
+} from "../lib/graph-adapter";
+import { QueryFAB } from "./QueryFAB";
+import Graph from "graphology";
 
 export interface GraphCanvasHandle {
   focusNode: (nodeId: string) => void;
@@ -37,7 +59,12 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     for (const id of aiToolHighlightedNodeIds) next.add(id);
     // Note: blast radius nodes are handled separately with red color
     return next;
-  }, [highlightedNodeIds, aiCitationHighlightedNodeIds, aiToolHighlightedNodeIds, isAIHighlightsEnabled]);
+  }, [
+    highlightedNodeIds,
+    aiCitationHighlightedNodeIds,
+    aiToolHighlightedNodeIds,
+    isAIHighlightsEnabled,
+  ]);
 
   // Blast radius nodes (only when AI highlights enabled)
   const effectiveBlastRadiusNodeIds = useMemo(() => {
@@ -51,25 +78,31 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     return animatedNodes;
   }, [animatedNodes, isAIHighlightsEnabled]);
 
-  const handleNodeClick = useCallback((nodeId: string) => {
-    if (!graph) return;
-    const node = graph.nodes.find(n => n.id === nodeId);
-    if (node) {
-      setSelectedNode(node);
-      openCodePanel();
-    }
-  }, [graph, setSelectedNode, openCodePanel]);
+  const handleNodeClick = useCallback(
+    (nodeId: string) => {
+      if (!graph) return;
+      const node = graph.nodes.find((n) => n.id === nodeId);
+      if (node) {
+        setSelectedNode(node);
+        openCodePanel();
+      }
+    },
+    [graph, setSelectedNode, openCodePanel],
+  );
 
-  const handleNodeHover = useCallback((nodeId: string | null) => {
-    if (!nodeId || !graph) {
-      setHoveredNodeName(null);
-      return;
-    }
-    const node = graph.nodes.find(n => n.id === nodeId);
-    if (node) {
-      setHoveredNodeName(node.properties.name);
-    }
-  }, [graph]);
+  const handleNodeHover = useCallback(
+    (nodeId: string | null) => {
+      if (!nodeId || !graph) {
+        setHoveredNodeName(null);
+        return;
+      }
+      const node = graph.nodes.find((n) => n.id === nodeId);
+      if (node) {
+        setHoveredNodeName(node.properties.name);
+      }
+    },
+    [graph],
+  );
 
   const handleStageClick = useCallback(() => {
     setSelectedNode(null);
@@ -99,19 +132,23 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
   });
 
   // Expose focusNode to parent via ref
-  useImperativeHandle(ref, () => ({
-    focusNode: (nodeId: string) => {
-      // Also update app state so the selection syncs properly
-      if (graph) {
-        const node = graph.nodes.find(n => n.id === nodeId);
-        if (node) {
-          setSelectedNode(node);
-          openCodePanel();
+  useImperativeHandle(
+    ref,
+    () => ({
+      focusNode: (nodeId: string) => {
+        // Also update app state so the selection syncs properly
+        if (graph) {
+          const node = graph.nodes.find((n) => n.id === nodeId);
+          if (node) {
+            setSelectedNode(node);
+            openCodePanel();
+          }
         }
-      }
-      focusNode(nodeId);
-    }
-  }), [focusNode, graph, setSelectedNode, openCodePanel]);
+        focusNode(nodeId);
+      },
+    }),
+    [focusNode, graph, setSelectedNode, openCodePanel],
+  );
 
   // Update Sigma graph when KnowledgeGraph changes
   useEffect(() => {
@@ -120,13 +157,16 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     // Build communityMemberships map from MEMBER_OF relationships
     // MEMBER_OF edges: nodeId -> communityId (stored as targetId)
     const communityMemberships = new Map<string, number>();
-    graph.relationships.forEach(rel => {
-      if (rel.type === 'MEMBER_OF') {
+    graph.relationships.forEach((rel) => {
+      if (rel.type === "MEMBER_OF") {
         // Find the community node to get its index
-        const communityNode = graph.nodes.find(n => n.id === rel.targetId && n.label === 'Community');
+        const communityNode = graph.nodes.find(
+          (n) => n.id === rel.targetId && n.label === "Community",
+        );
         if (communityNode) {
           // Extract community index from id (e.g., "comm_5" -> 5)
-          const communityIdx = parseInt(rel.targetId.replace('comm_', ''), 10) || 0;
+          const communityIdx =
+            parseInt(rel.targetId.replace("comm_", ""), 10) || 0;
           communityMemberships.set(rel.sourceId, communityIdx);
         }
       }
@@ -141,10 +181,18 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     const sigma = sigmaRef.current;
     if (!sigma) return;
 
-    const sigmaGraph = sigma.getGraph() as Graph<SigmaNodeAttributes, SigmaEdgeAttributes>;
+    const sigmaGraph = sigma.getGraph() as Graph<
+      SigmaNodeAttributes,
+      SigmaEdgeAttributes
+    >;
     if (sigmaGraph.order === 0) return; // Don't filter empty graph
 
-    filterGraphByDepth(sigmaGraph, appSelectedNode?.id || null, depthFilter, visibleLabels);
+    filterGraphByDepth(
+      sigmaGraph,
+      appSelectedNode?.id || null,
+      depthFilter,
+      visibleLabels,
+    );
     sigma.refresh();
   }, [visibleLabels, depthFilter, appSelectedNode, sigmaRef]);
 
@@ -181,7 +229,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
             background: `
               radial-gradient(circle at 50% 50%, rgba(124, 58, 237, 0.03) 0%, transparent 70%),
               linear-gradient(to bottom, #06060a, #0a0a10)
-            `
+            `,
           }}
         />
       </div>
@@ -195,7 +243,9 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
       {/* Hovered node tooltip - only show when NOT selected */}
       {hoveredNodeName && !sigmaSelectedNode && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-elevated/95 border border-border-subtle rounded-lg backdrop-blur-sm z-20 pointer-events-none animate-fade-in">
-          <span className="font-mono text-sm text-text-primary">{hoveredNodeName}</span>
+          <span className="font-mono text-sm text-text-primary">
+            {hoveredNodeName}
+          </span>
         </div>
       )}
 
@@ -275,12 +325,13 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
           onClick={isLayoutRunning ? stopLayout : startLayout}
           className={`
             w-9 h-9 flex items-center justify-center border rounded-md transition-all
-            ${isLayoutRunning
-              ? 'bg-accent border-accent text-white shadow-glow animate-pulse'
-              : 'bg-elevated border-border-subtle text-text-secondary hover:bg-hover hover:text-text-primary'
+            ${
+              isLayoutRunning
+                ? "bg-accent border-accent text-white shadow-glow animate-pulse"
+                : "bg-elevated border-border-subtle text-text-secondary hover:bg-hover hover:text-text-primary"
             }
           `}
-          title={isLayoutRunning ? 'Stop Layout' : 'Run Layout Again'}
+          title={isLayoutRunning ? "Stop Layout" : "Run Layout Again"}
         >
           {isLayoutRunning ? (
             <Pause className="w-4 h-4" />
@@ -294,7 +345,9 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
       {isLayoutRunning && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-1.5 bg-emerald-500/20 border border-emerald-500/30 rounded-full backdrop-blur-sm z-10 animate-fade-in">
           <div className="w-2 h-2 bg-emerald-400 rounded-full animate-ping" />
-          <span className="text-xs text-emerald-400 font-medium">Layout optimizing...</span>
+          <span className="text-xs text-emerald-400 font-medium">
+            Layout optimizing...
+          </span>
         </div>
       )}
 
@@ -313,16 +366,24 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
           }}
           className={
             isAIHighlightsEnabled
-              ? 'w-10 h-10 flex items-center justify-center bg-cyan-500/15 border border-cyan-400/40 rounded-lg text-cyan-200 hover:bg-cyan-500/20 hover:border-cyan-300/60 transition-colors'
-              : 'w-10 h-10 flex items-center justify-center bg-elevated border border-border-subtle rounded-lg text-text-muted hover:bg-hover hover:text-text-primary transition-colors'
+              ? "w-10 h-10 flex items-center justify-center bg-cyan-500/15 border border-cyan-400/40 rounded-lg text-cyan-200 hover:bg-cyan-500/20 hover:border-cyan-300/60 transition-colors"
+              : "w-10 h-10 flex items-center justify-center bg-elevated border border-border-subtle rounded-lg text-text-muted hover:bg-hover hover:text-text-primary transition-colors"
           }
-          title={isAIHighlightsEnabled ? 'Turn off all highlights' : 'Turn on AI highlights'}
+          title={
+            isAIHighlightsEnabled
+              ? "Turn off all highlights"
+              : "Turn on AI highlights"
+          }
         >
-          {isAIHighlightsEnabled ? <Lightbulb className="w-4 h-4" /> : <LightbulbOff className="w-4 h-4" />}
+          {isAIHighlightsEnabled ? (
+            <Lightbulb className="w-4 h-4" />
+          ) : (
+            <LightbulbOff className="w-4 h-4" />
+          )}
         </button>
       </div>
     </div>
   );
 });
 
-GraphCanvas.displayName = 'GraphCanvas';
+GraphCanvas.displayName = "GraphCanvas";

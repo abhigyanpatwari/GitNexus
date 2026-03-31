@@ -9,24 +9,24 @@ export interface SymbolTable {
    * Register a new symbol definition
    */
   add: (filePath: string, name: string, nodeId: string, type: string) => void;
-  
+
   /**
    * High Confidence: Look for a symbol specifically inside a file
    * Returns the Node ID if found
    */
   lookupExact: (filePath: string, name: string) => string | undefined;
-  
+
   /**
    * Low Confidence: Look for a symbol anywhere in the project
    * Used when imports are missing or for framework magic
    */
   lookupFuzzy: (name: string) => SymbolDefinition[];
-  
+
   /**
    * Debugging: See how many symbols are tracked
    */
   getStats: () => { fileCount: number; globalSymbolCount: number };
-  
+
   /**
    * Cleanup memory
    */
@@ -42,7 +42,12 @@ export const createSymbolTable = (): SymbolTable => {
   // Structure: SymbolName -> [List of Definitions]
   const globalIndex = new Map<string, SymbolDefinition[]>();
 
-  const add = (filePath: string, name: string, nodeId: string, type: string) => {
+  const add = (
+    filePath: string,
+    name: string,
+    nodeId: string,
+    type: string,
+  ) => {
     // A. Add to File Index
     if (!fileIndex.has(filePath)) {
       fileIndex.set(filePath, new Map());
@@ -68,7 +73,7 @@ export const createSymbolTable = (): SymbolTable => {
 
   const getStats = () => ({
     fileCount: fileIndex.size,
-    globalSymbolCount: globalIndex.size
+    globalSymbolCount: globalIndex.size,
   });
 
   const clear = () => {

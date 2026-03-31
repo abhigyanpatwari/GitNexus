@@ -1,4 +1,4 @@
-import { C } from './derived';
+import { C } from "./derived";
 
 function process() {
   const c = new C();

@@ -1,4 +1,4 @@
-import type { DbRecord } from './db';
+import type { DbRecord } from "./db";
 
 export function formatResponse(record: DbRecord): string {
   return JSON.stringify({

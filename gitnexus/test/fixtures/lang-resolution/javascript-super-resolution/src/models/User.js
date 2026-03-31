@@ -1,4 +1,4 @@
-const { BaseModel } = require('./Base');
+const { BaseModel } = require("./Base");
 
 class User extends BaseModel {
   save() {

@@ -1,5 +1,5 @@
-import { User } from './user';
-import { Repo } from './repo';
+import { User } from "./user";
+import { Repo } from "./repo";
 
 export function handleUser(entity: User): void {
   entity.save();

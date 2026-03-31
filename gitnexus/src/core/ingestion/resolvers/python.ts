@@ -3,7 +3,7 @@
  * Import system spec: PEP 302 (original), PEP 451 (current).
  */
 
-import { tryResolveWithExtensions } from './utils.js';
+import { tryResolveWithExtensions } from "./utils.js";
 
 /**
  * Resolve a Python import to a file path.
@@ -25,35 +25,41 @@ export function resolvePythonImport(
   allFiles: Set<string>,
 ): string | null {
   // Relative import — PEP 328 (https://peps.python.org/pep-0328/)
-  if (importPath.startsWith('.')) {
+  if (importPath.startsWith(".")) {
     const dotMatch = importPath.match(/^(\.+)(.*)/);
     if (!dotMatch) return null;
 
     const dotCount = dotMatch[1].length;
     const modulePart = dotMatch[2];
-    const dirParts = currentFile.split('/').slice(0, -1);
+    const dirParts = currentFile.split("/").slice(0, -1);
 
     // PEP 328: more dots than directory levels → beyond top-level package → invalid
     if (dotCount - 1 > dirParts.length) return null;
     for (let i = 1; i < dotCount; i++) dirParts.pop();
 
     if (modulePart) {
-      dirParts.push(...modulePart.replace(/\./g, '/').split('/'));
+      dirParts.push(...modulePart.replace(/\./g, "/").split("/"));
     }
 
-    return tryResolveWithExtensions(dirParts.join('/'), allFiles);
+    return tryResolveWithExtensions(dirParts.join("/"), allFiles);
   }
 
   // Proximity bare import — single-segment only; package before module (PEP 451 §4)
-  const pathLike = importPath.replace(/\./g, '/');
-  if (pathLike.includes('/')) return null;
+  const pathLike = importPath.replace(/\./g, "/");
+  if (pathLike.includes("/")) return null;
 
   // Normalize for Windows backslashes
-  const importerDir = currentFile.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+  const importerDir = currentFile
+    .replace(/\\/g, "/")
+    .split("/")
+    .slice(0, -1)
+    .join("/");
   if (!importerDir) return null;
 
-  if (allFiles.has(`${importerDir}/${pathLike}/__init__.py`)) return `${importerDir}/${pathLike}/__init__.py`;
-  if (allFiles.has(`${importerDir}/${pathLike}.py`)) return `${importerDir}/${pathLike}.py`;
+  if (allFiles.has(`${importerDir}/${pathLike}/__init__.py`))
+    return `${importerDir}/${pathLike}/__init__.py`;
+  if (allFiles.has(`${importerDir}/${pathLike}.py`))
+    return `${importerDir}/${pathLike}.py`;
 
   return null;
 }

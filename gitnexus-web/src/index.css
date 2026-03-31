@@ -34,8 +34,8 @@
   --color-node-method: #14b8a6;
 
   /* Fonts */
-  --font-sans: 'Outfit', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --font-sans: "Outfit", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
 
   /* Animations */
   --animate-breathe: breathe 3s ease-in-out infinite;
@@ -51,7 +51,6 @@
 
 /* Keyframes */
 @keyframes breathe {
-
   0%,
   100% {
     border-color: #2a2a3a;
@@ -65,7 +64,6 @@
 }
 
 @keyframes pulse-glow {
-
   0%,
   100% {
     transform: scale(1);
@@ -228,10 +226,10 @@ body {
   color: var(--color-text-secondary);
 }
 
-.chat-prose>h1:first-child,
-.chat-prose>h2:first-child,
-.chat-prose>h3:first-child,
-.chat-prose>h4:first-child {
+.chat-prose > h1:first-child,
+.chat-prose > h2:first-child,
+.chat-prose > h3:first-child,
+.chat-prose > h4:first-child {
   margin-top: 0;
 }
 

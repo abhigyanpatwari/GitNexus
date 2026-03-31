@@ -1,5 +1,5 @@
-const { User } = require('./user');
-const { Repo } = require('./repo');
+const { User } = require("./user");
+const { Repo } = require("./repo");
 
 /**
  * @param {User | null} user

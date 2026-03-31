@@ -11,9 +11,9 @@
  * Resources: repos, repo/{name}/context, repo/{name}/clusters, ...
  */
 
-import { createRequire } from 'module';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { CompatibleStdioServerTransport } from './compatible-stdio-transport.js';
+import { createRequire } from "module";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { CompatibleStdioServerTransport } from "./compatible-stdio-transport.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -22,11 +22,15 @@ import {
   ListResourceTemplatesRequestSchema,
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
-import { GITNEXUS_TOOLS } from './tools.js';
-import { realStdoutWrite } from './core/lbug-adapter.js';
-import type { LocalBackend } from './local/local-backend.js';
-import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
+} from "@modelcontextprotocol/sdk/types.js";
+import { GITNEXUS_TOOLS } from "./tools.js";
+import { realStdoutWrite } from "./core/lbug-adapter.js";
+import type { LocalBackend } from "./local/local-backend.js";
+import {
+  getResourceDefinitions,
+  getResourceTemplates,
+  readResource,
+} from "./resources.js";
 
 /**
  * Next-step hints appended to tool responses.
@@ -37,43 +41,46 @@ import { getResourceDefinitions, getResourceTemplates, readResource } from './re
  * Design: Each hint is a short, actionable instruction (not a suggestion).
  * The hint references the specific tool/resource to use next.
  */
-function getNextStepHint(toolName: string, args: Record<string, any> | undefined): string {
+function getNextStepHint(
+  toolName: string,
+  args: Record<string, any> | undefined,
+): string {
   const repo = args?.repo;
-  const repoParam = repo ? `, repo: "${repo}"` : '';
-  const repoPath = repo || '{name}';
+  const repoParam = repo ? `, repo: "${repo}"` : "";
+  const repoPath = repo || "{name}";
 
   switch (toolName) {
-    case 'list_repos':
+    case "list_repos":
       return `\n\n---\n**Next:** READ gitnexus://repo/{name}/context for any repo above to get its overview and check staleness.`;
 
-    case 'query':
+    case "query":
       return `\n\n---\n**Next:** To understand a specific symbol in depth, use context({name: "<symbol_name>"${repoParam}}) to see categorized refs and process participation.`;
 
-    case 'context':
-      return `\n\n---\n**Next:** If planning changes, use impact({target: "${args?.name || '<name>'}", direction: "upstream"${repoParam}}) to check blast radius. To see execution flows, READ gitnexus://repo/${repoPath}/processes.`;
+    case "context":
+      return `\n\n---\n**Next:** If planning changes, use impact({target: "${args?.name || "<name>"}", direction: "upstream"${repoParam}}) to check blast radius. To see execution flows, READ gitnexus://repo/${repoPath}/processes.`;
 
-    case 'impact':
+    case "impact":
       return `\n\n---\n**Next:** Review d=1 items first (WILL BREAK). To check affected execution flows, READ gitnexus://repo/${repoPath}/processes.`;
 
-    case 'detect_changes':
+    case "detect_changes":
       return `\n\n---\n**Next:** Review affected processes. Use context() on high-risk changed symbols. READ gitnexus://repo/${repoPath}/process/{name} for full execution traces.`;
 
-    case 'rename':
-      return `\n\n---\n**Next:** Run detect_changes(${repoParam ? `{repo: "${repo}"}` : ''}) to verify no unexpected side effects from the rename.`;
+    case "rename":
+      return `\n\n---\n**Next:** Run detect_changes(${repoParam ? `{repo: "${repo}"}` : ""}) to verify no unexpected side effects from the rename.`;
 
-    case 'cypher':
+    case "cypher":
       return `\n\n---\n**Next:** To explore a result symbol, use context({name: "<name>"${repoParam}}). For schema reference, READ gitnexus://repo/${repoPath}/schema.`;
 
     // Legacy tool names — still return useful hints
-    case 'search':
+    case "search":
       return `\n\n---\n**Next:** To understand a result in context, use context({name: "<symbol_name>"${repoParam}}).`;
-    case 'explore':
+    case "explore":
       return `\n\n---\n**Next:** If planning changes, use impact({target: "<name>", direction: "upstream"${repoParam}}).`;
-    case 'overview':
+    case "overview":
       return `\n\n---\n**Next:** To drill into an area, READ gitnexus://repo/${repoPath}/cluster/{name}. To see execution flows, READ gitnexus://repo/${repoPath}/processes.`;
 
     default:
-      return '';
+      return "";
   }
 }
 
@@ -83,10 +90,10 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
  */
 export function createMCPServer(backend: LocalBackend): Server {
   const require = createRequire(import.meta.url);
-  const pkgVersion: string = require('../../package.json').version;
+  const pkgVersion: string = require("../../package.json").version;
   const server = new Server(
     {
-      name: 'gitnexus',
+      name: "gitnexus",
       version: pkgVersion,
     },
     {
@@ -95,14 +102,14 @@ export function createMCPServer(backend: LocalBackend): Server {
         resources: {},
         prompts: {},
       },
-    }
+    },
   );
 
   // Handle list resources request
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
     const resources = getResourceDefinitions();
     return {
-      resources: resources.map(r => ({
+      resources: resources.map((r) => ({
         uri: r.uri,
         name: r.name,
         description: r.description,
@@ -115,7 +122,7 @@ export function createMCPServer(backend: LocalBackend): Server {
   server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
     const templates = getResourceTemplates();
     return {
-      resourceTemplates: templates.map(t => ({
+      resourceTemplates: templates.map((t) => ({
         uriTemplate: t.uriTemplate,
         name: t.name,
         description: t.description,
@@ -134,7 +141,7 @@ export function createMCPServer(backend: LocalBackend): Server {
         contents: [
           {
             uri,
-            mimeType: 'text/yaml',
+            mimeType: "text/yaml",
             text: content,
           },
         ],
@@ -144,14 +151,13 @@ export function createMCPServer(backend: LocalBackend): Server {
         contents: [
           {
             uri,
-            mimeType: 'text/plain',
+            mimeType: "text/plain",
             text: `Error: ${err.message}`,
           },
         ],
       };
     }
   });
-
 
   // Handle list tools request
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -168,23 +174,27 @@ export function createMCPServer(backend: LocalBackend): Server {
 
     try {
       const result = await backend.callTool(name, args);
-      const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-      const hint = getNextStepHint(name, args as Record<string, any> | undefined);
+      const resultText =
+        typeof result === "string" ? result : JSON.stringify(result, null, 2);
+      const hint = getNextStepHint(
+        name,
+        args as Record<string, any> | undefined,
+      );
 
       return {
         content: [
           {
-            type: 'text',
+            type: "text",
             text: resultText + hint,
           },
         ],
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
+      const message = error instanceof Error ? error.message : "Unknown error";
       return {
         content: [
           {
-            type: 'text',
+            type: "text",
             text: `Error: ${message}`,
           },
         ],
@@ -197,18 +207,32 @@ export function createMCPServer(backend: LocalBackend): Server {
   server.setRequestHandler(ListPromptsRequestSchema, async () => ({
     prompts: [
       {
-        name: 'detect_impact',
-        description: 'Analyze the impact of your current changes before committing. Guides through scope selection, change detection, process analysis, and risk assessment.',
+        name: "detect_impact",
+        description:
+          "Analyze the impact of your current changes before committing. Guides through scope selection, change detection, process analysis, and risk assessment.",
         arguments: [
-          { name: 'scope', description: 'What to analyze: unstaged, staged, all, or compare', required: false },
-          { name: 'base_ref', description: 'Branch/commit for compare scope', required: false },
+          {
+            name: "scope",
+            description: "What to analyze: unstaged, staged, all, or compare",
+            required: false,
+          },
+          {
+            name: "base_ref",
+            description: "Branch/commit for compare scope",
+            required: false,
+          },
         ],
       },
       {
-        name: 'generate_map',
-        description: 'Generate architecture documentation from the knowledge graph. Creates a codebase overview with execution flows and mermaid diagrams.',
+        name: "generate_map",
+        description:
+          "Generate architecture documentation from the knowledge graph. Creates a codebase overview with execution flows and mermaid diagrams.",
         arguments: [
-          { name: 'repo', description: 'Repository name (omit if only one indexed)', required: false },
+          {
+            name: "repo",
+            description: "Repository name (omit if only one indexed)",
+            required: false,
+          },
         ],
       },
     ],
@@ -218,15 +242,15 @@ export function createMCPServer(backend: LocalBackend): Server {
   server.setRequestHandler(GetPromptRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
-    if (name === 'detect_impact') {
-      const scope = args?.scope || 'all';
-      const baseRef = args?.base_ref || '';
+    if (name === "detect_impact") {
+      const scope = args?.scope || "all";
+      const baseRef = args?.base_ref || "";
       return {
         messages: [
           {
-            role: 'user' as const,
+            role: "user" as const,
             content: {
-              type: 'text' as const,
+              type: "text" as const,
               text: `Analyze the impact of my current code changes before committing.
 
 Follow these steps:
@@ -242,21 +266,21 @@ Present the analysis as a clear risk report.`,
       };
     }
 
-    if (name === 'generate_map') {
-      const repo = args?.repo || '';
+    if (name === "generate_map") {
+      const repo = args?.repo || "";
       return {
         messages: [
           {
-            role: 'user' as const,
+            role: "user" as const,
             content: {
-              type: 'text' as const,
+              type: "text" as const,
               text: `Generate architecture documentation for this codebase using the knowledge graph.
 
 Follow these steps:
-1. READ \`gitnexus://repo/${repo || '{name}'}/context\` for codebase stats
-2. READ \`gitnexus://repo/${repo || '{name}'}/clusters\` to see all functional areas
-3. READ \`gitnexus://repo/${repo || '{name}'}/processes\` to see all execution flows
-4. For the top 5 most important processes, READ \`gitnexus://repo/${repo || '{name}'}/process/{name}\` for step-by-step traces
+1. READ \`gitnexus://repo/${repo || "{name}"}/context\` for codebase stats
+2. READ \`gitnexus://repo/${repo || "{name}"}/clusters\` to see all functional areas
+3. READ \`gitnexus://repo/${repo || "{name}"}/processes\` to see all execution flows
+4. For the top 5 most important processes, READ \`gitnexus://repo/${repo || "{name}"}/process/{name}\` for step-by-step traces
 5. Generate a mermaid architecture diagram showing the major areas and their connections
 6. Write an ARCHITECTURE.md file with: overview, functional areas, key execution flows, and the mermaid diagram`,
             },
@@ -282,12 +306,15 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
   // module load and server start.
   const _safeStdout = new Proxy(process.stdout, {
     get(target, prop, receiver) {
-      if (prop === 'write') return realStdoutWrite;
+      if (prop === "write") return realStdoutWrite;
       const val = Reflect.get(target, prop, receiver);
-      return typeof val === 'function' ? val.bind(target) : val;
-    }
+      return typeof val === "function" ? val.bind(target) : val;
+    },
   });
-  const transport = new CompatibleStdioServerTransport(process.stdin, _safeStdout);
+  const transport = new CompatibleStdioServerTransport(
+    process.stdin,
+    _safeStdout,
+  );
   await server.connect(transport);
 
   // Graceful shutdown helper
@@ -295,29 +322,37 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
   const shutdown = async (exitCode = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    try { await backend.disconnect(); } catch {}
-    try { await server.close(); } catch {}
+    try {
+      await backend.disconnect();
+    } catch {}
+    try {
+      await server.close();
+    } catch {}
     process.exit(exitCode);
   };
 
   // Handle graceful shutdown
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 
   // Log crashes to stderr so they aren't silently lost.
   // uncaughtException is fatal — shut down.
   // unhandledRejection is logged but kept non-fatal (availability-first):
   // killing the server for one missed catch would be worse than logging it.
-  process.on('uncaughtException', (err) => {
-    process.stderr.write(`GitNexus MCP uncaughtException: ${err?.stack || err}\n`);
+  process.on("uncaughtException", (err) => {
+    process.stderr.write(
+      `GitNexus MCP uncaughtException: ${err?.stack || err}\n`,
+    );
     shutdown(1);
   });
-  process.on('unhandledRejection', (reason: any) => {
-    process.stderr.write(`GitNexus MCP unhandledRejection: ${reason?.stack || reason}\n`);
+  process.on("unhandledRejection", (reason: any) => {
+    process.stderr.write(
+      `GitNexus MCP unhandledRejection: ${reason?.stack || reason}\n`,
+    );
   });
 
   // Handle stdio errors — stdin close means the parent process is gone
-  process.stdin.on('end', shutdown);
-  process.stdin.on('error', () => shutdown());
-  process.stdout.on('error', () => shutdown());
+  process.stdin.on("end", shutdown);
+  process.stdin.on("error", () => shutdown());
+  process.stdout.on("error", () => shutdown());
 }

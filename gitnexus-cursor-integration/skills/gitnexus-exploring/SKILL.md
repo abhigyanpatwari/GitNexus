@@ -6,6 +6,7 @@ description: Navigate unfamiliar code using GitNexus knowledge graph
 # Exploring Codebases with GitNexus
 
 ## When to Use
+
 - "How does authentication work?"
 - "What's the project structure?"
 - "Show me the main components"
@@ -37,16 +38,17 @@ description: Navigate unfamiliar code using GitNexus knowledge graph
 
 ## Resources
 
-| Resource | What you get |
-|----------|-------------|
-| `gitnexus://repo/{name}/context` | Stats, staleness warning (~150 tokens) |
-| `gitnexus://repo/{name}/clusters` | All functional areas with cohesion scores (~300 tokens) |
-| `gitnexus://repo/{name}/cluster/{name}` | Area members with file paths (~500 tokens) |
-| `gitnexus://repo/{name}/process/{name}` | Step-by-step execution trace (~200 tokens) |
+| Resource                                | What you get                                            |
+| --------------------------------------- | ------------------------------------------------------- |
+| `gitnexus://repo/{name}/context`        | Stats, staleness warning (~150 tokens)                  |
+| `gitnexus://repo/{name}/clusters`       | All functional areas with cohesion scores (~300 tokens) |
+| `gitnexus://repo/{name}/cluster/{name}` | Area members with file paths (~500 tokens)              |
+| `gitnexus://repo/{name}/process/{name}` | Step-by-step execution trace (~200 tokens)              |
 
 ## Tools
 
 **gitnexus_query** — find execution flows related to a concept:
+
 ```
 gitnexus_query({query: "payment processing"})
 → Processes: CheckoutFlow, RefundFlow, WebhookHandler
@@ -54,6 +56,7 @@ gitnexus_query({query: "payment processing"})
 ```
 
 **gitnexus_context** — 360-degree view of a symbol:
+
 ```
 gitnexus_context({name: "validateUser"})
 → Incoming calls: loginHandler, apiMiddleware

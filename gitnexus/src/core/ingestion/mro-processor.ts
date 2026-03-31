@@ -19,9 +19,9 @@
  * Cypher: MATCH (c:Class)-[r:CodeRelation {type: 'OVERRIDES'}]->(m:Method)
  */
 
-import { KnowledgeGraph, GraphRelationship } from '../graph/types.js';
-import { generateId } from '../../lib/utils.js';
-import { SupportedLanguages } from '../../config/supported-languages.js';
+import { KnowledgeGraph, GraphRelationship } from "../graph/types.js";
+import { generateId } from "../../lib/utils.js";
+import { SupportedLanguages } from "../../config/supported-languages.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -31,14 +31,14 @@ export interface MROEntry {
   classId: string;
   className: string;
   language: SupportedLanguages;
-  mro: string[];               // linearized parent names
+  mro: string[]; // linearized parent names
   ambiguities: MethodAmbiguity[];
 }
 
 export interface MethodAmbiguity {
   methodName: string;
   definedIn: Array<{ classId: string; className: string; methodId: string }>;
-  resolvedTo: string | null;   // winning methodId or null if truly ambiguous
+  resolvedTo: string | null; // winning methodId or null if truly ambiguous
   reason: string;
 }
 
@@ -59,10 +59,13 @@ function buildAdjacency(graph: KnowledgeGraph) {
   // methodMap: classId → methodIds[]
   const methodMap = new Map<string, string[]>();
   // Track which edge type each parent link came from
-  const parentEdgeType = new Map<string, Map<string, 'EXTENDS' | 'IMPLEMENTS'>>();
+  const parentEdgeType = new Map<
+    string,
+    Map<string, "EXTENDS" | "IMPLEMENTS">
+  >();
 
   graph.forEachRelationship((rel) => {
-    if (rel.type === 'EXTENDS' || rel.type === 'IMPLEMENTS') {
+    if (rel.type === "EXTENDS" || rel.type === "IMPLEMENTS") {
       let parents = parentMap.get(rel.sourceId);
       if (!parents) {
         parents = [];
@@ -78,7 +81,7 @@ function buildAdjacency(graph: KnowledgeGraph) {
       edgeTypes.set(rel.targetId, rel.type);
     }
 
-    if (rel.type === 'HAS_METHOD') {
+    if (rel.type === "HAS_METHOD") {
       let methods = methodMap.get(rel.sourceId);
       if (!methods) {
         methods = [];
@@ -167,14 +170,14 @@ function c3Linearize(
   const sequences = [...parentLinearizations, [...directParents]];
   const result: string[] = [];
 
-  while (sequences.some(s => s.length > 0)) {
+  while (sequences.some((s) => s.length > 0)) {
     // Find a good head: one that doesn't appear in the tail of any other sequence
     let head: string | null = null;
     for (const seq of sequences) {
       if (seq.length === 0) continue;
       const candidate = seq[0];
       const inTail = sequences.some(
-        other => other.length > 1 && other.indexOf(candidate, 1) !== -1
+        (other) => other.length > 1 && other.indexOf(candidate, 1) !== -1,
       );
       if (!inTail) {
         head = candidate;
@@ -209,7 +212,11 @@ function c3Linearize(
 // ---------------------------------------------------------------------------
 
 type MethodDef = { classId: string; className: string; methodId: string };
-type Resolution = { resolvedTo: string | null; reason: string; confidence: number };
+type Resolution = {
+  resolvedTo: string | null;
+  reason: string;
+  confidence: number;
+};
 
 /** Resolve by MRO order — first ancestor in linearized order wins. */
 function resolveByMroOrder(
@@ -219,29 +226,33 @@ function resolveByMroOrder(
   reasonPrefix: string,
 ): Resolution {
   for (const ancestorId of mroOrder) {
-    const match = defs.find(d => d.classId === ancestorId);
+    const match = defs.find((d) => d.classId === ancestorId);
     if (match) {
       return {
         resolvedTo: match.methodId,
         reason: `${reasonPrefix}: ${match.className}::${methodName}`,
-        confidence: 0.9,  // MRO-ordered resolution
+        confidence: 0.9, // MRO-ordered resolution
       };
     }
   }
-  return { resolvedTo: defs[0].methodId, reason: `${reasonPrefix} fallback: first definition`, confidence: 0.7 };
+  return {
+    resolvedTo: defs[0].methodId,
+    reason: `${reasonPrefix} fallback: first definition`,
+    confidence: 0.7,
+  };
 }
 
 function resolveCsharpJava(
   methodName: string,
   defs: MethodDef[],
-  parentEdgeTypes: Map<string, 'EXTENDS' | 'IMPLEMENTS'> | undefined,
+  parentEdgeTypes: Map<string, "EXTENDS" | "IMPLEMENTS"> | undefined,
 ): Resolution {
   const classDefs: MethodDef[] = [];
   const interfaceDefs: MethodDef[] = [];
 
   for (const def of defs) {
     const edgeType = parentEdgeTypes?.get(def.classId);
-    if (edgeType === 'IMPLEMENTS') {
+    if (edgeType === "IMPLEMENTS") {
       interfaceDefs.push(def);
     } else {
       classDefs.push(def);
@@ -252,14 +263,14 @@ function resolveCsharpJava(
     return {
       resolvedTo: classDefs[0].methodId,
       reason: `class method wins: ${classDefs[0].className}::${methodName}`,
-      confidence: 0.95,  // Class method is authoritative
+      confidence: 0.95, // Class method is authoritative
     };
   }
 
   if (interfaceDefs.length > 1) {
     return {
       resolvedTo: null,
-      reason: `ambiguous: ${methodName} defined in multiple interfaces: ${interfaceDefs.map(d => d.className).join(', ')}`,
+      reason: `ambiguous: ${methodName} defined in multiple interfaces: ${interfaceDefs.map((d) => d.className).join(", ")}`,
       confidence: 0.5,
     };
   }
@@ -268,11 +279,11 @@ function resolveCsharpJava(
     return {
       resolvedTo: interfaceDefs[0].methodId,
       reason: `single interface default: ${interfaceDefs[0].className}::${methodName}`,
-      confidence: 0.85,  // Single interface, unambiguous
+      confidence: 0.85, // Single interface, unambiguous
     };
   }
 
-  return { resolvedTo: null, reason: 'no resolution found', confidence: 0.5 };
+  return { resolvedTo: null, reason: "no resolution found", confidence: 0.5 };
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +320,7 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
 
     // Get the parent names for the MRO entry
     const mroNames: string[] = mroOrder
-      .map(id => graph.getNode(id)?.properties.name)
+      .map((id) => graph.getNode(id)?.properties.name)
       .filter((n): n is string => n !== undefined);
 
     // Collect methods from all ancestors, grouped by method name
@@ -323,7 +334,7 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
         const methodNode = graph.getNode(methodId);
         if (!methodNode) continue;
         // Properties don't participate in method resolution order
-        if (methodNode.label === 'Property') continue;
+        if (methodNode.label === "Property") continue;
 
         const methodName = methodNode.properties.name;
         let defs = methodsByName.get(methodName);
@@ -332,7 +343,7 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
           methodsByName.set(methodName, defs);
         }
         // Avoid duplicates (same method seen via multiple paths)
-        if (!defs.some(d => d.methodId === methodId)) {
+        if (!defs.some((d) => d.methodId === methodId)) {
           defs.push({
             classId: ancestorId,
             className: ancestorNode.properties.name,
@@ -346,7 +357,10 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
     const ambiguities: MethodAmbiguity[] = [];
 
     // Compute transitive edge types once per class (only needed for C#/Java)
-    const needsEdgeTypes = language === SupportedLanguages.CSharp || language === SupportedLanguages.Java || language === SupportedLanguages.Kotlin;
+    const needsEdgeTypes =
+      language === SupportedLanguages.CSharp ||
+      language === SupportedLanguages.Java ||
+      language === SupportedLanguages.Kotlin;
     const classEdgeTypes = needsEdgeTypes
       ? buildTransitiveEdgeTypes(classId, parentMap, parentEdgeType)
       : undefined;
@@ -356,7 +370,7 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
 
       // Own method shadows inherited — no ambiguity
       const ownMethods = methodMap.get(classId) ?? [];
-      const ownDefinesIt = ownMethods.some(mid => {
+      const ownDefinesIt = ownMethods.some((mid) => {
         const mn = graph.getNode(mid);
         return mn?.properties.name === methodName;
       });
@@ -366,7 +380,12 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
 
       switch (language) {
         case SupportedLanguages.CPlusPlus:
-          resolution = resolveByMroOrder(methodName, defs, mroOrder, 'C++ leftmost base');
+          resolution = resolveByMroOrder(
+            methodName,
+            defs,
+            mroOrder,
+            "C++ leftmost base",
+          );
           break;
         case SupportedLanguages.CSharp:
         case SupportedLanguages.Java:
@@ -374,7 +393,12 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
           resolution = resolveCsharpJava(methodName, defs, classEdgeTypes);
           break;
         case SupportedLanguages.Python:
-          resolution = resolveByMroOrder(methodName, defs, mroOrder, 'Python C3 MRO');
+          resolution = resolveByMroOrder(
+            methodName,
+            defs,
+            mroOrder,
+            "Python C3 MRO",
+          );
           break;
         case SupportedLanguages.Rust:
           resolution = {
@@ -384,7 +408,12 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
           };
           break;
         default:
-          resolution = resolveByMroOrder(methodName, defs, mroOrder, 'first definition');
+          resolution = resolveByMroOrder(
+            methodName,
+            defs,
+            mroOrder,
+            "first definition",
+          );
           break;
       }
 
@@ -403,10 +432,10 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
       // Emit OVERRIDES edge if resolution found
       if (resolution.resolvedTo !== null) {
         graph.addRelationship({
-          id: generateId('OVERRIDES', `${classId}->${resolution.resolvedTo}`),
+          id: generateId("OVERRIDES", `${classId}->${resolution.resolvedTo}`),
           sourceId: classId,
           targetId: resolution.resolvedTo,
-          type: 'OVERRIDES',
+          type: "OVERRIDES",
           confidence: resolution.confidence,
           reason: resolution.reason,
         });
@@ -437,18 +466,18 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
 function buildTransitiveEdgeTypes(
   classId: string,
   parentMap: Map<string, string[]>,
-  parentEdgeType: Map<string, Map<string, 'EXTENDS' | 'IMPLEMENTS'>>,
-): Map<string, 'EXTENDS' | 'IMPLEMENTS'> {
-  const result = new Map<string, 'EXTENDS' | 'IMPLEMENTS'>();
+  parentEdgeType: Map<string, Map<string, "EXTENDS" | "IMPLEMENTS">>,
+): Map<string, "EXTENDS" | "IMPLEMENTS"> {
+  const result = new Map<string, "EXTENDS" | "IMPLEMENTS">();
   const directEdges = parentEdgeType.get(classId);
   if (!directEdges) return result;
 
   // BFS: propagate edge type from direct parents
-  const queue: Array<{ id: string; edgeType: 'EXTENDS' | 'IMPLEMENTS' }> = [];
+  const queue: Array<{ id: string; edgeType: "EXTENDS" | "IMPLEMENTS" }> = [];
   const directParents = parentMap.get(classId) ?? [];
 
   for (const pid of directParents) {
-    const et = directEdges.get(pid) ?? 'EXTENDS';
+    const et = directEdges.get(pid) ?? "EXTENDS";
     if (!result.has(pid)) {
       result.set(pid, et);
       queue.push({ id: pid, edgeType: et });

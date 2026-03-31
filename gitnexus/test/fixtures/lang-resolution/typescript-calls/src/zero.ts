@@ -1,3 +1,3 @@
 export function writeAudit(): string {
-  return 'zero';
+  return "zero";
 }

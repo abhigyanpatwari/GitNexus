@@ -1,4 +1,4 @@
-import Graph from 'graphology';
+import Graph from "graphology";
 
 type RNGFunction = () => number;
 

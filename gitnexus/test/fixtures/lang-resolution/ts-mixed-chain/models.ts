@@ -1,6 +1,6 @@
 export class City {
   getName(): string {
-    return 'city';
+    return "city";
   }
 }
 

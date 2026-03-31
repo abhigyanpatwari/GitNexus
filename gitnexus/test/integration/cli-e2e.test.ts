@@ -8,46 +8,54 @@
  * Uses process.execPath (never 'node' string), no shell: true.
  * Accepts status === null (timeout) as valid on slow CI runners.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawnSync, spawn } from 'child_process';
-import path from 'path';
-import fs from 'fs';
-import os from 'os';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { spawnSync, spawn } from "child_process";
+import path from "path";
+import fs from "fs";
+import os from "os";
+import { fileURLToPath, pathToFileURL } from "url";
 
-import { createRequire } from 'module';
+import { createRequire } from "module";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(testDir, '../..');
-const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
-const MINI_REPO = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
+const repoRoot = path.resolve(testDir, "../..");
+const cliEntry = path.join(repoRoot, "src/cli/index.ts");
+const MINI_REPO = path.resolve(testDir, "..", "fixtures", "mini-repo");
 
 // Absolute file:// URL to tsx loader — needed when spawning CLI with cwd
 // outside the project tree (bare 'tsx' specifier won't resolve there).
 // Cannot use require.resolve('tsx/dist/loader.mjs') because the subpath is
 // not in tsx's package.json exports; resolve the package root then join.
 const _require = createRequire(import.meta.url);
-const tsxPkgDir = path.dirname(_require.resolve('tsx/package.json'));
-const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).href;
+const tsxPkgDir = path.dirname(_require.resolve("tsx/package.json"));
+const tsxImportUrl = pathToFileURL(
+  path.join(tsxPkgDir, "dist", "loader.mjs"),
+).href;
 
 beforeAll(() => {
   // Initialize mini-repo as a git repo so the CLI analyze command
   // can run the full pipeline (it requires a .git directory).
-  const gitDir = path.join(MINI_REPO, '.git');
+  const gitDir = path.join(MINI_REPO, ".git");
   if (!fs.existsSync(gitDir)) {
-    spawnSync('git', ['init'], { cwd: MINI_REPO, stdio: 'pipe' });
-    spawnSync('git', ['add', '-A'], { cwd: MINI_REPO, stdio: 'pipe' });
-    spawnSync('git', ['commit', '-m', 'initial commit'], {
+    spawnSync("git", ["init"], { cwd: MINI_REPO, stdio: "pipe" });
+    spawnSync("git", ["add", "-A"], { cwd: MINI_REPO, stdio: "pipe" });
+    spawnSync("git", ["commit", "-m", "initial commit"], {
       cwd: MINI_REPO,
-      stdio: 'pipe',
-      env: { ...process.env, GIT_AUTHOR_NAME: 'test', GIT_AUTHOR_EMAIL: 'test@test', GIT_COMMITTER_NAME: 'test', GIT_COMMITTER_EMAIL: 'test@test' },
+      stdio: "pipe",
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "test",
+        GIT_AUTHOR_EMAIL: "test@test",
+        GIT_COMMITTER_NAME: "test",
+        GIT_COMMITTER_EMAIL: "test@test",
+      },
     });
   }
 });
 
 afterAll(() => {
   // Clean up .git/ and .gitnexus/ directories created during the test
-  for (const dir of ['.git', '.gitnexus']) {
+  for (const dir of [".git", ".gitnexus"]) {
     const fullPath = path.join(MINI_REPO, dir);
     if (fs.existsSync(fullPath)) {
       fs.rmSync(fullPath, { recursive: true, force: true });
@@ -56,17 +64,18 @@ afterAll(() => {
 });
 
 function runCli(command: string, cwd: string, timeoutMs = 15000) {
-  return spawnSync(process.execPath, ['--import', 'tsx', cliEntry, command], {
+  return spawnSync(process.execPath, ["--import", "tsx", cliEntry, command], {
     cwd,
-    encoding: 'utf8',
+    encoding: "utf8",
     timeout: timeoutMs,
-    stdio: ['pipe', 'pipe', 'pipe'],
+    stdio: ["pipe", "pipe", "pipe"],
     env: {
       ...process.env,
       // Pre-set --max-old-space-size so analyzeCommand's ensureHeap() sees it
       // and skips the re-exec. The re-exec drops the tsx loader (--import tsx
       // is not in process.argv), causing ERR_UNKNOWN_FILE_EXTENSION on .ts files.
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+      NODE_OPTIONS:
+        `${process.env.NODE_OPTIONS || ""} --max-old-space-size=8192`.trim(),
     },
   });
 }
@@ -76,21 +85,26 @@ function runCli(command: string, cwd: string, timeoutMs = 15000) {
  * can pass flags (e.g. --help) or omit a command entirely.
  */
 function runCliRaw(extraArgs: string[], cwd: string, timeoutMs = 15000) {
-  return spawnSync(process.execPath, ['--import', 'tsx', cliEntry, ...extraArgs], {
-    cwd,
-    encoding: 'utf8',
-    timeout: timeoutMs,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+  return spawnSync(
+    process.execPath,
+    ["--import", "tsx", cliEntry, ...extraArgs],
+    {
+      cwd,
+      encoding: "utf8",
+      timeout: timeoutMs,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        NODE_OPTIONS:
+          `${process.env.NODE_OPTIONS || ""} --max-old-space-size=8192`.trim(),
+      },
     },
-  });
+  );
 }
 
-describe('CLI end-to-end', () => {
-  it('status command exits cleanly', () => {
-    const result = runCli('status', MINI_REPO);
+describe("CLI end-to-end", () => {
+  it("status command exits cleanly", () => {
+    const result = runCli("status", MINI_REPO);
 
     // Accept timeout as valid on slow CI
     if (result.status === null) return;
@@ -101,26 +115,29 @@ describe('CLI end-to-end', () => {
     expect(combined).toMatch(/Repository|not indexed/i);
   });
 
-  it('analyze command runs pipeline on mini-repo', () => {
-    const result = runCli('analyze', MINI_REPO, 30000);
+  it("analyze command runs pipeline on mini-repo", () => {
+    const result = runCli("analyze", MINI_REPO, 30000);
 
     // Accept timeout as valid on slow CI
     if (result.status === null) return;
 
-    expect(result.status, [
-      `analyze exited with code ${result.status}`,
-      `stdout: ${result.stdout}`,
-      `stderr: ${result.stderr}`,
-    ].join('\n')).toBe(0);
+    expect(
+      result.status,
+      [
+        `analyze exited with code ${result.status}`,
+        `stdout: ${result.stdout}`,
+        `stderr: ${result.stderr}`,
+      ].join("\n"),
+    ).toBe(0);
 
     // Successful analyze should create .gitnexus/ output directory
-    const gitnexusDir = path.join(MINI_REPO, '.gitnexus');
+    const gitnexusDir = path.join(MINI_REPO, ".gitnexus");
     expect(fs.existsSync(gitnexusDir)).toBe(true);
     expect(fs.statSync(gitnexusDir).isDirectory()).toBe(true);
   });
 
-  describe('unhappy path', () => {
-    it('exits with error when no command is given', () => {
+  describe("unhappy path", () => {
+    it("exits with error when no command is given", () => {
       const result = runCliRaw([], MINI_REPO);
 
       // Accept timeout as valid on slow CI
@@ -133,8 +150,8 @@ describe('CLI end-to-end', () => {
       expect(combined.length).toBeGreaterThan(0);
     });
 
-    it('shows help with --help flag', () => {
-      const result = runCliRaw(['--help'], MINI_REPO);
+    it("shows help with --help flag", () => {
+      const result = runCliRaw(["--help"], MINI_REPO);
 
       // Accept timeout as valid on slow CI
       if (result.status === null) return;
@@ -147,8 +164,8 @@ describe('CLI end-to-end', () => {
       expect(result.stdout).toMatch(/analyze|status|serve/i);
     });
 
-    it('fails with unknown command', () => {
-      const result = runCliRaw(['nonexistent'], MINI_REPO);
+    it("fails with unknown command", () => {
+      const result = runCliRaw(["nonexistent"], MINI_REPO);
 
       // Accept timeout as valid on slow CI
       if (result.status === null) return;
@@ -159,38 +176,54 @@ describe('CLI end-to-end', () => {
     });
   });
 
-  describe('CLI error handling', () => {
+  describe("CLI error handling", () => {
     /**
      * Helper to spawn CLI from a cwd outside the project tree.
      * Uses the absolute file:// URL to tsx loader so the --import hook
      * resolves even when cwd has no node_modules.
      */
-    function runCliOutsideProject(args: string[], cwd: string, timeoutMs = 15000) {
-      return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, ...args], {
-        cwd,
-        encoding: 'utf8',
-        timeout: timeoutMs,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+    function runCliOutsideProject(
+      args: string[],
+      cwd: string,
+      timeoutMs = 15000,
+    ) {
+      return spawnSync(
+        process.execPath,
+        ["--import", tsxImportUrl, cliEntry, ...args],
+        {
+          cwd,
+          encoding: "utf8",
+          timeout: timeoutMs,
+          stdio: ["pipe", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            NODE_OPTIONS:
+              `${process.env.NODE_OPTIONS || ""} --max-old-space-size=8192`.trim(),
+          },
         },
-      });
+      );
     }
 
-    it('status on non-indexed repo reports not indexed', () => {
+    it("status on non-indexed repo reports not indexed", () => {
       // MINI_REPO is inside the project tree so findRepo() walks up and
       // finds the parent project's .gitnexus. Use an isolated temp git
       // repo to guarantee no .gitnexus exists anywhere in the path.
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-noindex-'));
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-noindex-"));
       try {
-        spawnSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
-        spawnSync('git', ['commit', '--allow-empty', '-m', 'init'], {
-          cwd: tmpDir, stdio: 'pipe',
-          env: { ...process.env, GIT_AUTHOR_NAME: 'test', GIT_AUTHOR_EMAIL: 'test@test', GIT_COMMITTER_NAME: 'test', GIT_COMMITTER_EMAIL: 'test@test' },
+        spawnSync("git", ["init"], { cwd: tmpDir, stdio: "pipe" });
+        spawnSync("git", ["commit", "--allow-empty", "-m", "init"], {
+          cwd: tmpDir,
+          stdio: "pipe",
+          env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: "test",
+            GIT_AUTHOR_EMAIL: "test@test",
+            GIT_COMMITTER_NAME: "test",
+            GIT_COMMITTER_EMAIL: "test@test",
+          },
         });
 
-        const result = runCliOutsideProject(['status'], tmpDir);
+        const result = runCliOutsideProject(["status"], tmpDir);
         if (result.status === null) return;
 
         expect(result.status).toBe(0);
@@ -200,10 +233,10 @@ describe('CLI end-to-end', () => {
       }
     });
 
-    it('status on non-git directory reports not a git repo', () => {
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-nogit-'));
+    it("status on non-git directory reports not a git repo", () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-nogit-"));
       try {
-        const result = runCliOutsideProject(['status'], tmpDir);
+        const result = runCliOutsideProject(["status"], tmpDir);
         if (result.status === null) return;
 
         // status.ts doesn't set process.exitCode — just prints and returns
@@ -214,12 +247,12 @@ describe('CLI end-to-end', () => {
       }
     });
 
-    it('analyze on non-git directory fails with exit code 1', () => {
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-nogit-'));
+    it("analyze on non-git directory fails with exit code 1", () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-nogit-"));
       try {
         // Pass the non-git path as a separate argument via runCliRaw
         // (runCli passes the whole string as one arg which breaks path parsing)
-        const result = runCliRaw(['analyze', tmpDir], repoRoot);
+        const result = runCliRaw(["analyze", tmpDir], repoRoot);
         if (result.status === null) return;
 
         // analyze.ts sets process.exitCode = 1 for non-git paths
@@ -229,7 +262,6 @@ describe('CLI end-to-end', () => {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
     });
-
   });
 
   // ─── stdout fd 1 tests (#324) ───────────────────────────────────────
@@ -238,9 +270,12 @@ describe('CLI end-to-end', () => {
 
   // All tool commands pass --repo to disambiguate when the global registry
   // has multiple indexed repos (e.g. the parent project is also indexed).
-  describe('tool output goes to stdout via fd 1 (#324)', () => {
-    it('cypher: JSON appears on stdout, not stderr', () => {
-      const result = runCliRaw(['cypher', 'MATCH (n) RETURN n.name LIMIT 3', '--repo', 'mini-repo'], MINI_REPO);
+  describe("tool output goes to stdout via fd 1 (#324)", () => {
+    it("cypher: JSON appears on stdout, not stderr", () => {
+      const result = runCliRaw(
+        ["cypher", "MATCH (n) RETURN n.name LIMIT 3", "--repo", "mini-repo"],
+        MINI_REPO,
+      );
       if (result.status === null) return; // CI timeout tolerance
 
       expect(result.status).toBe(0);
@@ -255,18 +290,28 @@ describe('CLI end-to-end', () => {
       }
     });
 
-    it('query: JSON appears on stdout, not stderr', () => {
+    it("query: JSON appears on stdout, not stderr", () => {
       // "handler" is a generic term likely to match something in mini-repo
-      const result = runCliRaw(['query', 'handler', '--repo', 'mini-repo'], MINI_REPO);
+      const result = runCliRaw(
+        ["query", "handler", "--repo", "mini-repo"],
+        MINI_REPO,
+      );
       if (result.status === null) return;
 
       expect(result.status).toBe(0);
       expect(() => JSON.parse(result.stdout.trim())).not.toThrow();
     });
 
-    it('impact: JSON appears on stdout, not stderr', () => {
+    it("impact: JSON appears on stdout, not stderr", () => {
       const result = runCliRaw(
-        ['impact', 'handleRequest', '--direction', 'upstream', '--repo', 'mini-repo'],
+        [
+          "impact",
+          "handleRequest",
+          "--direction",
+          "upstream",
+          "--repo",
+          "mini-repo",
+        ],
         MINI_REPO,
       );
       if (result.status === null) return;
@@ -277,9 +322,14 @@ describe('CLI end-to-end', () => {
       expect(() => JSON.parse(result.stdout.trim())).not.toThrow();
     });
 
-    it('stdout is pipeable: cypher output parses as valid JSON', () => {
+    it("stdout is pipeable: cypher output parses as valid JSON", () => {
       const result = runCliRaw(
-        ['cypher', 'MATCH (n:Function) RETURN n.name LIMIT 5', '--repo', 'mini-repo'],
+        [
+          "cypher",
+          "MATCH (n:Function) RETURN n.name LIMIT 5",
+          "--repo",
+          "mini-repo",
+        ],
         MINI_REPO,
       );
       if (result.status === null) return;
@@ -288,43 +338,54 @@ describe('CLI end-to-end', () => {
 
       // Simulate what jq does: parse stdout as JSON
       const parsed = JSON.parse(result.stdout.trim());
-      expect(Array.isArray(parsed) || typeof parsed === 'object').toBe(true);
+      expect(Array.isArray(parsed) || typeof parsed === "object").toBe(true);
     });
   });
 
   // ─── EPIPE clean exit test (#324) ───────────────────────────────────
 
-  describe('EPIPE handling (#324)', () => {
-    it('cypher: EPIPE exits with code 0, not stderr dump', () => {
+  describe("EPIPE handling (#324)", () => {
+    it("cypher: EPIPE exits with code 0, not stderr dump", () => {
       return new Promise<void>((resolve, reject) => {
         const child = spawn(
           process.execPath,
-          ['--import', 'tsx', cliEntry, 'cypher', 'MATCH (n) RETURN n LIMIT 500', '--repo', 'mini-repo'],
+          [
+            "--import",
+            "tsx",
+            cliEntry,
+            "cypher",
+            "MATCH (n) RETURN n LIMIT 500",
+            "--repo",
+            "mini-repo",
+          ],
           {
             cwd: MINI_REPO,
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: ["ignore", "pipe", "pipe"],
             env: {
               ...process.env,
-              NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+              NODE_OPTIONS:
+                `${process.env.NODE_OPTIONS || ""} --max-old-space-size=8192`.trim(),
             },
           },
         );
 
-        let stderrOutput = '';
-        child.stderr.on('data', (chunk: Buffer) => { stderrOutput += chunk.toString(); });
+        let stderrOutput = "";
+        child.stderr.on("data", (chunk: Buffer) => {
+          stderrOutput += chunk.toString();
+        });
 
         // Destroy stdout immediately — simulates `| head -0` (consumer closes early)
-        child.stdout.once('data', () => {
+        child.stdout.once("data", () => {
           child.stdout.destroy(); // triggers EPIPE on next write
         });
 
         const timer = setTimeout(() => {
-          child.kill('SIGTERM');
+          child.kill("SIGTERM");
           // Timeout is acceptable on CI — not a failure
           resolve();
         }, 20000);
 
-        child.on('close', (code) => {
+        child.on("close", (code) => {
           clearTimeout(timer);
           try {
             // Clean EPIPE exit: code 0
@@ -345,53 +406,65 @@ describe('CLI end-to-end', () => {
 
   // ─── eval-server READY signal test (#324) ───────────────────────────
 
-  describe('eval-server READY signal (#324)', () => {
-    it('READY signal appears on stdout, not stderr', () => {
+  describe("eval-server READY signal (#324)", () => {
+    it("READY signal appears on stdout, not stderr", () => {
       return new Promise<void>((resolve, reject) => {
         const child = spawn(
           process.execPath,
-          ['--import', 'tsx', cliEntry, 'eval-server', '--port', '0', '--idle-timeout', '3'],
+          [
+            "--import",
+            "tsx",
+            cliEntry,
+            "eval-server",
+            "--port",
+            "0",
+            "--idle-timeout",
+            "3",
+          ],
           {
             cwd: MINI_REPO,
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: ["ignore", "pipe", "pipe"],
             env: {
               ...process.env,
-              NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+              NODE_OPTIONS:
+                `${process.env.NODE_OPTIONS || ""} --max-old-space-size=8192`.trim(),
             },
           },
         );
 
-        let stdoutBuffer = '';
+        let stdoutBuffer = "";
         let foundOnStdout = false;
         let foundOnStderr = false;
 
-        child.stdout.on('data', (chunk: Buffer) => {
+        child.stdout.on("data", (chunk: Buffer) => {
           stdoutBuffer += chunk.toString();
-          if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:')) {
+          if (stdoutBuffer.includes("GITNEXUS_EVAL_SERVER_READY:")) {
             foundOnStdout = true;
-            child.kill('SIGTERM');
+            child.kill("SIGTERM");
           }
         });
 
-        child.stderr.on('data', (chunk: Buffer) => {
+        child.stderr.on("data", (chunk: Buffer) => {
           const text = chunk.toString();
-          if (text.includes('GITNEXUS_EVAL_SERVER_READY:')) {
+          if (text.includes("GITNEXUS_EVAL_SERVER_READY:")) {
             foundOnStderr = true;
-            child.kill('SIGTERM');
+            child.kill("SIGTERM");
           }
         });
 
         const timer = setTimeout(() => {
-          child.kill('SIGTERM');
+          child.kill("SIGTERM");
           // Timeout is acceptable on CI — not a failure
           resolve();
         }, 30000);
 
-        child.on('close', () => {
+        child.on("close", () => {
           clearTimeout(timer);
           try {
             if (foundOnStderr) {
-              reject(new Error('READY signal appeared on stderr instead of stdout'));
+              reject(
+                new Error("READY signal appeared on stderr instead of stdout"),
+              );
             } else if (foundOnStdout) {
               resolve();
             } else {

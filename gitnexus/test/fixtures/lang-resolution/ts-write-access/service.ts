@@ -1,4 +1,4 @@
-import { User, Address } from './models';
+import { User, Address } from "./models";
 
 function updateUser(user: User) {
   // Write access: user.name = "Alice"

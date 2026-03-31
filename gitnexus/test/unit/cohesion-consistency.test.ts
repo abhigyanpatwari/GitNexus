@@ -8,10 +8,13 @@
  * processCommunities — the public export. Graphs are built so that Leiden's community
  * assignment is deterministic (disconnected cliques with strong internal connectivity).
  */
-import { describe, it, expect } from 'vitest';
-import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import type { GraphNode, GraphRelationship } from '../../src/core/graph/types.js';
-import { processCommunities } from '../../src/core/ingestion/community-processor.js';
+import { describe, it, expect } from "vitest";
+import { createKnowledgeGraph } from "../../src/core/graph/graph.js";
+import type {
+  GraphNode,
+  GraphRelationship,
+} from "../../src/core/graph/types.js";
+import { processCommunities } from "../../src/core/ingestion/community-processor.js";
 
 // ============================================================================
 // FIXTURE HELPERS
@@ -21,13 +24,19 @@ import { processCommunities } from '../../src/core/ingestion/community-processor
 function makeNode(
   id: string,
   name: string,
-  label: GraphNode['label'],
+  label: GraphNode["label"],
   filePath: string,
 ): GraphNode {
   return {
     id,
     label,
-    properties: { name, filePath, startLine: 1, endLine: 10, isExported: false },
+    properties: {
+      name,
+      filePath,
+      startLine: 1,
+      endLine: 10,
+      isExported: false,
+    },
   };
 }
 
@@ -37,7 +46,7 @@ function makeRel(
   sourceId: string,
   targetId: string,
 ): GraphRelationship {
-  return { id, sourceId, targetId, type: 'CALLS', confidence: 1.0, reason: '' };
+  return { id, sourceId, targetId, type: "CALLS", confidence: 1.0, reason: "" };
 }
 
 /** Add a fully-connected clique of Function nodes to the graph */
@@ -51,13 +60,17 @@ function addClique(
   for (let i = 0; i < size; i++) {
     const id = `fn:${prefix}${i}`;
     ids.push(id);
-    graph.addNode(makeNode(id, `${prefix}Fn${i}`, 'Function', `/src/${folder}/f${i}.ts`));
+    graph.addNode(
+      makeNode(id, `${prefix}Fn${i}`, "Function", `/src/${folder}/f${i}.ts`),
+    );
   }
   // Fully connect all pairs
   let relIdx = 0;
   for (let i = 0; i < size; i++) {
     for (let j = i + 1; j < size; j++) {
-      graph.addRelationship(makeRel(`rel:${prefix}_${relIdx++}`, ids[i], ids[j]));
+      graph.addRelationship(
+        makeRel(`rel:${prefix}_${relIdx++}`, ids[i], ids[j]),
+      );
     }
   }
   return ids;
@@ -67,7 +80,7 @@ function addClique(
 // TESTS
 // ============================================================================
 
-describe('calculateCohesion — internal edge ratio', () => {
+describe("calculateCohesion — internal edge ratio", () => {
   /**
    * Build a 4-node fully connected clique with 2 external boundary edges.
    * For the clique community:
@@ -83,20 +96,24 @@ describe('calculateCohesion — internal edge ratio', () => {
    *   - Graph density would be: 6 / (4*3/2) = 6/6 = 1.0
    *   - This discriminates: if cohesion < 1.0, it's edge ratio; if 1.0, it could be density.
    */
-  it('produces internal edge ratio, not graph density, for a tight cluster with external edges', async () => {
+  it("produces internal edge ratio, not graph density, for a tight cluster with external edges", async () => {
     const graph = createKnowledgeGraph();
 
     // Clique of 4 nodes
-    const clique = addClique(graph, 'c', 'cluster', 4);
+    const clique = addClique(graph, "c", "cluster", 4);
 
     // Two external nodes, each connected to one clique member
-    graph.addNode(makeNode('fn:ext0', 'extFn0', 'Function', '/src/other/ext0.ts'));
-    graph.addNode(makeNode('fn:ext1', 'extFn1', 'Function', '/src/other/ext1.ts'));
+    graph.addNode(
+      makeNode("fn:ext0", "extFn0", "Function", "/src/other/ext0.ts"),
+    );
+    graph.addNode(
+      makeNode("fn:ext1", "extFn1", "Function", "/src/other/ext1.ts"),
+    );
     // Connect ext nodes to each other so they form their own community (size >= 2)
-    graph.addRelationship(makeRel('rel:ext_link', 'fn:ext0', 'fn:ext1'));
+    graph.addRelationship(makeRel("rel:ext_link", "fn:ext0", "fn:ext1"));
     // Boundary edges from clique to external
-    graph.addRelationship(makeRel('rel:boundary0', clique[0], 'fn:ext0'));
-    graph.addRelationship(makeRel('rel:boundary1', clique[1], 'fn:ext1'));
+    graph.addRelationship(makeRel("rel:boundary0", clique[0], "fn:ext0"));
+    graph.addRelationship(makeRel("rel:boundary1", clique[1], "fn:ext1"));
 
     const result = await processCommunities(graph);
 
@@ -117,7 +134,9 @@ describe('calculateCohesion — internal edge ratio', () => {
     }
 
     // Find the community node
-    const cliqueCommunity = result.communities.find(c => c.id === cliqueCommunityId);
+    const cliqueCommunity = result.communities.find(
+      (c) => c.id === cliqueCommunityId,
+    );
     expect(cliqueCommunity).toBeDefined();
 
     // Key assertion: cohesion should be < 1.0 (edge ratio with boundary edges)
@@ -131,11 +150,11 @@ describe('calculateCohesion — internal edge ratio', () => {
    * A fully isolated clique with no external edges.
    * Both formulas agree: cohesion should be 1.0 because all edges are internal.
    */
-  it('cohesion is 1.0 when community has no external edges', async () => {
+  it("cohesion is 1.0 when community has no external edges", async () => {
     const graph = createKnowledgeGraph();
 
     // Single isolated clique of 4 — no boundary edges at all
-    addClique(graph, 'iso', 'isolated', 4);
+    addClique(graph, "iso", "isolated", 4);
 
     const result = await processCommunities(graph);
 
@@ -143,7 +162,7 @@ describe('calculateCohesion — internal edge ratio', () => {
     expect(result.communities.length).toBeGreaterThanOrEqual(1);
 
     // The community containing our clique should have cohesion 1.0
-    const community = result.communities.find(c => c.symbolCount >= 4);
+    const community = result.communities.find((c) => c.symbolCount >= 4);
     // If Leiden puts them all in one community (expected for a fully connected graph)
     if (community) {
       expect(community.cohesion).toBe(1.0);
@@ -154,38 +173,50 @@ describe('calculateCohesion — internal edge ratio', () => {
    * Two variants of the same base clique: one with few external edges,
    * one with many. The variant with more external edges should have lower cohesion.
    */
-  it('cohesion decreases as external edge proportion increases', async () => {
+  it("cohesion decreases as external edge proportion increases", async () => {
     // --- Variant A: clique with 1 external edge ---
     const graphA = createKnowledgeGraph();
-    const cliqueA = addClique(graphA, 'a', 'groupA', 4);
+    const cliqueA = addClique(graphA, "a", "groupA", 4);
     // One external node pair (to form a valid community)
-    graphA.addNode(makeNode('fn:extA0', 'extA0', 'Function', '/src/extA/e0.ts'));
-    graphA.addNode(makeNode('fn:extA1', 'extA1', 'Function', '/src/extA/e1.ts'));
-    graphA.addRelationship(makeRel('rel:extA_link', 'fn:extA0', 'fn:extA1'));
+    graphA.addNode(
+      makeNode("fn:extA0", "extA0", "Function", "/src/extA/e0.ts"),
+    );
+    graphA.addNode(
+      makeNode("fn:extA1", "extA1", "Function", "/src/extA/e1.ts"),
+    );
+    graphA.addRelationship(makeRel("rel:extA_link", "fn:extA0", "fn:extA1"));
     // 1 boundary edge
-    graphA.addRelationship(makeRel('rel:bndA0', cliqueA[0], 'fn:extA0'));
+    graphA.addRelationship(makeRel("rel:bndA0", cliqueA[0], "fn:extA0"));
 
     const resultA = await processCommunities(graphA);
-    const commIdA = resultA.memberships.find(m => m.nodeId === cliqueA[0])?.communityId;
-    const communityA = resultA.communities.find(c => c.id === commIdA);
+    const commIdA = resultA.memberships.find(
+      (m) => m.nodeId === cliqueA[0],
+    )?.communityId;
+    const communityA = resultA.communities.find((c) => c.id === commIdA);
 
     // --- Variant B: clique with 4 external edges ---
     const graphB = createKnowledgeGraph();
-    const cliqueB = addClique(graphB, 'b', 'groupB', 4);
+    const cliqueB = addClique(graphB, "b", "groupB", 4);
     // Four external nodes (two pairs)
     for (let i = 0; i < 4; i++) {
-      graphB.addNode(makeNode(`fn:extB${i}`, `extB${i}`, 'Function', `/src/extB/e${i}.ts`));
+      graphB.addNode(
+        makeNode(`fn:extB${i}`, `extB${i}`, "Function", `/src/extB/e${i}.ts`),
+      );
     }
-    graphB.addRelationship(makeRel('rel:extB_link0', 'fn:extB0', 'fn:extB1'));
-    graphB.addRelationship(makeRel('rel:extB_link1', 'fn:extB2', 'fn:extB3'));
+    graphB.addRelationship(makeRel("rel:extB_link0", "fn:extB0", "fn:extB1"));
+    graphB.addRelationship(makeRel("rel:extB_link1", "fn:extB2", "fn:extB3"));
     // 4 boundary edges (one per clique node)
     for (let i = 0; i < 4; i++) {
-      graphB.addRelationship(makeRel(`rel:bndB${i}`, cliqueB[i], `fn:extB${i}`));
+      graphB.addRelationship(
+        makeRel(`rel:bndB${i}`, cliqueB[i], `fn:extB${i}`),
+      );
     }
 
     const resultB = await processCommunities(graphB);
-    const commIdB = resultB.memberships.find(m => m.nodeId === cliqueB[0])?.communityId;
-    const communityB = resultB.communities.find(c => c.id === commIdB);
+    const commIdB = resultB.memberships.find(
+      (m) => m.nodeId === cliqueB[0],
+    )?.communityId;
+    const communityB = resultB.communities.find((c) => c.id === commIdB);
 
     expect(communityA).toBeDefined();
     expect(communityB).toBeDefined();
@@ -202,11 +233,15 @@ describe('calculateCohesion — internal edge ratio', () => {
    * community at all. Instead, test with 2 connected nodes and verify the
    * community gets cohesion 1.0 (2 nodes, 1 internal edge, 0 external = 1.0).
    */
-  it('two-node community with no external edges returns 1.0', async () => {
+  it("two-node community with no external edges returns 1.0", async () => {
     const graph = createKnowledgeGraph();
-    graph.addNode(makeNode('fn:pair0', 'pairFn0', 'Function', '/src/pair/f0.ts'));
-    graph.addNode(makeNode('fn:pair1', 'pairFn1', 'Function', '/src/pair/f1.ts'));
-    graph.addRelationship(makeRel('rel:pair', 'fn:pair0', 'fn:pair1'));
+    graph.addNode(
+      makeNode("fn:pair0", "pairFn0", "Function", "/src/pair/f0.ts"),
+    );
+    graph.addNode(
+      makeNode("fn:pair1", "pairFn1", "Function", "/src/pair/f1.ts"),
+    );
+    graph.addRelationship(makeRel("rel:pair", "fn:pair0", "fn:pair1"));
 
     const result = await processCommunities(graph);
 
@@ -219,7 +254,7 @@ describe('calculateCohesion — internal edge ratio', () => {
   /**
    * Sanity check: an empty graph should yield no communities.
    */
-  it('empty graph returns empty communities', async () => {
+  it("empty graph returns empty communities", async () => {
     const graph = createKnowledgeGraph();
     const result = await processCommunities(graph);
 
@@ -253,33 +288,35 @@ describe('calculateCohesion — internal edge ratio', () => {
    *     vertex2: 2 internal = 2
    *   - Total: 7, internal: 6, ratio: 6/7 ≈ 0.857
    */
-  it('web and backend formulas produce equivalent edge-ratio results', async () => {
+  it("web and backend formulas produce equivalent edge-ratio results", async () => {
     const graph = createKnowledgeGraph();
 
     // Triangle clique
-    const tri = ['fn:t0', 'fn:t1', 'fn:t2'];
-    graph.addNode(makeNode('fn:t0', 'triFn0', 'Function', '/src/tri/f0.ts'));
-    graph.addNode(makeNode('fn:t1', 'triFn1', 'Function', '/src/tri/f1.ts'));
-    graph.addNode(makeNode('fn:t2', 'triFn2', 'Function', '/src/tri/f2.ts'));
-    graph.addRelationship(makeRel('rel:t01', 'fn:t0', 'fn:t1'));
-    graph.addRelationship(makeRel('rel:t02', 'fn:t0', 'fn:t2'));
-    graph.addRelationship(makeRel('rel:t12', 'fn:t1', 'fn:t2'));
+    const tri = ["fn:t0", "fn:t1", "fn:t2"];
+    graph.addNode(makeNode("fn:t0", "triFn0", "Function", "/src/tri/f0.ts"));
+    graph.addNode(makeNode("fn:t1", "triFn1", "Function", "/src/tri/f1.ts"));
+    graph.addNode(makeNode("fn:t2", "triFn2", "Function", "/src/tri/f2.ts"));
+    graph.addRelationship(makeRel("rel:t01", "fn:t0", "fn:t1"));
+    graph.addRelationship(makeRel("rel:t02", "fn:t0", "fn:t2"));
+    graph.addRelationship(makeRel("rel:t12", "fn:t1", "fn:t2"));
 
     // External pair
-    graph.addNode(makeNode('fn:ext0', 'extFn0', 'Function', '/src/ext/e0.ts'));
-    graph.addNode(makeNode('fn:ext1', 'extFn1', 'Function', '/src/ext/e1.ts'));
-    graph.addRelationship(makeRel('rel:ext', 'fn:ext0', 'fn:ext1'));
+    graph.addNode(makeNode("fn:ext0", "extFn0", "Function", "/src/ext/e0.ts"));
+    graph.addNode(makeNode("fn:ext1", "extFn1", "Function", "/src/ext/e1.ts"));
+    graph.addRelationship(makeRel("rel:ext", "fn:ext0", "fn:ext1"));
 
     // Boundary edge: triangle vertex0 -> ext0
-    graph.addRelationship(makeRel('rel:bnd', 'fn:t0', 'fn:ext0'));
+    graph.addRelationship(makeRel("rel:bnd", "fn:t0", "fn:ext0"));
 
     const result = await processCommunities(graph);
 
     // Find triangle community
-    const triCommId = result.memberships.find(m => m.nodeId === 'fn:t0')?.communityId;
+    const triCommId = result.memberships.find(
+      (m) => m.nodeId === "fn:t0",
+    )?.communityId;
     expect(triCommId).toBeDefined();
 
-    const triComm = result.communities.find(c => c.id === triCommId);
+    const triComm = result.communities.find((c) => c.id === triCommId);
     expect(triComm).toBeDefined();
 
     // Hand-calculated edge ratio: 6 internal traversals / 7 total = 0.8571...

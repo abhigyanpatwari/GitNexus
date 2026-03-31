@@ -1,4 +1,4 @@
-import type { FTSIndexDef } from '../helpers/test-indexed-db.js';
+import type { FTSIndexDef } from "../helpers/test-indexed-db.js";
 
 export const LOCAL_BACKEND_SEED_DATA = [
   // Files
@@ -41,8 +41,20 @@ export const LOCAL_BACKEND_SEED_DATA = [
 ];
 
 export const LOCAL_BACKEND_FTS_INDEXES: FTSIndexDef[] = [
-  { table: 'Function', indexName: 'function_fts', columns: ['name', 'content', 'description'] },
-  { table: 'Class', indexName: 'class_fts', columns: ['name', 'content', 'description'] },
-  { table: 'Method', indexName: 'method_fts', columns: ['name', 'content', 'description'] },
-  { table: 'File', indexName: 'file_fts', columns: ['name', 'content'] },
+  {
+    table: "Function",
+    indexName: "function_fts",
+    columns: ["name", "content", "description"],
+  },
+  {
+    table: "Class",
+    indexName: "class_fts",
+    columns: ["name", "content", "description"],
+  },
+  {
+    table: "Method",
+    indexName: "method_fts",
+    columns: ["name", "content", "description"],
+  },
+  { table: "File", indexName: "file_fts", columns: ["name", "content"] },
 ];

@@ -1,6 +1,6 @@
 /**
  * Context Builder for Graph RAG Agent
- * 
+ *
  * Generates dynamic context about the loaded codebase to inject into the system prompt.
  * This helps the LLM understand the project structure, scale, and key entry points
  * without needing to explore from scratch.
@@ -54,20 +54,26 @@ export interface CodebaseContext {
  */
 export async function getCodebaseStats(
   executeQuery: (cypher: string) => Promise<any[]>,
-  projectName: string
+  projectName: string,
 ): Promise<CodebaseStats> {
   try {
     // Count each node type
     const countQueries = [
-      { type: 'files', query: 'MATCH (n:File) RETURN COUNT(n) AS count' },
-      { type: 'functions', query: 'MATCH (n:Function) RETURN COUNT(n) AS count' },
-      { type: 'classes', query: 'MATCH (n:Class) RETURN COUNT(n) AS count' },
-      { type: 'interfaces', query: 'MATCH (n:Interface) RETURN COUNT(n) AS count' },
-      { type: 'methods', query: 'MATCH (n:Method) RETURN COUNT(n) AS count' },
+      { type: "files", query: "MATCH (n:File) RETURN COUNT(n) AS count" },
+      {
+        type: "functions",
+        query: "MATCH (n:Function) RETURN COUNT(n) AS count",
+      },
+      { type: "classes", query: "MATCH (n:Class) RETURN COUNT(n) AS count" },
+      {
+        type: "interfaces",
+        query: "MATCH (n:Interface) RETURN COUNT(n) AS count",
+      },
+      { type: "methods", query: "MATCH (n:Method) RETURN COUNT(n) AS count" },
     ];
 
     const counts: Record<string, number> = {};
-    
+
     for (const { type, query } of countQueries) {
       try {
         const result = await executeQuery(query);
@@ -88,7 +94,7 @@ export async function getCodebaseStats(
       methodCount: counts.methods,
     };
   } catch (error) {
-    console.error('Failed to get codebase stats:', error);
+    console.error("Failed to get codebase stats:", error);
     return {
       projectName,
       fileCount: 0,
@@ -100,13 +106,12 @@ export async function getCodebaseStats(
   }
 }
 
-
 /**
  * Find hotspots - nodes with the most connections
  */
 export async function getHotspots(
   executeQuery: (cypher: string) => Promise<any[]>,
-  limit: number = 8
+  limit: number = 8,
 ): Promise<Hotspot[]> {
   try {
     // Find nodes with most edges (both directions)
@@ -118,27 +123,29 @@ export async function getHotspots(
       LIMIT ${limit}
       RETURN n.name AS name, LABEL(n) AS type, n.filePath AS filePath, connections
     `;
-    
+
     const results = await executeQuery(query);
-    
-    return results.map(row => {
-      if (Array.isArray(row)) {
+
+    return results
+      .map((row) => {
+        if (Array.isArray(row)) {
+          return {
+            name: row[0],
+            type: row[1],
+            filePath: row[2],
+            connections: row[3],
+          };
+        }
         return {
-          name: row[0],
-          type: row[1],
-          filePath: row[2],
-          connections: row[3],
+          name: row.name,
+          type: row.type,
+          filePath: row.filePath,
+          connections: row.connections,
         };
-      }
-      return {
-        name: row.name,
-        type: row.type,
-        filePath: row.filePath,
-        connections: row.connections,
-      };
-    }).filter(h => h.name && h.type);
+      })
+      .filter((h) => h.name && h.type);
   } catch (error) {
-    console.error('Failed to get hotspots:', error);
+    console.error("Failed to get hotspots:", error);
     return [];
   }
 }
@@ -149,25 +156,27 @@ export async function getHotspots(
  */
 export async function getFolderTree(
   executeQuery: (cypher: string) => Promise<any[]>,
-  maxDepth: number = 10
+  maxDepth: number = 10,
 ): Promise<string> {
   try {
     // Get all file paths
-    const query = 'MATCH (f:File) RETURN f.filePath AS path ORDER BY path';
+    const query = "MATCH (f:File) RETURN f.filePath AS path ORDER BY path";
     const results = await executeQuery(query);
-    
-    const paths = results.map(row => {
-      if (Array.isArray(row)) return row[0];
-      return row.path;
-    }).filter(Boolean);
 
-    if (paths.length === 0) return '';
+    const paths = results
+      .map((row) => {
+        if (Array.isArray(row)) return row[0];
+        return row.path;
+      })
+      .filter(Boolean);
+
+    if (paths.length === 0) return "";
 
     // Use hybrid ASCII format: clear hierarchy with smart truncation
     return formatAsHybridAscii(paths, maxDepth);
   } catch (error) {
-    console.error('Failed to get folder tree:', error);
-    return '';
+    console.error("Failed to get folder tree:", error);
+    return "";
   }
 }
 
@@ -175,7 +184,7 @@ export async function getFolderTree(
  * Format paths as indented tree (TOON-style, no ASCII box chars)
  * Uses indentation only for hierarchy - more token efficient than ASCII tree
  * Shows complete structure with no truncation
- * 
+ *
  * Example output:
  * src/
  *   components/ (45 files)
@@ -192,22 +201,26 @@ function formatAsHybridAscii(paths: string[], maxDepth: number): string {
     children: Map<string, TreeNode>;
     fileCount: number;
   }
-  
+
   const root: TreeNode = { isFile: false, children: new Map(), fileCount: 0 };
-  
+
   for (const path of paths) {
-    const normalized = path.replace(/\\/g, '/');
-    const parts = normalized.split('/').filter(Boolean);
-    
+    const normalized = path.replace(/\\/g, "/");
+    const parts = normalized.split("/").filter(Boolean);
+
     let current = root;
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
       const isFile = i === parts.length - 1;
-      
+
       if (!current.children.has(part)) {
-        current.children.set(part, { isFile, children: new Map(), fileCount: 0 });
+        current.children.set(part, {
+          isFile,
+          children: new Map(),
+          fileCount: 0,
+        });
       }
-      
+
       current = current.children.get(part)!;
       if (isFile) {
         // Count files in parent directories
@@ -219,19 +232,20 @@ function formatAsHybridAscii(paths: string[], maxDepth: number): string {
       }
     }
   }
-  
+
   // Render tree with indentation only (no ASCII box chars)
   const lines: string[] = [];
-  
+
   function renderNode(node: TreeNode, indent: string, depth: number): void {
     const entries = [...node.children.entries()];
     // Sort: folders first (by file count desc), then files alphabetically
     entries.sort(([aName, aNode], [bName, bNode]) => {
       if (aNode.isFile !== bNode.isFile) return aNode.isFile ? 1 : -1;
-      if (!aNode.isFile && !bNode.isFile) return bNode.fileCount - aNode.fileCount;
+      if (!aNode.isFile && !bNode.isFile)
+        return bNode.fileCount - aNode.fileCount;
       return aName.localeCompare(bName);
     });
-    
+
     for (const [name, childNode] of entries) {
       if (childNode.isFile) {
         // File
@@ -240,45 +254,48 @@ function formatAsHybridAscii(paths: string[], maxDepth: number): string {
         // Directory
         const childCount = childNode.children.size;
         const fileCount = childNode.fileCount;
-        
+
         // Only collapse if beyond maxDepth
         if (depth >= maxDepth) {
           lines.push(`${indent}${name}/ (${fileCount} files)`);
         } else {
           lines.push(`${indent}${name}/`);
-          renderNode(childNode, indent + '  ', depth + 1);
+          renderNode(childNode, indent + "  ", depth + 1);
         }
       }
     }
   }
-  
-  renderNode(root, '', 0);
-  
-  return lines.join('\n');
+
+  renderNode(root, "", 0);
+
+  return lines.join("\n");
 }
 
 /**
  * Build a tree structure from file paths
  */
-function buildTreeFromPaths(paths: string[], maxDepth: number): Map<string, any> {
+function buildTreeFromPaths(
+  paths: string[],
+  maxDepth: number,
+): Map<string, any> {
   const root = new Map<string, any>();
-  
+
   for (const fullPath of paths) {
     // Normalize path separators
-    const normalizedPath = fullPath.replace(/\\/g, '/');
-    const parts = normalizedPath.split('/').filter(Boolean);
-    
+    const normalizedPath = fullPath.replace(/\\/g, "/");
+    const parts = normalizedPath.split("/").filter(Boolean);
+
     let current = root;
     const depth = Math.min(parts.length, maxDepth + 1); // +1 to include files at maxDepth
-    
+
     for (let i = 0; i < depth; i++) {
       const part = parts[i];
       const isFile = i === parts.length - 1;
-      
+
       if (!current.has(part)) {
         current.set(part, isFile ? null : new Map<string, any>());
       }
-      
+
       const next = current.get(part);
       if (next instanceof Map) {
         current = next;
@@ -287,7 +304,7 @@ function buildTreeFromPaths(paths: string[], maxDepth: number): Map<string, any>
       }
     }
   }
-  
+
   return root;
 }
 
@@ -297,11 +314,11 @@ function buildTreeFromPaths(paths: string[], maxDepth: number): Map<string, any>
 function formatTreeAsAscii(
   tree: Map<string, any>,
   prefix: string,
-  isLast: boolean = true
+  isLast: boolean = true,
 ): string {
   const lines: string[] = [];
   const entries = Array.from(tree.entries());
-  
+
   // Sort: folders first, then files, alphabetically
   entries.sort(([a, aVal], [b, bVal]) => {
     const aIsDir = aVal instanceof Map;
@@ -309,16 +326,16 @@ function formatTreeAsAscii(
     if (aIsDir !== bIsDir) return bIsDir ? 1 : -1;
     return a.localeCompare(b);
   });
-  
+
   entries.forEach(([name, subtree], index) => {
     const isLastItem = index === entries.length - 1;
-    const connector = isLastItem ? '└── ' : '├── ';
-    const childPrefix = prefix + (isLastItem ? '    ' : '│   ');
-    
+    const connector = isLastItem ? "└── " : "├── ";
+    const childPrefix = prefix + (isLastItem ? "    " : "│   ");
+
     if (subtree instanceof Map && subtree.size > 0) {
       // Folder with children
       const childCount = countItems(subtree);
-      const annotation = childCount > 3 ? ` (${childCount} items)` : '';
+      const annotation = childCount > 3 ? ` (${childCount} items)` : "";
       lines.push(`${prefix}${connector}${name}/${annotation}`);
       lines.push(formatTreeAsAscii(subtree, childPrefix, isLastItem));
     } else if (subtree instanceof Map) {
@@ -329,8 +346,8 @@ function formatTreeAsAscii(
       lines.push(`${prefix}${connector}${name}`);
     }
   });
-  
-  return lines.filter(Boolean).join('\n');
+
+  return lines.filter(Boolean).join("\n");
 }
 
 /**
@@ -353,7 +370,7 @@ function countItems(tree: Map<string, any>): number {
  */
 export async function buildCodebaseContext(
   executeQuery: (cypher: string) => Promise<any[]>,
-  projectName: string
+  projectName: string,
 ): Promise<CodebaseContext> {
   // Run all queries in parallel for speed
   const [stats, hotspots, folderTree] = await Promise.all([
@@ -374,40 +391,40 @@ export async function buildCodebaseContext(
  */
 export function formatContextForPrompt(context: CodebaseContext): string {
   const { stats, hotspots, folderTree } = context;
-  
+
   const lines: string[] = [];
-  
+
   // Project header with stats
   lines.push(`### 📊 CODEBASE: ${stats.projectName}`);
-  
+
   const statParts = [
     `Files: ${stats.fileCount}`,
     `Functions: ${stats.functionCount}`,
     stats.classCount > 0 ? `Classes: ${stats.classCount}` : null,
     stats.interfaceCount > 0 ? `Interfaces: ${stats.interfaceCount}` : null,
   ].filter(Boolean);
-  lines.push(statParts.join(' | '));
-  lines.push('');
-  
+  lines.push(statParts.join(" | "));
+  lines.push("");
+
   // Hotspots
   if (hotspots.length > 0) {
-    lines.push('**Hotspots** (most connected):');
-    hotspots.slice(0, 5).forEach(h => {
+    lines.push("**Hotspots** (most connected):");
+    hotspots.slice(0, 5).forEach((h) => {
       lines.push(`- \`${h.name}\` (${h.type}) — ${h.connections} edges`);
     });
-    lines.push('');
+    lines.push("");
   }
-  
+
   // Folder tree
   if (folderTree) {
-    lines.push('### 📁 STRUCTURE');
-    lines.push('```');
-    lines.push(stats.projectName + '/');
+    lines.push("### 📁 STRUCTURE");
+    lines.push("```");
+    lines.push(stats.projectName + "/");
     lines.push(folderTree);
-    lines.push('```');
+    lines.push("```");
   }
-  
-  return lines.join('\n');
+
+  return lines.join("\n");
 }
 
 /**
@@ -416,10 +433,10 @@ export function formatContextForPrompt(context: CodebaseContext): string {
  */
 export function buildDynamicSystemPrompt(
   basePrompt: string,
-  context: CodebaseContext
+  context: CodebaseContext,
 ): string {
   const contextSection = formatContextForPrompt(context);
-  
+
   // Append context at the END - keeps core instructions at top for better adherence
   return `${basePrompt}
 

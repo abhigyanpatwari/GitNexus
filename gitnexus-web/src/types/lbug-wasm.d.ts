@@ -1,4 +1,4 @@
-declare module '@ladybugdb/wasm-core' {
+declare module "@ladybugdb/wasm-core" {
   export function init(): Promise<void>;
   export class Database {
     constructor(path: string, bufferPoolSize?: number);
@@ -8,7 +8,10 @@ declare module '@ladybugdb/wasm-core' {
     constructor(db: Database);
     query(cypher: string): Promise<QueryResult>;
     prepare(cypher: string): Promise<PreparedStatement>;
-    execute(stmt: PreparedStatement, params?: Record<string, any>): Promise<QueryResult>;
+    execute(
+      stmt: PreparedStatement,
+      params?: Record<string, any>,
+    ): Promise<QueryResult>;
     close(): Promise<void>;
   }
   export interface QueryResult {

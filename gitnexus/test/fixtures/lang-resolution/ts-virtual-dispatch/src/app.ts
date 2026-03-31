@@ -2,26 +2,26 @@
 
 class Animal {
   speak(): string {
-    return '...';
+    return "...";
   }
 }
 
 class Dog extends Animal {
   speak(): string {
-    return 'woof';
+    return "woof";
   }
 
   fetchBall(): string {
-    return 'ball';
+    return "ball";
   }
 }
 
 export function run(): void {
   // Virtual dispatch: declared as Animal, constructed as Dog
   const animal: Animal = new Dog();
-  animal.fetchBall();  // Only Dog has fetchBall — proves virtual dispatch override
+  animal.fetchBall(); // Only Dog has fetchBall — proves virtual dispatch override
 
   // Direct type: no override needed
   const dog: Dog = new Dog();
-  dog.fetchBall();     // Direct resolution to Dog#fetchBall
+  dog.fetchBall(); // Direct resolution to Dog#fetchBall
 }

@@ -1,16 +1,16 @@
 /**
  * Entry Point Scoring
- * 
+ *
  * Calculates entry point scores for process detection based on:
  * 1. Call ratio (existing algorithm - callees / (callers + 1))
  * 2. Export status (exported functions get higher priority)
  * 3. Name patterns (functions matching entry point patterns like handle*, on*, *Controller)
  * 4. Framework detection (path-based detection for Next.js, Express, Django, etc.)
- * 
+ *
  * This module is language-agnostic - language-specific patterns are defined per language.
  */
 
-import { detectFrameworkFromPath } from './framework-detection';
+import { detectFrameworkFromPath } from "./framework-detection";
 
 // ============================================================================
 // NAME PATTERNS - All 11 supported languages
@@ -22,133 +22,133 @@ import { detectFrameworkFromPath } from './framework-detection';
  */
 const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
   // Universal patterns (apply to all languages)
-  '*': [
+  "*": [
     /^(main|init|bootstrap|start|run|setup|configure)$/i,
-    /^handle[A-Z]/,           // handleLogin, handleSubmit
-    /^on[A-Z]/,               // onClick, onSubmit
-    /Handler$/,               // RequestHandler
-    /Controller$/,            // UserController
-    /^process[A-Z]/,          // processPayment
-    /^execute[A-Z]/,          // executeQuery
-    /^perform[A-Z]/,          // performAction
-    /^dispatch[A-Z]/,         // dispatchEvent
-    /^trigger[A-Z]/,          // triggerAction
-    /^fire[A-Z]/,             // fireEvent
-    /^emit[A-Z]/,             // emitEvent
+    /^handle[A-Z]/, // handleLogin, handleSubmit
+    /^on[A-Z]/, // onClick, onSubmit
+    /Handler$/, // RequestHandler
+    /Controller$/, // UserController
+    /^process[A-Z]/, // processPayment
+    /^execute[A-Z]/, // executeQuery
+    /^perform[A-Z]/, // performAction
+    /^dispatch[A-Z]/, // dispatchEvent
+    /^trigger[A-Z]/, // triggerAction
+    /^fire[A-Z]/, // fireEvent
+    /^emit[A-Z]/, // emitEvent
   ],
-  
+
   // JavaScript/TypeScript
-  'javascript': [
-    /^use[A-Z]/,              // React hooks (useEffect, etc.)
+  javascript: [
+    /^use[A-Z]/, // React hooks (useEffect, etc.)
   ],
-  'typescript': [
-    /^use[A-Z]/,              // React hooks
+  typescript: [
+    /^use[A-Z]/, // React hooks
   ],
-  
+
   // Python
-  'python': [
-    /^app$/,                  // Flask/FastAPI app
-    /^(get|post|put|delete|patch)_/i,  // REST conventions
-    /^api_/,                  // API functions
-    /^view_/,                 // Django views
+  python: [
+    /^app$/, // Flask/FastAPI app
+    /^(get|post|put|delete|patch)_/i, // REST conventions
+    /^api_/, // API functions
+    /^view_/, // Django views
   ],
-  
+
   // Java
-  'java': [
-    /^do[A-Z]/,               // doGet, doPost (Servlets)
-    /^create[A-Z]/,           // Factory patterns
-    /^build[A-Z]/,            // Builder patterns
-    /Service$/,               // UserService
+  java: [
+    /^do[A-Z]/, // doGet, doPost (Servlets)
+    /^create[A-Z]/, // Factory patterns
+    /^build[A-Z]/, // Builder patterns
+    /Service$/, // UserService
   ],
-  
+
   // C#
-  'csharp': [
-    /^(Get|Post|Put|Delete)/,  // ASP.NET conventions
-    /Action$/,                 // MVC actions
-    /^On[A-Z]/,               // Event handlers
-    /Async$/,                 // Async entry points
+  csharp: [
+    /^(Get|Post|Put|Delete)/, // ASP.NET conventions
+    /Action$/, // MVC actions
+    /^On[A-Z]/, // Event handlers
+    /Async$/, // Async entry points
   ],
-  
+
   // Go
-  'go': [
-    /Handler$/,               // http.Handler pattern
-    /^Serve/,                 // ServeHTTP
-    /^New[A-Z]/,              // Constructor pattern (returns new instance)
-    /^Make[A-Z]/,             // Make functions
+  go: [
+    /Handler$/, // http.Handler pattern
+    /^Serve/, // ServeHTTP
+    /^New[A-Z]/, // Constructor pattern (returns new instance)
+    /^Make[A-Z]/, // Make functions
   ],
-  
+
   // Rust
-  'rust': [
+  rust: [
     /^(get|post|put|delete)_handler$/i,
-    /^handle_/,               // handle_request
-    /^new$/,                  // Constructor pattern
-    /^run$/,                  // run entry point
-    /^spawn/,                 // Async spawn
+    /^handle_/, // handle_request
+    /^new$/, // Constructor pattern
+    /^run$/, // run entry point
+    /^spawn/, // Async spawn
   ],
-  
+
   // C - explicit main() boost (critical for C programs)
-  'c': [
-    /^main$/,                 // THE entry point
-    /^init_/,                 // Initialization functions
-    /^start_/,                // Start functions
-    /^run_/,                  // Run functions
+  c: [
+    /^main$/, // THE entry point
+    /^init_/, // Initialization functions
+    /^start_/, // Start functions
+    /^run_/, // Run functions
   ],
-  
+
   // C++ - same as C plus class patterns
-  'cpp': [
-    /^main$/,                 // THE entry point
+  cpp: [
+    /^main$/, // THE entry point
     /^init_/,
-    /^Create[A-Z]/,           // Factory patterns
-    /^Run$/,                  // Run methods
-    /^Start$/,                // Start methods
+    /^Create[A-Z]/, // Factory patterns
+    /^Run$/, // Run methods
+    /^Start$/, // Start methods
   ],
 
   // Swift / iOS
-  'swift': [
-    /^viewDidLoad$/,                  // UIKit lifecycle
-    /^viewWillAppear$/,               // UIKit lifecycle
-    /^viewDidAppear$/,                // UIKit lifecycle
-    /^viewWillDisappear$/,            // UIKit lifecycle
-    /^viewDidDisappear$/,             // UIKit lifecycle
-    /^application\(/,                 // AppDelegate methods
-    /^scene\(/,                       // SceneDelegate methods
-    /^body$/,                         // SwiftUI View.body
-    /Coordinator$/,                   // Coordinator pattern
-    /^sceneDidBecomeActive$/,         // SceneDelegate lifecycle
-    /^sceneWillResignActive$/,        // SceneDelegate lifecycle
+  swift: [
+    /^viewDidLoad$/, // UIKit lifecycle
+    /^viewWillAppear$/, // UIKit lifecycle
+    /^viewDidAppear$/, // UIKit lifecycle
+    /^viewWillDisappear$/, // UIKit lifecycle
+    /^viewDidDisappear$/, // UIKit lifecycle
+    /^application\(/, // AppDelegate methods
+    /^scene\(/, // SceneDelegate methods
+    /^body$/, // SwiftUI View.body
+    /Coordinator$/, // Coordinator pattern
+    /^sceneDidBecomeActive$/, // SceneDelegate lifecycle
+    /^sceneWillResignActive$/, // SceneDelegate lifecycle
     /^didFinishLaunchingWithOptions$/, // AppDelegate
-    /ViewController$/,                // ViewController classes
-    /^configure[A-Z]/,               // Configuration methods
-    /^setup[A-Z]/,                    // Setup methods
-    /^makeBody$/,                     // SwiftUI ViewModifier
+    /ViewController$/, // ViewController classes
+    /^configure[A-Z]/, // Configuration methods
+    /^setup[A-Z]/, // Setup methods
+    /^makeBody$/, // SwiftUI ViewModifier
   ],
 
   // PHP / Laravel
-  'php': [
-    /Controller$/,            // UserController (class name convention)
-    /^handle$/,               // Job::handle(), Listener::handle()
-    /^execute$/,              // Command::execute()
-    /^boot$/,                 // ServiceProvider::boot()
-    /^register$/,             // ServiceProvider::register()
-    /^__invoke$/,             // Invokable controllers/actions
-    /^(index|show|store|update|destroy|create|edit)$/,  // RESTful resource methods
-    /^(get|post|put|delete|patch)[A-Z]/,  // Explicit HTTP method actions
-    /^run$/,                  // Command/Job run()
-    /^fire$/,                 // Event fire()
-    /^dispatch$/,             // Dispatchable jobs
-    /Service$/,               // UserService (Service layer)
-    /Repository$/,            // UserRepository (Repository pattern)
-    /^find$/,                 // Repository::find()
-    /^findAll$/,              // Repository::findAll()
-    /^save$/,                 // Repository::save()
-    /^delete$/,               // Repository::delete()
+  php: [
+    /Controller$/, // UserController (class name convention)
+    /^handle$/, // Job::handle(), Listener::handle()
+    /^execute$/, // Command::execute()
+    /^boot$/, // ServiceProvider::boot()
+    /^register$/, // ServiceProvider::register()
+    /^__invoke$/, // Invokable controllers/actions
+    /^(index|show|store|update|destroy|create|edit)$/, // RESTful resource methods
+    /^(get|post|put|delete|patch)[A-Z]/, // Explicit HTTP method actions
+    /^run$/, // Command/Job run()
+    /^fire$/, // Event fire()
+    /^dispatch$/, // Dispatchable jobs
+    /Service$/, // UserService (Service layer)
+    /Repository$/, // UserRepository (Repository pattern)
+    /^find$/, // Repository::find()
+    /^findAll$/, // Repository::findAll()
+    /^save$/, // Repository::save()
+    /^delete$/, // Repository::delete()
   ],
 
   // Ruby
-  'ruby': [
-    /^call$/,                 // Service objects (MyService.call)
-    /^perform$/,              // Background jobs (Sidekiq, ActiveJob)
-    /^execute$/,              // Command pattern
+  ruby: [
+    /^call$/, // Service objects (MyService.call)
+    /^perform$/, // Background jobs (Sidekiq, ActiveJob)
+    /^execute$/, // Command pattern
   ],
 };
 
@@ -161,16 +161,16 @@ const ENTRY_POINT_PATTERNS: Record<string, RegExp[]> = {
  * These get penalized in scoring
  */
 const UTILITY_PATTERNS: RegExp[] = [
-  /^(get|set|is|has|can|should|will|did)[A-Z]/,  // Accessors/predicates
-  /^_/,                                            // Private by convention
-  /^(format|parse|validate|convert|transform)/i,  // Transformation utilities
-  /^(log|debug|error|warn|info)$/i,               // Logging
-  /^(to|from)[A-Z]/,                              // Conversions
-  /^(encode|decode)/i,                            // Encoding utilities
-  /^(serialize|deserialize)/i,                    // Serialization
-  /^(clone|copy|deep)/i,                          // Cloning utilities
-  /^(merge|extend|assign)/i,                      // Object utilities
-  /^(filter|map|reduce|sort|find)/i,             // Collection utilities (standalone)
+  /^(get|set|is|has|can|should|will|did)[A-Z]/, // Accessors/predicates
+  /^_/, // Private by convention
+  /^(format|parse|validate|convert|transform)/i, // Transformation utilities
+  /^(log|debug|error|warn|info)$/i, // Logging
+  /^(to|from)[A-Z]/, // Conversions
+  /^(encode|decode)/i, // Encoding utilities
+  /^(serialize|deserialize)/i, // Serialization
+  /^(clone|copy|deep)/i, // Cloning utilities
+  /^(merge|extend|assign)/i, // Object utilities
+  /^(filter|map|reduce|sort|find)/i, // Collection utilities (standalone)
   /Helper$/,
   /Util$/,
   /Utils$/,
@@ -193,10 +193,10 @@ export interface EntryPointScoreResult {
 
 /**
  * Calculate an entry point score for a function/method
- * 
+ *
  * Higher scores indicate better entry point candidates.
  * Score = baseScore × exportMultiplier × nameMultiplier
- * 
+ *
  * @param name - Function/method name
  * @param language - Programming language
  * @param isExported - Whether the function is exported/public
@@ -210,45 +210,45 @@ export function calculateEntryPointScore(
   isExported: boolean,
   callerCount: number,
   calleeCount: number,
-  filePath: string = ''  // Optional for backwards compatibility
+  filePath: string = "", // Optional for backwards compatibility
 ): EntryPointScoreResult {
   const reasons: string[] = [];
-  
+
   // Must have outgoing calls to be an entry point (we need to trace forward)
   if (calleeCount === 0) {
-    return { score: 0, reasons: ['no-outgoing-calls'] };
+    return { score: 0, reasons: ["no-outgoing-calls"] };
   }
-  
+
   // Base score: call ratio (existing algorithm)
   // High ratio = calls many, called by few = likely entry point
   const baseScore = calleeCount / (callerCount + 1);
   reasons.push(`base:${baseScore.toFixed(2)}`);
-  
+
   // Export bonus: exported/public functions are more likely entry points
   const exportMultiplier = isExported ? 2.0 : 1.0;
   if (isExported) {
-    reasons.push('exported');
+    reasons.push("exported");
   }
-  
+
   // Name pattern scoring
   let nameMultiplier = 1.0;
-  
+
   // Check negative patterns first (utilities get penalized)
-  if (UTILITY_PATTERNS.some(p => p.test(name))) {
-    nameMultiplier = 0.3;  // Significant penalty
-    reasons.push('utility-pattern');
+  if (UTILITY_PATTERNS.some((p) => p.test(name))) {
+    nameMultiplier = 0.3; // Significant penalty
+    reasons.push("utility-pattern");
   } else {
     // Check positive patterns
-    const universalPatterns = ENTRY_POINT_PATTERNS['*'] || [];
+    const universalPatterns = ENTRY_POINT_PATTERNS["*"] || [];
     const langPatterns = ENTRY_POINT_PATTERNS[language] || [];
     const allPatterns = [...universalPatterns, ...langPatterns];
-    
-    if (allPatterns.some(p => p.test(name))) {
-      nameMultiplier = 1.5;  // Bonus for matching entry point pattern
-      reasons.push('entry-pattern');
+
+    if (allPatterns.some((p) => p.test(name))) {
+      nameMultiplier = 1.5; // Bonus for matching entry point pattern
+      reasons.push("entry-pattern");
     }
   }
-  
+
   // Framework detection bonus (Phase 2)
   let frameworkMultiplier = 1.0;
   if (filePath) {
@@ -258,10 +258,11 @@ export function calculateEntryPointScore(
       reasons.push(`framework:${frameworkHint.reason}`);
     }
   }
-  
+
   // Calculate final score
-  const finalScore = baseScore * exportMultiplier * nameMultiplier * frameworkMultiplier;
-  
+  const finalScore =
+    baseScore * exportMultiplier * nameMultiplier * frameworkMultiplier;
+
   return {
     score: finalScore,
     reasons,
@@ -277,44 +278,44 @@ export function calculateEntryPointScore(
  * Covers common test file patterns across all supported languages
  */
 export function isTestFile(filePath: string): boolean {
-  const p = filePath.toLowerCase().replace(/\\/g, '/');
-  
+  const p = filePath.toLowerCase().replace(/\\/g, "/");
+
   return (
     // JavaScript/TypeScript test patterns
-    p.includes('.test.') || 
-    p.includes('.spec.') || 
-    p.includes('__tests__/') || 
-    p.includes('__mocks__/') ||
+    p.includes(".test.") ||
+    p.includes(".spec.") ||
+    p.includes("__tests__/") ||
+    p.includes("__mocks__/") ||
     // Generic test folders
-    p.includes('/test/') ||
-    p.includes('/tests/') ||
-    p.includes('/testing/') ||
+    p.includes("/test/") ||
+    p.includes("/tests/") ||
+    p.includes("/testing/") ||
     // Python test patterns
-    p.endsWith('_test.py') ||
-    p.includes('/test_') ||
+    p.endsWith("_test.py") ||
+    p.includes("/test_") ||
     // Go test patterns
-    p.endsWith('_test.go') ||
+    p.endsWith("_test.go") ||
     // Java test patterns
-    p.includes('/src/test/') ||
+    p.includes("/src/test/") ||
     // Rust test patterns (inline tests are different, but test files)
-    p.includes('/tests/') ||
+    p.includes("/tests/") ||
     // Swift/iOS test patterns
-    p.endsWith('tests.swift') ||
-    p.endsWith('test.swift') ||
-    p.includes('uitests/') ||
+    p.endsWith("tests.swift") ||
+    p.endsWith("test.swift") ||
+    p.includes("uitests/") ||
     // C# test patterns
-    p.includes('.tests/') ||
-    p.includes('tests.cs') ||
+    p.includes(".tests/") ||
+    p.includes("tests.cs") ||
     // PHP/Laravel test patterns
-    p.endsWith('test.php') ||
-    p.endsWith('spec.php') ||
-    p.includes('/tests/feature/') ||
-    p.includes('/tests/unit/') ||
+    p.endsWith("test.php") ||
+    p.endsWith("spec.php") ||
+    p.includes("/tests/feature/") ||
+    p.includes("/tests/unit/") ||
     // Ruby test patterns
-    p.endsWith('_spec.rb') ||
-    p.endsWith('_test.rb') ||
-    p.includes('/spec/') ||
-    p.includes('/test/fixtures/')
+    p.endsWith("_spec.rb") ||
+    p.endsWith("_test.rb") ||
+    p.includes("/spec/") ||
+    p.includes("/test/fixtures/")
   );
 }
 
@@ -323,21 +324,21 @@ export function isTestFile(filePath: string): boolean {
  * These might still have entry points but should be lower priority
  */
 export function isUtilityFile(filePath: string): boolean {
-  const p = filePath.toLowerCase().replace(/\\/g, '/');
-  
+  const p = filePath.toLowerCase().replace(/\\/g, "/");
+
   return (
-    p.includes('/utils/') ||
-    p.includes('/util/') ||
-    p.includes('/helpers/') ||
-    p.includes('/helper/') ||
-    p.includes('/common/') ||
-    p.includes('/shared/') ||
-    p.includes('/lib/') ||
-    p.endsWith('/utils.ts') ||
-    p.endsWith('/utils.js') ||
-    p.endsWith('/helpers.ts') ||
-    p.endsWith('/helpers.js') ||
-    p.endsWith('_utils.py') ||
-    p.endsWith('_helpers.py')
+    p.includes("/utils/") ||
+    p.includes("/util/") ||
+    p.includes("/helpers/") ||
+    p.includes("/helper/") ||
+    p.includes("/common/") ||
+    p.includes("/shared/") ||
+    p.includes("/lib/") ||
+    p.endsWith("/utils.ts") ||
+    p.endsWith("/utils.js") ||
+    p.endsWith("/helpers.ts") ||
+    p.endsWith("/helpers.js") ||
+    p.endsWith("_utils.py") ||
+    p.endsWith("_helpers.py")
   );
 }

@@ -1,21 +1,29 @@
-import { Search, Settings, HelpCircle, Sparkles, Github, Star, ChevronDown } from 'lucide-react';
-import { useAppState } from '../hooks/useAppState';
-import type { RepoSummary } from '../services/server-connection';
-import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
-import { GraphNode } from '../core/graph/types';
-import { EmbeddingStatus } from './EmbeddingStatus';
+import {
+  Search,
+  Settings,
+  HelpCircle,
+  Sparkles,
+  Github,
+  Star,
+  ChevronDown,
+} from "lucide-react";
+import { useAppState } from "../hooks/useAppState";
+import type { RepoSummary } from "../services/server-connection";
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import { GraphNode } from "../core/graph/types";
+import { EmbeddingStatus } from "./EmbeddingStatus";
 
 // Color mapping for node types in search results
 const NODE_TYPE_COLORS: Record<string, string> = {
-  Folder: '#6366f1',
-  File: '#3b82f6',
-  Function: '#10b981',
-  Class: '#f59e0b',
-  Method: '#14b8a6',
-  Interface: '#ec4899',
-  Variable: '#64748b',
-  Import: '#475569',
-  Type: '#a78bfa',
+  Folder: "#6366f1",
+  File: "#3b82f6",
+  Function: "#10b981",
+  Class: "#f59e0b",
+  Method: "#14b8a6",
+  Interface: "#ec4899",
+  Variable: "#64748b",
+  Import: "#475569",
+  Type: "#a78bfa",
 };
 
 interface HeaderProps {
@@ -24,7 +32,11 @@ interface HeaderProps {
   onSwitchRepo?: (repoName: string) => void;
 }
 
-export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: HeaderProps) => {
+export const Header = ({
+  onFocusNode,
+  availableRepos = [],
+  onSwitchRepo,
+}: HeaderProps) => {
   const {
     projectName,
     graph,
@@ -35,7 +47,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
   } = useAppState();
   const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
   const repoDropdownRef = useRef<HTMLDivElement>(null);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState("");
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const searchRef = useRef<HTMLDivElement>(null);
@@ -50,7 +62,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
 
     const query = searchQuery.toLowerCase();
     return graph.nodes
-      .filter(node => node.properties.name.toLowerCase().includes(query))
+      .filter((node) => node.properties.name.toLowerCase().includes(query))
       .slice(0, 10); // Limit to 10 results
   }, [graph, searchQuery]);
 
@@ -60,42 +72,45 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
       if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
         setIsSearchOpen(false);
       }
-      if (repoDropdownRef.current && !repoDropdownRef.current.contains(e.target as Node)) {
+      if (
+        repoDropdownRef.current &&
+        !repoDropdownRef.current.contains(e.target as Node)
+      ) {
         setIsRepoDropdownOpen(false);
       }
     };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
   // Keyboard shortcut (Cmd+K / Ctrl+K)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         inputRef.current?.focus();
         setIsSearchOpen(true);
       }
-      if (e.key === 'Escape') {
+      if (e.key === "Escape") {
         setIsSearchOpen(false);
         inputRef.current?.blur();
       }
     };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
   // Handle keyboard navigation in results
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (!isSearchOpen || searchResults.length === 0) return;
 
-    if (e.key === 'ArrowDown') {
+    if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSelectedIndex(i => Math.min(i + 1, searchResults.length - 1));
-    } else if (e.key === 'ArrowUp') {
+      setSelectedIndex((i) => Math.min(i + 1, searchResults.length - 1));
+    } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setSelectedIndex(i => Math.max(i - 1, 0));
-    } else if (e.key === 'Enter') {
+      setSelectedIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
       e.preventDefault();
       const selected = searchResults[selectedIndex];
       if (selected) {
@@ -107,7 +122,7 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
   const handleSelectNode = (node: GraphNode) => {
     // onFocusNode handles both camera focus AND selection in useSigma
     onFocusNode?.(node.id);
-    setSearchQuery('');
+    setSearchQuery("");
     setIsSearchOpen(false);
     setSelectedIndex(0);
   };
@@ -121,20 +136,27 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
           <div className="w-7 h-7 flex items-center justify-center bg-gradient-to-br from-accent to-node-interface rounded-md shadow-glow text-white text-sm font-bold">
             ◇
           </div>
-          <span className="font-semibold text-[15px] tracking-tight">GitNexus</span>
+          <span className="font-semibold text-[15px] tracking-tight">
+            GitNexus
+          </span>
         </div>
 
         {/* Project badge / Repo selector dropdown */}
         {projectName && (
           <div className="relative" ref={repoDropdownRef}>
             <button
-              onClick={() => availableRepos.length >= 2 && setIsRepoDropdownOpen(prev => !prev)}
-              className={`flex items-center gap-2 px-3 py-1.5 bg-surface border border-border-subtle rounded-lg text-sm text-text-secondary transition-colors ${availableRepos.length >= 2 ? 'hover:bg-hover cursor-pointer' : ''}`}
+              onClick={() =>
+                availableRepos.length >= 2 &&
+                setIsRepoDropdownOpen((prev) => !prev)
+              }
+              className={`flex items-center gap-2 px-3 py-1.5 bg-surface border border-border-subtle rounded-lg text-sm text-text-secondary transition-colors ${availableRepos.length >= 2 ? "hover:bg-hover cursor-pointer" : ""}`}
             >
               <span className="w-1.5 h-1.5 bg-node-function rounded-full animate-pulse" />
               <span className="truncate max-w-[200px]">{projectName}</span>
               {availableRepos.length >= 2 && (
-                <ChevronDown className={`w-3.5 h-3.5 text-text-muted transition-transform ${isRepoDropdownOpen ? 'rotate-180' : ''}`} />
+                <ChevronDown
+                  className={`w-3.5 h-3.5 text-text-muted transition-transform ${isRepoDropdownOpen ? "rotate-180" : ""}`}
+                />
               )}
             </button>
 
@@ -152,15 +174,20 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
                         }
                         setIsRepoDropdownOpen(false);
                       }}
-                      className={`w-full px-4 py-3 flex items-center gap-3 text-left transition-colors ${isCurrent ? 'bg-accent/10 border-l-2 border-accent' : 'hover:bg-hover border-l-2 border-transparent'}`}
+                      className={`w-full px-4 py-3 flex items-center gap-3 text-left transition-colors ${isCurrent ? "bg-accent/10 border-l-2 border-accent" : "hover:bg-hover border-l-2 border-transparent"}`}
                     >
-                      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isCurrent ? 'bg-node-function animate-pulse' : 'bg-text-muted'}`} />
+                      <span
+                        className={`w-2 h-2 rounded-full flex-shrink-0 ${isCurrent ? "bg-node-function animate-pulse" : "bg-text-muted"}`}
+                      />
                       <div className="flex-1 min-w-0">
-                        <div className={`text-sm font-medium truncate ${isCurrent ? 'text-accent' : 'text-text-primary'}`}>
+                        <div
+                          className={`text-sm font-medium truncate ${isCurrent ? "text-accent" : "text-text-primary"}`}
+                        >
                           {repo.name}
                         </div>
                         <div className="text-xs text-text-muted mt-0.5">
-                          {repo.stats?.nodes ?? '?'} nodes &middot; {repo.stats?.files ?? '?'} files
+                          {repo.stats?.nodes ?? "?"} nodes &middot;{" "}
+                          {repo.stats?.files ?? "?"} files
                         </div>
                       </div>
                     </button>
@@ -208,15 +235,19 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
                   <button
                     key={node.id}
                     onClick={() => handleSelectNode(node)}
-                    className={`w-full px-4 py-2.5 flex items-center gap-3 text-left transition-colors ${index === selectedIndex
-                      ? 'bg-accent/20 text-text-primary'
-                      : 'hover:bg-hover text-text-secondary'
-                      }`}
+                    className={`w-full px-4 py-2.5 flex items-center gap-3 text-left transition-colors ${
+                      index === selectedIndex
+                        ? "bg-accent/20 text-text-primary"
+                        : "hover:bg-hover text-text-secondary"
+                    }`}
                   >
                     {/* Node type indicator */}
                     <span
                       className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: NODE_TYPE_COLORS[node.label] || '#6b7280' }}
+                      style={{
+                        backgroundColor:
+                          NODE_TYPE_COLORS[node.label] || "#6b7280",
+                      }}
                     />
                     {/* Node name */}
                     <span className="flex-1 truncate text-sm font-medium">
@@ -277,9 +308,10 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
           onClick={openChatPanel}
           className={`
             flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-medium transition-all
-            ${isRightPanelOpen && rightPanelTab === 'chat'
-              ? 'bg-accent text-white shadow-glow'
-              : 'bg-gradient-to-r from-accent to-accent-dim text-white shadow-glow hover:shadow-lg hover:-translate-y-0.5'
+            ${
+              isRightPanelOpen && rightPanelTab === "chat"
+                ? "bg-accent text-white shadow-glow"
+                : "bg-gradient-to-r from-accent to-accent-dim text-white shadow-glow hover:shadow-lg hover:-translate-y-0.5"
             }
           `}
         >
@@ -290,4 +322,3 @@ export const Header = ({ onFocusNode, availableRepos = [], onSwitchRepo }: Heade
     </header>
   );
 };
-

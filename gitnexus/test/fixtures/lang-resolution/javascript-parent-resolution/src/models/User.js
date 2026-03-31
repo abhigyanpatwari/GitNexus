@@ -1,6 +1,8 @@
-const { BaseModel } = require('./Base');
+const { BaseModel } = require("./Base");
 
 class User extends BaseModel {
-  serialize() { return ''; }
+  serialize() {
+    return "";
+  }
 }
 module.exports = { User };

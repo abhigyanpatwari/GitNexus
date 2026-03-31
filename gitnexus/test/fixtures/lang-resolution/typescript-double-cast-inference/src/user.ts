@@ -1,3 +1,5 @@
 export class User {
-  save() { return true; }
+  save() {
+    return true;
+  }
 }

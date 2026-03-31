@@ -5,6 +5,7 @@ All notable changes to GitNexus will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+
 - Migrated from KuzuDB to LadybugDB v0.15 (`@ladybugdb/core`, `@ladybugdb/wasm-core`)
 - Renamed all internal paths from `kuzu` to `lbug` (storage: `.gitnexus/kuzu` → `.gitnexus/lbug`)
 - Added automatic cleanup of stale KuzuDB index files

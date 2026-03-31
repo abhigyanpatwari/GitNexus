@@ -3,8 +3,8 @@
  * Handles path resolution for Ruby's require and require_relative calls.
  */
 
-import type { SuffixIndex } from './utils.js';
-import { suffixResolve } from './utils.js';
+import type { SuffixIndex } from "./utils.js";
+import { suffixResolve } from "./utils.js";
 
 /**
  * Resolve a Ruby require/require_relative path to a matching .rb file.
@@ -18,6 +18,6 @@ export function resolveRubyImport(
   allFileList: string[],
   index?: SuffixIndex,
 ): string | null {
-  const pathParts = importPath.replace(/^\.\//, '').split('/').filter(Boolean);
+  const pathParts = importPath.replace(/^\.\//, "").split("/").filter(Boolean);
   return suffixResolve(pathParts, normalizedFileList, allFileList, index);
 }

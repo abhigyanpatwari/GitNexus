@@ -1,4 +1,4 @@
-import { User } from './models';
+import { User } from "./models";
 
 function processStrict(x: User | null) {
   if (x !== null) {
@@ -18,7 +18,7 @@ function processUndefined(x: User | undefined) {
   }
 }
 
-const processFuncExpr = function(x: User | null) {
+const processFuncExpr = function (x: User | null) {
   if (x !== null) {
     x.save();
   }

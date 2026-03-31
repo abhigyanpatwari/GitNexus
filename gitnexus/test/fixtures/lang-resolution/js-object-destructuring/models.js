@@ -3,7 +3,9 @@
  */
 class Address {
   /** @returns {boolean} */
-  save() { return true; }
+  save() {
+    return true;
+  }
 }
 
 /**

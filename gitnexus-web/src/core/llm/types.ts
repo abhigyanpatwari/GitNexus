@@ -1,6 +1,6 @@
 /**
  * LLM Provider Types
- * 
+ *
  * Type definitions for multi-provider LLM support.
  * Supports Azure OpenAI and Google Gemini (with extensibility for others).
  */
@@ -8,7 +8,14 @@
 /**
  * Supported LLM providers
  */
-export type LLMProvider = 'openai' | 'azure-openai' | 'gemini' | 'anthropic' | 'ollama' | 'openrouter' | 'minimax';
+export type LLMProvider =
+  | "openai"
+  | "azure-openai"
+  | "gemini"
+  | "anthropic"
+  | "ollama"
+  | "openrouter"
+  | "minimax";
 
 /**
  * Base configuration shared by all providers
@@ -24,47 +31,47 @@ export interface BaseProviderConfig {
  * OpenAI specific configuration
  */
 export interface OpenAIConfig extends BaseProviderConfig {
-  provider: 'openai';
+  provider: "openai";
   apiKey: string;
-  model: string;  // e.g., 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'
-  baseUrl?: string;  // optional, for custom endpoints or proxies
+  model: string; // e.g., 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'
+  baseUrl?: string; // optional, for custom endpoints or proxies
 }
 
 /**
  * Azure OpenAI specific configuration
  */
 export interface AzureOpenAIConfig extends BaseProviderConfig {
-  provider: 'azure-openai';
+  provider: "azure-openai";
   apiKey: string;
-  endpoint: string;  // e.g., https://your-resource.openai.azure.com
+  endpoint: string; // e.g., https://your-resource.openai.azure.com
   deploymentName: string;
-  apiVersion?: string;  // defaults to '2024-08-01-preview'
+  apiVersion?: string; // defaults to '2024-08-01-preview'
 }
 
 /**
  * Google Gemini specific configuration
  */
 export interface GeminiConfig extends BaseProviderConfig {
-  provider: 'gemini';
+  provider: "gemini";
   apiKey: string;
-  model: string;  // e.g., 'gemini-2.0-flash', 'gemini-1.5-pro'
+  model: string; // e.g., 'gemini-2.0-flash', 'gemini-1.5-pro'
 }
 
 /**
  * Anthropic (Claude) configuration
  */
 export interface AnthropicConfig extends BaseProviderConfig {
-  provider: 'anthropic';
+  provider: "anthropic";
   apiKey: string;
-  model: string;  // e.g., 'claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022'
+  model: string; // e.g., 'claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022'
 }
 
 /**
  * Ollama configuration (for future use)
  */
 export interface OllamaConfig extends BaseProviderConfig {
-  provider: 'ollama';
-  baseUrl?: string;  // defaults to http://localhost:11434
+  provider: "ollama";
+  baseUrl?: string; // defaults to http://localhost:11434
   model: string;
 }
 
@@ -72,25 +79,32 @@ export interface OllamaConfig extends BaseProviderConfig {
  * OpenRouter configuration
  */
 export interface OpenRouterConfig extends BaseProviderConfig {
-  provider: 'openrouter';
+  provider: "openrouter";
   apiKey: string;
-  model: string;  // e.g., 'anthropic/claude-3.5-sonnet', 'openai/gpt-4-turbo'
-  baseUrl?: string;  // defaults to https://openrouter.ai/api/v1
+  model: string; // e.g., 'anthropic/claude-3.5-sonnet', 'openai/gpt-4-turbo'
+  baseUrl?: string; // defaults to https://openrouter.ai/api/v1
 }
 
 /**
  * MiniMax configuration (Anthropic-compatible API)
  */
 export interface MiniMaxConfig extends BaseProviderConfig {
-  provider: 'minimax';
+  provider: "minimax";
   apiKey: string;
-  model: string;  // e.g., 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed'
+  model: string; // e.g., 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed'
 }
 
 /**
  * Union type for all provider configurations
  */
-export type ProviderConfig = OpenAIConfig | AzureOpenAIConfig | GeminiConfig | AnthropicConfig | OllamaConfig | OpenRouterConfig | MiniMaxConfig;
+export type ProviderConfig =
+  | OpenAIConfig
+  | AzureOpenAIConfig
+  | GeminiConfig
+  | AnthropicConfig
+  | OllamaConfig
+  | OpenRouterConfig
+  | MiniMaxConfig;
 
 /**
  * Stored settings (what goes to localStorage)
@@ -101,13 +115,13 @@ export interface LLMSettings {
    * Provider settings are persisted to localStorage and may be partially configured.
    * We validate required fields at runtime before creating a ProviderConfig.
    */
-  openai?: Partial<Omit<OpenAIConfig, 'provider'>>;
-  azureOpenAI?: Partial<Omit<AzureOpenAIConfig, 'provider'>>;
-  gemini?: Partial<Omit<GeminiConfig, 'provider'>>;
-  anthropic?: Partial<Omit<AnthropicConfig, 'provider'>>;
-  ollama?: Partial<Omit<OllamaConfig, 'provider'>>;
-  openrouter?: Partial<Omit<OpenRouterConfig, 'provider'>>;
-  minimax?: Partial<Omit<MiniMaxConfig, 'provider'>>;
+  openai?: Partial<Omit<OpenAIConfig, "provider">>;
+  azureOpenAI?: Partial<Omit<AzureOpenAIConfig, "provider">>;
+  gemini?: Partial<Omit<GeminiConfig, "provider">>;
+  anthropic?: Partial<Omit<AnthropicConfig, "provider">>;
+  ollama?: Partial<Omit<OllamaConfig, "provider">>;
+  openrouter?: Partial<Omit<OpenRouterConfig, "provider">>;
+  minimax?: Partial<Omit<MiniMaxConfig, "provider">>;
 
   // Intelligent Clustering Settings
   intelligentClustering: boolean;
@@ -120,47 +134,47 @@ export interface LLMSettings {
  * Default LLM settings
  */
 export const DEFAULT_LLM_SETTINGS: LLMSettings = {
-  activeProvider: 'gemini',
+  activeProvider: "gemini",
   intelligentClustering: false,
   hasSeenClusteringPrompt: false,
   useSameModelForClustering: true,
   openai: {
-    apiKey: '',
-    model: 'gpt-4o',
+    apiKey: "",
+    model: "gpt-4o",
     temperature: 0.1,
   },
   gemini: {
-    apiKey: '',
-    model: 'gemini-2.0-flash',
+    apiKey: "",
+    model: "gemini-2.0-flash",
     temperature: 0.1,
   },
   azureOpenAI: {
-    apiKey: '',
-    endpoint: '',
-    deploymentName: '',
-    model: 'gpt-4o',
-    apiVersion: '2024-08-01-preview',
+    apiKey: "",
+    endpoint: "",
+    deploymentName: "",
+    model: "gpt-4o",
+    apiVersion: "2024-08-01-preview",
     temperature: 0.1,
   },
   anthropic: {
-    apiKey: '',
-    model: 'claude-sonnet-4-20250514',
+    apiKey: "",
+    model: "claude-sonnet-4-20250514",
     temperature: 0.1,
   },
   ollama: {
-    baseUrl: 'http://localhost:11434',
-    model: 'llama3.2',
+    baseUrl: "http://localhost:11434",
+    model: "llama3.2",
     temperature: 0.1,
   },
   openrouter: {
-    apiKey: '',
-    model: '',
-    baseUrl: 'https://openrouter.ai/api/v1',
+    apiKey: "",
+    model: "",
+    baseUrl: "https://openrouter.ai/api/v1",
     temperature: 0.1,
   },
   minimax: {
-    apiKey: '',
-    model: 'MiniMax-M2.5',
+    apiKey: "",
+    model: "MiniMax-M2.5",
     temperature: 0.1,
   },
 };
@@ -171,7 +185,7 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
  */
 export interface MessageStep {
   id: string;
-  type: 'reasoning' | 'tool_call' | 'content';
+  type: "reasoning" | "tool_call" | "content";
   /** For reasoning/content steps */
   content?: string;
   /** For tool_call steps */
@@ -183,7 +197,7 @@ export interface MessageStep {
  */
 export interface ChatMessage {
   id: string;
-  role: 'user' | 'assistant' | 'tool';
+  role: "user" | "assistant" | "tool";
   content: string;
   /** @deprecated Use steps instead for proper ordering */
   toolCalls?: ToolCallInfo[];
@@ -201,7 +215,7 @@ export interface ToolCallInfo {
   name: string;
   args: Record<string, unknown>;
   result?: string;
-  status: 'pending' | 'running' | 'completed' | 'error';
+  status: "pending" | "running" | "completed" | "error";
 }
 
 /**
@@ -209,7 +223,13 @@ export interface ToolCallInfo {
  * Now supports step-based streaming where each step is a distinct message
  */
 export interface AgentStreamChunk {
-  type: 'reasoning' | 'tool_call' | 'tool_result' | 'content' | 'error' | 'done';
+  type:
+    | "reasoning"
+    | "tool_call"
+    | "tool_result"
+    | "content"
+    | "error"
+    | "done";
   /** LLM's reasoning/thinking text (shown as a step) */
   reasoning?: string;
   /** Final answer content (streamed token by token) */
@@ -226,7 +246,7 @@ export interface AgentStreamChunk {
  */
 export interface AgentStep {
   id: string;
-  type: 'reasoning' | 'tool_call' | 'answer';
+  type: "reasoning" | "tool_call" | "answer";
   /** For reasoning steps */
   content?: string;
   /** For tool_call steps */
@@ -362,4 +382,3 @@ NOTES:
 - For vector search, join CodeEmbedding.nodeId to the appropriate table's id
 - Use LIMIT to avoid returning too many results
 `;
-

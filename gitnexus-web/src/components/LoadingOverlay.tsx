@@ -1,4 +1,4 @@
-import { PipelineProgress } from '../types/pipeline';
+import { PipelineProgress } from "../types/pipeline";
 
 interface LoadingOverlayProps {
   progress: PipelineProgress;
@@ -22,7 +22,7 @@ export const LoadingOverlay = ({ progress }: LoadingOverlayProps) => {
       {/* Progress bar */}
       <div className="w-80 mb-4">
         <div className="h-1.5 bg-elevated rounded-full overflow-hidden">
-          <div 
+          <div
             className="h-full bg-gradient-to-r from-accent to-node-interface rounded-full transition-all duration-300 ease-out"
             style={{ width: `${progress.percent}%` }}
           />
@@ -47,7 +47,10 @@ export const LoadingOverlay = ({ progress }: LoadingOverlayProps) => {
         <div className="mt-8 flex items-center gap-6 text-xs text-text-muted">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 bg-node-file rounded-full" />
-            <span>{progress.stats.filesProcessed} / {progress.stats.totalFiles} files</span>
+            <span>
+              {progress.stats.filesProcessed} / {progress.stats.totalFiles}{" "}
+              files
+            </span>
           </div>
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 bg-node-function rounded-full" />
@@ -63,4 +66,3 @@ export const LoadingOverlay = ({ progress }: LoadingOverlayProps) => {
     </div>
   );
 };
-

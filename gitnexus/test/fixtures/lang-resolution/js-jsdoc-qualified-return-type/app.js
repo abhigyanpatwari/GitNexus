@@ -1,4 +1,4 @@
-const { User } = require('./user');
+const { User } = require("./user");
 
 /**
  * @returns {Promise<models.User>}
@@ -8,6 +8,6 @@ async function fetchUser(name) {
 }
 
 async function processUser() {
-  const user = await fetchUser('alice');
+  const user = await fetchUser("alice");
   user.save();
 }

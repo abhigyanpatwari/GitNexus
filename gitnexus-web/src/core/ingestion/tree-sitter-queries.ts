@@ -1,10 +1,10 @@
-import { SupportedLanguages } from '../../config/supported-languages';
+import { SupportedLanguages } from "../../config/supported-languages";
 
-/* 
+/*
  * Tree-sitter queries for extracting code definitions.
- * 
+ *
  * Note: Different grammars (typescript vs tsx vs javascript) may have
- * slightly different node types. These queries are designed to be 
+ * slightly different node types. These queries are designed to be
  * compatible with the standard tree-sitter grammars.
  */
 
@@ -69,7 +69,7 @@ export const TYPESCRIPT_QUERIES = `
       (type_identifier) @heritage.implements))) @heritage.impl
 `;
 
-// JavaScript queries - works with tree-sitter-javascript  
+// JavaScript queries - works with tree-sitter-javascript
 export const JAVASCRIPT_QUERIES = `
 (class_declaration
   name: (identifier) @name) @definition.class
@@ -429,7 +429,7 @@ export const RUBY_QUERIES = `
   name: (constant) @heritage.class
   superclass: (superclass
     (constant) @heritage.extends)) @heritage`;
-    
+
 // Swift queries - works with tree-sitter-swift
 export const SWIFT_QUERIES = `
 ; Classes
@@ -495,7 +495,6 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Rust]: RUST_QUERIES,
   [SupportedLanguages.PHP]: PHP_QUERIES,
   [SupportedLanguages.Ruby]: RUBY_QUERIES,
-  [SupportedLanguages.Kotlin]: '', // Kotlin WASM parser not yet available for web
+  [SupportedLanguages.Kotlin]: "", // Kotlin WASM parser not yet available for web
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
 };
- 

@@ -1,4 +1,4 @@
-import { User } from './user';
+import { User } from "./user";
 
 function processUser(user: User) {
   // Field-access chain: user.address resolves to Address, then .save() must resolve

@@ -1,4 +1,4 @@
-import type { NodeLabel } from '../graph/types.js';
+import type { NodeLabel } from "../graph/types.js";
 
 export interface SymbolDefinition {
   nodeId: string;
@@ -29,7 +29,14 @@ export interface SymbolTable {
     name: string,
     nodeId: string,
     type: NodeLabel,
-    metadata?: { parameterCount?: number; requiredParameterCount?: number; parameterTypes?: string[]; returnType?: string; declaredType?: string; ownerId?: string }
+    metadata?: {
+      parameterCount?: number;
+      requiredParameterCount?: number;
+      parameterTypes?: string[];
+      returnType?: string;
+      declaredType?: string;
+      ownerId?: string;
+    },
   ) => void;
 
   /**
@@ -37,13 +44,16 @@ export interface SymbolTable {
    * Returns the Node ID if found
    */
   lookupExact: (filePath: string, name: string) => string | undefined;
-  
+
   /**
    * High Confidence: Look for a symbol in a specific file, returning full definition.
    * Includes type information needed for heritage resolution (Class vs Interface).
    * Returns first matching definition — use lookupExactAll for overloaded methods.
    */
-  lookupExactFull: (filePath: string, name: string) => SymbolDefinition | undefined;
+  lookupExactFull: (
+    filePath: string,
+    name: string,
+  ) => SymbolDefinition | undefined;
 
   /**
    * High Confidence: Look for ALL symbols with this name in a specific file.
@@ -70,13 +80,16 @@ export interface SymbolTable {
    * O(1) via dedicated eagerly-populated index keyed by `ownerNodeId\0fieldName`.
    * Returns undefined when no matching property exists or the owner is ambiguous.
    */
-  lookupFieldByOwner: (ownerNodeId: string, fieldName: string) => SymbolDefinition | undefined;
+  lookupFieldByOwner: (
+    ownerNodeId: string,
+    fieldName: string,
+  ) => SymbolDefinition | undefined;
 
   /**
    * Debugging: See how many symbols are tracked
    */
   getStats: () => { fileCount: number; globalSymbolCount: number };
-  
+
   /**
    * Cleanup memory
    */
@@ -102,24 +115,41 @@ export const createSymbolTable = (): SymbolTable => {
   // Only Property symbols with ownerId and declaredType are indexed.
   const fieldByOwner = new Map<string, SymbolDefinition>();
 
-  const CALLABLE_TYPES = new Set(['Function', 'Method', 'Constructor']);
+  const CALLABLE_TYPES = new Set(["Function", "Method", "Constructor"]);
 
   const add = (
     filePath: string,
     name: string,
     nodeId: string,
     type: NodeLabel,
-    metadata?: { parameterCount?: number; requiredParameterCount?: number; parameterTypes?: string[]; returnType?: string; declaredType?: string; ownerId?: string }
+    metadata?: {
+      parameterCount?: number;
+      requiredParameterCount?: number;
+      parameterTypes?: string[];
+      returnType?: string;
+      declaredType?: string;
+      ownerId?: string;
+    },
   ) => {
     const def: SymbolDefinition = {
       nodeId,
       filePath,
       type,
-      ...(metadata?.parameterCount !== undefined ? { parameterCount: metadata.parameterCount } : {}),
-      ...(metadata?.requiredParameterCount !== undefined ? { requiredParameterCount: metadata.requiredParameterCount } : {}),
-      ...(metadata?.parameterTypes !== undefined ? { parameterTypes: metadata.parameterTypes } : {}),
-      ...(metadata?.returnType !== undefined ? { returnType: metadata.returnType } : {}),
-      ...(metadata?.declaredType !== undefined ? { declaredType: metadata.declaredType } : {}),
+      ...(metadata?.parameterCount !== undefined
+        ? { parameterCount: metadata.parameterCount }
+        : {}),
+      ...(metadata?.requiredParameterCount !== undefined
+        ? { requiredParameterCount: metadata.requiredParameterCount }
+        : {}),
+      ...(metadata?.parameterTypes !== undefined
+        ? { parameterTypes: metadata.parameterTypes }
+        : {}),
+      ...(metadata?.returnType !== undefined
+        ? { returnType: metadata.returnType }
+        : {}),
+      ...(metadata?.declaredType !== undefined
+        ? { declaredType: metadata.declaredType }
+        : {}),
       ...(metadata?.ownerId !== undefined ? { ownerId: metadata.ownerId } : {}),
     };
 
@@ -138,7 +168,7 @@ export const createSymbolTable = (): SymbolTable => {
     // namespace pollution for common names like 'id', 'name', 'type'.
     // Index ALL properties (even without declaredType) so write-access tracking
     // can resolve field ownership for dynamically-typed languages (Ruby, JS).
-    if (type === 'Property' && metadata?.ownerId) {
+    if (type === "Property" && metadata?.ownerId) {
       fieldByOwner.set(`${metadata.ownerId}\0${name}`, def);
       // Still add to fileIndex above (for lookupExact), but skip globalIndex
       return;
@@ -161,12 +191,18 @@ export const createSymbolTable = (): SymbolTable => {
     return defs?.[0]?.nodeId;
   };
 
-  const lookupExactFull = (filePath: string, name: string): SymbolDefinition | undefined => {
+  const lookupExactFull = (
+    filePath: string,
+    name: string,
+  ): SymbolDefinition | undefined => {
     const defs = fileIndex.get(filePath)?.get(name);
     return defs?.[0];
   };
 
-  const lookupExactAll = (filePath: string, name: string): SymbolDefinition[] => {
+  const lookupExactAll = (
+    filePath: string,
+    name: string,
+  ): SymbolDefinition[] => {
     return fileIndex.get(filePath)?.get(name) ?? [];
   };
 
@@ -179,20 +215,23 @@ export const createSymbolTable = (): SymbolTable => {
       // Build the callable index lazily on first use
       callableIndex = new Map();
       for (const [symName, defs] of globalIndex) {
-        const callables = defs.filter(d => CALLABLE_TYPES.has(d.type));
+        const callables = defs.filter((d) => CALLABLE_TYPES.has(d.type));
         if (callables.length > 0) callableIndex.set(symName, callables);
       }
     }
     return callableIndex.get(name) ?? [];
   };
 
-  const lookupFieldByOwner = (ownerNodeId: string, fieldName: string): SymbolDefinition | undefined => {
+  const lookupFieldByOwner = (
+    ownerNodeId: string,
+    fieldName: string,
+  ): SymbolDefinition | undefined => {
     return fieldByOwner.get(`${ownerNodeId}\0${fieldName}`);
   };
 
   const getStats = () => ({
     fileCount: fileIndex.size,
-    globalSymbolCount: globalIndex.size
+    globalSymbolCount: globalIndex.size,
   });
 
   const clear = () => {
@@ -202,5 +241,15 @@ export const createSymbolTable = (): SymbolTable => {
     fieldByOwner.clear();
   };
 
-  return { add, lookupExact, lookupExactFull, lookupExactAll, lookupFuzzy, lookupFuzzyCallable, lookupFieldByOwner, getStats, clear };
+  return {
+    add,
+    lookupExact,
+    lookupExactFull,
+    lookupExactAll,
+    lookupFuzzy,
+    lookupFuzzyCallable,
+    lookupFieldByOwner,
+    getStats,
+    clear,
+  };
 };

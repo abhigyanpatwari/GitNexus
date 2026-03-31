@@ -1,10 +1,10 @@
-import { SupportedLanguages } from '../../config/supported-languages.js';
+import { SupportedLanguages } from "../../config/supported-languages.js";
 
-/* 
+/*
  * Tree-sitter queries for extracting code definitions.
- * 
+ *
  * Note: Different grammars (typescript vs tsx vs javascript) may have
- * slightly different node types. These queries are designed to be 
+ * slightly different node types. These queries are designed to be
  * compatible with the standard tree-sitter grammars.
  */
 
@@ -936,4 +936,3 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Kotlin]: KOTLIN_QUERIES,
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
 };
- 

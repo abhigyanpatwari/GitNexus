@@ -1,4 +1,4 @@
-const { getUser } = require('./service');
+const { getUser } = require("./service");
 
 function processDestructured() {
   const user = getUser();

@@ -1,5 +1,7 @@
 class User {
-  save() { return true; }
+  save() {
+    return true;
+  }
   process() {
     this.save();
   }

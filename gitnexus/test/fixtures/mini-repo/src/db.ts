@@ -1,4 +1,4 @@
-import type { ValidationResult } from './validator';
+import type { ValidationResult } from "./validator";
 
 export interface DbRecord {
   id: string;

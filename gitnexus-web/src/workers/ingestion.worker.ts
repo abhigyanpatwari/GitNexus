@@ -1,38 +1,60 @@
-import * as Comlink from 'comlink';
-import { runIngestionPipeline, runPipelineFromFiles } from '../core/ingestion/pipeline';
-import { createKnowledgeGraph } from '../core/graph/graph';
-import type { GraphNode, GraphRelationship } from '../core/graph/types';
-import { PipelineProgress, SerializablePipelineResult, serializePipelineResult } from '../types/pipeline';
-import { FileEntry } from '../services/zip';
+import * as Comlink from "comlink";
+import {
+  runIngestionPipeline,
+  runPipelineFromFiles,
+} from "../core/ingestion/pipeline";
+import { createKnowledgeGraph } from "../core/graph/graph";
+import type { GraphNode, GraphRelationship } from "../core/graph/types";
+import {
+  PipelineProgress,
+  SerializablePipelineResult,
+  serializePipelineResult,
+} from "../types/pipeline";
+import { FileEntry } from "../services/zip";
 import {
   runEmbeddingPipeline,
   semanticSearch as doSemanticSearch,
   semanticSearchWithContext as doSemanticSearchWithContext,
   type EmbeddingProgressCallback,
-} from '../core/embeddings/embedding-pipeline';
-import { isEmbedderReady, disposeEmbedder } from '../core/embeddings/embedder';
-import type { EmbeddingProgress, SemanticSearchResult } from '../core/embeddings/types';
-import type { ProviderConfig, AgentStreamChunk } from '../core/llm/types';
-import { createGraphRAGAgent, streamAgentResponse, type AgentMessage, createChatModel } from '../core/llm/agent';
-import { SystemMessage } from '@langchain/core/messages';
-import { enrichClustersBatch, ClusterMemberInfo, ClusterEnrichment } from '../core/ingestion/cluster-enricher';
-import { CommunityNode } from '../core/ingestion/community-processor';
-import { PipelineResult } from '../types/pipeline';
-import { buildCodebaseContext, type CodebaseContext } from '../core/llm/context-builder';
-import { 
-  buildBM25Index, 
-  searchBM25, 
-  isBM25Ready, 
+} from "../core/embeddings/embedding-pipeline";
+import { isEmbedderReady, disposeEmbedder } from "../core/embeddings/embedder";
+import type {
+  EmbeddingProgress,
+  SemanticSearchResult,
+} from "../core/embeddings/types";
+import type { ProviderConfig, AgentStreamChunk } from "../core/llm/types";
+import {
+  createGraphRAGAgent,
+  streamAgentResponse,
+  type AgentMessage,
+  createChatModel,
+} from "../core/llm/agent";
+import { SystemMessage } from "@langchain/core/messages";
+import {
+  enrichClustersBatch,
+  ClusterMemberInfo,
+  ClusterEnrichment,
+} from "../core/ingestion/cluster-enricher";
+import { CommunityNode } from "../core/ingestion/community-processor";
+import { PipelineResult } from "../types/pipeline";
+import {
+  buildCodebaseContext,
+  type CodebaseContext,
+} from "../core/llm/context-builder";
+import {
+  buildBM25Index,
+  searchBM25,
+  isBM25Ready,
   getBM25Stats,
   mergeWithRRF,
   type HybridSearchResult,
-} from '../core/search';
+} from "../core/search";
 
 // Lazy import for LadybugDB to avoid breaking worker if SharedArrayBuffer unavailable
-let lbugAdapter: typeof import('../core/lbug/lbug-adapter') | null = null;
+let lbugAdapter: typeof import("../core/lbug/lbug-adapter") | null = null;
 const getLbugAdapter = async () => {
   if (!lbugAdapter) {
-    lbugAdapter = await import('../core/lbug/lbug-adapter');
+    lbugAdapter = await import("../core/lbug/lbug-adapter");
   }
   return lbugAdapter;
 };
@@ -77,8 +99,8 @@ const httpFetchWithTimeout = async (
 const createHttpExecuteQuery = (backendUrl: string, repo: string) => {
   return async (cypher: string): Promise<any[]> => {
     const response = await httpFetchWithTimeout(`${backendUrl}/api/query`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ cypher, repo }),
     });
     if (!response.ok) {
@@ -100,8 +122,8 @@ const createHttpHybridSearch = (backendUrl: string, repo: string) => {
   return async (query: string, k: number = 15): Promise<any[]> => {
     try {
       const response = await httpFetchWithTimeout(`${backendUrl}/api/search`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query, limit: k, repo }),
       });
       if (!response.ok) {
@@ -111,27 +133,29 @@ const createHttpHybridSearch = (backendUrl: string, repo: string) => {
       const data = body.results ?? body;
 
       // Flatten process_symbols + definitions into a single ranked list
-      const symbols: any[] = (data.process_symbols ?? []).map((s: any, i: number) => ({
-        nodeId: s.id,
-        id: s.id,
-        name: s.name,
-        label: s.type,
-        filePath: s.filePath,
-        startLine: s.startLine,
-        endLine: s.endLine,
-        content: s.content ?? '',
-        sources: ['bm25', 'semantic'],
-        score: 1 - (i * 0.02),
-      }));
+      const symbols: any[] = (data.process_symbols ?? []).map(
+        (s: any, i: number) => ({
+          nodeId: s.id,
+          id: s.id,
+          name: s.name,
+          label: s.type,
+          filePath: s.filePath,
+          startLine: s.startLine,
+          endLine: s.endLine,
+          content: s.content ?? "",
+          sources: ["bm25", "semantic"],
+          score: 1 - i * 0.02,
+        }),
+      );
 
       const defs: any[] = (data.definitions ?? []).map((d: any, i: number) => ({
         id: d.name,
         name: d.name,
-        label: d.type || 'File',
+        label: d.type || "File",
         filePath: d.filePath,
-        content: '',
-        sources: ['bm25'],
-        score: 0.5 - (i * 0.02),
+        content: "",
+        sources: ["bm25"],
+        score: 0.5 - i * 0.02,
       }));
 
       return [...symbols, ...defs].slice(0, k);
@@ -143,7 +167,7 @@ const createHttpHybridSearch = (backendUrl: string, repo: string) => {
 
 /**
  * Worker API exposed via Comlink
- * 
+ *
  * Note: The onProgress callback is passed as a Comlink.proxy() from the main thread,
  * allowing it to be called from the worker and have it execute on the main thread.
  */
@@ -157,29 +181,32 @@ const workerApi = {
   async runPipeline(
     file: File,
     onProgress: (progress: PipelineProgress) => void,
-    clusteringConfig?: ProviderConfig
+    clusteringConfig?: ProviderConfig,
   ): Promise<SerializablePipelineResult> {
     // Debug logging
-    console.log('🔧 runPipeline called with clusteringConfig:', !!clusteringConfig);
+    console.log(
+      "🔧 runPipeline called with clusteringConfig:",
+      !!clusteringConfig,
+    );
     // Run the actual pipeline
     const result = await runIngestionPipeline(file, onProgress);
     currentGraphResult = result;
-    
+
     // Store file contents for grep/read tools (full content, not truncated)
     storedFileContents = result.fileContents;
-    
+
     // Build BM25 index for keyword search (instant, ~100ms)
     const bm25DocCount = buildBM25Index(storedFileContents);
     if (import.meta.env.DEV) {
       console.log(`🔍 BM25 index built: ${bm25DocCount} documents`);
     }
-    
+
     // Load graph into LadybugDB for querying (optional - gracefully degrades)
     try {
       onProgress({
-        phase: 'complete',
+        phase: "complete",
         percent: 98,
-        message: 'Loading into LadybugDB...',
+        message: "Loading into LadybugDB...",
         stats: {
           filesProcessed: result.graph.nodeCount,
           totalFiles: result.graph.nodeCount,
@@ -192,8 +219,12 @@ const workerApi = {
 
       if (import.meta.env.DEV) {
         const stats = await lbug.getLbugStats();
-        console.log('LadybugDB loaded:', stats);
-        console.log('📁 Stored', storedFileContents.size, 'files for grep/read tools');
+        console.log("LadybugDB loaded:", stats);
+        console.log(
+          "📁 Stored",
+          storedFileContents.size,
+          "files for grep/read tools",
+        );
       }
     } catch {
       // LadybugDB is optional - silently continue without it
@@ -202,7 +233,7 @@ const workerApi = {
     // Store clustering config for background enrichment (runs after graph loads)
     if (clusteringConfig) {
       pendingEnrichmentConfig = clusteringConfig;
-      console.log('📋 Clustering config saved for background enrichment');
+      console.log("📋 Clustering config saved for background enrichment");
     }
 
     // Convert to serializable format for transfer back to main thread
@@ -217,7 +248,7 @@ const workerApi = {
   async hydrateFromServerData(
     nodes: GraphNode[],
     relationships: GraphRelationship[],
-    fileContents: Record<string, string>
+    fileContents: Record<string, string>,
   ): Promise<void> {
     // 1. Build a KnowledgeGraph the same way the pipeline does
     const graph = createKnowledgeGraph();
@@ -230,7 +261,9 @@ const workerApi = {
     // 3. Build BM25 keyword index
     const bm25DocCount = buildBM25Index(storedFileContents);
     if (import.meta.env.DEV) {
-      console.log(`🔍 BM25 index built (server mode): ${bm25DocCount} documents`);
+      console.log(
+        `🔍 BM25 index built (server mode): ${bm25DocCount} documents`,
+      );
     }
 
     // 4. Set currentGraphResult so the agent context builder works
@@ -243,12 +276,12 @@ const workerApi = {
 
       if (import.meta.env.DEV) {
         const stats = await lbug.getLbugStats();
-        console.log('✅ LadybugDB hydrated (server mode):', stats);
+        console.log("✅ LadybugDB hydrated (server mode):", stats);
       }
     } catch (err) {
       // LadybugDB is optional — silently continue without it
       if (import.meta.env.DEV) {
-        console.warn('⚠️ LadybugDB hydration failed (non-fatal):', err);
+        console.warn("⚠️ LadybugDB hydration failed (non-fatal):", err);
       }
     }
   },
@@ -261,7 +294,7 @@ const workerApi = {
   async runQuery(cypher: string): Promise<any[]> {
     const lbug = await getLbugAdapter();
     if (!lbug.isLbugReady()) {
-      throw new Error('Database not ready. Please load a repository first.');
+      throw new Error("Database not ready. Please load a repository first.");
     }
     return lbug.executeQuery(cypher);
   },
@@ -299,35 +332,35 @@ const workerApi = {
   async runPipelineFromFiles(
     files: FileEntry[],
     onProgress: (progress: PipelineProgress) => void,
-    clusteringConfig?: ProviderConfig
+    clusteringConfig?: ProviderConfig,
   ): Promise<SerializablePipelineResult> {
     // Skip extraction phase, start from 15%
     onProgress({
-      phase: 'extracting',
+      phase: "extracting",
       percent: 15,
-      message: 'Files ready',
+      message: "Files ready",
       stats: { filesProcessed: 0, totalFiles: files.length, nodesCreated: 0 },
     });
 
     // Run the pipeline
     const result = await runPipelineFromFiles(files, onProgress);
     currentGraphResult = result;
-    
+
     // Store file contents for grep/read tools (full content, not truncated)
     storedFileContents = result.fileContents;
-    
+
     // Build BM25 index for keyword search (instant, ~100ms)
     const bm25DocCount = buildBM25Index(storedFileContents);
     if (import.meta.env.DEV) {
       console.log(`🔍 BM25 index built: ${bm25DocCount} documents`);
     }
-    
+
     // Load graph into LadybugDB for querying (optional - gracefully degrades)
     try {
       onProgress({
-        phase: 'complete',
+        phase: "complete",
         percent: 98,
-        message: 'Loading into LadybugDB...',
+        message: "Loading into LadybugDB...",
         stats: {
           filesProcessed: result.graph.nodeCount,
           totalFiles: result.graph.nodeCount,
@@ -340,19 +373,23 @@ const workerApi = {
 
       if (import.meta.env.DEV) {
         const stats = await lbug.getLbugStats();
-        console.log('LadybugDB loaded:', stats);
-        console.log('📁 Stored', storedFileContents.size, 'files for grep/read tools');
+        console.log("LadybugDB loaded:", stats);
+        console.log(
+          "📁 Stored",
+          storedFileContents.size,
+          "files for grep/read tools",
+        );
       }
     } catch {
       // LadybugDB is optional - silently continue without it
     }
-    
+
     // Store clustering config for background enrichment (runs after graph loads)
     if (clusteringConfig) {
       pendingEnrichmentConfig = clusteringConfig;
-      console.log('📋 Clustering config saved for background enrichment');
+      console.log("📋 Clustering config saved for background enrichment");
     }
-    
+
     // Convert to serializable format for transfer back to main thread
     return serializePipelineResult(result);
   },
@@ -369,11 +406,11 @@ const workerApi = {
    */
   async startEmbeddingPipeline(
     onProgress: (progress: EmbeddingProgress) => void,
-    forceDevice?: 'webgpu' | 'wasm'
+    forceDevice?: "webgpu" | "wasm",
   ): Promise<void> {
     const lbug = await getLbugAdapter();
     if (!lbug.isLbugReady()) {
-      throw new Error('Database not ready. Please load a repository first.');
+      throw new Error("Database not ready. Please load a repository first.");
     }
 
     // Reset state
@@ -382,7 +419,7 @@ const workerApi = {
 
     const progressCallback: EmbeddingProgressCallback = (progress) => {
       embeddingProgress = progress;
-      if (progress.phase === 'ready') {
+      if (progress.phase === "ready") {
         isEmbeddingComplete = true;
       }
       onProgress(progress);
@@ -392,7 +429,7 @@ const workerApi = {
       lbug.executeQuery,
       lbug.executeWithReusedStatement,
       progressCallback,
-      forceDevice ? { device: forceDevice } : {}
+      forceDevice ? { device: forceDevice } : {},
     );
   },
 
@@ -402,24 +439,24 @@ const workerApi = {
    * @param onProgress - Progress callback
    */
   async startBackgroundEnrichment(
-    onProgress?: (current: number, total: number) => void
+    onProgress?: (current: number, total: number) => void,
   ): Promise<{ enriched: number; skipped: boolean }> {
     if (!pendingEnrichmentConfig) {
-      console.log('⏭️ No pending enrichment config, skipping');
+      console.log("⏭️ No pending enrichment config, skipping");
       return { enriched: 0, skipped: true };
     }
-    
-    console.log('✨ Starting background LLM enrichment...');
+
+    console.log("✨ Starting background LLM enrichment...");
     try {
       await workerApi.enrichCommunities(
         pendingEnrichmentConfig,
-        onProgress ?? (() => {})
+        onProgress ?? (() => {}),
       );
       pendingEnrichmentConfig = null; // Clear after running
-      console.log('✅ Background enrichment completed');
+      console.log("✅ Background enrichment completed");
       return { enriched: 1, skipped: false };
     } catch (err) {
-      console.error('❌ Background enrichment failed:', err);
+      console.error("❌ Background enrichment failed:", err);
       pendingEnrichmentConfig = null;
       return { enriched: 0, skipped: false };
     }
@@ -431,7 +468,7 @@ const workerApi = {
   async cancelEnrichment(): Promise<void> {
     enrichmentCancelled = true;
     pendingEnrichmentConfig = null;
-    console.log('⏸️ Enrichment cancelled by user');
+    console.log("⏸️ Enrichment cancelled by user");
   },
 
   /**
@@ -444,14 +481,16 @@ const workerApi = {
   async semanticSearch(
     query: string,
     k: number = 10,
-    maxDistance: number = 0.5
+    maxDistance: number = 0.5,
   ): Promise<SemanticSearchResult[]> {
     const lbug = await getLbugAdapter();
     if (!lbug.isLbugReady()) {
-      throw new Error('Database not ready. Please load a repository first.');
+      throw new Error("Database not ready. Please load a repository first.");
     }
     if (!isEmbeddingComplete) {
-      throw new Error('Embeddings not ready. Please wait for embedding pipeline to complete.');
+      throw new Error(
+        "Embeddings not ready. Please wait for embedding pipeline to complete.",
+      );
     }
 
     return doSemanticSearch(lbug.executeQuery, query, k, maxDistance);
@@ -468,14 +507,16 @@ const workerApi = {
   async semanticSearchWithContext(
     query: string,
     k: number = 5,
-    hops: number = 2
+    hops: number = 2,
   ): Promise<any[]> {
     const lbug = await getLbugAdapter();
     if (!lbug.isLbugReady()) {
-      throw new Error('Database not ready. Please load a repository first.');
+      throw new Error("Database not ready. Please load a repository first.");
     }
     if (!isEmbeddingComplete) {
-      throw new Error('Embeddings not ready. Please wait for embedding pipeline to complete.');
+      throw new Error(
+        "Embeddings not ready. Please wait for embedding pipeline to complete.",
+      );
     }
 
     return doSemanticSearchWithContext(lbug.executeQuery, query, k, hops);
@@ -484,35 +525,42 @@ const workerApi = {
   /**
    * Perform hybrid search combining BM25 (keyword) and semantic (embedding) search
    * Uses Reciprocal Rank Fusion (RRF) to merge results
-   * 
+   *
    * @param query - Search query
    * @param k - Number of results to return (default: 10)
    * @returns Hybrid search results with RRF scores
    */
   async hybridSearch(
     query: string,
-    k: number = 10
+    k: number = 10,
   ): Promise<HybridSearchResult[]> {
     if (!isBM25Ready()) {
-      throw new Error('Search index not ready. Please load a repository first.');
+      throw new Error(
+        "Search index not ready. Please load a repository first.",
+      );
     }
-    
+
     // Get BM25 results (always available after ingestion)
-    const bm25Results = searchBM25(query, k * 3);  // Get more for better RRF merge
-    
+    const bm25Results = searchBM25(query, k * 3); // Get more for better RRF merge
+
     // Get semantic results if embeddings are ready
     let semanticResults: SemanticSearchResult[] = [];
     if (isEmbeddingComplete) {
       try {
         const lbug = await getLbugAdapter();
         if (lbug.isLbugReady()) {
-          semanticResults = await doSemanticSearch(lbug.executeQuery, query, k * 3, 0.5);
+          semanticResults = await doSemanticSearch(
+            lbug.executeQuery,
+            query,
+            k * 3,
+            0.5,
+          );
         }
       } catch {
         // Semantic search failed, continue with BM25 only
       }
     }
-    
+
     // Merge with RRF
     return mergeWithRRF(bm25Results, semanticResults, k);
   },
@@ -568,7 +616,7 @@ const workerApi = {
   async testArrayParams(): Promise<{ success: boolean; error?: string }> {
     const lbug = await getLbugAdapter();
     if (!lbug.isLbugReady()) {
-      return { success: false, error: 'Database not ready' };
+      return { success: false, error: "Database not ready" };
     }
     return lbug.testArrayParams();
   },
@@ -583,24 +631,38 @@ const workerApi = {
    * @param config - Provider configuration (Azure OpenAI or Gemini)
    * @param projectName - Name of the loaded project/repository
    */
-  async initializeAgent(config: ProviderConfig, projectName?: string): Promise<{ success: boolean; error?: string }> {
+  async initializeAgent(
+    config: ProviderConfig,
+    projectName?: string,
+  ): Promise<{ success: boolean; error?: string }> {
     try {
       const lbug = await getLbugAdapter();
       if (!lbug.isLbugReady()) {
-        return { success: false, error: 'Database not ready. Please load a repository first.' };
+        return {
+          success: false,
+          error: "Database not ready. Please load a repository first.",
+        };
       }
 
       // Create semantic search wrappers that handle embedding state
-      const semanticSearchWrapper = async (query: string, k?: number, maxDistance?: number) => {
+      const semanticSearchWrapper = async (
+        query: string,
+        k?: number,
+        maxDistance?: number,
+      ) => {
         if (!isEmbeddingComplete) {
-          throw new Error('Embeddings not ready');
+          throw new Error("Embeddings not ready");
         }
         return doSemanticSearch(lbug.executeQuery, query, k, maxDistance);
       };
 
-      const semanticSearchWithContextWrapper = async (query: string, k?: number, hops?: number) => {
+      const semanticSearchWithContextWrapper = async (
+        query: string,
+        k?: number,
+        hops?: number,
+      ) => {
         if (!isEmbeddingComplete) {
-          throw new Error('Embeddings not ready');
+          throw new Error("Embeddings not ready");
         }
         return doSemanticSearchWithContext(lbug.executeQuery, query, k, hops);
       };
@@ -614,7 +676,12 @@ const workerApi = {
         let semanticResults: any[] = [];
         if (isEmbeddingComplete) {
           try {
-            semanticResults = await doSemanticSearch(lbug.executeQuery, query, (k ?? 10) * 3, 0.5);
+            semanticResults = await doSemanticSearch(
+              lbug.executeQuery,
+              query,
+              (k ?? 10) * 3,
+              0.5,
+            );
           } catch {
             // Semantic search failed, continue with BM25 only
           }
@@ -625,23 +692,32 @@ const workerApi = {
       };
 
       // Use provided projectName, or fallback to 'project' if not provided
-      const resolvedProjectName = projectName || 'project';
+      const resolvedProjectName = projectName || "project";
       if (import.meta.env.DEV) {
-        console.log('📛 Project name received:', { provided: projectName, resolved: resolvedProjectName });
+        console.log("📛 Project name received:", {
+          provided: projectName,
+          resolved: resolvedProjectName,
+        });
       }
-      
+
       let codebaseContext;
       try {
-        codebaseContext = await buildCodebaseContext(lbug.executeQuery, resolvedProjectName);
+        codebaseContext = await buildCodebaseContext(
+          lbug.executeQuery,
+          resolvedProjectName,
+        );
         if (import.meta.env.DEV) {
-          console.log('📊 Codebase context built:', {
+          console.log("📊 Codebase context built:", {
             files: codebaseContext.stats.fileCount,
             functions: codebaseContext.stats.functionCount,
             hotspots: codebaseContext.hotspots.length,
           });
         }
       } catch (err) {
-        console.warn('Failed to build codebase context, proceeding without:', err);
+        console.warn(
+          "Failed to build codebase context, proceeding without:",
+          err,
+        );
       }
 
       currentAgent = createGraphRAGAgent(
@@ -653,19 +729,22 @@ const workerApi = {
         () => isEmbeddingComplete,
         () => isBM25Ready(),
         storedFileContents,
-        codebaseContext
+        codebaseContext,
       );
       currentProviderConfig = config;
 
       if (import.meta.env.DEV) {
-        console.log('🤖 Graph RAG Agent initialized with provider:', config.provider);
+        console.log(
+          "🤖 Graph RAG Agent initialized with provider:",
+          config.provider,
+        );
       }
 
       return { success: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (import.meta.env.DEV) {
-        console.error('❌ Agent initialization failed:', error);
+        console.error("❌ Agent initialization failed:", error);
       }
       return { success: false, error: message };
     }
@@ -699,7 +778,10 @@ const workerApi = {
       // Build codebase context (uses Cypher queries — works via HTTP)
       let codebaseContext: CodebaseContext | undefined;
       try {
-        codebaseContext = await buildCodebaseContext(executeQuery, projectName || repoName);
+        codebaseContext = await buildCodebaseContext(
+          executeQuery,
+          projectName || repoName,
+        );
       } catch {
         // Non-fatal — agent works without context
       }
@@ -710,28 +792,34 @@ const workerApi = {
       // isBM25Ready is true — BM25 is available via the server's hybrid search.
       currentAgent = createGraphRAGAgent(
         config,
-        executeQuery,          // Cypher via HTTP
-        hybridSearch,          // semanticSearch → server hybrid search
-        hybridSearch,          // semanticSearchWithContext → same
-        hybridSearch,          // hybridSearch → server hybrid search
-        () => false,           // isEmbeddingReady → no local embedder
-        () => true,            // isBM25Ready → available via server
-        contents,              // fileContents Map
+        executeQuery, // Cypher via HTTP
+        hybridSearch, // semanticSearch → server hybrid search
+        hybridSearch, // semanticSearchWithContext → same
+        hybridSearch, // hybridSearch → server hybrid search
+        () => false, // isEmbeddingReady → no local embedder
+        () => true, // isBM25Ready → available via server
+        contents, // fileContents Map
         codebaseContext,
       );
 
       currentProviderConfig = config;
 
       if (import.meta.env.DEV) {
-        console.log('🤖 Backend agent initialized with provider:', config.provider);
+        console.log(
+          "🤖 Backend agent initialized with provider:",
+          config.provider,
+        );
       }
 
       return { success: true };
     } catch (err: any) {
       if (import.meta.env.DEV) {
-        console.error('❌ Backend agent initialization failed:', err);
+        console.error("❌ Backend agent initialization failed:", err);
       }
-      return { success: false, error: err.message || 'Failed to initialize backend agent' };
+      return {
+        success: false,
+        error: err.message || "Failed to initialize backend agent",
+      };
     }
   },
 
@@ -761,10 +849,13 @@ const workerApi = {
    */
   async chatStream(
     messages: AgentMessage[],
-    onChunk: (chunk: AgentStreamChunk) => void
+    onChunk: (chunk: AgentStreamChunk) => void,
   ): Promise<void> {
     if (!currentAgent) {
-      onChunk({ type: 'error', error: 'Agent not initialized. Please configure an LLM provider first.' });
+      onChunk({
+        type: "error",
+        error: "Agent not initialized. Please configure an LLM provider first.",
+      });
       return;
     }
 
@@ -773,7 +864,7 @@ const workerApi = {
     try {
       for await (const chunk of streamAgentResponse(currentAgent, messages)) {
         if (chatCancelled) {
-          onChunk({ type: 'done' });
+          onChunk({ type: "done" });
           break;
         }
         onChunk(chunk);
@@ -781,11 +872,11 @@ const workerApi = {
     } catch (error) {
       if (chatCancelled) {
         // Swallow errors from cancellation
-        onChunk({ type: 'done' });
+        onChunk({ type: "done" });
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
-      onChunk({ type: 'error', error: message });
+      onChunk({ type: "error", error: message });
     }
   },
 
@@ -809,24 +900,30 @@ const workerApi = {
    */
   async enrichCommunities(
     providerConfig: ProviderConfig,
-    onProgress: (current: number, total: number) => void
-  ): Promise<{ enrichments: Record<string, ClusterEnrichment>, tokensUsed: number }> {
+    onProgress: (current: number, total: number) => void,
+  ): Promise<{
+    enrichments: Record<string, ClusterEnrichment>;
+    tokensUsed: number;
+  }> {
     if (!currentGraphResult) {
-      throw new Error('No graph loaded. Please ingest a repository first.');
+      throw new Error("No graph loaded. Please ingest a repository first.");
     }
 
     const { graph } = currentGraphResult;
-    
+
     // Filter for community nodes
     const communityNodes = graph.nodes
-      .filter(n => n.label === 'Community')
-      .map(n => ({
-        id: n.id,
-        label: 'Community',
-        heuristicLabel: n.properties.heuristicLabel,
-        cohesion: n.properties.cohesion,
-        symbolCount: n.properties.symbolCount
-      } as CommunityNode));
+      .filter((n) => n.label === "Community")
+      .map(
+        (n) =>
+          ({
+            id: n.id,
+            label: "Community",
+            heuristicLabel: n.properties.heuristicLabel,
+            cohesion: n.properties.cohesion,
+            symbolCount: n.properties.symbolCount,
+          }) as CommunityNode,
+      );
 
     if (communityNodes.length === 0) {
       return { enrichments: {}, tokensUsed: 0 };
@@ -834,24 +931,24 @@ const workerApi = {
 
     // Build member map: CommunityID -> Member Info
     const memberMap = new Map<string, ClusterMemberInfo[]>();
-    
+
     // Initialize map
-    communityNodes.forEach(c => memberMap.set(c.id, []));
-    
+    communityNodes.forEach((c) => memberMap.set(c.id, []));
+
     // Find all MEMBER_OF edges
-    graph.relationships.forEach(rel => {
-      if (rel.type === 'MEMBER_OF') {
+    graph.relationships.forEach((rel) => {
+      if (rel.type === "MEMBER_OF") {
         const communityId = rel.targetId;
         const memberId = rel.sourceId; // MEMBER_OF goes Member -> Community
-        
+
         if (memberMap.has(communityId)) {
           // Find member node details
-          const memberNode = graph.nodes.find(n => n.id === memberId);
+          const memberNode = graph.nodes.find((n) => n.id === memberId);
           if (memberNode) {
             memberMap.get(communityId)?.push({
               name: memberNode.properties.name,
               filePath: memberNode.properties.filePath,
-              type: memberNode.label
+              type: memberNode.label,
             });
           }
         }
@@ -863,11 +960,11 @@ const workerApi = {
     const llmClient = {
       generate: async (prompt: string): Promise<string> => {
         const response = await chatModel.invoke([
-          new SystemMessage('You are a helpful code analysis assistant.'),
-          { role: 'user', content: prompt }
+          new SystemMessage("You are a helpful code analysis assistant."),
+          { role: "user", content: prompt },
         ]);
         return response.content as string;
-      }
+      },
     };
 
     // Run enrichment
@@ -876,63 +973,64 @@ const workerApi = {
       memberMap,
       llmClient,
       5, // Batch size
-      onProgress
+      onProgress,
     );
 
     if (import.meta.env.DEV) {
-      console.log(`✨ Enriched ${enrichments.size} clusters using ~${Math.round(tokensUsed)} tokens`);
+      console.log(
+        `✨ Enriched ${enrichments.size} clusters using ~${Math.round(tokensUsed)} tokens`,
+      );
     }
 
     // Update graph nodes with enrichment data
-    graph.nodes.forEach(node => {
-      if (node.label === 'Community' && enrichments.has(node.id)) {
+    graph.nodes.forEach((node) => {
+      if (node.label === "Community" && enrichments.has(node.id)) {
         const enrichment = enrichments.get(node.id)!;
         node.properties.name = enrichment.name; // Update display label
         node.properties.keywords = enrichment.keywords;
         node.properties.description = enrichment.description;
-        node.properties.enrichedBy = 'llm';
+        node.properties.enrichedBy = "llm";
       }
     });
 
     // Update LadybugDB with new data
     try {
       const lbug = await getLbugAdapter();
-        
+
       onProgress(enrichments.size, enrichments.size); // Done
-      
+
       // Update one by one via Cypher (simplest for now)
       for (const [id, enrichment] of enrichments.entries()) {
-         // Escape strings for Cypher - replace backslash first, then quotes
-         const escapeCypher = (str: string) => str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-         
-         const keywordsStr = JSON.stringify(enrichment.keywords);
-         const descStr = escapeCypher(enrichment.description);
-         const nameStr = escapeCypher(enrichment.name);
-         const escapedId = escapeCypher(id);
-         
-         const query = `
+        // Escape strings for Cypher - replace backslash first, then quotes
+        const escapeCypher = (str: string) =>
+          str.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+
+        const keywordsStr = JSON.stringify(enrichment.keywords);
+        const descStr = escapeCypher(enrichment.description);
+        const nameStr = escapeCypher(enrichment.name);
+        const escapedId = escapeCypher(id);
+
+        const query = `
            MATCH (c:Community {id: "${escapedId}"})
            SET c.label = "${nameStr}", 
                c.keywords = ${keywordsStr}, 
                c.description = "${descStr}",
                c.enrichedBy = "llm"
          `;
-         
-         await lbug.executeQuery(query);
-      }
 
+        await lbug.executeQuery(query);
+      }
     } catch (err) {
-      console.error('Failed to update LadybugDB with enrichment:', err);
+      console.error("Failed to update LadybugDB with enrichment:", err);
     }
-    
+
     // Convert Map to Record for serialization
     const enrichmentsRecord: Record<string, ClusterEnrichment> = {};
     for (const [id, val] of enrichments.entries()) {
       enrichmentsRecord[id] = val;
     }
-     
+
     return { enrichments: enrichmentsRecord, tokensUsed };
-  
   },
 };
 
@@ -941,4 +1039,3 @@ Comlink.expose(workerApi);
 
 // TypeScript type for the exposed API (used by the hook)
 export type IngestionWorkerApi = typeof workerApi;
-

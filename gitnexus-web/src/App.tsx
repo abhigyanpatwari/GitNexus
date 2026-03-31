@@ -1,18 +1,23 @@
-import { useCallback, useEffect, useRef } from 'react';
-import { AppStateProvider, useAppState } from './hooks/useAppState';
-import { DropZone } from './components/DropZone';
-import { LoadingOverlay } from './components/LoadingOverlay';
-import { Header } from './components/Header';
-import { GraphCanvas, GraphCanvasHandle } from './components/GraphCanvas';
-import { RightPanel } from './components/RightPanel';
-import { SettingsPanel } from './components/SettingsPanel';
-import { StatusBar } from './components/StatusBar';
-import { FileTreePanel } from './components/FileTreePanel';
-import { CodeReferencesPanel } from './components/CodeReferencesPanel';
-import { FileEntry } from './services/zip';
-import { getActiveProviderConfig } from './core/llm/settings-service';
-import { createKnowledgeGraph } from './core/graph/graph';
-import { connectToServer, fetchRepos, normalizeServerUrl, type ConnectToServerResult } from './services/server-connection';
+import { useCallback, useEffect, useRef } from "react";
+import { AppStateProvider, useAppState } from "./hooks/useAppState";
+import { DropZone } from "./components/DropZone";
+import { LoadingOverlay } from "./components/LoadingOverlay";
+import { Header } from "./components/Header";
+import { GraphCanvas, GraphCanvasHandle } from "./components/GraphCanvas";
+import { RightPanel } from "./components/RightPanel";
+import { SettingsPanel } from "./components/SettingsPanel";
+import { StatusBar } from "./components/StatusBar";
+import { FileTreePanel } from "./components/FileTreePanel";
+import { CodeReferencesPanel } from "./components/CodeReferencesPanel";
+import { FileEntry } from "./services/zip";
+import { getActiveProviderConfig } from "./core/llm/settings-service";
+import { createKnowledgeGraph } from "./core/graph/graph";
+import {
+  connectToServer,
+  fetchRepos,
+  normalizeServerUrl,
+  type ConnectToServerResult,
+} from "./services/server-connection";
 
 const AppContent = () => {
   const {
@@ -45,199 +50,289 @@ const AppContent = () => {
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
 
-  const handleFileSelect = useCallback(async (file: File) => {
-    const projectName = file.name.replace('.zip', '');
-    setProjectName(projectName);
-    setProgress({ phase: 'extracting', percent: 0, message: 'Starting...', detail: 'Preparing to extract files' });
-    setViewMode('loading');
-
-    try {
-      const result = await runPipeline(file, (progress) => {
-        setProgress(progress);
-      });
-
-      setGraph(result.graph);
-      setFileContents(result.fileContents);
-      setViewMode('exploring');
-
-      // Initialize (or re-initialize) the agent AFTER a repo loads so it captures
-      // the current codebase context (file contents + graph tools) in the worker.
-      if (getActiveProviderConfig()) {
-        initializeAgent(projectName);
-      }
-
-      // Auto-start embeddings pipeline in background
-      // Uses WebGPU if available, falls back to WASM
-      startEmbeddings().catch((err) => {
-        if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
-          startEmbeddings('wasm').catch(console.warn);
-        } else {
-          console.warn('Embeddings auto-start failed:', err);
-        }
-      });
-    } catch (error) {
-      console.error('Pipeline error:', error);
+  const handleFileSelect = useCallback(
+    async (file: File) => {
+      const projectName = file.name.replace(".zip", "");
+      setProjectName(projectName);
       setProgress({
-        phase: 'error',
+        phase: "extracting",
         percent: 0,
-        message: 'Error processing file',
-        detail: error instanceof Error ? error.message : 'Unknown error',
+        message: "Starting...",
+        detail: "Preparing to extract files",
       });
-      setTimeout(() => {
-        setViewMode('onboarding');
-        setProgress(null);
-      }, 3000);
-    }
-  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipeline, startEmbeddings, initializeAgent]);
+      setViewMode("loading");
 
-  const handleGitClone = useCallback(async (files: FileEntry[]) => {
-    const firstPath = files[0]?.path || 'repository';
-    const projectName = firstPath.split('/')[0].replace(/-\d+$/, '') || 'repository';
+      try {
+        const result = await runPipeline(file, (progress) => {
+          setProgress(progress);
+        });
 
-    setProjectName(projectName);
-    setProgress({ phase: 'extracting', percent: 0, message: 'Starting...', detail: 'Preparing to process files' });
-    setViewMode('loading');
+        setGraph(result.graph);
+        setFileContents(result.fileContents);
+        setViewMode("exploring");
 
-    try {
-      const result = await runPipelineFromFiles(files, (progress) => {
-        setProgress(progress);
-      });
-
-      setGraph(result.graph);
-      setFileContents(result.fileContents);
-      setViewMode('exploring');
-
-      if (getActiveProviderConfig()) {
-        initializeAgent(projectName);
-      }
-
-      startEmbeddings().catch((err) => {
-        if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
-          startEmbeddings('wasm').catch(console.warn);
-        } else {
-          console.warn('Embeddings auto-start failed:', err);
+        // Initialize (or re-initialize) the agent AFTER a repo loads so it captures
+        // the current codebase context (file contents + graph tools) in the worker.
+        if (getActiveProviderConfig()) {
+          initializeAgent(projectName);
         }
-      });
-    } catch (error) {
-      console.error('Pipeline error:', error);
+
+        // Auto-start embeddings pipeline in background
+        // Uses WebGPU if available, falls back to WASM
+        startEmbeddings().catch((err) => {
+          if (
+            err?.name === "WebGPUNotAvailableError" ||
+            err?.message?.includes("WebGPU")
+          ) {
+            startEmbeddings("wasm").catch(console.warn);
+          } else {
+            console.warn("Embeddings auto-start failed:", err);
+          }
+        });
+      } catch (error) {
+        console.error("Pipeline error:", error);
+        setProgress({
+          phase: "error",
+          percent: 0,
+          message: "Error processing file",
+          detail: error instanceof Error ? error.message : "Unknown error",
+        });
+        setTimeout(() => {
+          setViewMode("onboarding");
+          setProgress(null);
+        }, 3000);
+      }
+    },
+    [
+      setViewMode,
+      setGraph,
+      setFileContents,
+      setProgress,
+      setProjectName,
+      runPipeline,
+      startEmbeddings,
+      initializeAgent,
+    ],
+  );
+
+  const handleGitClone = useCallback(
+    async (files: FileEntry[]) => {
+      const firstPath = files[0]?.path || "repository";
+      const projectName =
+        firstPath.split("/")[0].replace(/-\d+$/, "") || "repository";
+
+      setProjectName(projectName);
       setProgress({
-        phase: 'error',
+        phase: "extracting",
         percent: 0,
-        message: 'Error processing repository',
-        detail: error instanceof Error ? error.message : 'Unknown error',
+        message: "Starting...",
+        detail: "Preparing to process files",
       });
-      setTimeout(() => {
-        setViewMode('onboarding');
-        setProgress(null);
-      }, 3000);
-    }
-  }, [setViewMode, setGraph, setFileContents, setProgress, setProjectName, runPipelineFromFiles, startEmbeddings, initializeAgent]);
+      setViewMode("loading");
 
-  const handleServerConnect = useCallback((result: ConnectToServerResult) => {
-    // Extract project name from repoPath
-    const repoPath = result.repoInfo.repoPath;
-    const projectName = repoPath.split('/').pop() || 'server-project';
-    setProjectName(projectName);
+      try {
+        const result = await runPipelineFromFiles(files, (progress) => {
+          setProgress(progress);
+        });
 
-    // Build KnowledgeGraph from server data (bypasses WASM pipeline entirely)
-    const graph = createKnowledgeGraph();
-    for (const node of result.nodes) {
-      graph.addNode(node);
-    }
-    for (const rel of result.relationships) {
-      graph.addRelationship(rel);
-    }
-    setGraph(graph);
+        setGraph(result.graph);
+        setFileContents(result.fileContents);
+        setViewMode("exploring");
 
-    // Set file contents from extracted File node content
-    const fileMap = new Map<string, string>();
-    for (const [path, content] of Object.entries(result.fileContents)) {
-      fileMap.set(path, content);
-    }
-    setFileContents(fileMap);
-
-    // Transition directly to exploring view
-    setViewMode('exploring');
-    setProgress(null);
-
-    // Hydrate the worker-side DB (LadybugDB + BM25) so Query/Processes/embeddings work
-    hydrateWorkerFromServer(result.nodes, result.relationships, result.fileContents).then(() => {
-      // Initialize agent if LLM is configured
-      if (getActiveProviderConfig()) {
-        initializeAgent(projectName);
-      }
-
-      // Auto-start embeddings (now that LadybugDB is ready)
-      startEmbeddings().catch((err) => {
-        if (err?.name === 'WebGPUNotAvailableError' || err?.message?.includes('WebGPU')) {
-          startEmbeddings('wasm').catch(console.warn);
-        } else {
-          console.warn('Embeddings auto-start failed:', err);
+        if (getActiveProviderConfig()) {
+          initializeAgent(projectName);
         }
-      });
-    }).catch((err) => {
-      console.warn('Worker hydration failed (non-fatal):', err);
-      // Still initialize agent even if hydration fails
-      if (getActiveProviderConfig()) {
-        initializeAgent(projectName);
+
+        startEmbeddings().catch((err) => {
+          if (
+            err?.name === "WebGPUNotAvailableError" ||
+            err?.message?.includes("WebGPU")
+          ) {
+            startEmbeddings("wasm").catch(console.warn);
+          } else {
+            console.warn("Embeddings auto-start failed:", err);
+          }
+        });
+      } catch (error) {
+        console.error("Pipeline error:", error);
+        setProgress({
+          phase: "error",
+          percent: 0,
+          message: "Error processing repository",
+          detail: error instanceof Error ? error.message : "Unknown error",
+        });
+        setTimeout(() => {
+          setViewMode("onboarding");
+          setProgress(null);
+        }, 3000);
       }
-    });
-  }, [setViewMode, setGraph, setFileContents, setProjectName, setProgress, initializeAgent, startEmbeddings, hydrateWorkerFromServer]);
+    },
+    [
+      setViewMode,
+      setGraph,
+      setFileContents,
+      setProgress,
+      setProjectName,
+      runPipelineFromFiles,
+      startEmbeddings,
+      initializeAgent,
+    ],
+  );
+
+  const handleServerConnect = useCallback(
+    (result: ConnectToServerResult) => {
+      // Extract project name from repoPath
+      const repoPath = result.repoInfo.repoPath;
+      const projectName = repoPath.split("/").pop() || "server-project";
+      setProjectName(projectName);
+
+      // Build KnowledgeGraph from server data (bypasses WASM pipeline entirely)
+      const graph = createKnowledgeGraph();
+      for (const node of result.nodes) {
+        graph.addNode(node);
+      }
+      for (const rel of result.relationships) {
+        graph.addRelationship(rel);
+      }
+      setGraph(graph);
+
+      // Set file contents from extracted File node content
+      const fileMap = new Map<string, string>();
+      for (const [path, content] of Object.entries(result.fileContents)) {
+        fileMap.set(path, content);
+      }
+      setFileContents(fileMap);
+
+      // Transition directly to exploring view
+      setViewMode("exploring");
+      setProgress(null);
+
+      // Hydrate the worker-side DB (LadybugDB + BM25) so Query/Processes/embeddings work
+      hydrateWorkerFromServer(
+        result.nodes,
+        result.relationships,
+        result.fileContents,
+      )
+        .then(() => {
+          // Initialize agent if LLM is configured
+          if (getActiveProviderConfig()) {
+            initializeAgent(projectName);
+          }
+
+          // Auto-start embeddings (now that LadybugDB is ready)
+          startEmbeddings().catch((err) => {
+            if (
+              err?.name === "WebGPUNotAvailableError" ||
+              err?.message?.includes("WebGPU")
+            ) {
+              startEmbeddings("wasm").catch(console.warn);
+            } else {
+              console.warn("Embeddings auto-start failed:", err);
+            }
+          });
+        })
+        .catch((err) => {
+          console.warn("Worker hydration failed (non-fatal):", err);
+          // Still initialize agent even if hydration fails
+          if (getActiveProviderConfig()) {
+            initializeAgent(projectName);
+          }
+        });
+    },
+    [
+      setViewMode,
+      setGraph,
+      setFileContents,
+      setProjectName,
+      setProgress,
+      initializeAgent,
+      startEmbeddings,
+      hydrateWorkerFromServer,
+    ],
+  );
 
   // Auto-connect when ?server query param is present (bookmarkable shortcut)
   const autoConnectRan = useRef(false);
   useEffect(() => {
     if (autoConnectRan.current) return;
     const params = new URLSearchParams(window.location.search);
-    if (!params.has('server')) return;
+    if (!params.has("server")) return;
     autoConnectRan.current = true;
 
     // Clean the URL so a refresh won't re-trigger
     const cleanUrl = window.location.pathname + window.location.hash;
-    window.history.replaceState(null, '', cleanUrl);
+    window.history.replaceState(null, "", cleanUrl);
 
-    setProgress({ phase: 'extracting', percent: 0, message: 'Connecting to server...', detail: 'Validating server' });
-    setViewMode('loading');
+    setProgress({
+      phase: "extracting",
+      percent: 0,
+      message: "Connecting to server...",
+      detail: "Validating server",
+    });
+    setViewMode("loading");
 
-    const serverUrl = params.get('server') || window.location.origin;
+    const serverUrl = params.get("server") || window.location.origin;
 
     const baseUrl = normalizeServerUrl(serverUrl);
 
     connectToServer(serverUrl, (phase, downloaded, total) => {
-      if (phase === 'validating') {
-        setProgress({ phase: 'extracting', percent: 5, message: 'Connecting to server...', detail: 'Validating server' });
-      } else if (phase === 'downloading') {
+      if (phase === "validating") {
+        setProgress({
+          phase: "extracting",
+          percent: 5,
+          message: "Connecting to server...",
+          detail: "Validating server",
+        });
+      } else if (phase === "downloading") {
         const pct = total ? Math.round((downloaded / total) * 90) + 5 : 50;
         const mb = (downloaded / (1024 * 1024)).toFixed(1);
-        setProgress({ phase: 'extracting', percent: pct, message: 'Downloading graph...', detail: `${mb} MB downloaded` });
-      } else if (phase === 'extracting') {
-        setProgress({ phase: 'extracting', percent: 97, message: 'Processing...', detail: 'Extracting file contents' });
+        setProgress({
+          phase: "extracting",
+          percent: pct,
+          message: "Downloading graph...",
+          detail: `${mb} MB downloaded`,
+        });
+      } else if (phase === "extracting") {
+        setProgress({
+          phase: "extracting",
+          percent: 97,
+          message: "Processing...",
+          detail: "Extracting file contents",
+        });
       }
-    }).then(async (result) => {
-      handleServerConnect(result);
+    })
+      .then(async (result) => {
+        handleServerConnect(result);
 
-      // Store server URL and fetch available repos for the repo switcher
-      setServerBaseUrl(baseUrl);
-      try {
-        const repos = await fetchRepos(baseUrl);
-        setAvailableRepos(repos);
-      } catch (e) {
-        console.warn('Failed to fetch repo list:', e);
-      }
-    }).catch((err) => {
-      console.error('Auto-connect failed:', err);
-      setProgress({
-        phase: 'error',
-        percent: 0,
-        message: 'Failed to connect to server',
-        detail: err instanceof Error ? err.message : 'Unknown error',
+        // Store server URL and fetch available repos for the repo switcher
+        setServerBaseUrl(baseUrl);
+        try {
+          const repos = await fetchRepos(baseUrl);
+          setAvailableRepos(repos);
+        } catch (e) {
+          console.warn("Failed to fetch repo list:", e);
+        }
+      })
+      .catch((err) => {
+        console.error("Auto-connect failed:", err);
+        setProgress({
+          phase: "error",
+          percent: 0,
+          message: "Failed to connect to server",
+          detail: err instanceof Error ? err.message : "Unknown error",
+        });
+        setTimeout(() => {
+          setViewMode("onboarding");
+          setProgress(null);
+        }, 3000);
       });
-      setTimeout(() => {
-        setViewMode('onboarding');
-        setProgress(null);
-      }, 3000);
-    });
-  }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos]);
+  }, [
+    handleServerConnect,
+    setProgress,
+    setViewMode,
+    setServerBaseUrl,
+    setAvailableRepos,
+  ]);
 
   const handleFocusNode = useCallback((nodeId: string) => {
     graphCanvasRef.current?.focusNode(nodeId);
@@ -251,7 +346,7 @@ const AppContent = () => {
   }, [refreshLLMSettings, initializeAgent]);
 
   // Render based on view mode
-  if (viewMode === 'onboarding') {
+  if (viewMode === "onboarding") {
     return (
       <DropZone
         onFileSelect={handleFileSelect}
@@ -265,7 +360,7 @@ const AppContent = () => {
               const repos = await fetchRepos(baseUrl);
               setAvailableRepos(repos);
             } catch (e) {
-              console.warn('Failed to fetch repo list:', e);
+              console.warn("Failed to fetch repo list:", e);
             }
           }
         }}
@@ -273,14 +368,18 @@ const AppContent = () => {
     );
   }
 
-  if (viewMode === 'loading' && progress) {
+  if (viewMode === "loading" && progress) {
     return <LoadingOverlay progress={progress} />;
   }
 
   // Exploring view
   return (
     <div className="flex flex-col h-screen bg-void overflow-hidden">
-      <Header onFocusNode={handleFocusNode} availableRepos={availableRepos} onSwitchRepo={switchRepo} />
+      <Header
+        onFocusNode={handleFocusNode}
+        availableRepos={availableRepos}
+        onSwitchRepo={switchRepo}
+      />
 
       <main className="flex-1 flex min-h-0">
         {/* Left Panel - File Tree */}
@@ -310,7 +409,6 @@ const AppContent = () => {
         onClose={() => setSettingsPanelOpen(false)}
         onSettingsSaved={handleSettingsSaved}
       />
-
     </div>
   );
 };

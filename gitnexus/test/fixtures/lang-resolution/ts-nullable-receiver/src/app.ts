@@ -1,5 +1,5 @@
-import { User } from './user';
-import { Repo } from './repo';
+import { User } from "./user";
+import { Repo } from "./repo";
 
 export function processEntities(): void {
   const user: User | null = new User();
@@ -7,6 +7,6 @@ export function processEntities(): void {
 
   // Optional chain calls — receiver should still resolve
   user?.save();
-  user?.greet('hello');
+  user?.greet("hello");
   repo?.save();
 }

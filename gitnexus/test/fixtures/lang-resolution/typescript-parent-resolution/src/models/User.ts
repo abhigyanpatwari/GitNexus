@@ -1,5 +1,7 @@
-import { BaseModel, Serializable } from './Base';
+import { BaseModel, Serializable } from "./Base";
 
 export class User extends BaseModel implements Serializable {
-  serialize(): string { return ''; }
+  serialize(): string {
+    return "";
+  }
 }

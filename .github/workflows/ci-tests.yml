@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: ./.github/actions/setup-gitnexus
         with:
-          build: 'true'
+          build: "true"
 
       - name: Run all tests with coverage
         run: >-
@@ -52,6 +52,6 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: ./.github/actions/setup-gitnexus
         with:
-          build: 'true'
+          build: "true"
       - run: npx vitest run
         working-directory: gitnexus

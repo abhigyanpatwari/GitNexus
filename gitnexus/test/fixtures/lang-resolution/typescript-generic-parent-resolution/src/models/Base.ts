@@ -1,3 +1,5 @@
 export class BaseModel<T> {
-  save(): boolean { return true; }
+  save(): boolean {
+    return true;
+  }
 }

@@ -20,7 +20,7 @@ export function resolveGoPackageDir(
   if (!importPath.startsWith(goModule.modulePath)) return null;
   const relativePkg = importPath.slice(goModule.modulePath.length + 1);
   if (!relativePkg) return null;
-  return '/' + relativePkg + '/';
+  return "/" + relativePkg + "/";
 }
 
 /**
@@ -39,16 +39,22 @@ export function resolveGoPackage(
   const relativePkg = importPath.slice(goModule.modulePath.length + 1); // e.g., "internal/auth"
   if (!relativePkg) return [];
 
-  const pkgSuffix = '/' + relativePkg + '/';
+  const pkgSuffix = "/" + relativePkg + "/";
   const matches: string[] = [];
 
   for (let i = 0; i < normalizedFileList.length; i++) {
     // Prepend '/' so paths like "internal/auth/service.go" match suffix "/internal/auth/"
-    const normalized = '/' + normalizedFileList[i];
+    const normalized = "/" + normalizedFileList[i];
     // File must be directly in the package directory (not a subdirectory)
-    if (normalized.includes(pkgSuffix) && normalized.endsWith('.go') && !normalized.endsWith('_test.go')) {
-      const afterPkg = normalized.substring(normalized.indexOf(pkgSuffix) + pkgSuffix.length);
-      if (!afterPkg.includes('/')) {
+    if (
+      normalized.includes(pkgSuffix) &&
+      normalized.endsWith(".go") &&
+      !normalized.endsWith("_test.go")
+    ) {
+      const afterPkg = normalized.substring(
+        normalized.indexOf(pkgSuffix) + pkgSuffix.length,
+      );
+      if (!afterPkg.includes("/")) {
         matches.push(allFileList[i]);
       }
     }

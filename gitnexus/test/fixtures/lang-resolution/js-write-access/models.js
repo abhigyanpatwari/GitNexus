@@ -1,10 +1,10 @@
 class Address {
-    city = '';
+  city = "";
 }
 
 class User {
-    name = '';
-    address = null;
+  name = "";
+  address = null;
 }
 
 module.exports = { Address, User };

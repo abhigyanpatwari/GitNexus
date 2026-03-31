@@ -1,6 +1,6 @@
 /**
  * Settings Service
- * 
+ *
  * Handles localStorage persistence for LLM provider settings.
  * All API keys are stored locally - never sent to any server except the LLM provider.
  */
@@ -17,9 +17,9 @@ import {
   OpenRouterConfig,
   MiniMaxConfig,
   ProviderConfig,
-} from './types';
+} from "./types";
 
-const STORAGE_KEY = 'gitnexus-llm-settings';
+const STORAGE_KEY = "gitnexus-llm-settings";
 
 /**
  * Load settings from localStorage
@@ -30,9 +30,9 @@ export const loadSettings = (): LLMSettings => {
     if (!stored) {
       return DEFAULT_LLM_SETTINGS;
     }
-    
+
     const parsed = JSON.parse(stored) as Partial<LLMSettings>;
-    
+
     // Merge with defaults to handle new fields
     return {
       ...DEFAULT_LLM_SETTINGS,
@@ -67,7 +67,7 @@ export const loadSettings = (): LLMSettings => {
       },
     };
   } catch (error) {
-    console.warn('Failed to load LLM settings:', error);
+    console.warn("Failed to load LLM settings:", error);
     return DEFAULT_LLM_SETTINGS;
   }
 };
@@ -79,7 +79,7 @@ export const saveSettings = (settings: LLMSettings): void => {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
   } catch (error) {
-    console.error('Failed to save LLM settings:', error);
+    console.error("Failed to save LLM settings:", error);
   }
 };
 
@@ -89,91 +89,97 @@ export const saveSettings = (settings: LLMSettings): void => {
 export const updateProviderSettings = <T extends LLMProvider>(
   provider: T,
   updates: Partial<
-    T extends 'openai' ? Partial<Omit<OpenAIConfig, 'provider'>> :
-    T extends 'azure-openai' ? Partial<Omit<AzureOpenAIConfig, 'provider'>> :
-    T extends 'gemini' ? Partial<Omit<GeminiConfig, 'provider'>> :
-    T extends 'anthropic' ? Partial<Omit<AnthropicConfig, 'provider'>> :
-    T extends 'ollama' ? Partial<Omit<OllamaConfig, 'provider'>> :
-    T extends 'minimax' ? Partial<Omit<MiniMaxConfig, 'provider'>> :
-    never
-  >
+    T extends "openai"
+      ? Partial<Omit<OpenAIConfig, "provider">>
+      : T extends "azure-openai"
+        ? Partial<Omit<AzureOpenAIConfig, "provider">>
+        : T extends "gemini"
+          ? Partial<Omit<GeminiConfig, "provider">>
+          : T extends "anthropic"
+            ? Partial<Omit<AnthropicConfig, "provider">>
+            : T extends "ollama"
+              ? Partial<Omit<OllamaConfig, "provider">>
+              : T extends "minimax"
+                ? Partial<Omit<MiniMaxConfig, "provider">>
+                : never
+  >,
 ): LLMSettings => {
   const current = loadSettings();
 
   // Avoid spreading unions like LLMSettings[keyof LLMSettings] (can be string/undefined)
   switch (provider) {
-    case 'openai': {
+    case "openai": {
       const updated: LLMSettings = {
         ...current,
         openai: {
           ...(current.openai ?? {}),
-          ...(updates as Partial<Omit<OpenAIConfig, 'provider'>>),
+          ...(updates as Partial<Omit<OpenAIConfig, "provider">>),
         },
       };
       saveSettings(updated);
       return updated;
     }
-    case 'azure-openai': {
+    case "azure-openai": {
       const updated: LLMSettings = {
         ...current,
         azureOpenAI: {
           ...(current.azureOpenAI ?? {}),
-          ...(updates as Partial<Omit<AzureOpenAIConfig, 'provider'>>),
+          ...(updates as Partial<Omit<AzureOpenAIConfig, "provider">>),
         },
       };
       saveSettings(updated);
       return updated;
     }
-    case 'gemini': {
+    case "gemini": {
       const updated: LLMSettings = {
         ...current,
         gemini: {
           ...(current.gemini ?? {}),
-          ...(updates as Partial<Omit<GeminiConfig, 'provider'>>),
+          ...(updates as Partial<Omit<GeminiConfig, "provider">>),
         },
       };
       saveSettings(updated);
       return updated;
     }
-    case 'anthropic': {
+    case "anthropic": {
       const updated: LLMSettings = {
         ...current,
         anthropic: {
           ...(current.anthropic ?? {}),
-          ...(updates as Partial<Omit<AnthropicConfig, 'provider'>>),
+          ...(updates as Partial<Omit<AnthropicConfig, "provider">>),
         },
       };
       saveSettings(updated);
       return updated;
     }
-    case 'ollama': {
+    case "ollama": {
       const updated: LLMSettings = {
         ...current,
         ollama: {
           ...(current.ollama ?? {}),
-          ...(updates as Partial<Omit<OllamaConfig, 'provider'>>),
+          ...(updates as Partial<Omit<OllamaConfig, "provider">>),
         },
       };
       saveSettings(updated);
       return updated;
     }
-    case 'openrouter': {
+    case "openrouter": {
       const updated: LLMSettings = {
         ...current,
         openrouter: {
           ...(current.openrouter ?? {}),
-          ...(updates as Partial<Omit<OpenRouterConfig, 'provider'>>),
+          ...(updates as Partial<Omit<OpenRouterConfig, "provider">>),
         },
       };
       saveSettings(updated);
       return updated;
     }
-    case 'minimax': {
+    case "minimax": {
       const updated: LLMSettings = {
         ...current,
         minimax: {
           ...(current.minimax ?? {}),
-          ...(updates as Partial<Omit<MiniMaxConfig, 'provider'>>),
+          ...(updates as Partial<Omit<MiniMaxConfig, "provider">>),
         },
       };
       saveSettings(updated);
@@ -206,69 +212,72 @@ export const setActiveProvider = (provider: LLMProvider): LLMSettings => {
  */
 export const getActiveProviderConfig = (): ProviderConfig | null => {
   const settings = loadSettings();
-  
+
   switch (settings.activeProvider) {
-    case 'openai':
+    case "openai":
       if (!settings.openai?.apiKey) {
         return null;
       }
       return {
-        provider: 'openai',
+        provider: "openai",
         ...settings.openai,
       } as OpenAIConfig;
-      
-    case 'azure-openai':
+
+    case "azure-openai":
       if (!settings.azureOpenAI?.apiKey || !settings.azureOpenAI?.endpoint) {
         return null;
       }
       return {
-        provider: 'azure-openai',
+        provider: "azure-openai",
         ...settings.azureOpenAI,
       } as AzureOpenAIConfig;
-      
-    case 'gemini':
+
+    case "gemini":
       if (!settings.gemini?.apiKey) {
         return null;
       }
       return {
-        provider: 'gemini',
+        provider: "gemini",
         ...settings.gemini,
       } as GeminiConfig;
-      
-    case 'anthropic':
+
+    case "anthropic":
       if (!settings.anthropic?.apiKey) {
         return null;
       }
       return {
-        provider: 'anthropic',
+        provider: "anthropic",
         ...settings.anthropic,
       } as AnthropicConfig;
-      
-    case 'ollama':
+
+    case "ollama":
       return {
-        provider: 'ollama',
+        provider: "ollama",
         ...settings.ollama,
       } as OllamaConfig;
-      
-    case 'openrouter':
-      if (!settings.openrouter?.apiKey || settings.openrouter.apiKey.trim() === '') {
+
+    case "openrouter":
+      if (
+        !settings.openrouter?.apiKey ||
+        settings.openrouter.apiKey.trim() === ""
+      ) {
         return null;
       }
       return {
-        provider: 'openrouter',
+        provider: "openrouter",
         apiKey: settings.openrouter.apiKey,
-        model: settings.openrouter.model || '',
-        baseUrl: settings.openrouter.baseUrl || 'https://openrouter.ai/api/v1',
+        model: settings.openrouter.model || "",
+        baseUrl: settings.openrouter.baseUrl || "https://openrouter.ai/api/v1",
         temperature: settings.openrouter.temperature,
         maxTokens: settings.openrouter.maxTokens,
       } as OpenRouterConfig;
 
-    case 'minimax':
+    case "minimax":
       if (!settings.minimax?.apiKey) {
         return null;
       }
       return {
-        provider: 'minimax',
+        provider: "minimax",
         ...settings.minimax,
       } as MiniMaxConfig;
 
@@ -296,20 +305,20 @@ export const clearSettings = (): void => {
  */
 export const getProviderDisplayName = (provider: LLMProvider): string => {
   switch (provider) {
-    case 'openai':
-      return 'OpenAI';
-    case 'azure-openai':
-      return 'Azure OpenAI';
-    case 'gemini':
-      return 'Google Gemini';
-    case 'anthropic':
-      return 'Anthropic';
-    case 'ollama':
-      return 'Ollama (Local)';
-    case 'openrouter':
-      return 'OpenRouter';
-    case 'minimax':
-      return 'MiniMax';
+    case "openai":
+      return "OpenAI";
+    case "azure-openai":
+      return "Azure OpenAI";
+    case "gemini":
+      return "Google Gemini";
+    case "anthropic":
+      return "Anthropic";
+    case "ollama":
+      return "Ollama (Local)";
+    case "openrouter":
+      return "OpenRouter";
+    case "minimax":
+      return "MiniMax";
     default:
       return provider;
   }
@@ -320,19 +329,36 @@ export const getProviderDisplayName = (provider: LLMProvider): string => {
  */
 export const getAvailableModels = (provider: LLMProvider): string[] => {
   switch (provider) {
-    case 'openai':
-      return ['gpt-4.5-preview', 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo'];
-    case 'azure-openai':
+    case "openai":
+      return [
+        "gpt-4.5-preview",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4-turbo",
+        "gpt-4",
+        "gpt-3.5-turbo",
+      ];
+    case "azure-openai":
       // Azure models depend on deployment, so we show common ones
-      return ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-35-turbo'];
-    case 'gemini':
-      return ['gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-1.0-pro'];
-    case 'anthropic':
-      return ['claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'];
-    case 'ollama':
-      return ['llama3.2', 'llama3.1', 'mistral', 'codellama', 'deepseek-coder'];
-    case 'minimax':
-      return ['MiniMax-M2.5', 'MiniMax-M2.5-highspeed'];
+      return ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-35-turbo"];
+    case "gemini":
+      return [
+        "gemini-2.0-flash",
+        "gemini-1.5-pro",
+        "gemini-1.5-flash",
+        "gemini-1.0-pro",
+      ];
+    case "anthropic":
+      return [
+        "claude-sonnet-4-20250514",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-haiku-20241022",
+        "claude-3-opus-20240229",
+      ];
+    case "ollama":
+      return ["llama3.2", "llama3.1", "mistral", "codellama", "deepseek-coder"];
+    case "minimax":
+      return ["MiniMax-M2.5", "MiniMax-M2.5-highspeed"];
     default:
       return [];
   }
@@ -341,18 +367,19 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
 /**
  * Fetch available models from OpenRouter API
  */
-export const fetchOpenRouterModels = async (): Promise<Array<{ id: string; name: string }>> => {
+export const fetchOpenRouterModels = async (): Promise<
+  Array<{ id: string; name: string }>
+> => {
   try {
-    const response = await fetch('https://openrouter.ai/api/v1/models');
-    if (!response.ok) throw new Error('Failed to fetch models');
+    const response = await fetch("https://openrouter.ai/api/v1/models");
+    if (!response.ok) throw new Error("Failed to fetch models");
     const data = await response.json();
     return data.data.map((model: any) => ({
       id: model.id,
       name: model.name || model.id,
     }));
   } catch (error) {
-    console.error('Error fetching OpenRouter models:', error);
+    console.error("Error fetching OpenRouter models:", error);
     return [];
   }
 };
-

@@ -1,5 +1,5 @@
-import { getUsers } from './models/user';
-import { getRepos } from './models/repo';
+import { getUsers } from "./models/user";
+import { getRepos } from "./models/repo";
 
 function processUsers(): void {
   for (const user of getUsers()) {

@@ -3,8 +3,8 @@
  * Handles use-statement resolution via composer.json autoload mappings.
  */
 
-import type { SuffixIndex } from './utils.js';
-import { suffixResolve } from './utils.js';
+import type { SuffixIndex } from "./utils.js";
+import { suffixResolve } from "./utils.js";
 
 /** PHP Composer PSR-4 autoload config */
 export interface ComposerConfig {
@@ -18,7 +18,9 @@ export interface ComposerConfig {
 /** Get or compute the sorted PSR-4 entries (cached after first call). */
 function getSortedPsr4(config: ComposerConfig): readonly [string, string][] {
   if (!config.psr4Sorted) {
-    const sorted = [...config.psr4.entries()].sort((a, b) => b[0].length - a[0].length);
+    const sorted = [...config.psr4.entries()].sort(
+      (a, b) => b[0].length - a[0].length,
+    );
     config.psr4Sorted = sorted;
   }
   return config.psr4Sorted;
@@ -48,20 +50,26 @@ export function resolvePhpImport(
   index?: SuffixIndex,
 ): string | null {
   // Normalize: replace backslashes with forward slashes
-  const normalized = importPath.replace(/\\/g, '/');
+  const normalized = importPath.replace(/\\/g, "/");
 
   // Reject path traversal attempts (defense-in-depth — walker whitelist also prevents this)
-  if (normalized.includes('..')) return null;
+  if (normalized.includes("..")) return null;
 
   if (composerConfig) {
     const sorted = getSortedPsr4(composerConfig);
     for (const [nsPrefix, dirPrefix] of sorted) {
-      const nsPrefixSlash = nsPrefix.replace(/\\/g, '/');
-      if (normalized.startsWith(nsPrefixSlash + '/') || normalized === nsPrefixSlash) {
-        const remainder = normalized.slice(nsPrefixSlash.length).replace(/^\//, '');
+      const nsPrefixSlash = nsPrefix.replace(/\\/g, "/");
+      if (
+        normalized.startsWith(nsPrefixSlash + "/") ||
+        normalized === nsPrefixSlash
+      ) {
+        const remainder = normalized
+          .slice(nsPrefixSlash.length)
+          .replace(/^\//, "");
 
         // 1. Try class-style PSR-4: full path → file (e.g. App\Models\User → app/Models/User.php)
-        const filePath = dirPrefix + (remainder ? '/' + remainder : '') + '.php';
+        const filePath =
+          dirPrefix + (remainder ? "/" + remainder : "") + ".php";
         if (allFiles.has(filePath)) return filePath;
         if (index) {
           const result = index.getInsensitive(filePath);
@@ -70,21 +78,26 @@ export function resolvePhpImport(
 
         // 2. Function/constant fallback: strip last segment (symbol name), scan namespace directory.
         //    e.g. App\Models\getUser → directory app/Models/, find first .php file in that dir.
-        const lastSlash = remainder.lastIndexOf('/');
-        const nsDir = lastSlash >= 0
-          ? dirPrefix + '/' + remainder.slice(0, lastSlash)
-          : dirPrefix;
+        const lastSlash = remainder.lastIndexOf("/");
+        const nsDir =
+          lastSlash >= 0
+            ? dirPrefix + "/" + remainder.slice(0, lastSlash)
+            : dirPrefix;
 
         // Prefer SuffixIndex directory lookup (O(log n + matches)) over linear scan
         if (index) {
-          const candidates = index.getFilesInDir(nsDir, '.php');
+          const candidates = index.getFilesInDir(nsDir, ".php");
           if (candidates.length > 0) return candidates[0];
         }
 
         // Fallback: linear scan (only when SuffixIndex unavailable)
-        const nsDirPrefix = nsDir.endsWith('/') ? nsDir : nsDir + '/';
+        const nsDirPrefix = nsDir.endsWith("/") ? nsDir : nsDir + "/";
         for (const f of allFiles) {
-          if (f.startsWith(nsDirPrefix) && f.endsWith('.php') && !f.slice(nsDirPrefix.length).includes('/')) {
+          if (
+            f.startsWith(nsDirPrefix) &&
+            f.endsWith(".php") &&
+            !f.slice(nsDirPrefix.length).includes("/")
+          ) {
             return f;
           }
         }
@@ -93,6 +106,6 @@ export function resolvePhpImport(
   }
 
   // Fallback: suffix matching (works without composer.json)
-  const pathParts = normalized.split('/').filter(Boolean);
+  const pathParts = normalized.split("/").filter(Boolean);
   return suffixResolve(pathParts, normalizedFileList, allFileList, index);
 }

@@ -1,8 +1,22 @@
-import { useState, useCallback, useRef, DragEvent } from 'react';
-import { Upload, FileArchive, Github, Loader2, ArrowRight, Key, Eye, EyeOff, Globe, X } from 'lucide-react';
-import { cloneRepository, parseGitHubUrl } from '../services/git-clone';
-import { connectToServer, type ConnectToServerResult } from '../services/server-connection';
-import { FileEntry } from '../services/zip';
+import { useState, useCallback, useRef, DragEvent } from "react";
+import {
+  Upload,
+  FileArchive,
+  Github,
+  Loader2,
+  ArrowRight,
+  Key,
+  Eye,
+  EyeOff,
+  Globe,
+  X,
+} from "lucide-react";
+import { cloneRepository, parseGitHubUrl } from "../services/git-clone";
+import {
+  connectToServer,
+  type ConnectToServerResult,
+} from "../services/server-connection";
+import { FileEntry } from "../services/zip";
 
 interface DropZoneProps {
   onFileSelect: (file: File) => void;
@@ -16,26 +30,32 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZoneProps) => {
+export const DropZone = ({
+  onFileSelect,
+  onGitClone,
+  onServerConnect,
+}: DropZoneProps) => {
   const [isDragging, setIsDragging] = useState(false);
-  const [activeTab, setActiveTab] = useState<'zip' | 'github' | 'server'>('zip');
-  const [githubUrl, setGithubUrl] = useState('');
-  const [githubToken, setGithubToken] = useState('');
+  const [activeTab, setActiveTab] = useState<"zip" | "github" | "server">(
+    "zip",
+  );
+  const [githubUrl, setGithubUrl] = useState("");
+  const [githubToken, setGithubToken] = useState("");
   const [showToken, setShowToken] = useState(false);
   const [isCloning, setIsCloning] = useState(false);
-  const [cloneProgress, setCloneProgress] = useState({ phase: '', percent: 0 });
+  const [cloneProgress, setCloneProgress] = useState({ phase: "", percent: 0 });
   const [error, setError] = useState<string | null>(null);
 
   // Server tab state
-  const [serverUrl, setServerUrl] = useState(() =>
-    localStorage.getItem('gitnexus-server-url') || ''
+  const [serverUrl, setServerUrl] = useState(
+    () => localStorage.getItem("gitnexus-server-url") || "",
   );
   const [isConnecting, setIsConnecting] = useState(false);
   const [serverProgress, setServerProgress] = useState<{
     phase: string;
     downloaded: number;
     total: number | null;
-  }>({ phase: '', downloaded: 0, total: null });
+  }>({ phase: "", downloaded: 0, total: null });
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
@@ -50,73 +70,90 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
     setIsDragging(false);
   }, []);
 
-  const handleDrop = useCallback((e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
+  const handleDrop = useCallback(
+    (e: DragEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDragging(false);
 
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      const file = files[0];
-      if (file.name.endsWith('.zip')) {
-        onFileSelect(file);
-      } else {
-        setError('Please drop a .zip file');
+      const files = e.dataTransfer.files;
+      if (files.length > 0) {
+        const file = files[0];
+        if (file.name.endsWith(".zip")) {
+          onFileSelect(file);
+        } else {
+          setError("Please drop a .zip file");
+        }
       }
-    }
-  }, [onFileSelect]);
+    },
+    [onFileSelect],
+  );
 
-  const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) {
-      const file = files[0];
-      if (file.name.endsWith('.zip')) {
-        onFileSelect(file);
-      } else {
-        setError('Please select a .zip file');
+  const handleFileInput = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (files && files.length > 0) {
+        const file = files[0];
+        if (file.name.endsWith(".zip")) {
+          onFileSelect(file);
+        } else {
+          setError("Please select a .zip file");
+        }
       }
-    }
-  }, [onFileSelect]);
+    },
+    [onFileSelect],
+  );
 
   const handleGitClone = async () => {
     if (!githubUrl.trim()) {
-      setError('Please enter a GitHub URL');
+      setError("Please enter a GitHub URL");
       return;
     }
 
     const parsed = parseGitHubUrl(githubUrl);
     if (!parsed) {
-      setError('Invalid GitHub URL. Use format: https://github.com/owner/repo');
+      setError("Invalid GitHub URL. Use format: https://github.com/owner/repo");
       return;
     }
 
     setError(null);
     setIsCloning(true);
-    setCloneProgress({ phase: 'starting', percent: 0 });
+    setCloneProgress({ phase: "starting", percent: 0 });
 
     try {
       const files = await cloneRepository(
         githubUrl,
         (phase, percent) => setCloneProgress({ phase, percent }),
-        githubToken || undefined
+        githubToken || undefined,
       );
 
-      setGithubToken('');
+      setGithubToken("");
 
       if (onGitClone) {
         onGitClone(files);
       }
     } catch (err) {
-      console.error('Clone failed:', err);
-      const message = err instanceof Error ? err.message : 'Failed to clone repository';
-      if (message.includes('401') || message.includes('403') || message.includes('Authentication')) {
+      console.error("Clone failed:", err);
+      const message =
+        err instanceof Error ? err.message : "Failed to clone repository";
+      if (
+        message.includes("401") ||
+        message.includes("403") ||
+        message.includes("Authentication")
+      ) {
         if (!githubToken) {
-          setError('This looks like a private repo. Add a GitHub PAT (Personal Access Token) to access it.');
+          setError(
+            "This looks like a private repo. Add a GitHub PAT (Personal Access Token) to access it.",
+          );
         } else {
-          setError('Authentication failed. Check your token permissions (needs repo access).');
+          setError(
+            "Authentication failed. Check your token permissions (needs repo access).",
+          );
         }
-      } else if (message.includes('404') || message.includes('not found')) {
-        setError('Repository not found. Check the URL or it might be private (needs PAT).');
+      } else if (message.includes("404") || message.includes("not found")) {
+        setError(
+          "Repository not found. Check the URL or it might be private (needs PAT).",
+        );
       } else {
         setError(message);
       }
@@ -128,16 +165,16 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
   const handleServerConnect = async () => {
     const urlToUse = serverUrl.trim() || window.location.origin;
     if (!urlToUse) {
-      setError('Please enter a server URL');
+      setError("Please enter a server URL");
       return;
     }
 
     // Persist URL to localStorage
-    localStorage.setItem('gitnexus-server-url', serverUrl);
+    localStorage.setItem("gitnexus-server-url", serverUrl);
 
     setError(null);
     setIsConnecting(true);
-    setServerProgress({ phase: 'validating', downloaded: 0, total: null });
+    setServerProgress({ phase: "validating", downloaded: 0, total: null });
 
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
@@ -148,21 +185,27 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
         (phase, downloaded, total) => {
           setServerProgress({ phase, downloaded, total });
         },
-        abortController.signal
+        abortController.signal,
       );
 
       if (onServerConnect) {
         onServerConnect(result, urlToUse);
       }
     } catch (err) {
-      if ((err as Error).name === 'AbortError') {
+      if ((err as Error).name === "AbortError") {
         // User cancelled
         return;
       }
-      console.error('Server connect failed:', err);
-      const message = err instanceof Error ? err.message : 'Failed to connect to server';
-      if (message.includes('Failed to fetch') || message.includes('NetworkError')) {
-        setError('Cannot reach server. Check the URL and ensure the server is running.');
+      console.error("Server connect failed:", err);
+      const message =
+        err instanceof Error ? err.message : "Failed to connect to server";
+      if (
+        message.includes("Failed to fetch") ||
+        message.includes("NetworkError")
+      ) {
+        setError(
+          "Cannot reach server. Check the URL and ensure the server is running.",
+        );
       } else {
         setError(message);
       }
@@ -193,13 +236,17 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
         {/* Tab Switcher */}
         <div className="flex mb-4 bg-surface border border-border-default rounded-xl p-1">
           <button
-            onClick={() => { setActiveTab('zip'); setError(null); }}
+            onClick={() => {
+              setActiveTab("zip");
+              setError(null);
+            }}
             className={`
               flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg
               text-sm font-medium transition-all duration-200
-              ${activeTab === 'zip'
-                ? 'bg-accent text-white shadow-md'
-                : 'text-text-secondary hover:text-text-primary hover:bg-elevated'
+              ${
+                activeTab === "zip"
+                  ? "bg-accent text-white shadow-md"
+                  : "text-text-secondary hover:text-text-primary hover:bg-elevated"
               }
             `}
           >
@@ -207,13 +254,17 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
             ZIP Upload
           </button>
           <button
-            onClick={() => { setActiveTab('github'); setError(null); }}
+            onClick={() => {
+              setActiveTab("github");
+              setError(null);
+            }}
             className={`
               flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg
               text-sm font-medium transition-all duration-200
-              ${activeTab === 'github'
-                ? 'bg-accent text-white shadow-md'
-                : 'text-text-secondary hover:text-text-primary hover:bg-elevated'
+              ${
+                activeTab === "github"
+                  ? "bg-accent text-white shadow-md"
+                  : "text-text-secondary hover:text-text-primary hover:bg-elevated"
               }
             `}
           >
@@ -221,13 +272,17 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
             GitHub URL
           </button>
           <button
-            onClick={() => { setActiveTab('server'); setError(null); }}
+            onClick={() => {
+              setActiveTab("server");
+              setError(null);
+            }}
             className={`
               flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg
               text-sm font-medium transition-all duration-200
-              ${activeTab === 'server'
-                ? 'bg-accent text-white shadow-md'
-                : 'text-text-secondary hover:text-text-primary hover:bg-elevated'
+              ${
+                activeTab === "server"
+                  ? "bg-accent text-white shadow-md"
+                  : "text-text-secondary hover:text-text-primary hover:bg-elevated"
               }
             `}
           >
@@ -244,22 +299,23 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
         )}
 
         {/* ZIP Upload Tab */}
-        {activeTab === 'zip' && (
+        {activeTab === "zip" && (
           <>
             <div
               className={`
                 relative p-16
                 bg-surface border-2 border-dashed rounded-3xl
                 transition-all duration-300 cursor-pointer
-                ${isDragging
-                  ? 'border-accent bg-elevated scale-105 shadow-glow'
-                  : 'border-border-default hover:border-accent/50 hover:bg-elevated/50 animate-breathe'
+                ${
+                  isDragging
+                    ? "border-accent bg-elevated scale-105 shadow-glow"
+                    : "border-border-default hover:border-accent/50 hover:bg-elevated/50 animate-breathe"
                 }
               `}
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
-              onClick={() => document.getElementById('file-input')?.click()}
+              onClick={() => document.getElementById("file-input")?.click()}
             >
               <input
                 id="file-input"
@@ -270,14 +326,16 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
               />
 
               {/* Icon */}
-              <div className={`
+              <div
+                className={`
                 mx-auto w-20 h-20 mb-6
                 flex items-center justify-center
                 bg-gradient-to-br from-accent to-node-interface
                 rounded-2xl shadow-glow
                 transition-transform duration-300
-                ${isDragging ? 'scale-110' : ''}
-              `}>
+                ${isDragging ? "scale-110" : ""}
+              `}
+              >
                 {isDragging ? (
                   <Upload className="w-10 h-10 text-white" />
                 ) : (
@@ -287,7 +345,7 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
 
               {/* Text */}
               <h2 className="text-xl font-semibold text-text-primary text-center mb-2">
-                {isDragging ? 'Drop it here!' : 'Drop your codebase'}
+                {isDragging ? "Drop it here!" : "Drop your codebase"}
               </h2>
               <p className="text-sm text-text-secondary text-center mb-6">
                 Drag & drop a .zip file to generate a knowledge graph
@@ -300,12 +358,11 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
                 </span>
               </div>
             </div>
-
           </>
         )}
 
         {/* GitHub URL Tab */}
-        {activeTab === 'github' && (
+        {activeTab === "github" && (
           <div className="p-8 bg-surface border border-border-default rounded-3xl">
             {/* Icon */}
             <div className="mx-auto w-20 h-20 mb-6 flex items-center justify-center bg-gradient-to-br from-[#333] to-[#24292e] rounded-2xl shadow-lg">
@@ -327,7 +384,9 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
                 name="github-repo-url-input"
                 value={githubUrl}
                 onChange={(e) => setGithubUrl(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && !isCloning && handleGitClone()}
+                onKeyDown={(e) =>
+                  e.key === "Enter" && !isCloning && handleGitClone()
+                }
                 placeholder="https://github.com/owner/repo"
                 disabled={isCloning}
                 autoComplete="off"
@@ -350,7 +409,7 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
                   <Key className="w-4 h-4" />
                 </div>
                 <input
-                  type={showToken ? 'text' : 'password'}
+                  type={showToken ? "text" : "password"}
                   name="github-pat-token-input"
                   value={githubToken}
                   onChange={(e) => setGithubToken(e.target.value)}
@@ -374,7 +433,11 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
                   onClick={() => setShowToken(!showToken)}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-secondary transition-colors"
                 >
-                  {showToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  {showToken ? (
+                    <EyeOff className="w-4 h-4" />
+                  ) : (
+                    <Eye className="w-4 h-4" />
+                  )}
                 </button>
               </div>
 
@@ -393,12 +456,11 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
                 {isCloning ? (
                   <>
                     <Loader2 className="w-5 h-5 animate-spin" />
-                    {cloneProgress.phase === 'cloning'
+                    {cloneProgress.phase === "cloning"
                       ? `Cloning... ${cloneProgress.percent}%`
-                      : cloneProgress.phase === 'reading'
-                        ? 'Reading files...'
-                        : 'Starting...'
-                    }
+                      : cloneProgress.phase === "reading"
+                        ? "Reading files..."
+                        : "Starting..."}
                   </>
                 ) : (
                   <>
@@ -431,7 +493,7 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
             {/* Hints */}
             <div className="mt-4 flex items-center justify-center gap-3 text-xs text-text-muted">
               <span className="px-3 py-1.5 bg-elevated border border-border-subtle rounded-md">
-                {githubToken ? 'Private + Public' : 'Public repos'}
+                {githubToken ? "Private + Public" : "Public repos"}
               </span>
               <span className="px-3 py-1.5 bg-elevated border border-border-subtle rounded-md">
                 Shallow clone
@@ -441,7 +503,7 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
         )}
 
         {/* Server Tab */}
-        {activeTab === 'server' && (
+        {activeTab === "server" && (
           <div className="p-8 bg-surface border border-border-default rounded-3xl">
             {/* Icon */}
             <div className="mx-auto w-20 h-20 mb-6 flex items-center justify-center bg-gradient-to-br from-accent to-emerald-600 rounded-2xl shadow-lg">
@@ -463,7 +525,9 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
                 name="server-url-input"
                 value={serverUrl}
                 onChange={(e) => setServerUrl(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && !isConnecting && handleServerConnect()}
+                onKeyDown={(e) =>
+                  e.key === "Enter" && !isConnecting && handleServerConnect()
+                }
                 placeholder={window.location.origin}
                 disabled={isConnecting}
                 autoComplete="off"
@@ -496,16 +560,15 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
                   {isConnecting ? (
                     <>
                       <Loader2 className="w-5 h-5 animate-spin" />
-                      {serverProgress.phase === 'validating'
-                        ? 'Validating...'
-                        : serverProgress.phase === 'downloading'
+                      {serverProgress.phase === "validating"
+                        ? "Validating..."
+                        : serverProgress.phase === "downloading"
                           ? serverProgressPercent !== null
                             ? `Downloading... ${serverProgressPercent}%`
                             : `Downloading... ${formatBytes(serverProgress.downloaded)}`
-                          : serverProgress.phase === 'extracting'
-                            ? 'Processing...'
-                            : 'Connecting...'
-                      }
+                          : serverProgress.phase === "extracting"
+                            ? "Processing..."
+                            : "Connecting..."}
                     </>
                   ) : (
                     <>
@@ -533,23 +596,25 @@ export const DropZone = ({ onFileSelect, onGitClone, onServerConnect }: DropZone
             </div>
 
             {/* Progress bar */}
-            {isConnecting && serverProgress.phase === 'downloading' && (
+            {isConnecting && serverProgress.phase === "downloading" && (
               <div className="mt-4">
                 <div className="h-2 bg-elevated rounded-full overflow-hidden">
                   <div
                     className={`h-full bg-accent transition-all duration-300 ease-out ${
-                      serverProgressPercent === null ? 'animate-pulse' : ''
+                      serverProgressPercent === null ? "animate-pulse" : ""
                     }`}
                     style={{
-                      width: serverProgressPercent !== null
-                        ? `${serverProgressPercent}%`
-                        : '100%',
+                      width:
+                        serverProgressPercent !== null
+                          ? `${serverProgressPercent}%`
+                          : "100%",
                     }}
                   />
                 </div>
                 {serverProgress.total && (
                   <p className="mt-1 text-xs text-text-muted text-center">
-                    {formatBytes(serverProgress.downloaded)} / {formatBytes(serverProgress.total)}
+                    {formatBytes(serverProgress.downloaded)} /{" "}
+                    {formatBytes(serverProgress.total)}
                   </p>
                 )}
               </div>

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState } from "react";
 
 interface ButtonProps {
   label: string;
@@ -23,8 +23,8 @@ export const Button: React.FC<ButtonProps> = ({ label, onClick }) => {
 
 export function useCounter(initial: number = 0) {
   const [count, setCount] = useState(initial);
-  const increment = () => setCount(c => c + 1);
-  const decrement = () => setCount(c => c - 1);
+  const increment = () => setCount((c) => c + 1);
+  const decrement = () => setCount((c) => c - 1);
   return { count, increment, decrement };
 }
 

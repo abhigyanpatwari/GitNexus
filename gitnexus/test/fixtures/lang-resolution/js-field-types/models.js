@@ -1,5 +1,5 @@
 class Address {
-  city = '';
+  city = "";
 
   save() {
     // persist address
@@ -7,7 +7,7 @@ class Address {
 }
 
 class User {
-  name = '';
+  name = "";
   address = new Address();
 
   greet() {

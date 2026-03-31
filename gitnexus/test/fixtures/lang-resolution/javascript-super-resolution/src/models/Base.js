@@ -1,4 +1,6 @@
 class BaseModel {
-  save() { return true; }
+  save() {
+    return true;
+  }
 }
 module.exports = { BaseModel };

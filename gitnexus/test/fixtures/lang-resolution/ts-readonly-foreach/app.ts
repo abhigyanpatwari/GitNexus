@@ -1,5 +1,5 @@
-import { User } from './models/user';
-import { Repo } from './models/repo';
+import { User } from "./models/user";
+import { Repo } from "./models/repo";
 
 function processUsers(users: readonly User[]) {
   for (const user of users) {

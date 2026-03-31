@@ -1,8 +1,14 @@
-import process from 'node:process';
-import type { Transport, TransportSendOptions } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { JSONRPCMessageSchema, type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import process from "node:process";
+import type {
+  Transport,
+  TransportSendOptions,
+} from "@modelcontextprotocol/sdk/shared/transport.js";
+import {
+  JSONRPCMessageSchema,
+  type JSONRPCMessage,
+} from "@modelcontextprotocol/sdk/types.js";
 
-export type StdioFraming = 'content-length' | 'newline';
+export type StdioFraming = "content-length" | "newline";
 
 function deserializeMessage(raw: string): JSONRPCMessage {
   return JSONRPCMessageSchema.parse(JSON.parse(raw));
@@ -14,16 +20,18 @@ function serializeNewlineMessage(message: JSONRPCMessage): string {
 
 function serializeContentLengthMessage(message: JSONRPCMessage): string {
   const body = JSON.stringify(message);
-  return `Content-Length: ${Buffer.byteLength(body, 'utf8')}\r\n\r\n${body}`;
+  return `Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`;
 }
 
-function findHeaderEnd(buffer: Buffer): { index: number; separatorLength: number } | null {
-  const crlfEnd = buffer.indexOf('\r\n\r\n');
+function findHeaderEnd(
+  buffer: Buffer,
+): { index: number; separatorLength: number } | null {
+  const crlfEnd = buffer.indexOf("\r\n\r\n");
   if (crlfEnd !== -1) {
     return { index: crlfEnd, separatorLength: 4 };
   }
 
-  const lfEnd = buffer.indexOf('\n\n');
+  const lfEnd = buffer.indexOf("\n\n");
   if (lfEnd !== -1) {
     return { index: lfEnd, separatorLength: 2 };
   }
@@ -35,7 +43,7 @@ function looksLikeContentLength(buffer: Buffer): boolean {
   if (buffer.length < 14) {
     return false;
   }
-  const probe = buffer.toString('utf8', 0, Math.min(buffer.length, 32));
+  const probe = buffer.toString("utf8", 0, Math.min(buffer.length, 32));
   return /^content-length\s*:/i.test(probe);
 }
 
@@ -56,9 +64,15 @@ export class CompatibleStdioServerTransport implements Transport {
   ) {}
 
   private readonly _ondata = (chunk: Buffer) => {
-    this._readBuffer = this._readBuffer ? Buffer.concat([this._readBuffer, chunk]) : chunk;
+    this._readBuffer = this._readBuffer
+      ? Buffer.concat([this._readBuffer, chunk])
+      : chunk;
     if (this._readBuffer.length > MAX_BUFFER_SIZE) {
-      this.onerror?.(new Error(`Read buffer exceeded maximum size (${MAX_BUFFER_SIZE} bytes)`));
+      this.onerror?.(
+        new Error(
+          `Read buffer exceeded maximum size (${MAX_BUFFER_SIZE} bytes)`,
+        ),
+      );
       this.discardBufferedInput();
       return;
     }
@@ -71,12 +85,12 @@ export class CompatibleStdioServerTransport implements Transport {
 
   async start() {
     if (this._started) {
-      throw new Error('CompatibleStdioServerTransport already started!');
+      throw new Error("CompatibleStdioServerTransport already started!");
     }
 
     this._started = true;
-    this._stdin.on('data', this._ondata);
-    this._stdin.on('error', this._onerror);
+    this._stdin.on("data", this._ondata);
+    this._stdin.on("error", this._onerror);
   }
 
   private detectFraming(): StdioFraming | null {
@@ -86,11 +100,11 @@ export class CompatibleStdioServerTransport implements Transport {
 
     const firstByte = this._readBuffer[0];
     if (firstByte === 0x7b || firstByte === 0x5b) {
-      return 'newline';
+      return "newline";
     }
 
     if (looksLikeContentLength(this._readBuffer)) {
-      return 'content-length';
+      return "content-length";
     }
 
     return null;
@@ -112,23 +126,25 @@ export class CompatibleStdioServerTransport implements Transport {
     }
 
     const headerText = this._readBuffer
-      .toString('utf8', 0, header.index)
-      .replace(/\r\n/g, '\n')
-      .replace(/\r/g, '\n');
+      .toString("utf8", 0, header.index)
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n");
     const match = headerText.match(/(?:^|\n)content-length\s*:\s*(\d+)/i);
     if (!match) {
       this.discardBufferedInput();
-      throw new Error('Missing Content-Length header from MCP client');
+      throw new Error("Missing Content-Length header from MCP client");
     }
 
     const contentLength = Number.parseInt(match[1], 10);
     if (!Number.isFinite(contentLength) || contentLength < 0) {
       this.discardBufferedInput();
-      throw new Error('Invalid Content-Length header from MCP client');
+      throw new Error("Invalid Content-Length header from MCP client");
     }
     if (contentLength > MAX_BUFFER_SIZE) {
       this.discardBufferedInput();
-      throw new Error(`Content-Length ${contentLength} exceeds maximum allowed size (${MAX_BUFFER_SIZE} bytes)`);
+      throw new Error(
+        `Content-Length ${contentLength} exceeds maximum allowed size (${MAX_BUFFER_SIZE} bytes)`,
+      );
     }
     const bodyStart = header.index + header.separatorLength;
     const bodyEnd = bodyStart + contentLength;
@@ -136,7 +152,7 @@ export class CompatibleStdioServerTransport implements Transport {
       return null;
     }
 
-    const body = this._readBuffer.toString('utf8', bodyStart, bodyEnd);
+    const body = this._readBuffer.toString("utf8", bodyStart, bodyEnd);
     this._readBuffer = this._readBuffer.subarray(bodyEnd);
     return deserializeMessage(body);
   }
@@ -147,12 +163,14 @@ export class CompatibleStdioServerTransport implements Transport {
     }
 
     while (true) {
-      const newlineIndex = this._readBuffer.indexOf('\n');
+      const newlineIndex = this._readBuffer.indexOf("\n");
       if (newlineIndex === -1) {
         return null;
       }
 
-      const line = this._readBuffer.toString('utf8', 0, newlineIndex).replace(/\r$/, '');
+      const line = this._readBuffer
+        .toString("utf8", 0, newlineIndex)
+        .replace(/\r$/, "");
       this._readBuffer = this._readBuffer.subarray(newlineIndex + 1);
       if (line.trim().length === 0) {
         continue;
@@ -174,7 +192,7 @@ export class CompatibleStdioServerTransport implements Transport {
       }
     }
 
-    return this._framing === 'content-length'
+    return this._framing === "content-length"
       ? this.readContentLengthMessage()
       : this.readNewlineMessage();
   }
@@ -195,10 +213,10 @@ export class CompatibleStdioServerTransport implements Transport {
   }
 
   async close() {
-    this._stdin.off('data', this._ondata);
-    this._stdin.off('error', this._onerror);
+    this._stdin.off("data", this._ondata);
+    this._stdin.off("error", this._onerror);
 
-    const remainingDataListeners = this._stdin.listenerCount('data');
+    const remainingDataListeners = this._stdin.listenerCount("data");
     if (remainingDataListeners === 0) {
       this._stdin.pause();
     }
@@ -211,27 +229,28 @@ export class CompatibleStdioServerTransport implements Transport {
   send(message: JSONRPCMessage, _options?: TransportSendOptions) {
     return new Promise<void>((resolve, reject) => {
       if (!this._started) {
-        reject(new Error('Transport is closed'));
+        reject(new Error("Transport is closed"));
         return;
       }
 
-      const payload = this._framing === 'newline'
-        ? serializeNewlineMessage(message)
-        : serializeContentLengthMessage(message);
+      const payload =
+        this._framing === "newline"
+          ? serializeNewlineMessage(message)
+          : serializeContentLengthMessage(message);
 
       const onError = (error: Error) => {
-        this._stdout.removeListener('error', onError);
+        this._stdout.removeListener("error", onError);
         reject(error);
       };
 
-      this._stdout.on('error', onError);
+      this._stdout.on("error", onError);
 
       if (this._stdout.write(payload)) {
-        this._stdout.removeListener('error', onError);
+        this._stdout.removeListener("error", onError);
         resolve();
       } else {
-        this._stdout.once('drain', () => {
-          this._stdout.removeListener('error', onError);
+        this._stdout.once("drain", () => {
+          this._stdout.removeListener("error", onError);
           resolve();
         });
       }

@@ -3,19 +3,19 @@
  * Assembled here into a dispatch map keyed by SupportedLanguages.
  */
 
-import { SupportedLanguages } from '../../../config/supported-languages.js';
-import type { LanguageTypeConfig } from './types.js';
+import { SupportedLanguages } from "../../../config/supported-languages.js";
+import type { LanguageTypeConfig } from "./types.js";
 
-import { typeConfig as typescriptConfig } from './typescript.js';
-import { javaTypeConfig, kotlinTypeConfig } from './jvm.js';
-import { typeConfig as csharpConfig } from './csharp.js';
-import { typeConfig as goConfig } from './go.js';
-import { typeConfig as rustConfig } from './rust.js';
-import { typeConfig as pythonConfig } from './python.js';
-import { typeConfig as swiftConfig } from './swift.js';
-import { typeConfig as cCppConfig } from './c-cpp.js';
-import { typeConfig as phpConfig } from './php.js';
-import { typeConfig as rubyConfig } from './ruby.js';
+import { typeConfig as typescriptConfig } from "./typescript.js";
+import { javaTypeConfig, kotlinTypeConfig } from "./jvm.js";
+import { typeConfig as csharpConfig } from "./csharp.js";
+import { typeConfig as goConfig } from "./go.js";
+import { typeConfig as rustConfig } from "./rust.js";
+import { typeConfig as pythonConfig } from "./python.js";
+import { typeConfig as swiftConfig } from "./swift.js";
+import { typeConfig as cCppConfig } from "./c-cpp.js";
+import { typeConfig as phpConfig } from "./php.js";
+import { typeConfig as rubyConfig } from "./ruby.js";
 
 export const typeConfigs = {
   [SupportedLanguages.JavaScript]: typescriptConfig,
@@ -41,11 +41,11 @@ export type {
   ForLoopExtractor,
   PendingAssignmentExtractor,
   PatternBindingExtractor,
-} from './types.js';
-export { 
+} from "./types.js";
+export {
   TYPED_PARAMETER_TYPES,
   extractSimpleTypeName,
   extractGenericTypeArgs,
   extractVarName,
-  extractRubyConstructorAssignment
-} from './shared.js';
+  extractRubyConstructorAssignment,
+} from "./shared.js";

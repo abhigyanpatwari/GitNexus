@@ -14,12 +14,12 @@ export function resolveRustImport(
 ): string | null {
   let rustPath: string;
 
-  if (importPath.startsWith('crate::')) {
+  if (importPath.startsWith("crate::")) {
     // crate:: resolves from src/ directory (standard Rust layout)
-    rustPath = importPath.slice(7).replace(/::/g, '/');
+    rustPath = importPath.slice(7).replace(/::/g, "/");
 
     // Try from src/ (standard layout)
-    const fromSrc = tryRustModulePath('src/' + rustPath, allFiles);
+    const fromSrc = tryRustModulePath("src/" + rustPath, allFiles);
     if (fromSrc) return fromSrc;
 
     // Try from repo root (non-standard)
@@ -29,27 +29,27 @@ export function resolveRustImport(
     return null;
   }
 
-  if (importPath.startsWith('super::')) {
+  if (importPath.startsWith("super::")) {
     // super:: = parent directory of current file's module
-    const currentDir = currentFile.split('/').slice(0, -1);
+    const currentDir = currentFile.split("/").slice(0, -1);
     currentDir.pop(); // Go up one level for super::
-    rustPath = importPath.slice(7).replace(/::/g, '/');
-    const fullPath = [...currentDir, rustPath].join('/');
+    rustPath = importPath.slice(7).replace(/::/g, "/");
+    const fullPath = [...currentDir, rustPath].join("/");
     return tryRustModulePath(fullPath, allFiles);
   }
 
-  if (importPath.startsWith('self::')) {
+  if (importPath.startsWith("self::")) {
     // self:: = current module's directory
-    const currentDir = currentFile.split('/').slice(0, -1);
-    rustPath = importPath.slice(6).replace(/::/g, '/');
-    const fullPath = [...currentDir, rustPath].join('/');
+    const currentDir = currentFile.split("/").slice(0, -1);
+    rustPath = importPath.slice(6).replace(/::/g, "/");
+    const fullPath = [...currentDir, rustPath].join("/");
     return tryRustModulePath(fullPath, allFiles);
   }
 
   // Bare path without prefix (e.g., from a use in a nested module)
   // Convert :: to / and try suffix matching
-  if (importPath.includes('::')) {
-    rustPath = importPath.replace(/::/g, '/');
+  if (importPath.includes("::")) {
+    rustPath = importPath.replace(/::/g, "/");
     return tryRustModulePath(rustPath, allFiles);
   }
 
@@ -61,21 +61,24 @@ export function resolveRustImport(
  * Tries: path.rs, path/mod.rs, and with the last segment stripped
  * (last segment might be a symbol name, not a module).
  */
-export function tryRustModulePath(modulePath: string, allFiles: Set<string>): string | null {
+export function tryRustModulePath(
+  modulePath: string,
+  allFiles: Set<string>,
+): string | null {
   // Try direct: path.rs
-  if (allFiles.has(modulePath + '.rs')) return modulePath + '.rs';
+  if (allFiles.has(modulePath + ".rs")) return modulePath + ".rs";
   // Try directory: path/mod.rs
-  if (allFiles.has(modulePath + '/mod.rs')) return modulePath + '/mod.rs';
+  if (allFiles.has(modulePath + "/mod.rs")) return modulePath + "/mod.rs";
   // Try path/lib.rs (for crate root)
-  if (allFiles.has(modulePath + '/lib.rs')) return modulePath + '/lib.rs';
+  if (allFiles.has(modulePath + "/lib.rs")) return modulePath + "/lib.rs";
 
   // The last segment might be a symbol (function, struct, etc.), not a module.
   // Strip it and try again.
-  const lastSlash = modulePath.lastIndexOf('/');
+  const lastSlash = modulePath.lastIndexOf("/");
   if (lastSlash > 0) {
     const parentPath = modulePath.substring(0, lastSlash);
-    if (allFiles.has(parentPath + '.rs')) return parentPath + '.rs';
-    if (allFiles.has(parentPath + '/mod.rs')) return parentPath + '/mod.rs';
+    if (allFiles.has(parentPath + ".rs")) return parentPath + ".rs";
+    if (allFiles.has(parentPath + "/mod.rs")) return parentPath + "/mod.rs";
   }
 
   return null;

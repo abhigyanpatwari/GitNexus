@@ -25,50 +25,67 @@
  * TODO: Remove this script when tree-sitter is upgraded to ^0.22.x,
  *       which allows using tree-sitter-swift@0.7.1+ directly.
  */
-const fs = require('fs');
-const path = require('path');
-const { execSync } = require('child_process');
+const fs = require("fs");
+const path = require("path");
+const { execSync } = require("child_process");
 
-const swiftDir = path.join(__dirname, '..', 'node_modules', 'tree-sitter-swift');
-const bindingPath = path.join(swiftDir, 'binding.gyp');
+const swiftDir = path.join(
+  __dirname,
+  "..",
+  "node_modules",
+  "tree-sitter-swift",
+);
+const bindingPath = path.join(swiftDir, "binding.gyp");
 
 try {
   if (!fs.existsSync(bindingPath)) {
     process.exit(0);
   }
 
-  const content = fs.readFileSync(bindingPath, 'utf8');
+  const content = fs.readFileSync(bindingPath, "utf8");
   let needsRebuild = false;
 
   if (content.includes('"actions"')) {
     // Strip Python-style comments (#) before JSON parsing
-    const cleaned = content.replace(/#[^\n]*/g, '');
+    const cleaned = content.replace(/#[^\n]*/g, "");
     const gyp = JSON.parse(cleaned);
 
     if (gyp.targets && gyp.targets[0] && gyp.targets[0].actions) {
       delete gyp.targets[0].actions;
-      fs.writeFileSync(bindingPath, JSON.stringify(gyp, null, 2) + '\n');
-      console.log('[tree-sitter-swift] Patched binding.gyp (removed actions array)');
+      fs.writeFileSync(bindingPath, JSON.stringify(gyp, null, 2) + "\n");
+      console.log(
+        "[tree-sitter-swift] Patched binding.gyp (removed actions array)",
+      );
       needsRebuild = true;
     }
   }
 
   // Check if native binding exists
-  const bindingNode = path.join(swiftDir, 'build', 'Release', 'tree_sitter_swift_binding.node');
+  const bindingNode = path.join(
+    swiftDir,
+    "build",
+    "Release",
+    "tree_sitter_swift_binding.node",
+  );
   if (!fs.existsSync(bindingNode)) {
     needsRebuild = true;
   }
 
   if (needsRebuild) {
-    console.log('[tree-sitter-swift] Rebuilding native binding...');
-    execSync('npx node-gyp rebuild', {
+    console.log("[tree-sitter-swift] Rebuilding native binding...");
+    execSync("npx node-gyp rebuild", {
       cwd: swiftDir,
-      stdio: 'pipe',
+      stdio: "pipe",
       timeout: 120000,
     });
-    console.log('[tree-sitter-swift] Native binding built successfully');
+    console.log("[tree-sitter-swift] Native binding built successfully");
   }
 } catch (err) {
-  console.warn('[tree-sitter-swift] Could not build native binding:', err.message);
-  console.warn('[tree-sitter-swift] You may need to manually run: cd node_modules/tree-sitter-swift && npx node-gyp rebuild');
+  console.warn(
+    "[tree-sitter-swift] Could not build native binding:",
+    err.message,
+  );
+  console.warn(
+    "[tree-sitter-swift] You may need to manually run: cd node_modules/tree-sitter-swift && npx node-gyp rebuild",
+  );
 }

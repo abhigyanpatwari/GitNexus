@@ -1,8 +1,8 @@
-import fs from 'fs/promises';
-import path from 'path';
-import type { ImportConfigs } from './import-resolution.js';
+import fs from "fs/promises";
+import path from "path";
+import type { ImportConfigs } from "./import-resolution.js";
 
-const isDev = process.env.NODE_ENV === 'development';
+const isDev = process.env.NODE_ENV === "development";
 
 // ============================================================================
 // LANGUAGE-SPECIFIC CONFIG TYPES
@@ -50,20 +50,28 @@ export interface SwiftPackageConfig {
  * Parse tsconfig.json to extract path aliases.
  * Tries tsconfig.json, tsconfig.app.json, tsconfig.base.json in order.
  */
-export async function loadTsconfigPaths(repoRoot: string): Promise<TsconfigPaths | null> {
-  const candidates = ['tsconfig.json', 'tsconfig.app.json', 'tsconfig.base.json'];
+export async function loadTsconfigPaths(
+  repoRoot: string,
+): Promise<TsconfigPaths | null> {
+  const candidates = [
+    "tsconfig.json",
+    "tsconfig.app.json",
+    "tsconfig.base.json",
+  ];
 
   for (const filename of candidates) {
     try {
       const tsconfigPath = path.join(repoRoot, filename);
-      const raw = await fs.readFile(tsconfigPath, 'utf-8');
+      const raw = await fs.readFile(tsconfigPath, "utf-8");
       // Strip JSON comments (// and /* */ style) for robustness
-      const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+      const stripped = raw
+        .replace(/\/\/.*$/gm, "")
+        .replace(/\/\*[\s\S]*?\*\//g, "");
       const tsconfig = JSON.parse(stripped);
       const compilerOptions = tsconfig.compilerOptions;
       if (!compilerOptions?.paths) continue;
 
-      const baseUrl = compilerOptions.baseUrl || '.';
+      const baseUrl = compilerOptions.baseUrl || ".";
       const aliases = new Map<string, string>();
 
       for (const [pattern, targets] of Object.entries(compilerOptions.paths)) {
@@ -71,15 +79,21 @@ export async function loadTsconfigPaths(repoRoot: string): Promise<TsconfigPaths
         const target = targets[0] as string;
 
         // Convert glob patterns: "@/*" -> "@/", "src/*" -> "src/"
-        const aliasPrefix = pattern.endsWith('/*') ? pattern.slice(0, -1) : pattern;
-        const targetPrefix = target.endsWith('/*') ? target.slice(0, -1) : target;
+        const aliasPrefix = pattern.endsWith("/*")
+          ? pattern.slice(0, -1)
+          : pattern;
+        const targetPrefix = target.endsWith("/*")
+          ? target.slice(0, -1)
+          : target;
 
         aliases.set(aliasPrefix, targetPrefix);
       }
 
       if (aliases.size > 0) {
         if (isDev) {
-          console.log(`📦 Loaded ${aliases.size} path aliases from ${filename}`);
+          console.log(
+            `📦 Loaded ${aliases.size} path aliases from ${filename}`,
+          );
         }
         return { aliases, baseUrl };
       }
@@ -94,10 +108,12 @@ export async function loadTsconfigPaths(repoRoot: string): Promise<TsconfigPaths
 /**
  * Parse go.mod to extract module path.
  */
-export async function loadGoModulePath(repoRoot: string): Promise<GoModuleConfig | null> {
+export async function loadGoModulePath(
+  repoRoot: string,
+): Promise<GoModuleConfig | null> {
   try {
-    const goModPath = path.join(repoRoot, 'go.mod');
-    const content = await fs.readFile(goModPath, 'utf-8');
+    const goModPath = path.join(repoRoot, "go.mod");
+    const content = await fs.readFile(goModPath, "utf-8");
     const match = content.match(/^module\s+(\S+)/m);
     if (match) {
       if (isDev) {
@@ -112,19 +128,21 @@ export async function loadGoModulePath(repoRoot: string): Promise<GoModuleConfig
 }
 
 /** Parse composer.json to extract PSR-4 autoload mappings (including autoload-dev). */
-export async function loadComposerConfig(repoRoot: string): Promise<ComposerConfig | null> {
+export async function loadComposerConfig(
+  repoRoot: string,
+): Promise<ComposerConfig | null> {
   try {
-    const composerPath = path.join(repoRoot, 'composer.json');
-    const raw = await fs.readFile(composerPath, 'utf-8');
+    const composerPath = path.join(repoRoot, "composer.json");
+    const raw = await fs.readFile(composerPath, "utf-8");
     const composer = JSON.parse(raw);
-    const psr4Raw = composer.autoload?.['psr-4'] ?? {};
-    const psr4Dev = composer['autoload-dev']?.['psr-4'] ?? {};
+    const psr4Raw = composer.autoload?.["psr-4"] ?? {};
+    const psr4Dev = composer["autoload-dev"]?.["psr-4"] ?? {};
     const merged = { ...psr4Raw, ...psr4Dev };
 
     const psr4 = new Map<string, string>();
     for (const [ns, dir] of Object.entries(merged)) {
-      const nsNorm = (ns as string).replace(/\\+$/, '');
-      const dirNorm = (dir as string).replace(/\\/g, '/').replace(/\/+$/, '');
+      const nsNorm = (ns as string).replace(/\\+$/, "");
+      const dirNorm = (dir as string).replace(/\\/g, "/").replace(/\/+$/, "");
       psr4.set(nsNorm, dirNorm);
     }
 
@@ -141,10 +159,14 @@ export async function loadComposerConfig(repoRoot: string): Promise<ComposerConf
  * Parse .csproj files to extract RootNamespace.
  * Scans the repo root for .csproj files and returns configs for each.
  */
-export async function loadCSharpProjectConfig(repoRoot: string): Promise<CSharpProjectConfig[]> {
+export async function loadCSharpProjectConfig(
+  repoRoot: string,
+): Promise<CSharpProjectConfig[]> {
   const configs: CSharpProjectConfig[] = [];
   // BFS scan for .csproj files up to 5 levels deep, cap at 100 dirs to avoid runaway scanning
-  const scanQueue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
+  const scanQueue: { dir: string; depth: number }[] = [
+    { dir: repoRoot, depth: 0 },
+  ];
   const maxDepth = 5;
   const maxDirs = 100;
   let dirsScanned = 0;
@@ -157,21 +179,31 @@ export async function loadCSharpProjectConfig(repoRoot: string): Promise<CSharpP
       for (const entry of entries) {
         if (entry.isDirectory() && depth < maxDepth) {
           // Skip common non-project directories
-          if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'bin' || entry.name === 'obj') continue;
+          if (
+            entry.name === "node_modules" ||
+            entry.name === ".git" ||
+            entry.name === "bin" ||
+            entry.name === "obj"
+          )
+            continue;
           scanQueue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
         }
-        if (entry.isFile() && entry.name.endsWith('.csproj')) {
+        if (entry.isFile() && entry.name.endsWith(".csproj")) {
           try {
             const csprojPath = path.join(dir, entry.name);
-            const content = await fs.readFile(csprojPath, 'utf-8');
-            const nsMatch = content.match(/<RootNamespace>\s*([^<]+)\s*<\/RootNamespace>/);
+            const content = await fs.readFile(csprojPath, "utf-8");
+            const nsMatch = content.match(
+              /<RootNamespace>\s*([^<]+)\s*<\/RootNamespace>/,
+            );
             const rootNamespace = nsMatch
               ? nsMatch[1].trim()
-              : entry.name.replace(/\.csproj$/, '');
-            const projectDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
+              : entry.name.replace(/\.csproj$/, "");
+            const projectDir = path.relative(repoRoot, dir).replace(/\\/g, "/");
             configs.push({ rootNamespace, projectDir });
             if (isDev) {
-              console.log(`📦 Loaded C# project: ${entry.name} (namespace: ${rootNamespace}, dir: ${projectDir})`);
+              console.log(
+                `📦 Loaded C# project: ${entry.name} (namespace: ${rootNamespace}, dir: ${projectDir})`,
+              );
             }
           } catch {
             // Can't read .csproj
@@ -185,20 +217,22 @@ export async function loadCSharpProjectConfig(repoRoot: string): Promise<CSharpP
   return configs;
 }
 
-export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPackageConfig | null> {
+export async function loadSwiftPackageConfig(
+  repoRoot: string,
+): Promise<SwiftPackageConfig | null> {
   // Swift imports are module-name based (e.g., `import SiuperModel`)
   // SPM convention: Sources/<TargetName>/ or Package/Sources/<TargetName>/
   // We scan for these directories to build a target map
   const targets = new Map<string, string>();
 
-  const sourceDirs = ['Sources', 'Package/Sources', 'src'];
+  const sourceDirs = ["Sources", "Package/Sources", "src"];
   for (const sourceDir of sourceDirs) {
     try {
       const fullPath = path.join(repoRoot, sourceDir);
       const entries = await fs.readdir(fullPath, { withFileTypes: true });
       for (const entry of entries) {
         if (entry.isDirectory()) {
-          targets.set(entry.name, sourceDir + '/' + entry.name);
+          targets.set(entry.name, sourceDir + "/" + entry.name);
         }
       }
     } catch {
@@ -220,7 +254,9 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
 // ============================================================================
 
 /** Load all language-specific configs once for an ingestion run. */
-export async function loadImportConfigs(repoRoot: string): Promise<ImportConfigs> {
+export async function loadImportConfigs(
+  repoRoot: string,
+): Promise<ImportConfigs> {
   return {
     tsconfigPaths: await loadTsconfigPaths(repoRoot),
     goModule: await loadGoModulePath(repoRoot),

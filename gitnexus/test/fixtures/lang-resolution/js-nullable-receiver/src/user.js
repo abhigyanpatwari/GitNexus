@@ -1,4 +1,6 @@
 class User {
-  save() { return true; }
+  save() {
+    return true;
+  }
 }
 module.exports = { User };

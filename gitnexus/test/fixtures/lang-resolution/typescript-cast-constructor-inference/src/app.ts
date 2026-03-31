@@ -1,5 +1,5 @@
-import { User } from './user';
-import { Repo } from './repo';
+import { User } from "./user";
+import { Repo } from "./repo";
 
 function process() {
   const user = new User() as any;

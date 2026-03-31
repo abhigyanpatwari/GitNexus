@@ -1,4 +1,4 @@
-const { User, Config } = require('./models');
+const { User, Config } = require("./models");
 
 function processUser(user) {
   user.address.save();

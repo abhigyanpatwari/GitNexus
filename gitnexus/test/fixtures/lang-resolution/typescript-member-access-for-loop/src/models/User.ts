@@ -1,3 +1,3 @@
 export class User {
-    save() {}
+  save() {}
 }

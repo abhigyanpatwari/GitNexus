@@ -8,10 +8,10 @@ Evaluate whether GitNexus code intelligence improves AI agent performance on rea
 
 **Evaluation modes:**
 
-| Mode | What the agent gets |
-|------|-------------------|
-| `baseline` | Standard bash tools (grep, find, cat, sed) — control group |
-| `native` | Baseline + explicit GitNexus tools via eval-server (~100ms) |
+| Mode             | What the agent gets                                                                     |
+| ---------------- | --------------------------------------------------------------------------------------- |
+| `baseline`       | Standard bash tools (grep, find, cat, sed) — control group                              |
+| `native`         | Baseline + explicit GitNexus tools via eval-server (~100ms)                             |
 | `native_augment` | Native tools + grep results automatically enriched with graph context (**recommended**) |
 
 > **Recommended**: Use `native_augment` mode. It mirrors the Claude Code model — the agent gets both explicit GitNexus tools (fast bash commands) AND automatic enrichment of grep results with callers, callees, and execution flows. The agent decides when to use explicit tools vs rely on enriched search output.
@@ -139,6 +139,7 @@ eval/
 ### Template structure
 
 mini-swe-agent requires two Jinja templates:
+
 - **system_template** → system message: persona, format rules, tool reference (static)
 - **instance_template** → first user message: task, workflow, rules, examples (contains `{{task}}`)
 
@@ -167,6 +168,7 @@ Each tool script in `/usr/local/bin/` is standalone — no sourcing, no env inhe
 ### Eval-server
 
 The eval-server is a lightweight HTTP daemon that:
+
 - Keeps LadybugDB warm in memory (no cold start per tool call)
 - Returns LLM-friendly text (not raw JSON — saves tokens)
 - Includes next-step hints to guide tool chaining (query → context → impact → fix)
@@ -188,7 +190,7 @@ Create a YAML file in `configs/models/`:
 # configs/models/my-model.yaml
 model:
   model_name: "openrouter/provider/model-name"
-  cost_tracking: "ignore_errors"  # if not in litellm's cost DB
+  cost_tracking: "ignore_errors" # if not in litellm's cost DB
   model_kwargs:
     max_tokens: 8192
     temperature: 0
@@ -198,13 +200,13 @@ The model name follows [litellm conventions](https://docs.litellm.ai/docs/provid
 
 ## Metrics Collected
 
-| Metric | Description |
-|--------|-------------|
-| Patch Rate | % of instances where agent produced a patch |
-| Resolve Rate | % of instances where patch passes tests (requires --swebench-eval) |
-| Total Cost | API cost across all instances |
-| Avg Cost/Instance | Cost efficiency |
-| API Calls | Number of LLM calls |
-| GN Tool Calls | How many GitNexus tools the agent used |
-| Augment Hits | How many grep/find results got enriched |
-| Augment Hit Rate | % of search commands that got useful enrichment |
+| Metric            | Description                                                        |
+| ----------------- | ------------------------------------------------------------------ |
+| Patch Rate        | % of instances where agent produced a patch                        |
+| Resolve Rate      | % of instances where patch passes tests (requires --swebench-eval) |
+| Total Cost        | API cost across all instances                                      |
+| Avg Cost/Instance | Cost efficiency                                                    |
+| API Calls         | Number of LLM calls                                                |
+| GN Tool Calls     | How many GitNexus tools the agent used                             |
+| Augment Hits      | How many grep/find results got enriched                            |
+| Augment Hit Rate  | % of search commands that got useful enrichment                    |

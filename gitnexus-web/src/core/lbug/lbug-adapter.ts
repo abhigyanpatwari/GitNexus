@@ -7,15 +7,15 @@
  * Multi-table schema: separate tables for File, Function, Class, etc.
  */
 
-import { KnowledgeGraph } from '../graph/types';
+import { KnowledgeGraph } from "../graph/types";
 import {
   NODE_TABLES,
   REL_TABLE_NAME,
   SCHEMA_QUERIES,
   EMBEDDING_TABLE_NAME,
   NodeTableName,
-} from './schema';
-import { generateAllCSVs } from './csv-generator';
+} from "./schema";
+import { generateAllCSVs } from "./csv-generator";
 
 // Holds the reference to the dynamically loaded module
 let lbug: any = null;
@@ -29,10 +29,10 @@ export const initLbug = async () => {
   if (conn) return { db, conn, lbug };
 
   try {
-    if (import.meta.env.DEV) console.log('🚀 Initializing LadybugDB...');
+    if (import.meta.env.DEV) console.log("🚀 Initializing LadybugDB...");
 
     // 1. Dynamic Import (Fixes the "not a function" bundler issue)
-    const lbugModule = await import('@ladybugdb/wasm-core');
+    const lbugModule = await import("@ladybugdb/wasm-core");
 
     // 2. Handle Vite/Webpack "default" wrapping
     lbug = lbugModule.default || lbugModule;
@@ -42,10 +42,10 @@ export const initLbug = async () => {
 
     // 4. Create Database with 512MB buffer manager
     const BUFFER_POOL_SIZE = 512 * 1024 * 1024; // 512MB
-    db = new lbug.Database(':memory:', BUFFER_POOL_SIZE);
+    db = new lbug.Database(":memory:", BUFFER_POOL_SIZE);
     conn = new lbug.Connection(db);
 
-    if (import.meta.env.DEV) console.log('✅ LadybugDB WASM Initialized');
+    if (import.meta.env.DEV) console.log("✅ LadybugDB WASM Initialized");
 
     // 5. Initialize Schema (all node tables, then rel tables, then embedding table)
     for (const schemaQuery of SCHEMA_QUERIES) {
@@ -54,16 +54,18 @@ export const initLbug = async () => {
       } catch (e) {
         // Schema might already exist, skip
         if (import.meta.env.DEV) {
-          console.warn('Schema creation skipped (may already exist):', e);
+          console.warn("Schema creation skipped (may already exist):", e);
         }
       }
     }
 
-    if (import.meta.env.DEV) console.log('✅ LadybugDB Multi-Table Schema Created');
+    if (import.meta.env.DEV)
+      console.log("✅ LadybugDB Multi-Table Schema Created");
 
     return { db, conn, lbug };
   } catch (error) {
-    if (import.meta.env.DEV) console.error('❌ LadybugDB Initialization Failed:', error);
+    if (import.meta.env.DEV)
+      console.error("❌ LadybugDB Initialization Failed:", error);
     throw error;
   }
 };
@@ -74,12 +76,13 @@ export const initLbug = async () => {
  */
 export const loadGraphToLbug = async (
   graph: KnowledgeGraph,
-  fileContents: Map<string, string>
+  fileContents: Map<string, string>,
 ) => {
   const { conn, lbug } = await initLbug();
 
   try {
-    if (import.meta.env.DEV) console.log(`LadybugDB: Generating CSVs for ${graph.nodeCount} nodes...`);
+    if (import.meta.env.DEV)
+      console.log(`LadybugDB: Generating CSVs for ${graph.nodeCount} nodes...`);
 
     // 1. Generate all CSVs (per-table)
     const csvData = generateAllCSVs(graph, fileContents);
@@ -90,20 +93,27 @@ export const loadGraphToLbug = async (
     const nodeFiles: Array<{ table: NodeTableName; path: string }> = [];
     for (const [tableName, csv] of csvData.nodes.entries()) {
       // Skip empty CSVs (only header row)
-      if (csv.split('\n').length <= 1) continue;
+      if (csv.split("\n").length <= 1) continue;
 
       const path = `/${tableName.toLowerCase()}.csv`;
-      try { await fs.unlink(path); } catch {}
+      try {
+        await fs.unlink(path);
+      } catch {}
       await fs.writeFile(path, csv);
       nodeFiles.push({ table: tableName, path });
     }
 
     // 3. Parse relation CSV and prepare for INSERT (COPY FROM doesn't work with multi-pair tables)
-    const relLines = csvData.relCSV.split('\n').slice(1).filter(line => line.trim());
+    const relLines = csvData.relCSV
+      .split("\n")
+      .slice(1)
+      .filter((line) => line.trim());
     const relCount = relLines.length;
 
     if (import.meta.env.DEV) {
-      console.log(`LadybugDB: Wrote ${nodeFiles.length} node CSVs, ${relCount} relations to insert`);
+      console.log(
+        `LadybugDB: Wrote ${nodeFiles.length} node CSVs, ${relCount} relations to insert`,
+      );
     }
 
     // 4. COPY all node tables (must complete before rels due to FK constraints)
@@ -117,9 +127,9 @@ export const loadGraphToLbug = async (
     const validTables = new Set<string>(NODE_TABLES as readonly string[]);
 
     const getNodeLabel = (nodeId: string): string => {
-      if (nodeId.startsWith('comm_')) return 'Community';
-      if (nodeId.startsWith('proc_')) return 'Process';
-      return nodeId.split(':')[0];
+      if (nodeId.startsWith("comm_")) return "Community";
+      if (nodeId.startsWith("proc_")) return "Process";
+      return nodeId.split(":")[0];
     };
 
     // All multi-language tables are created with backticks - must always reference them with backticks
@@ -133,7 +143,9 @@ export const loadGraphToLbug = async (
     for (const line of relLines) {
       try {
         // Format: "from","to","type",confidence,"reason",step
-        const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)",([0-9-]+)/);
+        const match = line.match(
+          /"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)",([0-9-]+)/,
+        );
         if (!match) continue;
 
         const [, fromId, toId, relType, confidenceStr, reason, stepStr] = match;
@@ -160,7 +172,9 @@ export const loadGraphToLbug = async (
         insertedRels++;
       } catch (err) {
         skippedRels++;
-        const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)"/);
+        const match = line.match(
+          /"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)"/,
+        );
         if (match) {
           const [, fromId, toId, relType] = match;
           const fromLabel = getNodeLabel(fromId);
@@ -169,7 +183,9 @@ export const loadGraphToLbug = async (
           skippedRelStats.set(key, (skippedRelStats.get(key) || 0) + 1);
 
           if (import.meta.env.DEV) {
-            console.warn(`⚠️ Skipped: ${key} | "${fromId}" → "${toId}" | ${err instanceof Error ? err.message : String(err)}`);
+            console.warn(
+              `⚠️ Skipped: ${key} | "${fromId}" → "${toId}" | ${err instanceof Error ? err.message : String(err)}`,
+            );
           }
         }
       }
@@ -181,7 +197,10 @@ export const loadGraphToLbug = async (
         const topSkipped = Array.from(skippedRelStats.entries())
           .sort((a, b) => b[1] - a[1])
           .slice(0, 10);
-        console.warn(`LadybugDB: Skipped ${skippedRels}/${relCount} relations (top by kind/pair):`, topSkipped);
+        console.warn(
+          `LadybugDB: Skipped ${skippedRels}/${relCount} relations (top by kind/pair):`,
+          topSkipped,
+        );
       }
     }
 
@@ -189,8 +208,13 @@ export const loadGraphToLbug = async (
     let totalNodes = 0;
     for (const tableName of NODE_TABLES) {
       try {
-        const countRes = await conn.query(`MATCH (n:${tableName}) RETURN count(n) AS cnt`);
-        const countRows = await (countRes.getAll?.() ?? countRes.getAllObjects?.() ?? countRes.getAllRows?.() ?? []);
+        const countRes = await conn.query(
+          `MATCH (n:${tableName}) RETURN count(n) AS cnt`,
+        );
+        const countRows = await (countRes.getAll?.() ??
+          countRes.getAllObjects?.() ??
+          countRes.getAllRows?.() ??
+          []);
         const countRow = countRows[0];
         const count = countRow ? (countRow.cnt ?? countRow[0] ?? 0) : 0;
         totalNodes += Number(count);
@@ -199,17 +223,22 @@ export const loadGraphToLbug = async (
       }
     }
 
-    if (import.meta.env.DEV) console.log(`✅ LadybugDB Bulk Load Complete. Total nodes: ${totalNodes}, edges: ${insertedRels}`);
+    if (import.meta.env.DEV)
+      console.log(
+        `✅ LadybugDB Bulk Load Complete. Total nodes: ${totalNodes}, edges: ${insertedRels}`,
+      );
 
     // 7. Cleanup CSV files
     for (const { path } of nodeFiles) {
-      try { await fs.unlink(path); } catch {}
+      try {
+        await fs.unlink(path);
+      } catch {}
     }
 
     return { success: true, count: totalNodes };
-
   } catch (error) {
-    if (import.meta.env.DEV) console.error('❌ LadybugDB Bulk Load Failed:', error);
+    if (import.meta.env.DEV)
+      console.error("❌ LadybugDB Bulk Load Failed:", error);
     return { success: false, count: 0 };
   }
 };
@@ -221,9 +250,24 @@ const COPY_CSV_OPTS = `(HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=
 
 // Multi-language table names created with backticks in CODE_ELEMENT_BASE
 const BACKTICK_TABLES = new Set([
-  'Struct', 'Enum', 'Macro', 'Typedef', 'Union', 'Namespace', 'Trait', 'Impl',
-  'TypeAlias', 'Const', 'Static', 'Property', 'Record', 'Delegate', 'Annotation',
-  'Constructor', 'Template', 'Module',
+  "Struct",
+  "Enum",
+  "Macro",
+  "Typedef",
+  "Union",
+  "Namespace",
+  "Trait",
+  "Impl",
+  "TypeAlias",
+  "Const",
+  "Static",
+  "Property",
+  "Record",
+  "Delegate",
+  "Annotation",
+  "Constructor",
+  "Template",
+  "Module",
 ]);
 
 const escapeTableName = (table: string): string => {
@@ -231,23 +275,29 @@ const escapeTableName = (table: string): string => {
 };
 
 /** Tables with isExported column (TypeScript/JS-native types) */
-const TABLES_WITH_EXPORTED = new Set<string>(['Function', 'Class', 'Interface', 'Method', 'CodeElement']);
+const TABLES_WITH_EXPORTED = new Set<string>([
+  "Function",
+  "Class",
+  "Interface",
+  "Method",
+  "CodeElement",
+]);
 
 /**
  * Get the COPY query for a node table with correct column mapping
  */
 const getCopyQuery = (table: NodeTableName, path: string): string => {
   const t = escapeTableName(table);
-  if (table === 'File') {
+  if (table === "File") {
     return `COPY ${t}(id, name, filePath, content) FROM "${path}" ${COPY_CSV_OPTS}`;
   }
-  if (table === 'Folder') {
+  if (table === "Folder") {
     return `COPY ${t}(id, name, filePath) FROM "${path}" ${COPY_CSV_OPTS}`;
   }
-  if (table === 'Community') {
+  if (table === "Community") {
     return `COPY ${t}(id, label, heuristicLabel, keywords, description, enrichedBy, cohesion, symbolCount) FROM "${path}" ${COPY_CSV_OPTS}`;
   }
-  if (table === 'Process') {
+  if (table === "Process") {
     return `COPY ${t}(id, label, heuristicLabel, processType, stepCount, communities, entryPointId, terminalId) FROM "${path}" ${COPY_CSV_OPTS}`;
   }
   // TypeScript/JS code element tables have isExported; multi-language tables do not
@@ -271,13 +321,15 @@ export const executeQuery = async (cypher: string): Promise<any[]> => {
     const result = await conn.query(cypher);
 
     // Extract column names from RETURN clause
-    const returnMatch = cypher.match(/RETURN\s+(.+?)(?:\s+ORDER|\s+LIMIT|\s+SKIP|\s*$)/is);
+    const returnMatch = cypher.match(
+      /RETURN\s+(.+?)(?:\s+ORDER|\s+LIMIT|\s+SKIP|\s*$)/is,
+    );
     let columnNames: string[] = [];
     if (returnMatch) {
       // Parse RETURN clause to get column names/aliases
       // Handles: "a.name, b.filePath AS path, count(x) AS cnt"
       const returnClause = returnMatch[1];
-      columnNames = returnClause.split(',').map(col => {
+      columnNames = returnClause.split(",").map((col) => {
         col = col.trim();
         // Check for AS alias
         const asMatch = col.match(/\s+AS\s+(\w+)\s*$/i);
@@ -289,12 +341,15 @@ export const executeQuery = async (cypher: string): Promise<any[]> => {
         const funcMatch = col.match(/^(\w+)\s*\(/);
         if (funcMatch) return funcMatch[1];
         // Just use as-is if simple identifier
-        return col.replace(/[^a-zA-Z0-9_]/g, '_');
+        return col.replace(/[^a-zA-Z0-9_]/g, "_");
       });
     }
 
     // Collect all rows (handle API differences across LadybugDB versions)
-    const allRows = await (result.getAll?.() ?? result.getAllObjects?.() ?? result.getAllRows?.() ?? []);
+    const allRows = await (result.getAll?.() ??
+      result.getAllObjects?.() ??
+      result.getAllRows?.() ??
+      []);
     const rows: any[] = [];
     for (const row of allRows) {
       // Convert tuple to named object if we have column names and row is array
@@ -312,7 +367,7 @@ export const executeQuery = async (cypher: string): Promise<any[]> => {
 
     return rows;
   } catch (error) {
-    if (import.meta.env.DEV) console.error('Query execution failed:', error);
+    if (import.meta.env.DEV) console.error("Query execution failed:", error);
     throw error;
   }
 };
@@ -320,7 +375,10 @@ export const executeQuery = async (cypher: string): Promise<any[]> => {
 /**
  * Get database statistics
  */
-export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> => {
+export const getLbugStats = async (): Promise<{
+  nodes: number;
+  edges: number;
+}> => {
   if (!conn) {
     return { nodes: 0, edges: 0 };
   }
@@ -330,8 +388,13 @@ export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> 
     let totalNodes = 0;
     for (const tableName of NODE_TABLES) {
       try {
-        const nodeResult = await conn.query(`MATCH (n:${tableName}) RETURN count(n) AS cnt`);
-        const nodeRows = await (nodeResult.getAll?.() ?? nodeResult.getAllObjects?.() ?? nodeResult.getAllRows?.() ?? []);
+        const nodeResult = await conn.query(
+          `MATCH (n:${tableName}) RETURN count(n) AS cnt`,
+        );
+        const nodeRows = await (nodeResult.getAll?.() ??
+          nodeResult.getAllObjects?.() ??
+          nodeResult.getAllRows?.() ??
+          []);
         const nodeRow = nodeRows[0];
         totalNodes += Number(nodeRow?.cnt ?? nodeRow?.[0] ?? 0);
       } catch {
@@ -342,8 +405,13 @@ export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> 
     // Count edges from single relation table
     let totalEdges = 0;
     try {
-      const edgeResult = await conn.query(`MATCH ()-[r:${REL_TABLE_NAME}]->() RETURN count(r) AS cnt`);
-      const edgeRows = await (edgeResult.getAll?.() ?? edgeResult.getAllObjects?.() ?? edgeResult.getAllRows?.() ?? []);
+      const edgeResult = await conn.query(
+        `MATCH ()-[r:${REL_TABLE_NAME}]->() RETURN count(r) AS cnt`,
+      );
+      const edgeRows = await (edgeResult.getAll?.() ??
+        edgeResult.getAllObjects?.() ??
+        edgeResult.getAllRows?.() ??
+        []);
       const edgeRow = edgeRows[0];
       totalEdges = Number(edgeRow?.cnt ?? edgeRow?.[0] ?? 0);
     } catch {
@@ -353,7 +421,7 @@ export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> 
     return { nodes: totalNodes, edges: totalEdges };
   } catch (error) {
     if (import.meta.env.DEV) {
-      console.warn('Failed to get LadybugDB stats:', error);
+      console.warn("Failed to get LadybugDB stats:", error);
     }
     return { nodes: 0, edges: 0 };
   }
@@ -393,7 +461,7 @@ export const closeLbug = async (): Promise<void> => {
  */
 export const executePrepared = async (
   cypher: string,
-  params: Record<string, any>
+  params: Record<string, any>,
 ): Promise<any[]> => {
   if (!conn) {
     await initLbug();
@@ -408,12 +476,15 @@ export const executePrepared = async (
 
     const result = await conn.execute(stmt, params);
 
-    const rows = await (result.getAll?.() ?? result.getAllObjects?.() ?? result.getAllRows?.() ?? []);
+    const rows = await (result.getAll?.() ??
+      result.getAllObjects?.() ??
+      result.getAllRows?.() ??
+      []);
 
     await stmt.close();
     return rows;
   } catch (error) {
-    if (import.meta.env.DEV) console.error('Prepared query failed:', error);
+    if (import.meta.env.DEV) console.error("Prepared query failed:", error);
     throw error;
   }
 };
@@ -423,7 +494,7 @@ export const executePrepared = async (
  */
 export const executeWithReusedStatement = async (
   cypher: string,
-  paramsList: Array<Record<string, any>>
+  paramsList: Array<Record<string, any>>,
 ): Promise<void> => {
   if (!conn) {
     await initLbug();
@@ -451,7 +522,7 @@ export const executeWithReusedStatement = async (
     }
 
     if (i + SUB_BATCH_SIZE < paramsList.length) {
-      await new Promise(r => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
     }
   }
 };
@@ -459,7 +530,10 @@ export const executeWithReusedStatement = async (
 /**
  * Test if array parameters work with prepared statements
  */
-export const testArrayParams = async (): Promise<{ success: boolean; error?: string }> => {
+export const testArrayParams = async (): Promise<{
+  success: boolean;
+  error?: string;
+}> => {
   if (!conn) {
     await initLbug();
   }
@@ -471,8 +545,13 @@ export const testArrayParams = async (): Promise<{ success: boolean; error?: str
     let testNodeId: string | null = null;
     for (const tableName of NODE_TABLES) {
       try {
-        const nodeResult = await conn.query(`MATCH (n:${tableName}) RETURN n.id AS id LIMIT 1`);
-        const nodeRows = await (nodeResult.getAll?.() ?? nodeResult.getAllObjects?.() ?? nodeResult.getAllRows?.() ?? []);
+        const nodeResult = await conn.query(
+          `MATCH (n:${tableName}) RETURN n.id AS id LIMIT 1`,
+        );
+        const nodeRows = await (nodeResult.getAll?.() ??
+          nodeResult.getAllObjects?.() ??
+          nodeResult.getAllRows?.() ??
+          []);
         const nodeRow = nodeRows[0];
         if (nodeRow) {
           testNodeId = nodeRow.id ?? nodeRow[0];
@@ -482,11 +561,11 @@ export const testArrayParams = async (): Promise<{ success: boolean; error?: str
     }
 
     if (!testNodeId) {
-      return { success: false, error: 'No nodes found to test with' };
+      return { success: false, error: "No nodes found to test with" };
     }
 
     if (import.meta.env.DEV) {
-      console.log('🧪 Testing array params with node:', testNodeId);
+      console.log("🧪 Testing array params with node:", testNodeId);
     }
 
     // First create an embedding entry
@@ -507,27 +586,33 @@ export const testArrayParams = async (): Promise<{ success: boolean; error?: str
 
     // Verify it was stored
     const verifyResult = await conn.query(
-      `MATCH (e:${EMBEDDING_TABLE_NAME} {nodeId: '${testNodeId}'}) RETURN e.embedding AS emb`
+      `MATCH (e:${EMBEDDING_TABLE_NAME} {nodeId: '${testNodeId}'}) RETURN e.embedding AS emb`,
     );
-    const verifyRows = await (verifyResult.getAll?.() ?? verifyResult.getAllObjects?.() ?? verifyResult.getAllRows?.() ?? []);
+    const verifyRows = await (verifyResult.getAll?.() ??
+      verifyResult.getAllObjects?.() ??
+      verifyResult.getAllRows?.() ??
+      []);
     const verifyRow = verifyRows[0];
     const storedEmb = verifyRow?.emb ?? verifyRow?.[0];
 
     if (storedEmb && Array.isArray(storedEmb) && storedEmb.length === 384) {
       if (import.meta.env.DEV) {
-        console.log('✅ Array params WORK! Stored embedding length:', storedEmb.length);
+        console.log(
+          "✅ Array params WORK! Stored embedding length:",
+          storedEmb.length,
+        );
       }
       return { success: true };
     } else {
       return {
         success: false,
-        error: `Embedding not stored correctly. Got: ${typeof storedEmb}, length: ${storedEmb?.length}`
+        error: `Embedding not stored correctly. Got: ${typeof storedEmb}, length: ${storedEmb?.length}`,
       };
     }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     if (import.meta.env.DEV) {
-      console.error('❌ Array params test failed:', errorMsg);
+      console.error("❌ Array params test failed:", errorMsg);
     }
     return { success: false, error: errorMsg };
   }

@@ -1,6 +1,6 @@
 ---
 name: gitnexus-guide
-description: "Use when the user asks about GitNexus itself — available tools, how to query the knowledge graph, MCP resources, graph schema, or workflow reference. Examples: \"What GitNexus tools are available?\", \"How do I use GitNexus?\""
+description: 'Use when the user asks about GitNexus itself — available tools, how to query the knowledge graph, MCP resources, graph schema, or workflow reference. Examples: "What GitNexus tools are available?", "How do I use GitNexus?"'
 ---
 
 # GitNexus Guide
@@ -19,8 +19,8 @@ For any task involving code understanding, debugging, impact analysis, or refact
 
 ## Skills
 
-| Task                                         | Skill to read       |
-| -------------------------------------------- | ------------------- |
+| Task                                         | Skill to read                |
+| -------------------------------------------- | ---------------------------- |
 | Understand architecture / "How does X work?" | `gitnexus-exploring`         |
 | Blast radius / "What breaks if I change X?"  | `gitnexus-impact-analysis`   |
 | Trace bugs / "Why is X failing?"             | `gitnexus-debugging`         |

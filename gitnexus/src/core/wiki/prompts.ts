@@ -1,6 +1,6 @@
 /**
  * LLM Prompt Templates for Wiki Generation
- * 
+ *
  * All prompts produce deterministic, source-grounded documentation.
  * Templates use {{PLACEHOLDER}} substitution.
  */
@@ -133,16 +133,20 @@ export function fillTemplate(
  * Format file list with exports for the grouping prompt.
  */
 export function formatFileListForGrouping(
-  files: Array<{ filePath: string; symbols: Array<{ name: string; type: string }> }>,
+  files: Array<{
+    filePath: string;
+    symbols: Array<{ name: string; type: string }>;
+  }>,
 ): string {
   return files
-    .map(f => {
-      const exports = f.symbols.length > 0
-        ? f.symbols.map(s => `${s.name} (${s.type})`).join(', ')
-        : 'no exports';
+    .map((f) => {
+      const exports =
+        f.symbols.length > 0
+          ? f.symbols.map((s) => `${s.name} (${s.type})`).join(", ")
+          : "no exports";
       return `- ${f.filePath}: ${exports}`;
     })
-    .join('\n');
+    .join("\n");
 }
 
 /**
@@ -151,29 +155,42 @@ export function formatFileListForGrouping(
 export function formatDirectoryTree(filePaths: string[]): string {
   const dirs = new Set<string>();
   for (const fp of filePaths) {
-    const parts = fp.replace(/\\/g, '/').split('/');
+    const parts = fp.replace(/\\/g, "/").split("/");
     for (let i = 1; i < parts.length; i++) {
-      dirs.add(parts.slice(0, i).join('/'));
+      dirs.add(parts.slice(0, i).join("/"));
     }
   }
 
   const sorted = Array.from(dirs).sort();
-  if (sorted.length === 0) return '(flat structure)';
+  if (sorted.length === 0) return "(flat structure)";
 
-  return sorted.slice(0, 50).join('\n') + (sorted.length > 50 ? `\n... and ${sorted.length - 50} more directories` : '');
+  return (
+    sorted.slice(0, 50).join("\n") +
+    (sorted.length > 50
+      ? `\n... and ${sorted.length - 50} more directories`
+      : "")
+  );
 }
 
 /**
  * Format call edges as readable text.
  */
 export function formatCallEdges(
-  edges: Array<{ fromFile: string; fromName: string; toFile: string; toName: string }>,
+  edges: Array<{
+    fromFile: string;
+    fromName: string;
+    toFile: string;
+    toName: string;
+  }>,
 ): string {
-  if (edges.length === 0) return 'None';
+  if (edges.length === 0) return "None";
   return edges
     .slice(0, 30)
-    .map(e => `${e.fromName} (${shortPath(e.fromFile)}) → ${e.toName} (${shortPath(e.toFile)})`)
-    .join('\n');
+    .map(
+      (e) =>
+        `${e.fromName} (${shortPath(e.fromFile)}) → ${e.toName} (${shortPath(e.toFile)})`,
+    )
+    .join("\n");
 }
 
 /**
@@ -186,22 +203,23 @@ export function formatProcesses(
     steps: Array<{ step: number; name: string; filePath: string }>;
   }>,
 ): string {
-  if (processes.length === 0) return 'No execution flows detected for this module.';
+  if (processes.length === 0)
+    return "No execution flows detected for this module.";
 
   return processes
-    .map(p => {
+    .map((p) => {
       const stepsText = p.steps
-        .map(s => `  ${s.step}. ${s.name} (${shortPath(s.filePath)})`)
-        .join('\n');
+        .map((s) => `  ${s.step}. ${s.name} (${shortPath(s.filePath)})`)
+        .join("\n");
       return `**${p.label}** (${p.type}):\n${stepsText}`;
     })
-    .join('\n\n');
+    .join("\n\n");
 }
 
 /**
  * Shorten a file path for readability.
  */
 function shortPath(fp: string): string {
-  const parts = fp.replace(/\\/g, '/').split('/');
-  return parts.length > 3 ? parts.slice(-3).join('/') : fp;
+  const parts = fp.replace(/\\/g, "/").split("/");
+  return parts.length > 3 ? parts.slice(-3).join("/") : fp;
 }

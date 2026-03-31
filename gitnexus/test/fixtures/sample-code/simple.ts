@@ -5,7 +5,7 @@ export interface UserConfig {
 }
 
 export function validateUser(config: UserConfig): boolean {
-  return config.name.length > 0 && config.email.includes('@');
+  return config.name.length > 0 && config.email.includes("@");
 }
 
 export class UserService {
@@ -18,10 +18,10 @@ export class UserService {
   }
 
   getUser(name: string): UserConfig | undefined {
-    return this.users.find(u => u.name === name);
+    return this.users.find((u) => u.name === name);
   }
 }
 
 function internalHelper(): string {
-  return 'helper';
+  return "helper";
 }

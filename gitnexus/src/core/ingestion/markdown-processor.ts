@@ -6,13 +6,17 @@
  * cross-file links.
  */
 
-import path from 'node:path';
-import { generateId } from '../../lib/utils.js';
-import { KnowledgeGraph, GraphNode, GraphRelationship } from '../graph/types.js';
+import path from "node:path";
+import { generateId } from "../../lib/utils.js";
+import {
+  KnowledgeGraph,
+  GraphNode,
+  GraphRelationship,
+} from "../graph/types.js";
 
 const HEADING_RE = /^(#{1,6})\s+(.+)$/;
 const LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g;
-const MD_EXTENSIONS = new Set(['.md', '.mdx']);
+const MD_EXTENSIONS = new Set([".md", ".mdx"]);
 
 interface MdFile {
   path: string;
@@ -31,11 +35,11 @@ export const processMarkdown = (
     const ext = path.extname(file.path).toLowerCase();
     if (!MD_EXTENSIONS.has(ext)) continue;
 
-    const fileNodeId = generateId('File', file.path);
+    const fileNodeId = generateId("File", file.path);
     // Skip if file node doesn't exist (shouldn't happen, structure-processor creates it)
     if (!graph.getNode(fileNodeId)) continue;
 
-    const lines = file.content.split('\n');
+    const lines = file.content.split("\n");
 
     // --- Extract headings and build hierarchy ---
     // First pass: collect all heading positions so we can compute endLine spans
@@ -67,11 +71,14 @@ export const processMarkdown = (
         }
       }
 
-      const sectionId = generateId('Section', `${file.path}:L${lineNum}:${heading}`);
+      const sectionId = generateId(
+        "Section",
+        `${file.path}:L${lineNum}:${heading}`,
+      );
 
       const node: GraphNode = {
         id: sectionId,
-        label: 'Section',
+        label: "Section",
         properties: {
           name: heading,
           filePath: file.path,
@@ -85,21 +92,25 @@ export const processMarkdown = (
       totalSections++;
 
       // Find parent: pop stack until we find a level strictly less than current
-      while (sectionStack.length > 0 && sectionStack[sectionStack.length - 1].level >= level) {
+      while (
+        sectionStack.length > 0 &&
+        sectionStack[sectionStack.length - 1].level >= level
+      ) {
         sectionStack.pop();
       }
 
-      const parentId = sectionStack.length > 0
-        ? sectionStack[sectionStack.length - 1].id
-        : fileNodeId;
+      const parentId =
+        sectionStack.length > 0
+          ? sectionStack[sectionStack.length - 1].id
+          : fileNodeId;
 
       graph.addRelationship({
-        id: generateId('CONTAINS', `${parentId}->${sectionId}`),
-        type: 'CONTAINS',
+        id: generateId("CONTAINS", `${parentId}->${sectionId}`),
+        type: "CONTAINS",
         sourceId: parentId,
         targetId: sectionId,
         confidence: 1.0,
-        reason: 'markdown-heading',
+        reason: "markdown-heading",
       });
 
       sectionStack.push({ level, id: sectionId });
@@ -115,20 +126,26 @@ export const processMarkdown = (
       const href = linkMatch[2];
 
       // Skip external URLs, anchors, and mailto
-      if (href.startsWith('http://') || href.startsWith('https://') ||
-          href.startsWith('#') || href.startsWith('mailto:')) {
+      if (
+        href.startsWith("http://") ||
+        href.startsWith("https://") ||
+        href.startsWith("#") ||
+        href.startsWith("mailto:")
+      ) {
         continue;
       }
 
       // Strip anchor fragments from local links
-      const cleanHref = href.split('#')[0];
+      const cleanHref = href.split("#")[0];
       if (!cleanHref) continue;
 
       // Resolve relative to the file's directory, then normalize
-      const resolved = path.posix.normalize(path.posix.join(fileDir, cleanHref));
+      const resolved = path.posix.normalize(
+        path.posix.join(fileDir, cleanHref),
+      );
 
       if (allPathSet.has(resolved)) {
-        const targetFileId = generateId('File', resolved);
+        const targetFileId = generateId("File", resolved);
 
         // Skip if target file node doesn't exist
         if (!graph.getNode(targetFileId)) continue;
@@ -138,15 +155,15 @@ export const processMarkdown = (
         if (seenLinks.has(linkKey)) continue;
         seenLinks.add(linkKey);
 
-        const relId = generateId('IMPORTS', linkKey);
+        const relId = generateId("IMPORTS", linkKey);
 
         graph.addRelationship({
           id: relId,
-          type: 'IMPORTS',
+          type: "IMPORTS",
           sourceId: fileNodeId,
           targetId: targetFileId,
           confidence: 0.8,
-          reason: 'markdown-link',
+          reason: "markdown-link",
         });
         totalLinks++;
       }

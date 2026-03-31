@@ -1,27 +1,36 @@
 /**
  * Clean Command
- * 
+ *
  * Removes the .gitnexus index from the current repository.
  * Also unregisters it from the global registry.
  */
 
-import fs from 'fs/promises';
-import { findRepo, unregisterRepo, listRegisteredRepos } from '../storage/repo-manager.js';
+import fs from "fs/promises";
+import {
+  findRepo,
+  unregisterRepo,
+  listRegisteredRepos,
+} from "../storage/repo-manager.js";
 
-export const cleanCommand = async (options?: { force?: boolean; all?: boolean }) => {
+export const cleanCommand = async (options?: {
+  force?: boolean;
+  all?: boolean;
+}) => {
   // --all flag: clean all indexed repos
   if (options?.all) {
     if (!options?.force) {
       const entries = await listRegisteredRepos();
       if (entries.length === 0) {
-        console.log('No indexed repositories found.');
+        console.log("No indexed repositories found.");
         return;
       }
-      console.log(`This will delete GitNexus indexes for ${entries.length} repo(s):`);
+      console.log(
+        `This will delete GitNexus indexes for ${entries.length} repo(s):`,
+      );
       for (const entry of entries) {
         console.log(`  - ${entry.name} (${entry.path})`);
       }
-      console.log('\nRun with --force to confirm deletion.');
+      console.log("\nRun with --force to confirm deletion.");
       return;
     }
 
@@ -43,7 +52,7 @@ export const cleanCommand = async (options?: { force?: boolean; all?: boolean })
   const repo = await findRepo(cwd);
 
   if (!repo) {
-    console.log('No indexed repository found in this directory.');
+    console.log("No indexed repository found in this directory.");
     return;
   }
 
@@ -52,7 +61,7 @@ export const cleanCommand = async (options?: { force?: boolean; all?: boolean })
   if (!options?.force) {
     console.log(`This will delete the GitNexus index for: ${repoName}`);
     console.log(`   Path: ${repo.storagePath}`);
-    console.log('\nRun with --force to confirm deletion.');
+    console.log("\nRun with --force to confirm deletion.");
     return;
   }
 
@@ -61,6 +70,6 @@ export const cleanCommand = async (options?: { force?: boolean; all?: boolean })
     await unregisterRepo(repo.repoPath);
     console.log(`Deleted: ${repo.storagePath}`);
   } catch (err) {
-    console.error('Failed to delete:', err);
+    console.error("Failed to delete:", err);
   }
 };

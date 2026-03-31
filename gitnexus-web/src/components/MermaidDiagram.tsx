@@ -1,30 +1,30 @@
-import { useEffect, useRef, useState } from 'react';
-import mermaid from 'mermaid';
-import { AlertTriangle, Maximize2 } from 'lucide-react';
-import { ProcessFlowModal } from './ProcessFlowModal';
-import type { ProcessData } from '../lib/mermaid-generator';
+import { useEffect, useRef, useState } from "react";
+import mermaid from "mermaid";
+import { AlertTriangle, Maximize2 } from "lucide-react";
+import { ProcessFlowModal } from "./ProcessFlowModal";
+import type { ProcessData } from "../lib/mermaid-generator";
 
 // Initialize mermaid with cyan theme matching ProcessFlowModal
 mermaid.initialize({
   startOnLoad: false,
   maxTextSize: 900000,
-  theme: 'base',
+  theme: "base",
   themeVariables: {
-    primaryColor: '#1e293b', // node bg - slate
-    primaryTextColor: '#f1f5f9',
-    primaryBorderColor: '#22d3ee', // cyan
-    lineColor: '#94a3b8',
-    secondaryColor: '#1e293b',
-    tertiaryColor: '#0f172a',
-    mainBkg: '#1e293b',
-    nodeBorder: '#22d3ee', // cyan
-    clusterBkg: '#1e293b',
-    clusterBorder: '#475569',
-    titleColor: '#f1f5f9',
-    edgeLabelBackground: '#0f172a',
+    primaryColor: "#1e293b", // node bg - slate
+    primaryTextColor: "#f1f5f9",
+    primaryBorderColor: "#22d3ee", // cyan
+    lineColor: "#94a3b8",
+    secondaryColor: "#1e293b",
+    tertiaryColor: "#0f172a",
+    mainBkg: "#1e293b",
+    nodeBorder: "#22d3ee", // cyan
+    clusterBkg: "#1e293b",
+    clusterBorder: "#475569",
+    titleColor: "#f1f5f9",
+    edgeLabelBackground: "#0f172a",
   },
   flowchart: {
-    curve: 'basis',
+    curve: "basis",
     padding: 15,
     nodeSpacing: 50,
     rankSpacing: 50,
@@ -55,7 +55,7 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
-  const [svg, setSvg] = useState<string>('');
+  const [svg, setSvg] = useState<string>("");
 
   useEffect(() => {
     const renderDiagram = async () => {
@@ -70,12 +70,12 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
         setSvg(renderedSvg);
         setError(null);
       } catch (err) {
-        // Silent catch for streaming: 
+        // Silent catch for streaming:
         // If render fails (common during partial streaming), we:
         // 1. Log to console for debugging
         // 2. Do NOT set error state (avoids flashing red box)
         // 3. Do NOT clear existing SVG (keeps last valid state visible)
-        console.debug('Mermaid render skipped (incomplete):', err);
+        console.debug("Mermaid render skipped (incomplete):", err);
       }
     };
 
@@ -88,15 +88,17 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
   }, [code]);
 
   // Create a pseudo ProcessData for the modal (with custom rawMermaid property)
-  const processData: any = showModal ? {
-    id: 'ai-generated',
-    label: 'AI Generated Diagram',
-    processType: 'intra_community',
-    steps: [], // Empty - we'll render raw mermaid
-    edges: [],
-    clusters: [],
-    rawMermaid: code, // Pass raw mermaid code
-  } : null;
+  const processData: any = showModal
+    ? {
+        id: "ai-generated",
+        label: "AI Generated Diagram",
+        processType: "intra_community",
+        steps: [], // Empty - we'll render raw mermaid
+        edges: [],
+        clusters: [],
+        rawMermaid: code, // Pass raw mermaid code
+      }
+    : null;
 
   if (error) {
     return (
@@ -105,7 +107,9 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
           <AlertTriangle className="w-4 h-4" />
           <span className="font-medium">Diagram Error</span>
         </div>
-        <pre className="text-xs text-rose-200/70 font-mono whitespace-pre-wrap">{error}</pre>
+        <pre className="text-xs text-rose-200/70 font-mono whitespace-pre-wrap">
+          {error}
+        </pre>
         <details className="mt-2">
           <summary className="text-xs text-text-muted cursor-pointer hover:text-text-secondary">
             Show source

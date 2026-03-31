@@ -13,7 +13,7 @@ export class User {
     public name: string,
     public address: Address,
   ) {
-    this.#secret = 'hidden';
+    this.#secret = "hidden";
   }
 
   greet(): string {

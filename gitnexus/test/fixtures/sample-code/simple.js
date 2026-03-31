@@ -1,4 +1,4 @@
-const path = require('path');
+const path = require("path");
 
 class EventEmitter {
   constructor() {
@@ -14,7 +14,7 @@ class EventEmitter {
 
   emit(event, ...args) {
     const handlers = this.listeners[event] || [];
-    handlers.forEach(handler => handler(...args));
+    handlers.forEach((handler) => handler(...args));
   }
 }
 
@@ -26,7 +26,7 @@ function createLogger(prefix) {
 }
 
 const formatDate = (date) => {
-  return date.toISOString().split('T')[0];
+  return date.toISOString().split("T")[0];
 };
 
 module.exports = { EventEmitter, createLogger, formatDate };

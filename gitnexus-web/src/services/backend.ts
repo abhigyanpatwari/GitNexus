@@ -21,10 +21,10 @@ export interface BackendRepo {
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
-let backendUrl = 'http://localhost:4747';
+let backendUrl = "http://localhost:4747";
 
 export const setBackendUrl = (url: string): void => {
-  backendUrl = url.replace(/\/$/, '');
+  backendUrl = url.replace(/\/$/, "");
 };
 
 export const getBackendUrl = (): string => backendUrl;
@@ -50,11 +50,13 @@ const fetchWithTimeout = async (
     const response = await fetch(url, { ...init, signal: controller.signal });
     return response;
   } catch (error: unknown) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
+    if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error(`Request to ${url} timed out after ${timeoutMs}ms`);
     }
     if (error instanceof TypeError) {
-      throw new Error(`Network error reaching GitNexus backend at ${backendUrl}: ${error.message}`);
+      throw new Error(
+        `Network error reaching GitNexus backend at ${backendUrl}: ${error.message}`,
+      );
     }
     throw error;
   } finally {
@@ -71,7 +73,7 @@ const assertOk = async (response: Response): Promise<void> => {
   let message = `Backend returned ${response.status} ${response.statusText}`;
   try {
     const body = await response.json();
-    if (body && typeof body.error === 'string') {
+    if (body && typeof body.error === "string") {
       message = body.error;
     }
   } catch {
@@ -121,7 +123,10 @@ export const fetchGraph = async (
     60_000,
   );
   await assertOk(response);
-  return response.json() as Promise<{ nodes: unknown[]; relationships: unknown[] }>;
+  return response.json() as Promise<{
+    nodes: unknown[];
+    relationships: unknown[];
+  }>;
 };
 
 /**
@@ -133,14 +138,14 @@ export const runCypherQuery = async (
   cypher: string,
 ): Promise<unknown[]> => {
   const response = await fetchWithTimeout(`${backendUrl}/api/query`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ cypher, repo }),
   });
   await assertOk(response);
 
   const body = await response.json();
-  if (body && typeof body.error === 'string') {
+  if (body && typeof body.error === "string") {
     throw new Error(body.error);
   }
   return (body.result ?? body) as unknown[];
@@ -155,8 +160,8 @@ export const runSearch = async (
   limit?: number,
 ): Promise<unknown> => {
   const response = await fetchWithTimeout(`${backendUrl}/api/search`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, limit, repo }),
   });
   await assertOk(response);

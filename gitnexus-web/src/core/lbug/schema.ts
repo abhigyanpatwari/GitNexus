@@ -1,10 +1,10 @@
 /**
  * LadybugDB Schema Definitions
- * 
+ *
  * Hybrid Schema:
  * - Separate node tables for each code element type (File, Function, Class, etc.)
  * - Single CodeRelation table with 'type' property for all relationships
- * 
+ *
  * This allows LLMs to write natural Cypher queries like:
  *   MATCH (f:Function)-[r:CodeRelation {type: 'CALLS'}]->(g:Function) RETURN f, g
  */
@@ -13,26 +13,59 @@
 // NODE TABLE NAMES
 // ============================================================================
 export const NODE_TABLES = [
-  'File', 'Folder', 'Function', 'Class', 'Interface', 'Method', 'CodeElement', 'Community', 'Process',
+  "File",
+  "Folder",
+  "Function",
+  "Class",
+  "Interface",
+  "Method",
+  "CodeElement",
+  "Community",
+  "Process",
   // Multi-language support
-  'Struct', 'Enum', 'Macro', 'Typedef', 'Union', 'Namespace', 'Trait', 'Impl',
-  'TypeAlias', 'Const', 'Static', 'Property', 'Record', 'Delegate', 'Annotation', 'Constructor', 'Template', 'Module'
+  "Struct",
+  "Enum",
+  "Macro",
+  "Typedef",
+  "Union",
+  "Namespace",
+  "Trait",
+  "Impl",
+  "TypeAlias",
+  "Const",
+  "Static",
+  "Property",
+  "Record",
+  "Delegate",
+  "Annotation",
+  "Constructor",
+  "Template",
+  "Module",
 ] as const;
-export type NodeTableName = typeof NODE_TABLES[number];
+export type NodeTableName = (typeof NODE_TABLES)[number];
 
 // ============================================================================
 // RELATION TABLE
 // ============================================================================
-export const REL_TABLE_NAME = 'CodeRelation';
+export const REL_TABLE_NAME = "CodeRelation";
 
 // Valid relation types
-export const REL_TYPES = ['CONTAINS', 'DEFINES', 'IMPORTS', 'CALLS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF', 'STEP_IN_PROCESS'] as const;
-export type RelType = typeof REL_TYPES[number];
+export const REL_TYPES = [
+  "CONTAINS",
+  "DEFINES",
+  "IMPORTS",
+  "CALLS",
+  "EXTENDS",
+  "IMPLEMENTS",
+  "MEMBER_OF",
+  "STEP_IN_PROCESS",
+] as const;
+export type RelType = (typeof REL_TYPES)[number];
 
 // ============================================================================
 // EMBEDDING TABLE
 // ============================================================================
-export const EMBEDDING_TABLE_NAME = 'CodeEmbedding';
+export const EMBEDDING_TABLE_NAME = "CodeEmbedding";
 
 // ============================================================================
 // NODE TABLE SCHEMAS
@@ -165,24 +198,24 @@ CREATE NODE TABLE \`${name}\` (
   PRIMARY KEY (id)
 )`;
 
-export const STRUCT_SCHEMA = CODE_ELEMENT_BASE('Struct');
-export const ENUM_SCHEMA = CODE_ELEMENT_BASE('Enum');
-export const MACRO_SCHEMA = CODE_ELEMENT_BASE('Macro');
-export const TYPEDEF_SCHEMA = CODE_ELEMENT_BASE('Typedef');
-export const UNION_SCHEMA = CODE_ELEMENT_BASE('Union');
-export const NAMESPACE_SCHEMA = CODE_ELEMENT_BASE('Namespace');
-export const TRAIT_SCHEMA = CODE_ELEMENT_BASE('Trait');
-export const IMPL_SCHEMA = CODE_ELEMENT_BASE('Impl');
-export const TYPE_ALIAS_SCHEMA = CODE_ELEMENT_BASE('TypeAlias');
-export const CONST_SCHEMA = CODE_ELEMENT_BASE('Const');
-export const STATIC_SCHEMA = CODE_ELEMENT_BASE('Static');
-export const PROPERTY_SCHEMA = CODE_ELEMENT_BASE('Property');
-export const RECORD_SCHEMA = CODE_ELEMENT_BASE('Record');
-export const DELEGATE_SCHEMA = CODE_ELEMENT_BASE('Delegate');
-export const ANNOTATION_SCHEMA = CODE_ELEMENT_BASE('Annotation');
-export const CONSTRUCTOR_SCHEMA = CODE_ELEMENT_BASE('Constructor');
-export const TEMPLATE_SCHEMA = CODE_ELEMENT_BASE('Template');
-export const MODULE_SCHEMA = CODE_ELEMENT_BASE('Module');
+export const STRUCT_SCHEMA = CODE_ELEMENT_BASE("Struct");
+export const ENUM_SCHEMA = CODE_ELEMENT_BASE("Enum");
+export const MACRO_SCHEMA = CODE_ELEMENT_BASE("Macro");
+export const TYPEDEF_SCHEMA = CODE_ELEMENT_BASE("Typedef");
+export const UNION_SCHEMA = CODE_ELEMENT_BASE("Union");
+export const NAMESPACE_SCHEMA = CODE_ELEMENT_BASE("Namespace");
+export const TRAIT_SCHEMA = CODE_ELEMENT_BASE("Trait");
+export const IMPL_SCHEMA = CODE_ELEMENT_BASE("Impl");
+export const TYPE_ALIAS_SCHEMA = CODE_ELEMENT_BASE("TypeAlias");
+export const CONST_SCHEMA = CODE_ELEMENT_BASE("Const");
+export const STATIC_SCHEMA = CODE_ELEMENT_BASE("Static");
+export const PROPERTY_SCHEMA = CODE_ELEMENT_BASE("Property");
+export const RECORD_SCHEMA = CODE_ELEMENT_BASE("Record");
+export const DELEGATE_SCHEMA = CODE_ELEMENT_BASE("Delegate");
+export const ANNOTATION_SCHEMA = CODE_ELEMENT_BASE("Annotation");
+export const CONSTRUCTOR_SCHEMA = CODE_ELEMENT_BASE("Constructor");
+export const TEMPLATE_SCHEMA = CODE_ELEMENT_BASE("Template");
+export const MODULE_SCHEMA = CODE_ELEMENT_BASE("Module");
 
 // ============================================================================
 // RELATION TABLE SCHEMA
@@ -399,9 +432,7 @@ export const NODE_SCHEMA_QUERIES = [
   MODULE_SCHEMA,
 ];
 
-export const REL_SCHEMA_QUERIES = [
-  RELATION_SCHEMA,
-];
+export const REL_SCHEMA_QUERIES = [RELATION_SCHEMA];
 
 export const SCHEMA_QUERIES = [
   ...NODE_SCHEMA_QUERIES,

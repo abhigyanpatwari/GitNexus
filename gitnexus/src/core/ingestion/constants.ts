@@ -16,4 +16,7 @@ export const TREE_SITTER_MAX_BUFFER = 32 * 1024 * 1024;
  * Previous 256 KB fixed limit silently skipped files > ~200 KB (e.g., imgui.h at 411 KB).
  */
 export const getTreeSitterBufferSize = (contentLength: number): number =>
-  Math.min(Math.max(contentLength * 2, TREE_SITTER_BUFFER_SIZE), TREE_SITTER_MAX_BUFFER);
+  Math.min(
+    Math.max(contentLength * 2, TREE_SITTER_BUFFER_SIZE),
+    TREE_SITTER_MAX_BUFFER,
+  );

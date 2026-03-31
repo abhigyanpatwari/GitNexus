@@ -1,5 +1,7 @@
 export class BaseModel {
-  save(): boolean { return true; }
+  save(): boolean {
+    return true;
+  }
 }
 
 export interface Serializable {

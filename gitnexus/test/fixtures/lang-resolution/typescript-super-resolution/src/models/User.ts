@@ -1,4 +1,4 @@
-import { BaseModel } from './Base';
+import { BaseModel } from "./Base";
 
 export class User extends BaseModel {
   save(): boolean {

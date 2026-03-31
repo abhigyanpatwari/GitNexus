@@ -4,10 +4,10 @@
  * Used as the fallback when language-specific resolvers don't match.
  */
 
-import type { SuffixIndex } from './utils.js';
-import { tryResolveWithExtensions, suffixResolve } from './utils.js';
-import { resolveRustImport } from './rust.js';
-import { SupportedLanguages } from '../../../config/supported-languages.js';
+import type { SuffixIndex } from "./utils.js";
+import { tryResolveWithExtensions, suffixResolve } from "./utils.js";
+import { resolveRustImport } from "./rust.js";
+import { SupportedLanguages } from "../../../config/supported-languages.js";
 
 /** TypeScript path alias config parsed from tsconfig.json */
 export interface TsconfigPaths {
@@ -61,25 +61,32 @@ export const resolveImportPath = (
 
   // ---- TypeScript/JavaScript: rewrite path aliases ----
   if (
-    (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) &&
+    (language === SupportedLanguages.TypeScript ||
+      language === SupportedLanguages.JavaScript) &&
     tsconfigPaths &&
-    !importPath.startsWith('.')
+    !importPath.startsWith(".")
   ) {
     for (const [aliasPrefix, targetPrefix] of tsconfigPaths.aliases) {
       if (importPath.startsWith(aliasPrefix)) {
         const remainder = importPath.slice(aliasPrefix.length);
         // Build the rewritten path relative to baseUrl
-        const rewritten = tsconfigPaths.baseUrl === '.'
-          ? targetPrefix + remainder
-          : tsconfigPaths.baseUrl + '/' + targetPrefix + remainder;
+        const rewritten =
+          tsconfigPaths.baseUrl === "."
+            ? targetPrefix + remainder
+            : tsconfigPaths.baseUrl + "/" + targetPrefix + remainder;
 
         // Try direct resolution from repo root
         const resolved = tryResolveWithExtensions(rewritten, allFiles);
         if (resolved) return cache(resolved);
 
         // Try suffix matching as fallback
-        const parts = rewritten.split('/').filter(Boolean);
-        const suffixResult = suffixResolve(parts, normalizedFileList, allFileList, index);
+        const parts = rewritten.split("/").filter(Boolean);
+        const suffixResult = suffixResolve(
+          parts,
+          normalizedFileList,
+          allFileList,
+          index,
+        );
         if (suffixResult) return cache(suffixResult);
       }
     }
@@ -90,17 +97,20 @@ export const resolveImportPath = (
     // Handle grouped imports: use crate::module::{Foo, Bar, Baz}
     // Extract the prefix path before ::{...} and resolve the module, not the symbols
     let rustImportPath = importPath;
-    const braceIdx = importPath.indexOf('::{');
+    const braceIdx = importPath.indexOf("::{");
     if (braceIdx !== -1) {
       rustImportPath = importPath.substring(0, braceIdx);
-    } else if (importPath.startsWith('{') && importPath.endsWith('}')) {
+    } else if (importPath.startsWith("{") && importPath.endsWith("}")) {
       // Top-level grouped imports: use {crate::a, crate::b}
       // Iterate each part and return the first that resolves. This function returns a single
       // string, so callers that need ALL edges must intercept before reaching here (see the
       // Rust grouped-import blocks in processImports / processImportsBatch). This fallback
       // handles any path that reaches resolveImportPath directly.
       const inner = importPath.slice(1, -1);
-      const parts = inner.split(',').map(p => p.trim()).filter(Boolean);
+      const parts = inner
+        .split(",")
+        .map((p) => p.trim())
+        .filter(Boolean);
       for (const part of parts) {
         const partResult = resolveRustImport(currentFile, part, allFiles);
         if (partResult) return cache(partResult);
@@ -114,38 +124,46 @@ export const resolveImportPath = (
   }
 
   // ---- Generic relative import resolution (./ and ../) ----
-  const currentDir = currentFile.split('/').slice(0, -1);
-  const parts = importPath.split('/');
+  const currentDir = currentFile.split("/").slice(0, -1);
+  const parts = importPath.split("/");
 
   for (const part of parts) {
-    if (part === '.') continue;
-    if (part === '..') {
+    if (part === ".") continue;
+    if (part === "..") {
       currentDir.pop();
     } else {
       currentDir.push(part);
     }
   }
 
-  const basePath = currentDir.join('/');
+  const basePath = currentDir.join("/");
 
-  if (importPath.startsWith('.')) {
+  if (importPath.startsWith(".")) {
     const resolved = tryResolveWithExtensions(basePath, allFiles);
     return cache(resolved);
   }
 
   // ---- Generic package/absolute import resolution (suffix matching) ----
   // Java wildcards are handled in processImports, not here
-  if (importPath.endsWith('.*')) {
+  if (importPath.endsWith(".*")) {
     return cache(null);
   }
 
   // C/C++ includes use actual file paths (e.g. "animal.h") — don't convert dots to slashes
-  const isCpp = language === SupportedLanguages.C || language === SupportedLanguages.CPlusPlus;
-  const pathLike = importPath.includes('/') || isCpp
-    ? importPath
-    : importPath.replace(/\./g, '/');
-  const pathParts = pathLike.split('/').filter(Boolean);
+  const isCpp =
+    language === SupportedLanguages.C ||
+    language === SupportedLanguages.CPlusPlus;
+  const pathLike =
+    importPath.includes("/") || isCpp
+      ? importPath
+      : importPath.replace(/\./g, "/");
+  const pathParts = pathLike.split("/").filter(Boolean);
 
-  const resolved = suffixResolve(pathParts, normalizedFileList, allFileList, index);
+  const resolved = suffixResolve(
+    pathParts,
+    normalizedFileList,
+    allFileList,
+    index,
+  );
   return cache(resolved);
 };

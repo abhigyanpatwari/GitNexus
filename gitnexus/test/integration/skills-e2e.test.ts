@@ -10,23 +10,25 @@
  * Uses process.execPath (never 'node' string), no shell: true.
  * Accepts status === null (timeout) as valid on slow CI runners.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawnSync } from 'child_process';
-import path from 'path';
-import fs from 'fs';
-import os from 'os';
-import { fileURLToPath, pathToFileURL } from 'url';
-import { createRequire } from 'module';
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { spawnSync } from "child_process";
+import path from "path";
+import fs from "fs";
+import os from "os";
+import { fileURLToPath, pathToFileURL } from "url";
+import { createRequire } from "module";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(testDir, '../..');
-const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
+const repoRoot = path.resolve(testDir, "../..");
+const cliEntry = path.join(repoRoot, "src/cli/index.ts");
 
 // Absolute file:// URL to tsx loader — needed when spawning CLI with cwd
 // outside the project tree (bare 'tsx' specifier won't resolve there).
 const _require = createRequire(import.meta.url);
-const tsxPkgDir = path.dirname(_require.resolve('tsx/package.json'));
-const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).href;
+const tsxPkgDir = path.dirname(_require.resolve("tsx/package.json"));
+const tsxImportUrl = pathToFileURL(
+  path.join(tsxPkgDir, "dist", "loader.mjs"),
+).href;
 
 // ============================================================================
 // FILE-LOCAL HELPERS
@@ -37,16 +39,21 @@ const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).h
  * Uses the absolute tsx loader URL so it works outside the project tree.
  */
 function runSkillsCli(cwd: string, timeoutMs = 45000) {
-  return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, 'analyze', '--skills'], {
-    cwd,
-    encoding: 'utf8',
-    timeout: timeoutMs,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+  return spawnSync(
+    process.execPath,
+    ["--import", tsxImportUrl, cliEntry, "analyze", "--skills"],
+    {
+      cwd,
+      encoding: "utf8",
+      timeout: timeoutMs,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        NODE_OPTIONS:
+          `${process.env.NODE_OPTIONS || ""} --max-old-space-size=8192`.trim(),
+      },
     },
-  });
+  );
 }
 
 /**
@@ -57,23 +64,25 @@ function createFixtureRepo(
   prefix: string,
   files: Record<string, string>,
 ): string {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `skills-e2e-${prefix}-`));
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), `skills-e2e-${prefix}-`),
+  );
   for (const [relPath, content] of Object.entries(files)) {
     const fullPath = path.join(tmpDir, relPath);
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-    fs.writeFileSync(fullPath, content, 'utf-8');
+    fs.writeFileSync(fullPath, content, "utf-8");
   }
-  spawnSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['add', '-A'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['commit', '-m', 'initial commit'], {
+  spawnSync("git", ["init"], { cwd: tmpDir, stdio: "pipe" });
+  spawnSync("git", ["add", "-A"], { cwd: tmpDir, stdio: "pipe" });
+  spawnSync("git", ["commit", "-m", "initial commit"], {
     cwd: tmpDir,
-    stdio: 'pipe',
+    stdio: "pipe",
     env: {
       ...process.env,
-      GIT_AUTHOR_NAME: 'test',
-      GIT_AUTHOR_EMAIL: 'test@test',
-      GIT_COMMITTER_NAME: 'test',
-      GIT_COMMITTER_EMAIL: 'test@test',
+      GIT_AUTHOR_NAME: "test",
+      GIT_AUTHOR_EMAIL: "test@test",
+      GIT_COMMITTER_NAME: "test",
+      GIT_COMMITTER_EMAIL: "test@test",
     },
   });
   return tmpDir;
@@ -101,15 +110,18 @@ function assertSkillFiles(
   /* CI timeout tolerance */
   if (result.status === null) return false;
 
-  expect(result.status, [
-    `analyze --skills exited with code ${result.status}`,
-    `stdout: ${result.stdout?.slice(0, 500)}`,
-    `stderr: ${result.stderr?.slice(0, 500)}`,
-  ].join('\n')).toBe(0);
+  expect(
+    result.status,
+    [
+      `analyze --skills exited with code ${result.status}`,
+      `stdout: ${result.stdout?.slice(0, 500)}`,
+      `stderr: ${result.stderr?.slice(0, 500)}`,
+    ].join("\n"),
+  ).toBe(0);
 
-  expect(fs.existsSync(path.join(tmpDir, '.gitnexus'))).toBe(true);
+  expect(fs.existsSync(path.join(tmpDir, ".gitnexus"))).toBe(true);
 
-  const generatedDir = path.join(tmpDir, '.claude', 'skills', 'generated');
+  const generatedDir = path.join(tmpDir, ".claude", "skills", "generated");
   if (!fs.existsSync(generatedDir)) {
     // Native parser may have crashed in worker or Leiden produced 0 communities.
     // The pipeline still succeeds (exit 0) but no skills are generated.
@@ -117,12 +129,12 @@ function assertSkillFiles(
     return false;
   }
 
-  const skillDirs = fs.readdirSync(generatedDir).filter(d =>
-    fs.statSync(path.join(generatedDir, d)).isDirectory(),
-  );
+  const skillDirs = fs
+    .readdirSync(generatedDir)
+    .filter((d) => fs.statSync(path.join(generatedDir, d)).isDirectory());
   const skillFiles: string[] = [];
   for (const dir of skillDirs) {
-    const skillPath = path.join(generatedDir, dir, 'SKILL.md');
+    const skillPath = path.join(generatedDir, dir, "SKILL.md");
     if (fs.existsSync(skillPath)) {
       skillFiles.push(skillPath);
     }
@@ -131,12 +143,12 @@ function assertSkillFiles(
   expect(skillFiles.length).toBeGreaterThanOrEqual(minSkills);
 
   for (const skillPath of skillFiles) {
-    const content = fs.readFileSync(skillPath, 'utf-8');
-    expect(content.startsWith('---')).toBe(true);
-    expect(content).toContain('name:');
-    expect(content).toContain('description:');
-    expect(content).toContain('## Key Files');
-    expect(content).toContain('## How to Explore');
+    const content = fs.readFileSync(skillPath, "utf-8");
+    expect(content.startsWith("---")).toBe(true);
+    expect(content).toContain("name:");
+    expect(content).toContain("description:");
+    expect(content).toContain("## Key Files");
+    expect(content).toContain("## How to Explore");
     expect(content.length).toBeGreaterThan(200);
   }
 
@@ -154,21 +166,21 @@ function assertContextFiles(
 ) {
   if (result.status === null) return;
 
-  const generatedDir = path.join(tmpDir, '.claude', 'skills', 'generated');
+  const generatedDir = path.join(tmpDir, ".claude", "skills", "generated");
   const skillsGenerated = fs.existsSync(generatedDir);
 
-  const claudePath = path.join(tmpDir, 'CLAUDE.md');
+  const claudePath = path.join(tmpDir, "CLAUDE.md");
   expect(fs.existsSync(claudePath)).toBe(true);
   if (skillsGenerated) {
-    const claudeContent = fs.readFileSync(claudePath, 'utf-8');
-    expect(claudeContent).toContain('.claude/skills/generated/');
+    const claudeContent = fs.readFileSync(claudePath, "utf-8");
+    expect(claudeContent).toContain(".claude/skills/generated/");
   }
 
-  const agentsPath = path.join(tmpDir, 'AGENTS.md');
+  const agentsPath = path.join(tmpDir, "AGENTS.md");
   expect(fs.existsSync(agentsPath)).toBe(true);
   if (skillsGenerated) {
-    const agentsContent = fs.readFileSync(agentsPath, 'utf-8');
-    expect(agentsContent).toContain('.claude/skills/generated/');
+    const agentsContent = fs.readFileSync(agentsPath, "utf-8");
+    expect(agentsContent).toContain(".claude/skills/generated/");
   }
 }
 
@@ -176,13 +188,13 @@ function assertContextFiles(
 // DESCRIBE 1: TypeScript
 // ============================================================================
 
-describe('TypeScript', () => {
+describe("TypeScript", () => {
   let tmpDir: string;
   let result: ReturnType<typeof runSkillsCli>;
 
   beforeAll(() => {
-    tmpDir = createFixtureRepo('typescript', {
-      'src/api/router.ts': `
+    tmpDir = createFixtureRepo("typescript", {
+      "src/api/router.ts": `
 import { validateRequest } from '../utils/validator';
 import { logRequest } from '../utils/logger';
 
@@ -198,7 +210,7 @@ export function registerRoute(path: string) {
   return true;
 }
 `,
-      'src/api/controller.ts': `
+      "src/api/controller.ts": `
 import { runQuery } from '../data/query';
 import { formatResponse } from '../data/format';
 
@@ -212,7 +224,7 @@ export function handlePost(body: any) {
   return formatResponse(result);
 }
 `,
-      'src/api/middleware.ts': `
+      "src/api/middleware.ts": `
 import { validateToken } from '../utils/validator';
 import { logRequest } from '../utils/logger';
 
@@ -227,7 +239,7 @@ export function corsMiddleware(req: any) {
   return { allowed: true };
 }
 `,
-      'src/data/query.ts': `
+      "src/data/query.ts": `
 import { formatResult } from './format';
 import { getCached } from './cache';
 
@@ -241,7 +253,7 @@ export function buildQuery(table: string, conditions: any) {
   return 'SELECT * FROM ' + table;
 }
 `,
-      'src/data/format.ts': `
+      "src/data/format.ts": `
 export function formatResult(data: any) {
   return { ...data, formatted: true };
 }
@@ -254,7 +266,7 @@ export function serializeResult(data: any) {
   return JSON.stringify(data);
 }
 `,
-      'src/data/cache.ts': `
+      "src/data/cache.ts": `
 import { runQuery } from './query';
 
 const cache = new Map<string, any>();
@@ -269,7 +281,7 @@ export function warmCache(keys: string[]) {
   }
 }
 `,
-      'src/utils/logger.ts': `
+      "src/utils/logger.ts": `
 export function logRequest(msg: string) {
   console.log('[REQ]', msg);
 }
@@ -282,7 +294,7 @@ export function createLogEntry(level: string, msg: string) {
   return { level, msg, ts: Date.now() };
 }
 `,
-      'src/utils/validator.ts': `
+      "src/utils/validator.ts": `
 export function validateRequest(input: string) {
   if (!input || input.length === 0) throw new Error('Invalid');
   return true;
@@ -297,7 +309,7 @@ export function sanitize(input: string) {
   return input.replace(/[<>]/g, '');
 }
 `,
-      'src/utils/config.ts': `
+      "src/utils/config.ts": `
 export function getConfig(key: string) {
   return process.env[key] || '';
 }
@@ -326,14 +338,14 @@ export function parseArgs(args: string[]) {
    * Verify analyze --skills generates valid SKILL.md files for a
    * TypeScript repo with 3 clusters of cross-calling functions.
    */
-  it('generates skill files', () => {
+  it("generates skill files", () => {
     assertSkillFiles(result, tmpDir);
   }, 50000);
 
   /**
    * Verify CLAUDE.md and AGENTS.md are created and reference generated skills.
    */
-  it('context files updated', () => {
+  it("context files updated", () => {
     assertContextFiles(result, tmpDir);
   }, 50000);
 });
@@ -342,13 +354,13 @@ export function parseArgs(args: string[]) {
 // DESCRIBE 2: JavaScript
 // ============================================================================
 
-describe('JavaScript', () => {
+describe("JavaScript", () => {
   let tmpDir: string;
   let result: ReturnType<typeof runSkillsCli>;
 
   beforeAll(() => {
-    tmpDir = createFixtureRepo('javascript', {
-      'src/handlers/userHandler.js': `
+    tmpDir = createFixtureRepo("javascript", {
+      "src/handlers/userHandler.js": `
 const { findById } = require('../services/userService');
 const { validateInput } = require('../helpers/validator');
 
@@ -364,7 +376,7 @@ function createUser(data) {
 
 module.exports = { getUser, createUser };
 `,
-      'src/handlers/authHandler.js': `
+      "src/handlers/authHandler.js": `
 const { hashPassword, createToken } = require('../services/authService');
 
 function login(username, password) {
@@ -378,7 +390,7 @@ function logout(token) {
 
 module.exports = { login, logout };
 `,
-      'src/handlers/errorHandler.js': `
+      "src/handlers/errorHandler.js": `
 const { logError } = require('../helpers/logger');
 
 function handleError(err) {
@@ -393,7 +405,7 @@ function formatError(err) {
 
 module.exports = { handleError, formatError };
 `,
-      'src/services/userService.js': `
+      "src/services/userService.js": `
 const { formatUser } = require('./formatService');
 
 function findById(id) {
@@ -407,7 +419,7 @@ function saveUser(user) {
 
 module.exports = { findById, saveUser };
 `,
-      'src/services/authService.js': `
+      "src/services/authService.js": `
 function hashPassword(password) {
   return 'hashed_' + password;
 }
@@ -422,7 +434,7 @@ function verifyToken(token) {
 
 module.exports = { hashPassword, createToken, verifyToken };
 `,
-      'src/services/formatService.js': `
+      "src/services/formatService.js": `
 function formatUser(user) {
   return { ...user, displayName: user.name.toUpperCase() };
 }
@@ -437,7 +449,7 @@ function formatError(err) {
 
 module.exports = { formatUser, formatDate, formatError };
 `,
-      'src/helpers/validator.js': `
+      "src/helpers/validator.js": `
 function validateInput(input) {
   if (!input) throw new Error('Required');
   return true;
@@ -453,7 +465,7 @@ function sanitize(str) {
 
 module.exports = { validateInput, validateEmail, sanitize };
 `,
-      'src/helpers/logger.js': `
+      "src/helpers/logger.js": `
 function logError(msg) {
   console.error('[ERROR]', msg);
 }
@@ -480,14 +492,14 @@ module.exports = { logError, logInfo, createEntry };
    * Verify analyze --skills generates valid SKILL.md files for a
    * JavaScript repo with handler/service/helper clusters.
    */
-  it('generates skill files', () => {
+  it("generates skill files", () => {
     assertSkillFiles(result, tmpDir);
   }, 50000);
 
   /**
    * Verify CLAUDE.md and AGENTS.md are created and reference generated skills.
    */
-  it('context files updated', () => {
+  it("context files updated", () => {
     assertContextFiles(result, tmpDir);
   }, 50000);
 });
@@ -496,14 +508,14 @@ module.exports = { logError, logInfo, createEntry };
 // DESCRIBE 3: Python
 // ============================================================================
 
-describe('Python', () => {
+describe("Python", () => {
   let tmpDir: string;
   let result: ReturnType<typeof runSkillsCli>;
 
   beforeAll(() => {
-    tmpDir = createFixtureRepo('python', {
-      'src/auth/__init__.py': '',
-      'src/auth/login.py': `
+    tmpDir = createFixtureRepo("python", {
+      "src/auth/__init__.py": "",
+      "src/auth/login.py": `
 from src.auth.hash import hash_password
 from src.auth.session import create_session
 
@@ -517,7 +529,7 @@ def validate_credentials(username, password):
         raise ValueError("Invalid credentials")
     return True
 `,
-      'src/auth/hash.py': `
+      "src/auth/hash.py": `
 def hash_password(password):
     return "hashed_" + password
 
@@ -527,7 +539,7 @@ def compare_hash(plain, hashed):
 def generate_salt():
     return "salt_" + str(id(object()))
 `,
-      'src/auth/session.py': `
+      "src/auth/session.py": `
 from src.auth.login import login
 
 def create_session(username):
@@ -539,8 +551,8 @@ def validate_session(session):
 def refresh_session(session):
     return create_session(session["user"])
 `,
-      'src/database/__init__.py': '',
-      'src/database/query.py': `
+      "src/database/__init__.py": "",
+      "src/database/query.py": `
 from src.database.format import format_result
 from src.database.cache import get_cached
 
@@ -553,7 +565,7 @@ def run_query(sql):
 def build_query(table, conditions):
     return f"SELECT * FROM {table}"
 `,
-      'src/database/format.py': `
+      "src/database/format.py": `
 def format_result(data):
     return {**data, "formatted": True}
 
@@ -564,7 +576,7 @@ def serialize_result(data):
 def format_error(err):
     return {"error": str(err)}
 `,
-      'src/database/cache.py': `
+      "src/database/cache.py": `
 from src.database.query import run_query
 
 _cache = {}
@@ -576,8 +588,8 @@ def warm_cache(keys):
     for key in keys:
         _cache[key] = run_query(key)
 `,
-      'src/utils/__init__.py': '',
-      'src/utils/logger.py': `
+      "src/utils/__init__.py": "",
+      "src/utils/logger.py": `
 def log_info(msg):
     print(f"[INFO] {msg}")
 
@@ -587,7 +599,7 @@ def log_error(msg):
 def create_entry(level, msg):
     return {"level": level, "msg": msg}
 `,
-      'src/utils/validator.py': `
+      "src/utils/validator.py": `
 def validate_input(data):
     if not data:
         raise ValueError("Input required")
@@ -611,14 +623,14 @@ def check_length(text, max_len=255):
    * Verify analyze --skills generates valid SKILL.md files for a
    * Python repo with auth/database/utils clusters.
    */
-  it('generates skill files', () => {
+  it("generates skill files", () => {
     assertSkillFiles(result, tmpDir);
   }, 50000);
 
   /**
    * Verify CLAUDE.md and AGENTS.md are created and reference generated skills.
    */
-  it('context files updated', () => {
+  it("context files updated", () => {
     assertContextFiles(result, tmpDir);
   }, 50000);
 });
@@ -627,17 +639,17 @@ def check_length(text, max_len=255):
 // DESCRIBE 4: Go
 // ============================================================================
 
-describe('Go', () => {
+describe("Go", () => {
   let tmpDir: string;
   let result: ReturnType<typeof runSkillsCli>;
 
   beforeAll(() => {
-    tmpDir = createFixtureRepo('go', {
-      'go.mod': `module example.com/testapp
+    tmpDir = createFixtureRepo("go", {
+      "go.mod": `module example.com/testapp
 
 go 1.21
 `,
-      'cmd/main.go': `package main
+      "cmd/main.go": `package main
 
 import (
 	"example.com/testapp/pkg/handler"
@@ -648,7 +660,7 @@ func main() {
 	handler.HandlePost(map[string]string{"name": "test"})
 }
 `,
-      'pkg/handler/get.go': `package handler
+      "pkg/handler/get.go": `package handler
 
 import (
 	"example.com/testapp/pkg/service"
@@ -659,7 +671,7 @@ func HandleGet(id string) map[string]interface{} {
 	return service.FormatResponse(user)
 }
 `,
-      'pkg/handler/post.go': `package handler
+      "pkg/handler/post.go": `package handler
 
 import (
 	"example.com/testapp/pkg/service"
@@ -670,7 +682,7 @@ func HandlePost(data map[string]string) map[string]interface{} {
 	return service.CreateUser(data)
 }
 `,
-      'pkg/service/user.go': `package service
+      "pkg/service/user.go": `package service
 
 import (
 	"example.com/testapp/pkg/repository"
@@ -685,7 +697,7 @@ func CreateUser(data map[string]string) map[string]interface{} {
 	return map[string]interface{}{"created": true}
 }
 `,
-      'pkg/service/format.go': `package service
+      "pkg/service/format.go": `package service
 
 func FormatResponse(data map[string]interface{}) map[string]interface{} {
 	data["formatted"] = true
@@ -700,7 +712,7 @@ func Sanitize(input string) string {
 	return input
 }
 `,
-      'pkg/repository/user_repo.go': `package repository
+      "pkg/repository/user_repo.go": `package repository
 
 func GetByID(id string) map[string]interface{} {
 	return map[string]interface{}{"id": id, "name": "Test"}
@@ -714,7 +726,7 @@ func Delete(id string) bool {
 	return true
 }
 `,
-      'pkg/models/user.go': `package models
+      "pkg/models/user.go": `package models
 
 type User struct {
 	ID   string
@@ -741,14 +753,14 @@ func (u *User) Validate() bool {
    * Verify analyze --skills generates valid SKILL.md files for a
    * Go repo with handler/service/repository clusters.
    */
-  it('generates skill files', () => {
+  it("generates skill files", () => {
     assertSkillFiles(result, tmpDir);
   }, 50000);
 
   /**
    * Verify CLAUDE.md and AGENTS.md are created and reference generated skills.
    */
-  it('context files updated', () => {
+  it("context files updated", () => {
     assertContextFiles(result, tmpDir);
   }, 50000);
 });
@@ -757,13 +769,13 @@ func (u *User) Validate() bool {
 // DESCRIBE 5: Java
 // ============================================================================
 
-describe('Java', () => {
+describe("Java", () => {
   let tmpDir: string;
   let result: ReturnType<typeof runSkillsCli>;
 
   beforeAll(() => {
-    tmpDir = createFixtureRepo('java', {
-      'src/service/UserService.java': `package service;
+    tmpDir = createFixtureRepo("java", {
+      "src/service/UserService.java": `package service;
 
 import repository.UserRepository;
 import service.Validator;
@@ -783,7 +795,7 @@ public class UserService {
     }
 }
 `,
-      'src/service/AuthService.java': `package service;
+      "src/service/AuthService.java": `package service;
 
 public class AuthService {
     private UserService userService = new UserService();
@@ -798,7 +810,7 @@ public class AuthService {
     }
 }
 `,
-      'src/service/Validator.java': `package service;
+      "src/service/Validator.java": `package service;
 
 public class Validator {
     public boolean validate(String input) {
@@ -817,7 +829,7 @@ public class Validator {
     }
 }
 `,
-      'src/repository/UserRepository.java': `package repository;
+      "src/repository/UserRepository.java": `package repository;
 
 public class UserRepository extends BaseRepository {
     public Object getById(String id) {
@@ -833,7 +845,7 @@ public class UserRepository extends BaseRepository {
     }
 }
 `,
-      'src/repository/BaseRepository.java': `package repository;
+      "src/repository/BaseRepository.java": `package repository;
 
 public abstract class BaseRepository {
     public Object[] findAll() {
@@ -845,7 +857,7 @@ public abstract class BaseRepository {
     }
 }
 `,
-      'src/model/User.java': `package model;
+      "src/model/User.java": `package model;
 
 public class User {
     private String name;
@@ -875,14 +887,14 @@ public class User {
    * Verify analyze --skills generates valid SKILL.md files for a
    * Java repo with service/repository/model clusters.
    */
-  it('generates skill files', () => {
+  it("generates skill files", () => {
     assertSkillFiles(result, tmpDir);
   }, 50000);
 
   /**
    * Verify CLAUDE.md and AGENTS.md are created and reference generated skills.
    */
-  it('context files updated', () => {
+  it("context files updated", () => {
     assertContextFiles(result, tmpDir);
   }, 50000);
 });
@@ -891,18 +903,18 @@ public class User {
 // DESCRIBE 6: Rust
 // ============================================================================
 
-describe('Rust', () => {
+describe("Rust", () => {
   let tmpDir: string;
   let result: ReturnType<typeof runSkillsCli>;
 
   beforeAll(() => {
-    tmpDir = createFixtureRepo('rust', {
-      'Cargo.toml': `[package]
+    tmpDir = createFixtureRepo("rust", {
+      "Cargo.toml": `[package]
 name = "testapp"
 version = "0.1.0"
 edition = "2021"
 `,
-      'src/main.rs': `mod auth;
+      "src/main.rs": `mod auth;
 mod data;
 
 fn main() {
@@ -911,10 +923,10 @@ fn main() {
     println!("{:?} {:?}", session, result);
 }
 `,
-      'src/auth/mod.rs': `pub mod login;
+      "src/auth/mod.rs": `pub mod login;
 pub mod hash;
 `,
-      'src/auth/login.rs': `use crate::auth::hash::hash_password;
+      "src/auth/login.rs": `use crate::auth::hash::hash_password;
 
 pub fn login(username: &str, password: &str) -> String {
     let hashed = hash_password(password);
@@ -925,7 +937,7 @@ pub fn validate(token: &str) -> bool {
     token.starts_with("session_")
 }
 `,
-      'src/auth/hash.rs': `pub fn hash_password(password: &str) -> String {
+      "src/auth/hash.rs": `pub fn hash_password(password: &str) -> String {
     format!("hashed_{}", password)
 }
 
@@ -937,10 +949,10 @@ pub fn generate_salt() -> String {
     String::from("random_salt")
 }
 `,
-      'src/data/mod.rs': `pub mod query;
+      "src/data/mod.rs": `pub mod query;
 pub mod format;
 `,
-      'src/data/query.rs': `use crate::data::format::format_result;
+      "src/data/query.rs": `use crate::data::format::format_result;
 
 pub fn run_query(sql: &str) -> String {
     let raw = format!("result_{}", sql);
@@ -951,7 +963,7 @@ pub fn build_query(table: &str) -> String {
     format!("SELECT * FROM {}", table)
 }
 `,
-      'src/data/format.rs': `pub fn format_result(data: &str) -> String {
+      "src/data/format.rs": `pub fn format_result(data: &str) -> String {
     format!("[formatted] {}", data)
 }
 
@@ -975,14 +987,14 @@ pub fn format_error(err: &str) -> String {
    * Verify analyze --skills generates valid SKILL.md files for a
    * Rust repo with auth/data module clusters.
    */
-  it('generates skill files', () => {
+  it("generates skill files", () => {
     assertSkillFiles(result, tmpDir);
   }, 50000);
 
   /**
    * Verify CLAUDE.md and AGENTS.md are created and reference generated skills.
    */
-  it('context files updated', () => {
+  it("context files updated", () => {
     assertContextFiles(result, tmpDir);
   }, 50000);
 });
@@ -991,13 +1003,13 @@ pub fn format_error(err: &str) -> String {
 // DESCRIBE 7: C#
 // ============================================================================
 
-describe('CSharp', () => {
+describe("CSharp", () => {
   let tmpDir: string;
   let result: ReturnType<typeof runSkillsCli>;
 
   beforeAll(() => {
-    tmpDir = createFixtureRepo('csharp', {
-      'Services/UserService.cs': `using System;
+    tmpDir = createFixtureRepo("csharp", {
+      "Services/UserService.cs": `using System;
 
 namespace Services
 {
@@ -1043,7 +1055,7 @@ namespace Services
     }
 }
 `,
-      'Services/AuthService.cs': `using System;
+      "Services/AuthService.cs": `using System;
 
 namespace Services
 {
@@ -1089,7 +1101,7 @@ namespace Services
     }
 }
 `,
-      'Services/OrderService.cs': `using System;
+      "Services/OrderService.cs": `using System;
 
 namespace Services
 {
@@ -1130,7 +1142,7 @@ namespace Services
     }
 }
 `,
-      'Services/EmailService.cs': `using System;
+      "Services/EmailService.cs": `using System;
 
 namespace Services
 {
@@ -1156,7 +1168,7 @@ namespace Services
     }
 }
 `,
-      'Data/UserRepo.cs': `using System;
+      "Data/UserRepo.cs": `using System;
 
 namespace Data
 {
@@ -1189,7 +1201,7 @@ namespace Data
     }
 }
 `,
-      'Data/OrderRepo.cs': `using System;
+      "Data/OrderRepo.cs": `using System;
 
 namespace Data
 {
@@ -1222,7 +1234,7 @@ namespace Data
     }
 }
 `,
-      'Data/CacheManager.cs': `using System;
+      "Data/CacheManager.cs": `using System;
 
 namespace Data
 {
@@ -1265,7 +1277,7 @@ namespace Data
     }
 }
 `,
-      'Data/Logger.cs': `using System;
+      "Data/Logger.cs": `using System;
 
 namespace Data
 {
@@ -1324,14 +1336,14 @@ namespace Data
    * the pipeline falls through with 0 communities and no skills are
    * generated. assertSkillFiles handles this gracefully.
    */
-  it('generates skill files', () => {
+  it("generates skill files", () => {
     assertSkillFiles(result, tmpDir);
   }, 50000);
 
   /**
    * Verify CLAUDE.md and AGENTS.md are created and reference generated skills.
    */
-  it('context files updated', () => {
+  it("context files updated", () => {
     assertContextFiles(result, tmpDir);
   }, 50000);
 });
@@ -1340,13 +1352,13 @@ namespace Data
 // DESCRIBE 8: C++
 // ============================================================================
 
-describe('CPlusPlus', () => {
+describe("CPlusPlus", () => {
   let tmpDir: string;
   let result: ReturnType<typeof runSkillsCli>;
 
   beforeAll(() => {
-    tmpDir = createFixtureRepo('cpp', {
-      'src/engine/engine.h': `#ifndef ENGINE_H
+    tmpDir = createFixtureRepo("cpp", {
+      "src/engine/engine.h": `#ifndef ENGINE_H
 #define ENGINE_H
 
 class Engine {
@@ -1357,7 +1369,7 @@ public:
 
 #endif
 `,
-      'src/engine/engine.cpp': `#include "engine.h"
+      "src/engine/engine.cpp": `#include "engine.h"
 #include "../utils/logger.h"
 #include "../utils/config.h"
 
@@ -1373,7 +1385,7 @@ void Engine::stop() {
     logger.log("Engine stopping");
 }
 `,
-      'src/engine/renderer.h': `#ifndef RENDERER_H
+      "src/engine/renderer.h": `#ifndef RENDERER_H
 #define RENDERER_H
 
 class Renderer {
@@ -1384,7 +1396,7 @@ public:
 
 #endif
 `,
-      'src/engine/renderer.cpp': `#include "renderer.h"
+      "src/engine/renderer.cpp": `#include "renderer.h"
 #include "engine.h"
 
 void Renderer::render() {
@@ -1395,7 +1407,7 @@ void Renderer::render() {
 void Renderer::clear() {
 }
 `,
-      'src/engine/physics.h': `#ifndef PHYSICS_H
+      "src/engine/physics.h": `#ifndef PHYSICS_H
 #define PHYSICS_H
 
 void simulate();
@@ -1403,7 +1415,7 @@ void collide();
 
 #endif
 `,
-      'src/engine/physics.cpp': `#include "physics.h"
+      "src/engine/physics.cpp": `#include "physics.h"
 #include "engine.h"
 #include "../utils/logger.h"
 
@@ -1419,7 +1431,7 @@ void collide() {
     logger.log("collision detected");
 }
 `,
-      'src/utils/logger.h': `#ifndef LOGGER_H
+      "src/utils/logger.h": `#ifndef LOGGER_H
 #define LOGGER_H
 
 #include <string>
@@ -1433,7 +1445,7 @@ public:
 
 #endif
 `,
-      'src/utils/logger.cpp': `#include "logger.h"
+      "src/utils/logger.cpp": `#include "logger.h"
 #include <iostream>
 
 void Logger::log(const std::string& msg) {
@@ -1448,7 +1460,7 @@ void Logger::flush() {
     std::cout.flush();
 }
 `,
-      'src/utils/config.h': `#ifndef CONFIG_H
+      "src/utils/config.h": `#ifndef CONFIG_H
 #define CONFIG_H
 
 #include <string>
@@ -1462,7 +1474,7 @@ public:
 
 #endif
 `,
-      'src/utils/config.cpp': `#include "config.h"
+      "src/utils/config.cpp": `#include "config.h"
 
 std::string Config::get(const std::string& key) {
     return "";
@@ -1474,7 +1486,7 @@ void Config::set(const std::string& key, const std::string& value) {
 void Config::load(const std::string& path) {
 }
 `,
-      'src/utils/math.h': `#ifndef MATH_H
+      "src/utils/math.h": `#ifndef MATH_H
 #define MATH_H
 
 int clamp(int value, int min, int max);
@@ -1483,7 +1495,7 @@ double distance(double x1, double y1, double x2, double y2);
 
 #endif
 `,
-      'src/utils/math.cpp': `#include "math.h"
+      "src/utils/math.cpp": `#include "math.h"
 #include <cmath>
 
 int clamp(int value, int min, int max) {
@@ -1512,14 +1524,14 @@ double distance(double x1, double y1, double x2, double y2) {
    * Verify analyze --skills generates valid SKILL.md files for a
    * C++ repo with engine/utils clusters including headers.
    */
-  it('generates skill files', () => {
+  it("generates skill files", () => {
     assertSkillFiles(result, tmpDir);
   }, 50000);
 
   /**
    * Verify CLAUDE.md and AGENTS.md are created and reference generated skills.
    */
-  it('context files updated', () => {
+  it("context files updated", () => {
     assertContextFiles(result, tmpDir);
   }, 50000);
 });
@@ -1528,13 +1540,13 @@ double distance(double x1, double y1, double x2, double y2) {
 // DESCRIBE 9: C
 // ============================================================================
 
-describe('C', () => {
+describe("C", () => {
   let tmpDir: string;
   let result: ReturnType<typeof runSkillsCli>;
 
   beforeAll(() => {
-    tmpDir = createFixtureRepo('c', {
-      'src/core/parser.h': `#ifndef PARSER_H
+    tmpDir = createFixtureRepo("c", {
+      "src/core/parser.h": `#ifndef PARSER_H
 #define PARSER_H
 
 void parse(const char* input);
@@ -1542,7 +1554,7 @@ void tokenize(const char* input);
 
 #endif
 `,
-      'src/core/parser.c': `#include "parser.h"
+      "src/core/parser.c": `#include "parser.h"
 #include "../io/reader.h"
 #include "../io/logger.h"
 
@@ -1556,7 +1568,7 @@ void tokenize(const char* input) {
     log_msg("tokenizing");
 }
 `,
-      'src/core/lexer.h': `#ifndef LEXER_H
+      "src/core/lexer.h": `#ifndef LEXER_H
 #define LEXER_H
 
 typedef struct {
@@ -1570,7 +1582,7 @@ int is_keyword(const char* word);
 
 #endif
 `,
-      'src/core/lexer.c': `#include "lexer.h"
+      "src/core/lexer.c": `#include "lexer.h"
 #include "parser.h"
 #include <string.h>
 
@@ -1589,7 +1601,7 @@ int is_keyword(const char* word) {
     return strcmp(word, "if") == 0 || strcmp(word, "else") == 0;
 }
 `,
-      'src/core/ast.h': `#ifndef AST_H
+      "src/core/ast.h": `#ifndef AST_H
 #define AST_H
 
 typedef struct ASTNode {
@@ -1603,7 +1615,7 @@ void free_node(ASTNode* node);
 
 #endif
 `,
-      'src/core/ast.c': `#include "ast.h"
+      "src/core/ast.c": `#include "ast.h"
 #include "lexer.h"
 #include <stdlib.h>
 
@@ -1624,7 +1636,7 @@ void free_node(ASTNode* node) {
     }
 }
 `,
-      'src/io/reader.h': `#ifndef READER_H
+      "src/io/reader.h": `#ifndef READER_H
 #define READER_H
 
 char* read_file(const char* path);
@@ -1633,7 +1645,7 @@ int file_exists(const char* path);
 
 #endif
 `,
-      'src/io/reader.c': `#include "reader.h"
+      "src/io/reader.c": `#include "reader.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -1650,7 +1662,7 @@ int file_exists(const char* path) {
     return 0;
 }
 `,
-      'src/io/writer.h': `#ifndef WRITER_H
+      "src/io/writer.h": `#ifndef WRITER_H
 #define WRITER_H
 
 void write_file(const char* path, const char* data);
@@ -1658,7 +1670,7 @@ void flush_writer(void);
 
 #endif
 `,
-      'src/io/writer.c': `#include "writer.h"
+      "src/io/writer.c": `#include "writer.h"
 #include "logger.h"
 
 void write_file(const char* path, const char* data) {
@@ -1669,7 +1681,7 @@ void flush_writer(void) {
     log_msg("flushing");
 }
 `,
-      'src/io/logger.h': `#ifndef LOGGER_H
+      "src/io/logger.h": `#ifndef LOGGER_H
 #define LOGGER_H
 
 void log_msg(const char* msg);
@@ -1678,7 +1690,7 @@ void log_init(void);
 
 #endif
 `,
-      'src/io/logger.c': `#include "logger.h"
+      "src/io/logger.c": `#include "logger.h"
 #include <stdio.h>
 
 void log_msg(const char* msg) {
@@ -1705,14 +1717,14 @@ void log_init(void) {
    * Verify analyze --skills generates valid SKILL.md files for a
    * C repo with core/io clusters including headers.
    */
-  it('generates skill files', () => {
+  it("generates skill files", () => {
     assertSkillFiles(result, tmpDir);
   }, 50000);
 
   /**
    * Verify CLAUDE.md and AGENTS.md are created and reference generated skills.
    */
-  it('context files updated', () => {
+  it("context files updated", () => {
     assertContextFiles(result, tmpDir);
   }, 50000);
 });
@@ -1721,13 +1733,13 @@ void log_init(void) {
 // DESCRIBE 10: PHP
 // ============================================================================
 
-describe('PHP', () => {
+describe("PHP", () => {
   let tmpDir: string;
   let result: ReturnType<typeof runSkillsCli>;
 
   beforeAll(() => {
-    tmpDir = createFixtureRepo('php', {
-      'src/Controllers/UserController.php': `<?php
+    tmpDir = createFixtureRepo("php", {
+      "src/Controllers/UserController.php": `<?php
 
 function controller_index() {
     validate_input('list');
@@ -1754,7 +1766,7 @@ function controller_delete($id) {
     return service_delete($id);
 }
 `,
-      'src/Controllers/AuthController.php': `<?php
+      "src/Controllers/AuthController.php": `<?php
 
 function auth_login($username, $password) {
     validate_input($username);
@@ -1775,7 +1787,7 @@ function auth_register($username, $password) {
     return service_create($username, $hash);
 }
 `,
-      'src/Controllers/ApiController.php': `<?php
+      "src/Controllers/ApiController.php": `<?php
 
 function api_handle_request($method, $path) {
     validate_input($method);
@@ -1795,7 +1807,7 @@ function api_middleware($request) {
     return true;
 }
 `,
-      'src/Services/UserService.php': `<?php
+      "src/Services/UserService.php": `<?php
 
 function service_find_all() {
     $result = db_query('SELECT * FROM users');
@@ -1825,7 +1837,7 @@ function service_delete($id) {
     return true;
 }
 `,
-      'src/Services/AuthServiceImpl.php': `<?php
+      "src/Services/AuthServiceImpl.php": `<?php
 
 function auth_hash_password($password) {
     validate_input($password);
@@ -1848,7 +1860,7 @@ function auth_refresh_token($token) {
     return auth_create_token('refreshed');
 }
 `,
-      'src/Helpers/validator.php': `<?php
+      "src/Helpers/validator.php": `<?php
 
 function validate_input($input) {
     if (empty($input)) {
@@ -1872,7 +1884,7 @@ function check_length($input, $max = 255) {
     return strlen($input) <= $max;
 }
 `,
-      'src/Helpers/logger.php': `<?php
+      "src/Helpers/logger.php": `<?php
 
 function log_request($msg) {
     echo '[REQ] ' . $msg . "\\n";
@@ -1890,7 +1902,7 @@ function create_log_entry($level, $msg) {
     return ['level' => $level, 'msg' => $msg, 'ts' => time()];
 }
 `,
-      'src/Helpers/formatter.php': `<?php
+      "src/Helpers/formatter.php": `<?php
 
 function format_response($data) {
     return ['status' => 200, 'body' => $data, 'formatted' => true];
@@ -1908,7 +1920,7 @@ function format_json($data) {
     return json_encode($data);
 }
 `,
-      'src/Data/database.php': `<?php
+      "src/Data/database.php": `<?php
 
 function db_query($sql) {
     log_request('query: ' . $sql);
@@ -1940,14 +1952,14 @@ function db_close() {
    * Verify analyze --skills generates valid SKILL.md files for a
    * PHP repo with Controllers/Services/Models clusters.
    */
-  it('generates skill files', () => {
+  it("generates skill files", () => {
     assertSkillFiles(result, tmpDir);
   }, 50000);
 
   /**
    * Verify CLAUDE.md and AGENTS.md are created and reference generated skills.
    */
-  it('context files updated', () => {
+  it("context files updated", () => {
     assertContextFiles(result, tmpDir);
   }, 50000);
 });
@@ -1956,13 +1968,13 @@ function db_close() {
 // DESCRIBE 11: Kotlin
 // ============================================================================
 
-describe('Kotlin', () => {
+describe("Kotlin", () => {
   let tmpDir: string;
   let result: ReturnType<typeof runSkillsCli>;
 
   beforeAll(() => {
-    tmpDir = createFixtureRepo('kotlin', {
-      'src/main/kotlin/service/UserService.kt': `package service
+    tmpDir = createFixtureRepo("kotlin", {
+      "src/main/kotlin/service/UserService.kt": `package service
 
 fun findUser(id: String): Map<String, Any> {
     validateInput(id)
@@ -1993,7 +2005,7 @@ fun deleteUser(id: String): Boolean {
     return true
 }
 `,
-      'src/main/kotlin/service/AuthService.kt': `package service
+      "src/main/kotlin/service/AuthService.kt": `package service
 
 fun authenticate(username: String, password: String): Map<String, Any> {
     validateInput(username)
@@ -2024,7 +2036,7 @@ fun refreshToken(token: String): String {
     return createToken("refreshed")
 }
 `,
-      'src/main/kotlin/service/NotificationService.kt': `package service
+      "src/main/kotlin/service/NotificationService.kt": `package service
 
 fun notify(userId: String, message: String) {
     validateInput(userId)
@@ -2043,7 +2055,7 @@ fun sendAlert(message: String) {
     formatError(message)
 }
 `,
-      'src/main/kotlin/helpers/Validator.kt': `package helpers
+      "src/main/kotlin/helpers/Validator.kt": `package helpers
 
 fun validateInput(input: String): Boolean {
     if (input.isEmpty()) throw IllegalArgumentException("Invalid")
@@ -2062,7 +2074,7 @@ fun normalizeInput(input: String): String {
     return input.trim().lowercase()
 }
 `,
-      'src/main/kotlin/helpers/Logger.kt': `package helpers
+      "src/main/kotlin/helpers/Logger.kt": `package helpers
 
 fun logRequest(msg: String) {
     println("[REQ] $msg")
@@ -2080,7 +2092,7 @@ fun createLogEntry(level: String, msg: String): Map<String, Any> {
     return mapOf("level" to level, "msg" to msg, "ts" to System.currentTimeMillis())
 }
 `,
-      'src/main/kotlin/helpers/Formatter.kt': `package helpers
+      "src/main/kotlin/helpers/Formatter.kt": `package helpers
 
 fun formatResponse(data: Map<String, Any>): Map<String, Any> {
     return data + mapOf("formatted" to true, "status" to 200)
@@ -2098,7 +2110,7 @@ fun formatDate(timestamp: Long): String {
     return timestamp.toString()
 }
 `,
-      'src/main/kotlin/data/Database.kt': `package data
+      "src/main/kotlin/data/Database.kt": `package data
 
 fun dbQuery(sql: String): Map<String, Any> {
     logRequest("query: $sql")
@@ -2129,14 +2141,14 @@ fun dbClose() {
    * Verify analyze --skills generates valid SKILL.md files for a
    * Kotlin repo with service/repository clusters.
    */
-  it('generates skill files', () => {
+  it("generates skill files", () => {
     assertSkillFiles(result, tmpDir);
   }, 50000);
 
   /**
    * Verify CLAUDE.md and AGENTS.md are created and reference generated skills.
    */
-  it('context files updated', () => {
+  it("context files updated", () => {
     assertContextFiles(result, tmpDir);
   }, 50000);
 });
@@ -2145,13 +2157,13 @@ fun dbClose() {
 // DESCRIBE 12: Mixed TypeScript + Python
 // ============================================================================
 
-describe('Mixed TypeScript + Python', () => {
+describe("Mixed TypeScript + Python", () => {
   let tmpDir: string;
   let result: ReturnType<typeof runSkillsCli>;
 
   beforeAll(() => {
-    tmpDir = createFixtureRepo('mixed', {
-      'packages/backend/src/api/router.ts': `
+    tmpDir = createFixtureRepo("mixed", {
+      "packages/backend/src/api/router.ts": `
 import { validateRequest } from '../utils/validator';
 import { logRequest } from '../utils/logger';
 
@@ -2167,7 +2179,7 @@ export function registerRoute(path: string) {
   return true;
 }
 `,
-      'packages/backend/src/api/controller.ts': `
+      "packages/backend/src/api/controller.ts": `
 import { runQuery } from '../data/query';
 
 export function handleGet(id: string) {
@@ -2178,7 +2190,7 @@ export function handlePost(body: any) {
   return runQuery('INSERT INTO items VALUES ' + JSON.stringify(body));
 }
 `,
-      'packages/backend/src/data/query.ts': `
+      "packages/backend/src/data/query.ts": `
 export function runQuery(sql: string) {
   return { sql, rows: [] };
 }
@@ -2187,7 +2199,7 @@ export function buildQuery(table: string) {
   return 'SELECT * FROM ' + table;
 }
 `,
-      'packages/backend/src/utils/validator.ts': `
+      "packages/backend/src/utils/validator.ts": `
 export function validateRequest(input: string) {
   if (!input) throw new Error('Invalid');
   return true;
@@ -2197,7 +2209,7 @@ export function sanitize(input: string) {
   return input.replace(/[<>]/g, '');
 }
 `,
-      'packages/backend/src/utils/logger.ts': `
+      "packages/backend/src/utils/logger.ts": `
 export function logRequest(msg: string) {
   console.log('[REQ]', msg);
 }
@@ -2206,8 +2218,8 @@ export function logError(msg: string) {
   console.error('[ERR]', msg);
 }
 `,
-      'packages/ml/src/pipeline/__init__.py': '',
-      'packages/ml/src/pipeline/train.py': `
+      "packages/ml/src/pipeline/__init__.py": "",
+      "packages/ml/src/pipeline/train.py": `
 from packages.ml.src.data.loader import load_data, preprocess
 
 def train(config):
@@ -2219,7 +2231,7 @@ def evaluate(model, test_data):
     data = load_data("test.csv")
     return {"accuracy": 0.95}
 `,
-      'packages/ml/src/pipeline/predict.py': `
+      "packages/ml/src/pipeline/predict.py": `
 from packages.ml.src.models.model import load_model
 
 def predict(input_data):
@@ -2230,8 +2242,8 @@ def batch_predict(inputs):
     model = load_model("latest")
     return [{"prediction": "result"} for _ in inputs]
 `,
-      'packages/ml/src/data/__init__.py': '',
-      'packages/ml/src/data/loader.py': `
+      "packages/ml/src/data/__init__.py": "",
+      "packages/ml/src/data/loader.py": `
 def load_data(path):
     return {"path": path, "rows": []}
 
@@ -2241,8 +2253,8 @@ def preprocess(data):
 def split_data(data, ratio=0.8):
     return data, data
 `,
-      'packages/ml/src/models/__init__.py': '',
-      'packages/ml/src/models/model.py': `
+      "packages/ml/src/models/__init__.py": "",
+      "packages/ml/src/models/model.py": `
 def load_model(name):
     return {"name": name, "loaded": True}
 
@@ -2265,14 +2277,14 @@ def compile_model(config):
    * mixed TypeScript + Python monorepo. Relaxed assertion since Leiden
    * may or may not form communities spanning both languages.
    */
-  it('generates skill files', () => {
+  it("generates skill files", () => {
     assertSkillFiles(result, tmpDir, 1);
   }, 50000);
 
   /**
    * Verify CLAUDE.md and AGENTS.md are created and reference generated skills.
    */
-  it('context files updated', () => {
+  it("context files updated", () => {
     assertContextFiles(result, tmpDir);
   }, 50000);
 });
@@ -2281,14 +2293,14 @@ def compile_model(config):
 // DESCRIBE 13: Idempotency
 // ============================================================================
 
-describe('Idempotency', () => {
+describe("Idempotency", () => {
   let tmpDir: string;
   let result1: ReturnType<typeof runSkillsCli>;
   let result2: ReturnType<typeof runSkillsCli>;
 
   beforeAll(() => {
-    tmpDir = createFixtureRepo('idempotency', {
-      'src/core/parser.ts': `
+    tmpDir = createFixtureRepo("idempotency", {
+      "src/core/parser.ts": `
 import { readFile } from '../io/reader';
 import { log } from '../io/logger';
 
@@ -2303,7 +2315,7 @@ export function tokenize(data: string) {
   return data.split(' ');
 }
 `,
-      'src/core/transformer.ts': `
+      "src/core/transformer.ts": `
 import { parse } from './parser';
 import { validate } from './validator';
 
@@ -2318,7 +2330,7 @@ export function optimize(input: string) {
   return tokens.filter(t => t.length > 0);
 }
 `,
-      'src/core/validator.ts': `
+      "src/core/validator.ts": `
 export function validate(input: string) {
   if (!input) throw new Error('Invalid');
   return true;
@@ -2332,7 +2344,7 @@ export function sanitize(input: string) {
   return input.replace(/[<>]/g, '');
 }
 `,
-      'src/io/reader.ts': `
+      "src/io/reader.ts": `
 export function readFile(path: string) {
   return 'file contents from ' + path;
 }
@@ -2345,7 +2357,7 @@ export function close(handle: any) {
   return true;
 }
 `,
-      'src/io/writer.ts': `
+      "src/io/writer.ts": `
 import { log } from './logger';
 
 export function writeFile(path: string, data: string) {
@@ -2358,7 +2370,7 @@ export function flush() {
   return true;
 }
 `,
-      'src/io/logger.ts': `
+      "src/io/logger.ts": `
 export function log(msg: string) {
   console.log('[LOG]', msg);
 }
@@ -2385,44 +2397,50 @@ export function createEntry(level: string, msg: string) {
    * same number of skill directories, all SKILL.md files valid,
    * and CLAUDE.md still references generated skills.
    */
-  it('second analyze --skills produces stable output', () => {
+  it("second analyze --skills produces stable output", () => {
     /* CI timeout tolerance */
     if (result1.status === null || result2.status === null) return;
 
-    expect(result1.status, [
-      `first analyze --skills exited with code ${result1.status}`,
-      `stdout: ${result1.stdout?.slice(0, 500)}`,
-      `stderr: ${result1.stderr?.slice(0, 500)}`,
-    ].join('\n')).toBe(0);
-    expect(result2.status, [
-      `second analyze --skills exited with code ${result2.status}`,
-      `stdout: ${result2.stdout?.slice(0, 500)}`,
-      `stderr: ${result2.stderr?.slice(0, 500)}`,
-    ].join('\n')).toBe(0);
+    expect(
+      result1.status,
+      [
+        `first analyze --skills exited with code ${result1.status}`,
+        `stdout: ${result1.stdout?.slice(0, 500)}`,
+        `stderr: ${result1.stderr?.slice(0, 500)}`,
+      ].join("\n"),
+    ).toBe(0);
+    expect(
+      result2.status,
+      [
+        `second analyze --skills exited with code ${result2.status}`,
+        `stdout: ${result2.stdout?.slice(0, 500)}`,
+        `stderr: ${result2.stderr?.slice(0, 500)}`,
+      ].join("\n"),
+    ).toBe(0);
 
-    const generatedDir = path.join(tmpDir, '.claude', 'skills', 'generated');
+    const generatedDir = path.join(tmpDir, ".claude", "skills", "generated");
     expect(fs.existsSync(generatedDir)).toBe(true);
 
-    const skillDirs = fs.readdirSync(generatedDir).filter(d =>
-      fs.statSync(path.join(generatedDir, d)).isDirectory(),
-    );
+    const skillDirs = fs
+      .readdirSync(generatedDir)
+      .filter((d) => fs.statSync(path.join(generatedDir, d)).isDirectory());
     expect(skillDirs.length).toBeGreaterThanOrEqual(1);
 
     /* All SKILL.md files should still have valid frontmatter */
     for (const dir of skillDirs) {
-      const skillPath = path.join(generatedDir, dir, 'SKILL.md');
+      const skillPath = path.join(generatedDir, dir, "SKILL.md");
       expect(fs.existsSync(skillPath)).toBe(true);
-      const content = fs.readFileSync(skillPath, 'utf-8');
-      expect(content.startsWith('---')).toBe(true);
-      expect(content).toContain('name:');
-      expect(content).toContain('description:');
+      const content = fs.readFileSync(skillPath, "utf-8");
+      expect(content.startsWith("---")).toBe(true);
+      expect(content).toContain("name:");
+      expect(content).toContain("description:");
       expect(content.length).toBeGreaterThan(200);
     }
 
     /* CLAUDE.md should still reference generated skills */
-    const claudePath = path.join(tmpDir, 'CLAUDE.md');
+    const claudePath = path.join(tmpDir, "CLAUDE.md");
     expect(fs.existsSync(claudePath)).toBe(true);
-    const claudeContent = fs.readFileSync(claudePath, 'utf-8');
-    expect(claudeContent).toContain('.claude/skills/generated/');
+    const claudeContent = fs.readFileSync(claudePath, "utf-8");
+    expect(claudeContent).toContain(".claude/skills/generated/");
   }, 90000);
 });

@@ -1,7 +1,7 @@
-import { ILogger } from './models';
+import { ILogger } from "./models";
 
 export class ConsoleLogger implements ILogger {
-    log(message: string): void {
-        console.log(message);
-    }
+  log(message: string): void {
+    console.log(message);
+  }
 }

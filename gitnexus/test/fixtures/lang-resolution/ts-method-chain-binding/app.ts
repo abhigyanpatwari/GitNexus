@@ -1,4 +1,4 @@
-import { getUser } from './service';
+import { getUser } from "./service";
 
 function processChain() {
   const user = getUser();

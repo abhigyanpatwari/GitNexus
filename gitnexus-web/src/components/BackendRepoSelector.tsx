@@ -1,5 +1,5 @@
-import { Server, ArrowRight } from 'lucide-react';
-import { BackendRepo } from '../services/backend';
+import { Server, ArrowRight } from "lucide-react";
+import { BackendRepo } from "../services/backend";
 
 interface BackendRepoSelectorProps {
   repos: BackendRepo[];
@@ -33,7 +33,9 @@ export const BackendRepoSelector = ({
       {isConnected && (
         <div className="flex items-center justify-center gap-2 mb-6">
           <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-          <span className="text-xs text-green-400">Connected to {backendUrl}</span>
+          <span className="text-xs text-green-400">
+            Connected to {backendUrl}
+          </span>
         </div>
       )}
 
@@ -53,9 +55,15 @@ export const BackendRepoSelector = ({
                 <ArrowRight className="w-4 h-4 text-text-muted group-hover:text-accent transition-colors" />
               </div>
               <div className="flex items-center gap-3 text-xs text-text-muted">
-                {repo.stats?.files != null && <span>{repo.stats.files} files</span>}
-                {repo.stats?.nodes != null && <span>{repo.stats.nodes} nodes</span>}
-                {repo.stats?.edges != null && <span>{repo.stats.edges} edges</span>}
+                {repo.stats?.files != null && (
+                  <span>{repo.stats.files} files</span>
+                )}
+                {repo.stats?.nodes != null && (
+                  <span>{repo.stats.nodes} nodes</span>
+                )}
+                {repo.stats?.edges != null && (
+                  <span>{repo.stats.edges} edges</span>
+                )}
               </div>
               <div className="text-xs text-text-muted mt-1">
                 Indexed {new Date(repo.indexedAt).toLocaleDateString()}
@@ -67,8 +75,10 @@ export const BackendRepoSelector = ({
         <div className="text-center text-text-muted py-8">
           <p className="text-sm mb-2">No indexed repositories found</p>
           <p className="text-xs">
-            Run{' '}
-            <code className="px-1 py-0.5 bg-elevated rounded">gitnexus analyze</code>{' '}
+            Run{" "}
+            <code className="px-1 py-0.5 bg-elevated rounded">
+              gitnexus analyze
+            </code>{" "}
             in a repository
           </p>
         </div>
@@ -77,7 +87,7 @@ export const BackendRepoSelector = ({
       {/* Bottom hints */}
       <div className="mt-4 flex items-center justify-center gap-3 text-xs text-text-muted">
         <span className="px-3 py-1.5 bg-elevated border border-border-subtle rounded-md">
-          {repos.length} {repos.length === 1 ? 'repo' : 'repos'}
+          {repos.length} {repos.length === 1 ? "repo" : "repos"}
         </span>
         <span className="px-3 py-1.5 bg-elevated border border-border-subtle rounded-md">
           Pre-indexed
