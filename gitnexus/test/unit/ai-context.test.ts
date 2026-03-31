@@ -66,6 +66,77 @@ describe('generateAIContextFiles', () => {
     expect(starts).toBe(1);
   });
 
+  it('preserves custom section when gitnexus:keep is present', async () => {
+    const claudeMdPath = path.join(tmpDir, 'CLAUDE.md');
+
+    // Write a custom lean section with keep marker
+    const customContent = `# My Project
+
+Some project docs here.
+
+<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+# GitNexus — Code Knowledge Graph
+
+Indexed as **TestProject** (50 symbols, 100 relationships, 5 execution flows). MCP tools.
+
+| Tool | Use for |
+|------|---------|
+| query | Find flows |
+
+Resources: gitnexus://repo/TestProject/context
+<!-- gitnexus:end -->
+`;
+    await fs.writeFile(claudeMdPath, customContent, 'utf-8');
+
+    // Run analyze with new stats — should only update the stats line
+    const stats = { nodes: 999, edges: 1234, processes: 42 };
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+
+    const result = await fs.readFile(claudeMdPath, 'utf-8');
+
+    // Stats should be updated
+    expect(result).toContain('999 symbols');
+    expect(result).toContain('1234 relationships');
+    expect(result).toContain('42 execution flows');
+
+    // Custom layout should be preserved (not replaced with verbose template)
+    expect(result).toContain('<!-- gitnexus:keep -->');
+    expect(result).toContain('Code Knowledge Graph');
+    expect(result).toContain('| query | Find flows |');
+
+    // Verbose template sections should NOT be present
+    expect(result).not.toContain('## Always Do');
+    expect(result).not.toContain('## Never Do');
+    expect(result).not.toContain('## When Debugging');
+
+    // Non-GitNexus content should be preserved
+    expect(result).toContain('# My Project');
+    expect(result).toContain('Some project docs here.');
+  });
+
+  it('replaces section when no keep marker is present', async () => {
+    const agentsPath = path.join(tmpDir, 'AGENTS.md');
+
+    // Write a section WITHOUT keep marker
+    const content = `<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+Old content here.
+<!-- gitnexus:end -->
+`;
+    await fs.writeFile(agentsPath, content, 'utf-8');
+
+    const stats = { nodes: 100, edges: 200, processes: 10 };
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+
+    const result = await fs.readFile(agentsPath, 'utf-8');
+
+    // Should have the full verbose template
+    expect(result).toContain('## Always Do');
+    expect(result).not.toContain('Old content here');
+  });
+
   it('installs skills files', async () => {
     const stats = { nodes: 10 };
     const result = await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);

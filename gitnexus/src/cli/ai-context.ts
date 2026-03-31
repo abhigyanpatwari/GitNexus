@@ -200,12 +200,21 @@ async function upsertGitNexusSection(
   if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
     const existingSection = existingContent.substring(startIdx, endIdx + GITNEXUS_END_MARKER.length);
 
-    // If the existing section contains <!-- gitnexus:keep -->, only update the stats line
-    // This lets users customize the section without it being overwritten on every analyze
+    // If the existing section contains <!-- gitnexus:keep -->, preserve the user's
+    // custom layout and only update the stats line (node/edge/flow counts).
+    // This lets teams trim the verbose default template to a lean format without
+    // having it overwritten on every `gitnexus analyze`.
     if (existingSection.includes('<!-- gitnexus:keep -->')) {
-      // Update just the "Indexed as **Name** (N nodes, M edges, P flows)" line
-      const statsPattern = /Indexed as \*\*[^*]+\*\* \([^)]+\)/;
-      const statsLine = `Indexed as **${(content.match(/\*\*([^*]+)\*\*/)?.[1]) || 'unknown'}** (${(content.match(/\(([^)]+)\)/)?.[1]) || '0 nodes'})`;
+      // Match both formats:
+      //   "Indexed as **name** (N symbols, M relationships, P execution flows)"
+      //   "This project is indexed by GitNexus as **name** (N symbols, ...)"
+      const statsPattern = /(?:Indexed as|indexed by GitNexus as) \*\*[^*]+\*\* \([^)]+\)/;
+
+      // Extract fresh stats from the newly generated content
+      const newName = (content.match(/\*\*([^*]+)\*\*/) || [])[1] || 'unknown';
+      const newStats = (content.match(/\((\d[\d,]* symbols[^)]+)\)/) || content.match(/\(([^)]+)\)/) || [])[1] || '0 nodes';
+      const statsLine = `Indexed as **${newName}** (${newStats})`;
+
       if (statsPattern.test(existingSection)) {
         const updatedSection = existingSection.replace(statsPattern, statsLine);
         const before = existingContent.substring(0, startIdx);
@@ -213,6 +222,8 @@ async function upsertGitNexusSection(
         await fs.writeFile(filePath, (before + updatedSection + after).trim() + '\n', 'utf-8');
         return 'updated';
       }
+      // Keep marker present but no stats line found — preserve section as-is
+      return 'updated';
     }
 
     // No keep marker — replace existing section with full verbose content
