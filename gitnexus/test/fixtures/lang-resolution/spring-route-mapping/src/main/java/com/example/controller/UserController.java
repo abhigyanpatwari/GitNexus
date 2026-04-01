@@ -4,6 +4,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -22,5 +23,10 @@ public class UserController {
   @PatchMapping("/users/profile")
   public String updateProfile() {
     return "updated";
+  }
+
+  @RequestMapping(value = "/users/search", method = RequestMethod.POST)
+  public String searchUsers() {
+    return "search";
   }
 }
