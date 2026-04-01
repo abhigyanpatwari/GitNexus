@@ -865,12 +865,26 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
 
       // Path validation: require absolute path, reject traversal (e.g. /tmp/../etc/passwd)
+      // while still accepting common absolute-path variants with trailing separators.
       if (repoLocalPath) {
         if (!path.isAbsolute(repoLocalPath)) {
           res.status(400).json({ error: '"path" must be an absolute path' });
           return;
         }
-        if (path.normalize(repoLocalPath) !== path.resolve(repoLocalPath)) {
+
+        const normalizedInput = path.normalize(repoLocalPath);
+        const resolvedInput = path.resolve(repoLocalPath);
+        // normalize() may keep a trailing separator (e.g. /home/user/project/)
+        // while resolve() typically strips it. Compare without trailing separators
+        // so valid absolute paths are accepted consistently.
+        const stripTrailingSeparator = (p: string): string => {
+          if (p.length <= 1) return p;
+          return p.replace(/[\\/]+$/, '');
+        };
+
+        if (
+          stripTrailingSeparator(normalizedInput) !== stripTrailingSeparator(resolvedInput)
+        ) {
           res.status(400).json({ error: '"path" must not contain traversal sequences' });
           return;
         }
