@@ -1,4 +1,5 @@
 // gitnexus/src/core/ingestion/method-extractors/configs/typescript-javascript.ts
+// Verified against tree-sitter-typescript ^0.23.2, tree-sitter-javascript ^0.23.0
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type {
@@ -6,7 +7,7 @@ import type {
   ParameterInfo,
   MethodVisibility,
 } from '../../method-types.js';
-import { hasKeyword, typeFromAnnotation } from '../../field-extractors/configs/helpers.js';
+import { hasKeyword } from '../../field-extractors/configs/helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
@@ -34,8 +35,11 @@ function extractTsJsParameters(node: SyntaxNode): ParameterInfo[] {
 
     switch (param.type) {
       case 'required_parameter': {
-        const patternNode = param.childForFieldName('pattern') ?? param.childForFieldName('name');
+        const patternNode = param.childForFieldName('pattern');
         if (!patternNode) break;
+
+        // Skip TS `this` parameter — it's a compile-time type constraint, not a real param
+        if (patternNode.type === 'this') break;
 
         // Rest parameter: pattern is a rest_pattern (...args) — extract inner identifier
         const isRest = patternNode.type === 'rest_pattern';
@@ -60,7 +64,7 @@ function extractTsJsParameters(node: SyntaxNode): ParameterInfo[] {
         break;
       }
       case 'optional_parameter': {
-        const nameNode = param.childForFieldName('pattern') ?? param.childForFieldName('name');
+        const nameNode = param.childForFieldName('pattern');
         if (!nameNode) break;
         const typeAnnotation = param.childForFieldName('type');
         const typeNode = typeAnnotation?.firstNamedChild;
@@ -75,7 +79,7 @@ function extractTsJsParameters(node: SyntaxNode): ParameterInfo[] {
         break;
       }
       case 'rest_parameter': {
-        const nameNode = param.childForFieldName('pattern') ?? param.childForFieldName('name');
+        const nameNode = param.childForFieldName('pattern');
         if (!nameNode) break;
         const typeAnnotation = param.childForFieldName('type');
         const typeNode = typeAnnotation?.firstNamedChild;
@@ -136,16 +140,15 @@ function extractTsJsReturnType(node: SyntaxNode): string | undefined {
     }
     return extractSimpleTypeName(returnType) ?? returnType.text?.trim();
   }
-  // Fallback: walk children for type_annotation (some node types may not use return_type field)
-  return typeFromAnnotation(node);
+  return undefined;
 }
 
 /**
- * Extract visibility using the accessibility_modifier two-pass pattern.
+ * Extract visibility from accessibility_modifier or #private name.
  *
  * tree-sitter-typescript emits accessibility_modifier as a named child of method nodes
- * (not as a modifiers wrapper like JVM). Matches the field extractor pattern at
- * field-extractors/configs/typescript-javascript.ts lines 39-47.
+ * (not as a modifiers wrapper like JVM). Pass 1 scans for that child; pass 2 checks for
+ * ES2022 private_property_identifier (#name). Default: public.
  */
 function extractTsJsVisibility(node: SyntaxNode): MethodVisibility {
   // Pass 1: check for accessibility_modifier named child (TS-specific)
@@ -217,8 +220,11 @@ const shared: Omit<MethodExtractionConfig, 'language'> = {
   ],
   // Note: TS constructors are method_definition nodes (name = 'constructor'), so no
   // explicit constructor_declaration entry is needed (unlike JVM/C# configs).
-  // Known gap: call_signature and construct_signature (e.g., interface Fn { (x: string): void; })
-  // are not extracted — they have no name field and are uncommon in practice.
+  // Known gaps:
+  //   - call_signature and construct_signature (e.g., interface Fn { (x: string): void; })
+  //     are not extracted — they have no name field and are uncommon in practice.
+  //   - class_expression (const Foo = class { ... }) — methods inside class expressions
+  //     are not discovered because class_expression is not in typeDeclarationNodes.
   methodNodeTypes: ['method_definition', 'method_signature', 'abstract_method_signature'],
   bodyNodeTypes: ['class_body', 'interface_body'],
 

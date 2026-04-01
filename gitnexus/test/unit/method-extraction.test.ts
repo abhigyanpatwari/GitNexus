@@ -301,7 +301,7 @@ describe('Java MethodExtractor', () => {
       const classNode = tree.rootNode.child(0)!;
       const result = extractor.extract(classNode, javaCtx);
 
-      expect(result!.methods.length).toBeGreaterThanOrEqual(1);
+      expect(result!.methods).toHaveLength(1);
       const sg = result!.methods.find((m) => m.name === 'surfaceGravity');
       expect(sg).toBeDefined();
       expect(sg!.returnType).toBe('double');
@@ -1526,6 +1526,7 @@ describe('TypeScript MethodExtractor', () => {
 
       expect(result!.methods[0].isAsync).toBe(true);
       expect(result!.methods[0].name).toBe('fetch');
+      expect(result!.methods[0].returnType).toBe('Promise');
     });
 
     it('extracts constructor', () => {
@@ -1542,7 +1543,9 @@ describe('TypeScript MethodExtractor', () => {
       expect(ctor.name).toBe('constructor');
       expect(ctor.parameters).toHaveLength(2);
       expect(ctor.parameters[0].name).toBe('name');
+      expect(ctor.parameters[0].type).toBe('string');
       expect(ctor.parameters[1].name).toBe('age');
+      expect(ctor.parameters[1].type).toBe('number');
     });
 
     it('extracts override method', () => {
@@ -1570,8 +1573,14 @@ describe('TypeScript MethodExtractor', () => {
 
       // Getter and setter both have name 'value' (no get/set prefix from extractName)
       expect(result!.methods).toHaveLength(2);
-      expect(result!.methods[0].name).toBe('value');
-      expect(result!.methods[1].name).toBe('value');
+      const getter = result!.methods[0];
+      const setter = result!.methods[1];
+      expect(getter.name).toBe('value');
+      expect(getter.parameters).toHaveLength(0);
+      expect(getter.returnType).toBe('number');
+      expect(setter.name).toBe('value');
+      expect(setter.parameters).toHaveLength(1);
+      expect(setter.parameters[0].name).toBe('v');
     });
 
     it('extracts destructured parameter', () => {
@@ -1629,9 +1638,113 @@ describe('TypeScript MethodExtractor', () => {
       const classNode = tree.rootNode.child(0)!;
       const result = extractor.extract(classNode, tsCtx);
 
-      // Two overload signatures (method_signature) + one implementation (method_definition)
+      // Two overload signatures (method_signature) + one implementation (method_definition) = 3
       const parseMethods = result!.methods.filter((m) => m.name === 'parse');
-      expect(parseMethods.length).toBeGreaterThanOrEqual(2);
+      expect(parseMethods).toHaveLength(3);
+      // Overload signatures inside a class body are not abstract
+      for (const m of parseMethods) {
+        expect(m.isAbstract).toBe(false);
+      }
+    });
+
+    it('filters out this-parameter (compile-time constraint)', () => {
+      const tree = parseTypeScript(`
+        class Handler {
+          handle(this: void, event: Event): void {}
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      const params = result!.methods[0].parameters;
+      // 'this' is not a real parameter — only 'event' should appear
+      expect(params).toHaveLength(1);
+      expect(params[0].name).toBe('event');
+      expect(params[0].type).toBe('Event');
+    });
+
+    it('does not false-positive on methods named after soft keywords', () => {
+      const tree = parseTypeScript(`
+        class Foo {
+          static abstract() {}
+          static() {}
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      const abstractMethod = result!.methods.find((m) => m.name === 'abstract');
+      expect(abstractMethod).toBeDefined();
+      expect(abstractMethod!.isStatic).toBe(true);
+      expect(abstractMethod!.isAbstract).toBe(false); // name, not keyword
+
+      const staticMethod = result!.methods.find((m) => m.name === 'static');
+      expect(staticMethod).toBeDefined();
+      expect(staticMethod!.isStatic).toBe(false); // name, not keyword
+    });
+
+    it('extracts destructured rest parameter via required_parameter + rest_pattern', () => {
+      const tree = parseTypeScript(`
+        class Router {
+          route(base: string, ...{ method, path }: RouteConfig): void {}
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      const params = result!.methods[0].parameters;
+      expect(params).toHaveLength(2);
+      expect(params[0].name).toBe('base');
+      expect(params[1].name).toBe('{ method, path }');
+      expect(params[1].isVariadic).toBe(true);
+      expect(params[1].type).toBe('RouteConfig');
+    });
+
+    it('extracts ES2022 #private method as visibility private', () => {
+      const tree = parseTypeScript(`
+        class Vault {
+          #decrypt(data: string): string { return data; }
+          public read(): string { return this.#decrypt("x"); }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      const decrypt = result!.methods.find((m) => m.name === '#decrypt');
+      expect(decrypt).toBeDefined();
+      expect(decrypt!.visibility).toBe('private');
+      expect(decrypt!.parameters[0].type).toBe('string');
+
+      const read = result!.methods.find((m) => m.name === 'read');
+      expect(read!.visibility).toBe('public');
+    });
+
+    it('extracts generic method without type params in name', () => {
+      const tree = parseTypeScript(`
+        class Mapper {
+          transform<T, U>(input: T, fn: (x: T) => U): U { return fn(input); }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      const m = result!.methods[0];
+      expect(m.name).toBe('transform');
+      expect(m.parameters).toHaveLength(2);
+      expect(m.parameters[0].name).toBe('input');
+      expect(m.parameters[0].type).toBe('T');
+    });
+
+    it('returns empty methods for class with no methods', () => {
+      const tree = parseTypeScript(`
+        class Empty {}
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('Empty');
+      expect(result!.methods).toHaveLength(0);
     });
   });
 });
@@ -1749,6 +1862,34 @@ describe('JavaScript MethodExtractor', () => {
       expect(internal!.name).toBe('#internal');
       // ES2022 private methods (#name) are inherently private
       expect(internal!.visibility).toBe('private');
+    });
+
+    it('extracts destructured object parameter', () => {
+      const tree = parseJavaScript(`
+        class Handler {
+          handle({ method, path }) {}
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, jsCtx);
+
+      const params = result!.methods[0].parameters;
+      expect(params).toHaveLength(1);
+      expect(params[0].name).toBe('{ method, path }');
+      expect(params[0].type).toBeNull();
+    });
+
+    it('extracts async method', () => {
+      const tree = parseJavaScript(`
+        class Client {
+          async fetch(url) { return null; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, jsCtx);
+
+      expect(result!.methods[0].isAsync).toBe(true);
+      expect(result!.methods[0].name).toBe('fetch');
     });
   });
 });
