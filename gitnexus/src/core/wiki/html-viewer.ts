@@ -5,6 +5,7 @@
  * module tree, and metadata — viewable offline in any browser.
  */
 
+import { randomBytes } from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -90,6 +91,8 @@ function buildHTML(
   const treeJSON = safeJSON(moduleTree);
   const metaJSON = safeJSON(meta);
 
+  const nonce = randomBytes(16).toString('base64');
+
   const parts: string[] = [];
 
   // ── Head ──
@@ -98,11 +101,11 @@ function buildHTML(
   parts.push('<head>');
   parts.push('<meta charset="UTF-8">');
   parts.push('<meta name="viewport" content="width=device-width, initial-scale=1.0">');
-  parts.push('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\' \'unsafe-eval\' https://cdn.jsdelivr.net; style-src \'unsafe-inline\'; img-src data: https:;">');
+  parts.push(`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src data: https:;">`);
   parts.push('<title>' + esc(projectName) + ' — Wiki</title>');
-  parts.push('<script src="https://cdn.jsdelivr.net/npm/marked@11.0.0/marked.min.js"><\/script>');
+  parts.push(`<script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/marked@11.0.0/marked.min.js"><\/script>`);
   parts.push(
-    '<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"><\/script>',
+    `<script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"><\/script>`,
   );
   parts.push('<style>');
   parts.push(CSS);
@@ -136,7 +139,7 @@ function buildHTML(
   parts.push('</div>');
 
   // ── Script ──
-  parts.push('<script>');
+  parts.push(`<script nonce="${nonce}">`);
   parts.push('var PAGES = ' + pagesJSON + ';');
   parts.push('var TREE = ' + treeJSON + ';');
   parts.push('var META = ' + metaJSON + ';');

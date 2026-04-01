@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -54,17 +54,33 @@ describe('safeJSON', () => {
 });
 
 describe('generateHTMLViewer — CSP meta tag', () => {
-  it('includes a Content-Security-Policy meta tag in generated HTML', async () => {
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-csp-'));
-    try {
-      await fs.writeFile(path.join(tmpDir, 'overview.md'), '# Hello');
-      await fs.writeFile(path.join(tmpDir, 'module_tree.json'), '[]');
-      const outputPath = await generateHTMLViewer(tmpDir, 'TestProject');
-      const html = await fs.readFile(outputPath, 'utf-8');
-      expect(html).toContain('Content-Security-Policy');
-      expect(html).toContain("'unsafe-eval'");
-    } finally {
-      await fs.rm(tmpDir, { recursive: true, force: true });
-    }
+  let tmpDir: string;
+  let html: string;
+
+  beforeAll(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-csp-'));
+    await fs.writeFile(path.join(tmpDir, 'overview.md'), '# Hello');
+    await fs.writeFile(path.join(tmpDir, 'module_tree.json'), '[]');
+    const outputPath = await generateHTMLViewer(tmpDir, 'TestProject');
+    html = await fs.readFile(outputPath, 'utf-8');
+  });
+
+  afterAll(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('includes a nonce-based Content-Security-Policy (no unsafe-inline for scripts)', () => {
+    expect(html).toContain('Content-Security-Policy');
+    expect(html).toContain("'unsafe-eval'");
+    expect(html).toMatch(/script-src 'nonce-[A-Za-z0-9+/=]+'/);;
+    expect(html).not.toMatch(/script-src[^;]*'unsafe-inline'/);
+  });
+
+  it('applies the nonce attribute to every <script> tag', () => {
+    const scriptTags = html.match(/<script[\s>]/g) ?? [];
+    expect(scriptTags.length).toBeGreaterThanOrEqual(3);
+
+    const noncedScripts = html.match(/<script\s+nonce="[A-Za-z0-9+/=]+"[\s>]/g) ?? [];
+    expect(noncedScripts.length).toBe(scriptTags.length);
   });
 });

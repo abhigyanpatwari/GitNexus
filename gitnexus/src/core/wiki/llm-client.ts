@@ -211,11 +211,16 @@ export async function callLLM(
           continue;
         }
 
-        // Auto-switch max_tokens → max_completion_tokens when the model rejects max_tokens
+        // Auto-switch max_tokens -> max_completion_tokens when the model rejects it
+        let tokenErrMsg = errorText;
+        try {
+          const parsed = JSON.parse(errorText);
+          if (parsed?.error?.message) tokenErrMsg = parsed.error.message;
+        } catch { /* use raw errorText */ }
         if (
           !switchedTokenParam &&
           response.status === 400 &&
-          (errorText.includes("'max_tokens'") || errorText.includes('"max_tokens"')) &&
+          /['"]max_tokens['"]/.test(tokenErrMsg) &&
           body.max_tokens !== undefined
         ) {
           console.warn(
