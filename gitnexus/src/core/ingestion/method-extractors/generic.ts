@@ -120,8 +120,14 @@ function extractMethodsFromBody(
   out: MethodInfo[],
 ): void {
   for (let i = 0; i < body.namedChildCount; i++) {
-    const child = body.namedChild(i);
+    let child = body.namedChild(i);
     if (!child) continue;
+
+    // C++ template methods are wrapped in template_declaration — unwrap to the inner node
+    if (child.type === 'template_declaration') {
+      const inner = child.namedChildren.find((c) => methodNodeSet.has(c.type));
+      if (inner) child = inner;
+    }
 
     if (methodNodeSet.has(child.type)) {
       const method = buildMethod(child, ownerNode, context, config);

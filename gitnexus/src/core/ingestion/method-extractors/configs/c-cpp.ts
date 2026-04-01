@@ -1,5 +1,5 @@
 // gitnexus/src/core/ingestion/method-extractors/configs/c-cpp.ts
-// Verified against tree-sitter-cpp ^0.22.4
+// Verified against tree-sitter-cpp ^0.23.4
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type {
@@ -24,10 +24,19 @@ function findFunctionDeclarator(node: SyntaxNode): SyntaxNode | null {
   const declarator = node.childForFieldName('declarator');
   if (!declarator) return null;
   if (declarator.type === 'function_declarator') return declarator;
-  // pointer_declarator or reference_declarator wraps the function_declarator
-  for (let i = 0; i < declarator.namedChildCount; i++) {
-    const child = declarator.namedChild(i);
-    if (child?.type === 'function_declarator') return child;
+  // Recursively unwrap pointer_declarator / reference_declarator chains
+  // (e.g. int** (*pfn)() has pointer_declarator → pointer_declarator → function_declarator)
+  let current: SyntaxNode | null = declarator;
+  while (current) {
+    for (let i = 0; i < current.namedChildCount; i++) {
+      const child = current.namedChild(i);
+      if (child?.type === 'function_declarator') return child;
+    }
+    // Go deeper into nested pointer/reference declarators
+    const next = current.namedChildren.find(
+      (c) => c.type === 'pointer_declarator' || c.type === 'reference_declarator',
+    );
+    current = next ?? null;
   }
   return null;
 }
@@ -56,7 +65,26 @@ function extractCppMethodName(node: SyntaxNode): string | undefined {
  */
 function extractCppReturnType(node: SyntaxNode): string | undefined {
   const typeNode = node.childForFieldName('type');
-  if (typeNode) return extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
+  if (typeNode) {
+    const typeText = extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
+    // C++11 trailing return type: `auto foo() -> ReturnType`
+    // When the declared type is `auto`, check for a trailing_return_type on the
+    // function_declarator which holds the actual return type.
+    if (typeText === 'auto') {
+      const funcDecl = findFunctionDeclarator(node);
+      if (funcDecl) {
+        for (let i = 0; i < funcDecl.namedChildCount; i++) {
+          const child = funcDecl.namedChild(i);
+          if (child?.type === 'trailing_return_type') {
+            // trailing_return_type contains a type_descriptor with the real type
+            const typeDesc = child.firstNamedChild;
+            if (typeDesc) return extractSimpleTypeName(typeDesc) ?? typeDesc.text?.trim();
+          }
+        }
+      }
+    }
+    return typeText;
+  }
   // Fallback: first type-like named child (for declarations without type field)
   const first = node.firstNamedChild;
   if (
@@ -148,16 +176,20 @@ function extractCppParameters(node: SyntaxNode): ParameterInfo[] {
   return params;
 }
 
-/** Extract parameter name, unwrapping pointer/reference declarators. */
+/** Extract parameter name, recursively unwrapping pointer/reference declarators. */
 function extractParamName(declNode: SyntaxNode | null): string | undefined {
   if (!declNode) return undefined;
   if (declNode.type === 'identifier') return declNode.text;
-  // pointer_declarator (*name) or reference_declarator (&name)
+  // Recursively unwrap pointer_declarator / reference_declarator chains (e.g. int** ptr)
   for (let i = 0; i < declNode.namedChildCount; i++) {
     const child = declNode.namedChild(i);
-    if (child?.type === 'identifier') return child.text;
+    if (!child) continue;
+    if (child.type === 'identifier') return child.text;
+    if (child.type === 'pointer_declarator' || child.type === 'reference_declarator') {
+      return extractParamName(child);
+    }
   }
-  return declNode.text;
+  return undefined;
 }
 
 /**
@@ -173,9 +205,11 @@ function extractCppVisibility(node: SyntaxNode): MethodVisibility {
     }
     sibling = sibling.previousNamedSibling;
   }
-  // Default: struct = public, class = private
+  // Default: struct/union = public, class = private
   const parent = node.parent?.parent;
-  return parent?.type === 'struct_specifier' ? 'public' : 'private';
+  return parent?.type === 'struct_specifier' || parent?.type === 'union_specifier'
+    ? 'public'
+    : 'private';
 }
 
 /**
@@ -233,7 +267,7 @@ function hasVirtualSpecifier(node: SyntaxNode, keyword: string): boolean {
 //   - Template method declarations with explicit specialization.
 export const cppMethodConfig: MethodExtractionConfig = {
   language: SupportedLanguages.CPlusPlus,
-  typeDeclarationNodes: ['class_specifier', 'struct_specifier'],
+  typeDeclarationNodes: ['class_specifier', 'struct_specifier', 'union_specifier'],
   // declaration covers constructors/destructors; field_declaration covers method
   // declarations; function_definition covers inline method definitions.
   // Non-method declarations (variables, typedefs) are filtered by extractName

@@ -2170,5 +2170,82 @@ describe('C++ MethodExtractor', () => {
       expect(result).not.toBeNull();
       expect(result!.methods).toHaveLength(0);
     });
+
+    it('extracts double-pointer parameter name correctly', () => {
+      const tree = parseCPP(`
+        class Allocator {
+        public:
+          void alloc(int** ptr, char** argv);
+        };
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, cppCtx);
+
+      const params = result!.methods[0].parameters;
+      expect(params).toHaveLength(2);
+      expect(params[0].name).toBe('ptr');
+      expect(params[0].type).toBe('int');
+      expect(params[1].name).toBe('argv');
+    });
+
+    it('extracts template methods from class body', () => {
+      const tree = parseCPP(`
+        class Buffer {
+        public:
+          template<typename T>
+          void push(T value);
+          template<typename T>
+          T get(int index) { return T(); }
+        };
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, cppCtx);
+
+      expect(result!.methods).toHaveLength(2);
+      const push = result!.methods.find((m) => m.name === 'push');
+      const get = result!.methods.find((m) => m.name === 'get');
+      expect(push).toBeDefined();
+      expect(push!.parameters).toHaveLength(1);
+      expect(push!.parameters[0].name).toBe('value');
+      expect(get).toBeDefined();
+      expect(get!.parameters).toHaveLength(1);
+      expect(get!.parameters[0].name).toBe('index');
+    });
+
+    it('extracts methods from union_specifier', () => {
+      const tree = parseCPP(`
+        union Variant {
+          void clear();
+          int asInt() const;
+        };
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, cppCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('Variant');
+      expect(result!.methods).toHaveLength(2);
+      // Union default visibility is public (like struct)
+      expect(result!.methods[0].visibility).toBe('public');
+      expect(result!.methods[1].visibility).toBe('public');
+    });
+
+    it('extracts trailing return type instead of auto', () => {
+      const tree = parseCPP(`
+        class Container {
+        public:
+          auto begin() -> iterator;
+          auto size() -> size_t;
+        };
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, cppCtx);
+
+      expect(result!.methods).toHaveLength(2);
+      expect(result!.methods[0].name).toBe('begin');
+      expect(result!.methods[0].returnType).toBe('iterator');
+      expect(result!.methods[1].name).toBe('size');
+      expect(result!.methods[1].returnType).toBe('size_t');
+    });
   });
 });
