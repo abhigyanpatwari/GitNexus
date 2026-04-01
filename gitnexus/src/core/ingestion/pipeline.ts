@@ -27,6 +27,7 @@ import {
 import { nextjsFileToRouteURL, normalizeFetchURL } from './route-extractors/nextjs.js';
 import { expoFileToRouteURL } from './route-extractors/expo.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';
+import { extractSpringJavaRoutes } from './route-extractors/spring-java.js';
 import {
   extractResponseShapes,
   extractPHPResponseShapes,
@@ -1013,6 +1014,19 @@ async function runChunkedParseAndResolve(
     await processHeritage(graph, chunkFiles, astCache, ctx);
     if (rubyHeritage.length > 0) {
       await processHeritageFromExtracted(graph, rubyHeritage, ctx);
+    }
+    const chunkSpringRoutes: ExtractedRoute[] = [];
+    for (const file of chunkFiles) {
+      const provider = getProviderForFile(file.path);
+      const language = getLanguageFromFilename(file.path);
+      if (language !== SupportedLanguages.Java || !provider?.isRouteFile?.(file.path)) continue;
+      const tree = astCache.get(file.path);
+      if (!tree) continue;
+      chunkSpringRoutes.push(...extractSpringJavaRoutes(tree, file.path));
+    }
+    if (chunkSpringRoutes.length > 0) {
+      await processRoutesFromExtracted(graph, chunkSpringRoutes, ctx);
+      allExtractedRoutes.push(...chunkSpringRoutes);
     }
     // Extract fetch() calls for Next.js route matching (sequential path)
     const chunkFetchCalls = await extractFetchCallsFromFiles(chunkFiles, astCache);

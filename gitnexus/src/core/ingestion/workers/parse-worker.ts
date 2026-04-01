@@ -63,6 +63,7 @@ import { extractParsedCallSite } from '../call-sites/extract-language-call-site.
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
+import { extractSpringJavaRoutes } from '../route-extractors/spring-java.js';
 import { generateId } from '../../../lib/utils.js';
 import { preprocessImportPath } from '../import-processor.js';
 import type { NamedBinding } from '../named-bindings/types.js';
@@ -1887,9 +1888,14 @@ const processFileGroup = (
       }
     }
 
-    // Extract framework routes via provider detection (e.g., Laravel routes.php)
+    // Extract framework routes via provider detection (e.g., Laravel routes.php, Spring controllers)
     if (provider.isRouteFile?.(file.path)) {
-      const extractedRoutes = extractLaravelRoutes(tree, file.path);
+      let extractedRoutes: ExtractedRoute[] = [];
+      if (language === SupportedLanguages.PHP) {
+        extractedRoutes = extractLaravelRoutes(tree, file.path);
+      } else if (language === SupportedLanguages.Java) {
+        extractedRoutes = extractSpringJavaRoutes(tree, file.path);
+      }
       result.routes.push(...extractedRoutes);
     }
 

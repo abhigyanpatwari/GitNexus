@@ -19,6 +19,15 @@ import { javaConfig } from '../field-extractors/configs/jvm.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { javaMethodConfig } from '../method-extractors/configs/jvm.js';
 
+function isSpringRouteFile(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/');
+  return (
+    normalized.endsWith('Controller.java') ||
+    normalized.includes('/controller/') ||
+    normalized.includes('/controllers/')
+  );
+}
+
 export const javaProvider = defineLanguage({
   id: SupportedLanguages.Java,
   extensions: ['.java'],
@@ -31,4 +40,5 @@ export const javaProvider = defineLanguage({
   mroStrategy: 'implements-split',
   fieldExtractor: createFieldExtractor(javaConfig),
   methodExtractor: createMethodExtractor(javaMethodConfig),
+  isRouteFile: isSpringRouteFile,
 });

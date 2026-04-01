@@ -1701,7 +1701,7 @@ export const processAssignmentsFromExtracted = (
 };
 
 /**
- * Resolve pre-extracted Laravel routes to CALLS edges from route files to controller methods.
+ * Resolve pre-extracted framework routes to CALLS edges from handler files to controller methods.
  */
 export const processRoutesFromExtracted = async (
   graph: KnowledgeGraph,
@@ -1739,7 +1739,7 @@ export const processRoutesFromExtracted = async (
         targetId: guessedId,
         type: 'CALLS',
         confidence: confidence * 0.8,
-        reason: 'laravel-route',
+        reason: 'framework-route',
       });
       continue;
     }
@@ -1751,7 +1751,7 @@ export const processRoutesFromExtracted = async (
       targetId: methodId,
       type: 'CALLS',
       confidence,
-      reason: 'laravel-route',
+      reason: 'framework-route',
     });
   }
 
