@@ -364,16 +364,27 @@ function findClassNodeByQualifiedName(node: SyntaxNode): SyntaxNode | null {
   const declarator = node.childForFieldName('declarator');
   if (!declarator) return null;
 
-  // Find the function_declarator (may be nested inside pointer/reference declarator)
+  // Find the function_declarator, recursively unwrapping pointer_declarator /
+  // reference_declarator chains (e.g. int** Foo::bar() has
+  // pointer_declarator → pointer_declarator → function_declarator).
   let funcDecl: SyntaxNode | null = null;
   if (declarator.type === 'function_declarator') {
     funcDecl = declarator;
   } else {
-    for (let i = 0; i < declarator.namedChildCount; i++) {
-      const child = declarator.namedChild(i);
-      if (child?.type === 'function_declarator') {
-        funcDecl = child;
-        break;
+    let current: SyntaxNode | null = declarator;
+    while (current && !funcDecl) {
+      for (let i = 0; i < current.namedChildCount; i++) {
+        const child = current.namedChild(i);
+        if (child?.type === 'function_declarator') {
+          funcDecl = child;
+          break;
+        }
+      }
+      if (!funcDecl) {
+        const next = current.namedChildren.find(
+          (c) => c.type === 'pointer_declarator' || c.type === 'reference_declarator',
+        );
+        current = next ?? null;
       }
     }
   }
@@ -387,17 +398,27 @@ function findClassNodeByQualifiedName(node: SyntaxNode): SyntaxNode | null {
   if (!scope) return null;
   const className = scope.text;
 
-  // Search the file root for a matching class/struct specifier
+  // Search the file for a matching class/struct specifier, including inside
+  // namespace_definition blocks (the majority of production C++ uses namespaces).
   const root = node.tree.rootNode;
-  for (let i = 0; i < root.namedChildCount; i++) {
-    const child = root.namedChild(i);
-    if (!child) continue;
-    if (child.type === 'class_specifier' || child.type === 'struct_specifier') {
-      const nameNode = child.childForFieldName('name');
-      if (nameNode?.text === className) return child;
+  const classTypes = new Set(['class_specifier', 'struct_specifier']);
+  const searchIn = (parent: SyntaxNode): SyntaxNode | null => {
+    for (let i = 0; i < parent.namedChildCount; i++) {
+      const child = parent.namedChild(i);
+      if (!child) continue;
+      if (classTypes.has(child.type)) {
+        const nameNode = child.childForFieldName('name');
+        if (nameNode?.text === className) return child;
+      }
+      // Recurse into namespace blocks
+      if (child.type === 'namespace_definition') {
+        const found = searchIn(child);
+        if (found) return found;
+      }
     }
-  }
-  return null;
+    return null;
+  };
+  return searchIn(root);
 }
 
 /**

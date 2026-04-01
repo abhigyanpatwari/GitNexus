@@ -42,6 +42,22 @@ function findFunctionDeclarator(node: SyntaxNode): SyntaxNode | null {
 }
 
 /**
+ * Detect `= delete` and `= default` special member function declarations.
+ * These are not callable methods and should be suppressed from extraction.
+ * tree-sitter-cpp ^0.23.4 emits `delete_method_clause` / `default_method_clause`
+ * as named children of the function_definition node.
+ */
+function isDeletedOrDefaulted(node: SyntaxNode): boolean {
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child?.type === 'delete_method_clause' || child?.type === 'default_method_clause') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Extract method name from a function_declarator.
  * The name is the `declarator` field of the function_declarator — typically a
  * field_identifier, but can be a destructor_name (~ClassName) or operator name.
@@ -49,6 +65,11 @@ function findFunctionDeclarator(node: SyntaxNode): SyntaxNode | null {
 function extractCppMethodName(node: SyntaxNode): string | undefined {
   const funcDecl = findFunctionDeclarator(node);
   if (!funcDecl) return undefined;
+
+  // Suppress `= delete` and `= default` special members — these are not callable
+  // methods and should not appear in HAS_METHOD edges.
+  if (isDeletedOrDefaulted(node)) return undefined;
+
   const nameNode = funcDecl.childForFieldName('declarator');
   if (!nameNode) return undefined;
   // destructor_name: ~ClassName
@@ -268,8 +289,11 @@ function hasVirtualSpecifier(node: SyntaxNode, keyword: string): boolean {
 // Known gaps:
 //   - Out-of-class method definitions (void Foo::bar() {}) are not linked as
 //     HAS_METHOD — they appear as top-level function_definition nodes.
+//     This includes namespace-wrapped and nested classes.
 //   - Friend declarations are not extracted.
 //   - Template method declarations with explicit specialization.
+//   - const-qualified method overloads (e.g. begin() vs begin() const) collapse
+//     to the same name — the schema has no isConst field to distinguish them.
 export const cppMethodConfig: MethodExtractionConfig = {
   language: SupportedLanguages.CPlusPlus,
   typeDeclarationNodes: ['class_specifier', 'struct_specifier', 'union_specifier'],
@@ -314,6 +338,7 @@ export const cppMethodConfig: MethodExtractionConfig = {
 
 // ---------------------------------------------------------------------------
 // C config (minimal — C has no classes/methods, only struct function pointers)
+// Verified against tree-sitter-c 0.23.2
 // ---------------------------------------------------------------------------
 
 // C does not have methods in the OOP sense. Structs with function pointer fields
