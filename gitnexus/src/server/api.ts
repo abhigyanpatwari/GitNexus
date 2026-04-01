@@ -879,6 +879,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         // so valid absolute paths are accepted consistently.
         const stripTrailingSeparator = (p: string): string => {
           if (p.length <= 1) return p;
+          // Preserve root paths, including Windows drive roots like C:\\
+          if (p === path.parse(p).root || /^[A-Za-z]:[\\/]?$/.test(p)) return p;
           return p.replace(/[\\/]+$/, '');
         };
 

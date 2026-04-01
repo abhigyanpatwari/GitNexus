@@ -25,4 +25,19 @@ describe('analyze path validation', () => {
   it('rejects traversal sequences', () => {
     expect(hasTraversalSequence('/tmp/project/../other')).toBe(true);
   });
+
+
+  it('preserves Windows drive root semantics when stripping separators', () => {
+    const normalizedRoot = path.win32.normalize('C:\\');
+    const resolvedRoot = path.win32.resolve('C:\\');
+
+    const stripTrailingSeparator = (p: string): string => {
+      if (p.length <= 1) return p;
+      if (p === path.win32.parse(p).root || /^[A-Za-z]:[\\/]?$/.test(p)) return p;
+      return p.replace(/[\\/]+$/, '');
+    };
+
+    expect(stripTrailingSeparator(normalizedRoot)).toBe('C:\\');
+    expect(stripTrailingSeparator(resolvedRoot)).toBe('C:\\');
+  });
 });
