@@ -259,7 +259,13 @@ export const cppMethodConfig: MethodExtractionConfig = {
   },
 
   isVirtual(node) {
-    return hasKeyword(node, 'virtual');
+    // In C++, override and method-level final are only legal on virtual functions,
+    // so they imply virtual even without the explicit keyword.
+    return (
+      hasKeyword(node, 'virtual') ||
+      hasVirtualSpecifier(node, 'override') ||
+      hasVirtualSpecifier(node, 'final')
+    );
   },
 
   isOverride(node) {

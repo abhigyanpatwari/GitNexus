@@ -535,6 +535,63 @@ public:
   });
 });
 
+describe('HAS_METHOD integration — C++ virtual/static/constructor inline methods', () => {
+  beforeAll(async () => {
+    await loadLanguage(SupportedLanguages.CPlusPlus);
+  });
+
+  it('virtual, override, static, and constructor methods are captured from inline class body', () => {
+    const code = `
+class Shape {
+public:
+  Shape() {}
+  virtual ~Shape() {}
+  virtual double area() = 0;
+  static Shape* create();
+};
+
+class Circle : public Shape {
+public:
+  Circle(double r) : radius(r) {}
+  double area() override { return 3.14 * radius * radius; }
+private:
+  double radius;
+};
+`;
+    const results = parseAndExtractMethods(code, SupportedLanguages.CPlusPlus, 'src/shapes.h');
+
+    // Shape methods
+    const shapeCtor = results.find(
+      (r) => r.name === 'Shape' && r.enclosingClassId === 'Class:src/shapes.h:Shape',
+    );
+    expect(shapeCtor).toBeDefined();
+
+    const shapeDtor = results.find((r) => r.name === '~Shape');
+    expect(shapeDtor).toBeDefined();
+    expect(shapeDtor!.enclosingClassId).toBe('Class:src/shapes.h:Shape');
+
+    const area = results.find(
+      (r) => r.name === 'area' && r.enclosingClassId === 'Class:src/shapes.h:Shape',
+    );
+    expect(area).toBeDefined();
+
+    const create = results.find((r) => r.name === 'create');
+    expect(create).toBeDefined();
+    expect(create!.enclosingClassId).toBe('Class:src/shapes.h:Shape');
+
+    // Circle methods
+    const circleCtor = results.find(
+      (r) => r.name === 'Circle' && r.enclosingClassId === 'Class:src/shapes.h:Circle',
+    );
+    expect(circleCtor).toBeDefined();
+
+    const circleArea = results.find(
+      (r) => r.name === 'area' && r.enclosingClassId === 'Class:src/shapes.h:Circle',
+    );
+    expect(circleArea).toBeDefined();
+  });
+});
+
 describe('HAS_METHOD integration — TypeScript: abstract, interface, and #private methods', () => {
   beforeAll(async () => {
     await loadLanguage(SupportedLanguages.TypeScript, 'methods.ts');

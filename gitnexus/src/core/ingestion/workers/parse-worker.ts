@@ -353,6 +353,54 @@ function findEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
 }
 
 /**
+ * For C++ out-of-class method definitions (e.g. `void Foo::bar() {}`), extract the
+ * class name from the qualified_identifier scope and find the class declaration in the
+ * file's AST. Returns the class SyntaxNode or null if not found.
+ *
+ * Handles pointer/reference return types where function_declarator is nested inside
+ * pointer_declarator or reference_declarator.
+ */
+function findClassNodeByQualifiedName(node: SyntaxNode): SyntaxNode | null {
+  const declarator = node.childForFieldName('declarator');
+  if (!declarator) return null;
+
+  // Find the function_declarator (may be nested inside pointer/reference declarator)
+  let funcDecl: SyntaxNode | null = null;
+  if (declarator.type === 'function_declarator') {
+    funcDecl = declarator;
+  } else {
+    for (let i = 0; i < declarator.namedChildCount; i++) {
+      const child = declarator.namedChild(i);
+      if (child?.type === 'function_declarator') {
+        funcDecl = child;
+        break;
+      }
+    }
+  }
+  if (!funcDecl) return null;
+
+  // Check if the inner declarator is a qualified_identifier (Foo::bar)
+  const innerDecl = funcDecl.childForFieldName('declarator');
+  if (!innerDecl || innerDecl.type !== 'qualified_identifier') return null;
+
+  const scope = innerDecl.childForFieldName('scope');
+  if (!scope) return null;
+  const className = scope.text;
+
+  // Search the file root for a matching class/struct specifier
+  const root = node.tree.rootNode;
+  for (let i = 0; i < root.namedChildCount; i++) {
+    const child = root.namedChild(i);
+    if (!child) continue;
+    if (child.type === 'class_specifier' || child.type === 'struct_specifier') {
+      const nameNode = child.childForFieldName('name');
+      if (nameNode?.text === className) return child;
+    }
+  }
+  return null;
+}
+
+/**
  * Minimal no-op SymbolTable stub for FieldExtractorContext in the worker.
  * Field extraction only uses symbolTable.lookupExactAll for optional type resolution —
  * returning [] causes the extractor to use the raw type string, which is fine for us.
@@ -1713,7 +1761,8 @@ const processFileGroup = (
         // MethodExtractor is available or the method isn't inside a class body.
         let enrichedByMethodExtractor = false;
         if (provider.methodExtractor && definitionNode) {
-          const classNode = findEnclosingClassNode(definitionNode);
+          const classNode =
+            findEnclosingClassNode(definitionNode) ?? findClassNodeByQualifiedName(definitionNode);
           if (classNode) {
             const methodMap = getMethodInfo(classNode, provider, {
               filePath: file.path,

@@ -1996,6 +1996,8 @@ describe('C++ MethodExtractor', () => {
 
       expect(result!.methods[0].name).toBe('process');
       expect(result!.methods[0].isFinal).toBe(true);
+      // final is only legal on virtual functions — isVirtual must be true
+      expect(result!.methods[0].isVirtual).toBe(true);
     });
 
     it('extracts override method', () => {
@@ -2010,6 +2012,21 @@ describe('C++ MethodExtractor', () => {
 
       expect(result!.methods[0].name).toBe('draw');
       expect(result!.methods[0].isOverride).toBe(true);
+      // override is only legal on virtual functions — isVirtual must be true
+      expect(result!.methods[0].isVirtual).toBe(true);
+    });
+
+    it('non-virtual method has isVirtual false', () => {
+      const tree = parseCPP(`
+        class Plain {
+        public:
+          void bar();
+        };
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, cppCtx);
+
+      expect(result!.methods[0].isVirtual).toBeFalsy();
     });
 
     it('extracts static method', () => {
