@@ -301,21 +301,45 @@ export const fetchServerInfo = async (): Promise<ServerInfo> => {
   return response.json() as Promise<ServerInfo>;
 };
 
+export interface HeartbeatOptions {
+  /**
+   * Liveness probe cadence when SSE heartbeat is unavailable.
+   * Defaults to 5000ms.
+   */
+  probeIntervalMs?: number;
+  /**
+   * Number of consecutive probe failures before considering backend disconnected.
+   * Defaults to 3 (with 5s probe interval this is ~15s grace).
+   */
+  maxProbeFailures?: number;
+  /**
+   * Forces polling fallback mode immediately (primarily for tests).
+   */
+  forcePollingFallback?: boolean;
+}
+
 /**
  * Connect an SSE heartbeat to the backend. Fires `onDisconnect` when the
  * server goes down (after one retry to avoid false positives from transient
  * network hiccups). Returns a cleanup function.
  */
-export const connectHeartbeat = (onConnect: () => void, onDisconnect: () => void): (() => void) => {
+export const connectHeartbeat = (
+  onConnect: () => void,
+  onDisconnect: () => void,
+  options: HeartbeatOptions = {},
+): (() => void) => {
+  const probeIntervalMs = options.probeIntervalMs ?? 5_000;
+  const maxProbeFailures = options.maxProbeFailures ?? 3;
+
   let closed = false;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let livenessTimer: ReturnType<typeof setInterval> | null = null;
   let es: EventSource | null = null;
   let attempt = 0;
-  let heartbeatUnsupported = false;
+  let heartbeatUnsupported = options.forcePollingFallback ?? false;
   let consecutiveProbeFailures = 0;
+  let probeInFlight = false;
   const MAX_RETRIES = 3;
-  const MAX_PROBE_FAILURES = 3;
 
   const stopLivenessProbe = () => {
     if (livenessTimer) {
@@ -328,17 +352,23 @@ export const connectHeartbeat = (onConnect: () => void, onDisconnect: () => void
     if (closed || livenessTimer) return;
 
     const check = async () => {
-      const ok = await probeBackend();
-      if (closed) return;
-      if (ok) {
-        consecutiveProbeFailures = 0;
-        return;
-      }
+      if (probeInFlight || closed) return;
+      probeInFlight = true;
+      try {
+        const ok = await probeBackend();
+        if (closed) return;
+        if (ok) {
+          consecutiveProbeFailures = 0;
+          return;
+        }
 
-      consecutiveProbeFailures += 1;
-      if (consecutiveProbeFailures >= MAX_PROBE_FAILURES) {
-        stopLivenessProbe();
-        onDisconnect();
+        consecutiveProbeFailures += 1;
+        if (consecutiveProbeFailures >= maxProbeFailures) {
+          stopLivenessProbe();
+          onDisconnect();
+        }
+      } finally {
+        probeInFlight = false;
       }
     };
 
@@ -346,13 +376,14 @@ export const connectHeartbeat = (onConnect: () => void, onDisconnect: () => void
     void check();
     livenessTimer = setInterval(() => {
       void check();
-    }, 5_000);
+    }, probeIntervalMs);
   };
 
   const connect = () => {
     if (closed) return;
     if (heartbeatUnsupported) {
       startLivenessProbe();
+      onConnect();
       return;
     }
 
@@ -376,7 +407,7 @@ export const connectHeartbeat = (onConnect: () => void, onDisconnect: () => void
         return;
       }
 
-      // Backward-compat: older servers may not expose /api/heartbeat.
+      // Backward-compat: older servers (pre-1.5.x) may not expose /api/heartbeat.
       // If normal API probing still succeeds, keep the app connected and use
       // lightweight polling-based liveness instead of forcing onboarding.
       void probeBackend().then((ok) => {
