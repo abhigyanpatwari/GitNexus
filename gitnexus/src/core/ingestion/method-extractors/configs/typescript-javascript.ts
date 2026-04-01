@@ -225,6 +225,8 @@ const shared: Omit<MethodExtractionConfig, 'language'> = {
   //     are not extracted — they have no name field and are uncommon in practice.
   //   - class_expression (const Foo = class { ... }) — methods inside class expressions
   //     are not discovered because class_expression is not in typeDeclarationNodes.
+  //   - declare module / declare global augmentations — methods inside ambient_module_declaration
+  //     wrappers are not surfaced because the top-level walker doesn't descend into them.
   methodNodeTypes: ['method_definition', 'method_signature', 'abstract_method_signature'],
   bodyNodeTypes: ['class_body', 'interface_body'],
 

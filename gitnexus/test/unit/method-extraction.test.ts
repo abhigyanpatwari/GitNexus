@@ -1613,6 +1613,21 @@ describe('TypeScript MethodExtractor', () => {
       expect(result!.methods[0].returnType).toBe('Generator');
     });
 
+    it('extracts async generator method with isAsync true', () => {
+      const tree = parseTypeScript(`
+        class Stream {
+          async *values(): AsyncGenerator<number> { yield 1; }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, tsCtx);
+
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('values');
+      expect(result!.methods[0].isAsync).toBe(true);
+      expect(result!.methods[0].returnType).toBe('AsyncGenerator');
+    });
+
     it('extracts computed property name with brackets', () => {
       const tree = parseTypeScript(`
         class Iterable {
