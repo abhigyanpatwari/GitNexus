@@ -67,10 +67,12 @@ function buildHTML(
   pages: Record<string, string>,
   meta: Record<string, unknown> | null,
 ): string {
-  // Embed data as JSON inside the HTML
-  const pagesJSON = JSON.stringify(pages);
-  const treeJSON = JSON.stringify(moduleTree);
-  const metaJSON = JSON.stringify(meta);
+  // Embed data as JSON inside the HTML.
+  // Escape </script> sequences so they don't prematurely close the <script> tag.
+  const escScript = (s: string) => s.replace(/<\//g, '<\\/');
+  const pagesJSON = escScript(JSON.stringify(pages));
+  const treeJSON = escScript(JSON.stringify(moduleTree));
+  const metaJSON = escScript(JSON.stringify(meta));
 
   const parts: string[] = [];
 
