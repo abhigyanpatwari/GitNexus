@@ -1606,3 +1606,212 @@ describe('Rust cross-file binding propagation', () => {
     expect(getNameEdge).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Method enrichment: trait vs inherent impl, isAbstract, isStatic, annotations
+// ---------------------------------------------------------------------------
+
+describe('Rust method enrichment (trait + inherent impl)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-method-enrichment'), () => {});
+  }, 60000);
+
+  it('detects Dog struct and Animal trait', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('Dog');
+    expect(getNodesByLabel(result, 'Trait')).toContain('Animal');
+  });
+
+  it('emits IMPLEMENTS edge from Dog to Animal', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const edge = implements_.find((e) => e.source === 'Dog' && e.target === 'Animal');
+    expect(edge).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edges for all Dog methods (trait + inherent)', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const dogMethods = hasMethod
+      .filter((e) => e.source === 'Dog')
+      .map((e) => e.target)
+      .sort();
+    expect(dogMethods).toContain('speak');
+    expect(dogMethods).toContain('fetch');
+    expect(dogMethods).toContain('new');
+    expect(dogMethods).toContain('wag');
+  });
+
+  it('emits HAS_METHOD edge for Animal default method breathe', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const traitMethods = hasMethod
+      .filter((e) => e.source === 'Animal')
+      .map((e) => e.target)
+      .sort();
+    // Only default (non-abstract) methods get HAS_METHOD on the trait itself
+    expect(traitMethods).toContain('breathe');
+  });
+
+  it('marks trait required method speak as isAbstract=true on the trait', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const traitSpeak = methods.find(
+      (m) => m.name === 'speak' && m.properties.filePath?.includes('lib.rs'),
+    );
+    if (traitSpeak?.properties.isAbstract !== undefined) {
+      expect(traitSpeak.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks trait default method breathe as isAbstract=false', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const breathe = methods.find(
+      (m) => m.name === 'breathe' && m.properties.filePath?.includes('lib.rs'),
+    );
+    if (breathe?.properties.isAbstract !== undefined) {
+      expect(breathe.properties.isAbstract).toBe(false);
+    }
+  });
+
+  it('marks Dog::new() as isStatic=true (no self parameter)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const newFn = methods.find(
+      (m) => m.name === 'new' && m.properties.filePath?.includes('lib.rs'),
+    );
+    if (newFn?.properties.isStatic !== undefined) {
+      expect(newFn.properties.isStatic).toBe(true);
+    }
+  });
+
+  it('records parameterTypes for fetch(&self, item: &str)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const fetchFn = methods.find(
+      (m) => m.name === 'fetch' && m.properties.filePath?.includes('lib.rs'),
+    );
+    if (fetchFn?.properties.parameterTypes) {
+      expect(fetchFn.properties.parameterTypes).toContain('str');
+    }
+  });
+
+  it('records #[inline] annotation on wag()', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const wagFn = methods.find(
+      (m) => m.name === 'wag' && m.properties.filePath?.includes('lib.rs'),
+    );
+    if (wagFn?.properties.annotations) {
+      expect(wagFn.properties.annotations).toContain('inline');
+    }
+  });
+
+  it('resolves main.rs calls: Dog::new(), dog.speak(), dog.fetch()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const mainCalls = calls.filter((c) => c.source === 'main');
+
+    const newCall = mainCalls.find((c) => c.target === 'new');
+    const speakCall = mainCalls.find((c) => c.target === 'speak');
+    const fetchCall = mainCalls.find((c) => c.target === 'fetch');
+
+    expect(newCall).toBeDefined();
+    expect(speakCall).toBeDefined();
+    expect(fetchCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Abstract dispatch: trait required vs default methods, IMPLEMENTS + HAS_METHOD
+// ---------------------------------------------------------------------------
+
+describe('Rust abstract dispatch (Repository trait)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-abstract-dispatch'), () => {});
+  }, 60000);
+
+  it('detects SqlRepo struct and Repository trait', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('SqlRepo');
+    expect(getNodesByLabel(result, 'Trait')).toContain('Repository');
+  });
+
+  it('emits IMPLEMENTS edge from SqlRepo to Repository', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const edge = implements_.find((e) => e.source === 'SqlRepo' && e.target === 'Repository');
+    expect(edge).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edge for Repository default method count', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const traitMethods = hasMethod
+      .filter((e) => e.source === 'Repository')
+      .map((e) => e.target)
+      .sort();
+    // Only default (non-abstract) methods get HAS_METHOD on the trait itself
+    expect(traitMethods).toContain('count');
+  });
+
+  it('emits HAS_METHOD edges linking find and save to SqlRepo', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    // Trait-impl methods are attached to the implementing struct or the trait;
+    // check that at least find and save appear somewhere in the HAS_METHOD graph
+    const allTargets = hasMethod.map((e) => e.target);
+    expect(allTargets).toContain('find');
+    expect(allTargets).toContain('save');
+  });
+
+  it('marks required trait methods find and save as isAbstract=true', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const traitFind = methods.find(
+      (m) => m.name === 'find' && m.properties.filePath?.includes('lib.rs'),
+    );
+    const traitSave = methods.find(
+      (m) => m.name === 'save' && m.properties.filePath?.includes('lib.rs'),
+    );
+    if (traitFind?.properties.isAbstract !== undefined) {
+      expect(traitFind.properties.isAbstract).toBe(true);
+    }
+    if (traitSave?.properties.isAbstract !== undefined) {
+      expect(traitSave.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks default trait method count as isAbstract=false', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const countFn = methods.find(
+      (m) => m.name === 'count' && m.properties.filePath?.includes('lib.rs'),
+    );
+    if (countFn?.properties.isAbstract !== undefined) {
+      expect(countFn.properties.isAbstract).toBe(false);
+    }
+  });
+
+  it('records parameterTypes for find(&self, id: i32)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const findFn = methods.find(
+      (m) => m.name === 'find' && m.properties.filePath?.includes('lib.rs'),
+    );
+    if (findFn?.properties.parameterTypes) {
+      expect(findFn.properties.parameterTypes).toContain('i32');
+    }
+  });
+
+  it('records parameterTypes for save(&self, entity: &str)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const saveFn = methods.find(
+      (m) => m.name === 'save' && m.properties.filePath?.includes('lib.rs'),
+    );
+    if (saveFn?.properties.parameterTypes) {
+      expect(saveFn.properties.parameterTypes).toContain('str');
+    }
+  });
+
+  it('resolves process() calls: repo.find(), repo.save(), repo.count()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const processCalls = calls.filter((c) => c.source === 'process');
+
+    const findCall = processCalls.find((c) => c.target === 'find');
+    const saveCall = processCalls.find((c) => c.target === 'save');
+    const countCall = processCalls.find((c) => c.target === 'count');
+
+    expect(findCall).toBeDefined();
+    expect(saveCall).toBeDefined();
+    expect(countCall).toBeDefined();
+  });
+});

@@ -1,0 +1,3 @@
+String writeAuditSimple() {
+  return "zero";
+}

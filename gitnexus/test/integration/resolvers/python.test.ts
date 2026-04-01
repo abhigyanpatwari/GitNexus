@@ -1847,3 +1847,259 @@ describe('Python module import CALLS resolution (Issue #337)', () => {
     expect(authAdminLogin).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 16: Method enrichment (isAbstract, parameterTypes, static methods)
+// models.py: Animal(ABC) with @abstractmethod speak, @staticmethod classify, breathe
+// Dog(Animal) overrides speak
+// app.py: dog.speak(), Dog.classify("dog")
+// ---------------------------------------------------------------------------
+
+describe('Python method enrichment', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-method-enrichment'), () => {});
+  }, 60000);
+
+  it('detects Animal and Dog classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Animal');
+    expect(classes).toContain('Dog');
+  });
+
+  it('emits HAS_METHOD edges for Animal methods', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const animalMethods = hasMethod
+      .filter((e) => e.source === 'Animal')
+      .map((e) => e.target)
+      .sort();
+    expect(animalMethods).toContain('speak');
+    expect(animalMethods).toContain('classify');
+    expect(animalMethods).toContain('breathe');
+  });
+
+  it('emits HAS_METHOD edge for Dog.speak', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const dogSpeak = hasMethod.find((e) => e.source === 'Dog' && e.target === 'speak');
+    expect(dogSpeak).toBeDefined();
+  });
+
+  it('emits EXTENDS edge Dog -> Animal', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const dogExtends = extends_.find((e) => e.source === 'Dog' && e.target === 'Animal');
+    expect(dogExtends).toBeDefined();
+  });
+
+  it('marks @abstractmethod speak as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const speak = methods.find((n) => n.name === 'speak' && n.properties.filePath === 'models.py');
+    if (speak?.properties.isAbstract !== undefined) {
+      expect(speak.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks breathe as NOT isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const breathe = methods.find((n) => n.name === 'breathe');
+    if (breathe?.properties.isAbstract !== undefined) {
+      expect(breathe.properties.isAbstract).toBe(false);
+    }
+  });
+
+  it('populates parameterTypes for classify (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'classify');
+    if (classify?.properties.parameterTypes !== undefined) {
+      const params = classify.properties.parameterTypes;
+      expect(params).toContain('str');
+    }
+  });
+
+  it('resolves dog.speak() CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const speakCall = calls.find((c) => c.target === 'speak' && c.sourceFilePath === 'app.py');
+    expect(speakCall).toBeDefined();
+  });
+
+  it('resolves Dog.classify("dog") static CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const classifyCall = calls.find(
+      (c) => c.target === 'classify' && c.sourceFilePath === 'app.py',
+    );
+    expect(classifyCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 17: Overload dispatch (similarly-named methods/functions)
+// service.py: Formatter.format, Formatter.format_with_prefix,
+//             format_text, format_text_with_width
+// app.py: calls all four
+// ---------------------------------------------------------------------------
+
+describe('Python overload dispatch', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-overload-dispatch'), () => {});
+  }, 60000);
+
+  it('detects Formatter class', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Formatter');
+  });
+
+  it('detects all functions including methods', () => {
+    const fns = getNodesByLabel(result, 'Function');
+    expect(fns).toContain('format');
+    expect(fns).toContain('format_with_prefix');
+    expect(fns).toContain('format_text');
+    expect(fns).toContain('format_text_with_width');
+    expect(fns).toContain('run');
+  });
+
+  it('emits HAS_METHOD for Formatter.format and Formatter.format_with_prefix', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const fmtFormat = hasMethod.find((e) => e.source === 'Formatter' && e.target === 'format');
+    const fmtPrefix = hasMethod.find(
+      (e) => e.source === 'Formatter' && e.target === 'format_with_prefix',
+    );
+    expect(fmtFormat).toBeDefined();
+    expect(fmtPrefix).toBeDefined();
+  });
+
+  it('resolves f.format("hello") to Formatter.format', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const formatCall = calls.find((c) => c.target === 'format' && c.sourceFilePath === 'app.py');
+    expect(formatCall).toBeDefined();
+  });
+
+  it('resolves f.format_with_prefix("hello",">>") to Formatter.format_with_prefix', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const prefixCall = calls.find(
+      (c) => c.target === 'format_with_prefix' && c.sourceFilePath === 'app.py',
+    );
+    expect(prefixCall).toBeDefined();
+  });
+
+  it('resolves format_text() top-level call', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const textCall = calls.find((c) => c.target === 'format_text' && c.sourceFilePath === 'app.py');
+    expect(textCall).toBeDefined();
+  });
+
+  it('resolves format_text_with_width() top-level call', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const widthCall = calls.find(
+      (c) => c.target === 'format_text_with_width' && c.sourceFilePath === 'app.py',
+    );
+    expect(widthCall).toBeDefined();
+  });
+
+  it('populates parameterTypes for format_with_prefix (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const fwp = methods.find((n) => n.name === 'format_with_prefix');
+    if (fwp?.properties.parameterTypes !== undefined) {
+      const params = fwp.properties.parameterTypes;
+      expect(params).toContain('str');
+    }
+  });
+
+  it('populates parameterTypes for format_text_with_width (conditional)', () => {
+    const fns = getNodesByLabelFull(result, 'Function');
+    const ftw = fns.find((n) => n.name === 'format_text_with_width');
+    if (ftw?.properties.parameterTypes !== undefined) {
+      const params = ftw.properties.parameterTypes;
+      expect(params).toContain('str');
+      expect(params).toContain('int');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 18: Abstract dispatch (ABC base + concrete impl + receiver resolution)
+// base.py: Repository(ABC) with @abstractmethod find, save
+// impl.py: SqlRepository(Repository) implements find, save
+// app.py: repo = SqlRepository(); repo.find(42); repo.save(user)
+// ---------------------------------------------------------------------------
+
+describe('Python abstract dispatch', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-abstract-dispatch'), () => {});
+  }, 60000);
+
+  it('detects Repository and SqlRepository classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Repository');
+    expect(classes).toContain('SqlRepository');
+  });
+
+  it('emits EXTENDS edge SqlRepository -> Repository', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const edge = extends_.find((e) => e.source === 'SqlRepository' && e.target === 'Repository');
+    expect(edge).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edges for Repository.find and Repository.save', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const repoFind = hasMethod.find((e) => e.source === 'Repository' && e.target === 'find');
+    const repoSave = hasMethod.find((e) => e.source === 'Repository' && e.target === 'save');
+    expect(repoFind).toBeDefined();
+    expect(repoSave).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edges for SqlRepository.find and SqlRepository.save', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const sqlFind = hasMethod.find((e) => e.source === 'SqlRepository' && e.target === 'find');
+    const sqlSave = hasMethod.find((e) => e.source === 'SqlRepository' && e.target === 'save');
+    expect(sqlFind).toBeDefined();
+    expect(sqlSave).toBeDefined();
+  });
+
+  it('marks base Repository.find as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const baseFind = methods.find((n) => n.name === 'find' && n.properties.filePath === 'base.py');
+    if (baseFind?.properties.isAbstract !== undefined) {
+      expect(baseFind.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks base Repository.save as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const baseSave = methods.find((n) => n.name === 'save' && n.properties.filePath === 'base.py');
+    if (baseSave?.properties.isAbstract !== undefined) {
+      expect(baseSave.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks concrete SqlRepository.find as NOT isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const sqlFind = methods.find((n) => n.name === 'find' && n.properties.filePath === 'impl.py');
+    if (sqlFind?.properties.isAbstract !== undefined) {
+      expect(sqlFind.properties.isAbstract).toBe(false);
+    }
+  });
+
+  it('resolves repo.find(42) CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findCall = calls.find((c) => c.target === 'find' && c.sourceFilePath === 'app.py');
+    expect(findCall).toBeDefined();
+  });
+
+  it('resolves repo.save(user) CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find((c) => c.target === 'save' && c.sourceFilePath === 'app.py');
+    expect(saveCall).toBeDefined();
+  });
+
+  it('populates parameterTypes for Repository.find (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const baseFind = methods.find((n) => n.name === 'find' && n.properties.filePath === 'base.py');
+    if (baseFind?.properties.parameterTypes !== undefined) {
+      const params = baseFind.properties.parameterTypes;
+      expect(params).toContain('int');
+    }
+  });
+});

@@ -17,6 +17,8 @@ import { findDescendant, extractStringContent, type SyntaxNode } from '../utils/
 import type { NodeLabel } from 'gitnexus-shared';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { phpConfig as phpFieldConfig } from '../field-extractors/configs/php.js';
+import { createMethodExtractor } from '../method-extractors/generic.js';
+import { phpMethodConfig } from '../method-extractors/configs/php.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'echo',
@@ -231,6 +233,7 @@ export const phpProvider = defineLanguage({
   importResolver: resolvePhpImport,
   namedBindingExtractor: extractPhpNamedBindings,
   fieldExtractor: createFieldExtractor(phpFieldConfig),
+  methodExtractor: createMethodExtractor(phpMethodConfig),
   descriptionExtractor: phpDescriptionExtractor,
   isRouteFile: isPhpRouteFile,
   builtInNames: BUILT_INS,

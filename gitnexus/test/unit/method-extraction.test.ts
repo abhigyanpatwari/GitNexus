@@ -10,6 +10,12 @@ import {
   javascriptMethodConfig,
 } from '../../src/core/ingestion/method-extractors/configs/typescript-javascript.js';
 import { cppMethodConfig } from '../../src/core/ingestion/method-extractors/configs/c-cpp.js';
+import { pythonMethodConfig } from '../../src/core/ingestion/method-extractors/configs/python.js';
+import { rubyMethodConfig } from '../../src/core/ingestion/method-extractors/configs/ruby.js';
+import { rustMethodConfig } from '../../src/core/ingestion/method-extractors/configs/rust.js';
+import { dartMethodConfig } from '../../src/core/ingestion/method-extractors/configs/dart.js';
+import { phpMethodConfig } from '../../src/core/ingestion/method-extractors/configs/php.js';
+import { swiftMethodConfig } from '../../src/core/ingestion/method-extractors/configs/swift.js';
 import type { MethodExtractorContext } from '../../src/core/ingestion/method-types.js';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
@@ -17,6 +23,10 @@ import CSharp from 'tree-sitter-c-sharp';
 import CPP from 'tree-sitter-cpp';
 import TypeScript from 'tree-sitter-typescript';
 import JavaScript from 'tree-sitter-javascript';
+import Python from 'tree-sitter-python';
+import PHP from 'tree-sitter-php';
+import Ruby from 'tree-sitter-ruby';
+import Rust from 'tree-sitter-rust';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
 let Kotlin: unknown;
@@ -24,6 +34,26 @@ try {
   Kotlin = require('tree-sitter-kotlin');
 } catch {
   // Kotlin grammar may not be installed
+}
+
+let Dart: unknown;
+try {
+  Dart = require('tree-sitter-dart');
+  // Verify the grammar actually works with the installed tree-sitter version
+  const testParser = new Parser();
+  testParser.setLanguage(Dart as Parser.Language);
+} catch {
+  Dart = null;
+}
+
+let Swift: unknown;
+try {
+  Swift = require('tree-sitter-swift');
+  // Verify the grammar actually works with the installed tree-sitter version
+  const testParser = new Parser();
+  testParser.setLanguage(Swift as Parser.Language);
+} catch {
+  Swift = null;
 }
 
 const parser = new Parser();
@@ -2393,6 +2423,1719 @@ describe('C++ MethodExtractor', () => {
       expect(result!.methods[0].returnType).toBe('iterator');
       expect(result!.methods[1].name).toBe('size');
       expect(result!.methods[1].returnType).toBe('size_t');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Python
+// ---------------------------------------------------------------------------
+
+const parsePython = (code: string) => {
+  parser.setLanguage(Python);
+  return parser.parse(code);
+};
+
+const pythonCtx: MethodExtractorContext = {
+  filePath: 'test.py',
+  language: SupportedLanguages.Python,
+};
+
+describe('Python MethodExtractor', () => {
+  const extractor = createMethodExtractor(pythonMethodConfig);
+
+  describe('isTypeDeclaration', () => {
+    it('recognizes class_definition', () => {
+      const tree = parsePython('class Foo:\n    pass');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(true);
+    });
+
+    it('rejects function_definition', () => {
+      const tree = parsePython('def foo():\n    pass');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(false);
+    });
+  });
+
+  describe('basic class with __init__ and public method', () => {
+    it('extracts __init__ and a public method', () => {
+      const tree = parsePython(`
+class UserService:
+    def __init__(self, name: str):
+        self.name = name
+
+    def find_by_id(self, user_id: int) -> str:
+        pass
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('UserService');
+      expect(result!.methods).toHaveLength(2);
+
+      const init = result!.methods[0];
+      expect(init.name).toBe('__init__');
+      expect(init.visibility).toBe('public'); // dunder methods are public
+      expect(init.parameters).toHaveLength(1);
+      expect(init.parameters[0]).toEqual({
+        name: 'name',
+        type: 'str',
+        isOptional: false,
+        isVariadic: false,
+      });
+
+      const find = result!.methods[1];
+      expect(find.name).toBe('find_by_id');
+      expect(find.returnType).toBe('str');
+      expect(find.visibility).toBe('public');
+      expect(find.parameters).toHaveLength(1);
+      expect(find.parameters[0]).toEqual({
+        name: 'user_id',
+        type: 'int',
+        isOptional: false,
+        isVariadic: false,
+      });
+    });
+  });
+
+  describe('@abstractmethod', () => {
+    it('detects abstract method', () => {
+      const tree = parsePython(`
+class Shape:
+    @abstractmethod
+    def area(self) -> float:
+        pass
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result!.methods[0].isAbstract).toBe(true);
+      expect(result!.methods[0].name).toBe('area');
+      expect(result!.methods[0].returnType).toBe('float');
+      expect(result!.methods[0].annotations).toContain('@abstractmethod');
+    });
+  });
+
+  describe('@staticmethod and @classmethod', () => {
+    it('detects @staticmethod as static', () => {
+      const tree = parsePython(`
+class MathUtils:
+    @staticmethod
+    def add(a: int, b: int) -> int:
+        return a + b
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result!.methods[0].isStatic).toBe(true);
+      expect(result!.methods[0].name).toBe('add');
+      expect(result!.methods[0].parameters).toHaveLength(2);
+      expect(result!.methods[0].annotations).toContain('@staticmethod');
+    });
+
+    it('detects @classmethod as static', () => {
+      const tree = parsePython(`
+class Factory:
+    @classmethod
+    def from_dict(cls, data: dict) -> str:
+        pass
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result!.methods[0].isStatic).toBe(true);
+      expect(result!.methods[0].name).toBe('from_dict');
+      // cls should be skipped
+      expect(result!.methods[0].parameters).toHaveLength(1);
+      expect(result!.methods[0].parameters[0].name).toBe('data');
+      expect(result!.methods[0].annotations).toContain('@classmethod');
+    });
+  });
+
+  describe('*args and **kwargs', () => {
+    it('detects *args as variadic', () => {
+      const tree = parsePython(`
+class Logger:
+    def log(self, *args):
+        pass
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result!.methods[0].parameters).toHaveLength(1);
+      expect(result!.methods[0].parameters[0]).toEqual({
+        name: 'args',
+        type: null,
+        isOptional: false,
+        isVariadic: true,
+      });
+    });
+
+    it('detects **kwargs as variadic', () => {
+      const tree = parsePython(`
+class Config:
+    def update(self, **kwargs):
+        pass
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result!.methods[0].parameters).toHaveLength(1);
+      expect(result!.methods[0].parameters[0]).toEqual({
+        name: 'kwargs',
+        type: null,
+        isOptional: false,
+        isVariadic: true,
+      });
+    });
+
+    it('handles typed *args and **kwargs', () => {
+      const tree = parsePython(`
+class Handler:
+    def process(self, *args: str, **kwargs: int):
+        pass
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result!.methods[0].parameters).toHaveLength(2);
+      expect(result!.methods[0].parameters[0]).toEqual({
+        name: 'args',
+        type: 'str',
+        isOptional: false,
+        isVariadic: true,
+      });
+      expect(result!.methods[0].parameters[1]).toEqual({
+        name: 'kwargs',
+        type: 'int',
+        isOptional: false,
+        isVariadic: true,
+      });
+    });
+  });
+
+  describe('type-hinted parameters with defaults', () => {
+    it('extracts types and isOptional for defaults', () => {
+      const tree = parsePython(`
+class Service:
+    def configure(self, host: str, port: int = 8080, debug: bool = False):
+        pass
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      const params = result!.methods[0].parameters;
+      expect(params).toHaveLength(3);
+      expect(params[0]).toEqual({
+        name: 'host',
+        type: 'str',
+        isOptional: false,
+        isVariadic: false,
+      });
+      expect(params[1]).toEqual({
+        name: 'port',
+        type: 'int',
+        isOptional: true,
+        isVariadic: false,
+      });
+      expect(params[2]).toEqual({
+        name: 'debug',
+        type: 'bool',
+        isOptional: true,
+        isVariadic: false,
+      });
+    });
+  });
+
+  describe('return type annotation', () => {
+    it('extracts return type', () => {
+      const tree = parsePython(`
+class Converter:
+    def to_string(self) -> str:
+        pass
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result!.methods[0].returnType).toBe('str');
+    });
+
+    it('returns null when no return type annotation', () => {
+      const tree = parsePython(`
+class Converter:
+    def process(self):
+        pass
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result!.methods[0].returnType).toBeNull();
+    });
+  });
+
+  describe('async def', () => {
+    it('detects async method', () => {
+      const tree = parsePython(`
+class Client:
+    async def fetch(self, url: str) -> str:
+        pass
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result!.methods[0].isAsync).toBe(true);
+      expect(result!.methods[0].name).toBe('fetch');
+      expect(result!.methods[0].returnType).toBe('str');
+    });
+  });
+
+  describe('visibility via naming convention', () => {
+    it('detects __private_method as private', () => {
+      const tree = parsePython(`
+class Foo:
+    def __private_method(self):
+        pass
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result!.methods[0].visibility).toBe('private');
+    });
+
+    it('detects _protected_method as protected', () => {
+      const tree = parsePython(`
+class Foo:
+    def _protected_method(self):
+        pass
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result!.methods[0].visibility).toBe('protected');
+    });
+
+    it('dunder methods (__init__) are public', () => {
+      const tree = parsePython(`
+class Foo:
+    def __init__(self):
+        pass
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result!.methods[0].visibility).toBe('public');
+    });
+  });
+
+  describe('multiple decorators', () => {
+    it('collects all decorator annotations', () => {
+      const tree = parsePython(`
+class Base:
+    @property
+    @abstractmethod
+    def value(self) -> int:
+        pass
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result!.methods[0].annotations).toEqual(['@property', '@abstractmethod']);
+      expect(result!.methods[0].isAbstract).toBe(true);
+    });
+  });
+
+  describe('no params besides self', () => {
+    it('returns empty parameters when only self', () => {
+      const tree = parsePython(`
+class Empty:
+    def do_nothing(self):
+        pass
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result!.methods[0].parameters).toEqual([]);
+    });
+  });
+
+  describe('isFinal', () => {
+    it('is always false for Python', () => {
+      const tree = parsePython(`
+class Foo:
+    def bar(self):
+        pass
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result!.methods[0].isFinal).toBe(false);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ruby
+// ---------------------------------------------------------------------------
+
+const parseRuby = (code: string) => {
+  parser.setLanguage(Ruby);
+  return parser.parse(code);
+};
+
+const rubyCtx: MethodExtractorContext = {
+  filePath: 'test.rb',
+  language: SupportedLanguages.Ruby,
+};
+
+describe('Ruby MethodExtractor', () => {
+  const extractor = createMethodExtractor(rubyMethodConfig);
+
+  describe('isTypeDeclaration', () => {
+    it('recognizes class', () => {
+      const tree = parseRuby('class Foo; end');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(true);
+    });
+
+    it('recognizes module', () => {
+      const tree = parseRuby('module Bar; end');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(true);
+    });
+
+    it('rejects method', () => {
+      const tree = parseRuby('def foo; end');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(false);
+    });
+  });
+
+  describe('visibility modifiers', () => {
+    it('defaults to public when no modifier', () => {
+      const tree = parseRuby(`
+class Foo
+  def greet
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, rubyCtx);
+
+      expect(result!.methods[0].name).toBe('greet');
+      expect(result!.methods[0].visibility).toBe('public');
+    });
+
+    it('detects private methods after private modifier', () => {
+      const tree = parseRuby(`
+class Foo
+  def public_method
+  end
+
+  private
+
+  def secret_method
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, rubyCtx);
+
+      expect(result!.methods).toHaveLength(2);
+      expect(result!.methods[0].name).toBe('public_method');
+      expect(result!.methods[0].visibility).toBe('public');
+      expect(result!.methods[1].name).toBe('secret_method');
+      expect(result!.methods[1].visibility).toBe('private');
+    });
+
+    it('detects protected methods after protected modifier', () => {
+      const tree = parseRuby(`
+class Foo
+  protected
+
+  def guarded_method
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, rubyCtx);
+
+      expect(result!.methods[0].name).toBe('guarded_method');
+      expect(result!.methods[0].visibility).toBe('protected');
+    });
+
+    it('handles multiple visibility transitions', () => {
+      const tree = parseRuby(`
+class Foo
+  def a; end
+
+  private
+
+  def b; end
+
+  protected
+
+  def c; end
+
+  public
+
+  def d; end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, rubyCtx);
+
+      expect(result!.methods).toHaveLength(4);
+      expect(result!.methods[0].visibility).toBe('public');
+      expect(result!.methods[1].visibility).toBe('private');
+      expect(result!.methods[2].visibility).toBe('protected');
+      expect(result!.methods[3].visibility).toBe('public');
+    });
+  });
+
+  describe('singleton_method (def self.method)', () => {
+    it('marks singleton_method as static', () => {
+      const tree = parseRuby(`
+class Foo
+  def self.class_method
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, rubyCtx);
+
+      expect(result!.methods[0].name).toBe('class_method');
+      expect(result!.methods[0].isStatic).toBe(true);
+    });
+  });
+
+  describe('parameters', () => {
+    it('extracts simple parameters', () => {
+      const tree = parseRuby(`
+class Foo
+  def bar(x, y)
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, rubyCtx);
+
+      expect(result!.methods[0].parameters).toHaveLength(2);
+      expect(result!.methods[0].parameters[0]).toEqual({
+        name: 'x',
+        type: null,
+        isOptional: false,
+        isVariadic: false,
+      });
+      expect(result!.methods[0].parameters[1]).toEqual({
+        name: 'y',
+        type: null,
+        isOptional: false,
+        isVariadic: false,
+      });
+    });
+
+    it('detects *args as variadic', () => {
+      const tree = parseRuby(`
+class Foo
+  def bar(*args)
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, rubyCtx);
+
+      expect(result!.methods[0].parameters).toHaveLength(1);
+      expect(result!.methods[0].parameters[0]).toEqual({
+        name: 'args',
+        type: null,
+        isOptional: false,
+        isVariadic: true,
+      });
+    });
+
+    it('detects **kwargs as variadic', () => {
+      const tree = parseRuby(`
+class Foo
+  def bar(**kwargs)
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, rubyCtx);
+
+      expect(result!.methods[0].parameters).toHaveLength(1);
+      expect(result!.methods[0].parameters[0]).toEqual({
+        name: 'kwargs',
+        type: null,
+        isOptional: false,
+        isVariadic: true,
+      });
+    });
+
+    it('extracts &block parameter', () => {
+      const tree = parseRuby(`
+class Foo
+  def bar(&block)
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, rubyCtx);
+
+      expect(result!.methods[0].parameters).toHaveLength(1);
+      expect(result!.methods[0].parameters[0]).toEqual({
+        name: 'block',
+        type: null,
+        isOptional: false,
+        isVariadic: false,
+      });
+    });
+
+    it('detects optional parameter with default', () => {
+      const tree = parseRuby(`
+class Foo
+  def bar(x, y = 10)
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, rubyCtx);
+
+      expect(result!.methods[0].parameters).toHaveLength(2);
+      expect(result!.methods[0].parameters[0]).toEqual({
+        name: 'x',
+        type: null,
+        isOptional: false,
+        isVariadic: false,
+      });
+      expect(result!.methods[0].parameters[1]).toEqual({
+        name: 'y',
+        type: null,
+        isOptional: true,
+        isVariadic: false,
+      });
+    });
+
+    it('extracts keyword parameters', () => {
+      const tree = parseRuby(`
+class Foo
+  def bar(name:, age: 0)
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, rubyCtx);
+
+      expect(result!.methods[0].parameters).toHaveLength(2);
+      expect(result!.methods[0].parameters[0]).toEqual({
+        name: 'name',
+        type: null,
+        isOptional: false,
+        isVariadic: false,
+      });
+      expect(result!.methods[0].parameters[1]).toEqual({
+        name: 'age',
+        type: null,
+        isOptional: true,
+        isVariadic: false,
+      });
+    });
+
+    it('handles mixed parameter types', () => {
+      const tree = parseRuby(`
+class Foo
+  def bar(x, y = 10, *args, **kwargs, &block)
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, rubyCtx);
+
+      const params = result!.methods[0].parameters;
+      expect(params).toHaveLength(5);
+      expect(params[0]).toEqual({ name: 'x', type: null, isOptional: false, isVariadic: false });
+      expect(params[1]).toEqual({ name: 'y', type: null, isOptional: true, isVariadic: false });
+      expect(params[2]).toEqual({ name: 'args', type: null, isOptional: false, isVariadic: true });
+      expect(params[3]).toEqual({
+        name: 'kwargs',
+        type: null,
+        isOptional: false,
+        isVariadic: true,
+      });
+      expect(params[4]).toEqual({
+        name: 'block',
+        type: null,
+        isOptional: false,
+        isVariadic: false,
+      });
+    });
+  });
+
+  describe('initialize method', () => {
+    it('extracts initialize as a method', () => {
+      const tree = parseRuby(`
+class User
+  def initialize(name)
+    @name = name
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, rubyCtx);
+
+      expect(result!.ownerName).toBe('User');
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('initialize');
+      expect(result!.methods[0].visibility).toBe('public');
+      expect(result!.methods[0].parameters).toHaveLength(1);
+      expect(result!.methods[0].parameters[0].name).toBe('name');
+    });
+  });
+
+  describe('return type', () => {
+    it('is always null for Ruby', () => {
+      const tree = parseRuby(`
+class Foo
+  def bar
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, rubyCtx);
+
+      expect(result!.methods[0].returnType).toBeNull();
+    });
+  });
+
+  describe('isAbstract and isFinal', () => {
+    it('are always false for Ruby', () => {
+      const tree = parseRuby(`
+class Foo
+  def bar
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, rubyCtx);
+
+      expect(result!.methods[0].isAbstract).toBe(false);
+      expect(result!.methods[0].isFinal).toBe(false);
+    });
+  });
+
+  describe('module methods', () => {
+    it('extracts methods from a module', () => {
+      const tree = parseRuby(`
+module MyModule
+  def helper
+  end
+end
+      `);
+      const modNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(modNode, rubyCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('MyModule');
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('helper');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dart
+// ---------------------------------------------------------------------------
+
+const parseDart = (code: string) => {
+  if (!Dart) throw new Error('tree-sitter-dart not available');
+  parser.setLanguage(Dart as Parser.Language);
+  return parser.parse(code);
+};
+
+const dartCtx: MethodExtractorContext = {
+  filePath: 'test.dart',
+  language: SupportedLanguages.Dart,
+};
+
+const describeDart = Dart ? describe : describe.skip;
+
+describeDart('Dart MethodExtractor', () => {
+  const extractor = createMethodExtractor(dartMethodConfig);
+
+  describe('extract from class', () => {
+    it('extracts public method with return type', () => {
+      const tree = parseDart(`
+class UserService {
+  String findById(int id) {
+    return '';
+  }
+}
+      `);
+      const classNode = tree.rootNode.firstNamedChild!;
+      const result = extractor.extract(classNode, dartCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('UserService');
+      expect(result!.methods).toHaveLength(1);
+
+      const method = result!.methods[0];
+      expect(method.name).toBe('findById');
+      expect(method.returnType).toBe('String');
+      expect(method.visibility).toBe('public');
+      expect(method.isStatic).toBe(false);
+      expect(method.isAbstract).toBe(false);
+      expect(method.parameters).toHaveLength(1);
+      expect(method.parameters[0].name).toBe('id');
+      expect(method.parameters[0].type).toBe('int');
+      expect(method.parameters[0].isOptional).toBe(false);
+    });
+
+    it('detects private method via underscore prefix', () => {
+      const tree = parseDart(`
+class Repo {
+  void _internal() {
+    return;
+  }
+}
+      `);
+      const classNode = tree.rootNode.firstNamedChild!;
+      const result = extractor.extract(classNode, dartCtx);
+
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('_internal');
+      expect(result!.methods[0].visibility).toBe('private');
+    });
+
+    it('detects static method', () => {
+      const tree = parseDart(`
+class Factory {
+  static Factory create() {
+    return Factory();
+  }
+}
+      `);
+      const classNode = tree.rootNode.firstNamedChild!;
+      const result = extractor.extract(classNode, dartCtx);
+
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('create');
+      expect(result!.methods[0].isStatic).toBe(true);
+    });
+
+    it('detects abstract method (no body)', () => {
+      const tree = parseDart(`
+abstract class Shape {
+  double area();
+  double perimeter() {
+    return 0;
+  }
+}
+      `);
+      const classNode = tree.rootNode.firstNamedChild!;
+      const result = extractor.extract(classNode, dartCtx);
+
+      expect(result!.methods).toHaveLength(2);
+
+      const areaMethod = result!.methods.find((m) => m.name === 'area');
+      const perimeterMethod = result!.methods.find((m) => m.name === 'perimeter');
+
+      expect(areaMethod!.isAbstract).toBe(true);
+      expect(perimeterMethod!.isAbstract).toBe(false);
+    });
+
+    it('extracts typed parameters', () => {
+      const tree = parseDart(`
+class Calculator {
+  int add(int a, int b) {
+    return a + b;
+  }
+}
+      `);
+      const classNode = tree.rootNode.firstNamedChild!;
+      const result = extractor.extract(classNode, dartCtx);
+
+      const params = result!.methods[0].parameters;
+      expect(params).toHaveLength(2);
+      expect(params[0]).toEqual({ name: 'a', type: 'int', isOptional: false, isVariadic: false });
+      expect(params[1]).toEqual({ name: 'b', type: 'int', isOptional: false, isVariadic: false });
+    });
+
+    it('extracts return type', () => {
+      const tree = parseDart(`
+class Converter {
+  String convert(int value) {
+    return value.toString();
+  }
+}
+      `);
+      const classNode = tree.rootNode.firstNamedChild!;
+      const result = extractor.extract(classNode, dartCtx);
+
+      expect(result!.methods[0].returnType).toBe('String');
+    });
+
+    it('extracts void return type', () => {
+      const tree = parseDart(`
+class Logger {
+  void log(String msg) {
+    print(msg);
+  }
+}
+      `);
+      const classNode = tree.rootNode.firstNamedChild!;
+      const result = extractor.extract(classNode, dartCtx);
+
+      expect(result!.methods[0].returnType).toBe('void');
+    });
+
+    it('extracts @override annotation', () => {
+      const tree = parseDart(`
+class MyClass {
+  @override
+  String toString() {
+    return 'MyClass';
+  }
+}
+      `);
+      const classNode = tree.rootNode.firstNamedChild!;
+      const result = extractor.extract(classNode, dartCtx);
+
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('toString');
+      expect(result!.methods[0].annotations).toContain('@override');
+    });
+
+    it('detects optional named parameter with {int? x}', () => {
+      const tree = parseDart(`
+class Builder {
+  void build({int? width, required int height}) {
+    return;
+  }
+}
+      `);
+      const classNode = tree.rootNode.firstNamedChild!;
+      const result = extractor.extract(classNode, dartCtx);
+
+      const params = result!.methods[0].parameters;
+      expect(params).toHaveLength(2);
+
+      const widthParam = params.find((p) => p.name === 'width');
+      const heightParam = params.find((p) => p.name === 'height');
+
+      expect(widthParam!.isOptional).toBe(true);
+      expect(heightParam!.isOptional).toBe(false);
+    });
+
+    it('detects async method', () => {
+      const tree = parseDart(`
+class Api {
+  Future<String> fetchData() async {
+    return '';
+  }
+}
+      `);
+      const classNode = tree.rootNode.firstNamedChild!;
+      const result = extractor.extract(classNode, dartCtx);
+
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].isAsync).toBe(true);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PHP
+// ---------------------------------------------------------------------------
+
+const parsePHP = (code: string) => {
+  parser.setLanguage(PHP.php_only as Parser.Language);
+  return parser.parse(code);
+};
+
+const phpCtx: MethodExtractorContext = {
+  filePath: 'Test.php',
+  language: SupportedLanguages.PHP,
+};
+
+describe('PHP MethodExtractor', () => {
+  const extractor = createMethodExtractor(phpMethodConfig);
+
+  describe('isTypeDeclaration', () => {
+    it('recognizes class_declaration', () => {
+      const tree = parsePHP('<?php class Foo { }');
+      const cls = tree.rootNode.namedChildren.find((c) => c.type === 'class_declaration')!;
+      expect(extractor.isTypeDeclaration(cls)).toBe(true);
+    });
+
+    it('recognizes interface_declaration', () => {
+      const tree = parsePHP('<?php interface Bar { }');
+      const iface = tree.rootNode.namedChildren.find((c) => c.type === 'interface_declaration')!;
+      expect(extractor.isTypeDeclaration(iface)).toBe(true);
+    });
+
+    it('recognizes trait_declaration', () => {
+      const tree = parsePHP('<?php trait Cacheable { }');
+      const trait = tree.rootNode.namedChildren.find((c) => c.type === 'trait_declaration')!;
+      expect(extractor.isTypeDeclaration(trait)).toBe(true);
+    });
+
+    it('rejects function_definition', () => {
+      const tree = parsePHP('<?php function foo() {}');
+      const fn = tree.rootNode.namedChildren.find((c) => c.type === 'function_definition')!;
+      expect(extractor.isTypeDeclaration(fn)).toBe(false);
+    });
+  });
+
+  describe('visibility', () => {
+    it('extracts public method', () => {
+      const tree = parsePHP(`<?php
+class Foo {
+    public function bar(): void {}
+}
+      `);
+      const cls = tree.rootNode.namedChildren.find((c) => c.type === 'class_declaration')!;
+      const result = extractor.extract(cls, phpCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('bar');
+      expect(result!.methods[0].visibility).toBe('public');
+    });
+
+    it('extracts private method', () => {
+      const tree = parsePHP(`<?php
+class Foo {
+    private function helper(): void {}
+}
+      `);
+      const cls = tree.rootNode.namedChildren.find((c) => c.type === 'class_declaration')!;
+      const result = extractor.extract(cls, phpCtx);
+
+      expect(result!.methods[0].visibility).toBe('private');
+    });
+
+    it('extracts protected method', () => {
+      const tree = parsePHP(`<?php
+class Foo {
+    protected function doWork(): void {}
+}
+      `);
+      const cls = tree.rootNode.namedChildren.find((c) => c.type === 'class_declaration')!;
+      const result = extractor.extract(cls, phpCtx);
+
+      expect(result!.methods[0].visibility).toBe('protected');
+    });
+
+    it('defaults to public when no visibility keyword', () => {
+      const tree = parsePHP(`<?php
+class Foo {
+    function noVis(): void {}
+}
+      `);
+      const cls = tree.rootNode.namedChildren.find((c) => c.type === 'class_declaration')!;
+      const result = extractor.extract(cls, phpCtx);
+
+      expect(result!.methods[0].visibility).toBe('public');
+    });
+  });
+
+  describe('abstract', () => {
+    it('detects abstract method via abstract_modifier', () => {
+      const tree = parsePHP(`<?php
+abstract class Foo {
+    abstract protected function process(): string;
+}
+      `);
+      const cls = tree.rootNode.namedChildren.find((c) => c.type === 'class_declaration')!;
+      const result = extractor.extract(cls, phpCtx);
+
+      expect(result!.methods[0].name).toBe('process');
+      expect(result!.methods[0].isAbstract).toBe(true);
+      expect(result!.methods[0].visibility).toBe('protected');
+    });
+
+    it('detects interface methods as implicitly abstract', () => {
+      const tree = parsePHP(`<?php
+interface Renderable {
+    public function render(): string;
+}
+      `);
+      const iface = tree.rootNode.namedChildren.find((c) => c.type === 'interface_declaration')!;
+      const result = extractor.extract(iface, phpCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('Renderable');
+      expect(result!.methods[0].name).toBe('render');
+      expect(result!.methods[0].isAbstract).toBe(true);
+    });
+  });
+
+  describe('final', () => {
+    it('detects final method', () => {
+      const tree = parsePHP(`<?php
+class Foo {
+    final public function execute(): void {}
+}
+      `);
+      const cls = tree.rootNode.namedChildren.find((c) => c.type === 'class_declaration')!;
+      const result = extractor.extract(cls, phpCtx);
+
+      expect(result!.methods[0].name).toBe('execute');
+      expect(result!.methods[0].isFinal).toBe(true);
+    });
+  });
+
+  describe('static', () => {
+    it('detects static method', () => {
+      const tree = parsePHP(`<?php
+class Foo {
+    public static function create(): self {}
+}
+      `);
+      const cls = tree.rootNode.namedChildren.find((c) => c.type === 'class_declaration')!;
+      const result = extractor.extract(cls, phpCtx);
+
+      expect(result!.methods[0].name).toBe('create');
+      expect(result!.methods[0].isStatic).toBe(true);
+    });
+  });
+
+  describe('__construct with typed parameters', () => {
+    it('extracts __construct with typed parameters', () => {
+      const tree = parsePHP(`<?php
+class User {
+    public function __construct(string $name, int $age) {}
+}
+      `);
+      const cls = tree.rootNode.namedChildren.find((c) => c.type === 'class_declaration')!;
+      const result = extractor.extract(cls, phpCtx);
+
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('__construct');
+      expect(result!.methods[0].parameters).toHaveLength(2);
+      expect(result!.methods[0].parameters[0]).toEqual({
+        name: 'name',
+        type: 'string',
+        isOptional: false,
+        isVariadic: false,
+      });
+      expect(result!.methods[0].parameters[1]).toEqual({
+        name: 'age',
+        type: 'int',
+        isOptional: false,
+        isVariadic: false,
+      });
+    });
+
+    it('extracts __destruct', () => {
+      const tree = parsePHP(`<?php
+class Resource {
+    public function __destruct() {}
+}
+      `);
+      const cls = tree.rootNode.namedChildren.find((c) => c.type === 'class_declaration')!;
+      const result = extractor.extract(cls, phpCtx);
+
+      expect(result!.methods[0].name).toBe('__destruct');
+    });
+  });
+
+  describe('variadic parameters', () => {
+    it('detects variadic parameter with ...$args', () => {
+      const tree = parsePHP(`<?php
+class Foo {
+    public function log(string ...$messages): void {}
+}
+      `);
+      const cls = tree.rootNode.namedChildren.find((c) => c.type === 'class_declaration')!;
+      const result = extractor.extract(cls, phpCtx);
+
+      expect(result!.methods[0].parameters).toHaveLength(1);
+      expect(result!.methods[0].parameters[0]).toEqual({
+        name: 'messages',
+        type: 'string',
+        isOptional: false,
+        isVariadic: true,
+      });
+    });
+  });
+
+  describe('return type', () => {
+    it('extracts primitive return type', () => {
+      const tree = parsePHP(`<?php
+class Foo {
+    public function findAll(): array {}
+}
+      `);
+      const cls = tree.rootNode.namedChildren.find((c) => c.type === 'class_declaration')!;
+      const result = extractor.extract(cls, phpCtx);
+
+      expect(result!.methods[0].returnType).toBe('array');
+    });
+
+    it('extracts named return type', () => {
+      const tree = parsePHP(`<?php
+class Foo {
+    public function create(): self {}
+}
+      `);
+      const cls = tree.rootNode.namedChildren.find((c) => c.type === 'class_declaration')!;
+      const result = extractor.extract(cls, phpCtx);
+
+      expect(result!.methods[0].returnType).toBe('self');
+    });
+
+    it('returns null when no return type', () => {
+      const tree = parsePHP(`<?php
+class Foo {
+    public function noReturn() {}
+}
+      `);
+      const cls = tree.rootNode.namedChildren.find((c) => c.type === 'class_declaration')!;
+      const result = extractor.extract(cls, phpCtx);
+
+      expect(result!.methods[0].returnType).toBeNull();
+    });
+  });
+
+  describe('optional parameters', () => {
+    it('detects optional parameter with default value', () => {
+      const tree = parsePHP(`<?php
+class Foo {
+    public function greet(string $name, string $greeting = "Hello"): string {}
+}
+      `);
+      const cls = tree.rootNode.namedChildren.find((c) => c.type === 'class_declaration')!;
+      const result = extractor.extract(cls, phpCtx);
+
+      expect(result!.methods[0].parameters).toHaveLength(2);
+      expect(result!.methods[0].parameters[0].isOptional).toBe(false);
+      expect(result!.methods[0].parameters[1].isOptional).toBe(true);
+    });
+  });
+
+  describe('annotations (PHP 8 attributes)', () => {
+    it('extracts PHP 8 attributes as annotations', () => {
+      const tree = parsePHP(`<?php
+class Controller {
+    #[Route("/api")]
+    #[Deprecated]
+    public function index(): void {}
+}
+      `);
+      const cls = tree.rootNode.namedChildren.find((c) => c.type === 'class_declaration')!;
+      const result = extractor.extract(cls, phpCtx);
+
+      expect(result!.methods[0].annotations).toEqual(['#Route', '#Deprecated']);
+    });
+  });
+
+  describe('trait methods', () => {
+    it('extracts methods from a trait', () => {
+      const tree = parsePHP(`<?php
+trait Cacheable {
+    public function cache(): void {}
+    private function clearCache(): void {}
+}
+      `);
+      const trait = tree.rootNode.namedChildren.find((c) => c.type === 'trait_declaration')!;
+      const result = extractor.extract(trait, phpCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('Cacheable');
+      expect(result!.methods).toHaveLength(2);
+      expect(result!.methods[0].name).toBe('cache');
+      expect(result!.methods[0].visibility).toBe('public');
+      expect(result!.methods[1].name).toBe('clearCache');
+      expect(result!.methods[1].visibility).toBe('private');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rust
+// ---------------------------------------------------------------------------
+
+const parseRust = (code: string) => {
+  parser.setLanguage(Rust);
+  return parser.parse(code);
+};
+
+const rustCtx: MethodExtractorContext = {
+  filePath: 'test.rs',
+  language: SupportedLanguages.Rust,
+};
+
+describe('Rust MethodExtractor', () => {
+  const extractor = createMethodExtractor(rustMethodConfig);
+
+  describe('isTypeDeclaration', () => {
+    it('recognizes impl_item', () => {
+      const tree = parseRust('impl MyStruct {}');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(true);
+    });
+
+    it('recognizes trait_item', () => {
+      const tree = parseRust('trait MyTrait {}');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(true);
+    });
+
+    it('rejects function_item', () => {
+      const tree = parseRust('fn free_function() {}');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(false);
+    });
+  });
+
+  describe('extract from impl', () => {
+    it('extracts pub method with &self receiver', () => {
+      const code = [
+        'impl UserService {',
+        '  pub fn find_by_id(&self, id: u64, active: bool) -> User {',
+        '    todo!()',
+        '  }',
+        '}',
+      ].join('\n');
+      const tree = parseRust(code);
+      const implNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(implNode, rustCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('UserService');
+      expect(result!.methods).toHaveLength(1);
+
+      const m = result!.methods[0];
+      expect(m.name).toBe('find_by_id');
+      expect(m.visibility).toBe('public');
+      expect(m.isStatic).toBe(false);
+      expect(m.receiverType).toBe('&self');
+      expect(m.returnType).toBe('User');
+      expect(m.parameters).toHaveLength(2);
+      expect(m.parameters[0]).toEqual({
+        name: 'id',
+        type: 'u64',
+        isOptional: false,
+        isVariadic: false,
+      });
+      expect(m.parameters[1]).toEqual({
+        name: 'active',
+        type: 'bool',
+        isOptional: false,
+        isVariadic: false,
+      });
+    });
+
+    it('extracts private method (no pub) as private', () => {
+      const code = ['impl Foo {', '  fn helper(&self) {}', '}'].join('\n');
+      const tree = parseRust(code);
+      const implNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(implNode, rustCtx);
+
+      expect(result!.methods[0].visibility).toBe('private');
+    });
+
+    it('extracts &mut self receiver', () => {
+      const code = ['impl Counter {', '  pub fn increment(&mut self) {}', '}'].join('\n');
+      const tree = parseRust(code);
+      const implNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(implNode, rustCtx);
+
+      const m = result!.methods[0];
+      expect(m.receiverType).toBe('&mut self');
+      expect(m.isStatic).toBe(false);
+    });
+
+    it('extracts self (owned) receiver', () => {
+      const code = ['impl Builder {', '  pub fn build(self) -> Widget { todo!() }', '}'].join('\n');
+      const tree = parseRust(code);
+      const implNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(implNode, rustCtx);
+
+      const m = result!.methods[0];
+      expect(m.receiverType).toBe('self');
+      expect(m.isStatic).toBe(false);
+    });
+
+    it('marks associated function (no self) as static', () => {
+      const code = ['impl Config {', '  pub fn new(path: String) -> Config { todo!() }', '}'].join(
+        '\n',
+      );
+      const tree = parseRust(code);
+      const implNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(implNode, rustCtx);
+
+      const m = result!.methods[0];
+      expect(m.name).toBe('new');
+      expect(m.isStatic).toBe(true);
+      expect(m.receiverType).toBeNull();
+      expect(m.parameters).toHaveLength(1);
+      expect(m.parameters[0].name).toBe('path');
+      expect(m.parameters[0].type).toBe('String');
+    });
+
+    it('extracts return type', () => {
+      const code = [
+        'impl Parser {',
+        '  pub fn parse(&self, input: &str) -> Result { todo!() }',
+        '}',
+      ].join('\n');
+      const tree = parseRust(code);
+      const implNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(implNode, rustCtx);
+
+      expect(result!.methods[0].returnType).toBe('Result');
+    });
+
+    it('returns null returnType when absent', () => {
+      const code = ['impl Logger {', '  pub fn log(&self, msg: &str) {}', '}'].join('\n');
+      const tree = parseRust(code);
+      const implNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(implNode, rustCtx);
+
+      expect(result!.methods[0].returnType).toBeNull();
+    });
+
+    it('extracts #[inline] attribute', () => {
+      const code = [
+        'impl Math {',
+        '  #[inline]',
+        '  pub fn add(&self, a: i32, b: i32) -> i32 { a + b }',
+        '}',
+      ].join('\n');
+      const tree = parseRust(code);
+      const implNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(implNode, rustCtx);
+
+      expect(result!.methods[0].annotations).toEqual(['#[inline]']);
+    });
+
+    it('extracts async fn as isAsync', () => {
+      const code = [
+        'impl Client {',
+        '  pub async fn fetch(&self, url: &str) -> Response { todo!() }',
+        '}',
+      ].join('\n');
+      const tree = parseRust(code);
+      const implNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(implNode, rustCtx);
+
+      expect(result!.methods[0].isAsync).toBe(true);
+    });
+
+    it('treats pub(crate) as public (simplified)', () => {
+      const code = ['impl Internal {', '  pub(crate) fn helper(&self) {}', '}'].join('\n');
+      const tree = parseRust(code);
+      const implNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(implNode, rustCtx);
+
+      expect(result!.methods[0].visibility).toBe('public');
+    });
+
+    it('impl methods are not abstract', () => {
+      const code = ['impl Concrete {', '  pub fn do_work(&self) {}', '}'].join('\n');
+      const tree = parseRust(code);
+      const implNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(implNode, rustCtx);
+
+      expect(result!.methods[0].isAbstract).toBe(false);
+    });
+
+    it('isFinal is always false for Rust', () => {
+      const code = ['impl Foo {', '  pub fn bar(&self) {}', '}'].join('\n');
+      const tree = parseRust(code);
+      const implNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(implNode, rustCtx);
+
+      expect(result!.methods[0].isFinal).toBe(false);
+    });
+  });
+
+  describe('extract from trait', () => {
+    it('extracts required method (no body) as abstract', () => {
+      const code = ['trait Drawable {', '  fn draw(&self);', '}'].join('\n');
+      const tree = parseRust(code);
+      const traitNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(traitNode, rustCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('Drawable');
+      expect(result!.methods).toHaveLength(1);
+
+      const m = result!.methods[0];
+      expect(m.name).toBe('draw');
+      expect(m.isAbstract).toBe(true);
+      expect(m.isStatic).toBe(false);
+      expect(m.receiverType).toBe('&self');
+    });
+
+    it('extracts default method (with body) as not abstract', () => {
+      const code = [
+        'trait Greet {',
+        '  fn greet(&self) -> String {',
+        '    String::from("hello")',
+        '  }',
+        '}',
+      ].join('\n');
+      const tree = parseRust(code);
+      const traitNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(traitNode, rustCtx);
+
+      const m = result!.methods[0];
+      expect(m.name).toBe('greet');
+      expect(m.isAbstract).toBe(false);
+      expect(m.returnType).toBe('String');
+    });
+
+    it('extracts both required and default methods', () => {
+      const code = [
+        'trait Shape {',
+        '  fn area(&self) -> f64;',
+        '  fn name(&self) -> &str { "unknown" }',
+        '}',
+      ].join('\n');
+      const tree = parseRust(code);
+      const traitNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(traitNode, rustCtx);
+
+      expect(result!.methods).toHaveLength(2);
+      expect(result!.methods[0].name).toBe('area');
+      expect(result!.methods[0].isAbstract).toBe(true);
+      expect(result!.methods[1].name).toBe('name');
+      expect(result!.methods[1].isAbstract).toBe(false);
+    });
+
+    it('trait associated function (no self) is static', () => {
+      const code = ['trait Factory {', '  fn create() -> Self;', '}'].join('\n');
+      const tree = parseRust(code);
+      const traitNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(traitNode, rustCtx);
+
+      const m = result!.methods[0];
+      expect(m.name).toBe('create');
+      expect(m.isStatic).toBe(true);
+      expect(m.isAbstract).toBe(true);
+      expect(m.receiverType).toBeNull();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Swift
+// ---------------------------------------------------------------------------
+
+const parseSwift = (code: string) => {
+  if (!Swift) throw new Error('tree-sitter-swift not available');
+  parser.setLanguage(Swift as Parser.Language);
+  return parser.parse(code);
+};
+
+const swiftCtx: MethodExtractorContext = {
+  filePath: 'Test.swift',
+  language: SupportedLanguages.Swift,
+};
+
+const describeSwift = Swift ? describe : describe.skip;
+
+describeSwift('Swift MethodExtractor', () => {
+  const extractor = createMethodExtractor(swiftMethodConfig);
+
+  describe('isTypeDeclaration', () => {
+    it('recognizes class_declaration', () => {
+      const tree = parseSwift('class Foo {}');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(true);
+    });
+
+    it('recognizes protocol_declaration', () => {
+      const tree = parseSwift('protocol Bar {}');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(true);
+    });
+
+    it('rejects import_declaration', () => {
+      const tree = parseSwift('import Foundation');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(false);
+    });
+  });
+
+  describe('visibility', () => {
+    it('extracts public method', () => {
+      const tree = parseSwift(`
+class Foo {
+    public func greet() {}
+}
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, swiftCtx);
+
+      expect(result!.methods[0].name).toBe('greet');
+      expect(result!.methods[0].visibility).toBe('public');
+    });
+
+    it('extracts private method', () => {
+      const tree = parseSwift(`
+class Foo {
+    private func secret() {}
+}
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, swiftCtx);
+
+      expect(result!.methods[0].name).toBe('secret');
+      expect(result!.methods[0].visibility).toBe('private');
+    });
+
+    it('defaults to internal when no modifier', () => {
+      const tree = parseSwift(`
+class Foo {
+    func doStuff() {}
+}
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, swiftCtx);
+
+      expect(result!.methods[0].name).toBe('doStuff');
+      expect(result!.methods[0].visibility).toBe('internal');
+    });
+  });
+
+  describe('protocol methods', () => {
+    it('marks protocol method as abstract', () => {
+      const tree = parseSwift(`
+protocol Greetable {
+    func greet() -> String
+}
+      `);
+      const protocolNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(protocolNode, swiftCtx);
+
+      expect(result!.ownerName).toBe('Greetable');
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('greet');
+      expect(result!.methods[0].isAbstract).toBe(true);
+    });
+  });
+
+  describe('static and class methods', () => {
+    it('detects static func as isStatic', () => {
+      const tree = parseSwift(`
+class Foo {
+    static func helper() {}
+}
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, swiftCtx);
+
+      expect(result!.methods[0].name).toBe('helper');
+      expect(result!.methods[0].isStatic).toBe(true);
+    });
+
+    it('detects class func as isStatic', () => {
+      const tree = parseSwift(`
+class Foo {
+    class func overridableHelper() {}
+}
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, swiftCtx);
+
+      expect(result!.methods[0].name).toBe('overridableHelper');
+      expect(result!.methods[0].isStatic).toBe(true);
+    });
+  });
+
+  describe('parameters', () => {
+    it('extracts parameters with types and default values', () => {
+      const tree = parseSwift(`
+class Foo {
+    func greet(name: String, age: Int = 25) -> String {
+        return ""
+    }
+}
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, swiftCtx);
+
+      const m = result!.methods[0];
+      expect(m.name).toBe('greet');
+      expect(m.parameters).toHaveLength(2);
+      expect(m.parameters[0]).toEqual({
+        name: 'name',
+        type: 'String',
+        isOptional: false,
+        isVariadic: false,
+      });
+      expect(m.parameters[1]).toEqual({
+        name: 'age',
+        type: 'Int',
+        isOptional: true,
+        isVariadic: false,
+      });
+    });
+  });
+
+  describe('return type', () => {
+    it('extracts return type from -> annotation', () => {
+      const tree = parseSwift(`
+class Foo {
+    func compute() -> Int {
+        return 42
+    }
+}
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, swiftCtx);
+
+      expect(result!.methods[0].returnType).toBe('Int');
+    });
+  });
+
+  describe('annotations', () => {
+    it('extracts @objc attribute', () => {
+      const tree = parseSwift(`
+class Foo {
+    @objc func bridgedMethod() {}
+}
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, swiftCtx);
+
+      expect(result!.methods[0].annotations).toContain('@objc');
+    });
+  });
+
+  describe('isFinal', () => {
+    it('detects final func', () => {
+      const tree = parseSwift(`
+class Foo {
+    final func locked() {}
+}
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, swiftCtx);
+
+      expect(result!.methods[0].name).toBe('locked');
+      expect(result!.methods[0].isFinal).toBe(true);
+    });
+
+    it('is false when not final', () => {
+      const tree = parseSwift(`
+class Foo {
+    func open() {}
+}
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, swiftCtx);
+
+      expect(result!.methods[0].isFinal).toBe(false);
+    });
+  });
+
+  describe('isAsync', () => {
+    it('detects async func', () => {
+      const tree = parseSwift(`
+class Foo {
+    func fetchData() async {}
+}
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, swiftCtx);
+
+      expect(result!.methods[0].isAsync).toBe(true);
     });
   });
 });

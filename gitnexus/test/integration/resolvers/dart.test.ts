@@ -12,14 +12,30 @@ import {
   FIXTURES,
   getRelationships,
   getNodesByLabel,
+  getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
+import {
+  isLanguageAvailable,
+  loadParser,
+  loadLanguage,
+} from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 
-const dartAvailable = isLanguageAvailable(SupportedLanguages.Dart);
+// isLanguageAvailable only checks whether the module loaded — it does NOT verify
+// that the native binary works at runtime (tree-sitter-dart can fail on setLanguage).
+// Probe the parser to get a reliable skip guard.
+let dartAvailable = isLanguageAvailable(SupportedLanguages.Dart);
+if (dartAvailable) {
+  try {
+    await loadParser();
+    await loadLanguage(SupportedLanguages.Dart);
+  } catch {
+    dartAvailable = false;
+  }
+}
 
 // ── Phase 8: Field-type resolution ──────────────────────────────────────
 
@@ -123,5 +139,227 @@ describe.skipIf(!dartAvailable)('Dart call-result binding', () => {
       expect(call.source).toBe('processUser');
       expect(call.sourceLabel).toBe('Function');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 16: Method enrichment (isAbstract, isStatic, annotations)
+// animal.dart: abstract Animal with abstract speak(), static classify(), breathe()
+// Dog extends Animal, @override speak()
+// app.dart: dog.speak(), Animal.classify("dog")
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)('Dart method enrichment', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-method-enrichment'), () => {});
+  }, 60000);
+
+  it('detects Animal and Dog classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Animal');
+    expect(classes).toContain('Dog');
+  });
+
+  it('emits HAS_METHOD edges for Animal methods', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const animalMethods = hasMethod
+      .filter((e) => e.source === 'Animal')
+      .map((e) => e.target)
+      .sort();
+    expect(animalMethods).toContain('speak');
+    expect(animalMethods).toContain('classify');
+    expect(animalMethods).toContain('breathe');
+  });
+
+  it('emits HAS_METHOD edge for Dog.speak', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const dogSpeak = hasMethod.find((e) => e.source === 'Dog' && e.target === 'speak');
+    expect(dogSpeak).toBeDefined();
+  });
+
+  it('emits EXTENDS edge Dog -> Animal', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const dogExtends = extends_.find((e) => e.source === 'Dog' && e.target === 'Animal');
+    expect(dogExtends).toBeDefined();
+  });
+
+  it('marks abstract speak as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const speak = methods.find(
+      (n) => n.name === 'speak' && n.properties.filePath === 'animal.dart',
+    );
+    if (speak?.properties.isAbstract !== undefined) {
+      expect(speak.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks breathe as NOT isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const breathe = methods.find((n) => n.name === 'breathe');
+    if (breathe?.properties.isAbstract !== undefined) {
+      expect(breathe.properties.isAbstract).toBe(false);
+    }
+  });
+
+  it('marks classify as isStatic (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'classify');
+    if (classify?.properties.isStatic !== undefined) {
+      expect(classify.properties.isStatic).toBe(true);
+    }
+  });
+
+  it('marks breathe as NOT isStatic (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const breathe = methods.find((n) => n.name === 'breathe');
+    if (breathe?.properties.isStatic !== undefined) {
+      expect(breathe.properties.isStatic).toBe(false);
+    }
+  });
+
+  it('captures @override annotation on Dog.speak (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    // Dog.speak is the override; find the one NOT in animal.dart
+    const dogSpeak = methods.find(
+      (n) => n.name === 'speak' && n.properties.filePath !== 'animal.dart',
+    );
+    if (dogSpeak?.properties.annotations !== undefined) {
+      expect(dogSpeak.properties.annotations).toContain('@override');
+    }
+  });
+
+  it('populates parameterTypes for classify (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'classify');
+    if (classify?.properties.parameterTypes !== undefined) {
+      const params = classify.properties.parameterTypes;
+      expect(params).toContain('String');
+    }
+  });
+
+  it('resolves dog.speak() CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const speakCall = calls.find(
+      (c) => c.target === 'speak' && c.sourceFilePath.includes('app.dart'),
+    );
+    expect(speakCall).toBeDefined();
+  });
+
+  it('resolves Animal.classify("dog") static CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const classifyCall = calls.find(
+      (c) => c.target === 'classify' && c.sourceFilePath.includes('app.dart'),
+    );
+    expect(classifyCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Basic arity-based call resolution (Dart catch-up)
+// one.dart: writeAudit(String message), zero.dart: writeAuditSimple()
+// app.dart: writeAudit("hello"), writeAuditSimple()
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)('Dart calls', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-calls'), () => {});
+  }, 60000);
+
+  it('detects top-level functions', () => {
+    const functions = getNodesByLabel(result, 'Function');
+    expect(functions).toContain('writeAudit');
+    expect(functions).toContain('writeAuditSimple');
+    expect(functions).toContain('run');
+  });
+
+  it('resolves writeAudit("hello") CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const auditCall = calls.find(
+      (c) => c.target === 'writeAudit' && c.sourceFilePath.includes('app.dart'),
+    );
+    expect(auditCall).toBeDefined();
+    expect(auditCall!.targetFilePath).toContain('one.dart');
+  });
+
+  it('resolves writeAuditSimple() CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const simpleCall = calls.find(
+      (c) => c.target === 'writeAuditSimple' && c.sourceFilePath.includes('app.dart'),
+    );
+    expect(simpleCall).toBeDefined();
+    expect(simpleCall!.targetFilePath).toContain('zero.dart');
+  });
+
+  it('attributes calls to run, not File', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const appCalls = calls.filter((c) => c.sourceFilePath.includes('app.dart'));
+    for (const call of appCalls) {
+      expect(call.source).toBe('run');
+      expect(call.sourceLabel).toBe('Function');
+    }
+  });
+
+  it('creates IMPORTS edges from app.dart', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const appImports = imports.filter((e) => e.sourceFilePath.includes('app.dart'));
+    const targetFiles = appImports.map((e) => e.targetFilePath).sort();
+    expect(targetFiles).toEqual(expect.arrayContaining(['one.dart', 'zero.dart']));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Member calls: receiver-type resolution via constructor inference
+// user.dart: User { save() }, app.dart: var user = User(); user.save()
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)('Dart member calls', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-member-calls'), () => {});
+  }, 60000);
+
+  it('detects User class and save method', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    const methods = getNodesByLabel(result, 'Function');
+    expect(methods).toContain('save');
+    expect(methods).toContain('processUser');
+  });
+
+  it('emits HAS_METHOD edge User -> save', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const userSave = hasMethod.find((e) => e.source === 'User' && e.target === 'save');
+    expect(userSave).toBeDefined();
+  });
+
+  it('resolves user.save() CALLS edge via constructor inference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.sourceFilePath.includes('app.dart'),
+    );
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toContain('user.dart');
+  });
+
+  it('attributes save() call to processUser, not File', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.sourceFilePath.includes('app.dart'),
+    );
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.source).toBe('processUser');
+    expect(saveCall!.sourceLabel).toBe('Function');
+  });
+
+  it('creates IMPORTS edge from app.dart to user.dart', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const appImport = imports.find(
+      (e) => e.sourceFilePath.includes('app.dart') && e.targetFilePath.includes('user.dart'),
+    );
+    expect(appImport).toBeDefined();
   });
 });

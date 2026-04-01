@@ -16,6 +16,8 @@ import { resolveRubyImport } from '../import-resolvers/ruby.js';
 import { RUBY_QUERIES } from '../tree-sitter-queries.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { rubyConfig as rubyFieldConfig } from '../field-extractors/configs/ruby.js';
+import { createMethodExtractor } from '../method-extractors/generic.js';
+import { rubyMethodConfig } from '../method-extractors/configs/ruby.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'puts',
@@ -85,5 +87,6 @@ export const rubyProvider = defineLanguage({
   callRouter: routeRubyCall,
   importSemantics: 'wildcard',
   fieldExtractor: createFieldExtractor(rubyFieldConfig),
+  methodExtractor: createMethodExtractor(rubyMethodConfig),
   builtInNames: BUILT_INS,
 });

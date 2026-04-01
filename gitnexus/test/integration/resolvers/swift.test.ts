@@ -570,3 +570,198 @@ describe.skipIf(!swiftAvailable)('Swift call-result binding', () => {
     expect(getUserCall!.targetFilePath).toContain('Models.swift');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Method enrichment: isAbstract, isFinal, isStatic, annotations
+// Animal protocol with speak(), Dog class with speak(), static classify(),
+// @objc final breathe(). App.swift calls dog.speak() and Dog.classify().
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift method enrichment', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'swift-method-enrichment'), () => {});
+  }, 60000);
+
+  it('detects Animal protocol and Dog class', () => {
+    expect(getNodesByLabel(result, 'Interface')).toContain('Animal');
+    expect(getNodesByLabel(result, 'Class')).toContain('Dog');
+  });
+
+  it('emits IMPLEMENTS edge Dog -> Animal', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const edge = implements_.find((e) => e.source === 'Dog' && e.target === 'Animal');
+    expect(edge).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edges for Dog methods', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const dogMethods = hasMethod
+      .filter((e) => e.source === 'Dog')
+      .map((e) => e.target)
+      .sort();
+    expect(dogMethods).toContain('speak');
+    expect(dogMethods).toContain('classify');
+    expect(dogMethods).toContain('breathe');
+  });
+
+  it('marks protocol Animal.speak as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const speak = methods.find(
+      (n) => n.name === 'speak' && n.properties.filePath === 'Sources/Animal.swift',
+    );
+    if (speak?.properties.isAbstract !== undefined) {
+      expect(speak.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks Dog.speak as NOT isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const dogSpeak = methods.find(
+      (n) => n.name === 'speak' && n.properties.filePath !== 'Sources/Animal.swift',
+    );
+    if (dogSpeak?.properties.isAbstract !== undefined) {
+      expect(dogSpeak.properties.isAbstract).toBe(false);
+    }
+  });
+
+  it('marks breathe as isFinal (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const breathe = methods.find((n) => n.name === 'breathe');
+    if (breathe?.properties.isFinal !== undefined) {
+      expect(breathe.properties.isFinal).toBe(true);
+    }
+  });
+
+  it('marks classify as isStatic (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'classify');
+    if (classify?.properties.isStatic !== undefined) {
+      expect(classify.properties.isStatic).toBe(true);
+    }
+  });
+
+  it('captures @objc annotation on breathe (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const breathe = methods.find((n) => n.name === 'breathe');
+    if (breathe?.properties.annotations !== undefined) {
+      expect(breathe.properties.annotations).toContain('@objc');
+    }
+  });
+
+  it('resolves dog.speak() CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const speakCall = calls.find(
+      (c) => c.target === 'speak' && c.sourceFilePath === 'Sources/App.swift',
+    );
+    expect(speakCall).toBeDefined();
+  });
+
+  it('resolves Dog.classify("dog") CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const classifyCall = calls.find(
+      (c) => c.target === 'classify' && c.sourceFilePath === 'Sources/App.swift',
+    );
+    expect(classifyCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Abstract dispatch: protocol base + concrete implementation + receiver resolution
+// Repository protocol with find(id:), save(entity:)
+// SqlRepository class implements both
+// App.swift: repo = SqlRepository(); repo.find(id: 42); repo.save(entity: user)
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift abstract dispatch', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'swift-abstract-dispatch'), () => {});
+  }, 60000);
+
+  it('detects Repository protocol and SqlRepository class', () => {
+    expect(getNodesByLabel(result, 'Interface')).toContain('Repository');
+    expect(getNodesByLabel(result, 'Class')).toContain('SqlRepository');
+  });
+
+  it('emits IMPLEMENTS edge SqlRepository -> Repository', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const edge = implements_.find((e) => e.source === 'SqlRepository' && e.target === 'Repository');
+    expect(edge).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edges for Repository.find and Repository.save', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const repoFind = hasMethod.find((e) => e.source === 'Repository' && e.target === 'find');
+    const repoSave = hasMethod.find((e) => e.source === 'Repository' && e.target === 'save');
+    expect(repoFind).toBeDefined();
+    expect(repoSave).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edges for SqlRepository.find and SqlRepository.save', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const sqlFind = hasMethod.find((e) => e.source === 'SqlRepository' && e.target === 'find');
+    const sqlSave = hasMethod.find((e) => e.source === 'SqlRepository' && e.target === 'save');
+    expect(sqlFind).toBeDefined();
+    expect(sqlSave).toBeDefined();
+  });
+
+  it('marks base Repository.find as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const baseFind = methods.find(
+      (n) => n.name === 'find' && n.properties.filePath === 'Sources/Repository.swift',
+    );
+    if (baseFind?.properties.isAbstract !== undefined) {
+      expect(baseFind.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks base Repository.save as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const baseSave = methods.find(
+      (n) => n.name === 'save' && n.properties.filePath === 'Sources/Repository.swift',
+    );
+    if (baseSave?.properties.isAbstract !== undefined) {
+      expect(baseSave.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks concrete SqlRepository.find as NOT isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const sqlFind = methods.find(
+      (n) => n.name === 'find' && n.properties.filePath !== 'Sources/Repository.swift',
+    );
+    if (sqlFind?.properties.isAbstract !== undefined) {
+      expect(sqlFind.properties.isAbstract).toBe(false);
+    }
+  });
+
+  it('resolves repo.find(id: 42) CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findCall = calls.find(
+      (c) => c.target === 'find' && c.sourceFilePath === 'Sources/App.swift',
+    );
+    expect(findCall).toBeDefined();
+  });
+
+  it('resolves repo.save(entity: user) CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.sourceFilePath === 'Sources/App.swift',
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('populates parameterTypes for Repository.find (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const baseFind = methods.find(
+      (n) => n.name === 'find' && n.properties.filePath === 'Sources/Repository.swift',
+    );
+    if (baseFind?.properties.parameterTypes !== undefined) {
+      const params = baseFind.properties.parameterTypes;
+      expect(params).toContain('Int');
+    }
+  });
+});

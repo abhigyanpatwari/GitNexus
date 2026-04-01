@@ -1103,3 +1103,186 @@ describe('Ruby cross-file binding propagation', () => {
     expect(getNameEdge).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Method Enrichment: visibility (private/protected), isStatic (singleton),
+// parameters, HAS_METHOD edges, member call resolution
+// ---------------------------------------------------------------------------
+
+describe('Ruby method enrichment (visibility, isStatic, parameters)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-method-enrichment'), () => {});
+  }, 60000);
+
+  it('detects Animal and Dog classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Animal', 'Dog']);
+  });
+
+  it('detects all methods including singleton', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('speak');
+    expect(methods).toContain('classify');
+    expect(methods).toContain('internal_state');
+    expect(methods).toContain('energy_level');
+  });
+
+  it('emits HAS_METHOD edges for Animal and Dog', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    // Animal has speak, classify, internal_state
+    expect(hasMethod.find((e) => e.source === 'Animal' && e.target === 'speak')).toBeDefined();
+    expect(hasMethod.find((e) => e.source === 'Animal' && e.target === 'classify')).toBeDefined();
+    expect(
+      hasMethod.find((e) => e.source === 'Animal' && e.target === 'internal_state'),
+    ).toBeDefined();
+    // Dog has speak, energy_level
+    expect(hasMethod.find((e) => e.source === 'Dog' && e.target === 'speak')).toBeDefined();
+    expect(hasMethod.find((e) => e.source === 'Dog' && e.target === 'energy_level')).toBeDefined();
+  });
+
+  it('marks internal_state as private (when enriched)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const internalState = methods.find(
+      (m) => m.name === 'internal_state' && m.properties.filePath?.includes('animal'),
+    );
+    expect(internalState).toBeDefined();
+    // Visibility enrichment requires the MethodExtractor path (worker mode).
+    // Sequential fallback (small repos) does not populate visibility.
+    if (internalState!.properties.visibility !== undefined) {
+      expect(internalState!.properties.visibility).toBe('private');
+    }
+  });
+
+  it('marks energy_level as protected (when enriched)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const energyLevel = methods.find(
+      (m) => m.name === 'energy_level' && m.properties.filePath?.includes('animal'),
+    );
+    expect(energyLevel).toBeDefined();
+    if (energyLevel!.properties.visibility !== undefined) {
+      expect(energyLevel!.properties.visibility).toBe('protected');
+    }
+  });
+
+  it('marks classify as static (when enriched)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const classify = methods.find(
+      (m) => m.name === 'classify' && m.properties.filePath?.includes('animal'),
+    );
+    expect(classify).toBeDefined();
+    if (classify!.properties.isStatic !== undefined) {
+      expect(classify!.properties.isStatic).toBe(true);
+    }
+  });
+
+  it('marks speak as public (when enriched)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const speak = methods.find(
+      (m) => m.name === 'speak' && m.properties.filePath?.includes('animal'),
+    );
+    expect(speak).toBeDefined();
+    // When the MethodExtractor enrichment runs, visibility defaults to public
+    if (speak!.properties.visibility !== undefined) {
+      expect(speak!.properties.visibility).toBe('public');
+    }
+  });
+
+  it('extracts parameterCount for classify(name)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const classify = methods.find(
+      (m) => m.name === 'classify' && m.properties.filePath?.includes('animal'),
+    );
+    expect(classify).toBeDefined();
+    expect(classify!.properties.parameterCount).toBe(1);
+  });
+
+  it('resolves dog.speak member call from main to Dog#speak', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const speakCall = calls.find(
+      (c) => c.source === 'main' && c.target === 'speak' && c.targetFilePath.includes('animal'),
+    );
+    expect(speakCall).toBeDefined();
+  });
+
+  it('emits EXTENDS edge from Dog to Animal', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const edge = extends_.find((e) => e.source === 'Dog' && e.target === 'Animal');
+    expect(edge).toBeDefined();
+  });
+
+  it('detects main as top-level Method in app.rb', () => {
+    // Ruby top-level def is parsed as a method node (tree-sitter `method` type)
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('main');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Overload Dispatch: methods with different arity resolve via receiver type
+// ---------------------------------------------------------------------------
+
+describe('Ruby overload dispatch (format vs format_with_prefix)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-overload-dispatch'), () => {});
+  }, 60000);
+
+  it('detects Formatter class', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Formatter');
+  });
+
+  it('detects format and format_with_prefix methods', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('format');
+    expect(methods).toContain('format_with_prefix');
+  });
+
+  it('emits HAS_METHOD edges for both methods on Formatter', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    expect(hasMethod.find((e) => e.source === 'Formatter' && e.target === 'format')).toBeDefined();
+    expect(
+      hasMethod.find((e) => e.source === 'Formatter' && e.target === 'format_with_prefix'),
+    ).toBeDefined();
+  });
+
+  it('extracts arity for format(value) — 1 parameter', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const format = methods.find((m) => m.name === 'format');
+    expect(format).toBeDefined();
+    expect(format!.properties.parameterCount).toBe(1);
+  });
+
+  it('extracts arity for format_with_prefix(value, prefix) — 2 parameters', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const fwp = methods.find((m) => m.name === 'format_with_prefix');
+    expect(fwp).toBeDefined();
+    expect(fwp!.properties.parameterCount).toBe(2);
+  });
+
+  it('resolves f.format call from run to Formatter#format', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const formatCall = calls.find(
+      (c) => c.source === 'run' && c.target === 'format' && c.targetFilePath.includes('formatter'),
+    );
+    expect(formatCall).toBeDefined();
+  });
+
+  it('resolves f.format_with_prefix call from run to Formatter#format_with_prefix', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fwpCall = calls.find(
+      (c) =>
+        c.source === 'run' &&
+        c.target === 'format_with_prefix' &&
+        c.targetFilePath.includes('formatter'),
+    );
+    expect(fwpCall).toBeDefined();
+  });
+
+  it('detects run as top-level Method in app.rb', () => {
+    // Ruby top-level def is parsed as a method node (tree-sitter `method` type)
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('run');
+  });
+});

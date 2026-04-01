@@ -19,6 +19,8 @@ import { SWIFT_QUERIES } from '../tree-sitter-queries.js';
 import type { SwiftPackageConfig } from '../language-config.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { swiftConfig as swiftFieldConfig } from '../field-extractors/configs/swift.js';
+import { createMethodExtractor } from '../method-extractors/generic.js';
+import { swiftMethodConfig } from '../method-extractors/configs/swift.js';
 
 /**
  * Group Swift files by SPM target for implicit module visibility.
@@ -227,6 +229,7 @@ export const swiftProvider = defineLanguage({
   importSemantics: 'wildcard',
   heritageDefaultEdge: 'IMPLEMENTS',
   fieldExtractor: createFieldExtractor(swiftFieldConfig),
+  methodExtractor: createMethodExtractor(swiftMethodConfig),
   implicitImportWirer: wireSwiftImplicitImports,
   builtInNames: BUILT_INS,
 });

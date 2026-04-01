@@ -19,6 +19,8 @@ import { extractRustNamedBindings } from '../named-bindings/rust.js';
 import { RUST_QUERIES } from '../tree-sitter-queries.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { rustConfig as rustFieldConfig } from '../field-extractors/configs/rust.js';
+import { createMethodExtractor } from '../method-extractors/generic.js';
+import { rustMethodConfig } from '../method-extractors/configs/rust.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'unwrap',
@@ -87,5 +89,6 @@ export const rustProvider = defineLanguage({
   namedBindingExtractor: extractRustNamedBindings,
   mroStrategy: 'qualified-syntax',
   fieldExtractor: createFieldExtractor(rustFieldConfig),
+  methodExtractor: createMethodExtractor(rustMethodConfig),
   builtInNames: BUILT_INS,
 });
