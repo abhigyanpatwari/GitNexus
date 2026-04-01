@@ -325,7 +325,9 @@ describe('Java method-reference resolution', () => {
     const calls = getRelationships(result, 'CALLS');
     const ctorRef = calls.find(
       (c) =>
-        c.source === 'mapNewUsers' && c.target === 'User' && c.targetFilePath === 'models/User.java',
+        c.source === 'mapNewUsers' &&
+        c.target === 'User' &&
+        c.targetFilePath === 'models/User.java',
     );
 
     expect(ctorRef).toBeDefined();

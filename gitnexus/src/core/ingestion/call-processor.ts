@@ -649,10 +649,13 @@ export const processCalls = async (
       if (languageSeed) {
         if (provider.isBuiltInName(languageSeed.calledName)) return;
 
-        const sourceId = findEnclosingFunction(callNode, file.path, ctx, provider) || generateId('File', file.path);
+        const sourceId =
+          findEnclosingFunction(callNode, file.path, ctx, provider) ||
+          generateId('File', file.path);
         const receiverName =
           languageSeed.callForm === 'member' ? languageSeed.receiverName : undefined;
-        let receiverTypeName = receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
+        let receiverTypeName =
+          receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
 
         if (
           receiverName !== undefined &&
