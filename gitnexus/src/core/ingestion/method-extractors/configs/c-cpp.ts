@@ -197,7 +197,12 @@ function extractParamName(declNode: SyntaxNode | null): string | undefined {
  * Mirrors the field extractor pattern in c-cpp.ts.
  */
 function extractCppVisibility(node: SyntaxNode): MethodVisibility {
-  let sibling = node.previousNamedSibling;
+  // If this node was unwrapped from a template_declaration, the access_specifier
+  // is a sibling of the template_declaration in field_declaration_list, not of
+  // this node — climb up one level before walking backward.
+  const startNode = node.parent?.type === 'template_declaration' ? node.parent : node;
+
+  let sibling = startNode.previousNamedSibling;
   while (sibling) {
     if (sibling.type === 'access_specifier') {
       const text = sibling.text.replace(':', '').trim();
@@ -206,7 +211,7 @@ function extractCppVisibility(node: SyntaxNode): MethodVisibility {
     sibling = sibling.previousNamedSibling;
   }
   // Default: struct/union = public, class = private
-  const parent = node.parent?.parent;
+  const parent = startNode.parent?.parent;
   return parent?.type === 'struct_specifier' || parent?.type === 'union_specifier'
     ? 'public'
     : 'private';

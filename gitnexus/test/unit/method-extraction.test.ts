@@ -1939,6 +1939,11 @@ describe('C++ MethodExtractor', () => {
       expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(true);
     });
 
+    it('recognizes union_specifier', () => {
+      const tree = parseCPP('union Variant {};');
+      expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(true);
+    });
+
     it('rejects function_definition', () => {
       const tree = parseCPP('void foo() {}');
       expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(false);
@@ -2188,7 +2193,7 @@ describe('C++ MethodExtractor', () => {
       expect(params[1].name).toBe('argv');
     });
 
-    it('extracts template methods from class body', () => {
+    it('extracts template methods from class body with correct visibility', () => {
       const tree = parseCPP(`
         class Buffer {
         public:
@@ -2196,20 +2201,28 @@ describe('C++ MethodExtractor', () => {
           void push(T value);
           template<typename T>
           T get(int index) { return T(); }
+        private:
+          template<typename T>
+          void internal(T x);
         };
       `);
       const classNode = tree.rootNode.child(0)!;
       const result = extractor.extract(classNode, cppCtx);
 
-      expect(result!.methods).toHaveLength(2);
+      expect(result!.methods).toHaveLength(3);
       const push = result!.methods.find((m) => m.name === 'push');
       const get = result!.methods.find((m) => m.name === 'get');
+      const internal = result!.methods.find((m) => m.name === 'internal');
       expect(push).toBeDefined();
       expect(push!.parameters).toHaveLength(1);
       expect(push!.parameters[0].name).toBe('value');
+      expect(push!.visibility).toBe('public');
       expect(get).toBeDefined();
       expect(get!.parameters).toHaveLength(1);
       expect(get!.parameters[0].name).toBe('index');
+      expect(get!.visibility).toBe('public');
+      expect(internal).toBeDefined();
+      expect(internal!.visibility).toBe('private');
     });
 
     it('extracts methods from union_specifier', () => {
