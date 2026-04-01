@@ -40,6 +40,7 @@ import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
 import type { LiteralTypeInferrer } from './type-extractors/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
+import { extractParsedCallSite } from './call-sites/extract-language-call-site.js';
 
 /** Per-file resolved type bindings for exported symbols.
  *  Populated during call processing, consumed by Phase 14 re-resolution pass. */
@@ -643,6 +644,72 @@ export const processCalls = async (
 
       if (!captureMap['call']) return;
 
+      const callNode = captureMap['call'];
+      const languageSeed = extractParsedCallSite(language, callNode);
+      if (languageSeed) {
+        if (provider.isBuiltInName(languageSeed.calledName)) return;
+
+        const sourceId = findEnclosingFunction(callNode, file.path, ctx, provider) || generateId('File', file.path);
+        const receiverName =
+          languageSeed.callForm === 'member' ? languageSeed.receiverName : undefined;
+        let receiverTypeName = receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
+
+        if (
+          receiverName !== undefined &&
+          receiverTypeName === undefined &&
+          languageSeed.callForm === 'member' &&
+          (language === 'java' || language === 'csharp' || language === 'kotlin')
+        ) {
+          const c0 = receiverName.charCodeAt(0);
+          if (c0 >= 65 && c0 <= 90) receiverTypeName = receiverName;
+        }
+
+        const resolved = resolveCallTarget(
+          {
+            calledName: languageSeed.calledName,
+            callForm: languageSeed.callForm,
+            ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
+            ...(receiverName !== undefined ? { receiverName } : {}),
+          },
+          file.path,
+          ctx,
+          undefined,
+          widenCache,
+        );
+
+        if (!resolved) return;
+        graph.addRelationship({
+          id: generateId('CALLS', `${sourceId}:${languageSeed.calledName}->${resolved.nodeId}`),
+          sourceId,
+          targetId: resolved.nodeId,
+          type: 'CALLS',
+          confidence: resolved.confidence,
+          reason: resolved.reason,
+        });
+
+        if (implementorMap && languageSeed.callForm === 'member' && receiverTypeName) {
+          const implTargets = findInterfaceDispatchTargets(
+            languageSeed.calledName,
+            receiverTypeName,
+            file.path,
+            ctx,
+            implementorMap,
+            resolved.nodeId,
+          );
+          for (const impl of implTargets) {
+            graph.addRelationship({
+              id: generateId('CALLS', `${sourceId}:${languageSeed.calledName}->${impl.nodeId}`),
+              sourceId,
+              targetId: impl.nodeId,
+              type: 'CALLS',
+              confidence: impl.confidence,
+              reason: impl.reason,
+            });
+          }
+        }
+        return;
+      }
+
       const nameNode = captureMap['call.name'];
       if (!nameNode) return;
 
@@ -718,7 +785,6 @@ export const processCalls = async (
 
       if (provider.isBuiltInName(calledName)) return;
 
-      const callNode = captureMap['call'];
       const callForm = inferCallForm(callNode, nameNode);
       const receiverName = callForm === 'member' ? extractReceiverName(nameNode) : undefined;
       let receiverTypeName =

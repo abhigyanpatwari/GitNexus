@@ -346,6 +346,7 @@ export const JAVA_QUERIES = `
 ; Calls
 (method_invocation name: (identifier) @call.name) @call
 (method_invocation object: (_) name: (identifier) @call.name) @call
+(method_reference) @call
 
 ; Constructor calls: new Foo()
 (object_creation_expression type: (type_identifier) @call.name) @call
