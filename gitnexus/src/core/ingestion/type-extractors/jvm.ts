@@ -850,6 +850,20 @@ const extractKotlinPatternBinding: PatternBindingExtractor = (
 export const kotlinTypeConfig: LanguageTypeConfig = {
   allowPatternBindingOverwrite: true,
   declarationNodeTypes: KOTLIN_DECLARATION_NODE_TYPES,
+  getDeclarationTypeNode: (node) => {
+    // Kotlin property_declaration wraps the actual declaration in variable_declaration.
+    // The type is commonly a user_type / nullable_type child (positional, not 'type' field).
+    const varDecl =
+      node.type === 'property_declaration' ? findChild(node, 'variable_declaration') : node;
+    if (varDecl) {
+      return (
+        varDecl.childForFieldName('type') ??
+        findChild(varDecl, 'user_type') ??
+        findChild(varDecl, 'nullable_type')
+      );
+    }
+    return node.childForFieldName('type') ?? findChild(node, 'user_type') ?? null;
+  },
   forLoopNodeTypes: KOTLIN_FOR_LOOP_NODE_TYPES,
   patternBindingNodeTypes: new Set(['type_test', 'equality_expression']),
   extractDeclaration: extractKotlinDeclaration,

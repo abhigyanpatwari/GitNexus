@@ -559,6 +559,24 @@ const inferLiteralType: LiteralTypeInferrer = (node) => {
 
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
+  getDeclarationTypeNode: (node) => {
+    // C# field_declaration / local_declaration_statement wrap type inside variable_declaration.
+    // Prefer the wrapper node's `type` field when present.
+    const direct = node.childForFieldName('type');
+    if (direct) return direct;
+
+    const wrapped =
+      node.childForFieldName('declaration') ??
+      (() => {
+        for (let i = 0; i < node.namedChildCount; i++) {
+          const c = node.namedChild(i);
+          if (c?.type === 'variable_declaration') return c;
+        }
+        return null;
+      })();
+
+    return wrapped?.childForFieldName('type') ?? null;
+  },
   forLoopNodeTypes: FOR_LOOP_NODE_TYPES,
   patternBindingNodeTypes: new Set([
     'is_pattern_expression',

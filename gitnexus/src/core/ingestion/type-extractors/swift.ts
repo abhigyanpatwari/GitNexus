@@ -496,6 +496,17 @@ function extractSwiftElementTypeFromTypeNode(typeNode: SyntaxNode): string | und
 
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
+  getDeclarationTypeNode: (node) => {
+    // Swift: many declarations store type as a type_annotation child (not a 'type' field).
+    // Prefer a direct 'type' field if present, else unwrap type_annotation to its inner type.
+    const direct = node.childForFieldName('type');
+    if (direct) return direct;
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const c = node.namedChild(i);
+      if (c?.type === 'type_annotation') return c.firstNamedChild ?? c;
+    }
+    return null;
+  },
   forLoopNodeTypes: FOR_LOOP_NODE_TYPES,
   extractDeclaration,
   extractParameter,

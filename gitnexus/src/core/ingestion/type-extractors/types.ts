@@ -6,6 +6,11 @@ export type TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>) 
 /** Extracts type bindings from a parameter node into the env map */
 export type ParameterExtractor = (node: SyntaxNode, env: Map<string, string>) => void;
 
+/** Optionally locates the type-annotation AST node for a declaration node.
+ * Used by buildTypeEnv to populate declarationTypeNodes and constructorTypeMap.
+ * If absent, buildTypeEnv falls back to generic heuristics (childForFieldName('type'), etc). */
+export type DeclarationTypeNodeLocator = (node: SyntaxNode) => SyntaxNode | null;
+
 /** Minimal interface for checking whether a name is a known class/struct.
  *  Narrower than ReadonlySet — only `.has()` is used by extractors. */
 export type ClassNameLookup = { has(name: string): boolean };
@@ -142,6 +147,9 @@ export interface LanguageTypeConfig {
   readonly allowPatternBindingOverwrite?: boolean;
   /** Node types that represent typed declarations for this language */
   declarationNodeTypes: ReadonlySet<string>;
+  /** Optional: language-specific way to find a declaration's type-annotation node.
+   * Prefer providing this for grammars where the type is wrapped (e.g., C#, Kotlin, Swift). */
+  getDeclarationTypeNode?: DeclarationTypeNodeLocator;
   /** AST node types for for-each/for-in statements with explicit element types. */
   forLoopNodeTypes?: ReadonlySet<string>;
   /** Optional allowlist of AST node types on which extractPatternBinding should run.
