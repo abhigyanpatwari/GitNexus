@@ -39,6 +39,8 @@ export interface FieldInfo {
   isStatic: boolean;
   /** Is this readonly/const? */
   isReadonly: boolean;
+  /** Compile-time constant string value when available */
+  constantValue?: string;
   /** Source file path */
   sourceFile: string;
   /** Line number */

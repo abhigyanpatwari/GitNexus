@@ -4,6 +4,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import type { FieldExtractionConfig } from '../generic.js';
 import { findVisibility, hasKeyword, hasModifier, typeFromField } from './helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
+import { extractJavaStringLiteral } from '../../utils/java-strings.js';
 import type { FieldVisibility } from '../../field-types.js';
 
 // ---------------------------------------------------------------------------
@@ -64,6 +65,17 @@ export const javaConfig: FieldExtractionConfig = {
 
   isReadonly(node) {
     return hasKeyword(node, 'final') || hasModifier(node, 'modifiers', 'final');
+  },
+
+  extractConstantValue(node) {
+    const isStatic = hasKeyword(node, 'static') || hasModifier(node, 'modifiers', 'static');
+    const isReadonly = hasKeyword(node, 'final') || hasModifier(node, 'modifiers', 'final');
+    if (!isStatic || !isReadonly) return undefined;
+    const declarator =
+      node.childForFieldName('declarator') ??
+      node.namedChildren.find((child) => child.type === 'variable_declarator');
+    const valueNode = declarator?.childForFieldName('value');
+    return extractJavaStringLiteral(valueNode);
   },
 };
 

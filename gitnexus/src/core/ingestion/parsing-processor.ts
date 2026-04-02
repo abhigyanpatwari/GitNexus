@@ -6,7 +6,7 @@ import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
 import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
-import { getLanguageFromFilename } from 'gitnexus-shared';
+import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import {
   getDefinitionNodeFromCaptures,
@@ -18,9 +18,11 @@ import {
 } from './utils/ast-helpers.js';
 import { detectFrameworkFromAST } from './framework-detection.js';
 import { buildTypeEnv } from './type-env.js';
+import type { ExtractedDeferredRouteCandidate } from './route-extractors/spring-java-types.js';
 import type { FieldInfo, FieldExtractorContext } from './field-types.js';
 import type { LanguageProvider } from './language-provider.js';
 import { WorkerPool } from './workers/worker-pool.js';
+import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
 import type {
   ParseWorkerResult,
   ParseWorkerInput,
@@ -36,7 +38,6 @@ import type {
   FileTypeEnvBindings,
   ExtractedORMQuery,
 } from './workers/parse-worker.js';
-import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
 
@@ -48,10 +49,28 @@ export interface WorkerExtractedData {
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
   decoratorRoutes: ExtractedDecoratorRoute[];
+  deferredRouteCandidates: ExtractedDeferredRouteCandidate[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
   typeEnvBindings: FileTypeEnvBindings[];
+}
+
+function createEmptyExtractedData(): WorkerExtractedData {
+  return {
+    imports: [],
+    calls: [],
+    assignments: [],
+    heritage: [],
+    routes: [],
+    fetchCalls: [],
+    decoratorRoutes: [],
+    deferredRouteCandidates: [],
+    toolDefs: [],
+    ormQueries: [],
+    constructorBindings: [],
+    typeEnvBindings: [],
+  };
 }
 
 // ============================================================================
@@ -73,20 +92,7 @@ const processParsingWithWorkers = async (
     if (lang) parseableFiles.push({ path: file.path, content: file.content });
   }
 
-  if (parseableFiles.length === 0)
-    return {
-      imports: [],
-      calls: [],
-      assignments: [],
-      heritage: [],
-      routes: [],
-      fetchCalls: [],
-      decoratorRoutes: [],
-      toolDefs: [],
-      ormQueries: [],
-      constructorBindings: [],
-      typeEnvBindings: [],
-    };
+  if (parseableFiles.length === 0) return createEmptyExtractedData();
 
   const total = files.length;
 
@@ -106,6 +112,7 @@ const processParsingWithWorkers = async (
   const allRoutes: ExtractedRoute[] = [];
   const allFetchCalls: ExtractedFetchCall[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
+  const allDeferredRouteCandidates: ExtractedDeferredRouteCandidate[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
   const allConstructorBindings: FileConstructorBindings[] = [];
@@ -130,6 +137,7 @@ const processParsingWithWorkers = async (
         parameterTypes: sym.parameterTypes,
         returnType: sym.returnType,
         declaredType: sym.declaredType,
+        constantValue: sym.constantValue,
         ownerId: sym.ownerId,
       });
     }
@@ -141,6 +149,7 @@ const processParsingWithWorkers = async (
     allRoutes.push(...result.routes);
     allFetchCalls.push(...result.fetchCalls);
     allDecoratorRoutes.push(...result.decoratorRoutes);
+    allDeferredRouteCandidates.push(...result.deferredRouteCandidates);
     allToolDefs.push(...result.toolDefs);
     if (result.ormQueries) allORMQueries.push(...result.ormQueries);
     allConstructorBindings.push(...result.constructorBindings);
@@ -171,6 +180,7 @@ const processParsingWithWorkers = async (
     routes: allRoutes,
     fetchCalls: allFetchCalls,
     decoratorRoutes: allDecoratorRoutes,
+    deferredRouteCandidates: allDeferredRouteCandidates,
     toolDefs: allToolDefs,
     ormQueries: allORMQueries,
     constructorBindings: allConstructorBindings,
@@ -250,8 +260,9 @@ const processParsingSequential = async (
   symbolTable: SymbolTable,
   astCache: ASTCache,
   onFileProgress?: FileProgressCallback,
-) => {
+): Promise<WorkerExtractedData> => {
   const parser = await loadParser();
+  const extractedData = createEmptyExtractedData();
   const total = files.length;
   const skippedLanguages = new Map<string, number>();
 
@@ -421,6 +432,7 @@ const processParsingSequential = async (
       let seqVisibility: string | undefined;
       let seqIsStatic: boolean | undefined;
       let seqIsReadonly: boolean | undefined;
+      let seqConstantValue: string | undefined;
       if (nodeLabel === 'Property' && definitionNode) {
         // FieldExtractor is the single source of truth when available
         if (provider.fieldExtractor && typeEnv) {
@@ -438,6 +450,7 @@ const processParsingSequential = async (
               seqVisibility = info.visibility;
               seqIsStatic = info.isStatic;
               seqIsReadonly = info.isReadonly;
+              seqConstantValue = info.constantValue;
             }
           }
         }
@@ -448,6 +461,7 @@ const processParsingSequential = async (
       if (seqVisibility !== undefined) node.properties.visibility = seqVisibility;
       if (seqIsStatic !== undefined) node.properties.isStatic = seqIsStatic;
       if (seqIsReadonly !== undefined) node.properties.isReadonly = seqIsReadonly;
+      if (seqConstantValue !== undefined) node.properties.constantValue = seqConstantValue;
       if (declaredType !== undefined) node.properties.declaredType = declaredType;
 
       symbolTable.add(file.path, nodeName, nodeId, nodeLabel, {
@@ -456,6 +470,7 @@ const processParsingSequential = async (
         parameterTypes: methodSig?.parameterTypes,
         returnType: methodSig?.returnType,
         declaredType,
+        constantValue: seqConstantValue,
         ownerId: enclosingClassId ?? undefined,
       });
 
@@ -487,6 +502,10 @@ const processParsingSequential = async (
         });
       }
     });
+
+    if (provider.isRouteFile?.(file.path) && provider.deferredRouteExtractor) {
+      extractedData.deferredRouteCandidates.push(...(provider.deferredRouteExtractor(tree, file.path)));
+    }
   }
 
   if (skippedLanguages.size > 0) {
@@ -495,11 +514,18 @@ const processParsingSequential = async (
       .join(', ');
     console.warn(`  Skipped unsupported languages: ${summary}`);
   }
+
+  return extractedData;
 };
 
 // ============================================================================
 // Public API
 // ============================================================================
+
+export interface ParsingResult {
+  data: WorkerExtractedData;
+  usedWorkers: boolean;
+}
 
 export const processParsing = async (
   graph: KnowledgeGraph,
@@ -508,10 +534,10 @@ export const processParsing = async (
   astCache: ASTCache,
   onFileProgress?: FileProgressCallback,
   workerPool?: WorkerPool,
-): Promise<WorkerExtractedData | null> => {
+): Promise<ParsingResult> => {
   if (workerPool) {
     try {
-      return await processParsingWithWorkers(
+      const data = await processParsingWithWorkers(
         graph,
         files,
         symbolTable,
@@ -519,6 +545,10 @@ export const processParsing = async (
         workerPool,
         onFileProgress,
       );
+      return {
+        data,
+        usedWorkers: true,
+      };
     } catch (err) {
       console.warn(
         'Worker pool parsing failed, falling back to sequential:',
@@ -527,7 +557,15 @@ export const processParsing = async (
     }
   }
 
-  // Fallback: sequential parsing (no pre-extracted data)
-  await processParsingSequential(graph, files, symbolTable, astCache, onFileProgress);
-  return null;
+  const data = await processParsingSequential(
+    graph,
+    files,
+    symbolTable,
+    astCache,
+    onFileProgress,
+  );
+  return {
+    data,
+    usedWorkers: false,
+  };
 };

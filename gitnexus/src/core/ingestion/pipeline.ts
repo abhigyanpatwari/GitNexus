@@ -25,9 +25,10 @@ import {
   mergeImplementorMaps,
 } from './call-processor.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from './route-extractors/nextjs.js';
+import { finalizeSpringJavaRoutes } from './route-extractors/spring-java.js';
+import type { ExtractedDeferredRouteCandidate } from './route-extractors/spring-java-types.js';
 import { expoFileToRouteURL } from './route-extractors/expo.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';
-import { extractSpringJavaRoutes } from './route-extractors/spring-java.js';
 import {
   extractResponseShapes,
   extractPHPResponseShapes,
@@ -785,6 +786,7 @@ async function runChunkedParseAndResolve(
   const allExtractedRoutes: ExtractedRoute[] = [];
   // Accumulate decorator-based routes (@Get, @Post, @app.route, etc.)
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
+  const allDeferredRouteCandidates: ExtractedDeferredRouteCandidate[] = [];
   // Accumulate MCP/RPC tool definitions (@mcp.tool(), @app.tool(), etc.)
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
@@ -804,7 +806,7 @@ async function runChunkedParseAndResolve(
         .map((p) => ({ path: p, content: chunkContents.get(p)! }));
 
       // Parse this chunk (workers or sequential fallback)
-      const chunkWorkerData = await processParsing(
+      const { data: chunkParseData, usedWorkers } = await processParsing(
         graph,
         chunkFiles,
         symbolTable,
@@ -828,13 +830,16 @@ async function runChunkedParseAndResolve(
       );
 
       const chunkBasePercent = 20 + (filesParsedSoFar / totalParseable) * 62;
+      if (chunkParseData.deferredRouteCandidates.length > 0) {
+        allDeferredRouteCandidates.push(...chunkParseData.deferredRouteCandidates);
+      }
 
-      if (chunkWorkerData) {
+      if (usedWorkers) {
         // Imports
         await processImportsFromExtracted(
           graph,
           allPathObjects,
-          chunkWorkerData.imports,
+          chunkParseData.imports,
           ctx,
           (current, total) => {
             onProgress({
@@ -864,7 +869,7 @@ async function runChunkedParseAndResolve(
         // it activates only if incremental export collection is added per-chunk.
         if (exportedTypeMap.size > 0 && ctx.namedImportMap.size > 0) {
           const { enrichedCount } = seedCrossFileReceiverTypes(
-            chunkWorkerData.calls,
+            chunkParseData.calls,
             ctx.namedImportMap,
             exportedTypeMap,
           );
@@ -874,17 +879,17 @@ async function runChunkedParseAndResolve(
             );
           }
         }
-        deferredWorkerCalls.push(...chunkWorkerData.calls);
-        deferredWorkerHeritage.push(...chunkWorkerData.heritage);
-        deferredConstructorBindings.push(...chunkWorkerData.constructorBindings);
-        if (chunkWorkerData.assignments?.length) {
-          deferredAssignments.push(...chunkWorkerData.assignments);
+        deferredWorkerCalls.push(...chunkParseData.calls);
+        deferredWorkerHeritage.push(...chunkParseData.heritage);
+        deferredConstructorBindings.push(...chunkParseData.constructorBindings);
+        if (chunkParseData.assignments?.length) {
+          deferredAssignments.push(...chunkParseData.assignments);
         }
 
         // Heritage + Routes — calls deferred until all chunks have contributed heritage
         // (complete implementor map for interface dispatch).
         await Promise.all([
-          processHeritageFromExtracted(graph, chunkWorkerData.heritage, ctx, (current, total) => {
+          processHeritageFromExtracted(graph, chunkParseData.heritage, ctx, (current, total) => {
             onProgress({
               phase: 'parsing',
               percent: Math.round(chunkBasePercent),
@@ -897,7 +902,7 @@ async function runChunkedParseAndResolve(
               },
             });
           }),
-          processRoutesFromExtracted(graph, chunkWorkerData.routes ?? [], ctx, (current, total) => {
+          processRoutesFromExtracted(graph, chunkParseData.routes ?? [], ctx, (current, total) => {
             onProgress({
               phase: 'parsing',
               percent: Math.round(chunkBasePercent),
@@ -912,24 +917,24 @@ async function runChunkedParseAndResolve(
           }),
         ]);
         // Collect TypeEnv file-scope bindings for exported type enrichment
-        if (chunkWorkerData.typeEnvBindings?.length) {
-          workerTypeEnvBindings.push(...chunkWorkerData.typeEnvBindings);
+        if (chunkParseData.typeEnvBindings?.length) {
+          workerTypeEnvBindings.push(...chunkParseData.typeEnvBindings);
         }
         // Collect fetch() calls for Next.js route matching
-        if (chunkWorkerData.fetchCalls?.length) {
-          allFetchCalls.push(...chunkWorkerData.fetchCalls);
+        if (chunkParseData.fetchCalls?.length) {
+          allFetchCalls.push(...chunkParseData.fetchCalls);
         }
-        if (chunkWorkerData.routes?.length) {
-          allExtractedRoutes.push(...chunkWorkerData.routes);
+        if (chunkParseData.routes?.length) {
+          allExtractedRoutes.push(...chunkParseData.routes);
         }
-        if (chunkWorkerData.decoratorRoutes?.length) {
-          allDecoratorRoutes.push(...chunkWorkerData.decoratorRoutes);
+        if (chunkParseData.decoratorRoutes?.length) {
+          allDecoratorRoutes.push(...chunkParseData.decoratorRoutes);
         }
-        if (chunkWorkerData.toolDefs?.length) {
-          allToolDefs.push(...chunkWorkerData.toolDefs);
+        if (chunkParseData.toolDefs?.length) {
+          allToolDefs.push(...chunkParseData.toolDefs);
         }
-        if (chunkWorkerData.ormQueries?.length) {
-          allORMQueries.push(...chunkWorkerData.ormQueries);
+        if (chunkParseData.ormQueries?.length) {
+          allORMQueries.push(...chunkParseData.ormQueries);
         }
       } else {
         await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
@@ -1015,19 +1020,6 @@ async function runChunkedParseAndResolve(
     if (rubyHeritage.length > 0) {
       await processHeritageFromExtracted(graph, rubyHeritage, ctx);
     }
-    const chunkSpringRoutes: ExtractedRoute[] = [];
-    for (const file of chunkFiles) {
-      const provider = getProviderForFile(file.path);
-      const language = getLanguageFromFilename(file.path);
-      if (language !== SupportedLanguages.Java || !provider?.isRouteFile?.(file.path)) continue;
-      const tree = astCache.get(file.path);
-      if (!tree) continue;
-      chunkSpringRoutes.push(...extractSpringJavaRoutes(tree, file.path));
-    }
-    if (chunkSpringRoutes.length > 0) {
-      await processRoutesFromExtracted(graph, chunkSpringRoutes, ctx);
-      allExtractedRoutes.push(...chunkSpringRoutes);
-    }
     // Extract fetch() calls for Next.js route matching (sequential path)
     const chunkFetchCalls = await extractFetchCallsFromFiles(chunkFiles, astCache);
     if (chunkFetchCalls.length > 0) {
@@ -1038,6 +1030,12 @@ async function runChunkedParseAndResolve(
       extractORMQueriesInline(f.path, f.content, allORMQueries);
     }
     astCache.clear();
+  }
+
+  const finalizedSpringRoutes = finalizeSpringJavaRoutes(allDeferredRouteCandidates, ctx);
+  if (finalizedSpringRoutes.length > 0) {
+    await processRoutesFromExtracted(graph, finalizedSpringRoutes, ctx);
+    allExtractedRoutes.push(...finalizedSpringRoutes);
   }
 
   // Log resolution cache stats
@@ -1369,7 +1367,14 @@ export const runPipelineFromRepo = async (
     );
 
     // ── Phase 3.5: Route Registry (Next.js + PHP + Laravel + decorators) ──
-    type RouteEntry = { filePath: string; source: string };
+    type RouteEntry = {
+      filePath: string;
+      source: string;
+      httpMethod?: string;
+      controllerName?: string | null;
+      methodName?: string | null;
+      prefix?: string | null;
+    };
     const routeRegistry = new Map<string, RouteEntry>();
 
     // Detect Expo Router app/ roots vs Next.js app/ roots (monorepo-safe).
@@ -1428,12 +1433,17 @@ export const runPipelineFromRepo = async (
       addRoute(ensureSlash(route.routePath), {
         filePath: route.filePath,
         source: 'framework-route',
+        httpMethod: route.httpMethod,
+        controllerName: route.controllerName,
+        methodName: route.methodName,
+        prefix: route.prefix,
       });
     }
     for (const dr of allDecoratorRoutes) {
       addRoute(ensureSlash(dr.routePath), {
         filePath: dr.filePath,
         source: `decorator-${dr.decoratorName}`,
+        httpMethod: dr.httpMethod,
       });
     }
 
@@ -1443,7 +1453,14 @@ export const runPipelineFromRepo = async (
       handlerContents = await readFileContents(repoPath, handlerPaths);
 
       for (const [routeURL, entry] of routeRegistry) {
-        const { filePath: handlerPath, source: routeSource } = entry;
+        const {
+          filePath: handlerPath,
+          source: routeSource,
+          httpMethod,
+          controllerName,
+          methodName,
+          prefix,
+        } = entry;
         const content = handlerContents.get(handlerPath);
 
         const { responseKeys, errorKeys } = content
@@ -1462,6 +1479,10 @@ export const runPipelineFromRepo = async (
           properties: {
             name: routeURL,
             filePath: handlerPath,
+            ...(httpMethod ? { httpMethod } : {}),
+            ...(controllerName ? { controllerName } : {}),
+            ...(methodName ? { methodName } : {}),
+            ...(prefix ? { prefix } : {}),
             ...(responseKeys ? { responseKeys } : {}),
             ...(errorKeys ? { errorKeys } : {}),
             ...(middleware && middleware.length > 0 ? { middleware } : {}),

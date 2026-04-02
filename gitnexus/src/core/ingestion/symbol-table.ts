@@ -16,6 +16,8 @@ export interface SymbolDefinition {
   returnType?: string;
   /** Declared type for non-callable symbols — fields/properties (e.g. 'Address', 'List<User>') */
   declaredType?: string;
+  /** Compile-time constant string value for properties when available */
+  constantValue?: string;
   /** Links Method/Constructor/Property to owning Class/Struct/Trait nodeId */
   ownerId?: string;
 }
@@ -35,6 +37,7 @@ export interface SymbolTable {
       parameterTypes?: string[];
       returnType?: string;
       declaredType?: string;
+      constantValue?: string;
       ownerId?: string;
     },
   ) => void;
@@ -122,6 +125,7 @@ export const createSymbolTable = (): SymbolTable => {
       parameterTypes?: string[];
       returnType?: string;
       declaredType?: string;
+      constantValue?: string;
       ownerId?: string;
     },
   ) => {
@@ -140,6 +144,7 @@ export const createSymbolTable = (): SymbolTable => {
         : {}),
       ...(metadata?.returnType !== undefined ? { returnType: metadata.returnType } : {}),
       ...(metadata?.declaredType !== undefined ? { declaredType: metadata.declaredType } : {}),
+      ...(metadata?.constantValue !== undefined ? { constantValue: metadata.constantValue } : {}),
       ...(metadata?.ownerId !== undefined ? { ownerId: metadata.ownerId } : {}),
     };
 

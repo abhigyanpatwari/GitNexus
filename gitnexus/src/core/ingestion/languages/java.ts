@@ -17,6 +17,7 @@ import { JAVA_QUERIES } from '../tree-sitter-queries.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { javaConfig } from '../field-extractors/configs/jvm.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
+import { extractSpringJavaRouteCandidates } from '../route-extractors/spring-java.js';
 import { javaMethodConfig } from '../method-extractors/configs/jvm.js';
 
 function isSpringRouteFile(filePath: string): boolean {
@@ -41,4 +42,5 @@ export const javaProvider = defineLanguage({
   fieldExtractor: createFieldExtractor(javaConfig),
   methodExtractor: createMethodExtractor(javaMethodConfig),
   isRouteFile: isSpringRouteFile,
+  deferredRouteExtractor: extractSpringJavaRouteCandidates,
 });

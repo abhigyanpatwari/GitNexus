@@ -39,6 +39,7 @@ try {
   Kotlin = _require('tree-sitter-kotlin');
 } catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
+import type { ExtractedDeferredRouteCandidate } from '../route-extractors/spring-java-types.js';
 import {
   FUNCTION_NODE_TYPES,
   extractFunctionName,
@@ -63,7 +64,6 @@ import { extractParsedCallSite } from '../call-sites/extract-language-call-site.
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
-import { extractSpringJavaRoutes } from '../route-extractors/spring-java.js';
 import { generateId } from '../../../lib/utils.js';
 import { preprocessImportPath } from '../import-processor.js';
 import type { NamedBinding } from '../named-bindings/types.js';
@@ -97,6 +97,7 @@ interface ParsedNode {
     visibility?: string;
     isStatic?: boolean;
     isReadonly?: boolean;
+    constantValue?: string;
   };
 }
 
@@ -119,6 +120,7 @@ interface ParsedSymbol {
   parameterTypes?: string[];
   returnType?: string;
   declaredType?: string;
+  constantValue?: string;
   ownerId?: string;
   visibility?: string;
   isStatic?: boolean;
@@ -245,6 +247,7 @@ export interface ParseWorkerResult {
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
   decoratorRoutes: ExtractedDecoratorRoute[];
+  deferredRouteCandidates: ExtractedDeferredRouteCandidate[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
@@ -529,6 +532,7 @@ const processBatch = (
     routes: [],
     fetchCalls: [],
     decoratorRoutes: [],
+    deferredRouteCandidates: [],
     toolDefs: [],
     ormQueries: [],
     constructorBindings: [],
@@ -1701,6 +1705,7 @@ const processFileGroup = (
       let visibility: string | undefined;
       let isStatic: boolean | undefined;
       let isReadonly: boolean | undefined;
+      let constantValue: string | undefined;
       let isAbstract: boolean | undefined;
       let isFinal: boolean | undefined;
       let isVirtual: boolean | undefined;
@@ -1785,6 +1790,7 @@ const processFileGroup = (
               visibility = info.visibility;
               isStatic = info.isStatic;
               isReadonly = info.isReadonly;
+              constantValue = info.constantValue;
             }
           }
         }
@@ -1816,6 +1822,7 @@ const processFileGroup = (
           ...(parameterTypes !== undefined ? { parameterTypes } : {}),
           ...(returnType !== undefined ? { returnType } : {}),
           ...(declaredType !== undefined ? { declaredType } : {}),
+          ...(constantValue !== undefined ? { constantValue } : {}),
           ...(visibility !== undefined ? { visibility } : {}),
           ...(isStatic !== undefined ? { isStatic } : {}),
           ...(isReadonly !== undefined ? { isReadonly } : {}),
@@ -1850,6 +1857,7 @@ const processFileGroup = (
         ...(parameterTypes !== undefined ? { parameterTypes } : {}),
         ...(returnType !== undefined ? { returnType } : {}),
         ...(declaredType !== undefined ? { declaredType } : {}),
+        ...(constantValue !== undefined ? { constantValue } : {}),
         ...(enclosingClassId ? { ownerId: enclosingClassId } : {}),
         ...(visibility !== undefined ? { visibility } : {}),
         ...(isStatic !== undefined ? { isStatic } : {}),
@@ -1893,10 +1901,11 @@ const processFileGroup = (
       let extractedRoutes: ExtractedRoute[] = [];
       if (language === SupportedLanguages.PHP) {
         extractedRoutes = extractLaravelRoutes(tree, file.path);
-      } else if (language === SupportedLanguages.Java) {
-        extractedRoutes = extractSpringJavaRoutes(tree, file.path);
       }
       result.routes.push(...extractedRoutes);
+      if (provider.deferredRouteExtractor) {
+        result.deferredRouteCandidates.push(...provider.deferredRouteExtractor(tree, file.path));
+      }
     }
 
     // Extract ORM queries (Prisma, Supabase)
@@ -1920,6 +1929,7 @@ let accumulated: ParseWorkerResult = {
   routes: [],
   fetchCalls: [],
   decoratorRoutes: [],
+  deferredRouteCandidates: [],
   toolDefs: [],
   ormQueries: [],
   constructorBindings: [],
@@ -1940,6 +1950,7 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   target.routes.push(...src.routes);
   target.fetchCalls.push(...src.fetchCalls);
   target.decoratorRoutes.push(...src.decoratorRoutes);
+  target.deferredRouteCandidates.push(...src.deferredRouteCandidates);
   target.toolDefs.push(...src.toolDefs);
   target.ormQueries.push(...src.ormQueries);
   target.constructorBindings.push(...src.constructorBindings);
@@ -1991,6 +2002,7 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
         routes: [],
         fetchCalls: [],
         decoratorRoutes: [],
+        deferredRouteCandidates: [],
         toolDefs: [],
         ormQueries: [],
         constructorBindings: [],

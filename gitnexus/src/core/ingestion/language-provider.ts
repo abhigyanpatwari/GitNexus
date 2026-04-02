@@ -9,6 +9,7 @@
  * so adding a language to the enum without creating a provider is a compiler error.
  */
 
+import type Parser from 'tree-sitter';
 import type { SupportedLanguages } from 'gitnexus-shared';
 import type { LanguageTypeConfig } from './type-extractors/types.js';
 import type { CallRouter } from './call-routing.js';
@@ -19,6 +20,7 @@ import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { NamedBindingExtractorFn } from './named-bindings/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { NodeLabel } from 'gitnexus-shared';
+import type { ExtractedDeferredRouteCandidate } from './route-extractors/spring-java-types.js';
 
 // ── Shared type aliases ────────────────────────────────────────────────────
 /** Tree-sitter query captures: capture name → AST node (or undefined if not captured). */
@@ -143,6 +145,12 @@ interface LanguageProviderConfig {
    *  When true, the worker extracts routes via the language's route extraction logic.
    *  Default: undefined (no route files). */
   readonly isRouteFile?: (filePath: string) => boolean;
+  /** Extract deferred framework route candidates that need finalize after imports/symbols.
+   *  Default: undefined (no deferred route extraction). */
+  readonly deferredRouteExtractor?: (
+    tree: Parser.Tree,
+    filePath: string,
+  ) => ExtractedDeferredRouteCandidate[];
 
   // ── Noise filtering ────────────────────────────────────────────────
   /** Built-in/stdlib names that should be filtered from the call graph for this language.

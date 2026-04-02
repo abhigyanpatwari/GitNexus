@@ -1,8 +1,22 @@
 import type Parser from 'tree-sitter';
+import type { ResolutionContext } from '../resolution-context.js';
+import type { SymbolDefinition } from '../symbol-table.js';
 import type { ExtractedRoute } from '../workers/parse-worker.js';
+import type {
+  ExtractedSpringJavaRouteCandidate,
+  SpringRoutePathExpression,
+} from './spring-java-types.js';
+import { extractJavaStringLiteral } from '../utils/java-strings.js';
 import { findChild, type SyntaxNode } from '../utils/ast-helpers.js';
 
 const CONTROLLER_ANNOTATIONS = new Set(['Controller', 'RestController']);
+const CLASS_DECLARATION_TYPES = new Set([
+  'class_declaration',
+  'record_declaration',
+  'interface_declaration',
+  'enum_declaration',
+]);
+const CLASS_LIKE_TYPES = new Set(['Class', 'Record', 'Interface', 'Enum']);
 const SHORTCUT_HTTP_METHODS = new Map([
   ['GetMapping', 'GET'],
   ['PostMapping', 'POST'],
@@ -10,25 +24,11 @@ const SHORTCUT_HTTP_METHODS = new Map([
   ['DeleteMapping', 'DELETE'],
   ['PatchMapping', 'PATCH'],
 ]);
-const REQUEST_MAPPING_ANNOTATIONS = new Set([
-  'RequestMapping',
-  ...SHORTCUT_HTTP_METHODS.keys(),
-]);
+const REQUEST_MAPPING_ANNOTATIONS = new Set(['RequestMapping', ...SHORTCUT_HTTP_METHODS.keys()]);
 
 function getAnnotationName(node: SyntaxNode): string | null {
   const nameNode = node.childForFieldName('name') ?? node.firstNamedChild;
   return nameNode?.text ?? null;
-}
-
-function extractJavaString(node: SyntaxNode | null | undefined): string | null {
-  if (!node) return null;
-  if (node.type === 'string_fragment') return node.text;
-  if (node.type === 'string_literal') {
-    const fragment = node.namedChildren.find((child) => child.type === 'string_fragment');
-    if (fragment) return fragment.text;
-    return node.text.replace(/^"/, '').replace(/"$/, '');
-  }
-  return null;
 }
 
 function getElementValuePairParts(node: SyntaxNode): { key: string | null; value: SyntaxNode | null } {
@@ -40,25 +40,73 @@ function getElementValuePairParts(node: SyntaxNode): { key: string | null; value
   };
 }
 
-function extractRequestMappingPath(annotation: SyntaxNode): string | null {
-  const argsNode = findChild(annotation, 'annotation_argument_list');
-  if (!argsNode) return null;
+function extractOwnerPath(node: SyntaxNode | null | undefined): string[] | null {
+  if (!node) return null;
+  if (node.type === 'identifier') return [node.text];
+  if (node.type !== 'field_access') return null;
 
-  for (let i = 0; i < argsNode.namedChildCount; i++) {
-    const child = argsNode.namedChild(i);
-    if (!child) continue;
-    if (child.type === 'string_literal') {
-      return extractJavaString(child);
-    }
-    if (child.type === 'element_value_pair') {
-      const { key, value } = getElementValuePairParts(child);
-      if ((key === 'value' || key === 'path') && value) {
-        return extractJavaString(value);
-      }
+  const objectNode = node.childForFieldName('object') ?? node.namedChild(0);
+  const fieldNode = node.childForFieldName('field') ?? node.namedChild(node.namedChildCount - 1);
+  const objectPath = extractOwnerPath(objectNode);
+  if (!objectPath || fieldNode?.type !== 'identifier') return null;
+  return [...objectPath, fieldNode.text];
+}
+
+function extractRoutePathExpression(node: SyntaxNode | null | undefined): SpringRoutePathExpression | null {
+  if (!node) return null;
+
+  const literal = extractJavaStringLiteral(node);
+  if (literal !== undefined) return { kind: 'literal', value: literal };
+
+  if (node.type === 'identifier') {
+    return { kind: 'identifier', name: node.text };
+  }
+
+  if (node.type === 'field_access') {
+    const ownerPath = extractOwnerPath(node.childForFieldName('object') ?? node.namedChild(0));
+    const fieldNode = node.childForFieldName('field') ?? node.namedChild(node.namedChildCount - 1);
+    if (ownerPath && fieldNode?.type === 'identifier') {
+      return {
+        kind: 'field-access',
+        ownerPath,
+        fieldName: fieldNode.text,
+      };
     }
   }
 
   return null;
+}
+
+function extractRequestMappingPath(annotation: SyntaxNode): {
+  expression: SpringRoutePathExpression | null;
+  hasExplicitPath: boolean;
+} {
+  const argsNode = findChild(annotation, 'annotation_argument_list');
+  if (!argsNode) return { expression: null, hasExplicitPath: false };
+
+  let hasExplicitPath = false;
+  for (let i = 0; i < argsNode.namedChildCount; i++) {
+    const child = argsNode.namedChild(i);
+    if (!child) continue;
+
+    const direct = extractRoutePathExpression(child);
+    if (direct) return { expression: direct, hasExplicitPath: true };
+
+    if (child.type === 'string_literal' || child.type === 'identifier' || child.type === 'field_access') {
+      return { expression: null, hasExplicitPath: true };
+    }
+
+    if (child.type === 'element_value_pair') {
+      const { key, value } = getElementValuePairParts(child);
+      if (key === 'value' || key === 'path') {
+        hasExplicitPath = true;
+        const fromPair = extractRoutePathExpression(value);
+        if (fromPair) return { expression: fromPair, hasExplicitPath: true };
+      }
+    }
+  }
+
+  return { expression: null, hasExplicitPath };
 }
 
 function extractRequestMethodName(annotation: SyntaxNode, annotationName: string): string {
@@ -129,18 +177,96 @@ function isSpringController(modifiersNode: SyntaxNode | null): boolean {
   return findAnnotation(modifiersNode, CONTROLLER_ANNOTATIONS) !== null;
 }
 
-function extractClassLevelPrefix(classNode: SyntaxNode): string | null {
-  const modifiersNode = findChild(classNode, 'modifiers');
-  const requestMapping = findAnnotation(modifiersNode, new Set(['RequestMapping']));
-  return requestMapping ? extractRequestMappingPath(requestMapping) : null;
+function walkClasses(node: SyntaxNode, visit: (classNode: SyntaxNode) => void): void {
+  if (CLASS_DECLARATION_TYPES.has(node.type)) visit(node);
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child) walkClasses(child, visit);
+  }
 }
 
-function extractMethodRoute(
+function firstConstantValue(defs: readonly SymbolDefinition[]): string | null {
+  const withConstant = defs.filter((def) => typeof def.constantValue === 'string');
+  return withConstant.length === 1 ? (withConstant[0].constantValue ?? null) : null;
+}
+
+function resolveUniqueClassLike(
+  name: string,
+  filePath: string,
+  ctx: ResolutionContext,
+): SymbolDefinition | null {
+  const resolved = ctx.resolve(name, filePath);
+  if (!resolved) return null;
+  const classLikes = resolved.candidates.filter((candidate) => CLASS_LIKE_TYPES.has(candidate.type));
+  return classLikes.length === 1 ? classLikes[0] : null;
+}
+
+function resolveNamedImportConstant(
+  name: string,
+  filePath: string,
+  ctx: ResolutionContext,
+): string | null {
+  const binding = ctx.namedImportMap.get(filePath)?.get(name);
+  if (!binding) return null;
+
+  const def = ctx.symbols.lookupExactFull(binding.sourcePath, binding.exportedName);
+  return def?.constantValue ?? null;
+}
+
+function resolveFieldAccessConstant(
+  ownerPath: string[],
+  fieldName: string,
+  filePath: string,
+  ctx: ResolutionContext,
+): string | null {
+  const ownerName = ownerPath[ownerPath.length - 1];
+  if (!ownerName) return null;
+  const ownerDef = resolveUniqueClassLike(ownerName, filePath, ctx);
+  if (!ownerDef) return null;
+  return ctx.symbols.lookupFieldByOwner(ownerDef.nodeId, fieldName)?.constantValue ?? null;
+}
+
+function resolvePathExpression(
+  expression: SpringRoutePathExpression | null,
   filePath: string,
   className: string,
-  classPrefix: string | null,
+  ctx: ResolutionContext,
+): string | null {
+  if (!expression) return null;
+
+  switch (expression.kind) {
+    case 'literal':
+      return expression.value;
+    case 'identifier': {
+      const sameClass = resolveUniqueClassLike(className, filePath, ctx);
+      if (sameClass) {
+        const local = ctx.symbols.lookupFieldByOwner(sameClass.nodeId, expression.name)?.constantValue;
+        if (local) return local;
+      }
+
+      const imported = resolveNamedImportConstant(expression.name, filePath, ctx);
+      if (imported) return imported;
+
+      const sameFile = firstConstantValue(
+        ctx.symbols.lookupExactAll(filePath, expression.name).filter((def) => def.type === 'Property'),
+      );
+      if (sameFile) return sameFile;
+
+      const resolved = ctx.resolve(expression.name, filePath);
+      return resolved ? firstConstantValue(resolved.candidates) : null;
+    }
+    case 'field-access':
+      return resolveFieldAccessConstant(expression.ownerPath, expression.fieldName, filePath, ctx);
+  }
+}
+
+function buildSpringRouteCandidate(
+  filePath: string,
+  className: string,
+  classPathExpression: SpringRoutePathExpression | null,
+  hasExplicitClassPath: boolean,
   methodNode: SyntaxNode,
-): ExtractedRoute | null {
+): ExtractedSpringJavaRouteCandidate | null {
   const modifiersNode = findChild(methodNode, 'modifiers');
   if (!modifiersNode) return null;
 
@@ -151,30 +277,27 @@ function extractMethodRoute(
   const methodName = methodNode.childForFieldName('name')?.text ?? null;
   if (!annotationName || !methodName) return null;
 
-  const methodPath = extractRequestMappingPath(mappingAnnotation);
+  const { expression: methodPathExpression, hasExplicitPath: hasExplicitMethodPath } =
+    extractRequestMappingPath(mappingAnnotation);
 
   return {
     filePath,
-    httpMethod: extractRequestMethodName(mappingAnnotation, annotationName),
-    routePath: joinRoutePaths(classPrefix, methodPath),
     controllerName: className,
     methodName,
-    middleware: [],
-    prefix: normalizePath(classPrefix),
+    httpMethod: extractRequestMethodName(mappingAnnotation, annotationName),
+    classPathExpression,
+    methodPathExpression,
+    hasExplicitClassPath,
+    hasExplicitMethodPath,
     lineNumber: mappingAnnotation.startPosition.row,
   };
 }
 
-function walkClasses(node: SyntaxNode, visit: (classNode: SyntaxNode) => void): void {
-  if (node.type === 'class_declaration') visit(node);
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child) walkClasses(child, visit);
-  }
-}
-
-export function extractSpringJavaRoutes(tree: Parser.Tree, filePath: string): ExtractedRoute[] {
-  const routes: ExtractedRoute[] = [];
+export function extractSpringJavaRouteCandidates(
+  tree: Parser.Tree,
+  filePath: string,
+): ExtractedSpringJavaRouteCandidate[] {
+  const candidates: ExtractedSpringJavaRouteCandidate[] = [];
 
   walkClasses(tree.rootNode, (classNode) => {
     const modifiersNode = findChild(classNode, 'modifiers');
@@ -184,14 +307,63 @@ export function extractSpringJavaRoutes(tree: Parser.Tree, filePath: string): Ex
     const classBody = classNode.childForFieldName('body');
     if (!className || !classBody) return;
 
-    const classPrefix = extractClassLevelPrefix(classNode);
+    const requestMapping = findAnnotation(modifiersNode, new Set(['RequestMapping']));
+    const classPath = requestMapping
+      ? extractRequestMappingPath(requestMapping)
+      : { expression: null, hasExplicitPath: false };
+
     for (let i = 0; i < classBody.namedChildCount; i++) {
       const child = classBody.namedChild(i);
       if (!child || child.type !== 'method_declaration') continue;
-      const route = extractMethodRoute(filePath, className, classPrefix, child);
-      if (route) routes.push(route);
+      const candidate = buildSpringRouteCandidate(
+        filePath,
+        className,
+        classPath.expression,
+        classPath.hasExplicitPath,
+        child,
+      );
+      if (candidate) candidates.push(candidate);
     }
   });
+
+  return candidates;
+}
+
+export function finalizeSpringJavaRoutes(
+  candidates: ExtractedSpringJavaRouteCandidate[],
+  ctx: ResolutionContext,
+): ExtractedRoute[] {
+  const routes: ExtractedRoute[] = [];
+
+  for (const candidate of candidates) {
+    const classPrefix = resolvePathExpression(
+      candidate.classPathExpression,
+      candidate.filePath,
+      candidate.controllerName,
+      ctx,
+    );
+    const methodPath = resolvePathExpression(
+      candidate.methodPathExpression,
+      candidate.filePath,
+      candidate.controllerName,
+      ctx,
+    );
+
+    if (candidate.hasExplicitClassPath && classPrefix === null) continue;
+    if (candidate.hasExplicitMethodPath && methodPath === null) continue;
+    if (classPrefix === null && methodPath === null) continue;
+
+    routes.push({
+      filePath: candidate.filePath,
+      httpMethod: candidate.httpMethod,
+      routePath: joinRoutePaths(classPrefix, methodPath),
+      controllerName: candidate.controllerName,
+      methodName: candidate.methodName,
+      middleware: [],
+      prefix: normalizePath(classPrefix),
+      lineNumber: candidate.lineNumber,
+    });
+  }
 
   return routes;
 }

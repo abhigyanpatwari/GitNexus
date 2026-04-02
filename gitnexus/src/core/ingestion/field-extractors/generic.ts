@@ -53,6 +53,8 @@ export interface FieldExtractionConfig {
   isStatic: (node: SyntaxNode) => boolean;
   /** Check if a field is readonly/final/const */
   isReadonly: (node: SyntaxNode) => boolean;
+  /** Extract compile-time constant string value when available */
+  extractConstantValue?: (node: SyntaxNode) => string | undefined;
   /** Extract fields from primary constructor parameters on the owner node itself
    *  (e.g. C# record positional parameters, C# 12 class primary constructors). */
   extractPrimaryFields?: (ownerNode: SyntaxNode, context: FieldExtractorContext) => FieldInfo[];
@@ -176,12 +178,15 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
         if (resolved) type = resolved;
       }
 
+      const constantValue = config.extractConstantValue?.(node);
+
       return {
         name,
         type,
         visibility: config.extractVisibility(node),
         isStatic: config.isStatic(node),
         isReadonly: config.isReadonly(node),
+        ...(constantValue !== undefined ? { constantValue } : {}),
         sourceFile: context.filePath,
         line: node.startPosition.row + 1,
       };
