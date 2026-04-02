@@ -54,6 +54,10 @@ function extractRubyVisibility(node: SyntaxNode): MethodVisibility {
     if (sibling.type === 'identifier' && VISIBILITY_MODIFIERS.has(sibling.text)) {
       return sibling.text as MethodVisibility;
     }
+    // module_function makes instance methods private
+    if (sibling.type === 'identifier' && sibling.text === 'module_function') {
+      return 'private';
+    }
   }
   return 'public';
 }
@@ -155,7 +159,25 @@ export const rubyMethodConfig: MethodExtractionConfig = {
   extractVisibility: extractRubyVisibility,
 
   isStatic(node) {
-    return node.type === 'singleton_method';
+    if (node.type === 'singleton_method') return true;
+    // module_function makes following methods callable at module level (static)
+    const parent = node.parent;
+    if (!parent) return false;
+    let methodIndex = -1;
+    for (let i = 0; i < parent.namedChildCount; i++) {
+      if (parent.namedChild(i) === node) {
+        methodIndex = i;
+        break;
+      }
+    }
+    for (let i = methodIndex - 1; i >= 0; i--) {
+      const sibling = parent.namedChild(i);
+      if (!sibling) continue;
+      if (sibling.type === 'identifier' && sibling.text === 'module_function') return true;
+      // Other visibility modifiers override module_function
+      if (sibling.type === 'identifier' && VISIBILITY_MODIFIERS.has(sibling.text)) return false;
+    }
+    return false;
   },
 
   isAbstract(_node) {

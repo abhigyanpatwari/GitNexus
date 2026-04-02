@@ -3156,6 +3156,46 @@ end
       expect(result!.methods[0].name).toBe('helper');
     });
   });
+
+  describe('module_function', () => {
+    it('marks following methods as private and static', () => {
+      const tree = parseRuby(`
+module Utils
+  module_function
+
+  def helper
+  end
+end
+      `);
+      const modNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(modNode, rubyCtx);
+
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('helper');
+      expect(result!.methods[0].visibility).toBe('private');
+      expect(result!.methods[0].isStatic).toBe(true);
+    });
+
+    it('private after module_function overrides static', () => {
+      const tree = parseRuby(`
+module Utils
+  module_function
+
+  private
+
+  def secret
+  end
+end
+      `);
+      const modNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(modNode, rubyCtx);
+
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('secret');
+      expect(result!.methods[0].visibility).toBe('private');
+      expect(result!.methods[0].isStatic).toBe(false);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3382,6 +3422,27 @@ mixin Loggable {
       expect(method.parameters).toHaveLength(1);
       expect(method.parameters[0].name).toBe('msg');
       expect(method.parameters[0].type).toBe('String');
+    });
+  });
+
+  describe('extract from extension', () => {
+    it('extracts methods from named extension_declaration', () => {
+      const tree = parseDart(`
+extension StringExt on String {
+  void log() {
+    print(this);
+  }
+}
+      `);
+      const extNode = tree.rootNode.firstNamedChild!;
+      const result = extractor.extract(extNode, dartCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('StringExt');
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('log');
+      expect(result!.methods[0].returnType).toBe('void');
+      expect(result!.methods[0].visibility).toBe('public');
     });
   });
 });

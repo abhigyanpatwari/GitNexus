@@ -119,6 +119,9 @@ export const CLASS_CONTAINER_TYPES = new Set([
   'class_definition',
   'trait_declaration',
   'protocol_declaration',
+  // Dart
+  'mixin_declaration',
+  'extension_declaration',
   // Ruby
   'class',
   'module',
