@@ -202,7 +202,12 @@ function extractPhpAnnotations(node: SyntaxNode): string[] {
 
 export const phpMethodConfig: MethodExtractionConfig = {
   language: SupportedLanguages.PHP,
-  typeDeclarationNodes: ['class_declaration', 'interface_declaration', 'trait_declaration', 'enum_declaration'],
+  typeDeclarationNodes: [
+    'class_declaration',
+    'interface_declaration',
+    'trait_declaration',
+    'enum_declaration',
+  ],
   methodNodeTypes: ['method_declaration'],
   bodyNodeTypes: ['declaration_list'],
 
