@@ -40,6 +40,26 @@ function ensureHeap(): boolean {
   return true;
 }
 
+/**
+ * Check for stale project-local skills left by a previous `analyze` run.
+ * Prints a deprecation notice but does NOT delete — cleanup is handled by `setup`.
+ */
+export async function checkStaleProjectSkills(repoPath: string): Promise<boolean> {
+  const skillsDir = path.join(repoPath, '.claude', 'skills', 'gitnexus');
+  try {
+    const stat = await fs.stat(skillsDir);
+    if (stat.isDirectory()) {
+      console.log(
+        `  Note: Skills are no longer installed by analyze. Run 'gitnexus setup' to manage skills globally.`,
+      );
+      return true;
+    }
+  } catch {
+    // Directory doesn't exist — nothing to warn about
+  }
+  return false;
+}
+
 export interface AnalyzeOptions {
   force?: boolean;
   embeddings?: boolean;
@@ -193,6 +213,8 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       console.warn = origWarn;
       console.error = origError;
       bar.stop();
+      // Keep migration notice visible even on no-op analyze runs
+      await checkStaleProjectSkills(repoPath);
       console.log('  Already up to date\n');
       // Safe to return without process.exit(0) — the early-return path in
       // runFullAnalysis never opens LadybugDB, so no native handles prevent exit.
@@ -268,10 +290,15 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     );
     console.log(`  ${repoPath}`);
 
+    // Warn if stale project-local skills exist from a previous analyze run
+    await checkStaleProjectSkills(repoPath);
+
     try {
       await fs.access(getGlobalRegistryPath());
     } catch {
-      console.log('\n  Tip: Run `gitnexus setup` to configure MCP for your editor.');
+      console.log(
+        '\n  Tip: Run `gitnexus setup` to configure MCP and install agent skills for your editor.',
+      );
     }
 
     console.log('');

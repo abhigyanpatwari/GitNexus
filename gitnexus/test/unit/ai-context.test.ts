@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -8,13 +8,13 @@ describe('generateAIContextFiles', () => {
   let tmpDir: string;
   let storagePath: string;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-test-'));
     storagePath = path.join(tmpDir, '.gitnexus');
     await fs.mkdir(storagePath, { recursive: true });
   });
 
-  afterAll(async () => {
+  afterEach(async () => {
     try {
       await fs.rm(tmpDir, { recursive: true, force: true });
     } catch {
@@ -66,18 +66,51 @@ describe('generateAIContextFiles', () => {
     expect(starts).toBe(1);
   });
 
-  it('installs skills files', async () => {
+  it('does NOT install skills after refactor', async () => {
+    const stats = { nodes: 10 };
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+
+    const skillsDir = path.join(tmpDir, '.claude', 'skills', 'gitnexus');
+    await expect(fs.stat(skillsDir)).rejects.toThrow();
+  });
+
+  it('return value does not mention skills after refactor', async () => {
     const stats = { nodes: 10 };
     const result = await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+    const skillFiles = result.files.filter((f) => f.includes('skills'));
+    expect(skillFiles).toHaveLength(0);
+  });
 
-    // Should have installed skill files
-    const skillsDir = path.join(tmpDir, '.claude', 'skills', 'gitnexus');
-    try {
-      const entries = await fs.readdir(skillsDir, { recursive: true });
-      expect(entries.length).toBeGreaterThan(0);
-    } catch {
-      // Skills dir may not be created if skills source doesn't exist in test context
-    }
+  it('preserves existing CLAUDE.md content', async () => {
+    const claudePath = path.join(tmpDir, 'CLAUDE.md');
+    await fs.writeFile(claudePath, '# My Custom Instructions\n\nDo not remove this.\n', 'utf-8');
+
+    const stats = { nodes: 10 };
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+
+    const content = await fs.readFile(claudePath, 'utf-8');
+    expect(content).toContain('My Custom Instructions');
+    expect(content).toContain('Do not remove this.');
+    expect(content).toContain('gitnexus:start');
+  });
+
+  it('existing CLAUDE.md with gitnexus section but no skills dir works', async () => {
+    const claudePath = path.join(tmpDir, 'CLAUDE.md');
+    await fs.writeFile(
+      claudePath,
+      '<!-- gitnexus:start -->\nold content\n<!-- gitnexus:end -->\n',
+      'utf-8',
+    );
+
+    const stats = { nodes: 99 };
+    await generateAIContextFiles(tmpDir, storagePath, 'UpdatedProject', stats);
+
+    const content = await fs.readFile(claudePath, 'utf-8');
+    expect(content).not.toContain('old content');
+    expect(content).toContain('99 symbols');
+    const starts = (content.match(/gitnexus:start/g) || []).length;
+    expect(starts).toBe(1);
+    await expect(fs.stat(path.join(tmpDir, '.claude', 'skills', 'gitnexus'))).rejects.toThrow();
   });
 
   it('preserves manual AGENTS.md and CLAUDE.md edits when skipAgentsMd is enabled', async () => {

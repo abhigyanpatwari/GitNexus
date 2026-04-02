@@ -104,11 +104,13 @@ npx gitnexus analyze
 
 That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
 
-To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
+To configure MCP, install agent skills, and register hooks for your editor, run `npx gitnexus setup` once — or set it up manually below.
+
+> **Claude Code plugin users:** If you installed GitNexus as a [Claude Code plugin](https://docs.anthropic.com/en/docs/claude-code/plugins), you can skip `gitnexus setup` entirely — the plugin bundles MCP, skills, and hooks automatically. Just run `gitnexus analyze` to index your repos.
 
 ### MCP Setup
 
-`gitnexus setup` auto-detects your editors and writes the correct global MCP config. You only need to run it once.
+`gitnexus setup` auto-detects your editors and writes the correct global MCP config, installs agent skills, and registers hooks. You only need to run it once.
 
 ### Editor Support
 

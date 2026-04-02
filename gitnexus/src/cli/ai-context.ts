@@ -8,12 +8,7 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { type GeneratedSkillInfo } from './skill-gen.js';
-
-// ESM equivalent of __dirname
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 interface RepoStats {
   files?: number;
@@ -213,88 +208,6 @@ async function upsertGitNexusSection(
 }
 
 /**
- * Install GitNexus skills to .claude/skills/gitnexus/
- * Works natively with Claude Code, Cursor, and GitHub Copilot
- */
-async function installSkills(repoPath: string): Promise<string[]> {
-  const skillsDir = path.join(repoPath, '.claude', 'skills', 'gitnexus');
-  const installedSkills: string[] = [];
-
-  // Skill definitions bundled with the package
-  const skills = [
-    {
-      name: 'gitnexus-exploring',
-      description:
-        'Use when the user asks how code works, wants to understand architecture, trace execution flows, or explore unfamiliar parts of the codebase. Examples: "How does X work?", "What calls this function?", "Show me the auth flow"',
-    },
-    {
-      name: 'gitnexus-debugging',
-      description:
-        'Use when the user is debugging a bug, tracing an error, or asking why something fails. Examples: "Why is X failing?", "Where does this error come from?", "Trace this bug"',
-    },
-    {
-      name: 'gitnexus-impact-analysis',
-      description:
-        'Use when the user wants to know what will break if they change something, or needs safety analysis before editing code. Examples: "Is it safe to change X?", "What depends on this?", "What will break?"',
-    },
-    {
-      name: 'gitnexus-refactoring',
-      description:
-        'Use when the user wants to rename, extract, split, move, or restructure code safely. Examples: "Rename this function", "Extract this into a module", "Refactor this class", "Move this to a separate file"',
-    },
-    {
-      name: 'gitnexus-guide',
-      description:
-        'Use when the user asks about GitNexus itself — available tools, how to query the knowledge graph, MCP resources, graph schema, or workflow reference. Examples: "What GitNexus tools are available?", "How do I use GitNexus?"',
-    },
-    {
-      name: 'gitnexus-cli',
-      description:
-        'Use when the user needs to run GitNexus CLI commands like analyze/index a repo, check status, clean the index, generate a wiki, or list indexed repos. Examples: "Index this repo", "Reanalyze the codebase", "Generate a wiki"',
-    },
-  ];
-
-  for (const skill of skills) {
-    const skillDir = path.join(skillsDir, skill.name);
-    const skillPath = path.join(skillDir, 'SKILL.md');
-
-    try {
-      // Create skill directory
-      await fs.mkdir(skillDir, { recursive: true });
-
-      // Try to read from package skills directory
-      const packageSkillPath = path.join(__dirname, '..', '..', 'skills', `${skill.name}.md`);
-      let skillContent: string;
-
-      try {
-        skillContent = await fs.readFile(packageSkillPath, 'utf-8');
-      } catch {
-        // Fallback: generate minimal skill content
-        skillContent = `---
-name: ${skill.name}
-description: ${skill.description}
----
-
-# ${skill.name.charAt(0).toUpperCase() + skill.name.slice(1)}
-
-${skill.description}
-
-Use GitNexus tools to accomplish this task.
-`;
-      }
-
-      await fs.writeFile(skillPath, skillContent, 'utf-8');
-      installedSkills.push(skill.name);
-    } catch (err) {
-      // Skip on error, don't fail the whole process
-      console.warn(`Warning: Could not install skill ${skill.name}:`, err);
-    }
-  }
-
-  return installedSkills;
-}
-
-/**
  * Generate AI context files after indexing
  */
 export async function generateAIContextFiles(
@@ -321,12 +234,6 @@ export async function generateAIContextFiles(
   } else {
     createdFiles.push('AGENTS.md (skipped via --skip-agents-md)');
     createdFiles.push('CLAUDE.md (skipped via --skip-agents-md)');
-  }
-
-  // Install skills to .claude/skills/gitnexus/
-  const installedSkills = await installSkills(repoPath);
-  if (installedSkills.length > 0) {
-    createdFiles.push(`.claude/skills/gitnexus/ (${installedSkills.length} skills)`);
   }
 
   return { files: createdFiles };
