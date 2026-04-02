@@ -46,7 +46,12 @@ const TARGET_CONFIGS: TargetConfig[] = [
   {
     name: 'gitnexus-cursor-integration',
     dir: path.join(REPO_ROOT, 'gitnexus-cursor-integration', 'skills'),
-    manifestPath: path.join(REPO_ROOT, 'gitnexus-cursor-integration', 'skills', 'skills.manifest.json'),
+    manifestPath: path.join(
+      REPO_ROOT,
+      'gitnexus-cursor-integration',
+      'skills',
+      'skills.manifest.json',
+    ),
     stripFrontmatter: true,
     generatedHeader: true,
   },
@@ -94,11 +99,13 @@ async function main() {
 
   const operations = await planSync(SOURCE_DIR, targets, readFile, listDir);
 
-  const writes = operations.filter(op => op.action === 'write');
-  const skips = operations.filter(op => op.action === 'skip');
+  const writes = operations.filter((op) => op.action === 'write');
+  const skips = operations.filter((op) => op.action === 'skip');
 
   if (dryRun) {
-    console.log(`[dry-run] ${writes.length} file(s) would be written, ${skips.length} already up-to-date.`);
+    console.log(
+      `[dry-run] ${writes.length} file(s) would be written, ${skips.length} already up-to-date.`,
+    );
     for (const op of writes) {
       console.log(`  WRITE ${path.relative(REPO_ROOT, op.targetPath)}`);
     }
@@ -122,7 +129,7 @@ async function main() {
   }
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error('sync-skills failed:', err.message);
   process.exit(1);
 });

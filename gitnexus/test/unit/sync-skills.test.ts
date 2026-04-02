@@ -6,10 +6,10 @@
  *
  * See docs/skill-sync.md for the full specification.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { planSync, type SyncTarget, type SyncOperation } from '../../src/sync-skills.js';
+import { planSync, type SyncTarget } from '../../src/sync-skills.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -59,7 +59,7 @@ function mockListDir(files: Record<string, string>): (dir: string) => Promise<st
         if (name) entries.add(name);
       }
     }
-    if (entries.size === 0 && !Object.keys(files).some(k => k.startsWith(normalized))) {
+    if (entries.size === 0 && !Object.keys(files).some((k) => k.startsWith(normalized))) {
       throw Object.assign(new Error(`ENOENT: no such directory: '${dir}'`), { code: 'ENOENT' });
     }
     return [...entries].sort();
@@ -90,7 +90,7 @@ describe('T1 — Source Discovery', () => {
 
     expect(ops.length).toBe(CANONICAL_SKILLS.length);
     for (const skill of CANONICAL_SKILLS) {
-      expect(ops.some(op => op.targetPath.includes(skill))).toBe(true);
+      expect(ops.some((op) => op.targetPath.includes(skill))).toBe(true);
     }
   });
 
@@ -177,7 +177,7 @@ describe('T2 — Target Allowlist Filtering', () => {
     const ops = await planSync(sourceDir, [target], mockReadFile(files), mockListDir(files));
     expect(ops.length).toBe(5);
     for (const skill of cursorSkills) {
-      expect(ops.some(op => op.targetPath.includes(skill))).toBe(true);
+      expect(ops.some((op) => op.targetPath.includes(skill))).toBe(true);
     }
   });
 
@@ -364,7 +364,7 @@ describe('T4 — Path Generation', () => {
     const ops = await planSync(sourceDir, targets, mockReadFile(files), mockListDir(files));
     expect(ops.length).toBe(3);
 
-    const paths = ops.map(op => op.targetPath);
+    const paths = ops.map((op) => op.targetPath);
     expect(paths).toContain('/target-claude/gitnexus-debugging/SKILL.md');
     expect(paths).toContain('/target-plugin/gitnexus-debugging/SKILL.md');
     expect(paths).toContain('/target-cursor/gitnexus-debugging/SKILL.md');
@@ -440,7 +440,7 @@ describe('T5 — Idempotency and Skip Detection', () => {
 
     // First run: all writes
     const ops1 = await planSync(sourceDir, [target], mockReadFile(files), mockListDir(files));
-    expect(ops1.every(op => op.action === 'write')).toBe(true);
+    expect(ops1.every((op) => op.action === 'write')).toBe(true);
 
     // Simulate applying writes — add generated content to virtual fs
     const updatedFiles = { ...files };
@@ -449,8 +449,13 @@ describe('T5 — Idempotency and Skip Detection', () => {
     }
 
     // Second run: all skips
-    const ops2 = await planSync(sourceDir, [target], mockReadFile(updatedFiles), mockListDir(files));
-    expect(ops2.every(op => op.action === 'skip')).toBe(true);
+    const ops2 = await planSync(
+      sourceDir,
+      [target],
+      mockReadFile(updatedFiles),
+      mockListDir(files),
+    );
+    expect(ops2.every((op) => op.action === 'skip')).toBe(true);
   });
 });
 
@@ -471,7 +476,7 @@ describe('T6 — Companion File Preservation', () => {
     });
 
     const ops = await planSync(sourceDir, [target], mockReadFile(files), mockListDir(files));
-    expect(ops.every(op => op.targetPath.endsWith('SKILL.md'))).toBe(true);
+    expect(ops.every((op) => op.targetPath.endsWith('SKILL.md'))).toBe(true);
   });
 
   it('T6.2 — No delete or overwrite operations for non-SKILL.md files', async () => {
@@ -559,15 +564,15 @@ describe('T8 — Integration: Actual Repository State', () => {
 
   it('T8.2 — All 7 canonical skills are present in source directory', async () => {
     const entries = await fs.readdir(sourceDir);
-    const skillFiles = entries.filter(e => e.startsWith('gitnexus-') && e.endsWith('.md'));
+    const skillFiles = entries.filter((e) => e.startsWith('gitnexus-') && e.endsWith('.md'));
     expect(skillFiles.length).toBe(7);
   });
 
   it('T8.3 — Skill names match expected set', async () => {
     const entries = await fs.readdir(sourceDir);
     const skillNames = entries
-      .filter(e => e.startsWith('gitnexus-') && e.endsWith('.md'))
-      .map(e => e.replace('.md', ''))
+      .filter((e) => e.startsWith('gitnexus-') && e.endsWith('.md'))
+      .map((e) => e.replace('.md', ''))
       .sort();
 
     expect(skillNames).toEqual(CANONICAL_SKILLS);
@@ -585,8 +590,8 @@ describe('T9 — SKILL_NAMES Parity', () => {
     // Read source skill names from filesystem
     const entries = await fs.readdir(sourceDir);
     const sourceSkills = entries
-      .filter(e => e.startsWith('gitnexus-') && e.endsWith('.md'))
-      .map(e => e.replace('.md', ''))
+      .filter((e) => e.startsWith('gitnexus-') && e.endsWith('.md'))
+      .map((e) => e.replace('.md', ''))
       .sort();
 
     // Read SKILL_NAMES from setup.ts source
@@ -596,8 +601,8 @@ describe('T9 — SKILL_NAMES Parity', () => {
 
     const runtimeSkills = match![1]
       .split(',')
-      .map(s => s.trim().replace(/['"]/g, ''))
-      .filter(s => s.length > 0)
+      .map((s) => s.trim().replace(/['"]/g, ''))
+      .filter((s) => s.length > 0)
       .sort();
 
     expect(runtimeSkills).toEqual(sourceSkills);
@@ -606,15 +611,15 @@ describe('T9 — SKILL_NAMES Parity', () => {
   it('T9.2 — Detects if SKILL_NAMES is missing a skill present in source', async () => {
     const entries = await fs.readdir(sourceDir);
     const sourceSkills = entries
-      .filter(e => e.startsWith('gitnexus-') && e.endsWith('.md'))
-      .map(e => e.replace('.md', ''));
+      .filter((e) => e.startsWith('gitnexus-') && e.endsWith('.md'))
+      .map((e) => e.replace('.md', ''));
 
     const setupContent = await fs.readFile(setupPath, 'utf-8');
     const match = setupContent.match(/SKILL_NAMES\s*=\s*\[([^\]]+)\]/);
     const runtimeSkills = match![1]
       .split(',')
-      .map(s => s.trim().replace(/['"]/g, ''))
-      .filter(s => s.length > 0);
+      .map((s) => s.trim().replace(/['"]/g, ''))
+      .filter((s) => s.length > 0);
 
     for (const skill of sourceSkills) {
       expect(runtimeSkills, `SKILL_NAMES is missing ${skill}`).toContain(skill);

@@ -68,10 +68,10 @@ export async function planSync(
 
   // Discover source skill files
   const entries = await listDir(sourceDir);
-  const skillFiles = entries.filter(e => e.startsWith('gitnexus-') && e.endsWith('.md'));
+  const skillFiles = entries.filter((e) => e.startsWith('gitnexus-') && e.endsWith('.md'));
 
   // Build a set of available skill names
-  const availableSkills = new Set(skillFiles.map(f => f.replace(/\.md$/, '')));
+  const availableSkills = new Set(skillFiles.map((f) => f.replace(/\.md$/, '')));
 
   // Empty source directory — nothing to sync
   if (availableSkills.size === 0) return [];
@@ -98,9 +98,7 @@ export async function planSync(
       try {
         content = await readFile(sourcePath);
       } catch (err: any) {
-        throw new Error(
-          `Failed to read skill "${skill}" from "${sourcePath}": ${err.message}`,
-        );
+        throw new Error(`Failed to read skill "${skill}" from "${sourcePath}": ${err.message}`);
       }
 
       // Apply transformations
