@@ -4047,6 +4047,40 @@ describe('Rust MethodExtractor', () => {
       expect(m.receiverType).toBeNull();
     });
   });
+
+  describe('impl Trait for Struct owner resolution', () => {
+    it('attributes methods to the concrete Struct, not the Trait', () => {
+      const code = [
+        'trait Animal {',
+        '  fn speak(&self) -> String;',
+        '}',
+        'struct Dog;',
+        'impl Animal for Dog {',
+        '  fn speak(&self) -> String {',
+        '    String::from("woof")',
+        '  }',
+        '}',
+      ].join('\n');
+      const tree = parseRust(code);
+      // Find the impl_item (not the trait_item)
+      const implNode = tree.rootNode.namedChildren.find((c) => c.type === 'impl_item')!;
+      const result = extractor.extract(implNode, rustCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('Dog');
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('speak');
+    });
+
+    it('attributes plain impl methods to the Struct', () => {
+      const code = ['struct Dog;', 'impl Dog {', '  fn bark(&self) {}', '}'].join('\n');
+      const tree = parseRust(code);
+      const implNode = tree.rootNode.namedChildren.find((c) => c.type === 'impl_item')!;
+      const result = extractor.extract(implNode, rustCtx);
+
+      expect(result!.ownerName).toBe('Dog');
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -4402,6 +4436,27 @@ func privateFunc() {}
 
       expect(pub!.visibility).toBe('public');
       expect(priv!.visibility).toBe('private');
+    });
+
+    it('extracts interface method_elem as abstract', () => {
+      const tree = parseGo(`
+package animal
+
+type Animal interface {
+    Speak() string
+}
+      `);
+      const typeDecl = tree.rootNode.namedChildren.find((c) => c.type === 'type_declaration')!;
+      const typeSpec = typeDecl.namedChildren.find((c) => c.type === 'type_spec')!;
+      const iface = typeSpec.childForFieldName('type')!;
+      const methodElem = iface.namedChildren.find((c) => c.type === 'method_elem')!;
+      const info = extractor.extractFromNode!(methodElem, goCtx);
+
+      expect(info).not.toBeNull();
+      expect(info!.name).toBe('Speak');
+      expect(info!.isAbstract).toBe(true);
+      expect(info!.returnType).toBe('string');
+      expect(info!.visibility).toBe('public');
     });
   });
 });

@@ -159,8 +159,9 @@ export const goMethodConfig: MethodExtractionConfig = {
 
   // Each method_declaration/function_declaration is treated as its own "container"
   // for extractFromNode() — not used with extract() in the traditional sense.
-  typeDeclarationNodes: ['method_declaration', 'function_declaration'],
-  methodNodeTypes: ['method_declaration', 'function_declaration'],
+  // method_elem covers interface method signatures (abstract methods).
+  typeDeclarationNodes: ['method_declaration', 'function_declaration', 'method_elem'],
+  methodNodeTypes: ['method_declaration', 'function_declaration', 'method_elem'],
   bodyNodeTypes: [],
 
   extractName: extractGoName,
@@ -175,8 +176,9 @@ export const goMethodConfig: MethodExtractionConfig = {
     return node.type === 'function_declaration';
   },
 
-  isAbstract(_node) {
-    return false; // Go has no abstract methods in the method_declaration sense
+  isAbstract(node) {
+    // Go interface method signatures (method_elem) are abstract — no body
+    return node.type === 'method_elem';
   },
 
   isFinal(_node) {

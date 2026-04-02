@@ -146,9 +146,6 @@ function extractRustAnnotations(node: SyntaxNode): string[] {
 // `trait_item` uses the standard `name` field.
 //
 // Known gaps:
-//   - `impl Trait for Struct {}` methods are attributed to the trait name
-//     (first type_identifier), not the struct. The graph heritage edge
-//     provides the correct mapping.
 //   - Macro-generated methods (e.g. derive) are not visible in the AST.
 //   - Unsafe methods are not distinguished (no isUnsafe field in schema).
 export const rustMethodConfig: MethodExtractionConfig = {
@@ -156,6 +153,27 @@ export const rustMethodConfig: MethodExtractionConfig = {
   typeDeclarationNodes: ['impl_item', 'trait_item'],
   methodNodeTypes: ['function_item', 'function_signature_item'],
   bodyNodeTypes: ['declaration_list'],
+
+  // For `impl Trait for Struct`, resolve owner to the concrete Struct (after `for`).
+  // For plain `impl Struct`, resolve to Struct (first type_identifier).
+  // For `trait Foo`, let the default name-field resolution handle it.
+  extractOwnerName(node) {
+    if (node.type !== 'impl_item') return undefined;
+    const children = node.children ?? [];
+    const forIdx = children.findIndex((c: SyntaxNode) => c.text === 'for');
+    if (forIdx !== -1) {
+      // impl Trait for Struct — pick the type after `for`
+      const typeNode = children
+        .slice(forIdx + 1)
+        .find(
+          (c: SyntaxNode) => c.type === 'type_identifier' || c.type === 'scoped_type_identifier',
+        );
+      if (typeNode) return typeNode.text;
+    }
+    // Plain `impl Struct` — pick the first type_identifier
+    const first = children.find((c: SyntaxNode) => c.type === 'type_identifier');
+    return first?.text;
+  },
 
   extractName: extractRustMethodName,
   extractReturnType: extractRustReturnType,

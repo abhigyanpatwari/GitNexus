@@ -1747,13 +1747,15 @@ describe('Rust abstract dispatch (Repository trait)', () => {
     expect(traitMethods).toContain('count');
   });
 
-  it('emits HAS_METHOD edges linking find and save to SqlRepo', () => {
+  it('emits HAS_METHOD edges linking find and save to SqlRepo (not Repository)', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
-    // Trait-impl methods are attached to the implementing struct or the trait;
-    // check that at least find and save appear somewhere in the HAS_METHOD graph
-    const allTargets = hasMethod.map((e) => e.target);
-    expect(allTargets).toContain('find');
-    expect(allTargets).toContain('save');
+    const sqlRepoMethods = hasMethod
+      .filter((e) => e.source === 'SqlRepo')
+      .map((e) => e.target)
+      .sort();
+    // impl Repository for SqlRepo methods should be owned by SqlRepo (concrete type)
+    expect(sqlRepoMethods).toContain('find');
+    expect(sqlRepoMethods).toContain('save');
   });
 
   it('marks required trait methods find and save as isAbstract=true', () => {

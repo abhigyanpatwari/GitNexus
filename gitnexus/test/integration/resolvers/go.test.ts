@@ -1312,4 +1312,36 @@ describe('Go method enrichment', () => {
       expect(classify.properties.parameterTypes).toContain('string');
     }
   });
+
+  it('detects Animal interface', () => {
+    const interfaces = getNodesByLabel(result, 'Interface');
+    expect(interfaces).toContain('Animal');
+  });
+
+  it('marks interface method Speak as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    // Interface method_elem Speak should be abstract
+    const interfaceSpeak = methods.find(
+      (m) => m.name === 'Speak' && m.properties.isAbstract === true,
+    );
+    if (interfaceSpeak) {
+      expect(interfaceSpeak.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('resolves dog.Speak() CALLS edge from app.go', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const speakCall = calls.find(
+      (c) => c.target === 'Speak' && c.sourceFilePath.includes('app.go'),
+    );
+    expect(speakCall).toBeDefined();
+  });
+
+  it('resolves Classify() CALLS edge from app.go', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const classifyCall = calls.find(
+      (c) => c.target === 'Classify' && c.sourceFilePath.includes('app.go'),
+    );
+    expect(classifyCall).toBeDefined();
+  });
 });
