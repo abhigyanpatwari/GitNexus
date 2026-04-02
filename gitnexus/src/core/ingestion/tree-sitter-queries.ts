@@ -1121,6 +1121,13 @@ export const DART_QUERIES = `
   value: (identifier) @call.name
   (selector (argument_part))) @call
 
+; ── Calls: member calls in variable assignments (var x = obj.method()) ──────
+(initialized_variable_definition
+  (selector
+    (unconditional_assignable_selector
+      (identifier) @call.name))
+  (selector (argument_part))) @call
+
 ; ── Re-exports (export 'foo.dart') ───────────────────────────────────────────
 (import_or_export
   (library_export

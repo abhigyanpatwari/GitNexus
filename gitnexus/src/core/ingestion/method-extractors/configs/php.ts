@@ -1,4 +1,5 @@
 // gitnexus/src/core/ingestion/method-extractors/configs/php.ts
+// Verified against tree-sitter-php 0.23.12
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type {
@@ -201,7 +202,7 @@ function extractPhpAnnotations(node: SyntaxNode): string[] {
 
 export const phpMethodConfig: MethodExtractionConfig = {
   language: SupportedLanguages.PHP,
-  typeDeclarationNodes: ['class_declaration', 'interface_declaration', 'trait_declaration'],
+  typeDeclarationNodes: ['class_declaration', 'interface_declaration', 'trait_declaration', 'enum_declaration'],
   methodNodeTypes: ['method_declaration'],
   bodyNodeTypes: ['declaration_list'],
 

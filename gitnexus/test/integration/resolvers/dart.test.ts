@@ -325,9 +325,8 @@ describe.skipIf(!dartAvailable)('Dart member calls', () => {
 
   it('detects User class and save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
-    const methods = getNodesByLabel(result, 'Function');
-    expect(methods).toContain('save');
-    expect(methods).toContain('processUser');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
+    expect(getNodesByLabel(result, 'Function')).toContain('processUser');
   });
 
   it('emits HAS_METHOD edge User -> save', () => {

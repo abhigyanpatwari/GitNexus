@@ -1,4 +1,5 @@
 // gitnexus/src/core/ingestion/method-extractors/configs/dart.ts
+// Verified against tree-sitter-dart 1.0.0 (80e23c07)
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type {
@@ -46,6 +47,8 @@ function getInnerSignature(node: SyntaxNode): SyntaxNode | null {
       return child;
     }
   }
+  // `declaration` nodes (abstract methods) also wrap function_signature as a
+  // named child — handled by the loop above.
   return null;
 }
 
@@ -223,13 +226,26 @@ function extractSingleParam(param: SyntaxNode, isOptionalBlock: boolean): Parame
     }
   }
 
-  // Check for 'required' keyword among children (for named parameters)
+  // Check for 'required' keyword:
+  // 1. Among children of the param node itself
   let hasRequired = false;
   for (let i = 0; i < param.childCount; i++) {
     const child = param.child(i);
     if (child && child.text.trim() === 'required') {
       hasRequired = true;
       break;
+    }
+  }
+  // 2. In tree-sitter-dart, `required` may be an anonymous sibling token
+  //    immediately preceding the formal_parameter inside optional_formal_parameters.
+  if (!hasRequired) {
+    let prev = param.previousSibling;
+    // Skip comma separators
+    while (prev && !prev.isNamed && prev.text.trim() === ',') {
+      prev = prev.previousSibling;
+    }
+    if (prev && !prev.isNamed && prev.text.trim() === 'required') {
+      hasRequired = true;
     }
   }
 
@@ -265,16 +281,24 @@ function extractDartVisibility(node: SyntaxNode): MethodVisibility {
 }
 
 /**
- * In Dart's tree-sitter grammar, `static` is an unnamed keyword token that
- * appears as a SIBLING of `method_signature` inside `class_body`, not as a
- * child of method_signature.
+ * In tree-sitter-dart, `static` is an anonymous child token of
+ * `method_signature` (or `declaration`), not a previous sibling.
  *
- * We walk back through previousSibling to find it.
+ * We check children first, then fall back to previous siblings for
+ * grammar variants.
  */
 function isDartStatic(node: SyntaxNode): boolean {
+  // In tree-sitter-dart, `static` is an anonymous child token of method_signature
+  // (or declaration), not a previous sibling.
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child && !child.isNamed && child.text.trim() === 'static') return true;
+    // Stop once we hit the inner signature — static always precedes it
+    if (child?.isNamed) break;
+  }
+  // Also check previous siblings (fallback for grammar variants)
   let sibling = node.previousSibling;
   while (sibling) {
-    // Stop when we hit another named node that isn't an annotation or keyword
     if (sibling.isNamed && sibling.type !== 'annotation') break;
     if (!sibling.isNamed && sibling.text.trim() === 'static') return true;
     sibling = sibling.previousSibling;
@@ -288,7 +312,9 @@ function isDartStatic(node: SyntaxNode): boolean {
  * in class_body.
  */
 function isDartAbstract(node: SyntaxNode, _ownerNode: SyntaxNode): boolean {
-  // Check if the next named sibling is a function_body
+  // `declaration` nodes in class_body represent abstract methods (no body, followed by ';')
+  if (node.type === 'declaration') return true;
+  // For method_signature nodes, check if the next named sibling is a function_body
   const next = node.nextNamedSibling;
   return !next || next.type !== 'function_body';
 }
@@ -352,8 +378,8 @@ function extractDartAnnotations(node: SyntaxNode): string[] {
 
 export const dartMethodConfig: MethodExtractionConfig = {
   language: SupportedLanguages.Dart,
-  typeDeclarationNodes: ['class_definition'],
-  methodNodeTypes: ['method_signature'],
+  typeDeclarationNodes: ['class_definition', 'mixin_declaration'],
+  methodNodeTypes: ['method_signature', 'declaration'],
   bodyNodeTypes: ['class_body'],
 
   extractName: extractDartName,

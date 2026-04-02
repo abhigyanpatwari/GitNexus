@@ -2771,6 +2771,25 @@ class Foo:
       expect(result!.methods[0].isFinal).toBe(false);
     });
   });
+
+  describe('dotted decorators', () => {
+    it('detects @abc.abstractmethod as abstract', () => {
+      const tree = parsePython(`
+import abc
+
+class Shape(abc.ABC):
+    @abc.abstractmethod
+    def area(self):
+        pass
+      `);
+      const classNode = tree.rootNode.namedChildren.find((c) => c.type === 'class_definition')!;
+      const result = extractor.extract(classNode, pythonCtx);
+
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('area');
+      expect(result!.methods[0].isAbstract).toBe(true);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3338,6 +3357,33 @@ class Api {
       expect(result!.methods[0].isAsync).toBe(true);
     });
   });
+
+  describe('extract from mixin', () => {
+    it('extracts method from mixin_declaration', () => {
+      const tree = parseDart(`
+mixin Loggable {
+  void log(String msg) {
+    print(msg);
+  }
+}
+      `);
+      const mixinNode = tree.rootNode.firstNamedChild!;
+      const result = extractor.extract(mixinNode, dartCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('Loggable');
+      expect(result!.methods).toHaveLength(1);
+
+      const method = result!.methods[0];
+      expect(method.name).toBe('log');
+      expect(method.returnType).toBe('void');
+      expect(method.visibility).toBe('public');
+      expect(method.isAbstract).toBe(false);
+      expect(method.parameters).toHaveLength(1);
+      expect(method.parameters[0].name).toBe('msg');
+      expect(method.parameters[0].type).toBe('String');
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3645,6 +3691,31 @@ trait Cacheable {
       expect(result!.methods[0].visibility).toBe('public');
       expect(result!.methods[1].name).toBe('clearCache');
       expect(result!.methods[1].visibility).toBe('private');
+    });
+  });
+
+  describe('enum methods', () => {
+    it('extracts methods from PHP 8.1 enum', () => {
+      const tree = parsePHP(`<?php
+enum Status: string {
+    case Active = 'active';
+    case Inactive = 'inactive';
+
+    public function label(): string {
+        return match($this) {
+            Status::Active => 'Active',
+            Status::Inactive => 'Inactive',
+        };
+    }
+}
+      `);
+      const enumNode = tree.rootNode.namedChildren.find((c) => c.type === 'enum_declaration')!;
+      const result = extractor.extract(enumNode, phpCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('Status');
+      expect(result!.methods.length).toBeGreaterThanOrEqual(1);
+      expect(result!.methods[0].name).toBe('label');
     });
   });
 });
@@ -4136,6 +4207,24 @@ class Foo {
       const result = extractor.extract(classNode, swiftCtx);
 
       expect(result!.methods[0].isAsync).toBe(true);
+    });
+  });
+
+  describe('isOverride', () => {
+    it('detects override method', () => {
+      const tree = parseSwift(`
+class Child {
+    override func toString() -> String {
+        return ""
+    }
+}
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, swiftCtx);
+
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('toString');
+      expect(result!.methods[0].isOverride).toBe(true);
     });
   });
 });

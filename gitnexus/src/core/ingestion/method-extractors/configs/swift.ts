@@ -288,5 +288,9 @@ export const swiftMethodConfig: MethodExtractionConfig = {
     return hasKeyword(node, 'async') || hasModifier(node, 'modifiers', 'async');
   },
 
+  isOverride(node) {
+    return hasKeyword(node, 'override') || hasModifier(node, 'modifiers', 'override');
+  },
+
   extractAnnotations: extractSwiftAnnotations,
 };

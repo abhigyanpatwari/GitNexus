@@ -1,5 +1,5 @@
 // gitnexus/src/core/ingestion/method-extractors/configs/python.ts
-// Verified against tree-sitter-python ^0.23.6
+// Verified against tree-sitter-python 0.23.4
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type {
@@ -81,7 +81,7 @@ function hasDecorator(node: SyntaxNode, name: string): boolean {
   const decorators = collectDecorators(node);
   for (const dec of decorators) {
     const decName = extractDecoratorName(dec);
-    if (decName === '@' + name) return true;
+    if (decName === '@' + name || decName?.endsWith('.' + name)) return true;
   }
   return false;
 }
