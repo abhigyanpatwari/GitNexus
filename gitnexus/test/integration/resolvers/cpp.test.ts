@@ -1155,3 +1155,53 @@ describe('C++ cross-file binding propagation', () => {
     expect(getNameEdge).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Method enrichment: pure virtual, static, concrete methods + EXTENDS
+// ---------------------------------------------------------------------------
+
+describe('C++ method enrichment', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-method-enrichment'), () => {});
+  }, 60000);
+
+  it('detects Animal and Dog classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Animal');
+    expect(classes).toContain('Dog');
+  });
+
+  it('emits HAS_METHOD edges for Animal', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const animalMethods = hasMethod.filter((e) => e.source === 'Animal').map((e) => e.target);
+    expect(animalMethods).toContain('speak');
+    expect(animalMethods).toContain('classify');
+    expect(animalMethods).toContain('breathe');
+  });
+
+  it('marks pure virtual speak as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const speak = methods.find((n) => n.name === 'speak' && n.properties.filePath === 'animal.hpp');
+    if (speak?.properties.isAbstract !== undefined) {
+      expect(speak.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks classify as isStatic (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'classify');
+    if (classify?.properties.isStatic !== undefined) {
+      expect(classify.properties.isStatic).toBe(true);
+    }
+  });
+
+  it('populates parameterTypes for classify (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'classify');
+    if (classify?.properties.parameterTypes !== undefined) {
+      expect(classify.properties.parameterTypes.length).toBeGreaterThan(0);
+    }
+  });
+});

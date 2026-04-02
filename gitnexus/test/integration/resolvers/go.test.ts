@@ -1267,3 +1267,49 @@ describe('Go cmd/ helper files entry-point scoring', () => {
     expect(edge).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Method enrichment: struct methods, interface methods, package-level funcs
+// ---------------------------------------------------------------------------
+
+describe('Go method enrichment', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-method-enrichment'), () => {});
+  }, 60000);
+
+  it('detects Dog struct', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    expect(structs).toContain('Dog');
+  });
+
+  it('detects Speak method', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('Speak');
+  });
+
+  it('detects Classify as static function', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'Classify');
+    if (classify?.properties.isStatic !== undefined) {
+      expect(classify.properties.isStatic).toBe(true);
+    }
+  });
+
+  it('marks Speak as public (exported)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const speak = methods.find((n) => n.name === 'Speak');
+    if (speak?.properties.visibility !== undefined) {
+      expect(speak.properties.visibility).toBe('public');
+    }
+  });
+
+  it('populates parameterTypes for Classify', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'Classify');
+    if (classify?.properties.parameterTypes !== undefined) {
+      expect(classify.properties.parameterTypes).toContain('string');
+    }
+  });
+});

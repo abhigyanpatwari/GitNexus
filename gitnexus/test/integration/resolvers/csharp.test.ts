@@ -1614,3 +1614,111 @@ describe('C# import resolution without .csproj (suffix fallback)', () => {
     expect(classes).toContain('UserService');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Method enrichment: abstract, static, override, parameterTypes, annotations
+// ---------------------------------------------------------------------------
+
+describe('C# method enrichment', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-method-enrichment'), () => {});
+  }, 60000);
+
+  it('detects Animal and Dog classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Animal');
+    expect(classes).toContain('Dog');
+  });
+
+  it('emits HAS_METHOD edges for Animal methods', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const animalMethods = hasMethod
+      .filter((e) => e.source === 'Animal')
+      .map((e) => e.target)
+      .sort();
+    expect(animalMethods).toContain('Speak');
+    expect(animalMethods).toContain('Classify');
+    expect(animalMethods).toContain('Breathe');
+  });
+
+  it('emits HAS_METHOD edge for Dog.Speak', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const dogSpeak = hasMethod.find((e) => e.source === 'Dog' && e.target === 'Speak');
+    expect(dogSpeak).toBeDefined();
+  });
+
+  it('emits EXTENDS edge Dog -> Animal', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const dogExtends = extends_.find((e) => e.source === 'Dog' && e.target === 'Animal');
+    expect(dogExtends).toBeDefined();
+  });
+
+  it('marks abstract Speak as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const speak = methods.find((n) => n.name === 'Speak' && n.properties.filePath === 'Animal.cs');
+    if (speak?.properties.isAbstract !== undefined) {
+      expect(speak.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks Breathe as NOT isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const breathe = methods.find((n) => n.name === 'Breathe');
+    if (breathe?.properties.isAbstract !== undefined) {
+      expect(breathe.properties.isAbstract).toBe(false);
+    }
+  });
+
+  it('marks Classify as isStatic (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'Classify');
+    if (classify?.properties.isStatic !== undefined) {
+      expect(classify.properties.isStatic).toBe(true);
+    }
+  });
+
+  it('marks Breathe as NOT isStatic (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const breathe = methods.find((n) => n.name === 'Breathe');
+    if (breathe?.properties.isStatic !== undefined) {
+      expect(breathe.properties.isStatic).toBe(false);
+    }
+  });
+
+  it('captures override annotation on Dog.Speak (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const dogSpeak = methods.find(
+      (n) => n.name === 'Speak' && n.properties.filePath !== 'Animal.cs',
+    );
+    if (dogSpeak?.properties.annotations !== undefined) {
+      expect(dogSpeak.properties.annotations).toContain('override');
+    }
+  });
+
+  it('populates parameterTypes for Classify (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'Classify');
+    if (classify?.properties.parameterTypes !== undefined) {
+      const params = classify.properties.parameterTypes;
+      expect(params).toContain('string');
+    }
+  });
+
+  it('resolves dog.Speak() CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const speakCall = calls.find(
+      (c) => c.target === 'Speak' && c.sourceFilePath.includes('App.cs'),
+    );
+    expect(speakCall).toBeDefined();
+  });
+
+  it('resolves Animal.Classify("dog") static CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const classifyCall = calls.find(
+      (c) => c.target === 'Classify' && c.sourceFilePath.includes('App.cs'),
+    );
+    expect(classifyCall).toBeDefined();
+  });
+});

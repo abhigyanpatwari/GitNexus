@@ -11,6 +11,9 @@ export const TYPESCRIPT_QUERIES = `
 (class_declaration
   name: (type_identifier) @name) @definition.class
 
+(abstract_class_declaration
+  name: (type_identifier) @name) @definition.class
+
 (interface_declaration
   name: (type_identifier) @name) @definition.interface
 

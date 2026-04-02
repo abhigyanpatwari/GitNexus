@@ -125,8 +125,6 @@ export const CLASS_CONTAINER_TYPES = new Set([
   // Ruby
   'class',
   'module',
-  // Go
-  'method_declaration',
   // Kotlin
   'object_declaration',
   'companion_object',

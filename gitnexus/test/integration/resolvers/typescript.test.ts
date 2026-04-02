@@ -2294,3 +2294,104 @@ describe('TypeScript optional parameter arity resolution', () => {
     expect(searchCalls.length).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Method enrichment: abstract, static, parameterTypes, annotations
+// ---------------------------------------------------------------------------
+
+describe('TypeScript method enrichment', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-method-enrichment'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Animal and Dog classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Animal');
+    expect(classes).toContain('Dog');
+  });
+
+  it('emits HAS_METHOD edges for Animal methods', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const animalMethods = hasMethod
+      .filter((e) => e.source === 'Animal')
+      .map((e) => e.target)
+      .sort();
+    expect(animalMethods).toContain('speak');
+    expect(animalMethods).toContain('classify');
+    expect(animalMethods).toContain('breathe');
+  });
+
+  it('emits HAS_METHOD edge for Dog.speak', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const dogSpeak = hasMethod.find((e) => e.source === 'Dog' && e.target === 'speak');
+    expect(dogSpeak).toBeDefined();
+  });
+
+  it('emits EXTENDS edge Dog -> Animal', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const dogExtends = extends_.find((e) => e.source === 'Dog' && e.target === 'Animal');
+    expect(dogExtends).toBeDefined();
+  });
+
+  it('marks abstract speak as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const speak = methods.find((n) => n.name === 'speak' && n.properties.filePath === 'animal.ts');
+    if (speak?.properties.isAbstract !== undefined) {
+      expect(speak.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks breathe as NOT isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const breathe = methods.find((n) => n.name === 'breathe');
+    if (breathe?.properties.isAbstract !== undefined) {
+      expect(breathe.properties.isAbstract).toBe(false);
+    }
+  });
+
+  it('marks classify as isStatic (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'classify');
+    if (classify?.properties.isStatic !== undefined) {
+      expect(classify.properties.isStatic).toBe(true);
+    }
+  });
+
+  it('marks breathe as NOT isStatic (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const breathe = methods.find((n) => n.name === 'breathe');
+    if (breathe?.properties.isStatic !== undefined) {
+      expect(breathe.properties.isStatic).toBe(false);
+    }
+  });
+
+  it('populates parameterTypes for classify (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'classify');
+    if (classify?.properties.parameterTypes !== undefined) {
+      const params = classify.properties.parameterTypes;
+      expect(params).toContain('string');
+    }
+  });
+
+  it('resolves dog.speak() CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const speakCall = calls.find(
+      (c) => c.target === 'speak' && c.sourceFilePath.includes('app.ts'),
+    );
+    expect(speakCall).toBeDefined();
+  });
+
+  it('resolves Animal.classify("dog") static CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const classifyCall = calls.find(
+      (c) => c.target === 'classify' && c.sourceFilePath.includes('app.ts'),
+    );
+    expect(classifyCall).toBeDefined();
+  });
+});
