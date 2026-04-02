@@ -6,7 +6,7 @@ import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
 import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
-import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
+import { getLanguageFromFilename } from 'gitnexus-shared';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import {
   getDefinitionNodeFromCaptures,
@@ -504,7 +504,9 @@ const processParsingSequential = async (
     });
 
     if (provider.isRouteFile?.(file.path) && provider.deferredRouteExtractor) {
-      extractedData.deferredRouteCandidates.push(...(provider.deferredRouteExtractor(tree, file.path)));
+      extractedData.deferredRouteCandidates.push(
+        ...provider.deferredRouteExtractor(tree, file.path),
+      );
     }
   }
 
@@ -557,13 +559,7 @@ export const processParsing = async (
     }
   }
 
-  const data = await processParsingSequential(
-    graph,
-    files,
-    symbolTable,
-    astCache,
-    onFileProgress,
-  );
+  const data = await processParsingSequential(graph, files, symbolTable, astCache, onFileProgress);
   return {
     data,
     usedWorkers: false,

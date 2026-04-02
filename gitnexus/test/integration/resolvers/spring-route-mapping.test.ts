@@ -9,6 +9,11 @@ import {
   type PipelineResult,
 } from './helpers.js';
 
+function expectDefined<T>(value: T | undefined): T {
+  expect(value).toBeDefined();
+  return value as T;
+}
+
 describe('Spring route mapping', () => {
   let result: PipelineResult;
 
@@ -41,31 +46,36 @@ describe('Spring route mapping', () => {
     const health = routes.find((r) => r.name === '/health');
     const status = routes.find((r) => r.name === '/status');
 
-    expect(users).toBeDefined();
-    expect(users!.properties.httpMethod).toBe('GET');
-    expect(users!.properties.controllerName).toBe('UserController');
-    expect(users!.properties.methodName).toBe('listUsers');
-    expect(users!.properties.prefix).toBe('/api');
+    const usersRoute = expectDefined(users);
+    const createRoute = expectDefined(create);
+    const profileRoute = expectDefined(profile);
+    const searchRouteNode = expectDefined(search);
+    const fqcnRouteNode = expectDefined(fqcn);
+    const healthRouteNode = expectDefined(health);
+    const statusRouteNode = expectDefined(status);
 
-    expect(create!.properties.httpMethod).toBe('POST');
-    expect(create!.properties.methodName).toBe('createUser');
-    expect(profile!.properties.httpMethod).toBe('PATCH');
-    expect(profile!.properties.methodName).toBe('updateProfile');
-    expect(search!.properties.httpMethod).toBe('POST');
-    expect(search!.properties.methodName).toBe('searchUsers');
-    expect(fqcn!.properties.httpMethod).toBe('PUT');
-    expect(fqcn!.properties.methodName).toBe('fullyQualifiedUsers');
+    expect(usersRoute.properties.httpMethod).toBe('GET');
+    expect(usersRoute.properties.controllerName).toBe('UserController');
+    expect(usersRoute.properties.methodName).toBe('listUsers');
+    expect(usersRoute.properties.prefix).toBe('/api');
 
-    expect(health).toBeDefined();
-    expect(health!.properties.httpMethod).toBe('GET');
-    expect(health!.properties.controllerName).toBe('HealthController');
-    expect(health!.properties.methodName).toBe('health');
-    expect(health!.properties.prefix).toBeUndefined();
+    expect(createRoute.properties.httpMethod).toBe('POST');
+    expect(createRoute.properties.methodName).toBe('createUser');
+    expect(profileRoute.properties.httpMethod).toBe('PATCH');
+    expect(profileRoute.properties.methodName).toBe('updateProfile');
+    expect(searchRouteNode.properties.httpMethod).toBe('POST');
+    expect(searchRouteNode.properties.methodName).toBe('searchUsers');
+    expect(fqcnRouteNode.properties.httpMethod).toBe('PUT');
+    expect(fqcnRouteNode.properties.methodName).toBe('fullyQualifiedUsers');
 
-    expect(status).toBeDefined();
-    expect(status!.properties.httpMethod).toBe('GET');
-    expect(status!.properties.controllerName).toBe('HealthController');
-    expect(status!.properties.methodName).toBe('status');
+    expect(healthRouteNode.properties.httpMethod).toBe('GET');
+    expect(healthRouteNode.properties.controllerName).toBe('HealthController');
+    expect(healthRouteNode.properties.methodName).toBe('health');
+    expect(healthRouteNode.properties.prefix).toBeUndefined();
+
+    expect(statusRouteNode.properties.httpMethod).toBe('GET');
+    expect(statusRouteNode.properties.controllerName).toBe('HealthController');
+    expect(statusRouteNode.properties.methodName).toBe('status');
   });
 
   it('creates HANDLES_ROUTE edges from controller files', () => {
@@ -76,16 +86,11 @@ describe('Spring route mapping', () => {
     const healthRoute = edges.find((edge) => edge.target === '/health');
     const statusRoute = edges.find((edge) => edge.target === '/status');
 
-    expect(usersRoute).toBeDefined();
-    expect(usersRoute!.sourceFilePath).toContain('UserController.java');
-    expect(searchRoute).toBeDefined();
-    expect(searchRoute!.sourceFilePath).toContain('UserController.java');
-    expect(fqcnRoute).toBeDefined();
-    expect(fqcnRoute!.sourceFilePath).toContain('UserController.java');
-    expect(healthRoute).toBeDefined();
-    expect(healthRoute!.sourceFilePath).toContain('HealthController.java');
-    expect(statusRoute).toBeDefined();
-    expect(statusRoute!.sourceFilePath).toContain('HealthController.java');
+    expect(expectDefined(usersRoute).sourceFilePath).toContain('UserController.java');
+    expect(expectDefined(searchRoute).sourceFilePath).toContain('UserController.java');
+    expect(expectDefined(fqcnRoute).sourceFilePath).toContain('UserController.java');
+    expect(expectDefined(healthRoute).sourceFilePath).toContain('HealthController.java');
+    expect(expectDefined(statusRoute).sourceFilePath).toContain('HealthController.java');
   });
 
   it('creates framework CALLS edges from controller files to handler methods', () => {
@@ -97,13 +102,17 @@ describe('Spring route mapping', () => {
       edges.some((edge) => edge.source === 'UserController.java' && edge.target === 'createUser'),
     ).toBe(true);
     expect(
-      edges.some((edge) => edge.source === 'UserController.java' && edge.target === 'updateProfile'),
+      edges.some(
+        (edge) => edge.source === 'UserController.java' && edge.target === 'updateProfile',
+      ),
     ).toBe(true);
     expect(
       edges.some((edge) => edge.source === 'UserController.java' && edge.target === 'searchUsers'),
     ).toBe(true);
     expect(
-      edges.some((edge) => edge.source === 'UserController.java' && edge.target === 'fullyQualifiedUsers'),
+      edges.some(
+        (edge) => edge.source === 'UserController.java' && edge.target === 'fullyQualifiedUsers',
+      ),
     ).toBe(true);
     expect(
       edges.some((edge) => edge.source === 'HealthController.java' && edge.target === 'health'),

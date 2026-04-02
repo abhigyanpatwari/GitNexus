@@ -31,7 +31,10 @@ function getAnnotationName(node: SyntaxNode): string | null {
   return nameNode?.text ?? null;
 }
 
-function getElementValuePairParts(node: SyntaxNode): { key: string | null; value: SyntaxNode | null } {
+function getElementValuePairParts(node: SyntaxNode): {
+  key: string | null;
+  value: SyntaxNode | null;
+} {
   const keyNode = node.childForFieldName('key') ?? node.namedChild(0);
   const valueNode = node.childForFieldName('value') ?? node.namedChild(1);
   return {
@@ -52,7 +55,9 @@ function extractOwnerPath(node: SyntaxNode | null | undefined): string[] | null 
   return [...objectPath, fieldNode.text];
 }
 
-function extractRoutePathExpression(node: SyntaxNode | null | undefined): SpringRoutePathExpression | null {
+function extractRoutePathExpression(
+  node: SyntaxNode | null | undefined,
+): SpringRoutePathExpression | null {
   if (!node) return null;
 
   const literal = extractJavaStringLiteral(node);
@@ -92,7 +97,11 @@ function extractRequestMappingPath(annotation: SyntaxNode): {
     const direct = extractRoutePathExpression(child);
     if (direct) return { expression: direct, hasExplicitPath: true };
 
-    if (child.type === 'string_literal' || child.type === 'identifier' || child.type === 'field_access') {
+    if (
+      child.type === 'string_literal' ||
+      child.type === 'identifier' ||
+      child.type === 'field_access'
+    ) {
       return { expression: null, hasExplicitPath: true };
     }
 
@@ -160,7 +169,10 @@ function joinRoutePaths(prefix: string | null, routePath: string | null): string
   return '/';
 }
 
-function findAnnotation(modifiersNode: SyntaxNode | null, names: ReadonlySet<string>): SyntaxNode | null {
+function findAnnotation(
+  modifiersNode: SyntaxNode | null,
+  names: ReadonlySet<string>,
+): SyntaxNode | null {
   if (!modifiersNode) return null;
 
   for (let i = 0; i < modifiersNode.namedChildCount; i++) {
@@ -197,7 +209,9 @@ function resolveUniqueClassLike(
 ): SymbolDefinition | null {
   const resolved = ctx.resolve(name, filePath);
   if (!resolved) return null;
-  const classLikes = resolved.candidates.filter((candidate) => CLASS_LIKE_TYPES.has(candidate.type));
+  const classLikes = resolved.candidates.filter((candidate) =>
+    CLASS_LIKE_TYPES.has(candidate.type),
+  );
   return classLikes.length === 1 ? classLikes[0] : null;
 }
 
@@ -240,7 +254,10 @@ function resolvePathExpression(
     case 'identifier': {
       const sameClass = resolveUniqueClassLike(className, filePath, ctx);
       if (sameClass) {
-        const local = ctx.symbols.lookupFieldByOwner(sameClass.nodeId, expression.name)?.constantValue;
+        const local = ctx.symbols.lookupFieldByOwner(
+          sameClass.nodeId,
+          expression.name,
+        )?.constantValue;
         if (local) return local;
       }
 
@@ -248,7 +265,9 @@ function resolvePathExpression(
       if (imported) return imported;
 
       const sameFile = firstConstantValue(
-        ctx.symbols.lookupExactAll(filePath, expression.name).filter((def) => def.type === 'Property'),
+        ctx.symbols
+          .lookupExactAll(filePath, expression.name)
+          .filter((def) => def.type === 'Property'),
       );
       if (sameFile) return sameFile;
 
