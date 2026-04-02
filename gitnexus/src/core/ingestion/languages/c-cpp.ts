@@ -22,6 +22,8 @@ import {
   cConfig as cFieldConfig,
   cppConfig as cppFieldConfig,
 } from '../field-extractors/configs/c-cpp.js';
+import { createMethodExtractor } from '../method-extractors/generic.js';
+import { cMethodConfig, cppMethodConfig } from '../method-extractors/configs/c-cpp.js';
 
 const C_BUILT_INS: ReadonlySet<string> = new Set([
   'printf',
@@ -149,6 +151,7 @@ export const cProvider = defineLanguage({
   importResolver: resolveCImport,
   importSemantics: 'wildcard',
   fieldExtractor: createFieldExtractor(cFieldConfig),
+  methodExtractor: createMethodExtractor(cMethodConfig),
   labelOverride: cppLabelOverride,
   builtInNames: C_BUILT_INS,
 });
@@ -163,6 +166,7 @@ export const cppProvider = defineLanguage({
   importSemantics: 'wildcard',
   mroStrategy: 'leftmost-base',
   fieldExtractor: createFieldExtractor(cppFieldConfig),
+  methodExtractor: createMethodExtractor(cppMethodConfig),
   labelOverride: cppLabelOverride,
   builtInNames: C_BUILT_INS,
 });

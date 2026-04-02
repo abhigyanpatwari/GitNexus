@@ -49,23 +49,33 @@ test.beforeAll(async () => {
 });
 
 /**
- * Wait for the new auto-connect flow to complete.
+ * Wait for the server-detection flow to complete.
  *
- * The app now auto-detects the server via polling and connects without
- * any user interaction. We just need to wait for the exploring view.
+ * The app auto-detects the server, then either:
+ *   - shows the landing screen when indexed repos exist, or
+ *   - goes straight into analyze onboarding when there are zero repos.
+ *
+ * For these tests we require at least one indexed repo, so pick the first
+ * landing card when present and then wait for the exploring view.
  */
 async function waitForGraphLoaded(page: import('@playwright/test').Page, testInfo: TestInfo) {
   await page.goto('/');
 
-  // The app auto-connects: onboarding → success → loading → exploring.
-  // Wait for the status bar "Ready" indicator which confirms the graph is loaded.
+  const landingCard = page.locator('[data-testid="landing-repo-card"]').first();
+  try {
+    await landingCard.waitFor({ state: 'visible', timeout: 15_000 });
+    await landingCard.click();
+  } catch {
+    // Landing screen may not appear (e.g. ?server auto-connect)
+  }
+
   await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText(/\d+ nodes/).first()).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('graph-loaded.png') });
 }
 
 test.describe('Server Connection & Graph Loading', () => {
-  test('auto-connects and loads graph', async ({ page }, testInfo) => {
+  test('selects a repo from landing and loads graph', async ({ page }, testInfo) => {
     await waitForGraphLoaded(page, testInfo);
     await page.screenshot({ path: testInfo.outputPath('graph-loaded-full.png'), fullPage: true });
   });

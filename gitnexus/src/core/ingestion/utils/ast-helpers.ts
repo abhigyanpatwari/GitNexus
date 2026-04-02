@@ -664,6 +664,12 @@ export const extractMethodSignature = (node: SyntaxNode | null | undefined): Met
       ) {
         continue;
       }
+      // TypeScript: `this` parameter is a compile-time type constraint, not a real param
+      // e.g., handle(this: void, event: Event) — only count 'event'
+      if (param.type === 'required_parameter') {
+        const patternNode = param.childForFieldName('pattern');
+        if (patternNode?.type === 'this') continue;
+      }
       // Kotlin: default values are siblings of the parameter node inside
       // function_value_parameters, so they appear as named children (e.g.
       // string_literal, integer_literal, boolean_literal, call_expression).

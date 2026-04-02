@@ -58,10 +58,11 @@ describe('TypeScript heritage resolution', () => {
 
   it('emits HAS_METHOD edges linking methods to classes', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
-    expect(hasMethod.length).toBe(4);
+    expect(hasMethod.length).toBe(5);
     expect(edgeSet(hasMethod)).toEqual([
       'BaseService → getName',
       'ConsoleLogger → log',
+      'ILogger → log',
       'UserService → getUsers',
       'UserService → log',
     ]);

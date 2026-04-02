@@ -30,6 +30,10 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: npm
           cache-dependency-path: gitnexus/package-lock.json
+      - name: Build gitnexus-shared
+        run: npm install && npm run build
+        working-directory: gitnexus-shared
+
       - run: npm ci
         working-directory: gitnexus
 
@@ -63,7 +67,22 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Extract release notes from CHANGELOG
+        id: changelog
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          NOTES=$(awk "/^## \\[$VERSION\\]/{found=1; next} /^## \\[/{if(found) exit} found" gitnexus/CHANGELOG.md)
+          if [ -z "$NOTES" ]; then
+            echo "::warning::No CHANGELOG entry found for v$VERSION, falling back to auto-generated notes"
+            echo "fallback=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "$NOTES" > /tmp/release-notes.md
+            echo "fallback=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
         with:
-          generate_release_notes: true
+          body_path: ${{ steps.changelog.outputs.fallback == 'false' && '/tmp/release-notes.md' || '' }}
+          generate_release_notes: ${{ steps.changelog.outputs.fallback == 'true' }}

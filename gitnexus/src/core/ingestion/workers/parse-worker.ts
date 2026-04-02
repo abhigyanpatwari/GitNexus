@@ -353,6 +353,75 @@ function findEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
 }
 
 /**
+ * For C++ out-of-class method definitions (e.g. `void Foo::bar() {}`), extract the
+ * class name from the qualified_identifier scope and find the class declaration in the
+ * file's AST. Returns the class SyntaxNode or null if not found.
+ *
+ * Handles pointer/reference return types where function_declarator is nested inside
+ * pointer_declarator or reference_declarator.
+ */
+function findClassNodeByQualifiedName(node: SyntaxNode): SyntaxNode | null {
+  const declarator = node.childForFieldName('declarator');
+  if (!declarator) return null;
+
+  // Find the function_declarator, recursively unwrapping pointer_declarator /
+  // reference_declarator chains (e.g. int** Foo::bar() has
+  // pointer_declarator → pointer_declarator → function_declarator).
+  let funcDecl: SyntaxNode | null = null;
+  if (declarator.type === 'function_declarator') {
+    funcDecl = declarator;
+  } else {
+    let current: SyntaxNode | null = declarator;
+    while (current && !funcDecl) {
+      for (let i = 0; i < current.namedChildCount; i++) {
+        const child = current.namedChild(i);
+        if (child?.type === 'function_declarator') {
+          funcDecl = child;
+          break;
+        }
+      }
+      if (!funcDecl) {
+        const next = current.namedChildren.find(
+          (c) => c.type === 'pointer_declarator' || c.type === 'reference_declarator',
+        );
+        current = next ?? null;
+      }
+    }
+  }
+  if (!funcDecl) return null;
+
+  // Check if the inner declarator is a qualified_identifier (Foo::bar)
+  const innerDecl = funcDecl.childForFieldName('declarator');
+  if (!innerDecl || innerDecl.type !== 'qualified_identifier') return null;
+
+  const scope = innerDecl.childForFieldName('scope');
+  if (!scope) return null;
+  const className = scope.text;
+
+  // Search the file for a matching class/struct specifier, including inside
+  // namespace_definition blocks (the majority of production C++ uses namespaces).
+  const root = node.tree.rootNode;
+  const classTypes = new Set(['class_specifier', 'struct_specifier']);
+  const searchIn = (parent: SyntaxNode): SyntaxNode | null => {
+    for (let i = 0; i < parent.namedChildCount; i++) {
+      const child = parent.namedChild(i);
+      if (!child) continue;
+      if (classTypes.has(child.type)) {
+        const nameNode = child.childForFieldName('name');
+        if (nameNode?.text === className) return child;
+      }
+      // Recurse into namespace blocks
+      if (child.type === 'namespace_definition') {
+        const found = searchIn(child);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+  return searchIn(root);
+}
+
+/**
  * Minimal no-op SymbolTable stub for FieldExtractorContext in the worker.
  * Field extraction only uses symbolTable.lookupExactAll for optional type resolution —
  * returning [] causes the extractor to use the raw type string, which is fine for us.
@@ -1713,7 +1782,8 @@ const processFileGroup = (
         // MethodExtractor is available or the method isn't inside a class body.
         let enrichedByMethodExtractor = false;
         if (provider.methodExtractor && definitionNode) {
-          const classNode = findEnclosingClassNode(definitionNode);
+          const classNode =
+            findEnclosingClassNode(definitionNode) ?? findClassNodeByQualifiedName(definitionNode);
           if (classNode) {
             const methodMap = getMethodInfo(classNode, provider, {
               filePath: file.path,

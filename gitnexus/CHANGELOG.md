@@ -2,6 +2,45 @@
 
 All notable changes to GitNexus will be documented in this file.
 
+## [1.5.2] - 2026-04-01
+
+### Fixed
+- **`gitnexus-shared` module not found** — `gitnexus-shared` was a `file:` workspace dependency never published to npm, causing `ERR_MODULE_NOT_FOUND` when installing `gitnexus` globally. The build now bundles shared code into `dist/_shared/` and rewrites imports to relative paths (#613)
+- **v1.5.1 publish regression** — npm's `prepare` lifecycle ran `tsc` after `prepack`, overwriting the rewritten imports before packing; both scripts now run the full build so the final tarball is always correct
+
+## [1.5.1] - 2026-04-01 [YANKED]
+
+### Fixed
+- Incomplete fix for `gitnexus-shared` bundling — `prepare` script overwrote rewritten imports during publish
+
+## [1.5.0] - 2026-04-01
+
+### Added
+- **Repo landing screen** — when the backend detects indexed repositories, the web UI now shows a landing page with selectable repo cards (name, stats, indexed date) instead of auto-loading the first repo; users can also analyze new repos directly from the landing screen (#607)
+- **Unified web & CLI ingestion pipeline** — complete architectural migration of the web app from a self-contained WASM browser app to a thin client backed by the CLI server; new `gitnexus-shared` package for cross-package type unification (#536)
+  - New server endpoints: `/api/heartbeat` (SSE liveness), `/api/info`, `/api/repos`, `/api/file`, `/api/grep`, `/api/analyze` (SSE progress), `/api/embed`, `/api/mcp` (MCP-over-StreamableHTTP)
+  - Onboarding flow: auto-detect server → connect → repo landing or analyze
+  - Header repo dropdown: switch, re-analyze, or delete repos
+- **Azure OpenAI support for wiki command** — fixed broken Azure auth (`api-key` header), `api-version` URL parameter, reasoning model handling (`max_completion_tokens`, no `temperature`), content filter error messages; added interactive setup wizard, `--api-version` and `--reasoning-model` CLI flags (#562)
+- **Java method references & interface dispatch** — `obj::method` treated as call sites, overload selection via typed variable args (not just literals), interface dispatch emits additional CALLS edges to implementing classes (#540)
+- **MethodExtractor abstraction** — structured method metadata extraction (isAbstract, isFinal, annotations, visibility, parameter types) with config-driven factory pattern (#576)
+  - Java and Kotlin configs with overload-safe `methodInfoCache` keyed by `name:line`
+  - C# config with `sealed`, `params`/`out`/`ref`/optional parameters, `[Attribute]` syntax, `internal` visibility (#582)
+- **`--skip-agents-md` CLI flag** — opt out of overwriting GitNexus-managed sections in AGENTS.md and CLAUDE.md during `gitnexus analyze` (#517)
+- **Prettier** — monorepo-wide code formatter with lint-staged + Husky pre-commit hook, `.prettierrc` config, Tailwind CSS v4 plugin, `endOfLine: "lf"` + `.gitattributes` for Windows consistency (#563)
+- **ESLint v9** — flat config with `unused-imports` auto-removal, `@typescript-eslint` rules, React hooks rules, CI `lint` job (#564)
+
+### Fixed
+- **OpenCode MCP configuration** — corrected README MCP setup for OpenCode which requires `command` as an array containing both executable and arguments (#363)
+- **litellm security** — excluded vulnerable versions 1.82.7 and 1.82.8 in eval harness `pyproject.toml` (#580)
+
+### Changed
+- **Reduced explicit `any` types** — 128 `no-explicit-any` warnings eliminated (689 → 561, 19% reduction) across `NodeProperties` index signature, ~80 `SyntaxNode` substitutions, typed worker protocol, and graphology community detection (#566)
+
+### Docs
+- Added `gitnexus-shared` build step to web UI quick start instructions (#585)
+- Added enterprise offering section to README (#579)
+
 ## [1.4.10] - 2026-03-27
 
 ### Fixed

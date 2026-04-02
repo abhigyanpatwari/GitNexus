@@ -152,11 +152,11 @@ export async function callLLM(
     messages,
   };
 
-  if (reasoning) {
-    body.max_completion_tokens = config.maxTokens;
-    // Do NOT include temperature, top_p, presence_penalty, frequency_penalty
-  } else {
-    body.max_tokens = config.maxTokens;
+  // max_tokens is deprecated; use max_completion_tokens for all models
+  body.max_completion_tokens = config.maxTokens;
+
+  // Only send temperature for non-Azure providers — some Azure models reject non-default values
+  if (!reasoning && !azure && config.temperature !== undefined) {
     body.temperature = config.temperature;
   }
 

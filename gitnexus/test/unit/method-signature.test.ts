@@ -64,6 +64,31 @@ describe('extractMethodSignature', () => {
       expect(sig.parameterCount).toBe(1);
       expect(sig.returnType).toBeUndefined();
     });
+
+    it('skips TypeScript this-parameter (compile-time constraint)', () => {
+      parser.setLanguage(TypeScript.typescript);
+      const code = `class Handler {
+  handle(this: void, event: Event): void {}
+}`;
+      const tree = parser.parse(code);
+      const classNode = tree.rootNode.child(0)!;
+      const classBody = classNode.childForFieldName('body')!;
+      const methodNode = classBody.namedChild(0)!;
+
+      const sig = extractMethodSignature(methodNode);
+      // 'this' is not a real parameter — only 'event' should be counted
+      expect(sig.parameterCount).toBe(1);
+    });
+
+    it('skips this-parameter in top-level function', () => {
+      parser.setLanguage(TypeScript.typescript);
+      const code = `function onClick(this: HTMLElement, ev: MouseEvent): void {}`;
+      const tree = parser.parse(code);
+      const funcNode = tree.rootNode.child(0)!;
+
+      const sig = extractMethodSignature(funcNode);
+      expect(sig.parameterCount).toBe(1);
+    });
   });
 
   describe('Python', () => {

@@ -535,6 +535,153 @@ public:
   });
 });
 
+describe('HAS_METHOD integration — C++ virtual/static/constructor inline methods', () => {
+  beforeAll(async () => {
+    await loadLanguage(SupportedLanguages.CPlusPlus);
+  });
+
+  it('virtual, override, static, and constructor methods are captured from inline class body', () => {
+    const code = `
+class Shape {
+public:
+  Shape() {}
+  virtual ~Shape() {}
+  virtual double area() = 0;
+  static Shape* create();
+};
+
+class Circle : public Shape {
+public:
+  Circle(double r) : radius(r) {}
+  double area() override { return 3.14 * radius * radius; }
+private:
+  double radius;
+};
+`;
+    const results = parseAndExtractMethods(code, SupportedLanguages.CPlusPlus, 'src/shapes.h');
+
+    // Shape methods
+    const shapeCtor = results.find(
+      (r) => r.name === 'Shape' && r.enclosingClassId === 'Class:src/shapes.h:Shape',
+    );
+    expect(shapeCtor).toBeDefined();
+
+    const shapeDtor = results.find((r) => r.name === '~Shape');
+    expect(shapeDtor).toBeDefined();
+    expect(shapeDtor!.enclosingClassId).toBe('Class:src/shapes.h:Shape');
+
+    const area = results.find(
+      (r) => r.name === 'area' && r.enclosingClassId === 'Class:src/shapes.h:Shape',
+    );
+    expect(area).toBeDefined();
+
+    const create = results.find((r) => r.name === 'create');
+    expect(create).toBeDefined();
+    expect(create!.enclosingClassId).toBe('Class:src/shapes.h:Shape');
+
+    // Circle methods
+    const circleCtor = results.find(
+      (r) => r.name === 'Circle' && r.enclosingClassId === 'Class:src/shapes.h:Circle',
+    );
+    expect(circleCtor).toBeDefined();
+
+    const circleArea = results.find(
+      (r) => r.name === 'area' && r.enclosingClassId === 'Class:src/shapes.h:Circle',
+    );
+    expect(circleArea).toBeDefined();
+  });
+});
+
+describe('HAS_METHOD integration — TypeScript: abstract, interface, and #private methods', () => {
+  beforeAll(async () => {
+    await loadLanguage(SupportedLanguages.TypeScript, 'methods.ts');
+  });
+
+  it('abstract method signatures are captured and link to abstract class', () => {
+    const code = `
+abstract class Shape {
+  abstract area(): number;
+  describe(): string { return "shape"; }
+}
+`;
+    const results = parseAndExtractMethods(code, SupportedLanguages.TypeScript, 'src/shapes.ts');
+
+    const area = results.find((r) => r.name === 'area' && r.defType === 'definition.method');
+    expect(area).toBeDefined();
+    expect(area!.enclosingClassId).toBe('Class:src/shapes.ts:Shape');
+
+    const describe = results.find(
+      (r) => r.name === 'describe' && r.defType === 'definition.method',
+    );
+    expect(describe).toBeDefined();
+    expect(describe!.enclosingClassId).toBe('Class:src/shapes.ts:Shape');
+  });
+
+  it('interface method signatures are captured and link to interface', () => {
+    const code = `
+interface Printable {
+  print(format: string): void;
+  getLabel(): string;
+}
+`;
+    const results = parseAndExtractMethods(code, SupportedLanguages.TypeScript, 'src/printable.ts');
+
+    const print = results.find((r) => r.name === 'print' && r.defType === 'definition.method');
+    expect(print).toBeDefined();
+    expect(print!.enclosingClassId).toBe('Interface:src/printable.ts:Printable');
+
+    const getLabel = results.find(
+      (r) => r.name === 'getLabel' && r.defType === 'definition.method',
+    );
+    expect(getLabel).toBeDefined();
+    expect(getLabel!.enclosingClassId).toBe('Interface:src/printable.ts:Printable');
+  });
+
+  it('ES2022 #private methods are captured and link to class', () => {
+    const code = `
+class Vault {
+  #decrypt(data: string): string { return data; }
+  read(): string { return this.#decrypt("x"); }
+}
+`;
+    const results = parseAndExtractMethods(code, SupportedLanguages.TypeScript, 'src/vault.ts');
+
+    const decrypt = results.find((r) => r.name === '#decrypt');
+    expect(decrypt).toBeDefined();
+    expect(decrypt!.defType).toBe('definition.method');
+    expect(decrypt!.enclosingClassId).toBe('Class:src/vault.ts:Vault');
+
+    const read = results.find((r) => r.name === 'read');
+    expect(read).toBeDefined();
+    expect(read!.enclosingClassId).toBe('Class:src/vault.ts:Vault');
+  });
+});
+
+describe('HAS_METHOD integration — JavaScript: ES2022 #private methods', () => {
+  beforeAll(async () => {
+    await loadLanguage(SupportedLanguages.JavaScript);
+  });
+
+  it('#private methods are captured and link to class', () => {
+    const code = `
+class Encapsulated {
+  #internal() { return 42; }
+  expose() { return this.#internal(); }
+}
+`;
+    const results = parseAndExtractMethods(
+      code,
+      SupportedLanguages.JavaScript,
+      'src/encapsulated.js',
+    );
+
+    const internal = results.find((r) => r.name === '#internal');
+    expect(internal).toBeDefined();
+    expect(internal!.defType).toBe('definition.method');
+    expect(internal!.enclosingClassId).toBe('Class:src/encapsulated.js:Encapsulated');
+  });
+});
+
 describe('HAS_METHOD integration — C# struct and record', () => {
   beforeAll(async () => {
     await loadLanguage(SupportedLanguages.CSharp);

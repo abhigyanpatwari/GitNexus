@@ -1,9 +1,15 @@
 import { useState, useRef, useEffect } from 'react';
 import { Loader2, Check, Sparkles } from '@/lib/lucide-icons';
-import { connectToServer, fetchRepos, type ConnectResult } from '../services/backend-client';
+import {
+  connectToServer,
+  fetchRepos,
+  type ConnectResult,
+  type BackendRepo,
+} from '../services/backend-client';
 import { useBackend } from '../hooks/useBackend';
 import { OnboardingGuide } from './OnboardingGuide';
 import { AnalyzeOnboarding } from './AnalyzeOnboarding';
+import { RepoLanding } from './RepoLanding';
 
 interface DropZoneProps {
   onServerConnect?: (result: ConnectResult, serverUrl?: string) => void | Promise<void>;
@@ -144,75 +150,52 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
   const autoConnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Connection state
-  // 'analyze' = server up but zero repos indexed — show URL input
-  const [phase, setPhase] = useState<'onboarding' | 'analyze' | 'success' | 'loading'>(
+  // 'analyze'  = server up but zero repos indexed — show URL input
+  // 'landing'  = server up with indexed repos — show repo picker + analyze
+  const [phase, setPhase] = useState<'onboarding' | 'analyze' | 'landing' | 'success' | 'loading'>(
     'onboarding',
   );
   const [loadingMessage, setLoadingMessage] = useState('');
   const abortControllerRef = useRef<AbortController | null>(null);
+  const [detectedRepos, setDetectedRepos] = useState<BackendRepo[]>([]);
 
-  // Auto-connect to the detected server
+  // Auto-connect to the detected server — fetch repo list and show the
+  // appropriate screen (landing with repo cards, or analyze for zero repos).
   const handleAutoConnect = async () => {
     setPhase('loading');
     setLoadingMessage('Connecting...');
     setError(null);
 
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
-
     try {
-      // Check if the server has any indexed repos first
       const repos = await fetchRepos();
       if (repos.length === 0) {
-        // Server is up but has no repos — transition to the analyze UI
-        // instead of showing a generic error string.
         setPhase('analyze');
         autoConnectRan.current = false;
         return;
       }
 
-      const result = await connectToServer(
-        detectedBackendUrl,
-        (p, downloaded, total) => {
-          if (p === 'validating') {
-            setLoadingMessage('Validating server...');
-          } else if (p === 'downloading') {
-            const mb = (downloaded / (1024 * 1024)).toFixed(1);
-            const pct = total ? Math.round((downloaded / total) * 100) : null;
-            setLoadingMessage(pct ? `Downloading graph... ${pct}%` : `Downloading... ${mb} MB`);
-          } else if (p === 'extracting') {
-            setLoadingMessage('Processing graph...');
-          }
-        },
-        abortController.signal,
-      );
-
-      if (onServerConnect) {
-        await onServerConnect(result, detectedBackendUrl);
-      }
+      // Show landing screen so the user can choose which repo to explore
+      setDetectedRepos(repos);
+      setPhase('landing');
     } catch (err) {
       if ((err as Error).name === 'AbortError') return;
       const message = err instanceof Error ? err.message : 'Failed to connect';
       setError(message);
-      // Show error on the loading card — do NOT reset autoConnectRan while
-      // isConnected is still true, or the auto-connect effect will loop.
-      // The "server went away" branch handles the reset when isConnected drops.
       setPhase('onboarding');
-    } finally {
-      abortControllerRef.current = null;
     }
   };
 
   const handleAutoConnectRef = useRef(handleAutoConnect);
   handleAutoConnectRef.current = handleAutoConnect;
 
-  // Called by AnalyzeOnboarding when a new repo finishes indexing.
-  // Connects directly to the newly-analyzed repo by name.
-  const handleAnalyzeComplete = (repoName: string) => {
+  // Shared handler: connect to a specific repo by name (used by both repo
+  // card selection on the landing screen and post-analysis completion).
+  const connectToRepo = (repoName: string) => {
     autoConnectRan.current = true;
     setPhase('loading');
     setLoadingMessage('Loading graph...');
-    // Connect to the specific repo that was just analyzed
+    setError(null);
+
     (async () => {
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
@@ -220,9 +203,12 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
         const result = await connectToServer(
           detectedBackendUrl,
           (p, downloaded, total) => {
-            if (p === 'downloading') {
+            if (p === 'validating') {
+              setLoadingMessage('Validating server...');
+            } else if (p === 'downloading') {
               const pct = total ? Math.round((downloaded / total) * 100) : null;
-              setLoadingMessage(pct ? `Downloading graph... ${pct}%` : 'Downloading graph...');
+              const mb = (downloaded / (1024 * 1024)).toFixed(1);
+              setLoadingMessage(pct ? `Downloading graph... ${pct}%` : `Downloading... ${mb} MB`);
             } else if (p === 'extracting') {
               setLoadingMessage('Processing graph...');
             }
@@ -236,7 +222,7 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
       } catch (err) {
         if ((err as Error).name === 'AbortError') return;
         setError(err instanceof Error ? err.message : 'Failed to load graph');
-        setPhase('onboarding');
+        setPhase(detectedRepos.length > 0 ? 'landing' : 'analyze');
       } finally {
         abortControllerRef.current = null;
       }
@@ -314,7 +300,14 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
         {displayPhase && (
           <Crossfade activeKey={displayPhase}>
             {displayPhase === 'onboarding' && <OnboardingGuide isPolling={isPolling} />}
-            {displayPhase === 'analyze' && <AnalyzeOnboarding onComplete={handleAnalyzeComplete} />}
+            {displayPhase === 'analyze' && <AnalyzeOnboarding onComplete={connectToRepo} />}
+            {displayPhase === 'landing' && (
+              <RepoLanding
+                repos={detectedRepos}
+                onSelectRepo={connectToRepo}
+                onAnalyzeComplete={connectToRepo}
+              />
+            )}
             {displayPhase === 'success' && <SuccessCard />}
             {displayPhase === 'loading' && <LoadingCard message={loadingMessage} />}
           </Crossfade>

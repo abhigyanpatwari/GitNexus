@@ -511,6 +511,25 @@ describe('GenericFieldExtractor — TypeScript config', () => {
     expect(countField!.isStatic).toBe(false);
     expect(countField!.isReadonly).toBe(false);
   });
+
+  it('does not false-positive visibility on fields named after visibility keywords', () => {
+    parser.setLanguage(TypeScript.typescript);
+    // A class field literally named 'private' with no accessibility modifier —
+    // findVisibility must not confuse the name with a keyword
+    const tree = parser.parse(`
+      class Flags {
+        private: boolean;
+      }
+    `);
+    const classNode = tree.rootNode.child(0);
+    const result = extractor.extract(classNode!, mockContext);
+
+    expect(result).not.toBeNull();
+    expect(result!.fields).toHaveLength(1);
+    expect(result!.fields[0].name).toBe('private');
+    // Default visibility is public — the field NAME 'private' must not be treated as a keyword
+    expect(result!.fields[0].visibility).toBe('public');
+  });
 });
 
 // ---------------------------------------------------------------------------
