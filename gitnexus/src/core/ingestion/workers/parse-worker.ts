@@ -1817,6 +1817,40 @@ const processFileGroup = (
           }
         }
 
+        // For top-level methods (e.g. Go method_declaration), try extractFromNode
+        if (
+          !enrichedByMethodExtractor &&
+          provider.methodExtractor?.extractFromNode &&
+          definitionNode
+        ) {
+          const info = provider.methodExtractor.extractFromNode(definitionNode, {
+            filePath: file.path,
+            language,
+          });
+          if (info) {
+            enrichedByMethodExtractor = true;
+            parameterCount = info.parameters.length;
+            const types: string[] = [];
+            let optionalCount = 0;
+            for (const p of info.parameters) {
+              if (p.type !== null) types.push(p.type);
+              if (p.isOptional) optionalCount++;
+            }
+            parameterTypes = types.length > 0 ? types : undefined;
+            requiredParameterCount = optionalCount > 0 ? parameterCount - optionalCount : undefined;
+            returnType = info.returnType ?? undefined;
+            visibility = info.visibility;
+            isStatic = info.isStatic;
+            isAbstract = info.isAbstract;
+            isFinal = info.isFinal;
+            if (info.isVirtual) isVirtual = info.isVirtual;
+            if (info.isOverride) isOverride = info.isOverride;
+            if (info.isAsync) isAsync = info.isAsync;
+            if (info.isPartial) isPartial = info.isPartial;
+            if (info.annotations.length > 0) annotations = info.annotations;
+          }
+        }
+
         if (!enrichedByMethodExtractor) {
           const sig = extractMethodSignature(definitionNode);
           parameterCount = sig.parameterCount;

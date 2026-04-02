@@ -17,6 +17,8 @@ import { resolveGoImport } from '../import-resolvers/go.js';
 import { GO_QUERIES } from '../tree-sitter-queries.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { goConfig as goFieldConfig } from '../field-extractors/configs/go.js';
+import { createMethodExtractor } from '../method-extractors/generic.js';
+import { goMethodConfig } from '../method-extractors/configs/go.js';
 
 export const goProvider = defineLanguage({
   id: SupportedLanguages.Go,
@@ -27,4 +29,5 @@ export const goProvider = defineLanguage({
   importResolver: resolveGoImport,
   importSemantics: 'wildcard',
   fieldExtractor: createFieldExtractor(goFieldConfig),
+  methodExtractor: createMethodExtractor(goMethodConfig),
 });

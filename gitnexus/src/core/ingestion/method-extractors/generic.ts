@@ -37,15 +37,23 @@ export function createMethodExtractor(config: MethodExtractionConfig): MethodExt
     extract(node: SyntaxNode, context: MethodExtractorContext): ExtractedMethods | null {
       if (!typeDeclarationSet.has(node.type)) return null;
 
-      // Resolve owner name: field-based → type_identifier → simple_identifier → "Companion"
+      // Resolve owner name: config hook → field-based → type_identifier → simple_identifier → "Companion"
       let ownerName: string | undefined;
-      const nameField = node.childForFieldName('name');
+      if (config.extractOwnerName) {
+        ownerName = config.extractOwnerName(node);
+      }
+      const nameField = !ownerName ? node.childForFieldName('name') : undefined;
       if (nameField) {
         ownerName = nameField.text;
       } else {
         for (let i = 0; i < node.namedChildCount; i++) {
           const child = node.namedChild(i);
-          if (child && (child.type === 'type_identifier' || child.type === 'simple_identifier' || child.type === 'identifier')) {
+          if (
+            child &&
+            (child.type === 'type_identifier' ||
+              child.type === 'simple_identifier' ||
+              child.type === 'identifier')
+          ) {
             ownerName = child.text;
             break;
           }
@@ -70,6 +78,11 @@ export function createMethodExtractor(config: MethodExtractionConfig): MethodExt
       }
 
       return { ownerName, methods };
+    },
+
+    extractFromNode(node: SyntaxNode, context: MethodExtractorContext): MethodInfo | null {
+      if (!methodNodeSet.has(node.type)) return null;
+      return buildMethod(node, node, context, config);
     },
   };
 }

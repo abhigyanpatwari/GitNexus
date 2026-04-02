@@ -16,9 +16,11 @@ import { rustMethodConfig } from '../../src/core/ingestion/method-extractors/con
 import { dartMethodConfig } from '../../src/core/ingestion/method-extractors/configs/dart.js';
 import { phpMethodConfig } from '../../src/core/ingestion/method-extractors/configs/php.js';
 import { swiftMethodConfig } from '../../src/core/ingestion/method-extractors/configs/swift.js';
+import { goMethodConfig } from '../../src/core/ingestion/method-extractors/configs/go.js';
 import type { MethodExtractorContext } from '../../src/core/ingestion/method-types.js';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
+import Go from 'tree-sitter-go';
 import CSharp from 'tree-sitter-c-sharp';
 import CPP from 'tree-sitter-cpp';
 import TypeScript from 'tree-sitter-typescript';
@@ -4286,6 +4288,120 @@ class Child {
       expect(result!.methods).toHaveLength(1);
       expect(result!.methods[0].name).toBe('toString');
       expect(result!.methods[0].isOverride).toBe(true);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Go
+// ---------------------------------------------------------------------------
+
+const parseGo = (code: string) => {
+  parser.setLanguage(Go);
+  return parser.parse(code);
+};
+
+const goCtx: MethodExtractorContext = {
+  filePath: 'main.go',
+  language: SupportedLanguages.Go,
+};
+
+describe('Go MethodExtractor', () => {
+  const extractor = createMethodExtractor(goMethodConfig);
+
+  describe('extractFromNode', () => {
+    it('extracts method with receiver', () => {
+      const tree = parseGo(`
+package main
+
+func (r *Repo) Find(id int) error {
+    return nil
+}
+      `);
+      const methodNode = tree.rootNode.namedChildren.find((c) => c.type === 'method_declaration')!;
+      const info = extractor.extractFromNode!(methodNode, goCtx);
+
+      expect(info).not.toBeNull();
+      expect(info!.name).toBe('Find');
+      expect(info!.receiverType).toBe('Repo');
+      expect(info!.returnType).toBe('error');
+      expect(info!.visibility).toBe('public');
+      expect(info!.isStatic).toBe(false);
+      expect(info!.parameters).toHaveLength(1);
+      expect(info!.parameters[0]).toEqual({
+        name: 'id',
+        type: 'int',
+        isOptional: false,
+        isVariadic: false,
+      });
+    });
+
+    it('extracts function (no receiver) as static', () => {
+      const tree = parseGo(`
+package main
+
+func helper(msg string) {
+}
+      `);
+      const funcNode = tree.rootNode.namedChildren.find((c) => c.type === 'function_declaration')!;
+      const info = extractor.extractFromNode!(funcNode, goCtx);
+
+      expect(info).not.toBeNull();
+      expect(info!.name).toBe('helper');
+      expect(info!.receiverType).toBeNull();
+      expect(info!.isStatic).toBe(true);
+      expect(info!.visibility).toBe('private');
+    });
+
+    it('extracts multi-return type (first type)', () => {
+      const tree = parseGo(`
+package main
+
+func (s *Service) Get(id int) (User, error) {
+    return User{}, nil
+}
+      `);
+      const methodNode = tree.rootNode.namedChildren.find((c) => c.type === 'method_declaration')!;
+      const info = extractor.extractFromNode!(methodNode, goCtx);
+
+      expect(info!.returnType).toBe('User');
+    });
+
+    it('extracts variadic parameter', () => {
+      const tree = parseGo(`
+package main
+
+func Format(pattern string, args ...interface{}) string {
+    return ""
+}
+      `);
+      const funcNode = tree.rootNode.namedChildren.find((c) => c.type === 'function_declaration')!;
+      const info = extractor.extractFromNode!(funcNode, goCtx);
+
+      expect(info!.parameters).toHaveLength(2);
+      expect(info!.parameters[0]).toEqual({
+        name: 'pattern',
+        type: 'string',
+        isOptional: false,
+        isVariadic: false,
+      });
+      expect(info!.parameters[1].name).toBe('args');
+      expect(info!.parameters[1].isVariadic).toBe(true);
+    });
+
+    it('detects exported (uppercase) vs unexported (lowercase)', () => {
+      const tree = parseGo(`
+package main
+
+func PublicFunc() {}
+func privateFunc() {}
+      `);
+      const funcs = tree.rootNode.namedChildren.filter((c) => c.type === 'function_declaration');
+      const pub = extractor.extractFromNode!(funcs[0], goCtx);
+      const priv = extractor.extractFromNode!(funcs[1], goCtx);
+
+      expect(pub!.visibility).toBe('public');
+      expect(priv!.visibility).toBe('private');
     });
   });
 });

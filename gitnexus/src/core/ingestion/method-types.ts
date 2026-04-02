@@ -46,6 +46,8 @@ export interface MethodExtractor {
   language: SupportedLanguages;
   extract(node: SyntaxNode, context: MethodExtractorContext): ExtractedMethods | null;
   isTypeDeclaration(node: SyntaxNode): boolean;
+  /** Extract method info from a standalone method node (e.g. Go top-level method_declaration). */
+  extractFromNode?(node: SyntaxNode, context: MethodExtractorContext): MethodInfo | null;
 }
 
 export interface MethodExtractionConfig {
@@ -66,6 +68,8 @@ export interface MethodExtractionConfig {
   isOverride?: (node: SyntaxNode) => boolean;
   isAsync?: (node: SyntaxNode) => boolean;
   isPartial?: (node: SyntaxNode) => boolean;
+  /** Resolve the owner name from a standalone method node (e.g. Go receiver type). */
+  extractOwnerName?: (node: SyntaxNode) => string | undefined;
   /** Extract a primary constructor from the owner node itself (e.g. C# 12 class Point(int x, int y)). */
   extractPrimaryConstructor?: (
     ownerNode: SyntaxNode,
