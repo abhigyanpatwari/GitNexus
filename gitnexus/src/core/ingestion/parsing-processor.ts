@@ -6,7 +6,8 @@ import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
 import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
-import { getLanguageFromFilename } from 'gitnexus-shared';
+import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
+import { extractVueScript, isVueSetupTopLevel } from './vue-sfc-extractor.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import {
   getDefinitionNodeFromCaptures,
@@ -312,6 +313,18 @@ const processParsingSequential = async (
     // Skip files larger than the max tree-sitter buffer (32 MB)
     if (file.content.length > TREE_SITTER_MAX_BUFFER) continue;
 
+    // Vue SFC preprocessing: extract <script> block content
+    let parseContent = file.content;
+    let lineOffset = 0;
+    let isVueSetup = false;
+    if (language === SupportedLanguages.Vue) {
+      const extracted = extractVueScript(file.content);
+      if (!extracted) continue; // skip .vue files with no script block
+      parseContent = extracted.scriptContent;
+      lineOffset = extracted.lineOffset;
+      isVueSetup = extracted.isSetup;
+    }
+
     try {
       await loadLanguage(language, file.path);
     } catch {
@@ -320,8 +333,8 @@ const processParsingSequential = async (
 
     let tree;
     try {
-      tree = parser.parse(file.content, undefined, {
-        bufferSize: getTreeSitterBufferSize(file.content.length),
+      tree = parser.parse(parseContent, undefined, {
+        bufferSize: getTreeSitterBufferSize(parseContent.length),
       });
     } catch (parseError) {
       console.warn(`Skipping unparseable file: ${file.path}`);
@@ -369,10 +382,10 @@ const processParsingSequential = async (
 
       const definitionNodeForRange = getDefinitionNodeFromCaptures(captureMap);
       const startLine = definitionNodeForRange
-        ? definitionNodeForRange.startPosition.row
+        ? definitionNodeForRange.startPosition.row + lineOffset
         : nameNode
-          ? nameNode.startPosition.row
-          : 0;
+          ? nameNode.startPosition.row + lineOffset
+          : lineOffset;
       const definitionNode = getDefinitionNodeFromCaptures(captureMap);
 
       // Compute enclosing class BEFORE node ID — needed to qualify method IDs
@@ -468,14 +481,21 @@ const processParsingSequential = async (
         properties: {
           name: nodeName,
           filePath: file.path,
-          startLine: definitionNodeForRange ? definitionNodeForRange.startPosition.row : startLine,
-          endLine: definitionNodeForRange ? definitionNodeForRange.endPosition.row : startLine,
+          startLine: definitionNodeForRange
+            ? definitionNodeForRange.startPosition.row + lineOffset
+            : startLine,
+          endLine: definitionNodeForRange
+            ? definitionNodeForRange.endPosition.row + lineOffset
+            : startLine,
           language: language,
-          isExported: cachedExportCheck(
-            provider.exportChecker,
-            nameNode || definitionNodeForRange,
-            nodeName,
-          ),
+          isExported:
+            language === SupportedLanguages.Vue && isVueSetup
+              ? isVueSetupTopLevel(nameNode || definitionNodeForRange)
+              : cachedExportCheck(
+                  provider.exportChecker,
+                  nameNode || definitionNodeForRange,
+                  nodeName,
+                ),
           ...(frameworkHint
             ? {
                 astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
@@ -515,7 +535,7 @@ const processParsingSequential = async (
             }
           }
         }
-        // All 14 languages register a FieldExtractor — no fallback needed.
+        // All 15 tree-sitter languages register a FieldExtractor — no fallback needed.
       }
 
       // Apply field metadata to the graph node retroactively

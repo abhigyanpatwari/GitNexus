@@ -23,7 +23,7 @@ import {
   javascriptMethodConfig,
 } from '../method-extractors/configs/typescript-javascript.js';
 
-const BUILT_INS: ReadonlySet<string> = new Set([
+export const BUILT_INS: ReadonlySet<string> = new Set([
   'console',
   'log',
   'warn',

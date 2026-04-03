@@ -262,6 +262,80 @@ describe('Java receiver-constrained resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Method references: expr::method, Type::method, Type::new, this::m, super::m
+// ---------------------------------------------------------------------------
+
+describe('Java method-reference resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-method-reference'), () => {});
+  }, 60000);
+
+  it('resolves project method references to CALLS edges', () => {
+    const calls = getRelationships(result, 'CALLS');
+
+    expect(
+      calls.find(
+        (c) =>
+          c.source === 'mapViaInstanceBuilder' &&
+          c.target === 'buildResponse' &&
+          c.targetFilePath === 'models/ResponseBuilder.java',
+      ),
+    ).toBeDefined();
+
+    expect(
+      calls.find(
+        (c) =>
+          c.source === 'mapViaStaticUtil' &&
+          c.target === 'format' &&
+          c.targetFilePath === 'util/FormatUtil.java',
+      ),
+    ).toBeDefined();
+
+    expect(
+      calls.find(
+        (c) =>
+          c.source === 'mapUserNames' &&
+          c.target === 'getName' &&
+          c.targetFilePath === 'models/User.java',
+      ),
+    ).toBeDefined();
+
+    expect(
+      calls.find(
+        (c) =>
+          c.source === 'mapSaves' &&
+          c.target === 'saveOne' &&
+          c.targetFilePath === 'services/MethodRefService.java',
+      ),
+    ).toBeDefined();
+
+    expect(
+      calls.find(
+        (c) =>
+          c.source === 'wrapTransform' &&
+          c.target === 'transform' &&
+          c.targetFilePath === 'models/BaseHandler.java',
+      ),
+    ).toBeDefined();
+  });
+
+  it('resolves constructor references to Constructor nodes', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctorRef = calls.find(
+      (c) =>
+        c.source === 'mapNewUsers' &&
+        c.target === 'User' &&
+        c.targetFilePath === 'models/User.java',
+    );
+
+    expect(ctorRef).toBeDefined();
+    expect(ctorRef!.targetLabel).toBe('Constructor');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Named import disambiguation: two User classes, import resolves to correct one
 // ---------------------------------------------------------------------------
 

@@ -955,47 +955,19 @@ export const buildTypeEnv = (
       // This decouples type node capture from scopeEnv success — container types
       // (User[], []User, List[User]) that fail extractSimpleTypeName still get
       // their AST type node recorded for Strategy 1 for-loop resolution.
-      // Try direct extraction first (works for Go var_spec, Python assignment, Rust let_declaration).
-      // Try direct type field first, then unwrap wrapper nodes (C# field_declaration,
-      // local_declaration_statement wrap their type inside a variable_declaration child).
-      let typeNode = node.childForFieldName('type');
+      //
+      // Prefer language-specific locator when provided (keeps buildTypeEnv generic),
+      // then fall back to a small set of safe, cross-grammar heuristics.
+      let typeNode =
+        config.getDeclarationTypeNode?.(node) ?? node.childForFieldName('type') ?? null;
+      // Fallback: some grammars wrap type annotations in a `type_annotation` child
+      // instead of exposing a named `type` field on the declaration node.
       if (!typeNode) {
-        // C# field_declaration / local_declaration_statement wrap type inside variable_declaration.
-        // Use manual loop instead of namedChildren.find() to avoid array allocation on hot path.
-        let wrapped = node.childForFieldName('declaration');
-        if (!wrapped) {
-          for (let i = 0; i < node.namedChildCount; i++) {
-            const c = node.namedChild(i);
-            if (c?.type === 'variable_declaration') {
-              wrapped = c;
-              break;
-            }
-          }
-        }
-        if (wrapped) {
-          typeNode = wrapped.childForFieldName('type');
-          // Kotlin: variable_declaration stores the type as user_type / nullable_type
-          // child rather than a named 'type' field.
-          if (!typeNode) {
-            for (let i = 0; i < wrapped.namedChildCount; i++) {
-              const c = wrapped.namedChild(i);
-              if (c && (c.type === 'user_type' || c.type === 'nullable_type')) {
-                typeNode = c;
-                break;
-              }
-            }
-          }
-        }
-        // Swift: property_declaration has type_annotation as a direct child (not a 'type' field).
-        // Extract the inner type node (array_type, user_type, etc.) for declarationTypeNodes.
-        if (!typeNode) {
-          for (let i = 0; i < node.namedChildCount; i++) {
-            const c = node.namedChild(i);
-            if (c?.type === 'type_annotation') {
-              // Use the inner type (array_type, user_type) rather than the annotation wrapper
-              typeNode = c.firstNamedChild ?? c;
-              break;
-            }
+        for (let i = 0; i < node.namedChildCount; i++) {
+          const c = node.namedChild(i);
+          if (c?.type === 'type_annotation') {
+            typeNode = c.firstNamedChild ?? c;
+            break;
           }
         }
       }

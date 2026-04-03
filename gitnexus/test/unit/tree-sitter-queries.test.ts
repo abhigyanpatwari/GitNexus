@@ -101,6 +101,10 @@ describe('tree-sitter queries', () => {
       expect(JAVA_QUERIES).toContain('@heritage.extends');
       expect(JAVA_QUERIES).toContain('@heritage.implements');
     });
+
+    it('captures method references as calls', () => {
+      expect(JAVA_QUERIES).toContain('(method_reference) @call');
+    });
   });
 
   describe('C queries', () => {
