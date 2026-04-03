@@ -8,6 +8,8 @@ import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
 import { GrpcExtractor } from './extractors/grpc-extractor.js';
 import { TopicExtractor } from './extractors/topic-extractor.js';
 import { ManifestExtractor } from './extractors/manifest-extractor.js';
+import { CodeDepExtractor } from './extractors/code-dep-extractor.js';
+import { readNpmManifest } from './extractors/manifest-reader.js';
 import { runExactMatch } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
@@ -97,6 +99,32 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     dbExecutors = new Map<string, CypherExecutor>();
     const openPoolIds: string[] = [];
 
+    // Build package map for code-dep extraction (auto-discover when config.packages is empty)
+    let packageMap = new Map<string, string>();
+    if (config.detect.shared_libs) {
+      const hasExplicitPackages =
+        Object.keys(config.packages).length > 0 &&
+        Object.values(config.packages).some((v) => Object.keys(v).length > 0);
+      if (hasExplicitPackages) {
+        // Flatten nested packages: { repoPath: { pkgName: groupPath } }
+        for (const pkgMapping of Object.values(config.packages)) {
+          for (const [pkgName, groupPath] of Object.entries(pkgMapping)) {
+            packageMap.set(pkgName, groupPath);
+          }
+        }
+      } else {
+        // Auto-discover: read each repo's manifest to build the map
+        for (const [groupPath, regName] of Object.entries(config.repos)) {
+          const entry = entries.find((e) => e.name === regName);
+          if (!entry) continue;
+          const manifest = readNpmManifest(entry.path);
+          if (manifest) {
+            packageMap.set(manifest.packageName, groupPath);
+          }
+        }
+      }
+    }
+
     try {
       for (const [groupPath, regName] of Object.entries(config.repos)) {
         const handle = await resolve(regName, groupPath);
@@ -142,6 +170,20 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
 
           if (config.detect.topics) {
             const extracted = await topicEx.extract(executor, handle.repoPath, handle);
+            for (const c of extracted) {
+              autoContracts.push({
+                ...c,
+                repo: groupPath,
+                service: assignService(c.symbolRef.filePath, boundaries),
+              });
+            }
+          }
+
+          if (config.detect.shared_libs && packageMap.size > 0) {
+            const manifest = readNpmManifest(handle.repoPath);
+            const ownPkgName = manifest?.packageName ?? null;
+            const codeDepEx = new CodeDepExtractor(packageMap, ownPkgName);
+            const extracted = await codeDepEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
               autoContracts.push({
                 ...c,
