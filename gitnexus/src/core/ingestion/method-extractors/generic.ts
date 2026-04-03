@@ -16,8 +16,8 @@ import type {
   MethodInfo,
 } from '../method-types.js';
 
-/** Owner node types where member functions are effectively static (JVM semantics). */
-const STATIC_OWNER_TYPES = new Set(['companion_object', 'object_declaration']);
+/** Owner node types where member functions are effectively static (JVM/Ruby semantics). */
+const STATIC_OWNER_TYPES = new Set(['companion_object', 'object_declaration', 'singleton_class']);
 
 /**
  * Create a MethodExtractor from a declarative config.
@@ -117,10 +117,17 @@ function findBodies(node: SyntaxNode, bodyNodeSet: Set<string>): SyntaxNode[] {
   return result;
 }
 
-function addNestedBodies(parent: SyntaxNode, bodyNodeSet: Set<string>, out: SyntaxNode[]): void {
+function addNestedBodies(
+  parent: SyntaxNode,
+  bodyNodeSet: Set<string>,
+  out: SyntaxNode[],
+  seen?: Set<SyntaxNode>,
+): void {
+  const visited = seen ?? new Set(out);
   for (let i = 0; i < parent.namedChildCount; i++) {
     const child = parent.namedChild(i);
-    if (child && bodyNodeSet.has(child.type) && !out.includes(child)) {
+    if (child && bodyNodeSet.has(child.type) && !visited.has(child)) {
+      visited.add(child);
       out.push(child);
     }
   }

@@ -260,8 +260,11 @@ function extractSwiftAnnotations(node: SyntaxNode): string[] {
 export const swiftMethodConfig: MethodExtractionConfig = {
   language: SupportedLanguages.Swift,
 
-  // tree-sitter-swift uses class_declaration for classes, structs, enums, extensions, actors.
-  // protocol_declaration is separate.
+  // tree-sitter-swift 0.6.0 may use class_declaration for classes, structs, enums, extensions,
+  // and actors — but this cannot be verified until the grammar installs on Node 22+.
+  // TODO: Verify struct_declaration, enum_declaration, extension_declaration, actor_declaration
+  // node types once tree-sitter-swift loads on Node 22, and add them here if they are distinct.
+  // protocol_declaration is a separate, confirmed node type.
   typeDeclarationNodes: ['class_declaration', 'protocol_declaration'],
 
   // function_declaration for class/struct methods, protocol_function_declaration for protocol methods

@@ -1,5 +1,5 @@
 // gitnexus/src/core/ingestion/method-extractors/configs/ruby.ts
-// Verified against tree-sitter-ruby ^0.23.1
+// Verified against tree-sitter-ruby 0.23.1
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type {
@@ -141,9 +141,25 @@ function extractRubyParameters(node: SyntaxNode): ParameterInfo[] {
 
 export const rubyMethodConfig: MethodExtractionConfig = {
   language: SupportedLanguages.Ruby,
-  typeDeclarationNodes: ['class', 'module'],
+  typeDeclarationNodes: ['class', 'module', 'singleton_class'],
   methodNodeTypes: ['method', 'singleton_method'],
   bodyNodeTypes: ['body_statement'],
+
+  extractOwnerName(node) {
+    // singleton_class (class << self) inherits the enclosing class/module name
+    if (node.type === 'singleton_class') {
+      let ancestor = node.parent;
+      while (ancestor) {
+        if (ancestor.type === 'class' || ancestor.type === 'module') {
+          const nameNode = ancestor.childForFieldName('name');
+          return nameNode?.text;
+        }
+        ancestor = ancestor.parent;
+      }
+      return undefined;
+    }
+    return undefined; // use default resolution for class/module
+  },
 
   extractName(node) {
     const nameNode = node.childForFieldName('name');
@@ -180,7 +196,7 @@ export const rubyMethodConfig: MethodExtractionConfig = {
     return false;
   },
 
-  isAbstract(_node) {
+  isAbstract(_node, _ownerNode) {
     return false; // Ruby has no abstract methods
   },
 

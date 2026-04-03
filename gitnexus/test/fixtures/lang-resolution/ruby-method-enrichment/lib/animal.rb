@@ -7,6 +7,12 @@ class Animal
     "mammal"
   end
 
+  class << self
+    def from_habitat(habitat)
+      new
+    end
+  end
+
   private
 
   def internal_state

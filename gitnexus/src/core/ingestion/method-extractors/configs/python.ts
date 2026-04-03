@@ -261,7 +261,7 @@ export const pythonMethodConfig: MethodExtractionConfig = {
     return hasDecorator(node, 'staticmethod') || hasDecorator(node, 'classmethod');
   },
 
-  isAbstract(node) {
+  isAbstract(node, _ownerNode) {
     return hasDecorator(node, 'abstractmethod');
   },
 

@@ -216,6 +216,13 @@ const cachedExportCheck = (
 // FieldExtractor cache for sequential path — same pattern as parse-worker.ts
 const seqFieldInfoCache = new Map<number, Map<string, FieldInfo>>();
 
+// MethodExtractor cache for sequential path — avoids re-traversing the same class
+// body once per method. Keyed on classNode.id (tree-sitter node identity number).
+const seqMethodExtractCache = new Map<
+  number,
+  { ownerName: string | undefined; methods: MethodInfo[] } | null
+>();
+
 function seqFindEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
   let current = node.parent;
   while (current) {
@@ -297,6 +304,7 @@ const processParsingSequential = async (
     classInfoCache.clear();
     exportCache.clear();
     seqFieldInfoCache.clear();
+    seqMethodExtractCache.clear();
 
     onFileProgress?.(i + 1, total, file.path);
 
@@ -425,10 +433,20 @@ const processParsingSequential = async (
           // Try class-based extraction (method inside a class/struct/trait body)
           const classNode = seqFindEnclosingClassNode(definitionNode);
           if (classNode) {
-            const result = provider.methodExtractor.extract(classNode, {
-              filePath: file.path,
-              language,
-            });
+            // Cache extract() results per class node to avoid re-traversing the
+            // same class body for every method it contains (O(N) -> O(1) per hit).
+            let result:
+              | { ownerName: string | undefined; methods: MethodInfo[] }
+              | null
+              | undefined = seqMethodExtractCache.get(classNode.id);
+            if (result === undefined) {
+              result =
+                provider.methodExtractor.extract(classNode, {
+                  filePath: file.path,
+                  language,
+                }) ?? null;
+              seqMethodExtractCache.set(classNode.id, result);
+            }
             if (result?.methods?.length) {
               const defLine = definitionNode.startPosition.row + 1;
               const info = result.methods.find((m) => m.name === nodeName && m.line === defLine);

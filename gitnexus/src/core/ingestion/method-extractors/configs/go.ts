@@ -176,7 +176,7 @@ export const goMethodConfig: MethodExtractionConfig = {
     return node.type === 'function_declaration';
   },
 
-  isAbstract(node) {
+  isAbstract(node, _ownerNode) {
     // Go interface method signatures (method_elem) are abstract — no body
     return node.type === 'method_elem';
   },

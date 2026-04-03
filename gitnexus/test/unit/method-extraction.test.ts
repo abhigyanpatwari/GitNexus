@@ -2826,6 +2826,21 @@ describe('Ruby MethodExtractor', () => {
       const tree = parseRuby('def foo; end');
       expect(extractor.isTypeDeclaration(tree.rootNode.child(0)!)).toBe(false);
     });
+
+    it('recognizes singleton_class (class << self)', () => {
+      const tree = parseRuby(`
+class Foo
+  class << self
+    def bar; end
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      // singleton_class is a child of body_statement
+      const bodyStmt = classNode.namedChildren.find((c) => c.type === 'body_statement')!;
+      const singletonClass = bodyStmt.namedChildren.find((c) => c.type === 'singleton_class')!;
+      expect(extractor.isTypeDeclaration(singletonClass)).toBe(true);
+    });
   });
 
   describe('visibility modifiers', () => {
@@ -2923,6 +2938,86 @@ end
 
       expect(result!.methods[0].name).toBe('class_method');
       expect(result!.methods[0].isStatic).toBe(true);
+    });
+  });
+
+  describe('singleton_class (class << self)', () => {
+    it('extracts methods from class << self as static', () => {
+      const tree = parseRuby(`
+class Foo
+  class << self
+    def from_string(s)
+    end
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const bodyStmt = classNode.namedChildren.find((c) => c.type === 'body_statement')!;
+      const singletonClass = bodyStmt.namedChildren.find((c) => c.type === 'singleton_class')!;
+      const result = extractor.extract(singletonClass, rubyCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('Foo');
+      expect(result!.methods).toHaveLength(1);
+      expect(result!.methods[0].name).toBe('from_string');
+      expect(result!.methods[0].isStatic).toBe(true);
+      expect(result!.methods[0].parameters).toHaveLength(1);
+      expect(result!.methods[0].parameters[0].name).toBe('s');
+    });
+
+    it('extracts multiple methods from class << self', () => {
+      const tree = parseRuby(`
+class Bar
+  class << self
+    def create
+    end
+
+    def build(name)
+    end
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const bodyStmt = classNode.namedChildren.find((c) => c.type === 'body_statement')!;
+      const singletonClass = bodyStmt.namedChildren.find((c) => c.type === 'singleton_class')!;
+      const result = extractor.extract(singletonClass, rubyCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.ownerName).toBe('Bar');
+      expect(result!.methods).toHaveLength(2);
+      expect(result!.methods[0].name).toBe('create');
+      expect(result!.methods[0].isStatic).toBe(true);
+      expect(result!.methods[1].name).toBe('build');
+      expect(result!.methods[1].isStatic).toBe(true);
+    });
+
+    it('respects visibility modifiers inside class << self', () => {
+      const tree = parseRuby(`
+class Baz
+  class << self
+    def public_class_method
+    end
+
+    private
+
+    def private_class_method
+    end
+  end
+end
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const bodyStmt = classNode.namedChildren.find((c) => c.type === 'body_statement')!;
+      const singletonClass = bodyStmt.namedChildren.find((c) => c.type === 'singleton_class')!;
+      const result = extractor.extract(singletonClass, rubyCtx);
+
+      expect(result).not.toBeNull();
+      expect(result!.methods).toHaveLength(2);
+      expect(result!.methods[0].name).toBe('public_class_method');
+      expect(result!.methods[0].visibility).toBe('public');
+      expect(result!.methods[0].isStatic).toBe(true);
+      expect(result!.methods[1].name).toBe('private_class_method');
+      expect(result!.methods[1].visibility).toBe('private');
+      expect(result!.methods[1].isStatic).toBe(true);
     });
   });
 

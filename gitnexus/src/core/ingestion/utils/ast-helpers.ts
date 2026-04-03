@@ -103,7 +103,14 @@ export const FUNCTION_DECLARATION_TYPES = new Set([
   'function_item',
 ]);
 
-/** AST node types that represent a class-like container (for HAS_METHOD edge extraction) */
+/**
+ * AST node types that represent a class-like container (for HAS_METHOD edge extraction).
+ *
+ * INVARIANT: When a language config adds a new node type to `typeDeclarationNodes`,
+ * that type must also be added here AND to `CONTAINER_TYPE_TO_LABEL` below,
+ * otherwise `findEnclosingClassNode` won't recognize it and methods may get
+ * orphaned HAS_METHOD edges or incorrect labels.
+ */
 export const CLASS_CONTAINER_TYPES = new Set([
   'class_declaration',
   'abstract_class_declaration',
@@ -118,6 +125,8 @@ export const CLASS_CONTAINER_TYPES = new Set([
   'enum_item',
   'class_definition',
   'trait_declaration',
+  // PHP
+  'enum_declaration',
   'protocol_declaration',
   // Dart
   'mixin_declaration',
@@ -125,6 +134,7 @@ export const CLASS_CONTAINER_TYPES = new Set([
   // Ruby
   'class',
   'module',
+  'singleton_class', // Ruby: class << self
   // Kotlin
   'object_declaration',
   'companion_object',
@@ -143,10 +153,14 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   struct_item: 'Struct',
   enum_item: 'Enum',
   trait_declaration: 'Trait',
+  enum_declaration: 'Enum',
   record_declaration: 'Record',
   protocol_declaration: 'Interface',
+  mixin_declaration: 'Mixin',
+  extension_declaration: 'Extension',
   class: 'Class',
   module: 'Module',
+  singleton_class: 'Class', // Ruby: class << self inherits enclosing class name
   object_declaration: 'Class',
   companion_object: 'Class',
 };
@@ -263,13 +277,20 @@ export const findEnclosingClassInfo = (
     }
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
       // Rust impl_item: for `impl Trait for Struct {}`, pick the type after `for`
+      // NOTE: This impl_item ownership logic is duplicated in rust.ts:extractOwnerName.
+      // If modifying this block, update the other location too.
       if (current.type === 'impl_item') {
         const children = current.children ?? [];
         const forIdx = children.findIndex((c: SyntaxNode) => c.text === 'for');
         if (forIdx !== -1) {
           const nameNode = children
             .slice(forIdx + 1)
-            .find((c: SyntaxNode) => c.type === 'type_identifier' || c.type === 'identifier');
+            .find(
+              (c: SyntaxNode) =>
+                c.type === 'type_identifier' ||
+                c.type === 'scoped_type_identifier' ||
+                c.type === 'identifier',
+            );
           if (nameNode) {
             return {
               classId: generateId('Struct', `${filePath}:${nameNode.text}`),

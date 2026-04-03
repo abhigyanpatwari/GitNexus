@@ -1302,16 +1302,53 @@ export class LocalBackend {
       return cats;
     };
 
+    // Method/Function/Constructor enrichment: fetch method-specific properties
+    const symKind = isClassLike ? resolvedLabel || 'Class' : sym.type || sym[2];
+    const isMethodLike =
+      symKind === 'Method' || symKind === 'Function' || symKind === 'Constructor';
+    let methodMetadata: Record<string, unknown> | undefined;
+    if (isMethodLike) {
+      try {
+        const metaRows = await executeParameterized(
+          repo.id,
+          `
+          MATCH (n {id: $symId})
+          RETURN n.visibility AS visibility, n.isStatic AS isStatic, n.isAbstract AS isAbstract,
+                 n.isFinal AS isFinal, n.isVirtual AS isVirtual, n.isOverride AS isOverride,
+                 n.isAsync AS isAsync, n.isPartial AS isPartial, n.returnType AS returnType,
+                 n.parameterCount AS parameterCount, n.isVariadic AS isVariadic,
+                 n.requiredParameterCount AS requiredParameterCount,
+                 n.parameterTypes AS parameterTypes, n.annotations AS annotations
+          LIMIT 1
+        `,
+          { symId },
+        );
+        if (metaRows.length > 0) {
+          const row = metaRows[0];
+          const meta: Record<string, unknown> = {};
+          // Only include defined properties to distinguish "not applicable" from "not enriched"
+          for (const key of Object.keys(row)) {
+            const val = row[key];
+            if (val !== null && val !== undefined) meta[key] = val;
+          }
+          if (Object.keys(meta).length > 0) methodMetadata = meta;
+        }
+      } catch {
+        /* method metadata unavailable — omit silently */
+      }
+    }
+
     return {
       status: 'found',
       symbol: {
         uid: sym.id || sym[0],
         name: sym.name || sym[1],
-        kind: isClassLike ? resolvedLabel || 'Class' : sym.type || sym[2],
+        kind: symKind,
         filePath: sym.filePath || sym[3],
         startLine: sym.startLine || sym[4],
         endLine: sym.endLine || sym[5],
         ...(include_content && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
+        ...(methodMetadata ? { methodMetadata } : {}),
       },
       incoming: categorize(incomingRows),
       outgoing: categorize(outgoingRows),

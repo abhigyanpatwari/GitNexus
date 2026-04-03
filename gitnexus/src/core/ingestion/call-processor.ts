@@ -248,6 +248,11 @@ const findEnclosingFunction = (
             const match = resolved.candidates.find((c) => c.ownerId === classInfo.classId);
             if (match) return match.nodeId;
           }
+          if (process.env.NODE_ENV === 'development' && classInfo) {
+            console.warn(
+              `[CallProcessor] Enclosing class '${classInfo.className}' found but no candidate matched — falling back to ${resolved.candidates[0].nodeId}`,
+            );
+          }
           return resolved.candidates[0].nodeId;
         }
 
@@ -277,6 +282,11 @@ const findEnclosingFunction = (
           if (classInfo) {
             const match = resolved.candidates.find((c) => c.ownerId === classInfo.classId);
             if (match) return match.nodeId;
+          }
+          if (process.env.NODE_ENV === 'development' && classInfo) {
+            console.warn(
+              `[CallProcessor] Enclosing class '${classInfo.className}' found but no candidate matched — falling back to ${resolved.candidates[0].nodeId}`,
+            );
           }
           return resolved.candidates[0].nodeId;
         }
