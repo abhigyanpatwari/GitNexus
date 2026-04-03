@@ -10,11 +10,19 @@
 import { describe, it, expect } from 'vitest';
 import { GITNEXUS_TOOLS } from '../../src/mcp/tools.js';
 
-const GROUP_TOOLS = new Set(['group_list', 'group_sync']);
+const GROUP_TOOLS = new Set([
+  'group_list',
+  'group_sync',
+  'group_contracts',
+  'group_query',
+  'group_status',
+  'group_graph',
+  'group_discover',
+]);
 
 describe('GITNEXUS_TOOLS', () => {
-  it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact + 2 group)', () => {
-    expect(GITNEXUS_TOOLS).toHaveLength(13);
+  it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact + 7 group)', () => {
+    expect(GITNEXUS_TOOLS).toHaveLength(18);
   });
 
   it('contains all expected tool names', () => {
