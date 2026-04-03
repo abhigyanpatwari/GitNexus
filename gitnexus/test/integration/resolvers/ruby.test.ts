@@ -1124,15 +1124,19 @@ describe('Ruby method enrichment (visibility, isStatic, parameters)', () => {
     const methods = getNodesByLabel(result, 'Method');
     expect(methods).toContain('speak');
     expect(methods).toContain('classify');
+    expect(methods).toContain('from_habitat');
     expect(methods).toContain('internal_state');
     expect(methods).toContain('energy_level');
   });
 
   it('emits HAS_METHOD edges for Animal and Dog', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
-    // Animal has speak, classify, internal_state
+    // Animal has speak, classify, from_habitat, internal_state
     expect(hasMethod.find((e) => e.source === 'Animal' && e.target === 'speak')).toBeDefined();
     expect(hasMethod.find((e) => e.source === 'Animal' && e.target === 'classify')).toBeDefined();
+    expect(
+      hasMethod.find((e) => e.source === 'Animal' && e.target === 'from_habitat'),
+    ).toBeDefined();
     expect(
       hasMethod.find((e) => e.source === 'Animal' && e.target === 'internal_state'),
     ).toBeDefined();
@@ -1174,6 +1178,29 @@ describe('Ruby method enrichment (visibility, isStatic, parameters)', () => {
     if (classify!.properties.isStatic !== undefined) {
       expect(classify!.properties.isStatic).toBe(true);
     }
+  });
+
+  it('marks from_habitat (class << self) as static and public (when enriched)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const fromHabitat = methods.find(
+      (m) => m.name === 'from_habitat' && m.properties.filePath?.includes('animal'),
+    );
+    expect(fromHabitat).toBeDefined();
+    if (fromHabitat!.properties.isStatic !== undefined) {
+      expect(fromHabitat!.properties.isStatic).toBe(true);
+    }
+    if (fromHabitat!.properties.visibility !== undefined) {
+      expect(fromHabitat!.properties.visibility).toBe('public');
+    }
+  });
+
+  it('extracts parameterCount for from_habitat(habitat)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const fromHabitat = methods.find(
+      (m) => m.name === 'from_habitat' && m.properties.filePath?.includes('animal'),
+    );
+    expect(fromHabitat).toBeDefined();
+    expect(fromHabitat!.properties.parameterCount).toBe(1);
   });
 
   it('marks speak as public (when enriched)', () => {

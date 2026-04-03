@@ -306,6 +306,27 @@ export const findEnclosingClassInfo = (
           };
         }
       }
+
+      // Ruby singleton_class (class << self): walk up to the enclosing class/module
+      // to inherit its name. singleton_class has no name field — its receiver is
+      // `self` (node type 'self'), not 'identifier' or 'constant'.
+      if (current.type === 'singleton_class') {
+        let ancestor = current.parent;
+        while (ancestor) {
+          if (ancestor.type === 'class' || ancestor.type === 'module') {
+            const classNameNode = ancestor.childForFieldName?.('name');
+            if (classNameNode) {
+              return {
+                classId: generateId('Class', `${filePath}:${classNameNode.text}`),
+                className: classNameNode.text,
+              };
+            }
+          }
+          ancestor = ancestor.parent;
+        }
+        // No enclosing class/module — skip singleton_class and keep walking up
+      }
+
       const nameNode =
         current.childForFieldName?.('name') ??
         current.children?.find(

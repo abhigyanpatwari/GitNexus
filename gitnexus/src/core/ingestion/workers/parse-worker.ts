@@ -352,6 +352,12 @@ function findEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
   let current = node.parent;
   while (current) {
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
+      // Ruby singleton_class (class << self) has no name field — walk up to
+      // the enclosing class/module so the caller gets a node with a findable name.
+      if (current.type === 'singleton_class') {
+        current = current.parent;
+        continue;
+      }
       return current;
     }
     current = current.parent;
