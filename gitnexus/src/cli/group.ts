@@ -24,34 +24,51 @@ export function registerGroupCommands(program: Command): void {
   group
     .command('auto-discover [directory]')
     .description(
-      'Auto-discover indexed repos in a directory and create a group with code-level dependency detection',
+      'Auto-discover indexed repos in a directory, or create a group from explicit repo paths',
     )
     .option('--name <name>', 'Group name', 'workspace')
+    .option('--repos <paths...>', 'Explicit repo paths (instead of scanning a directory)')
     .option('--force', 'Overwrite existing group')
     .option('--skip-sync', 'Create group without running sync')
     .option('--json', 'JSON output')
     .action(
       async (
         directory: string | undefined,
-        opts: { name: string; force?: boolean; skipSync?: boolean; json?: boolean },
+        opts: { name: string; repos?: string[]; force?: boolean; skipSync?: boolean; json?: boolean },
       ) => {
         const pathMod = await import('node:path');
         const { LocalBackend } = await import('../mcp/local/local-backend.js');
 
-        const resolvedDir = pathMod.resolve(directory || process.cwd());
         const backend = new LocalBackend();
         try {
           await backend.init();
-          console.log(
-            `Discovering indexed repos in ${resolvedDir}...\n`,
-          );
 
-          const raw = await backend.getGroupService().groupDiscover({
-            directory: resolvedDir,
-            name: opts.name,
-            force: Boolean(opts.force),
-            skipSync: Boolean(opts.skipSync),
-          });
+          let raw: unknown;
+          if (opts.repos && opts.repos.length > 0) {
+            // Explicit repo paths mode
+            const resolvedPaths = opts.repos.map((p) => pathMod.resolve(p));
+            console.log(
+              `Creating group from ${resolvedPaths.length} repos...\n`,
+            );
+            raw = await backend.getGroupService().groupDiscover({
+              repoPaths: resolvedPaths,
+              name: opts.name,
+              force: Boolean(opts.force),
+              skipSync: Boolean(opts.skipSync),
+            });
+          } else {
+            // Directory scan mode
+            const resolvedDir = pathMod.resolve(directory || process.cwd());
+            console.log(
+              `Discovering indexed repos in ${resolvedDir}...\n`,
+            );
+            raw = await backend.getGroupService().groupDiscover({
+              directory: resolvedDir,
+              name: opts.name,
+              force: Boolean(opts.force),
+              skipSync: Boolean(opts.skipSync),
+            });
+          }
 
           const result = raw as {
             error?: string;

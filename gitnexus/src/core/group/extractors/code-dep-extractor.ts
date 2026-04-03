@@ -112,7 +112,6 @@ export class CodeDepExtractor implements ContractExtractor {
 
     for (const imp of imports) {
       if (imp.isNamespaceImport) {
-        // import * as X from 'pkg' — wildcard consumer
         const contractId = `lib::${imp.packageName}::*`;
         const key = `${contractId}|${imp.filePath}`;
         if (seen.has(key)) continue;
@@ -137,7 +136,6 @@ export class CodeDepExtractor implements ContractExtractor {
       }
 
       if (imp.importedSymbols.length > 0) {
-        // Named imports — one contract per symbol
         for (const symbol of imp.importedSymbols) {
           const contractId = `lib::${imp.packageName}::${symbol}`;
           const key = `${contractId}|${imp.filePath}`;
@@ -161,7 +159,6 @@ export class CodeDepExtractor implements ContractExtractor {
           });
         }
       } else if (imp.isDefaultImport) {
-        // Default import — uses the package's default export
         const contractId = `lib::${imp.packageName}::default`;
         const key = `${contractId}|${imp.filePath}`;
         if (seen.has(key)) continue;
@@ -183,7 +180,6 @@ export class CodeDepExtractor implements ContractExtractor {
           },
         });
       }
-      // Side-effect imports (no symbols, no default) are skipped — no symbol contract to create
     }
 
     return contracts;

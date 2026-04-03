@@ -175,7 +175,7 @@ console.log(formatDate(new Date()));`,
   it('returns error when directory param is missing', async () => {
     const service = new GroupService(makeMockPort());
     const result = (await service.groupDiscover({})) as { error: string };
-    expect(result.error).toBe('directory is required');
+    expect(result.error).toBe('directory or repoPaths is required');
   });
 
   it('skips non-indexed subdirectories', async () => {

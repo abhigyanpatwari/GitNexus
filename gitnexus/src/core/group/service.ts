@@ -682,19 +682,12 @@ export class GroupService {
    */
   async groupDiscover(params: Record<string, unknown>): Promise<unknown> {
     const directory = typeof params.directory === 'string' ? params.directory.trim() : '';
+    const repoPaths = Array.isArray(params.repoPaths) ? (params.repoPaths as string[]) : [];
     const groupName = typeof params.name === 'string' ? params.name.trim() : 'workspace';
     const force = Boolean(params.force);
     const skipSync = Boolean(params.skipSync);
 
-    if (!directory) return { error: 'directory is required' };
-
-    // List subdirectories and find indexed repos
-    let entries: import('node:fs').Dirent[];
-    try {
-      entries = await fsp.readdir(directory, { withFileTypes: true });
-    } catch {
-      return { error: `Cannot read directory: ${directory}` };
-    }
+    if (!directory && repoPaths.length === 0) return { error: 'directory or repoPaths is required' };
 
     const repos: Record<string, string> = {};
     const packages: Record<string, Record<string, string>> = {};
@@ -704,51 +697,101 @@ export class GroupService {
       packageName: string | null;
     }> = [];
 
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
+    if (repoPaths.length > 0) {
+      // Explicit repo paths mode
+      for (const repoPath of repoPaths) {
+        const resolvedPath = path.resolve(repoPath);
+        const metaPath = path.join(resolvedPath, '.gitnexus', 'meta.json');
 
-      const repoPath = path.join(directory, entry.name);
-      const metaPath = path.join(repoPath, '.gitnexus', 'meta.json');
-
-      let metaExists = false;
-      try {
-        await fsp.access(metaPath);
-        metaExists = true;
-      } catch {
-        // Not indexed
-      }
-      if (!metaExists) continue;
-
-      // Find the registry name for this repo
-      let registryName: string | null = null;
-      try {
-        const repoHandle = await this.port.resolveRepo(entry.name);
-        registryName = repoHandle.name;
-      } catch {
-        // Try resolving by path
+        let metaExists = false;
         try {
-          const repoHandle = await this.port.resolveRepo(repoPath);
+          await fsp.access(metaPath);
+          metaExists = true;
+        } catch {
+          // Not indexed
+        }
+        if (!metaExists) {
+          return { error: `Repo at ${resolvedPath} is not indexed. Run 'gitnexus analyze' there first.` };
+        }
+
+        const dirName = path.basename(resolvedPath);
+        let registryName: string | null = null;
+        try {
+          const repoHandle = await this.port.resolveRepo(dirName);
           registryName = repoHandle.name;
         } catch {
-          // Use directory name as fallback
-          registryName = entry.name;
+          try {
+            const repoHandle = await this.port.resolveRepo(resolvedPath);
+            registryName = repoHandle.name;
+          } catch {
+            registryName = dirName;
+          }
         }
+
+        repos[dirName] = registryName;
+
+        const manifest = readNpmManifest(resolvedPath);
+        discoveredRepos.push({
+          name: registryName,
+          path: resolvedPath,
+          packageName: manifest?.packageName ?? null,
+        });
+      }
+    } else {
+      // Directory scan mode
+      let entries: import('node:fs').Dirent[];
+      try {
+        entries = await fsp.readdir(directory, { withFileTypes: true });
+      } catch {
+        return { error: `Cannot read directory: ${directory}` };
       }
 
-      const groupPath = entry.name;
-      repos[groupPath] = registryName;
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
 
-      // Read package manifest for auto-discovery
-      const manifest = readNpmManifest(repoPath);
-      discoveredRepos.push({
-        name: registryName,
-        path: repoPath,
-        packageName: manifest?.packageName ?? null,
-      });
-    }
+        const repoPath = path.join(directory, entry.name);
+        const metaPath = path.join(repoPath, '.gitnexus', 'meta.json');
+
+        let metaExists = false;
+        try {
+          await fsp.access(metaPath);
+          metaExists = true;
+        } catch {
+          // Not indexed
+        }
+        if (!metaExists) continue;
+
+        // Find the registry name for this repo
+        let registryName: string | null = null;
+        try {
+          const repoHandle = await this.port.resolveRepo(entry.name);
+          registryName = repoHandle.name;
+        } catch {
+          // Try resolving by path
+          try {
+            const repoHandle = await this.port.resolveRepo(repoPath);
+            registryName = repoHandle.name;
+          } catch {
+            // Use directory name as fallback
+            registryName = entry.name;
+          }
+        }
+
+        const groupPath = entry.name;
+        repos[groupPath] = registryName;
+
+        // Read package manifest for auto-discovery
+        const manifest = readNpmManifest(repoPath);
+        discoveredRepos.push({
+          name: registryName,
+          path: repoPath,
+          packageName: manifest?.packageName ?? null,
+        });
+      }
+    } // end else (directory scan mode)
 
     if (Object.keys(repos).length === 0) {
-      return { error: `No indexed repos found in ${directory}. Run 'gitnexus analyze' in each repo first.` };
+      return { error: `No indexed repos found. Run 'gitnexus analyze' in each repo first.` };
     }
 
     // Build packages mapping from discovered manifests

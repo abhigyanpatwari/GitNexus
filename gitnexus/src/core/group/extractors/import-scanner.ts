@@ -17,18 +17,9 @@ export interface ScannedImport {
   isDefaultImport: boolean;
 }
 
-// ES import patterns
-// Named: import { Foo, Bar } from 'pkg'
-// Default: import Foo from 'pkg'
-// Namespace: import * as Foo from 'pkg'
-// Side-effect: import 'pkg'
-// Re-export: export { Foo } from 'pkg'
 const ES_IMPORT_RE =
   /(?:import\s+(?:(\*\s+as\s+\w+)\s+from|(\w+)(?:\s*,\s*\{([^}]*)\})?\s+from|(?:type\s+)?\{([^}]*)\}\s+from)\s*['"]([^'"]+)['"]|import\s+['"]([^'"]+)['"]|export\s+(?:type\s+)?\{[^}]*\}\s+from\s+['"]([^'"]+)['"])/g;
 
-// CommonJS require patterns
-// const { Foo } = require('pkg')
-// const Foo = require('pkg')
 const CJS_REQUIRE_RE =
   /(?:const|let|var)\s+(?:(\w+)|\{([^}]*)\})\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
 
@@ -93,17 +84,16 @@ export function scanFileForImports(
     const { packageName, subpath } = splitPackageSpecifier(specifier);
     if (!targetPackages.has(packageName)) continue;
 
-    const isNamespaceImport = !!match[1]; // import * as X
-    const isDefaultImport = !!match[2]; // import X from
-    const namedFromDefault = match[3] || ''; // import X, { Y, Z } from
-    const namedOnly = match[4] || ''; // import { Y, Z } from
+    const isNamespaceImport = !!match[1];
+    const isDefaultImport = !!match[2];
+    const namedFromDefault = match[3] || '';
+    const namedOnly = match[4] || '';
 
     const importedSymbols = [
       ...parseNamedImports(namedFromDefault),
       ...parseNamedImports(namedOnly),
     ];
 
-    // Side-effect import (match[6]) — no symbols
     const isSideEffect = !!match[6];
 
     results.push({
@@ -125,8 +115,8 @@ export function scanFileForImports(
     const { packageName, subpath } = splitPackageSpecifier(specifier);
     if (!targetPackages.has(packageName)) continue;
 
-    const defaultName = match[1]; // const X = require(...)
-    const destructured = match[2]; // const { X, Y } = require(...)
+    const defaultName = match[1];
+    const destructured = match[2];
 
     const importedSymbols = destructured ? parseNamedImports(destructured) : [];
     const isDefaultImport = !!defaultName;

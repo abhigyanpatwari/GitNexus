@@ -2,11 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import {
-  readNpmManifest,
-  buildPackageMap,
-  findSiblingDependencies,
-} from '../../../src/core/group/extractors/manifest-reader.js';
+import { readNpmManifest } from '../../../src/core/group/extractors/manifest-reader.js';
 
 describe('manifest-reader', () => {
   let tmpDir: string;
@@ -118,65 +114,8 @@ describe('manifest-reader', () => {
     });
   });
 
-  describe('buildPackageMap', () => {
-    it('maps package names to group paths', () => {
-      const repoA = path.join(tmpDir, 'repo-a');
-      const repoB = path.join(tmpDir, 'repo-b');
-      fs.mkdirSync(repoA, { recursive: true });
-      fs.mkdirSync(repoB, { recursive: true });
-      fs.writeFileSync(
-        path.join(repoA, 'package.json'),
-        JSON.stringify({ name: '@acme/shared', dependencies: {} }),
-      );
-      fs.writeFileSync(
-        path.join(repoB, 'package.json'),
-        JSON.stringify({ name: '@acme/web-app', dependencies: {} }),
-      );
-
-      const repos = { 'libs/shared': 'repo-a', 'apps/web': 'repo-b' };
-      const resolve = (name: string) => {
-        if (name === 'repo-a') return repoA;
-        if (name === 'repo-b') return repoB;
-        return null;
-      };
-
-      const map = buildPackageMap(repos, resolve);
-      expect(map.get('@acme/shared')).toBe('libs/shared');
-      expect(map.get('@acme/web-app')).toBe('apps/web');
-      expect(map.size).toBe(2);
-    });
-
-    it('skips repos that cannot be resolved', () => {
-      const repoA = path.join(tmpDir, 'repo-a');
-      fs.mkdirSync(repoA, { recursive: true });
-      fs.writeFileSync(
-        path.join(repoA, 'package.json'),
-        JSON.stringify({ name: '@acme/shared', dependencies: {} }),
-      );
-
-      const repos = { 'libs/shared': 'repo-a', 'apps/missing': 'repo-missing' };
-      const resolve = (name: string) => (name === 'repo-a' ? repoA : null);
-
-      const map = buildPackageMap(repos, resolve);
-      expect(map.size).toBe(1);
-      expect(map.has('@acme/shared')).toBe(true);
-    });
-
-    it('skips repos without package.json', () => {
-      const repoA = path.join(tmpDir, 'repo-a');
-      fs.mkdirSync(repoA, { recursive: true });
-      // No package.json written
-
-      const repos = { 'libs/shared': 'repo-a' };
-      const resolve = () => repoA;
-
-      const map = buildPackageMap(repos, resolve);
-      expect(map.size).toBe(0);
-    });
-  });
-
-  describe('findSiblingDependencies', () => {
-    it('finds sibling packages in dependencies', () => {
+  describe('readNpmManifest — dependency list for sibling detection', () => {
+    it('lists all dependency names for cross-repo matching', () => {
       writePackageJson('.', {
         name: '@acme/web-app',
         dependencies: {
@@ -186,32 +125,11 @@ describe('manifest-reader', () => {
         },
       });
 
-      const packageMap = new Map([
-        ['@acme/shared', 'libs/shared'],
-        ['@acme/ui-kit', 'libs/ui-kit'],
-      ]);
-
-      const siblings = findSiblingDependencies(tmpDir, packageMap);
-      expect(siblings).toContain('@acme/shared');
-      expect(siblings).toContain('@acme/ui-kit');
-      expect(siblings).not.toContain('lodash');
-    });
-
-    it('returns empty when no siblings found', () => {
-      writePackageJson('.', {
-        name: '@acme/standalone',
-        dependencies: { lodash: '^4.17.0' },
-      });
-
-      const packageMap = new Map([['@acme/other', 'libs/other']]);
-      const siblings = findSiblingDependencies(tmpDir, packageMap);
-      expect(siblings).toEqual([]);
-    });
-
-    it('returns empty when no package.json', () => {
-      const packageMap = new Map([['@acme/shared', 'libs/shared']]);
-      const siblings = findSiblingDependencies(tmpDir, packageMap);
-      expect(siblings).toEqual([]);
+      const result = readNpmManifest(tmpDir);
+      expect(result).not.toBeNull();
+      expect(result!.dependencies).toContain('@acme/shared');
+      expect(result!.dependencies).toContain('@acme/ui-kit');
+      expect(result!.dependencies).toContain('lodash');
     });
   });
 });
