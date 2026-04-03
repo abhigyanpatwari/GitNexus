@@ -209,33 +209,42 @@ export function getLabelFromCaptures(
   return 'CodeElement';
 }
 
-/** Walk up AST to find enclosing class/struct/interface/impl, return its generateId or null.
+/** Enclosing class info: both the generated node ID and the bare class name. */
+export interface EnclosingClassInfo {
+  classId: string; // e.g. "Class:animal.dart:Animal"
+  className: string; // e.g. "Animal"
+}
+
+/** Walk up AST to find enclosing class/struct/interface/impl, return its ID and name.
  *  For Go method_declaration nodes, extracts receiver type (e.g. `func (u *User) Save()` → User struct). */
-export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string | null => {
+export const findEnclosingClassInfo = (
+  node: SyntaxNode,
+  filePath: string,
+): EnclosingClassInfo | null => {
   let current = node.parent;
   while (current) {
     // Go: method_declaration has a receiver parameter with the struct type
     if (current.type === 'method_declaration') {
       const receiver = current.childForFieldName?.('receiver');
       if (receiver) {
-        // receiver is a parameter_list: (u *User) or (u User)
         const paramDecl = receiver.namedChildren?.find?.(
           (c: SyntaxNode) => c.type === 'parameter_declaration',
         );
         if (paramDecl) {
           const typeNode = paramDecl.childForFieldName?.('type');
           if (typeNode) {
-            // Unwrap pointer_type (*User → User)
             const inner = typeNode.type === 'pointer_type' ? typeNode.firstNamedChild : typeNode;
             if (inner && (inner.type === 'type_identifier' || inner.type === 'identifier')) {
-              return generateId('Struct', `${filePath}:${inner.text}`);
+              return {
+                classId: generateId('Struct', `${filePath}:${inner.text}`),
+                className: inner.text,
+              };
             }
           }
         }
       }
     }
     // Go: type_declaration wrapping a struct_type (type User struct { ... })
-    // field_declaration → field_declaration_list → struct_type → type_spec → type_declaration
     if (current.type === 'type_declaration') {
       const typeSpec = current.children?.find((c: SyntaxNode) => c.type === 'type_spec');
       if (typeSpec) {
@@ -244,7 +253,10 @@ export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string
           const nameNode = typeSpec.childForFieldName?.('name');
           if (nameNode) {
             const label = typeBody.type === 'struct_type' ? 'Struct' : 'Interface';
-            return generateId(label, `${filePath}:${nameNode.text}`);
+            return {
+              classId: generateId(label, `${filePath}:${nameNode.text}`),
+              className: nameNode.text,
+            };
           }
         }
       }
@@ -255,19 +267,22 @@ export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string
         const children = current.children ?? [];
         const forIdx = children.findIndex((c: SyntaxNode) => c.text === 'for');
         if (forIdx !== -1) {
-          // impl Trait for Struct — attribute to the Struct node (no Impl node exists
-          // for trait impls because the tree-sitter query uses !trait filter)
           const nameNode = children
             .slice(forIdx + 1)
             .find((c: SyntaxNode) => c.type === 'type_identifier' || c.type === 'identifier');
           if (nameNode) {
-            return generateId('Struct', `${filePath}:${nameNode.text}`);
+            return {
+              classId: generateId('Struct', `${filePath}:${nameNode.text}`),
+              className: nameNode.text,
+            };
           }
         }
-        // Plain `impl Struct {}` — use Impl label (definition.impl creates an Impl node)
         const firstType = children.find((c: SyntaxNode) => c.type === 'type_identifier');
         if (firstType) {
-          return generateId('Impl', `${filePath}:${firstType.text}`);
+          return {
+            classId: generateId('Impl', `${filePath}:${firstType.text}`),
+            className: firstType.text,
+          };
         }
       }
       const nameNode =
@@ -281,12 +296,20 @@ export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string
         );
       if (nameNode) {
         const label = CONTAINER_TYPE_TO_LABEL[current.type] || 'Class';
-        return generateId(label, `${filePath}:${nameNode.text}`);
+        return {
+          classId: generateId(label, `${filePath}:${nameNode.text}`),
+          className: nameNode.text,
+        };
       }
     }
     current = current.parent;
   }
   return null;
+};
+
+/** Convenience wrapper: returns just the class ID string (backward compat). */
+export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string | null => {
+  return findEnclosingClassInfo(node, filePath)?.classId ?? null;
 };
 
 /**

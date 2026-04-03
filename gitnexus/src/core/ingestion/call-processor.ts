@@ -1242,10 +1242,14 @@ const resolveCallTarget = (
 /** Extract the function name from a scope key ("funcName@startIndex" → "funcName"). */
 const extractFuncNameFromScope = (scope: string): string => scope.slice(0, scope.indexOf('@'));
 
-/** Extract the trailing function name from a sourceId ("Function:filepath:funcName" → "funcName"). */
+/** Extract the bare function name from a sourceId.
+ *  Handles both unqualified ("Function:filepath:funcName" → "funcName")
+ *  and qualified ("Function:filepath:ClassName.funcName" → "funcName"). */
 const extractFuncNameFromSourceId = (sourceId: string): string => {
   const lastColon = sourceId.lastIndexOf(':');
-  return lastColon >= 0 ? sourceId.slice(lastColon + 1) : '';
+  const segment = lastColon >= 0 ? sourceId.slice(lastColon + 1) : '';
+  const dotIdx = segment.lastIndexOf('.');
+  return dotIdx >= 0 ? segment.slice(dotIdx + 1) : segment;
 };
 
 /**

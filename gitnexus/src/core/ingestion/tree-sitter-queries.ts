@@ -634,6 +634,7 @@ export const CSHARP_QUERIES = `
 export const RUST_QUERIES = `
 ; Functions & Items
 (function_item name: (identifier) @name) @definition.function
+(function_signature_item name: (identifier) @name) @definition.function
 (struct_item name: (type_identifier) @name) @definition.struct
 (enum_item name: (type_identifier) @name) @definition.enum
 (trait_item name: (type_identifier) @name) @definition.trait

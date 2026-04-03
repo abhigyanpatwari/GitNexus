@@ -10,11 +10,12 @@ import { getLanguageFromFilename } from 'gitnexus-shared';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import {
   getDefinitionNodeFromCaptures,
-  findEnclosingClassId,
+  findEnclosingClassInfo,
   extractMethodSignature,
   getLabelFromCaptures,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
+  type EnclosingClassInfo,
 } from './utils/ast-helpers.js';
 import { detectFrameworkFromAST } from './framework-detection.js';
 import { buildTypeEnv } from './type-env.js';
@@ -185,14 +186,17 @@ const processParsingWithWorkers = async (
 
 // Inline caches to avoid repeated parent-walks per node (same pattern as parse-worker.ts).
 // Keyed by tree-sitter node reference — cleared at the start of each file.
-const classIdCache = new Map<SyntaxNode, string | null>();
+const classInfoCache = new Map<SyntaxNode, EnclosingClassInfo | null>();
 const exportCache = new Map<SyntaxNode, boolean>();
 
-const cachedFindEnclosingClassId = (node: SyntaxNode, filePath: string): string | null => {
-  const cached = classIdCache.get(node);
+const cachedFindEnclosingClassInfo = (
+  node: SyntaxNode,
+  filePath: string,
+): EnclosingClassInfo | null => {
+  const cached = classInfoCache.get(node);
   if (cached !== undefined) return cached;
-  const result = findEnclosingClassId(node, filePath);
-  classIdCache.set(node, result);
+  const result = findEnclosingClassInfo(node, filePath);
+  classInfoCache.set(node, result);
   return result;
 };
 
@@ -287,7 +291,7 @@ const processParsingSequential = async (
     const file = files[i];
 
     // Reset memoization before each new file (node refs are per-tree)
-    classIdCache.clear();
+    classInfoCache.clear();
     exportCache.clear();
     seqFieldInfoCache.clear();
 
@@ -369,9 +373,25 @@ const processParsingSequential = async (
         : nameNode
           ? nameNode.startPosition.row
           : 0;
-      const nodeId = generateId(nodeLabel, `${file.path}:${nodeName}`);
-
       const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+
+      // Compute enclosing class BEFORE node ID — needed to qualify method IDs
+      const needsOwner =
+        nodeLabel === 'Method' ||
+        nodeLabel === 'Constructor' ||
+        nodeLabel === 'Property' ||
+        nodeLabel === 'Function';
+      const enclosingClassInfo = needsOwner
+        ? cachedFindEnclosingClassInfo(nameNode || definitionNodeForRange, file.path)
+        : null;
+      const enclosingClassId = enclosingClassInfo?.classId ?? null;
+
+      // Qualify method/property IDs with enclosing class name to avoid collisions
+      // e.g. "Method:animal.dart:Animal.speak" vs "Method:animal.dart:Dog.speak"
+      const qualifiedName = enclosingClassInfo
+        ? `${enclosingClassInfo.className}.${nodeName}`
+        : nodeName;
+      const nodeId = generateId(nodeLabel, `${file.path}:${qualifiedName}`);
       const frameworkHint = definitionNode
         ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
         : null;
@@ -468,16 +488,7 @@ const processParsingSequential = async (
 
       graph.addNode(node);
 
-      // Compute enclosing class for Method/Constructor/Property/Function — used for both ownerId and HAS_METHOD
-      // Function is included because Kotlin/Rust/Python capture class methods as Function nodes
-      const needsOwner =
-        nodeLabel === 'Method' ||
-        nodeLabel === 'Constructor' ||
-        nodeLabel === 'Property' ||
-        nodeLabel === 'Function';
-      const enclosingClassId = needsOwner
-        ? cachedFindEnclosingClassId(nameNode || definitionNodeForRange, file.path)
-        : null;
+      // enclosingClassId already computed above (before nodeId generation)
 
       // Extract declared type and field metadata for Property nodes
       let declaredType: string | undefined;

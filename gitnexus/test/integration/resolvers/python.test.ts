@@ -856,14 +856,12 @@ describe('Python static/classmethod class resolution (issue #289)', () => {
   });
 
   it('resolves find_user() via class-as-receiver for static method calls', () => {
-    // UserService.find_user() and AdminService.find_user() are both resolved because
-    // the class name (UserService / AdminService) is used as the receiver type for
-    // disambiguation. Both find_user methods share the same nodeId (same file, same name)
-    // so exactly 1 CALLS edge is emitted — which is correct (not ambiguous, not missing).
+    // With qualified IDs, UserService.find_user and AdminService.find_user are distinct
+    // nodes — so both CALLS edges are correctly emitted (no ID collision).
     const calls = getRelationships(result, 'CALLS');
     const findCalls = calls.filter((c) => c.target === 'find_user' && c.source === 'process');
-    expect(findCalls.length).toBe(1);
-    expect(findCalls[0].targetFilePath).toContain('service.py');
+    expect(findCalls.length).toBe(2);
+    expect(findCalls.every((c) => c.targetFilePath.includes('service.py'))).toBe(true);
   });
 });
 
