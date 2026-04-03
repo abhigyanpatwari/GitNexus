@@ -523,7 +523,10 @@ const findEnclosingFunctionId = (
           const override = provider.labelOverride(current, label);
           if (override !== null) finalLabel = override;
         }
-        const result = generateId(finalLabel, `${filePath}:${funcName}`);
+        // Qualify with enclosing class to match definition-phase node IDs
+        const classInfo = cachedFindEnclosingClassInfo(current, filePath);
+        const qualifiedName = classInfo ? `${classInfo.className}.${funcName}` : funcName;
+        const result = generateId(finalLabel, `${filePath}:${qualifiedName}`);
         functionIdCache.set(node, result);
         return result;
       }
@@ -539,7 +542,15 @@ const findEnclosingFunctionId = (
           const override = provider.labelOverride(current.previousSibling, finalLabel);
           if (override !== null) finalLabel = override;
         }
-        const result = generateId(finalLabel, `${filePath}:${customResult.funcName}`);
+        // Qualify custom result with enclosing class
+        const classInfo = cachedFindEnclosingClassInfo(
+          current.previousSibling ?? current,
+          filePath,
+        );
+        const qualifiedName = classInfo
+          ? `${classInfo.className}.${customResult.funcName}`
+          : customResult.funcName;
+        const result = generateId(finalLabel, `${filePath}:${qualifiedName}`);
         functionIdCache.set(node, result);
         return result;
       }
