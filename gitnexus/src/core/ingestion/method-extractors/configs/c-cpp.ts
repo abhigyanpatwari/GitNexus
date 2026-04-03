@@ -87,7 +87,7 @@ function extractCppMethodName(node: SyntaxNode): string | undefined {
 function extractCppReturnType(node: SyntaxNode): string | undefined {
   const typeNode = node.childForFieldName('type');
   if (typeNode) {
-    const typeText = extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
+    const typeText = typeNode.text?.trim();
     // C++11 trailing return type: `auto foo() -> ReturnType`
     // When the declared type is `auto`, check for a trailing_return_type on the
     // function_declarator which holds the actual return type.
@@ -99,7 +99,7 @@ function extractCppReturnType(node: SyntaxNode): string | undefined {
           if (child?.type === 'trailing_return_type') {
             // trailing_return_type contains a type_descriptor with the real type
             const typeDesc = child.firstNamedChild;
-            if (typeDesc) return extractSimpleTypeName(typeDesc) ?? typeDesc.text?.trim();
+            if (typeDesc) return typeDesc.text?.trim();
           }
         }
       }
@@ -115,7 +115,7 @@ function extractCppReturnType(node: SyntaxNode): string | undefined {
       first.type === 'sized_type_specifier' ||
       first.type === 'template_type')
   ) {
-    return extractSimpleTypeName(first) ?? first.text?.trim();
+    return first.text?.trim();
   }
   return undefined;
 }
@@ -194,6 +194,24 @@ function extractCppParameters(node: SyntaxNode): ParameterInfo[] {
       }
     }
   }
+
+  // C/C++: bare `...` token in parameter list is an unnamed child (not a named node).
+  // Check all children for the unnamed `...` token when no variadic was detected above.
+  if (!params.some((p) => p.isVariadic)) {
+    for (let i = 0; i < paramList.childCount; i++) {
+      const child = paramList.child(i);
+      if (child && !child.isNamed && child.text === '...') {
+        params.push({
+          name: '...',
+          type: null,
+          isOptional: false,
+          isVariadic: true,
+        });
+        break;
+      }
+    }
+  }
+
   return params;
 }
 

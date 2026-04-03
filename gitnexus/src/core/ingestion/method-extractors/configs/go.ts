@@ -36,7 +36,7 @@ function extractGoReturnType(node: SyntaxNode): string | undefined {
 
   // Single return type (type_identifier, pointer_type, etc.)
   if (result.type !== 'parameter_list') {
-    return extractSimpleTypeName(result) ?? result.text?.trim();
+    return result.text?.trim();
   }
 
   // Multi-return: (Type, error) — extract first parameter's type
@@ -44,7 +44,7 @@ function extractGoReturnType(node: SyntaxNode): string | undefined {
     const param = result.namedChild(i);
     if (param?.type === 'parameter_declaration') {
       const typeNode = param.childForFieldName('type');
-      if (typeNode) return extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
+      if (typeNode) return typeNode.text?.trim();
     }
   }
   return undefined;

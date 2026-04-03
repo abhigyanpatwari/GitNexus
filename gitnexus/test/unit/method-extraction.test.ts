@@ -1560,7 +1560,7 @@ describe('TypeScript MethodExtractor', () => {
 
       expect(result!.methods[0].isAsync).toBe(true);
       expect(result!.methods[0].name).toBe('fetch');
-      expect(result!.methods[0].returnType).toBe('Promise');
+      expect(result!.methods[0].returnType).toBe('Promise<Response>');
     });
 
     it('extracts constructor', () => {
@@ -1644,7 +1644,7 @@ describe('TypeScript MethodExtractor', () => {
 
       expect(result!.methods).toHaveLength(1);
       expect(result!.methods[0].name).toBe('items');
-      expect(result!.methods[0].returnType).toBe('Generator');
+      expect(result!.methods[0].returnType).toBe('Generator<number>');
     });
 
     it('extracts async generator method with isAsync true', () => {
@@ -1659,7 +1659,7 @@ describe('TypeScript MethodExtractor', () => {
       expect(result!.methods).toHaveLength(1);
       expect(result!.methods[0].name).toBe('values');
       expect(result!.methods[0].isAsync).toBe(true);
-      expect(result!.methods[0].returnType).toBe('AsyncGenerator');
+      expect(result!.methods[0].returnType).toBe('AsyncGenerator<number>');
     });
 
     it('extracts computed property name with brackets', () => {

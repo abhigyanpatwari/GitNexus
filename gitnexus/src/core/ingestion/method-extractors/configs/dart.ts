@@ -141,7 +141,7 @@ function extractDartReturnType(node: SyntaxNode): string | undefined {
   for (let i = 0; i < inner.namedChildCount; i++) {
     const child = inner.namedChild(i);
     if (child && TYPE_NODE_TYPES.has(child.type)) {
-      return extractSimpleTypeName(child) ?? child.text?.trim();
+      return child.text?.trim();
     }
   }
 

@@ -73,7 +73,7 @@ function extractPhpReturnType(node: SyntaxNode): string | undefined {
     }
     // After the parameters node, look for the colon and then the type
     if (seenParams && child.isNamed && TYPE_NODE_TYPES.has(child.type)) {
-      return extractSimpleTypeName(child) ?? child.text?.trim();
+      return child.text?.trim();
     }
     // Stop at body or semicolon
     if (child.type === 'compound_statement' || (!child.isNamed && child.text === ';')) {
@@ -227,11 +227,23 @@ export const phpMethodConfig: MethodExtractionConfig = {
 
   isAbstract(node, ownerNode) {
     if (hasModifierNode(node, 'abstract_modifier')) return true;
-    // Interface methods are implicitly abstract when they have no body
-    if (ownerNode.type === 'interface_declaration') {
+    // Interface methods are implicitly abstract when they have no body.
+    // Check ownerNode first, then fall back to walking the parent chain
+    // (needed when called from extractFromNode where ownerNode === node).
+    let isInterface = ownerNode.type === 'interface_declaration';
+    if (!isInterface) {
+      let p = node.parent;
+      while (p) {
+        if (p.type === 'interface_declaration') {
+          isInterface = true;
+          break;
+        }
+        p = p.parent;
+      }
+    }
+    if (isInterface) {
       const body = node.childForFieldName('body');
       if (body) return false;
-      // Also check for compound_statement child (not exposed as field in PHP)
       for (let i = 0; i < node.namedChildCount; i++) {
         if (node.namedChild(i)?.type === 'compound_statement') return false;
       }

@@ -215,7 +215,9 @@ function extractPythonReturnType(node: SyntaxNode): string | undefined {
   const funcNode = unwrapDecorated(node);
   const returnType = funcNode.childForFieldName('return_type');
   if (!returnType) return undefined;
-  return extractSimpleTypeName(returnType) ?? returnType.text?.trim();
+  // Use .text to preserve full generic types (e.g. list[User], Dict[str, User])
+  // that the call resolver needs for for-loop iterable and return-type inference.
+  return returnType.text?.trim();
 }
 
 /**

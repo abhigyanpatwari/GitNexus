@@ -229,13 +229,15 @@ function seqFindEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
 function buildMethodProps(info: MethodInfo): Record<string, unknown> {
   const types: string[] = [];
   let optionalCount = 0;
+  let hasVariadic = false;
   for (const p of info.parameters) {
     if (p.type !== null) types.push(p.type);
     if (p.isOptional) optionalCount++;
+    if (p.isVariadic) hasVariadic = true;
   }
   return {
-    parameterCount: info.parameters.length,
-    ...(optionalCount > 0
+    parameterCount: hasVariadic ? undefined : info.parameters.length,
+    ...(!hasVariadic && optionalCount > 0
       ? { requiredParameterCount: info.parameters.length - optionalCount }
       : {}),
     ...(types.length > 0 ? { parameterTypes: types } : {}),

@@ -19,7 +19,9 @@ const INTERFACE_OWNER_TYPES = new Set(['interface_declaration', 'annotation_type
 function extractReturnTypeFromField(node: SyntaxNode): string | undefined {
   const typeNode = node.childForFieldName('type');
   if (!typeNode) return undefined;
-  return extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
+  // Use .text to preserve full generic types (e.g. List<User>, Stream<T>)
+  // needed by the call resolver for return-type inference.
+  return typeNode.text?.trim();
 }
 
 function extractAnnotations(node: SyntaxNode, modifierType: string): string[] {
@@ -252,7 +254,7 @@ function extractKotlinReturnType(node: SyntaxNode): string | undefined {
         child.type === 'nullable_type' ||
         child.type === 'function_type')
     ) {
-      return extractSimpleTypeName(child) ?? child.text?.trim();
+      return child.text?.trim();
     }
     if (child.type === 'function_body') break;
   }

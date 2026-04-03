@@ -1720,7 +1720,7 @@ describe('PHP abstract dispatch', () => {
   it('marks interface Repository.find as isAbstract (conditional)', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const baseFind = methods.find(
-      (n) => n.name === 'find' && n.properties.filePath?.includes('Repository'),
+      (n) => n.name === 'find' && n.properties.filePath?.includes('Contracts/Repository'),
     );
     if (baseFind?.properties.isAbstract !== undefined) {
       expect(baseFind.properties.isAbstract).toBe(true);
@@ -1730,7 +1730,7 @@ describe('PHP abstract dispatch', () => {
   it('marks interface Repository.save as isAbstract (conditional)', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const baseSave = methods.find(
-      (n) => n.name === 'save' && n.properties.filePath?.includes('Repository'),
+      (n) => n.name === 'save' && n.properties.filePath?.includes('Contracts/Repository'),
     );
     if (baseSave?.properties.isAbstract !== undefined) {
       expect(baseSave.properties.isAbstract).toBe(true);

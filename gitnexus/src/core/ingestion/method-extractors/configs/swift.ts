@@ -65,7 +65,7 @@ function extractSwiftReturnType(node: SyntaxNode): string | undefined {
     if (seenParams || child.type === 'type_annotation') {
       if (child.type === 'type_annotation') {
         const inner = child.firstNamedChild;
-        if (inner) return extractSimpleTypeName(inner) ?? inner.text?.trim();
+        if (inner) return inner.text?.trim();
       }
       if (
         child.type === 'user_type' ||
@@ -75,7 +75,7 @@ function extractSwiftReturnType(node: SyntaxNode): string | undefined {
         child.type === 'dictionary_type' ||
         child.type === 'function_type'
       ) {
-        return extractSimpleTypeName(child) ?? child.text?.trim();
+        return child.text?.trim();
       }
     }
   }
@@ -90,7 +90,7 @@ function extractSwiftReturnType(node: SyntaxNode): string | undefined {
       continue;
     }
     if (seenArrow && child.isNamed) {
-      return extractSimpleTypeName(child) ?? child.text?.trim();
+      return child.text?.trim();
     }
   }
 

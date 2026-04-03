@@ -1843,7 +1843,8 @@ const processFileGroup = (
             const info = methodMap?.get(`${nodeName}:${defLine}`);
             if (info) {
               enrichedByMethodExtractor = true;
-              parameterCount = info.parameters.length;
+              const hasVariadic = info.parameters.some((p) => p.isVariadic);
+              parameterCount = hasVariadic ? undefined : info.parameters.length;
               const types: string[] = [];
               let optionalCount = 0;
               for (const p of info.parameters) {
@@ -1852,7 +1853,9 @@ const processFileGroup = (
               }
               parameterTypes = types.length > 0 ? types : undefined;
               requiredParameterCount =
-                optionalCount > 0 ? parameterCount - optionalCount : undefined;
+                !hasVariadic && optionalCount > 0
+                  ? info.parameters.length - optionalCount
+                  : undefined;
               returnType = info.returnType ?? undefined;
               visibility = info.visibility;
               isStatic = info.isStatic;
@@ -1879,7 +1882,8 @@ const processFileGroup = (
           });
           if (info) {
             enrichedByMethodExtractor = true;
-            parameterCount = info.parameters.length;
+            const hasVariadic = info.parameters.some((p) => p.isVariadic);
+            parameterCount = hasVariadic ? undefined : info.parameters.length;
             const types: string[] = [];
             let optionalCount = 0;
             for (const p of info.parameters) {
@@ -1887,7 +1891,10 @@ const processFileGroup = (
               if (p.isOptional) optionalCount++;
             }
             parameterTypes = types.length > 0 ? types : undefined;
-            requiredParameterCount = optionalCount > 0 ? parameterCount - optionalCount : undefined;
+            requiredParameterCount =
+              !hasVariadic && optionalCount > 0
+                ? info.parameters.length - optionalCount
+                : undefined;
             returnType = info.returnType ?? undefined;
             visibility = info.visibility;
             isStatic = info.isStatic;

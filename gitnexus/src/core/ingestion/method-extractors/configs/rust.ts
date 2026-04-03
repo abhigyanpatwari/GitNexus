@@ -30,7 +30,7 @@ function extractRustMethodName(node: SyntaxNode): string | undefined {
 function extractRustReturnType(node: SyntaxNode): string | undefined {
   const typeNode = node.childForFieldName('return_type');
   if (!typeNode) return undefined;
-  return extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
+  return typeNode.text?.trim();
 }
 
 /**

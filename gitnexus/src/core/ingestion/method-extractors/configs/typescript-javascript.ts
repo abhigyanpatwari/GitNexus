@@ -136,9 +136,9 @@ function extractTsJsReturnType(node: SyntaxNode): string | undefined {
   if (returnType) {
     if (returnType.type === 'type_annotation') {
       const inner = returnType.firstNamedChild;
-      if (inner) return extractSimpleTypeName(inner) ?? inner.text?.trim();
+      if (inner) return inner.text?.trim();
     }
-    return extractSimpleTypeName(returnType) ?? returnType.text?.trim();
+    return returnType.text?.trim();
   }
   return undefined;
 }
