@@ -264,7 +264,7 @@ export const pythonMethodConfig: MethodExtractionConfig = {
   },
 
   isFinal(_node) {
-    return false; // Python has no final methods
+    return false; // @typing.final (PEP 591) is captured in annotations; isFinal not modeled
   },
 
   extractAnnotations(node) {

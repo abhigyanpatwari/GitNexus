@@ -19,6 +19,7 @@ import {
 import { detectFrameworkFromAST } from './framework-detection.js';
 import { buildTypeEnv } from './type-env.js';
 import type { FieldInfo, FieldExtractorContext } from './field-types.js';
+import type { MethodInfo } from './method-types.js';
 import type { LanguageProvider } from './language-provider.js';
 import { WorkerPool } from './workers/worker-pool.js';
 import type {
@@ -219,6 +220,33 @@ function seqFindEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
   return null;
 }
 
+/** Convert MethodInfo from methodExtractor into flat properties for a graph node. */
+function buildMethodProps(info: MethodInfo): Record<string, unknown> {
+  const types: string[] = [];
+  let optionalCount = 0;
+  for (const p of info.parameters) {
+    if (p.type !== null) types.push(p.type);
+    if (p.isOptional) optionalCount++;
+  }
+  return {
+    parameterCount: info.parameters.length,
+    ...(optionalCount > 0
+      ? { requiredParameterCount: info.parameters.length - optionalCount }
+      : {}),
+    ...(types.length > 0 ? { parameterTypes: types } : {}),
+    returnType: info.returnType ?? undefined,
+    visibility: info.visibility,
+    isStatic: info.isStatic,
+    isAbstract: info.isAbstract,
+    isFinal: info.isFinal,
+    ...(info.isVirtual ? { isVirtual: info.isVirtual } : {}),
+    ...(info.isOverride ? { isOverride: info.isOverride } : {}),
+    ...(info.isAsync ? { isAsync: info.isAsync } : {}),
+    ...(info.isPartial ? { isPartial: info.isPartial } : {}),
+    ...(info.annotations.length > 0 ? { annotations: info.annotations } : {}),
+  };
+}
+
 /** Minimal no-op SymbolTable stub for FieldExtractorContext (sequential path has a real
  *  SymbolTable, but it's incomplete at this stage — use the stub for safety). */
 const NOOP_SYMBOL_TABLE_SEQ = {
@@ -348,25 +376,69 @@ const processParsingSequential = async (
         ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
         : null;
 
-      // Extract method signature for Method/Constructor nodes
-      const methodSig =
-        nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor'
-          ? extractMethodSignature(definitionNode)
-          : undefined;
+      // Extract method metadata for Function/Method/Constructor nodes.
+      // Try the per-language methodExtractor first (provides isAbstract, isStatic,
+      // visibility, annotations, etc.). Fall back to extractMethodSignature for
+      // basic parameterCount/parameterTypes/returnType when no methodExtractor exists.
+      const isMethodLike =
+        nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor';
+      let methodProps: Record<string, unknown> = {};
+      if (isMethodLike && definitionNode) {
+        let enriched = false;
 
-      // Language-specific return type fallback (e.g. Ruby YARD @return [Type])
-      // Also upgrades uninformative AST types like PHP `array` with PHPDoc `@return User[]`
-      if (
-        methodSig &&
-        (!methodSig.returnType ||
-          methodSig.returnType === 'array' ||
-          methodSig.returnType === 'iterable') &&
-        definitionNode
-      ) {
-        const tc = provider.typeConfig;
-        if (tc?.extractReturnType) {
-          const docReturn = tc.extractReturnType(definitionNode);
-          if (docReturn) methodSig.returnType = docReturn;
+        if (provider.methodExtractor) {
+          // Try class-based extraction (method inside a class/struct/trait body)
+          const classNode = seqFindEnclosingClassNode(definitionNode);
+          if (classNode) {
+            const result = provider.methodExtractor.extract(classNode, {
+              filePath: file.path,
+              language,
+            });
+            if (result?.methods?.length) {
+              const defLine = definitionNode.startPosition.row + 1;
+              const info = result.methods.find((m) => m.name === nodeName && m.line === defLine);
+              if (info) {
+                enriched = true;
+                methodProps = buildMethodProps(info);
+              }
+            }
+          }
+
+          // For top-level methods (e.g. Go method_declaration), try extractFromNode
+          if (!enriched && provider.methodExtractor.extractFromNode) {
+            const info = provider.methodExtractor.extractFromNode(definitionNode, {
+              filePath: file.path,
+              language,
+            });
+            if (info) {
+              enriched = true;
+              methodProps = buildMethodProps(info);
+            }
+          }
+        }
+
+        // Fallback to generic extractMethodSignature
+        if (!enriched) {
+          const sig = extractMethodSignature(definitionNode);
+          methodProps = {
+            parameterCount: sig.parameterCount,
+            ...(sig.requiredParameterCount !== undefined
+              ? { requiredParameterCount: sig.requiredParameterCount }
+              : {}),
+            ...(sig.parameterTypes ? { parameterTypes: sig.parameterTypes } : {}),
+            returnType: sig.returnType,
+          };
+        }
+
+        // Language-specific return type fallback (e.g. Ruby YARD @return [Type])
+        // Also upgrades uninformative AST types like PHP `array` with PHPDoc `@return User[]`
+        const rt = methodProps.returnType as string | undefined;
+        if (!rt || rt === 'array' || rt === 'iterable') {
+          const tc = provider.typeConfig;
+          if (tc?.extractReturnType) {
+            const docReturn = tc.extractReturnType(definitionNode);
+            if (docReturn) methodProps.returnType = docReturn;
+          }
         }
       }
 
@@ -390,16 +462,7 @@ const processParsingSequential = async (
                 astFrameworkReason: frameworkHint.reason,
               }
             : {}),
-          ...(methodSig
-            ? {
-                parameterCount: methodSig.parameterCount,
-                ...(methodSig.requiredParameterCount !== undefined
-                  ? { requiredParameterCount: methodSig.requiredParameterCount }
-                  : {}),
-                ...(methodSig.parameterTypes ? { parameterTypes: methodSig.parameterTypes } : {}),
-                returnType: methodSig.returnType,
-              }
-            : {}),
+          ...methodProps,
         },
       };
 
@@ -451,10 +514,10 @@ const processParsingSequential = async (
       if (declaredType !== undefined) node.properties.declaredType = declaredType;
 
       symbolTable.add(file.path, nodeName, nodeId, nodeLabel, {
-        parameterCount: methodSig?.parameterCount,
-        requiredParameterCount: methodSig?.requiredParameterCount,
-        parameterTypes: methodSig?.parameterTypes,
-        returnType: methodSig?.returnType,
+        parameterCount: methodProps.parameterCount as number | undefined,
+        requiredParameterCount: methodProps.requiredParameterCount as number | undefined,
+        parameterTypes: methodProps.parameterTypes as string[] | undefined,
+        returnType: methodProps.returnType as string | undefined,
         declaredType,
         ownerId: enclosingClassId ?? undefined,
       });

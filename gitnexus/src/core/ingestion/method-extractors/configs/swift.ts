@@ -1,4 +1,5 @@
 // gitnexus/src/core/ingestion/method-extractors/configs/swift.ts
+// Verified against tree-sitter-swift 0.6.0
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type {
@@ -109,9 +110,12 @@ function extractSwiftReturnType(node: SyntaxNode): string | undefined {
 function extractSwiftParameters(node: SyntaxNode): ParameterInfo[] {
   const params: ParameterInfo[] = [];
 
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (!child || child.type !== 'parameter') continue;
+  // In tree-sitter-swift 0.6.0, parameters are direct children of function_declaration.
+  // Default value tokens ('=', literal) are siblings of the parameter node at the
+  // function_declaration level, not children of the parameter node.
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (!child?.isNamed || child.type !== 'parameter') continue;
 
     // Extract parameter name — the last simple_identifier is the internal name
     let paramName: string | undefined;
@@ -123,30 +127,34 @@ function extractSwiftParameters(node: SyntaxNode): ParameterInfo[] {
     }
     if (!paramName) continue;
 
-    // Extract type from type_annotation
+    // Extract type — tree-sitter-swift uses user_type (not type_annotation)
     let typeName: string | null = null;
     for (let j = 0; j < child.namedChildCount; j++) {
       const part = child.namedChild(j);
-      if (part?.type === 'type_annotation') {
+      if (part?.type === 'user_type' || part?.type === 'type_annotation') {
         const inner = part.firstNamedChild;
         if (inner) {
           typeName = extractSimpleTypeName(inner) ?? inner.text?.trim() ?? null;
+        } else {
+          typeName = part.text?.trim() ?? null;
         }
         break;
       }
-    }
-
-    // Check for default value: '=' token among children
-    let isOptional = false;
-    for (let j = 0; j < child.childCount; j++) {
-      const c = child.child(j);
-      if (c && c.text.trim() === '=') {
-        isOptional = true;
+      // Handle built-in types (array_type, dictionary_type, optional_type, tuple_type)
+      if (part?.type.endsWith('_type') && part.type !== 'simple_identifier') {
+        typeName = extractSimpleTypeName(part) ?? part.text?.trim() ?? null;
         break;
       }
     }
 
-    // Check for variadic: '...' token among children
+    // Check for default value: '=' token appears as a sibling after the parameter node
+    let isOptional = false;
+    const nextSibling = node.child(i + 1);
+    if (nextSibling && !nextSibling.isNamed && nextSibling.text.trim() === '=') {
+      isOptional = true;
+    }
+
+    // Check for variadic: '...' token among parameter children
     let isVariadic = false;
     for (let j = 0; j < child.childCount; j++) {
       const c = child.child(j);

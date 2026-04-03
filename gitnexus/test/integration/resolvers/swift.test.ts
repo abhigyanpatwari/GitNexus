@@ -606,48 +606,67 @@ describe.skipIf(!swiftAvailable)('Swift method enrichment', () => {
     expect(dogMethods).toContain('breathe');
   });
 
-  it('marks protocol Animal.speak as isAbstract (conditional)', () => {
-    const methods = getNodesByLabelFull(result, 'Function');
+  it('marks protocol Animal.speak as isAbstract', () => {
+    // Protocol method declarations are emitted as 'Method' nodes (not 'Function')
+    const methods = getNodesByLabelFull(result, 'Method');
     const speak = methods.find(
       (n) => n.name === 'speak' && n.properties.filePath === 'Sources/Animal.swift',
     );
-    if (speak?.properties.isAbstract !== undefined) {
-      expect(speak.properties.isAbstract).toBe(true);
-    }
+    expect(speak).toBeDefined();
+    expect(speak!.properties.isAbstract).toBe(true);
   });
 
-  it('marks Dog.speak as NOT isAbstract (conditional)', () => {
+  it('marks Dog.speak as NOT isAbstract', () => {
+    // Dog's speak is a 'Function' node; both protocol and Dog are in Animal.swift,
+    // so distinguish by startLine: Dog.speak is at line 5 (0-indexed).
     const methods = getNodesByLabelFull(result, 'Function');
-    const dogSpeak = methods.find(
-      (n) => n.name === 'speak' && n.properties.filePath !== 'Sources/Animal.swift',
-    );
-    if (dogSpeak?.properties.isAbstract !== undefined) {
-      expect(dogSpeak.properties.isAbstract).toBe(false);
-    }
+    const dogSpeak = methods.find((n) => n.name === 'speak' && n.properties.startLine === 5);
+    expect(dogSpeak).toBeDefined();
+    expect(dogSpeak!.properties.isAbstract).toBe(false);
   });
 
-  it('marks breathe as isFinal (conditional)', () => {
+  it('marks breathe as isFinal', () => {
     const methods = getNodesByLabelFull(result, 'Function');
     const breathe = methods.find((n) => n.name === 'breathe');
-    if (breathe?.properties.isFinal !== undefined) {
-      expect(breathe.properties.isFinal).toBe(true);
-    }
+    expect(breathe).toBeDefined();
+    expect(breathe!.properties.isFinal).toBe(true);
   });
 
-  it('marks classify as isStatic (conditional)', () => {
+  it('marks classify as isStatic', () => {
     const methods = getNodesByLabelFull(result, 'Function');
     const classify = methods.find((n) => n.name === 'classify');
-    if (classify?.properties.isStatic !== undefined) {
-      expect(classify.properties.isStatic).toBe(true);
-    }
+    expect(classify).toBeDefined();
+    expect(classify!.properties.isStatic).toBe(true);
   });
 
-  it('captures @objc annotation on breathe (conditional)', () => {
+  it('captures @objc annotation on breathe', () => {
     const methods = getNodesByLabelFull(result, 'Function');
     const breathe = methods.find((n) => n.name === 'breathe');
-    if (breathe?.properties.annotations !== undefined) {
-      expect(breathe.properties.annotations).toContain('@objc');
-    }
+    expect(breathe).toBeDefined();
+    expect(breathe!.properties.annotations).toContain('@objc');
+  });
+
+  it('populates parameterTypes for classify(_ name: String)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'classify');
+    expect(classify).toBeDefined();
+    expect(classify!.properties.parameterTypes).toContain('String');
+  });
+
+  it('records parameterCount for classify', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'classify');
+    expect(classify).toBeDefined();
+    expect(classify!.properties.parameterCount).toBe(1);
+  });
+
+  it('records returnType for speak', () => {
+    // Dog.speak is a 'Function' node at startLine 5 (0-indexed); the protocol speak
+    // is a 'Method' node, so filtering Function by name gives Dog's implementation.
+    const methods = getNodesByLabelFull(result, 'Function');
+    const speak = methods.find((n) => n.name === 'speak' && n.properties.startLine === 5);
+    expect(speak).toBeDefined();
+    expect(speak!.properties.returnType).toBe('String');
   });
 
   it('resolves dog.speak() CALLS edge', () => {
@@ -708,34 +727,33 @@ describe.skipIf(!swiftAvailable)('Swift abstract dispatch', () => {
     expect(sqlSave).toBeDefined();
   });
 
-  it('marks base Repository.find as isAbstract (conditional)', () => {
-    const methods = getNodesByLabelFull(result, 'Function');
+  it('marks base Repository.find as isAbstract', () => {
+    // Protocol method declarations are emitted as 'Method' nodes (not 'Function')
+    const methods = getNodesByLabelFull(result, 'Method');
     const baseFind = methods.find(
       (n) => n.name === 'find' && n.properties.filePath === 'Sources/Repository.swift',
     );
-    if (baseFind?.properties.isAbstract !== undefined) {
-      expect(baseFind.properties.isAbstract).toBe(true);
-    }
+    expect(baseFind).toBeDefined();
+    expect(baseFind!.properties.isAbstract).toBe(true);
   });
 
-  it('marks base Repository.save as isAbstract (conditional)', () => {
-    const methods = getNodesByLabelFull(result, 'Function');
+  it('marks base Repository.save as isAbstract', () => {
+    // Protocol method declarations are emitted as 'Method' nodes (not 'Function')
+    const methods = getNodesByLabelFull(result, 'Method');
     const baseSave = methods.find(
       (n) => n.name === 'save' && n.properties.filePath === 'Sources/Repository.swift',
     );
-    if (baseSave?.properties.isAbstract !== undefined) {
-      expect(baseSave.properties.isAbstract).toBe(true);
-    }
+    expect(baseSave).toBeDefined();
+    expect(baseSave!.properties.isAbstract).toBe(true);
   });
 
-  it('marks concrete SqlRepository.find as NOT isAbstract (conditional)', () => {
+  it('marks concrete SqlRepository.find as NOT isAbstract', () => {
+    // SqlRepository and Repository are both in Repository.swift; distinguish by
+    // startLine: SqlRepository.find starts at line 6 (0-indexed).
     const methods = getNodesByLabelFull(result, 'Function');
-    const sqlFind = methods.find(
-      (n) => n.name === 'find' && n.properties.filePath !== 'Sources/Repository.swift',
-    );
-    if (sqlFind?.properties.isAbstract !== undefined) {
-      expect(sqlFind.properties.isAbstract).toBe(false);
-    }
+    const sqlFind = methods.find((n) => n.name === 'find' && n.properties.startLine === 6);
+    expect(sqlFind).toBeDefined();
+    expect(sqlFind!.properties.isAbstract).toBe(false);
   });
 
   it('resolves repo.find(id: 42) CALLS edge', () => {
@@ -754,14 +772,31 @@ describe.skipIf(!swiftAvailable)('Swift abstract dispatch', () => {
     expect(saveCall).toBeDefined();
   });
 
-  it('populates parameterTypes for Repository.find (conditional)', () => {
-    const methods = getNodesByLabelFull(result, 'Function');
+  it('populates parameterTypes for Repository.find', () => {
+    // Protocol method declarations are 'Method' nodes
+    const methods = getNodesByLabelFull(result, 'Method');
     const baseFind = methods.find(
       (n) => n.name === 'find' && n.properties.filePath === 'Sources/Repository.swift',
     );
-    if (baseFind?.properties.parameterTypes !== undefined) {
-      const params = baseFind.properties.parameterTypes;
-      expect(params).toContain('Int');
-    }
+    expect(baseFind).toBeDefined();
+    expect(baseFind!.properties.parameterTypes).toContain('Int');
+  });
+
+  it('populates parameterTypes for Repository.save', () => {
+    // Protocol method declarations are 'Method' nodes
+    const methods = getNodesByLabelFull(result, 'Method');
+    const baseSave = methods.find(
+      (n) => n.name === 'save' && n.properties.filePath === 'Sources/Repository.swift',
+    );
+    expect(baseSave).toBeDefined();
+    expect(baseSave!.properties.parameterTypes).toContain('String');
+  });
+
+  it('records returnType for SqlRepository.find', () => {
+    // SqlRepository.find is a 'Function' node at startLine 6 (0-indexed)
+    const methods = getNodesByLabelFull(result, 'Function');
+    const sqlFind = methods.find((n) => n.name === 'find' && n.properties.startLine === 6);
+    expect(sqlFind).toBeDefined();
+    expect(sqlFind!.properties.returnType).toBe('String');
   });
 });

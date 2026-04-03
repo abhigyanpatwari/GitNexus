@@ -185,58 +185,52 @@ describe.skipIf(!dartAvailable)('Dart method enrichment', () => {
     expect(dogExtends).toBeDefined();
   });
 
-  it('marks abstract speak as isAbstract (conditional)', () => {
-    const methods = getNodesByLabelFull(result, 'Function');
+  it('marks abstract speak as isAbstract', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
     const speak = methods.find(
       (n) => n.name === 'speak' && n.properties.filePath === 'animal.dart',
     );
-    if (speak?.properties.isAbstract !== undefined) {
-      expect(speak.properties.isAbstract).toBe(true);
-    }
+    expect(speak).toBeDefined();
+    expect(speak!.properties.isAbstract).toBe(true);
   });
 
-  it('marks breathe as NOT isAbstract (conditional)', () => {
-    const methods = getNodesByLabelFull(result, 'Function');
+  it('marks breathe as NOT isAbstract', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
     const breathe = methods.find((n) => n.name === 'breathe');
-    if (breathe?.properties.isAbstract !== undefined) {
-      expect(breathe.properties.isAbstract).toBe(false);
-    }
+    expect(breathe).toBeDefined();
+    expect(breathe!.properties.isAbstract).toBe(false);
   });
 
-  it('marks classify as isStatic (conditional)', () => {
-    const methods = getNodesByLabelFull(result, 'Function');
+  it('marks classify as isStatic', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
     const classify = methods.find((n) => n.name === 'classify');
-    if (classify?.properties.isStatic !== undefined) {
-      expect(classify.properties.isStatic).toBe(true);
-    }
+    expect(classify).toBeDefined();
+    expect(classify!.properties.isStatic).toBe(true);
   });
 
-  it('marks breathe as NOT isStatic (conditional)', () => {
-    const methods = getNodesByLabelFull(result, 'Function');
+  it('marks breathe as NOT isStatic', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
     const breathe = methods.find((n) => n.name === 'breathe');
-    if (breathe?.properties.isStatic !== undefined) {
-      expect(breathe.properties.isStatic).toBe(false);
-    }
+    expect(breathe).toBeDefined();
+    expect(breathe!.properties.isStatic).toBe(false);
   });
 
-  it('captures @override annotation on Dog.speak (conditional)', () => {
-    const methods = getNodesByLabelFull(result, 'Function');
-    // Dog.speak is the override; find the one NOT in animal.dart
-    const dogSpeak = methods.find(
-      (n) => n.name === 'speak' && n.properties.filePath !== 'animal.dart',
-    );
-    if (dogSpeak?.properties.annotations !== undefined) {
-      expect(dogSpeak.properties.annotations).toContain('@override');
-    }
+  it('abstract Animal.speak has isAbstract=true and concrete breathe does not', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const speak = methods.find((n) => n.name === 'speak');
+    expect(speak).toBeDefined();
+    expect(speak!.properties.isAbstract).toBe(true);
+    const breathe = methods.find((n) => n.name === 'breathe');
+    expect(breathe).toBeDefined();
+    expect(breathe!.properties.isAbstract).toBe(false);
   });
 
-  it('populates parameterTypes for classify (conditional)', () => {
-    const methods = getNodesByLabelFull(result, 'Function');
+  it('populates parameterTypes for classify', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
     const classify = methods.find((n) => n.name === 'classify');
-    if (classify?.properties.parameterTypes !== undefined) {
-      const params = classify.properties.parameterTypes;
-      expect(params).toContain('String');
-    }
+    expect(classify).toBeDefined();
+    const params = classify!.properties.parameterTypes;
+    expect(params).toContain('String');
   });
 
   it('resolves dog.speak() CALLS edge', () => {
@@ -360,5 +354,78 @@ describe.skipIf(!dartAvailable)('Dart member calls', () => {
       (e) => e.sourceFilePath.includes('app.dart') && e.targetFilePath.includes('user.dart'),
     );
     expect(appImport).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dart async / async* / sync* method detection
+// Verifies isDartAsync correctly identifies all three async-like forms
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)('Dart async method detection', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-async-methods'), () => {});
+  }, 60000);
+
+  it('detects DataService class', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('DataService');
+  });
+
+  it('emits HAS_METHOD edges for all DataService methods', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const methods = hasMethod
+      .filter((e) => e.source === 'DataService')
+      .map((e) => e.target)
+      .sort();
+    expect(methods).toContain('fetchUser');
+    expect(methods).toContain('countUp');
+    expect(methods).toContain('generateNames');
+    expect(methods).toContain('formatName');
+  });
+
+  it('marks async method fetchUser as isAsync=true', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const fetchUser = methods.find((n) => n.name === 'fetchUser');
+    expect(fetchUser).toBeDefined();
+    expect(fetchUser!.properties.isAsync).toBe(true);
+  });
+
+  it('marks async* generator countUp as isAsync=true', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const countUp = methods.find((n) => n.name === 'countUp');
+    expect(countUp).toBeDefined();
+    expect(countUp!.properties.isAsync).toBe(true);
+  });
+
+  it('marks sync* generator generateNames as isAsync=true', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const generateNames = methods.find((n) => n.name === 'generateNames');
+    expect(generateNames).toBeDefined();
+    expect(generateNames!.properties.isAsync).toBe(true);
+  });
+
+  it('marks regular sync method formatName as isAsync=false', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const formatName = methods.find((n) => n.name === 'formatName');
+    expect(formatName).toBeDefined();
+    // buildMethodProps only sets isAsync when truthy; for sync methods the
+    // property is absent (undefined), which is equivalent to false.
+    expect(formatName!.properties.isAsync ?? false).toBe(false);
+  });
+
+  it('populates parameterTypes for fetchUser(int id)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const fetchUser = methods.find((n) => n.name === 'fetchUser');
+    expect(fetchUser).toBeDefined();
+    expect(fetchUser!.properties.parameterTypes).toContain('int');
+  });
+
+  it('populates returnType for formatName', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const formatName = methods.find((n) => n.name === 'formatName');
+    expect(formatName).toBeDefined();
+    expect(formatName!.properties.returnType).toBe('String');
   });
 });

@@ -255,7 +255,8 @@ export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string
         const children = current.children ?? [];
         const forIdx = children.findIndex((c: SyntaxNode) => c.text === 'for');
         if (forIdx !== -1) {
-          // impl Trait for Struct — attribute to the concrete Struct
+          // impl Trait for Struct — attribute to the Struct node (no Impl node exists
+          // for trait impls because the tree-sitter query uses !trait filter)
           const nameNode = children
             .slice(forIdx + 1)
             .find((c: SyntaxNode) => c.type === 'type_identifier' || c.type === 'identifier');
@@ -263,10 +264,10 @@ export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string
             return generateId('Struct', `${filePath}:${nameNode.text}`);
           }
         }
-        // Plain `impl Struct {}` — use Struct label for consistency
+        // Plain `impl Struct {}` — use Impl label (definition.impl creates an Impl node)
         const firstType = children.find((c: SyntaxNode) => c.type === 'type_identifier');
         if (firstType) {
-          return generateId('Struct', `${filePath}:${firstType.text}`);
+          return generateId('Impl', `${filePath}:${firstType.text}`);
         }
       }
       const nameNode =

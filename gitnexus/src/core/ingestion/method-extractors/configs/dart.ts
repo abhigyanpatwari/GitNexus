@@ -312,7 +312,9 @@ function isDartStatic(node: SyntaxNode): boolean {
  * in class_body.
  */
 function isDartAbstract(node: SyntaxNode, _ownerNode: SyntaxNode): boolean {
-  // `declaration` nodes in class_body represent abstract methods (no body, followed by ';')
+  // `declaration` nodes in class_body represent abstract methods (no body, followed by ';').
+  // Note: extension bodies cannot have abstract members in Dart, but `declaration` nodes
+  // do not appear in extension_body in practice since extensions must provide implementations.
   if (node.type === 'declaration') return true;
   // For method_signature nodes, check if the next named sibling is a function_body
   const next = node.nextNamedSibling;
@@ -320,22 +322,29 @@ function isDartAbstract(node: SyntaxNode, _ownerNode: SyntaxNode): boolean {
 }
 
 /**
- * Check for `async` keyword in the function_body sibling.
- * The `async` keyword appears as an unnamed child of function_body, or
+ * Check for `async`, `async*`, or `sync*` keyword in the function_body sibling.
+ * The keyword appears as an unnamed child of function_body, or
  * as a sibling keyword before function_body.
+ *
+ * Dart has three async-like forms: `async` (Future), `async*` (Stream), `sync*` (Iterable).
+ * All three are treated as async for graph purposes.
  */
 function isDartAsync(node: SyntaxNode): boolean {
-  // async appears right after method_signature, before or inside function_body
   let sibling: SyntaxNode | null = node.nextSibling;
-  // Check the first few siblings for 'async' keyword
   let limit = 3;
   while (sibling && limit > 0) {
-    if (!sibling.isNamed && sibling.text.trim() === 'async') return true;
+    if (!sibling.isNamed) {
+      const text = sibling.text.trim();
+      if (text === 'async' || text === 'async*' || text === 'sync*') return true;
+    }
     if (sibling.isNamed && sibling.type === 'function_body') {
-      // Check first child of function_body for async
+      // Check first child of function_body for async/async*/sync*
       for (let i = 0; i < sibling.childCount; i++) {
         const child = sibling.child(i);
-        if (child && child.text.trim() === 'async') return true;
+        if (child) {
+          const text = child.text.trim();
+          if (text === 'async' || text === 'async*' || text === 'sync*') return true;
+        }
         // Stop at first substantial child
         if (child?.isNamed) break;
       }

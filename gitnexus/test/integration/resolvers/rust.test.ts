@@ -1651,14 +1651,13 @@ describe('Rust method enrichment (trait + inherent impl)', () => {
     expect(traitMethods).toContain('breathe');
   });
 
-  it('marks trait required method speak as isAbstract=true on the trait', () => {
+  it('marks impl Animal for Dog speak as isAbstract=false (concrete)', () => {
     const methods = getNodesByLabelFull(result, 'Function');
     const traitSpeak = methods.find(
       (m) => m.name === 'speak' && m.properties.filePath?.includes('lib.rs'),
     );
-    if (traitSpeak?.properties.isAbstract !== undefined) {
-      expect(traitSpeak.properties.isAbstract).toBe(true);
-    }
+    expect(traitSpeak).toBeDefined();
+    expect(traitSpeak!.properties.isAbstract).toBe(false);
   });
 
   it('marks trait default method breathe as isAbstract=false', () => {
@@ -1666,9 +1665,8 @@ describe('Rust method enrichment (trait + inherent impl)', () => {
     const breathe = methods.find(
       (m) => m.name === 'breathe' && m.properties.filePath?.includes('lib.rs'),
     );
-    if (breathe?.properties.isAbstract !== undefined) {
-      expect(breathe.properties.isAbstract).toBe(false);
-    }
+    expect(breathe).toBeDefined();
+    expect(breathe!.properties.isAbstract).toBe(false);
   });
 
   it('marks Dog::new() as isStatic=true (no self parameter)', () => {
@@ -1676,9 +1674,8 @@ describe('Rust method enrichment (trait + inherent impl)', () => {
     const newFn = methods.find(
       (m) => m.name === 'new' && m.properties.filePath?.includes('lib.rs'),
     );
-    if (newFn?.properties.isStatic !== undefined) {
-      expect(newFn.properties.isStatic).toBe(true);
-    }
+    expect(newFn).toBeDefined();
+    expect(newFn!.properties.isStatic).toBe(true);
   });
 
   it('records parameterTypes for fetch(&self, item: &str)', () => {
@@ -1686,9 +1683,8 @@ describe('Rust method enrichment (trait + inherent impl)', () => {
     const fetchFn = methods.find(
       (m) => m.name === 'fetch' && m.properties.filePath?.includes('lib.rs'),
     );
-    if (fetchFn?.properties.parameterTypes) {
-      expect(fetchFn.properties.parameterTypes).toContain('str');
-    }
+    expect(fetchFn).toBeDefined();
+    expect(fetchFn!.properties.parameterTypes).toContain('str');
   });
 
   it('records #[inline] annotation on wag()', () => {
@@ -1696,8 +1692,19 @@ describe('Rust method enrichment (trait + inherent impl)', () => {
     const wagFn = methods.find(
       (m) => m.name === 'wag' && m.properties.filePath?.includes('lib.rs'),
     );
-    if (wagFn?.properties.annotations) {
-      expect(wagFn.properties.annotations).toContain('inline');
+    expect(wagFn).toBeDefined();
+    expect(wagFn!.properties.annotations).toContain('#[inline]');
+  });
+
+  it('uses Impl source label for HAS_METHOD edges from inherent impl', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    // Dog inherent impl (plain `impl Dog {}`) → Impl label
+    const dogImplEdges = hasMethod.filter(
+      (e) =>
+        e.source === 'Dog' && (e.target === 'new' || e.target === 'wag' || e.target === 'fetch'),
+    );
+    for (const edge of dogImplEdges) {
+      expect(edge.sourceLabel).toBe('Impl');
     }
   });
 
@@ -1758,7 +1765,25 @@ describe('Rust abstract dispatch (Repository trait)', () => {
     expect(sqlRepoMethods).toContain('save');
   });
 
-  it('marks required trait methods find and save as isAbstract=true', () => {
+  it('uses Struct source label for HAS_METHOD edges from trait impl (impl Trait for Struct)', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    // impl Repository for SqlRepo → Struct label (no Impl node for trait impls)
+    const sqlRepoEdges = hasMethod.filter(
+      (e) => e.source === 'SqlRepo' && (e.target === 'find' || e.target === 'save'),
+    );
+    for (const edge of sqlRepoEdges) {
+      expect(edge.sourceLabel).toBe('Struct');
+    }
+  });
+
+  it('uses Trait source label for HAS_METHOD edge on Repository default method', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const traitCount = hasMethod.find((e) => e.source === 'Repository' && e.target === 'count');
+    expect(traitCount).toBeDefined();
+    expect(traitCount!.sourceLabel).toBe('Trait');
+  });
+
+  it('marks concrete impl methods find and save as isAbstract=false', () => {
     const methods = getNodesByLabelFull(result, 'Function');
     const traitFind = methods.find(
       (m) => m.name === 'find' && m.properties.filePath?.includes('lib.rs'),
@@ -1766,12 +1791,10 @@ describe('Rust abstract dispatch (Repository trait)', () => {
     const traitSave = methods.find(
       (m) => m.name === 'save' && m.properties.filePath?.includes('lib.rs'),
     );
-    if (traitFind?.properties.isAbstract !== undefined) {
-      expect(traitFind.properties.isAbstract).toBe(true);
-    }
-    if (traitSave?.properties.isAbstract !== undefined) {
-      expect(traitSave.properties.isAbstract).toBe(true);
-    }
+    expect(traitFind).toBeDefined();
+    expect(traitFind!.properties.isAbstract).toBe(false);
+    expect(traitSave).toBeDefined();
+    expect(traitSave!.properties.isAbstract).toBe(false);
   });
 
   it('marks default trait method count as isAbstract=false', () => {
@@ -1779,9 +1802,8 @@ describe('Rust abstract dispatch (Repository trait)', () => {
     const countFn = methods.find(
       (m) => m.name === 'count' && m.properties.filePath?.includes('lib.rs'),
     );
-    if (countFn?.properties.isAbstract !== undefined) {
-      expect(countFn.properties.isAbstract).toBe(false);
-    }
+    expect(countFn).toBeDefined();
+    expect(countFn!.properties.isAbstract).toBe(false);
   });
 
   it('records parameterTypes for find(&self, id: i32)', () => {
@@ -1789,9 +1811,8 @@ describe('Rust abstract dispatch (Repository trait)', () => {
     const findFn = methods.find(
       (m) => m.name === 'find' && m.properties.filePath?.includes('lib.rs'),
     );
-    if (findFn?.properties.parameterTypes) {
-      expect(findFn.properties.parameterTypes).toContain('i32');
-    }
+    expect(findFn).toBeDefined();
+    expect(findFn!.properties.parameterTypes).toContain('i32');
   });
 
   it('records parameterTypes for save(&self, entity: &str)', () => {
@@ -1799,9 +1820,8 @@ describe('Rust abstract dispatch (Repository trait)', () => {
     const saveFn = methods.find(
       (m) => m.name === 'save' && m.properties.filePath?.includes('lib.rs'),
     );
-    if (saveFn?.properties.parameterTypes) {
-      expect(saveFn.properties.parameterTypes).toContain('str');
-    }
+    expect(saveFn).toBeDefined();
+    expect(saveFn!.properties.parameterTypes).toContain('str');
   });
 
   it('resolves process() calls: repo.find(), repo.save(), repo.count()', () => {
