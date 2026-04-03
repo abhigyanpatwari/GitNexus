@@ -3040,6 +3040,14 @@ export class LocalBackend {
         return this.groupList(params);
       case 'group_sync':
         return this.groupSync(params);
+      case 'group_contracts':
+        return this.groupContracts(params);
+      case 'group_query':
+        return this.groupQuery(params);
+      case 'group_status':
+        return this.groupStatus(params);
+      case 'group_discover':
+        return this.groupDiscover(params);
       default:
         throw new Error(
           `Unknown group tool: ${method}. Removed tools: use repo "@<groupName>" on impact, query, or context (optional "/<memberPath>"), or MCP resources.`,
@@ -3184,6 +3192,11 @@ export class LocalBackend {
       }
     }
     return JSON.stringify(raw, null, 2);
+  }
+
+  private async groupDiscover(params: Record<string, unknown>): Promise<unknown> {
+    await this.refreshRepos();
+    return this.getGroupService().groupDiscover(params);
   }
 
   /**

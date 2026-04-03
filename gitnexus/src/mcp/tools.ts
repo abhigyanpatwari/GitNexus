@@ -508,4 +508,65 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
       required: ['name'],
     },
   },
+  {
+    name: 'group_contracts',
+    description: `Inspect contracts and cross-links from the group's contracts.json.
+
+WHEN TO USE: Debug cross-repo links after group_sync.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Group name' },
+        type: { type: 'string', description: 'Filter by contract type (http, topic, …)' },
+        repo: { type: 'string', description: 'Filter by group repo path (e.g. app/backend)' },
+        unmatchedOnly: { type: 'boolean', description: 'Only contracts with no cross-link' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'group_query',
+    description: `Run the query tool across all repos in a group and merge process results via reciprocal rank fusion.
+
+WHEN TO USE: Semantic / hybrid search across a whole product group.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Group name' },
+        query: { type: 'string', description: 'Search query' },
+        subgroup: { type: 'string', description: 'Limit to repo paths under this prefix' },
+        limit: { type: 'number', description: 'Max merged results (default 5)' },
+      },
+      required: ['name', 'query'],
+    },
+  },
+  {
+    name: 'group_status',
+    description: `Report index staleness (commit vs HEAD) and Contract Registry staleness (indexedAt) for each repo in a group.
+
+WHEN TO USE: Before group_sync or when agents should refresh indexes.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Group name' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'group_discover',
+    description: `Auto-discover indexed repos in a directory and create a group with code-level dependency detection.
+
+WHEN TO USE: When a user wants to see a combined knowledge graph from a parent directory containing multiple indexed repos. Scans for .gitnexus/ in subdirectories, reads package manifests, builds package mappings, creates a group, and optionally runs sync.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', description: 'Parent directory containing repos' },
+        name: { type: 'string', description: 'Group name (default: workspace)' },
+        force: { type: 'boolean', description: 'Overwrite existing group' },
+        skipSync: { type: 'boolean', description: 'Skip running sync after creation' },
+      },
+      required: ['directory'],
+    },
+  },
 ];

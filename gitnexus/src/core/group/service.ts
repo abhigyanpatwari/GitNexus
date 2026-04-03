@@ -7,12 +7,19 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { checkStaleness } from '../git-staleness.js';
 import { GroupNotFoundError, loadGroupConfig } from './config-parser.js';
+import { readNpmManifest } from './extractors/manifest-reader.js';
 import {
   fileMatchesServicePrefix,
   normalizeServicePrefix,
   repoInSubgroup,
 } from './group-path-utils.js';
-import { getDefaultGitnexusDir, getGroupDir, listGroups, readContractRegistry } from './storage.js';
+import {
+  createGroupDir,
+  getDefaultGitnexusDir,
+  getGroupDir,
+  listGroups,
+  readContractRegistry,
+} from './storage.js';
 import { syncGroup } from './sync.js';
 import type {
   ContractRegistry,
@@ -511,6 +518,149 @@ export class GroupService {
       lastSync: registry?.generatedAt || null,
       missingRepos: registry?.missingRepos || [],
       repos: repoStatuses,
+    };
+  }
+
+  /**
+   * Auto-discover indexed repos in a directory and create a group with code-level dependency detection.
+   */
+  async groupDiscover(params: Record<string, unknown>): Promise<unknown> {
+    const directory = typeof params.directory === 'string' ? params.directory.trim() : '';
+    const groupName = typeof params.name === 'string' ? params.name.trim() : 'workspace';
+    const force = Boolean(params.force);
+    const skipSync = Boolean(params.skipSync);
+
+    if (!directory) return { error: 'directory is required' };
+
+    // List subdirectories and find indexed repos
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await fsp.readdir(directory, { withFileTypes: true });
+    } catch {
+      return { error: `Cannot read directory: ${directory}` };
+    }
+
+    const repos: Record<string, string> = {};
+    const packages: Record<string, Record<string, string>> = {};
+    const discoveredRepos: Array<{
+      name: string;
+      path: string;
+      packageName: string | null;
+    }> = [];
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      const repoPath = path.join(directory, entry.name);
+      const metaPath = path.join(repoPath, '.gitnexus', 'meta.json');
+
+      let metaExists = false;
+      try {
+        await fsp.access(metaPath);
+        metaExists = true;
+      } catch {
+        // Not indexed
+      }
+      if (!metaExists) continue;
+
+      // Find the registry name for this repo
+      let registryName: string | null = null;
+      try {
+        const repoHandle = await this.port.resolveRepo(entry.name);
+        registryName = repoHandle.name;
+      } catch {
+        // Try resolving by path
+        try {
+          const repoHandle = await this.port.resolveRepo(repoPath);
+          registryName = repoHandle.name;
+        } catch {
+          // Use directory name as fallback
+          registryName = entry.name;
+        }
+      }
+
+      const groupPath = entry.name;
+      repos[groupPath] = registryName;
+
+      // Read package manifest for auto-discovery
+      const manifest = readNpmManifest(repoPath);
+      discoveredRepos.push({
+        name: registryName,
+        path: repoPath,
+        packageName: manifest?.packageName ?? null,
+      });
+    }
+
+    if (Object.keys(repos).length === 0) {
+      return { error: `No indexed repos found in ${directory}. Run 'gitnexus analyze' in each repo first.` };
+    }
+
+    // Build packages mapping from discovered manifests
+    const pkgToGroupPath = new Map<string, string>();
+    for (const repo of discoveredRepos) {
+      if (repo.packageName) {
+        const groupPath = Object.entries(repos).find(([, name]) => name === repo.name)?.[0];
+        if (groupPath) pkgToGroupPath.set(repo.packageName, groupPath);
+      }
+    }
+
+    // Create the group
+    const gitnexusDir = getDefaultGitnexusDir();
+    const groupDir = await createGroupDir(gitnexusDir, groupName, force);
+
+    // Write a populated group.yaml
+    const { createRequire } = await import('node:module');
+    const _require = createRequire(import.meta.url);
+    const yaml = _require('js-yaml') as typeof import('js-yaml');
+
+    const config = {
+      version: 1,
+      name: groupName,
+      description: `Auto-discovered from ${directory}`,
+      repos,
+      links: [],
+      packages,
+      detect: {
+        http: true,
+        grpc: true,
+        topics: true,
+        shared_libs: true,
+        embedding_fallback: false,
+      },
+      matching: {
+        bm25_threshold: 0.7,
+        embedding_threshold: 0.65,
+        max_candidates_per_step: 3,
+      },
+    };
+
+    await fsp.writeFile(path.join(groupDir, 'group.yaml'), yaml.dump(config), 'utf-8');
+
+    // Optionally run sync
+    let syncResult = null;
+    if (!skipSync) {
+      syncResult = await syncGroup(config, {
+        groupDir,
+        exactOnly: true,
+      });
+    }
+
+    return {
+      group: groupName,
+      groupDir,
+      repos: discoveredRepos.map((r) => ({
+        name: r.name,
+        packageName: r.packageName,
+      })),
+      repoCount: Object.keys(repos).length,
+      packageMappings: Object.fromEntries(pkgToGroupPath),
+      synced: !skipSync,
+      ...(syncResult
+        ? {
+            contracts: syncResult.contracts.length,
+            crossLinks: syncResult.crossLinks.length,
+          }
+        : {}),
     };
   }
 }

@@ -22,6 +22,84 @@ export function registerGroupCommands(program: Command): void {
     });
 
   group
+    .command('auto-discover [directory]')
+    .description(
+      'Auto-discover indexed repos in a directory and create a group with code-level dependency detection',
+    )
+    .option('--name <name>', 'Group name', 'workspace')
+    .option('--force', 'Overwrite existing group')
+    .option('--skip-sync', 'Create group without running sync')
+    .option('--json', 'JSON output')
+    .action(
+      async (
+        directory: string | undefined,
+        opts: { name: string; force?: boolean; skipSync?: boolean; json?: boolean },
+      ) => {
+        const pathMod = await import('node:path');
+        const { LocalBackend } = await import('../mcp/local/local-backend.js');
+
+        const resolvedDir = pathMod.resolve(directory || process.cwd());
+        const backend = new LocalBackend();
+        try {
+          await backend.init();
+          console.log(
+            `Discovering indexed repos in ${resolvedDir}...\n`,
+          );
+
+          const raw = await backend.getGroupService().groupDiscover({
+            directory: resolvedDir,
+            name: opts.name,
+            force: Boolean(opts.force),
+            skipSync: Boolean(opts.skipSync),
+          });
+
+          const result = raw as {
+            error?: string;
+            group?: string;
+            groupDir?: string;
+            repos?: Array<{ name: string; packageName: string | null }>;
+            repoCount?: number;
+            packageMappings?: Record<string, string>;
+            synced?: boolean;
+            contracts?: number;
+            crossLinks?: number;
+          };
+
+          if (result.error) {
+            console.error(result.error);
+            process.exitCode = 1;
+            return;
+          }
+
+          if (opts.json) {
+            console.log(JSON.stringify(raw, null, 2));
+          } else {
+            console.log(`Group "${result.group}" created at ${result.groupDir}\n`);
+            console.log(`Discovered repos (${result.repoCount}):`);
+            for (const repo of result.repos || []) {
+              const pkg = repo.packageName ? ` (${repo.packageName})` : '';
+              console.log(`  ${repo.name}${pkg}`);
+            }
+            const mappings = result.packageMappings || {};
+            if (Object.keys(mappings).length > 0) {
+              console.log(`\nPackage mappings:`);
+              for (const [pkg, groupPath] of Object.entries(mappings)) {
+                console.log(`  ${pkg} → ${groupPath}`);
+              }
+            }
+            if (result.synced) {
+              console.log(
+                `\nSync: ${result.contracts} contracts, ${result.crossLinks} cross-links`,
+              );
+            }
+          }
+        } finally {
+          await backend.dispose().catch(() => {});
+        }
+      },
+    );
+
+  group
     .command('add <group> <groupPath> <registryName>')
     .description(
       'Add a repo to a group. <groupPath> = hierarchy path (e.g. hr/hiring/backend), <registryName> = name from registry',
