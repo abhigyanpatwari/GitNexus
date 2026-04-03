@@ -93,12 +93,30 @@ describe('Vue SFC support', () => {
     expect(vueToTs.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('emits CALLS edge for PascalCase component used in <template>', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const templateCalls = calls.filter(
+      (e) => e.sourceFilePath.endsWith('App.vue') && e.targetFilePath.endsWith('Button.vue'),
+    );
+    expect(templateCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not mark non-setup <script> symbols as implicitly exported', () => {
+    const allNodes = getNodesByLabelFull(result, 'Function');
+    const oldStyleFns = allNodes.filter((n) => n.properties.filePath.endsWith('OldStyle.vue'));
+    // OldStyle.vue uses options API (no <script setup>), so any extracted
+    // symbols without an explicit `export` keyword should have isExported: false.
+    for (const fn of oldStyleFns) {
+      expect(fn.properties.isExported).toBe(false);
+    }
+  });
+
   // -------------------------------------------------------------------------
   // File nodes exist for .vue files
   // -------------------------------------------------------------------------
 
   it('creates File nodes for .vue files', () => {
     const files = getNodesByLabel(result, 'File');
-    expect(files.some((f) => f.endsWith('.vue') || f === 'App.vue')).toBe(true);
+    expect(files.some((f) => f.endsWith('.vue'))).toBe(true);
   });
 });

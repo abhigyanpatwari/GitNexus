@@ -7,7 +7,7 @@ import { TIER_CONFIDENCE, type ResolutionTier } from './resolution-context.js';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
-import { getLanguageFromFilename } from 'gitnexus-shared';
+import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import {
@@ -37,6 +37,7 @@ import type {
   FileConstructorBindings,
 } from './workers/parse-worker.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
+import { extractTemplateComponents } from './vue-sfc-extractor.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
 import type { LiteralTypeInferrer } from './type-extractors/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
@@ -893,6 +894,41 @@ export const processCalls = async (
       }
     });
 
+    // Vue: emit CALLS edges for PascalCase components used in <template>.
+    // Template components are default-imported (not named), so we match the
+    // component name against imported .vue file basenames via the import map.
+    if (language === SupportedLanguages.Vue) {
+      const templateComponents = extractTemplateComponents(file.content);
+      if (templateComponents.length > 0) {
+        const fileId = generateId('File', file.path);
+        const importedFiles = ctx.importMap.get(file.path);
+        if (importedFiles) {
+          for (const componentName of templateComponents) {
+            for (const importedPath of importedFiles) {
+              if (!importedPath.endsWith('.vue')) continue;
+              const basename = importedPath.slice(
+                importedPath.lastIndexOf('/') + 1,
+                importedPath.lastIndexOf('.'),
+              );
+              if (basename !== componentName) continue;
+              const targetFileId = generateId('File', importedPath);
+              if (graph.getNode(targetFileId)) {
+                graph.addRelationship({
+                  id: generateId('CALLS', `${fileId}:${componentName}->${targetFileId}`),
+                  sourceId: fileId,
+                  targetId: targetFileId,
+                  type: 'CALLS',
+                  confidence: 0.9,
+                  reason: 'vue-template-component',
+                });
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+
     ctx.clearCache();
   }
 
@@ -1590,7 +1626,38 @@ export const processCallsFromExtracted = async (
         widenCache,
         effectiveCall.argTypes,
       );
-      if (!resolved) continue;
+      if (!resolved) {
+        // Vue template component fallback: match calledName against imported .vue basenames
+        if (effectiveCall.filePath.endsWith('.vue') && effectiveCall.sourceId.startsWith('File:')) {
+          const importedFiles = ctx.importMap.get(effectiveCall.filePath);
+          if (importedFiles) {
+            for (const importedPath of importedFiles) {
+              if (!importedPath.endsWith('.vue')) continue;
+              const basename = importedPath.slice(
+                importedPath.lastIndexOf('/') + 1,
+                importedPath.lastIndexOf('.'),
+              );
+              if (basename !== effectiveCall.calledName) continue;
+              const targetFileId = generateId('File', importedPath);
+              if (graph.getNode(targetFileId)) {
+                graph.addRelationship({
+                  id: generateId(
+                    'CALLS',
+                    `${effectiveCall.sourceId}:${effectiveCall.calledName}->${targetFileId}`,
+                  ),
+                  sourceId: effectiveCall.sourceId,
+                  targetId: targetFileId,
+                  type: 'CALLS',
+                  confidence: 0.9,
+                  reason: 'vue-template-component',
+                });
+              }
+              break;
+            }
+          }
+        }
+        continue;
+      }
 
       const relId = generateId(
         'CALLS',

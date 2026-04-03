@@ -25,6 +25,9 @@ interface ScriptBlock {
 
 const SCRIPT_RE = /<script(\s[^>]*)?>([^]*?)<\/script>/g;
 const TEMPLATE_COMPONENT_RE = /<([A-Z][A-Za-z0-9]+)/g;
+// Greedy: matches from the first <template> to the *last* </template>.
+// This is intentional — nested <template v-slot:...> tags are valid Vue
+// syntax and we want the entire outermost template body.
 const TEMPLATE_RE = /<template(\s[^>]*)?>([^]*)<\/template>/;
 
 function countNewlines(text: string): number {
@@ -81,6 +84,25 @@ export function extractVueScript(vueContent: string): VueScriptExtraction | null
     isSetup: primary.isSetup,
   };
 }
+
+/**
+ * Vue <script setup>: all top-level bindings are implicitly exported.
+ * Returns true if the node (or any ancestor) has the `program` root as its
+ * direct parent — i.e. the node is at the top level of the script block.
+ *
+ * Shared between the worker and sequential parsing paths.
+ */
+export const isVueSetupTopLevel = (
+  node: { parent: { type: string; parent: unknown } | null } | null,
+): boolean => {
+  if (!node) return false;
+  let current: { parent: { type: string; parent: unknown } | null } | null = node;
+  while (current) {
+    if (current.parent?.type === 'program') return true;
+    current = current.parent as typeof current;
+  }
+  return false;
+};
 
 /**
  * Extract PascalCase component names used in <template>.

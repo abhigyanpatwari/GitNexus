@@ -19,35 +19,9 @@ import { resolveVueImport } from '../import-resolvers/vue.js';
 import { extractTsNamedBindings } from '../named-bindings/typescript.js';
 import { TYPESCRIPT_QUERIES } from '../tree-sitter-queries.js';
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
+import { BUILT_INS as TS_BUILT_INS } from './typescript.js';
 
-const VUE_BUILT_INS: ReadonlySet<string> = new Set([
-  // Standard JS/TS built-ins
-  'console',
-  'log',
-  'warn',
-  'error',
-  'setTimeout',
-  'setInterval',
-  'clearTimeout',
-  'clearInterval',
-  'parseInt',
-  'parseFloat',
-  'JSON',
-  'parse',
-  'stringify',
-  'Object',
-  'Array',
-  'String',
-  'Number',
-  'Boolean',
-  'Map',
-  'Set',
-  'Promise',
-  'Math',
-  'Date',
-  'Error',
-  'fetch',
-  // Vue composition API
+const VUE_SPECIFIC_BUILT_INS = [
   'ref',
   'reactive',
   'computed',
@@ -77,7 +51,9 @@ const VUE_BUILT_INS: ReadonlySet<string> = new Set([
   'inject',
   'useSlots',
   'useAttrs',
-]);
+] as const;
+
+const VUE_BUILT_INS: ReadonlySet<string> = new Set([...TS_BUILT_INS, ...VUE_SPECIFIC_BUILT_INS]);
 
 export const vueProvider = defineLanguage({
   id: SupportedLanguages.Vue,

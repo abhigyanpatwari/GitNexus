@@ -65,7 +65,11 @@ import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
 import { preprocessImportPath } from '../import-processor.js';
-import { extractVueScript, extractTemplateComponents } from '../vue-sfc-extractor.js';
+import {
+  extractVueScript,
+  extractTemplateComponents,
+  isVueSetupTopLevel,
+} from '../vue-sfc-extractor.js';
 import type { NamedBinding } from '../named-bindings/types.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import type { FieldInfo, FieldExtractorContext } from '../field-types.js';
@@ -330,20 +334,6 @@ const clearCaches = (): void => {
   exportCache.clear();
   fieldInfoCache.clear();
   methodInfoCache.clear();
-};
-
-/**
- * Vue <script setup>: all top-level bindings are implicitly exported.
- * Returns true if the definition's direct parent is the `program` root.
- */
-const isVueSetupTopLevel = (node: SyntaxNode | null): boolean => {
-  if (!node) return false;
-  let current: SyntaxNode | null = node;
-  while (current) {
-    if (current.parent?.type === 'program') return true;
-    current = current.parent;
-  }
-  return false;
 };
 
 // ============================================================================

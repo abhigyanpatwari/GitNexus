@@ -18,7 +18,7 @@ import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { javascriptConfig } from '../field-extractors/configs/typescript-javascript.js';
 
-const BUILT_INS: ReadonlySet<string> = new Set([
+export const BUILT_INS: ReadonlySet<string> = new Set([
   'console',
   'log',
   'warn',

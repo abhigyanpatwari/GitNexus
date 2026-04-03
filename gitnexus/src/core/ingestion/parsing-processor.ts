@@ -7,7 +7,7 @@ import { generateId } from '../../lib/utils.js';
 import { SymbolTable } from './symbol-table.js';
 import { ASTCache } from './ast-cache.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
-import { extractVueScript } from './vue-sfc-extractor.js';
+import { extractVueScript, isVueSetupTopLevel } from './vue-sfc-extractor.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import {
   getDefinitionNodeFromCaptures,
@@ -245,20 +245,6 @@ function seqGetFieldInfo(
   return cached;
 }
 
-/** Vue <script setup>: all top-level bindings are implicitly exported.
- *  Returns true if the definition's direct parent is the `program` root. */
-const isSeqVueSetupTopLevel = (node: SyntaxNode | null): boolean => {
-  if (!node) return false;
-  // Walk up to find the definition node (function_declaration, class_declaration, etc.)
-  // and check if its parent is the program root.
-  let current: SyntaxNode | null = node;
-  while (current) {
-    if (current.parent?.type === 'program') return true;
-    current = current.parent;
-  }
-  return false;
-};
-
 const processParsingSequential = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
@@ -412,7 +398,7 @@ const processParsingSequential = async (
           language: language,
           isExported:
             language === SupportedLanguages.Vue && isVueSetup
-              ? isSeqVueSetupTopLevel(nameNode || definitionNodeForRange)
+              ? isVueSetupTopLevel(nameNode || definitionNodeForRange)
               : cachedExportCheck(
                   provider.exportChecker,
                   nameNode || definitionNodeForRange,
@@ -475,7 +461,7 @@ const processParsingSequential = async (
             }
           }
         }
-        // All 14 languages register a FieldExtractor — no fallback needed.
+        // All 15 tree-sitter languages register a FieldExtractor — no fallback needed.
       }
 
       // Apply field metadata to the graph node retroactively
