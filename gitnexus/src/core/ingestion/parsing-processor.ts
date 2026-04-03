@@ -18,7 +18,7 @@ import {
 } from './utils/ast-helpers.js';
 import { detectFrameworkFromAST } from './framework-detection.js';
 import { buildTypeEnv } from './type-env.js';
-import type { ExtractedDeferredRouteCandidate } from './route-extractors/spring-java-types.js';
+import type { DeferredRouteCandidate } from './route-extractors/deferred-route-types.js';
 import type { FieldInfo, FieldExtractorContext } from './field-types.js';
 import type { LanguageProvider } from './language-provider.js';
 import { WorkerPool } from './workers/worker-pool.js';
@@ -49,7 +49,7 @@ export interface WorkerExtractedData {
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
   decoratorRoutes: ExtractedDecoratorRoute[];
-  deferredRouteCandidates: ExtractedDeferredRouteCandidate[];
+  deferredRouteCandidates: DeferredRouteCandidate[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
@@ -112,7 +112,7 @@ const processParsingWithWorkers = async (
   const allRoutes: ExtractedRoute[] = [];
   const allFetchCalls: ExtractedFetchCall[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
-  const allDeferredRouteCandidates: ExtractedDeferredRouteCandidate[] = [];
+  const allDeferredRouteCandidates: DeferredRouteCandidate[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
   const allConstructorBindings: FileConstructorBindings[] = [];

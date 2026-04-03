@@ -1,3 +1,4 @@
+import { SupportedLanguages } from 'gitnexus-shared';
 import type Parser from 'tree-sitter';
 import type { ResolutionContext } from '../resolution-context.js';
 import type { SymbolDefinition } from '../symbol-table.js';
@@ -6,6 +7,7 @@ import type {
   ExtractedSpringJavaRouteCandidate,
   SpringRoutePathExpression,
 } from './spring-java-types.js';
+import type { DeferredRouteCandidate } from './deferred-route-types.js';
 import { extractJavaStringLiteral } from '../utils/java-strings.js';
 import { findChild, type SyntaxNode } from '../utils/ast-helpers.js';
 
@@ -227,15 +229,36 @@ function resolveNamedImportConstant(
   return def?.constantValue ?? null;
 }
 
+function normalizeFilePath(filePath: string): string {
+  return filePath.replace(/\\/g, '/');
+}
+
+function resolveQualifiedClassLike(
+  ownerPath: string[],
+  filePath: string,
+  ctx: ResolutionContext,
+): SymbolDefinition | null {
+  const ownerName = ownerPath[ownerPath.length - 1];
+  if (!ownerName) return null;
+
+  const exact = resolveUniqueClassLike(ownerName, filePath, ctx);
+  if (exact || ownerPath.length === 1) return exact;
+
+  const qualifiedSuffix = `/${ownerPath.join('/')}.java`;
+  const classLikes = ctx.symbols
+    .lookupFuzzy(ownerName)
+    .filter((candidate) => CLASS_LIKE_TYPES.has(candidate.type))
+    .filter((candidate) => normalizeFilePath(candidate.filePath).endsWith(qualifiedSuffix));
+  return classLikes.length === 1 ? classLikes[0] : null;
+}
+
 function resolveFieldAccessConstant(
   ownerPath: string[],
   fieldName: string,
   filePath: string,
   ctx: ResolutionContext,
 ): string | null {
-  const ownerName = ownerPath[ownerPath.length - 1];
-  if (!ownerName) return null;
-  const ownerDef = resolveUniqueClassLike(ownerName, filePath, ctx);
+  const ownerDef = resolveQualifiedClassLike(ownerPath, filePath, ctx);
   if (!ownerDef) return null;
   return ctx.symbols.lookupFieldByOwner(ownerDef.nodeId, fieldName)?.constantValue ?? null;
 }
@@ -300,6 +323,8 @@ function buildSpringRouteCandidate(
     extractRequestMappingPath(mappingAnnotation);
 
   return {
+    kind: 'spring-java',
+    language: SupportedLanguages.Java,
     filePath,
     controllerName: className,
     methodName,
@@ -348,13 +373,20 @@ export function extractSpringJavaRouteCandidates(
   return candidates;
 }
 
+function isSpringJavaRouteCandidate(
+  candidate: DeferredRouteCandidate,
+): candidate is ExtractedSpringJavaRouteCandidate {
+  return candidate.kind === 'spring-java';
+}
+
 export function finalizeSpringJavaRoutes(
-  candidates: ExtractedSpringJavaRouteCandidate[],
+  candidates: DeferredRouteCandidate[],
   ctx: ResolutionContext,
 ): ExtractedRoute[] {
   const routes: ExtractedRoute[] = [];
 
   for (const candidate of candidates) {
+    if (!isSpringJavaRouteCandidate(candidate)) continue;
     const classPrefix = resolvePathExpression(
       candidate.classPathExpression,
       candidate.filePath,

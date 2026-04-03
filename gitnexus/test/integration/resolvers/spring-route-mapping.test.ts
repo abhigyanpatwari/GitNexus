@@ -30,6 +30,7 @@ describe('Spring route mapping', () => {
     expect(routes).toContain('/api/users/fqcn');
     expect(routes).toContain('/health');
     expect(routes).toContain('/status');
+    expect(routes).toHaveLength(7);
 
     expect(routes).not.toContain('/');
     expect(routes).not.toContain('/api');

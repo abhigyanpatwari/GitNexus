@@ -20,7 +20,9 @@ import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { NamedBindingExtractorFn } from './named-bindings/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { NodeLabel } from 'gitnexus-shared';
-import type { ExtractedDeferredRouteCandidate } from './route-extractors/spring-java-types.js';
+import type { DeferredRouteCandidate } from './route-extractors/deferred-route-types.js';
+import type { ResolutionContext } from './resolution-context.js';
+import type { ExtractedRoute } from './workers/parse-worker.js';
 
 // ── Shared type aliases ────────────────────────────────────────────────────
 /** Tree-sitter query captures: capture name → AST node (or undefined if not captured). */
@@ -150,7 +152,13 @@ interface LanguageProviderConfig {
   readonly deferredRouteExtractor?: (
     tree: Parser.Tree,
     filePath: string,
-  ) => ExtractedDeferredRouteCandidate[];
+  ) => DeferredRouteCandidate[];
+  /** Finalize deferred route candidates after imports/symbols are available.
+   *  Default: undefined (no deferred route finalization). */
+  readonly deferredRouteFinalizer?: (
+    candidates: DeferredRouteCandidate[],
+    ctx: ResolutionContext,
+  ) => ExtractedRoute[];
 
   // ── Noise filtering ────────────────────────────────────────────────
   /** Built-in/stdlib names that should be filtered from the call graph for this language.

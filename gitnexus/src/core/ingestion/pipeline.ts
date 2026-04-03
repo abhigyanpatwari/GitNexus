@@ -25,8 +25,7 @@ import {
   mergeImplementorMaps,
 } from './call-processor.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from './route-extractors/nextjs.js';
-import { finalizeSpringJavaRoutes } from './route-extractors/spring-java.js';
-import type { ExtractedDeferredRouteCandidate } from './route-extractors/spring-java-types.js';
+import type { DeferredRouteCandidate } from './route-extractors/deferred-route-types.js';
 import { expoFileToRouteURL } from './route-extractors/expo.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';
 import {
@@ -786,7 +785,7 @@ async function runChunkedParseAndResolve(
   const allExtractedRoutes: ExtractedRoute[] = [];
   // Accumulate decorator-based routes (@Get, @Post, @app.route, etc.)
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
-  const allDeferredRouteCandidates: ExtractedDeferredRouteCandidate[] = [];
+  const allDeferredRouteCandidates: DeferredRouteCandidate[] = [];
   // Accumulate MCP/RPC tool definitions (@mcp.tool(), @app.tool(), etc.)
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
@@ -1032,10 +1031,17 @@ async function runChunkedParseAndResolve(
     astCache.clear();
   }
 
-  const finalizedSpringRoutes = finalizeSpringJavaRoutes(allDeferredRouteCandidates, ctx);
-  if (finalizedSpringRoutes.length > 0) {
-    await processRoutesFromExtracted(graph, finalizedSpringRoutes, ctx);
-    allExtractedRoutes.push(...finalizedSpringRoutes);
+  for (const provider of Object.values(providers)) {
+    if (!provider.deferredRouteFinalizer) continue;
+
+    const finalizedRoutes = provider.deferredRouteFinalizer(
+      allDeferredRouteCandidates.filter((candidate) => candidate.language === provider.id),
+      ctx,
+    );
+    if (finalizedRoutes.length === 0) continue;
+
+    await processRoutesFromExtracted(graph, finalizedRoutes, ctx);
+    allExtractedRoutes.push(...finalizedRoutes);
   }
 
   // Log resolution cache stats

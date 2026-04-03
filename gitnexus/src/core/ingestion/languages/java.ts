@@ -17,15 +17,26 @@ import { JAVA_QUERIES } from '../tree-sitter-queries.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { javaConfig } from '../field-extractors/configs/jvm.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
-import { extractSpringJavaRouteCandidates } from '../route-extractors/spring-java.js';
+import {
+  extractSpringJavaRouteCandidates,
+  finalizeSpringJavaRoutes,
+} from '../route-extractors/spring-java.js';
 import { javaMethodConfig } from '../method-extractors/configs/jvm.js';
+
+const SPRING_ROUTE_FILE_SUFFIXES = [
+  'Controller.java',
+  'Resource.java',
+  'Endpoint.java',
+  'Api.java',
+  'Handler.java',
+];
+const SPRING_ROUTE_DIR_HINTS = ['/controller/', '/controllers/', '/rest/', '/api/', '/web/'];
 
 function isSpringRouteFile(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, '/');
   return (
-    normalized.endsWith('Controller.java') ||
-    normalized.includes('/controller/') ||
-    normalized.includes('/controllers/')
+    SPRING_ROUTE_FILE_SUFFIXES.some((suffix) => normalized.endsWith(suffix)) ||
+    SPRING_ROUTE_DIR_HINTS.some((segment) => normalized.includes(segment))
   );
 }
 
@@ -43,4 +54,5 @@ export const javaProvider = defineLanguage({
   methodExtractor: createMethodExtractor(javaMethodConfig),
   isRouteFile: isSpringRouteFile,
   deferredRouteExtractor: extractSpringJavaRouteCandidates,
+  deferredRouteFinalizer: finalizeSpringJavaRoutes,
 });

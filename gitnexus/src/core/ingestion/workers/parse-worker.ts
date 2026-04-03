@@ -39,7 +39,7 @@ try {
   Kotlin = _require('tree-sitter-kotlin');
 } catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
-import type { ExtractedDeferredRouteCandidate } from '../route-extractors/spring-java-types.js';
+import type { DeferredRouteCandidate } from '../route-extractors/deferred-route-types.js';
 import {
   FUNCTION_NODE_TYPES,
   extractFunctionName,
@@ -247,7 +247,7 @@ export interface ParseWorkerResult {
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
   decoratorRoutes: ExtractedDecoratorRoute[];
-  deferredRouteCandidates: ExtractedDeferredRouteCandidate[];
+  deferredRouteCandidates: DeferredRouteCandidate[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];

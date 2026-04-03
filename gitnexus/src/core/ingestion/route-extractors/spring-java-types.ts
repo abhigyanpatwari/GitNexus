@@ -1,9 +1,14 @@
+import { SupportedLanguages } from 'gitnexus-shared';
+import type { DeferredRouteCandidate } from './deferred-route-types.js';
+
 export type SpringRoutePathExpression =
   | { kind: 'literal'; value: string }
   | { kind: 'identifier'; name: string }
   | { kind: 'field-access'; ownerPath: string[]; fieldName: string };
 
-export interface ExtractedSpringJavaRouteCandidate {
+export interface ExtractedSpringJavaRouteCandidate extends DeferredRouteCandidate {
+  kind: 'spring-java';
+  language: SupportedLanguages.Java;
   filePath: string;
   controllerName: string;
   methodName: string;
@@ -14,5 +19,3 @@ export interface ExtractedSpringJavaRouteCandidate {
   hasExplicitMethodPath: boolean;
   lineNumber: number;
 }
-
-export type ExtractedDeferredRouteCandidate = ExtractedSpringJavaRouteCandidate;
