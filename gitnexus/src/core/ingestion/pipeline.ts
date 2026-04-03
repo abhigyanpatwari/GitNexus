@@ -873,7 +873,9 @@ async function runChunkedParseAndResolve(
             );
           }
         }
-        deferredWorkerCalls.push(...chunkWorkerData.calls);
+        for (const c of chunkWorkerData.calls) {
+          deferredWorkerCalls.push(c)
+        }
         deferredWorkerHeritage.push(...chunkWorkerData.heritage);
         deferredConstructorBindings.push(...chunkWorkerData.constructorBindings);
         if (chunkWorkerData.assignments?.length) {
