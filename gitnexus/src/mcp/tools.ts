@@ -554,6 +554,27 @@ WHEN TO USE: Before group_sync or when agents should refresh indexes.`,
     },
   },
   {
+    name: 'group_graph',
+    description: `Traverse the cross-repo knowledge graph for a symbol. Returns the symbol's local context plus all code-level connections to other repos in the group via CrossLinks.
+
+WHEN TO USE: After group_sync, to explore how a symbol in one repo connects to symbols in other repos (e.g. who imports this function from another package).`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Group name' },
+        symbol: { type: 'string', description: 'Symbol name to search for' },
+        repo: { type: 'string', description: 'Repo containing the symbol (optional, searches all if omitted)' },
+        depth: { type: 'number', description: 'Cross-repo traversal depth (default: 1, max: 2)' },
+        direction: {
+          type: 'string',
+          enum: ['upstream', 'downstream', 'both'],
+          description: 'Direction of traversal (default: both)',
+        },
+      },
+      required: ['name', 'symbol'],
+    },
+  },
+  {
     name: 'group_discover',
     description: `Auto-discover indexed repos in a directory and create a group with code-level dependency detection.
 

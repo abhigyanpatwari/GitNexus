@@ -522,6 +522,162 @@ export class GroupService {
   }
 
   /**
+   * Traverse the cross-repo knowledge graph for a symbol.
+   * Returns the symbol's local context plus all cross-repo connections via CrossLinks.
+   */
+  async groupGraph(params: Record<string, unknown>): Promise<unknown> {
+    const name = String(params.name ?? '').trim();
+    const symbol = String(params.symbol ?? '').trim();
+    const repoParam = typeof params.repo === 'string' ? params.repo.trim() : undefined;
+    const depth = typeof params.depth === 'number' ? Math.min(params.depth, 2) : 1;
+    const direction =
+      typeof params.direction === 'string' ? params.direction : 'both';
+
+    if (!name || !symbol) return { error: 'name and symbol are required' };
+
+    const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
+    const config = await loadGroupConfig(groupDir);
+    const registry = await readContractRegistry(groupDir);
+
+    if (!registry) {
+      return { error: `No contracts.json for group "${name}". Run group_sync first.` };
+    }
+
+    // Find the symbol in a repo
+    let sourceRepo: GroupRepoHandle | null = null;
+    let localContext: unknown = null;
+
+    if (repoParam) {
+      // User specified which repo
+      try {
+        sourceRepo = await this.port.resolveRepo(repoParam);
+        localContext = await this.port.query(sourceRepo, {
+          query: symbol,
+          limit: 5,
+          max_symbols: 10,
+          include_content: false,
+        });
+      } catch {
+        return { error: `Cannot resolve repo: ${repoParam}` };
+      }
+    } else {
+      // Search all repos in the group for the symbol
+      for (const [, registryName] of Object.entries(config.repos)) {
+        try {
+          const repo = await this.port.resolveRepo(registryName);
+          const result = await this.port.query(repo, {
+            query: symbol,
+            limit: 3,
+            max_symbols: 5,
+            include_content: false,
+          });
+          const processes = (result as { processes?: unknown[] }).processes || [];
+          if (processes.length > 0) {
+            sourceRepo = repo;
+            localContext = result;
+            break;
+          }
+        } catch {
+          // Skip inaccessible repos
+        }
+      }
+    }
+
+    if (!sourceRepo) {
+      return { error: `Symbol "${symbol}" not found in any repo in group "${name}"` };
+    }
+
+    // Find cross-repo connections via CrossLinks
+    const crossConnections: Array<{
+      direction: 'outgoing' | 'incoming';
+      link: typeof registry.crossLinks[0];
+      remoteRepo: string;
+      remoteContext: unknown;
+    }> = [];
+
+    const visited = new Set<string>([sourceRepo.name]);
+
+    const findConnections = async (
+      repoName: string,
+      currentDepth: number,
+    ): Promise<void> => {
+      if (currentDepth > depth) return;
+
+      for (const link of registry.crossLinks) {
+        const isFrom = link.from.repo === repoName ||
+          Object.entries(config.repos).some(([gp, rn]) => gp === link.from.repo && rn === repoName);
+        const isTo = link.to.repo === repoName ||
+          Object.entries(config.repos).some(([gp, rn]) => gp === link.to.repo && rn === repoName);
+
+        let remoteRepoGroupPath: string | null = null;
+        let linkDirection: 'outgoing' | 'incoming' | null = null;
+
+        if (isFrom && (direction === 'downstream' || direction === 'both')) {
+          remoteRepoGroupPath = link.to.repo;
+          linkDirection = 'outgoing';
+        } else if (isTo && (direction === 'upstream' || direction === 'both')) {
+          remoteRepoGroupPath = link.from.repo;
+          linkDirection = 'incoming';
+        }
+
+        if (!remoteRepoGroupPath || !linkDirection) continue;
+
+        // Find registry name for remote repo
+        const remoteRegistryName = config.repos[remoteRepoGroupPath];
+        if (!remoteRegistryName || visited.has(remoteRegistryName)) continue;
+        visited.add(remoteRegistryName);
+
+        let remoteContext: unknown = null;
+        try {
+          const remoteRepo = await this.port.resolveRepo(remoteRegistryName);
+          // Get context for the connected symbol
+          const remoteSymbol =
+            linkDirection === 'outgoing' ? link.to.symbolRef.name : link.from.symbolRef.name;
+          remoteContext = await this.port.query(remoteRepo, {
+            query: remoteSymbol,
+            limit: 3,
+            max_symbols: 5,
+            include_content: false,
+          });
+        } catch {
+          // Remote repo not accessible
+        }
+
+        crossConnections.push({
+          direction: linkDirection,
+          link,
+          remoteRepo: remoteRepoGroupPath,
+          remoteContext,
+        });
+      }
+    };
+
+    // Find connections from source repo
+    const sourceGroupPath = Object.entries(config.repos)
+      .find(([, rn]) => rn === sourceRepo!.name)?.[0] || sourceRepo.name;
+    await findConnections(sourceGroupPath, 1);
+
+    return {
+      group: name,
+      symbol,
+      sourceRepo: sourceRepo.name,
+      localContext,
+      crossConnections: crossConnections.map((cc) => ({
+        direction: cc.direction,
+        remoteRepo: cc.remoteRepo,
+        contractId: cc.link.contractId,
+        contractType: cc.link.type,
+        matchType: cc.link.matchType,
+        confidence: cc.link.confidence,
+        from: cc.link.from,
+        to: cc.link.to,
+        remoteContext: cc.remoteContext,
+      })),
+      totalCrossLinks: crossConnections.length,
+    };
+  }
+
+  /**
    * Auto-discover indexed repos in a directory and create a group with code-level dependency detection.
    */
   async groupDiscover(params: Record<string, unknown>): Promise<unknown> {

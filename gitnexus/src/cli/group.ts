@@ -340,6 +340,78 @@ export function registerGroupCommands(program: Command): void {
     });
 
   group
+    .command('graph <name> <symbol>')
+    .description('Traverse the cross-repo knowledge graph for a symbol')
+    .option('--repo <repo>', 'Repo containing the symbol')
+    .option('--depth <n>', 'Cross-repo traversal depth (max 2)', '1')
+    .option('--direction <dir>', 'upstream | downstream | both', 'both')
+    .option('--json', 'JSON output')
+    .action(
+      async (
+        name: string,
+        symbol: string,
+        opts: { repo?: string; depth?: string; direction?: string; json?: boolean },
+      ) => {
+        const { LocalBackend } = await import('../mcp/local/local-backend.js');
+
+        const depth = parseInt(opts.depth || '1', 10) || 1;
+        const backend = new LocalBackend();
+        try {
+          await backend.init();
+          console.log(`Traversing cross-repo graph for "${symbol}" in group "${name}"...\n`);
+
+          const raw = await backend.getGroupService().groupGraph({
+            name,
+            symbol,
+            repo: opts.repo,
+            depth,
+            direction: opts.direction || 'both',
+          });
+
+          const result = raw as {
+            error?: string;
+            sourceRepo?: string;
+            localContext?: unknown;
+            crossConnections?: Array<{
+              direction: string;
+              remoteRepo: string;
+              contractId: string;
+              contractType: string;
+              confidence: number;
+            }>;
+            totalCrossLinks?: number;
+          };
+
+          if (result.error) {
+            console.error(result.error);
+            process.exitCode = 1;
+            return;
+          }
+
+          if (opts.json) {
+            console.log(JSON.stringify(raw, null, 2));
+          } else {
+            console.log(`Source repo: ${result.sourceRepo}`);
+            console.log(`Cross-repo connections: ${result.totalCrossLinks}\n`);
+
+            for (const conn of result.crossConnections || []) {
+              const arrow = conn.direction === 'outgoing' ? '→' : '←';
+              console.log(
+                `  ${arrow} ${conn.remoteRepo} [${conn.contractType}] ${conn.contractId} (conf=${conn.confidence})`,
+              );
+            }
+
+            if ((result.crossConnections || []).length === 0) {
+              console.log('  No cross-repo connections found for this symbol.');
+            }
+          }
+        } finally {
+          await backend.dispose().catch(() => {});
+        }
+      },
+    );
+
+  group
     .command('query <name> <query>')
     .description('Search execution flows across all repos in a group')
     .option('--subgroup <path>', 'Limit search scope')

@@ -3046,6 +3046,8 @@ export class LocalBackend {
         return this.groupQuery(params);
       case 'group_status':
         return this.groupStatus(params);
+      case 'group_graph':
+        return this.groupGraph(params);
       case 'group_discover':
         return this.groupDiscover(params);
       default:
@@ -3192,6 +3194,11 @@ export class LocalBackend {
       }
     }
     return JSON.stringify(raw, null, 2);
+  }
+
+  private async groupGraph(params: Record<string, unknown>): Promise<unknown> {
+    await this.refreshRepos();
+    return this.getGroupService().groupGraph(params);
   }
 
   private async groupDiscover(params: Record<string, unknown>): Promise<unknown> {
