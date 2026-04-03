@@ -132,7 +132,14 @@ export const FILTERABLE_LABELS: NodeLabel[] = [
 ];
 
 // Edge/Relation types
-export type EdgeType = 'CONTAINS' | 'DEFINES' | 'IMPORTS' | 'CALLS' | 'EXTENDS' | 'IMPLEMENTS';
+export type EdgeType =
+  | 'CONTAINS'
+  | 'DEFINES'
+  | 'IMPORTS'
+  | 'CALLS'
+  | 'EXTENDS'
+  | 'IMPLEMENTS'
+  | 'CROSS_REPO_IMPORT';
 
 export const ALL_EDGE_TYPES: EdgeType[] = [
   'CONTAINS',
@@ -141,6 +148,7 @@ export const ALL_EDGE_TYPES: EdgeType[] = [
   'CALLS',
   'EXTENDS',
   'IMPLEMENTS',
+  'CROSS_REPO_IMPORT',
 ];
 
 // Default visible edges (CALLS hidden by default to reduce clutter)
@@ -151,6 +159,7 @@ export const DEFAULT_VISIBLE_EDGES: EdgeType[] = [
   'EXTENDS',
   'IMPLEMENTS',
   'CALLS',
+  'CROSS_REPO_IMPORT',
 ];
 
 // Edge display info for UI
@@ -161,4 +170,21 @@ export const EDGE_INFO: Record<EdgeType, { color: string; label: string }> = {
   CALLS: { color: '#7c3aed', label: 'Calls' },
   EXTENDS: { color: '#c2410c', label: 'Extends' },
   IMPLEMENTS: { color: '#be185d', label: 'Implements' },
+  CROSS_REPO_IMPORT: { color: '#f59e0b', label: 'Cross-Repo Import' },
+};
+
+// Repo color palette for multi-repo graph view
+export const REPO_COLORS = [
+  '#3b82f6', // blue
+  '#10b981', // emerald
+  '#f59e0b', // amber
+  '#ef4444', // red
+  '#8b5cf6', // violet
+  '#06b6d4', // cyan
+  '#ec4899', // pink
+  '#84cc16', // lime
+];
+
+export const getRepoColor = (repoIndex: number): string => {
+  return REPO_COLORS[repoIndex % REPO_COLORS.length];
 };

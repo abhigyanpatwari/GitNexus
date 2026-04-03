@@ -774,3 +774,55 @@ export async function connectToServer(
 
   return { nodes, relationships, repoInfo };
 }
+
+// ── Group API ──────────────────────────────────────────────────────────────
+
+export interface GroupGraphResult {
+  repos: Array<{ name: string; groupPath: string; nodeCount: number; edgeCount: number }>;
+  nodes: GraphNode[];
+  relationships: GraphRelationship[];
+  crossLinks: Array<{
+    from: { repo: string; symbolUid: string; symbolRef: { filePath: string; name: string } };
+    to: { repo: string; symbolUid: string; symbolRef: { filePath: string; name: string } };
+    type: string;
+    contractId: string;
+    matchType: string;
+    confidence: number;
+  }>;
+}
+
+export interface GroupStatus {
+  group: string;
+  lastSync: string | null;
+  missingRepos: string[];
+  repos: Record<
+    string,
+    { indexStale: boolean; contractsStale: boolean; missing: boolean; commitsBehind?: number }
+  >;
+}
+
+/** Fetch list of configured group names. */
+export const fetchGroups = async (): Promise<string[]> => {
+  const response = await fetchWithTimeout(`${_backendUrl}/api/groups`);
+  await assertOk(response);
+  return response.json() as Promise<string[]>;
+};
+
+/** Fetch merged graph for a group (all repos + cross-repo edges). */
+export const fetchGroupGraph = async (
+  groupName: string,
+  signal?: AbortSignal,
+): Promise<GroupGraphResult> => {
+  const url = `${_backendUrl}/api/group-graph?group=${encodeURIComponent(groupName)}`;
+  const response = await fetchWithTimeout(url, { signal }, 120_000);
+  await assertOk(response);
+  return response.json() as Promise<GroupGraphResult>;
+};
+
+/** Fetch group status (staleness info). */
+export const fetchGroupStatus = async (groupName: string): Promise<GroupStatus> => {
+  const url = `${_backendUrl}/api/group-status?group=${encodeURIComponent(groupName)}`;
+  const response = await fetchWithTimeout(url);
+  await assertOk(response);
+  return response.json() as Promise<GroupStatus>;
+};

@@ -15,6 +15,7 @@ import { useAppState } from '../hooks/useAppState';
 import {
   deleteRepo,
   fetchRepos,
+  fetchGroups,
   startAnalyze,
   streamAnalyzeProgress,
   type BackendRepo,
@@ -63,6 +64,14 @@ export const Header = ({
     rightPanelTab,
     setSettingsPanelOpen,
     setHelpDialogBoxOpen,
+    groupMode,
+    activeGroup,
+    availableGroups,
+    setAvailableGroups,
+    connectToGroup,
+    setGroupMode,
+    setActiveGroup,
+    serverBaseUrl,
   } = useAppState();
   const [searchQuery, setSearchQuery] = useState('');
   const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
@@ -72,6 +81,7 @@ export const Header = ({
   const reanalyzeSseRef = useRef<AbortController | null>(null);
   const repoDropdownRef = useRef<HTMLDivElement>(null);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isGroupDropdownOpen, setIsGroupDropdownOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const searchRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -365,6 +375,59 @@ export const Header = ({
                     </div>
                   </>
                 )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Group View toggle */}
+        {serverBaseUrl && (
+          <div className="relative">
+            <button
+              onClick={async () => {
+                if (groupMode) {
+                  setGroupMode(false);
+                  setActiveGroup(null);
+                } else {
+                  try {
+                    const groups = await fetchGroups();
+                    setAvailableGroups(groups);
+                    if (groups.length === 1) {
+                      connectToGroup(groups[0]);
+                    } else if (groups.length > 1) {
+                      setIsGroupDropdownOpen(true);
+                    }
+                  } catch {
+                    // No groups available
+                  }
+                }
+              }}
+              className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition-all ${
+                groupMode
+                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
+                  : 'border-border-subtle bg-surface text-text-muted hover:border-border-default hover:text-text-secondary'
+              }`}
+              title={groupMode ? `Group: ${activeGroup}` : 'Multi-repo group view'}
+            >
+              <FolderOpen className="h-3 w-3" />
+              <span>{groupMode ? activeGroup : 'Group'}</span>
+            </button>
+            {isGroupDropdownOpen && !groupMode && availableGroups.length > 0 && (
+              <div className="absolute top-full left-0 z-50 mt-1.5 w-56 animate-slide-up overflow-hidden rounded-xl border border-border-subtle bg-surface shadow-xl">
+                <div className="px-3 py-2 text-xs font-medium text-text-muted">Select a group</div>
+                {availableGroups.map((g) => (
+                  <button
+                    key={g}
+                    onClick={() => {
+                      setIsGroupDropdownOpen(false);
+                      connectToGroup(g);
+                    }}
+                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-sm text-text-secondary transition-colors hover:bg-hover"
+                  >
+                    <FolderOpen className="h-3.5 w-3.5 text-amber-400" />
+                    {g}
+                  </button>
+                ))}
               </div>
             )}
           </div>

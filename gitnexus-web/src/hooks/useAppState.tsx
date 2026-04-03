@@ -147,6 +147,15 @@ interface AppState {
   switchRepo: (repoName: string) => Promise<void>;
   setCurrentRepo: (repoName: string) => void;
 
+  // Group mode (multi-repo combined graph)
+  groupMode: boolean;
+  setGroupMode: (mode: boolean) => void;
+  activeGroup: string | null;
+  setActiveGroup: (name: string | null) => void;
+  availableGroups: string[];
+  setAvailableGroups: (groups: string[]) => void;
+  connectToGroup: (groupName: string) => Promise<void>;
+
   // Worker API (shared across app)
   runQuery: (cypher: string) => Promise<any[]>;
   isDatabaseReady: () => Promise<boolean>;
@@ -318,6 +327,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   // Multi-repo switching
   const [serverBaseUrl, setServerBaseUrl] = useState<string | null>(null);
   const [availableRepos, setAvailableRepos] = useState<BackendRepo[]>([]);
+
+  // Group mode (multi-repo combined graph)
+  const [groupMode, setGroupMode] = useState(false);
+  const [activeGroup, setActiveGroup] = useState<string | null>(null);
+  const [availableGroups, setAvailableGroups] = useState<string[]>([]);
 
   // Embedding state
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus>('idle');
@@ -1172,6 +1186,84 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     ],
   );
 
+  const connectToGroup = useCallback(
+    async (groupName: string) => {
+      if (!serverBaseUrl) return;
+
+      setProgress({
+        phase: 'extracting',
+        percent: 10,
+        message: `Loading group "${groupName}"...`,
+      });
+      setViewMode('loading');
+
+      // Clear stale state
+      setHighlightedNodeIds(new Set());
+      clearAIToolHighlights();
+      clearAICitationHighlights();
+      clearBlastRadius();
+      setSelectedNode(null);
+      setQueryResult(null);
+      setCodeReferences([]);
+      setCodePanelOpen(false);
+      setCodeReferenceFocus(null);
+
+      try {
+        const { fetchGroupGraph } = await import('../services/backend-client');
+        const result = await fetchGroupGraph(groupName);
+
+        setProgress({ phase: 'structure', percent: 60, message: 'Building combined graph...' });
+
+        const { createKnowledgeGraph } = await import('../core/graph/graph');
+        const newGraph = createKnowledgeGraph();
+
+        for (const node of result.nodes) {
+          newGraph.addNode(node);
+        }
+        for (const rel of result.relationships) {
+          newGraph.addRelationship(rel);
+        }
+
+        setGraph(newGraph);
+        setGroupMode(true);
+        setActiveGroup(groupName);
+        setProjectName(`Group: ${groupName}`);
+
+        setProgress(null);
+        setViewMode('exploring');
+      } catch (err) {
+        setProgress({
+          phase: 'error',
+          percent: 0,
+          message: 'Failed to load group',
+          detail: err instanceof Error ? err.message : 'Unknown error',
+        });
+        setTimeout(() => {
+          setViewMode('exploring');
+          setProgress(null);
+        }, 3000);
+      }
+    },
+    [
+      serverBaseUrl,
+      setProgress,
+      setViewMode,
+      setProjectName,
+      setGraph,
+      setHighlightedNodeIds,
+      clearAIToolHighlights,
+      clearAICitationHighlights,
+      clearBlastRadius,
+      setSelectedNode,
+      setQueryResult,
+      setCodeReferences,
+      setCodePanelOpen,
+      setCodeReferenceFocus,
+      setGroupMode,
+      setActiveGroup,
+    ],
+  );
+
   const removeCodeReference = useCallback(
     (id: string) => {
       setCodeReferences((prev) => {
@@ -1256,6 +1348,14 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setAvailableRepos,
     switchRepo,
     setCurrentRepo,
+    // Group mode
+    groupMode,
+    setGroupMode,
+    activeGroup,
+    setActiveGroup,
+    availableGroups,
+    setAvailableGroups,
+    connectToGroup,
     runQuery,
     isDatabaseReady,
     // Embedding state and methods

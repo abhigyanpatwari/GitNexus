@@ -1,7 +1,7 @@
 import Graph from 'graphology';
 import type { NodeLabel } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../core/graph/types';
-import { NODE_COLORS, NODE_SIZES, getCommunityColor } from './constants';
+import { NODE_COLORS, NODE_SIZES, getCommunityColor, getRepoColor } from './constants';
 
 export interface SigmaNodeAttributes {
   x: number;
@@ -19,6 +19,8 @@ export interface SigmaNodeAttributes {
   mass?: number; // ForceAtlas2 mass - higher = more repulsion
   community?: number; // Community index from Leiden algorithm
   communityColor?: string; // Color assigned by community
+  repoName?: string; // Repo name for multi-repo graph view
+  repoColor?: string; // Color tint for repo identification
 }
 
 export interface SigmaEdgeAttributes {
@@ -88,6 +90,36 @@ export const knowledgeGraphToGraphology = (
   const graph = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
   const nodeCount = knowledgeGraph.nodes.length;
 
+  // Detect multi-repo mode: nodes with _repo property or namespaced IDs (repoName::nodeId)
+  const repoSet = new Set<string>();
+  for (const node of knowledgeGraph.nodes) {
+    const repo = (node.properties as Record<string, unknown>)._repo as string | undefined;
+    if (repo) {
+      repoSet.add(repo);
+    } else {
+      const sep = node.id.indexOf('::');
+      if (sep > 0) repoSet.add(node.id.substring(0, sep));
+    }
+  }
+  const isMultiRepo = repoSet.size > 1;
+  const repoList = [...repoSet];
+
+  // Build repo center positions for multi-repo layout
+  const repoCenters = new Map<string, { x: number; y: number; color: string }>();
+  if (isMultiRepo) {
+    const repoSpread = Math.sqrt(nodeCount) * 60;
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+    repoList.forEach((repo, idx) => {
+      const angle = idx * goldenAngle;
+      const radius = repoSpread * 0.6;
+      repoCenters.set(repo, {
+        x: radius * Math.cos(angle),
+        y: radius * Math.sin(angle),
+        color: getRepoColor(idx),
+      });
+    });
+  }
+
   // Build parent-child map from hierarchy relationships
   // CONTAINS: Folder -> File
   // DEFINES: File -> Function/Class/Interface/Method
@@ -151,6 +183,14 @@ export const knowledgeGraphToGraphology = (
   // Store positions for parent lookup
   const nodePositions = new Map<string, { x: number; y: number }>();
 
+  // Helper to get repo name from a node
+  const getNodeRepo = (node: typeof knowledgeGraph.nodes[0]): string | undefined => {
+    const repo = (node.properties as Record<string, unknown>)._repo as string | undefined;
+    if (repo) return repo;
+    const sep = node.id.indexOf('::');
+    return sep > 0 ? node.id.substring(0, sep) : undefined;
+  };
+
   // Position structural nodes (folders, etc.) in a wide radial pattern FIRST
   structuralNodes.forEach((node, index) => {
     // Use golden angle for even distribution
@@ -160,8 +200,16 @@ export const knowledgeGraphToGraphology = (
 
     // Add some randomness to prevent perfect patterns
     const jitter = structuralSpread * 0.15;
-    const x = radius * Math.cos(angle) + (Math.random() - 0.5) * jitter;
-    const y = radius * Math.sin(angle) + (Math.random() - 0.5) * jitter;
+    let x = radius * Math.cos(angle) + (Math.random() - 0.5) * jitter;
+    let y = radius * Math.sin(angle) + (Math.random() - 0.5) * jitter;
+
+    // In multi-repo mode, offset structural nodes to their repo's region
+    const nodeRepo = getNodeRepo(node);
+    const repoCenter = nodeRepo ? repoCenters.get(nodeRepo) : undefined;
+    if (repoCenter) {
+      x += repoCenter.x;
+      y += repoCenter.y;
+    }
 
     nodePositions.set(node.id, { x, y });
 
@@ -181,6 +229,8 @@ export const knowledgeGraphToGraphology = (
       endLine: node.properties.endLine,
       hidden: false,
       mass: getNodeMass(node.label, nodeCount),
+      repoName: nodeRepo,
+      repoColor: repoCenter?.color,
     });
   });
 
@@ -218,6 +268,14 @@ export const knowledgeGraphToGraphology = (
       }
     }
 
+    // In multi-repo mode, offset orphan/non-structural nodes to their repo's region
+    const nodeRepo = getNodeRepo(node);
+    const repoCenter = nodeRepo ? repoCenters.get(nodeRepo) : undefined;
+    if (repoCenter && !childToParent.has(nodeId) && !clusterCenter) {
+      x += repoCenter.x;
+      y += repoCenter.y;
+    }
+
     nodePositions.set(nodeId, { x, y });
 
     const baseSize = NODE_SIZES[node.label] || 8;
@@ -246,6 +304,8 @@ export const knowledgeGraphToGraphology = (
       mass: getNodeMass(node.label, nodeCount),
       community: communityIndex,
       communityColor: hasCommunity ? getCommunityColor(communityIndex!) : undefined,
+      repoName: nodeRepo,
+      repoColor: repoCenter?.color,
     });
   };
 
@@ -295,6 +355,9 @@ export const knowledgeGraphToGraphology = (
     // TYPE RELATIONSHIPS - Warm colors (OOP)
     EXTENDS: { color: '#c2410c', sizeMultiplier: 1.0 }, // Orange - extension
     IMPLEMENTS: { color: '#be185d', sizeMultiplier: 0.9 }, // Pink - interface implementation
+
+    // CROSS-REPO - Amber (stands out against everything)
+    CROSS_REPO_IMPORT: { color: '#f59e0b', sizeMultiplier: 1.5 }, // Amber - cross-repo link
   };
 
   knowledgeGraph.relationships.forEach((rel) => {

@@ -716,6 +716,137 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     }
   });
 
+  // List all configured groups
+  app.get('/api/groups', async (_req, res) => {
+    try {
+      const { listGroups } = await import('../core/group/storage.js');
+      const groups = await listGroups();
+      res.json(groups);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to list groups' });
+    }
+  });
+
+  // Get merged graph for a group (all repos + cross-repo edges)
+  app.get('/api/group-graph', async (req, res) => {
+    try {
+      const groupName = (req.query.group as string) || '';
+      if (!groupName) {
+        res.status(400).json({ error: 'Missing "group" query parameter' });
+        return;
+      }
+
+      const { getGroupDir, getDefaultGitnexusDir, readContractRegistry } =
+        await import('../core/group/storage.js');
+      const { loadGroupConfig } = await import('../core/group/config-parser.js');
+
+      const groupDir = getGroupDir(getDefaultGitnexusDir(), groupName);
+      const config = await loadGroupConfig(groupDir);
+      const registry = await readContractRegistry(groupDir);
+
+      const allNodes: GraphNode[] = [];
+      const allRelationships: GraphRelationship[] = [];
+      const repoSummaries: Array<{ name: string; groupPath: string; nodeCount: number; edgeCount: number }> = [];
+
+      // Load graph from each repo and namespace node IDs
+      for (const [groupPath, registryName] of Object.entries(config.repos)) {
+        const entry = await resolveRepo(registryName);
+        if (!entry) continue;
+
+        const lbugPath = path.join(entry.storagePath, 'lbug');
+        try {
+          const graph = await withLbugDb(lbugPath, async () => buildGraph(false));
+
+          // Namespace all node IDs with repo name
+          const prefix = `${registryName}::`;
+          for (const node of graph.nodes) {
+            allNodes.push({
+              ...node,
+              id: `${prefix}${node.id}`,
+              properties: {
+                ...node.properties,
+                _repo: registryName,
+                _groupPath: groupPath,
+              } as GraphNode['properties'],
+            });
+          }
+
+          for (const rel of graph.relationships) {
+            allRelationships.push({
+              ...rel,
+              id: `${prefix}${rel.id}`,
+              sourceId: `${prefix}${rel.sourceId}`,
+              targetId: `${prefix}${rel.targetId}`,
+            });
+          }
+
+          repoSummaries.push({
+            name: registryName,
+            groupPath,
+            nodeCount: graph.nodes.length,
+            edgeCount: graph.relationships.length,
+          });
+        } catch {
+          // Skip inaccessible repos
+        }
+      }
+
+      // Add cross-repo edges from contracts.json
+      if (registry) {
+        for (const link of registry.crossLinks) {
+          const fromRepoName =
+            config.repos[link.from.repo] || link.from.repo;
+          const toRepoName =
+            config.repos[link.to.repo] || link.to.repo;
+
+          allRelationships.push({
+            id: `cross::${link.contractId}::${fromRepoName}::${toRepoName}`,
+            type: 'CROSS_REPO_IMPORT' as GraphRelationship['type'],
+            sourceId: link.from.symbolUid
+              ? `${fromRepoName}::${link.from.symbolUid}`
+              : `${fromRepoName}::cross_ref::${link.contractId}`,
+            targetId: link.to.symbolUid
+              ? `${toRepoName}::${link.to.symbolUid}`
+              : `${toRepoName}::cross_ref::${link.contractId}`,
+            confidence: link.confidence,
+            reason: `${link.type} contract: ${link.contractId} (${link.matchType})`,
+          });
+        }
+      }
+
+      res.json({
+        repos: repoSummaries,
+        nodes: allNodes,
+        relationships: allRelationships,
+        crossLinks: registry?.crossLinks || [],
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to build group graph' });
+    }
+  });
+
+  // Get group status (staleness info)
+  app.get('/api/group-status', async (req, res) => {
+    try {
+      const groupName = (req.query.group as string) || '';
+      if (!groupName) {
+        res.status(400).json({ error: 'Missing "group" query parameter' });
+        return;
+      }
+
+      const backend = new LocalBackend();
+      try {
+        await backend.init();
+        const result = await backend.getGroupService().groupStatus({ name: groupName });
+        res.json(result);
+      } finally {
+        await backend.dispose().catch(() => {});
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to get group status' });
+    }
+  });
+
   // Get repo info
   app.get('/api/repo', async (req, res) => {
     try {
