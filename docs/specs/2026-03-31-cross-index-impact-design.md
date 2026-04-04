@@ -1,7 +1,9 @@
 # RFC: Cross-Index Impact Analysis — Repository Groups
 
+> **Superseded:** Contract storage migrated from `contracts.json` to `bridge.lbug` (LadybugDB). See [`docs/superpowers/specs/2026-04-03-bridge-lbug-grpc-normalization-design.md`](../superpowers/specs/2026-04-03-bridge-lbug-grpc-normalization-design.md) for the current design.
+
 **Date:** 2026-03-31
-**Status:** Draft
+**Status:** Superseded
 **Author:** @ivkond
 **Related Issues:** [#256](https://github.com/abhigyanpatwari/GitNexus/issues/256), [#306](https://github.com/abhigyanpatwari/GitNexus/issues/306), [#77](https://github.com/abhigyanpatwari/GitNexus/issues/77)
 

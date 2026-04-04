@@ -392,7 +392,7 @@ WHEN TO USE: Discover groups before group_sync or group_impact. Optional "name" 
   },
   {
     name: 'group_sync',
-    description: `Rebuild the Contract Registry (contracts.json) for a group: extract HTTP contracts, apply manifest links, exact-match cross-links.
+    description: `Rebuild the Contract Registry (bridge.lbug) for a group: extract HTTP/gRPC/topic contracts, apply manifest links, exact-match and wildcard cross-links.
 
 WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
     inputSchema: {
@@ -410,7 +410,7 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
   },
   {
     name: 'group_contracts',
-    description: `Inspect contracts and cross-links from the group's contracts.json.
+    description: `Inspect contracts and cross-links from the group bridge graph.
 
 WHEN TO USE: Debug cross-repo links after group_sync.`,
     inputSchema: {

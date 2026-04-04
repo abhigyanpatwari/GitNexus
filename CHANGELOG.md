@@ -4,6 +4,12 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Cross-repo impact analysis (`group_impact` tool and CLI command)
+- Bridge.lbug storage: contract registry stored in LadybugDB instead of `contracts.json`
+- gRPC canonical ID normalization: proto-aware extraction with wildcard matching
+- Backward compatibility: automatic `contracts.json` fallback with deprecation warning
+
 ### Changed
 - Migrated from KuzuDB to LadybugDB v0.15 (`@ladybugdb/core`, `@ladybugdb/wasm-core`)
 - Renamed all internal paths from `kuzu` to `lbug` (storage: `.gitnexus/kuzu` → `.gitnexus/lbug`)

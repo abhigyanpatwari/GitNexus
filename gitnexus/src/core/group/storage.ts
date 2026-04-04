@@ -2,9 +2,13 @@ import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import type { ContractRegistry } from './types.js';
-
-const CONTRACTS_FILE = 'contracts.json';
+import type {
+  ContractRegistry,
+  BridgeHandle,
+  BridgeMeta,
+  LegacyContractRegistry,
+} from './types.js';
+import { openBridgeDbReadOnly, readBridgeMeta } from './bridge-db.js';
 
 export function getDefaultGitnexusDir(): string {
   return process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus');
@@ -29,19 +33,12 @@ export function getGroupDir(gitnexusDir: string, groupName: string): string {
   return path.join(gitnexusDir, 'groups', groupName);
 }
 
-export async function writeContractRegistry(
-  groupDir: string,
-  registry: ContractRegistry,
-): Promise<void> {
-  const targetPath = path.join(groupDir, CONTRACTS_FILE);
-  const tmpPath = `${targetPath}.tmp.${Date.now()}`;
-
-  await fsp.writeFile(tmpPath, JSON.stringify(registry, null, 2), 'utf-8');
-  await fsp.rename(tmpPath, targetPath);
-}
-
-export async function readContractRegistry(groupDir: string): Promise<ContractRegistry | null> {
-  const filePath = path.join(groupDir, CONTRACTS_FILE);
+/**
+ * @deprecated Used only as internal JSON fallback for openBridgeOrFallback.
+ * New data is written to bridge.lbug via writeBridge.
+ */
+async function readContractRegistryJson(groupDir: string): Promise<ContractRegistry | null> {
+  const filePath = path.join(groupDir, 'contracts.json');
   try {
     const content = await fsp.readFile(filePath, 'utf-8');
     return JSON.parse(content) as ContractRegistry;
@@ -106,4 +103,29 @@ matching:
 `;
   await fsp.writeFile(path.join(groupDir, 'group.yaml'), template, 'utf-8');
   return groupDir;
+}
+
+export async function openBridgeOrFallback(
+  groupDir: string,
+): Promise<
+  | { type: 'bridge'; handle: BridgeHandle; meta: BridgeMeta }
+  | { type: 'json'; registry: LegacyContractRegistry; deprecationWarning: string }
+  | { type: 'none' }
+> {
+  const handle = await openBridgeDbReadOnly(groupDir);
+  if (handle) {
+    const meta = await readBridgeMeta(groupDir);
+    return { type: 'bridge', handle, meta };
+  }
+  // JSON fallback
+  const registry = await readContractRegistryJson(groupDir);
+  if (registry) {
+    return {
+      type: 'json',
+      registry,
+      deprecationWarning:
+        'contracts.json is deprecated. Run "gitnexus group sync <name>" to migrate to bridge.lbug.',
+    };
+  }
+  return { type: 'none' };
 }

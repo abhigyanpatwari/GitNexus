@@ -5,12 +5,12 @@ import * as os from 'node:os';
 import {
   getGroupDir,
   getGroupsBaseDir,
-  writeContractRegistry,
-  readContractRegistry,
   listGroups,
   createGroupDir,
   validateGroupName,
+  openBridgeOrFallback,
 } from '../../../src/core/group/storage.js';
+import { writeBridge, closeBridgeDb } from '../../../src/core/group/bridge-db.js';
 import type { ContractRegistry } from '../../../src/core/group/types.js';
 
 describe('Group storage', () => {
@@ -32,36 +32,6 @@ describe('Group storage', () => {
   it('getGroupDir returns correct path for group name', () => {
     const dir = getGroupDir(tmpDir, 'company');
     expect(dir).toBe(path.join(tmpDir, 'groups', 'company'));
-  });
-
-  it('writeContractRegistry writes atomically and readContractRegistry reads back', async () => {
-    const groupDir = path.join(tmpDir, 'groups', 'test-group');
-    fs.mkdirSync(groupDir, { recursive: true });
-
-    const registry: ContractRegistry = {
-      version: 1,
-      generatedAt: '2026-03-31T10:00:00Z',
-      repoSnapshots: {},
-      missingRepos: [],
-      contracts: [],
-      crossLinks: [],
-    };
-
-    await writeContractRegistry(groupDir, registry);
-
-    const filePath = path.join(groupDir, 'contracts.json');
-    expect(fs.existsSync(filePath)).toBe(true);
-
-    const loaded = await readContractRegistry(groupDir);
-    expect(loaded?.version).toBe(1);
-    expect(loaded?.generatedAt).toBe('2026-03-31T10:00:00Z');
-  });
-
-  it('readContractRegistry returns null when file does not exist', async () => {
-    const groupDir = path.join(tmpDir, 'groups', 'nonexistent');
-    fs.mkdirSync(groupDir, { recursive: true });
-    const result = await readContractRegistry(groupDir);
-    expect(result).toBeNull();
   });
 
   it('listGroups returns group names', async () => {
@@ -133,6 +103,63 @@ describe('Group storage', () => {
   describe('createGroupDir rejects invalid names', () => {
     it('test_createGroupDir_traversal_throws', async () => {
       await expect(createGroupDir(tmpDir, '../evil')).rejects.toThrow(/Invalid group name/);
+    });
+  });
+
+  describe('openBridgeOrFallback', () => {
+    it('test_openBridgeOrFallback_bridge_exists_returns_bridge', async () => {
+      const groupDir = path.join(tmpDir, 'bridge-test');
+      fs.mkdirSync(groupDir, { recursive: true });
+
+      await writeBridge(groupDir, {
+        contracts: [],
+        crossLinks: [],
+        repoSnapshots: {},
+        missingRepos: [],
+      });
+
+      const result = await openBridgeOrFallback(groupDir);
+      expect(result.type).toBe('bridge');
+      if (result.type === 'bridge') {
+        expect(result.handle).toBeDefined();
+        expect(result.meta).toBeDefined();
+        await closeBridgeDb(result.handle);
+      }
+    });
+
+    it('test_openBridgeOrFallback_json_only_returns_json_with_deprecation', async () => {
+      const groupDir = path.join(tmpDir, 'json-test');
+      fs.mkdirSync(groupDir, { recursive: true });
+
+      const registry: ContractRegistry = {
+        version: 1,
+        generatedAt: '2026-04-01T00:00:00Z',
+        repoSnapshots: {},
+        missingRepos: [],
+        contracts: [],
+        crossLinks: [],
+      };
+      fs.writeFileSync(
+        path.join(groupDir, 'contracts.json'),
+        JSON.stringify(registry, null, 2),
+        'utf-8',
+      );
+
+      const result = await openBridgeOrFallback(groupDir);
+      expect(result.type).toBe('json');
+      if (result.type === 'json') {
+        expect(result.registry.version).toBe(1);
+        expect(result.deprecationWarning).toContain('deprecated');
+        expect(result.deprecationWarning).toContain('bridge.lbug');
+      }
+    });
+
+    it('test_openBridgeOrFallback_neither_exists_returns_none', async () => {
+      const groupDir = path.join(tmpDir, 'empty-test');
+      fs.mkdirSync(groupDir, { recursive: true });
+
+      const result = await openBridgeOrFallback(groupDir);
+      expect(result.type).toBe('none');
     });
   });
 });

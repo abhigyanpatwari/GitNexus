@@ -8,11 +8,10 @@ import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
 import { GrpcExtractor } from './extractors/grpc-extractor.js';
 import { TopicExtractor } from './extractors/topic-extractor.js';
 import { ManifestExtractor } from './extractors/manifest-extractor.js';
-import { runExactMatch } from './matching.js';
+import { buildProviderIndex, runExactMatch, runWildcardMatch } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
-import { writeContractRegistry } from './storage.js';
-import type { ContractRegistry } from './types.js';
+import { writeBridge } from './bridge-db.js';
 
 export interface SyncOptions {
   extractorOverride?:
@@ -163,27 +162,25 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     }
   }
 
-  const { matched, unmatched } = runExactMatch(autoContracts);
-  const crossLinks: CrossLink[] = [...manifestResult.crossLinks, ...matched];
+  const providerIndex = buildProviderIndex(autoContracts);
+  const { matched: exactLinks, unmatched } = runExactMatch(autoContracts, providerIndex);
+  const { matched: wildcardLinks, remaining } = runWildcardMatch(unmatched, providerIndex);
+  const crossLinks: CrossLink[] = [...manifestResult.crossLinks, ...exactLinks, ...wildcardLinks];
   const allContracts: StoredContract[] = [...manifestResult.contracts, ...autoContracts];
 
-  const registry: ContractRegistry = {
-    version: 1,
-    generatedAt: new Date().toISOString(),
-    repoSnapshots,
-    missingRepos,
-    contracts: allContracts,
-    crossLinks,
-  };
-
   if (opts?.groupDir && !opts.skipWrite) {
-    await writeContractRegistry(opts.groupDir, registry);
+    await writeBridge(opts.groupDir, {
+      contracts: allContracts,
+      crossLinks,
+      repoSnapshots,
+      missingRepos,
+    });
   }
 
   return {
     contracts: allContracts,
     crossLinks,
-    unmatched,
+    unmatched: remaining,
     missingRepos,
     repoSnapshots,
   };

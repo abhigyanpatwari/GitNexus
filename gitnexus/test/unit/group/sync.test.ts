@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { syncGroup, stableRepoPoolId } from '../../../src/core/group/sync.js';
+import { bridgeExists } from '../../../src/core/group/bridge-db.js';
 import type { GroupConfig, StoredContract, RepoHandle } from '../../../src/core/group/types.js';
 import type { RegistryEntry } from '../../../src/storage/repo-manager.js';
 
@@ -202,7 +203,7 @@ describe('syncGroup', () => {
     }
   });
 
-  it('writes registry to groupDir when skipWrite is false', async () => {
+  it('writes bridge.lbug to groupDir when skipWrite is false', async () => {
     const tmpDir = path.join(os.tmpdir(), `gitnexus-sync-write-${Date.now()}`);
     fs.mkdirSync(tmpDir, { recursive: true });
 
@@ -215,13 +216,7 @@ describe('syncGroup', () => {
       });
 
       expect(result.contracts).toHaveLength(0);
-
-      const registryPath = path.join(tmpDir, 'contracts.json');
-      expect(fs.existsSync(registryPath)).toBe(true);
-
-      const registry = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
-      expect(registry.version).toBe(1);
-      expect(registry.contracts).toHaveLength(0);
+      expect(await bridgeExists(tmpDir)).toBe(true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

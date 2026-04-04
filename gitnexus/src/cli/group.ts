@@ -97,16 +97,23 @@ export function registerGroupCommands(program: Command): void {
     .command('status <name>')
     .description('Check staleness of group and repos')
     .action(async (name: string) => {
-      const { readContractRegistry, getGroupDir, getDefaultGitnexusDir } =
+      const { getGroupDir, getDefaultGitnexusDir, openBridgeOrFallback } =
         await import('../core/group/storage.js');
+      const { closeBridgeDb } = await import('../core/group/bridge-db.js');
       const { LocalBackend } = await import('../mcp/local/local-backend.js');
 
       const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
-      const registry = await readContractRegistry(groupDir);
+      const fallback = await openBridgeOrFallback(groupDir);
+      const lastSync =
+        fallback.type === 'bridge'
+          ? fallback.meta.generatedAt
+          : fallback.type === 'json'
+            ? fallback.registry.generatedAt
+            : null;
+      if (fallback.type === 'json') console.warn(fallback.deprecationWarning);
+      if (fallback.type === 'bridge') await closeBridgeDb(fallback.handle);
 
-      console.log(
-        `Group: ${name}${registry ? ` (last sync: ${registry.generatedAt})` : ' (never synced)'}\n`,
-      );
+      console.log(`Group: ${name}${lastSync ? ` (last sync: ${lastSync})` : ' (never synced)'}\n`);
 
       const backend = new LocalBackend();
       try {
@@ -181,7 +188,7 @@ export function registerGroupCommands(program: Command): void {
           console.log(`  exact:     ${exactLinks.length} cross-links (confidence 1.0)`);
           console.log(`  unmatched: ${result.unmatched.length} contracts`);
           console.log(
-            `\nWrote contracts.json (${result.contracts.length} contracts, ${result.crossLinks.length} cross-links)`,
+            `\nWrote bridge.lbug (${result.contracts.length} contracts, ${result.crossLinks.length} cross-links)`,
           );
         }
       } finally {
@@ -202,17 +209,20 @@ export function registerGroupCommands(program: Command): void {
     .option('--timeout <ms>', 'Total wall time budget in ms', '30000')
     .option('--json', 'JSON output')
     .action(async (name: string, opts: Record<string, string | boolean | undefined>) => {
-      const { getGroupDir, getDefaultGitnexusDir, readContractRegistry } =
+      const { getGroupDir, getDefaultGitnexusDir, openBridgeOrFallback } =
         await import('../core/group/storage.js');
+      const { closeBridgeDb } = await import('../core/group/bridge-db.js');
       const { LocalBackend } = await import('../mcp/local/local-backend.js');
 
       const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
-      const regFile = await readContractRegistry(groupDir);
-      if (!regFile) {
-        console.error(`No contracts.json found. Run: gitnexus group sync ${name}`);
+      const fallback = await openBridgeOrFallback(groupDir);
+      if (fallback.type === 'none') {
+        console.error(`No contract data found. Run: gitnexus group sync ${name}`);
         process.exitCode = 1;
         return;
       }
+      if (fallback.type === 'json') console.warn(fallback.deprecationWarning);
+      if (fallback.type === 'bridge') await closeBridgeDb(fallback.handle);
 
       const repoGroupPath = opts.repo as string;
       const targetSymbol = opts.target as string;

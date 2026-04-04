@@ -2,7 +2,7 @@
  * Group impact wiring — mocks `localImpactFn` / `crossImpactFn`. E2E with real graphs is a follow-up.
  */
 import { describe, it, expect } from 'vitest';
-import { runGroupImpact } from '../../../src/core/group/cross-impact.js';
+import { runGroupImpactLegacy } from '../../../src/core/group/cross-impact.js';
 import type { ContractRegistry } from '../../../src/core/group/types.js';
 
 function minimalRegistry(crossLinks: ContractRegistry['crossLinks']): ContractRegistry {
@@ -56,7 +56,7 @@ describe('Group impact integration', () => {
       return { byDepth: {}, affected_processes: [] };
     };
 
-    const result = await runGroupImpact({
+    const result = await runGroupImpactLegacy({
       groupName: 'g',
       target: 'T',
       repoPath: 'app/backend',

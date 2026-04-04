@@ -7,11 +7,23 @@ import {
   type GroupToolPort,
   type GroupRepoHandle,
 } from '../../../src/core/group/service.js';
-import { writeContractRegistry } from '../../../src/core/group/storage.js';
+import { writeBridge } from '../../../src/core/group/bridge-db.js';
 import type { ContractRegistry, StoredContract, CrossLink } from '../../../src/core/group/types.js';
 
+/** Test helper: write legacy contracts.json for JSON-fallback tests */
+async function writeContractRegistryJson(
+  groupDir: string,
+  registry: ContractRegistry,
+): Promise<void> {
+  const targetPath = path.join(groupDir, 'contracts.json');
+  fs.writeFileSync(targetPath, JSON.stringify(registry, null, 2), 'utf-8');
+}
+
 function makeTmpGroup(): { tmpDir: string; groupDir: string; cleanup: () => void } {
-  const tmpDir = path.join(os.tmpdir(), `gitnexus-svc-${Date.now()}`);
+  const tmpDir = path.join(
+    os.tmpdir(),
+    `gitnexus-svc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
   const groupDir = path.join(tmpDir, 'groups', 'test-group');
   fs.mkdirSync(groupDir, { recursive: true });
 
@@ -113,20 +125,20 @@ describe('GroupService', () => {
       expect(result.error).toContain('name is required');
     });
 
-    it('test_groupContracts_returns_error_when_no_registry', async () => {
+    it('test_groupContracts_no_data_returns_error', async () => {
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
         const svc = new GroupService(makePort());
         const result = (await svc.groupContracts({ name: 'test-group' })) as { error: string };
-        expect(result.error).toContain('No contracts.json');
+        expect(result.error).toContain('No contract data');
       } finally {
         vi.unstubAllEnvs();
         cleanup();
       }
     });
 
-    it('test_groupContracts_returns_all_contracts', async () => {
+    it('test_groupContracts_json_fallback_returns_all_contracts', async () => {
       const { groupDir, cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
@@ -134,7 +146,7 @@ describe('GroupService', () => {
           makeContract('http::GET::/api/users', 'provider', 'app/backend'),
           makeContract('http::GET::/api/users', 'consumer', 'app/frontend'),
         ];
-        await writeContractRegistry(groupDir, makeRegistry(contracts));
+        await writeContractRegistryJson(groupDir, makeRegistry(contracts));
 
         const svc = new GroupService(makePort());
         const result = (await svc.groupContracts({ name: 'test-group' })) as {
@@ -147,7 +159,7 @@ describe('GroupService', () => {
       }
     });
 
-    it('test_groupContracts_filters_by_type', async () => {
+    it('test_groupContracts_json_fallback_filters_by_type', async () => {
       const { groupDir, cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
@@ -158,7 +170,7 @@ describe('GroupService', () => {
             type: 'grpc' as const,
           },
         ];
-        await writeContractRegistry(groupDir, makeRegistry(contracts));
+        await writeContractRegistryJson(groupDir, makeRegistry(contracts));
 
         const svc = new GroupService(makePort());
         const result = (await svc.groupContracts({ name: 'test-group', type: 'grpc' })) as {
@@ -172,7 +184,7 @@ describe('GroupService', () => {
       }
     });
 
-    it('test_groupContracts_filters_by_repo', async () => {
+    it('test_groupContracts_json_fallback_filters_by_repo', async () => {
       const { groupDir, cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
@@ -180,7 +192,7 @@ describe('GroupService', () => {
           makeContract('http::GET::/api/users', 'provider', 'app/backend'),
           makeContract('http::GET::/api/users', 'consumer', 'app/frontend'),
         ];
-        await writeContractRegistry(groupDir, makeRegistry(contracts));
+        await writeContractRegistryJson(groupDir, makeRegistry(contracts));
 
         const svc = new GroupService(makePort());
         const result = (await svc.groupContracts({ name: 'test-group', repo: 'app/backend' })) as {
@@ -194,7 +206,7 @@ describe('GroupService', () => {
       }
     });
 
-    it('test_groupContracts_unmatchedOnly_filters_matched', async () => {
+    it('test_groupContracts_json_fallback_unmatchedOnly_filters_matched', async () => {
       const { groupDir, cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
@@ -217,7 +229,7 @@ describe('GroupService', () => {
           matchType: 'exact',
           confidence: 1.0,
         };
-        await writeContractRegistry(
+        await writeContractRegistryJson(
           groupDir,
           makeRegistry([provider, consumer, orphan], [crossLink]),
         );
@@ -226,6 +238,107 @@ describe('GroupService', () => {
         const result = (await svc.groupContracts({ name: 'test-group', unmatchedOnly: true })) as {
           contracts: StoredContract[];
         };
+        expect(result.contracts).toHaveLength(1);
+        expect(result.contracts[0].contractId).toBe('http::GET::/api/health');
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupContracts_with_bridge_returns_contracts', async () => {
+      const { groupDir, cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const contracts = [
+          makeContract('http::GET::/api/users', 'provider', 'app/backend'),
+          makeContract('http::GET::/api/users', 'consumer', 'app/frontend'),
+        ];
+        await writeBridge(groupDir, {
+          contracts,
+          crossLinks: [],
+          repoSnapshots: {},
+          missingRepos: [],
+        });
+
+        const svc = new GroupService(makePort());
+        const result = (await svc.groupContracts({ name: 'test-group' })) as {
+          contracts: unknown[];
+          crossLinks: unknown[];
+        };
+        expect(result.contracts).toHaveLength(2);
+        expect(result.crossLinks).toEqual([]);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupContracts_bridge_path_filters_by_type', async () => {
+      const { groupDir, cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const contracts = [
+          makeContract('http::GET::/api/users', 'provider', 'app/backend'),
+          {
+            ...makeContract('grpc::auth.AuthService/Login', 'provider', 'app/backend'),
+            type: 'grpc' as const,
+          },
+        ];
+        await writeBridge(groupDir, {
+          contracts,
+          crossLinks: [],
+          repoSnapshots: {},
+          missingRepos: [],
+        });
+
+        const svc = new GroupService(makePort());
+        const result = (await svc.groupContracts({ name: 'test-group', type: 'grpc' })) as {
+          contracts: { type: string }[];
+        };
+        expect(result.contracts).toHaveLength(1);
+        expect(result.contracts[0].type).toBe('grpc');
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupContracts_bridge_path_unmatchedOnly_filters_matched', async () => {
+      const { groupDir, cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const provider = makeContract('http::GET::/api/users', 'provider', 'app/backend');
+        const consumer = makeContract('http::GET::/api/users', 'consumer', 'app/frontend');
+        const orphan = makeContract('http::GET::/api/health', 'provider', 'app/backend');
+        const crossLink: CrossLink = {
+          from: {
+            repo: 'app/frontend',
+            symbolUid: consumer.symbolUid,
+            symbolRef: consumer.symbolRef,
+          },
+          to: {
+            repo: 'app/backend',
+            symbolUid: provider.symbolUid,
+            symbolRef: provider.symbolRef,
+          },
+          type: 'http',
+          contractId: 'http::GET::/api/users',
+          matchType: 'exact',
+          confidence: 1.0,
+        };
+        await writeBridge(groupDir, {
+          contracts: [provider, consumer, orphan],
+          crossLinks: [crossLink],
+          repoSnapshots: {},
+          missingRepos: [],
+        });
+
+        const svc = new GroupService(makePort());
+        const result = (await svc.groupContracts({ name: 'test-group', unmatchedOnly: true })) as {
+          contracts: { contractId: string }[];
+        };
+        // Only the orphan should remain after filtering out matched ones
         expect(result.contracts).toHaveLength(1);
         expect(result.contracts[0].contractId).toBe('http::GET::/api/health');
       } finally {
@@ -330,6 +443,111 @@ describe('GroupService', () => {
     });
   });
 
+  describe('groupImpact', () => {
+    it('test_groupImpact_no_data_returns_error', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const svc = new GroupService(makePort());
+        const result = (await svc.groupImpact({
+          name: 'test-group',
+          target: 'someSymbol',
+          repo: 'app/backend',
+        })) as { error: string };
+        expect(result.error).toContain('No contract data');
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupImpact_with_json_fallback_uses_legacy', async () => {
+      const { groupDir, cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const contracts = [makeContract('http::GET::/api/users', 'provider', 'app/backend')];
+        await writeContractRegistryJson(groupDir, makeRegistry(contracts));
+
+        const port = makePort({
+          impact: vi.fn(async () => ({
+            target: { id: 'uid-1', name: 'someSymbol', filePath: 'src/app.ts' },
+            direction: 'upstream',
+            impactedCount: 0,
+            risk: 'LOW',
+            summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+            affected_processes: [],
+            affected_modules: [],
+            byDepth: {},
+          })),
+        });
+
+        const svc = new GroupService(port);
+        const result = (await svc.groupImpact({
+          name: 'test-group',
+          target: 'someSymbol',
+          repo: 'app/backend',
+        })) as { local: unknown; group: string; risk: string };
+
+        expect(result.group).toBe('test-group');
+        expect(result.local).toBeDefined();
+        expect(result.risk).toBeDefined();
+        expect(port.impact).toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupImpact_with_bridge_uses_new_runGroupImpact', async () => {
+      const { groupDir, cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const contracts = [makeContract('http::GET::/api/users', 'provider', 'app/backend')];
+        await writeBridge(groupDir, {
+          contracts,
+          crossLinks: [],
+          repoSnapshots: {},
+          missingRepos: [],
+        });
+
+        const port = makePort({
+          impact: vi.fn(async () => ({
+            target: { id: 'uid-1', name: 'someSymbol', filePath: 'src/app.ts' },
+            direction: 'upstream',
+            impactedCount: 0,
+            risk: 'LOW',
+            summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+            affected_processes: [],
+            affected_modules: [],
+            byDepth: {},
+          })),
+        });
+
+        const svc = new GroupService(port);
+        const result = (await svc.groupImpact({
+          name: 'test-group',
+          target: 'someSymbol',
+          repo: 'app/backend',
+        })) as { local: unknown; group: string; risk: string; cross: unknown[] };
+
+        expect(result.group).toBe('test-group');
+        expect(result.local).toBeDefined();
+        expect(result.risk).toBeDefined();
+        expect(result.cross).toEqual([]);
+        expect(port.impact).toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupImpact_returns_error_when_params_missing', async () => {
+      const svc = new GroupService(makePort());
+      const result = (await svc.groupImpact({})) as { error: string };
+      expect(result.error).toContain('name, target, and repo are required');
+    });
+  });
+
   describe('groupStatus', () => {
     it('test_groupStatus_returns_error_when_name_empty', async () => {
       const svc = new GroupService(makePort());
@@ -337,10 +555,32 @@ describe('GroupService', () => {
       expect(result.error).toContain('name is required');
     });
 
-    it('test_groupStatus_marks_unresolvable_repos_as_missing', async () => {
+    it('test_groupStatus_no_data_returns_empty', async () => {
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const svc = new GroupService(makePort());
+        const result = (await svc.groupStatus({ name: 'test-group' })) as {
+          group: string;
+          lastSync: null;
+          missingRepos: string[];
+          repos: Record<string, unknown>;
+        };
+        expect(result.group).toBe('test-group');
+        expect(result.lastSync).toBeNull();
+        expect(result.missingRepos).toEqual([]);
+        expect(result.repos).toEqual({});
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupStatus_json_fallback_marks_unresolvable_repos_as_missing', async () => {
+      const { groupDir, cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        await writeContractRegistryJson(groupDir, makeRegistry([]));
 
         const port = makePort({
           resolveRepo: vi.fn(async () => {
@@ -355,6 +595,84 @@ describe('GroupService', () => {
         };
 
         expect(result.group).toBe('test-group');
+        expect(result.repos['app/backend'].missing).toBe(true);
+        expect(result.repos['app/frontend'].missing).toBe(true);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupStatus_reads_from_bridge_meta_and_snapshots', async () => {
+      const { groupDir, cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        await writeBridge(groupDir, {
+          contracts: [],
+          crossLinks: [],
+          repoSnapshots: {
+            'app/backend': { indexedAt: '2026-01-01T00:00:00Z', lastCommit: 'abc123' },
+          },
+          missingRepos: ['app/frontend'],
+        });
+
+        const port = makePort({
+          resolveRepo: vi.fn(async () => {
+            throw new Error('repo not found');
+          }),
+        });
+
+        const svc = new GroupService(port);
+        const result = (await svc.groupStatus({ name: 'test-group' })) as {
+          group: string;
+          lastSync: string;
+          missingRepos: string[];
+          repos: Record<string, { missing: boolean }>;
+        };
+
+        expect(result.group).toBe('test-group');
+        expect(result.lastSync).toBeTruthy();
+        expect(result.missingRepos).toContain('app/frontend');
+        expect(result.repos['app/backend'].missing).toBe(true);
+        expect(result.repos['app/frontend'].missing).toBe(true);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupStatus_bridge_path_reads_repoSnapshots', async () => {
+      const { groupDir, cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        await writeBridge(groupDir, {
+          contracts: [],
+          crossLinks: [],
+          repoSnapshots: {
+            'app/backend': { indexedAt: '2026-02-01T00:00:00Z', lastCommit: 'abc123' },
+            'app/frontend': { indexedAt: '2026-02-01T00:00:00Z', lastCommit: 'def456' },
+          },
+          missingRepos: [],
+        });
+
+        const port = makePort({
+          resolveRepo: vi.fn(async () => {
+            throw new Error('repo not found');
+          }),
+        });
+
+        const svc = new GroupService(port);
+        const result = (await svc.groupStatus({ name: 'test-group' })) as {
+          group: string;
+          lastSync: string;
+          missingRepos: string[];
+          repos: Record<string, { missing: boolean }>;
+        };
+
+        expect(result.group).toBe('test-group');
+        expect(result.lastSync).toBeTruthy();
+        expect(result.missingRepos).toEqual([]);
+        // Both repos should be marked missing since resolveRepo throws
         expect(result.repos['app/backend'].missing).toBe(true);
         expect(result.repos['app/frontend'].missing).toBe(true);
       } finally {

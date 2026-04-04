@@ -214,13 +214,14 @@ gitnexus group remove <name> <repo> # Remove a repo from a group
 gitnexus group list [name]       # List groups, or show one group's config
 gitnexus group sync <name>       # Extract contracts and match across repos/services
 gitnexus group contracts <name>  # Inspect extracted contracts and cross-links
+gitnexus group impact <name>     # Cross-repo blast radius analysis
 gitnexus group query <name> <q>  # Search execution flows across all repos in a group
 gitnexus group status <name>     # Check staleness of repos in a group
 ```
 
 ### What Your AI Agent Gets
 
-**16 tools** exposed via MCP (11 per-repo + 5 group):
+**17 tools** exposed via MCP (11 per-repo + 6 group):
 
 | Tool               | What It Does                                                      | `repo` Param |
 | ------------------ | ----------------------------------------------------------------- | -------------- |
@@ -234,10 +235,13 @@ gitnexus group status <name>     # Check staleness of repos in a group
 | `group_list`     | List configured repository groups                                 | —             |
 | `group_sync`     | Extract contracts and match across repos/services                 | —             |
 | `group_contracts`| Inspect extracted contracts and cross-links                       | —             |
+| `group_impact`   | Cross-repo blast radius analysis                                  | —             |
 | `group_query`    | Search execution flows across all repos in a group                | —             |
 | `group_status`   | Check staleness of repos in a group                               | —             |
 
 > When only one repo is indexed, the `repo` parameter is optional. With multiple repos, specify which one: `query({query: "auth", repo: "my-app"})`.
+
+> **Storage migration:** Group contract data is now stored in `bridge.lbug` (LadybugDB) instead of `contracts.json`. Existing groups with `contracts.json` are supported via automatic fallback with a deprecation warning. Run `gitnexus group sync <name>` to migrate.
 
 **Resources** for instant context:
 

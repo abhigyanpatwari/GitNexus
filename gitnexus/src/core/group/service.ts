@@ -4,9 +4,10 @@
  */
 
 import { checkStaleness } from '../git-staleness.js';
+import { queryBridge, closeBridgeDb } from './bridge-db.js';
 import { loadGroupConfig } from './config-parser.js';
-import { runGroupImpact } from './cross-impact.js';
-import { getDefaultGitnexusDir, getGroupDir, listGroups, readContractRegistry } from './storage.js';
+import { runGroupImpact, runGroupImpactLegacy } from './cross-impact.js';
+import { getDefaultGitnexusDir, getGroupDir, listGroups, openBridgeOrFallback } from './storage.js';
 import { syncGroup } from './sync.js';
 
 export interface GroupRepoHandle {
@@ -104,23 +105,115 @@ export class GroupService {
     const name = String(params.name ?? '').trim();
     if (!name) return { error: 'name is required' };
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
-    const registry = await readContractRegistry(groupDir);
-    if (!registry) {
-      return { error: `No contracts.json for group "${name}". Run group_sync first.` };
+
+    const fallback = await openBridgeOrFallback(groupDir);
+    if (fallback.type === 'none') {
+      return { error: `No contract data for group "${name}". Run group_sync first.` };
     }
-    let contracts = registry.contracts;
-    if (params.type) contracts = contracts.filter((c) => c.type === params.type);
-    if (params.repo) contracts = contracts.filter((c) => c.repo === params.repo);
-    if (params.unmatchedOnly) {
-      const matchedIds = new Set(
-        registry.crossLinks.flatMap((l) => [
-          `${l.from.repo}::${l.contractId}`,
-          `${l.to.repo}::${l.contractId}`,
-        ]),
+
+    if (fallback.type === 'json') {
+      const registry = fallback.registry;
+      let contracts = registry.contracts;
+      if (params.type) contracts = contracts.filter((c) => c.type === params.type);
+      if (params.repo) contracts = contracts.filter((c) => c.repo === params.repo);
+      if (params.unmatchedOnly) {
+        const matchedIds = new Set(
+          registry.crossLinks.flatMap((l) => [
+            `${l.from.repo}::${l.contractId}`,
+            `${l.to.repo}::${l.contractId}`,
+          ]),
+        );
+        contracts = contracts.filter((c) => !matchedIds.has(`${c.repo}::${c.contractId}`));
+      }
+      return { contracts, crossLinks: registry.crossLinks };
+    }
+
+    // Bridge path — query Contract nodes with flat field projection
+    const handle = fallback.handle;
+    try {
+      let cypher = 'MATCH (c:Contract)';
+      const queryParams: Record<string, unknown> = {};
+      const whereClauses: string[] = [];
+      if (params.type) {
+        whereClauses.push('c.type = $type');
+        queryParams.type = params.type;
+      }
+      if (params.repo) {
+        whereClauses.push('c.repo = $repo');
+        queryParams.repo = params.repo;
+      }
+      if (whereClauses.length > 0) {
+        cypher += ` WHERE ${whereClauses.join(' AND ')}`;
+      }
+      cypher +=
+        ' RETURN c.contractId AS contractId, c.type AS type, c.role AS role, c.repo AS repo,' +
+        ' c.service AS service, c.symbolUid AS symbolUid, c.filePath AS filePath,' +
+        ' c.symbolName AS symbolName, c.confidence AS confidence, c.meta AS meta';
+
+      const rawContracts = await queryBridge<{
+        contractId: string;
+        type: string;
+        role: string;
+        repo: string;
+        service: string;
+        symbolUid: string;
+        filePath: string;
+        symbolName: string;
+        confidence: number;
+        meta: string;
+      }>(handle, cypher, queryParams as Record<string, import('@ladybugdb/core').LbugValue>);
+
+      // Reconstruct StoredContract shape for CLI compatibility
+      let contracts = rawContracts.map((r) => ({
+        contractId: r.contractId,
+        type: r.type,
+        role: r.role,
+        repo: r.repo,
+        service: r.service,
+        symbolUid: r.symbolUid,
+        symbolRef: { filePath: r.filePath, name: r.symbolName },
+        symbolName: r.symbolName,
+        confidence: r.confidence,
+        meta: typeof r.meta === 'string' ? JSON.parse(r.meta) : r.meta,
+      }));
+
+      // Query cross-links
+      const rawLinks = await queryBridge<{
+        fromRepo: string;
+        toRepo: string;
+        matchType: string;
+        confidence: number;
+        linkContractId: string;
+      }>(
+        handle,
+        `MATCH (a:Contract)-[l:ContractLink]->(b:Contract)
+         RETURN l.fromRepo AS fromRepo, l.toRepo AS toRepo,
+                l.matchType AS matchType, l.confidence AS confidence,
+                l.contractId AS linkContractId`,
       );
-      contracts = contracts.filter((c) => !matchedIds.has(`${c.repo}::${c.contractId}`));
+      const crossLinks = rawLinks.map((l) => ({
+        from: { repo: l.fromRepo },
+        to: { repo: l.toRepo },
+        matchType: l.matchType,
+        confidence: l.confidence,
+        contractId: l.linkContractId,
+      }));
+
+      // Apply unmatchedOnly filter
+      if (params.unmatchedOnly) {
+        const matchedIds = new Set(
+          crossLinks.flatMap((l) => [
+            `${l.from.repo}::${l.contractId}`,
+            `${l.to.repo}::${l.contractId}`,
+          ]),
+        );
+        contracts = contracts.filter((c) => !matchedIds.has(`${c.repo}::${c.contractId}`));
+      }
+
+      return { contracts, crossLinks };
+    } finally {
+      await closeBridgeDb(handle);
     }
-    return { contracts, crossLinks: registry.crossLinks };
   }
 
   async groupImpact(params: Record<string, unknown>): Promise<unknown> {
@@ -146,9 +239,10 @@ export class GroupService {
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
 
     const config = await loadGroupConfig(groupDir);
-    const registry = await readContractRegistry(groupDir);
-    if (!registry) {
-      return { error: `No contracts.json for group "${name}". Run group_sync first.` };
+
+    const fallback = await openBridgeOrFallback(groupDir);
+    if (fallback.type === 'none') {
+      return { error: `No contract data for group "${name}". Run group_sync first.` };
     }
 
     const requestedCrossDepth =
@@ -163,56 +257,123 @@ export class GroupService {
 
     const defaultRelTypes = ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
 
+    const impactOpts = {
+      maxDepth,
+      relationTypes: defaultRelTypes,
+      minConfidence: 0,
+      includeTests: false,
+    };
+
     const resolveGroupRepo = async (groupPath: string): Promise<GroupRepoHandle> => {
       const registryName = config.repos[groupPath];
       if (!registryName) throw new Error(`Repo "${groupPath}" not found in group "${name}"`);
       return this.port.resolveRepo(registryName);
     };
 
-    const result = await runGroupImpact({
-      groupName: name,
-      target: targetSymbol,
-      repoPath: repoGroupPath,
-      direction,
-      registry,
-      localImpactFn: async (t: string, d: string) => {
-        const repoObj = await resolveGroupRepo(repoGroupPath);
-        return this.port.impact(repoObj, {
-          target: t,
-          direction: d as 'upstream' | 'downstream',
-          maxDepth,
-          relationTypes: defaultRelTypes,
-          minConfidence: 0,
-          includeTests: false,
-        });
-      },
-      crossImpactFn: async (targetGroupPath: string, uid: string, d: string) => {
-        const registryName = config.repos[targetGroupPath];
-        if (!registryName) return null;
-        try {
-          const repoObj = await this.port.resolveRepo(registryName);
-          return this.port.impactByUid(repoObj.id, uid, d, {
-            maxDepth,
-            relationTypes: defaultRelTypes,
-            minConfidence: 0,
-            includeTests: false,
+    if (fallback.type === 'json') {
+      // Legacy JSON path
+      const result = await runGroupImpactLegacy({
+        groupName: name,
+        target: targetSymbol,
+        repoPath: repoGroupPath,
+        direction,
+        registry: fallback.registry,
+        localImpactFn: async (t: string, d: string) => {
+          const repoObj = await resolveGroupRepo(repoGroupPath);
+          return this.port.impact(repoObj, {
+            target: t,
+            direction: d as 'upstream' | 'downstream',
+            ...impactOpts,
           });
-        } catch {
-          return null;
-        }
-      },
-      maxDepth,
-      minConfidence,
-      subgroup,
-      timeout,
-      crossDepth,
-    });
+        },
+        crossImpactFn: async (targetGroupPath: string, uid: string, d: string) => {
+          const registryName = config.repos[targetGroupPath];
+          if (!registryName) return null;
+          try {
+            const repoObj = await this.port.resolveRepo(registryName);
+            return this.port.impactByUid(repoObj.id, uid, d, impactOpts);
+          } catch {
+            return null;
+          }
+        },
+        maxDepth,
+        minConfidence,
+        subgroup,
+        timeout,
+        crossDepth,
+      });
 
-    if (crossDepthWarning) {
-      (result as unknown as Record<string, unknown>).crossDepthWarning = crossDepthWarning;
+      if (crossDepthWarning) {
+        (result as unknown as Record<string, unknown>).crossDepthWarning = crossDepthWarning;
+      }
+      return result;
     }
 
-    return result;
+    // Bridge path
+    const handle = fallback.handle;
+    try {
+      const result = await runGroupImpact({
+        groupName: name,
+        target: targetSymbol,
+        repoPath: repoGroupPath,
+        direction,
+        bridgeQuery: (cypher, p) =>
+          queryBridge(handle, cypher, p as Record<string, import('@ladybugdb/core').LbugValue>),
+        localImpactFn: async (t: string, d: string) => {
+          const repoObj = await resolveGroupRepo(repoGroupPath);
+          return this.port.impact(repoObj, {
+            target: t,
+            direction: d as 'upstream' | 'downstream',
+            ...impactOpts,
+          });
+        },
+        crossImpactFn: async (
+          targetGroupPath: string,
+          uid: string,
+          d: string,
+          hint?: { filePath: string; symbolName: string },
+        ) => {
+          const registryName = config.repos[targetGroupPath];
+          if (!registryName) return null;
+          try {
+            const repoObj = await this.port.resolveRepo(registryName);
+            if (uid) {
+              return this.port.impactByUid(repoObj.id, uid, d, impactOpts);
+            }
+            // Name-based fallback for empty UID (gRPC contracts)
+            if (hint?.symbolName) {
+              const hintResult = await this.port.impact(repoObj, {
+                target: hint.symbolName,
+                direction: d as 'upstream' | 'downstream',
+                ...impactOpts,
+              });
+              if (
+                hintResult &&
+                typeof hintResult === 'object' &&
+                'error' in (hintResult as Record<string, unknown>)
+              )
+                return null;
+              return hintResult;
+            }
+            return null;
+          } catch {
+            return null;
+          }
+        },
+        maxDepth,
+        minConfidence,
+        subgroup,
+        timeout,
+        crossDepth,
+      });
+
+      if (crossDepthWarning) {
+        (result as unknown as Record<string, unknown>).crossDepthWarning = crossDepthWarning;
+      }
+      return result;
+    } finally {
+      await closeBridgeDb(handle);
+    }
   }
 
   async groupQuery(params: Record<string, unknown>): Promise<unknown> {
@@ -265,52 +426,118 @@ export class GroupService {
     if (!name) return { error: 'name is required' };
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
     const config = await loadGroupConfig(groupDir);
-    const registry = await readContractRegistry(groupDir);
 
-    const repoStatuses: Record<
-      string,
-      {
-        indexStale: boolean;
-        contractsStale: boolean;
-        missing: boolean;
-        commitsBehind?: number;
-      }
-    > = {};
+    const fallback = await openBridgeOrFallback(groupDir);
+    if (fallback.type === 'none') {
+      return { group: name, lastSync: null, missingRepos: [], repos: {} };
+    }
 
     const fsp = await import('node:fs/promises');
     const pathMod = await import('node:path');
 
-    for (const [repoPath, registryName] of Object.entries(config.repos)) {
-      try {
-        const repoObj = await this.port.resolveRepo(registryName);
-        const metaPath = pathMod.join(repoObj.storagePath, 'meta.json');
-        const metaRaw = await fsp.readFile(metaPath, 'utf-8').catch(() => '{}');
-        const meta = JSON.parse(metaRaw) as { lastCommit?: string; indexedAt?: string };
+    if (fallback.type === 'json') {
+      const registry = fallback.registry;
+      const repoStatuses: Record<
+        string,
+        {
+          indexStale: boolean;
+          contractsStale: boolean;
+          missing: boolean;
+          commitsBehind?: number;
+        }
+      > = {};
 
-        const staleness = meta.lastCommit
-          ? checkStaleness(repoObj.repoPath, meta.lastCommit)
-          : { isStale: true, commitsBehind: -1 };
+      for (const [repoPath, registryName] of Object.entries(config.repos)) {
+        try {
+          const repoObj = await this.port.resolveRepo(registryName);
+          const metaPath = pathMod.join(repoObj.storagePath, 'meta.json');
+          const metaRaw = await fsp.readFile(metaPath, 'utf-8').catch(() => '{}');
+          const meta = JSON.parse(metaRaw) as { lastCommit?: string; indexedAt?: string };
 
-        const snapshot = registry?.repoSnapshots[repoPath];
-        const contractsStale =
-          snapshot && meta.indexedAt ? snapshot.indexedAt !== meta.indexedAt : !snapshot;
+          const staleness = meta.lastCommit
+            ? checkStaleness(repoObj.repoPath, meta.lastCommit)
+            : { isStale: true, commitsBehind: -1 };
 
-        repoStatuses[repoPath] = {
-          indexStale: staleness.isStale,
-          contractsStale: Boolean(contractsStale),
-          missing: false,
-          commitsBehind: staleness.commitsBehind,
-        };
-      } catch {
-        repoStatuses[repoPath] = { indexStale: false, contractsStale: false, missing: true };
+          const snapshot = registry.repoSnapshots[repoPath];
+          const contractsStale =
+            snapshot && meta.indexedAt ? snapshot.indexedAt !== meta.indexedAt : !snapshot;
+
+          repoStatuses[repoPath] = {
+            indexStale: staleness.isStale,
+            contractsStale: Boolean(contractsStale),
+            missing: false,
+            commitsBehind: staleness.commitsBehind,
+          };
+        } catch {
+          repoStatuses[repoPath] = { indexStale: false, contractsStale: false, missing: true };
+        }
       }
+
+      return {
+        group: name,
+        lastSync: registry.generatedAt || null,
+        missingRepos: registry.missingRepos || [],
+        repos: repoStatuses,
+      };
     }
 
-    return {
-      group: name,
-      lastSync: registry?.generatedAt || null,
-      missingRepos: registry?.missingRepos || [],
-      repos: repoStatuses,
-    };
+    // Bridge path
+    const handle = fallback.handle;
+    const meta = fallback.meta;
+    try {
+      const snapshots = await queryBridge<{ id: string; indexedAt: string; lastCommit: string }>(
+        handle,
+        'MATCH (s:RepoSnapshot) RETURN s.id AS id, s.indexedAt AS indexedAt, s.lastCommit AS lastCommit',
+      );
+      const bridgeSnapshots: Record<string, { indexedAt: string; lastCommit: string }> = {};
+      for (const s of snapshots) {
+        bridgeSnapshots[s.id] = { indexedAt: s.indexedAt, lastCommit: s.lastCommit };
+      }
+
+      const repoStatuses: Record<
+        string,
+        {
+          indexStale: boolean;
+          contractsStale: boolean;
+          missing: boolean;
+          commitsBehind?: number;
+        }
+      > = {};
+
+      for (const [repoPath, registryName] of Object.entries(config.repos)) {
+        try {
+          const repoObj = await this.port.resolveRepo(registryName);
+          const metaPath = pathMod.join(repoObj.storagePath, 'meta.json');
+          const metaRaw = await fsp.readFile(metaPath, 'utf-8').catch(() => '{}');
+          const repoMeta = JSON.parse(metaRaw) as { lastCommit?: string; indexedAt?: string };
+
+          const staleness = repoMeta.lastCommit
+            ? checkStaleness(repoObj.repoPath, repoMeta.lastCommit)
+            : { isStale: true, commitsBehind: -1 };
+
+          const snapshot = bridgeSnapshots[repoPath];
+          const contractsStale =
+            snapshot && repoMeta.indexedAt ? snapshot.indexedAt !== repoMeta.indexedAt : !snapshot;
+
+          repoStatuses[repoPath] = {
+            indexStale: staleness.isStale,
+            contractsStale: Boolean(contractsStale),
+            missing: false,
+            commitsBehind: staleness.commitsBehind,
+          };
+        } catch {
+          repoStatuses[repoPath] = { indexStale: false, contractsStale: false, missing: true };
+        }
+      }
+
+      return {
+        group: name,
+        lastSync: meta.generatedAt || null,
+        missingRepos: meta.missingRepos || [],
+        repos: repoStatuses,
+      };
+    } finally {
+      await closeBridgeDb(handle);
+    }
   }
 }

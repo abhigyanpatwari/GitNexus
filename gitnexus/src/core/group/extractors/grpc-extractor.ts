@@ -75,6 +75,84 @@ function makeContract(
   };
 }
 
+export interface ProtoServiceInfo {
+  package: string;
+  serviceName: string;
+  methods: string[];
+  protoPath: string;
+}
+
+export async function buildProtoMap(repoPath: string): Promise<Map<string, ProtoServiceInfo[]>> {
+  const map = new Map<string, ProtoServiceInfo[]>();
+  const protoFiles = await glob('**/*.proto', {
+    cwd: repoPath,
+    absolute: false,
+    nodir: true,
+    ignore: ['**/node_modules/**', '**/.git/**', '**/vendor/**'],
+  });
+
+  for (const rel of protoFiles) {
+    const content = readSafe(repoPath, rel);
+    if (!content) continue;
+
+    const pkgMatch = content.match(/^\s*package\s+([\w.]+)\s*;/m);
+    const pkg = pkgMatch?.[1] ?? '';
+
+    const serviceBlocks = extractServiceBlocks(content);
+    for (const block of serviceBlocks) {
+      const rpcRe = /rpc\s+(\w+)\s*\(/g;
+      const methods: string[] = [];
+      let m: RegExpExecArray | null;
+      while ((m = rpcRe.exec(block.body)) !== null) {
+        methods.push(m[1]);
+      }
+      const info: ProtoServiceInfo = {
+        package: pkg,
+        serviceName: block.name,
+        methods,
+        protoPath: rel.replace(/\\/g, '/'),
+      };
+      const existing = map.get(block.name) ?? [];
+      existing.push(info);
+      map.set(block.name, existing);
+    }
+  }
+  return map;
+}
+
+export function resolveProtoConflict(
+  _serviceName: string,
+  sourceFilePath: string,
+  candidates: ProtoServiceInfo[],
+): ProtoServiceInfo | null {
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+
+  // Directory proximity heuristic
+  const sourceDir = path.dirname(sourceFilePath).replace(/\\/g, '/');
+  let best = candidates[0];
+  let bestScore = 0;
+  for (const c of candidates) {
+    const protoDir = path.dirname(c.protoPath).replace(/\\/g, '/');
+    let shared = 0;
+    const min = Math.min(sourceDir.length, protoDir.length);
+    for (let i = 0; i < min; i++) {
+      if (sourceDir[i] === protoDir[i]) shared++;
+      else break;
+    }
+    if (shared > bestScore) {
+      bestScore = shared;
+      best = c;
+    }
+  }
+  return best;
+}
+
+export function serviceContractId(pkg: string, serviceName: string): string {
+  const prefix = pkg ? `${pkg}.${serviceName}` : serviceName;
+  return `grpc::${prefix}/*`;
+}
+
 export class GrpcExtractor implements ContractExtractor {
   type = 'grpc' as const;
 
@@ -100,6 +178,9 @@ export class GrpcExtractor implements ContractExtractor {
       if (content) out.push(...this.parseProtoFile(content, rel));
     }
 
+    // Build proto map for source scanner resolution
+    const protoMap = await buildProtoMap(repoPath);
+
     // Source files — server/client detection
     const sourceFiles = await glob('**/*.{go,java,py,ts,tsx,js,jsx}', {
       cwd: repoPath,
@@ -112,16 +193,16 @@ export class GrpcExtractor implements ContractExtractor {
       const ext = path.extname(rel).toLowerCase();
 
       if (ext === '.go') {
-        out.push(...this.scanGoProviders(content, rel));
-        out.push(...this.scanGoConsumers(content, rel));
+        out.push(...this.scanGoProviders(content, rel, protoMap));
+        out.push(...this.scanGoConsumers(content, rel, protoMap));
       } else if (ext === '.java') {
-        out.push(...this.scanJavaProviders(content, rel));
-        out.push(...this.scanJavaConsumers(content, rel));
+        out.push(...this.scanJavaProviders(content, rel, protoMap));
+        out.push(...this.scanJavaConsumers(content, rel, protoMap));
       } else if (ext === '.py') {
-        out.push(...this.scanPythonProviders(content, rel));
-        out.push(...this.scanPythonConsumers(content, rel));
+        out.push(...this.scanPythonProviders(content, rel, protoMap));
+        out.push(...this.scanPythonConsumers(content, rel, protoMap));
       } else if (['.ts', '.tsx', '.js', '.jsx'].includes(ext)) {
-        out.push(...this.scanTsProviders(content, rel));
+        out.push(...this.scanTsProviders(content, rel, protoMap));
       }
     }
 
@@ -154,7 +235,11 @@ export class GrpcExtractor implements ContractExtractor {
     return out;
   }
 
-  private scanGoProviders(content: string, filePath: string): ExtractedContract[] {
+  private scanGoProviders(
+    content: string,
+    filePath: string,
+    protoMap: Map<string, ProtoServiceInfo[]>,
+  ): ExtractedContract[] {
     const out: ExtractedContract[] = [];
 
     // pb.RegisterXxxServer(
@@ -162,15 +247,17 @@ export class GrpcExtractor implements ContractExtractor {
     let m: RegExpExecArray | null;
     while ((m = registerRe.exec(content)) !== null) {
       const serviceName = m[1];
+      const candidates = protoMap.get(serviceName);
+      const proto = resolveProtoConflict(serviceName, filePath, candidates ?? []);
+      const cid = proto
+        ? serviceContractId(proto.package, proto.serviceName)
+        : serviceOnlyContractId(serviceName);
+      const conf = proto ? 0.8 : 0.65;
       out.push(
-        makeContract(
-          serviceOnlyContractId(serviceName),
-          'provider',
-          filePath,
-          `Register${serviceName}Server`,
-          0.8,
-          { service: serviceName, source: 'go_register' },
-        ),
+        makeContract(cid, 'provider', filePath, `Register${serviceName}Server`, conf, {
+          service: serviceName,
+          source: 'go_register',
+        }),
       );
     }
 
@@ -178,51 +265,74 @@ export class GrpcExtractor implements ContractExtractor {
     const unimplRe = /\w+\.Unimplemented(\w+)Server\b/g;
     while ((m = unimplRe.exec(content)) !== null) {
       const serviceName = m[1];
+      const candidates = protoMap.get(serviceName);
+      const proto = resolveProtoConflict(serviceName, filePath, candidates ?? []);
+      const cid = proto
+        ? serviceContractId(proto.package, proto.serviceName)
+        : serviceOnlyContractId(serviceName);
+      const conf = proto ? 0.8 : 0.65;
       out.push(
-        makeContract(
-          serviceOnlyContractId(serviceName),
-          'provider',
-          filePath,
-          `Unimplemented${serviceName}Server`,
-          0.8,
-          { service: serviceName, source: 'go_unimplemented' },
-        ),
+        makeContract(cid, 'provider', filePath, `Unimplemented${serviceName}Server`, conf, {
+          service: serviceName,
+          source: 'go_unimplemented',
+        }),
       );
     }
 
     return out;
   }
 
-  private scanGoConsumers(content: string, filePath: string): ExtractedContract[] {
+  private scanGoConsumers(
+    content: string,
+    filePath: string,
+    protoMap: Map<string, ProtoServiceInfo[]>,
+  ): ExtractedContract[] {
     const out: ExtractedContract[] = [];
     const re = /\w+\.New(\w+)Client\s*\(/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(content)) !== null) {
       const serviceName = m[1];
+      const candidates = protoMap.get(serviceName);
+      const proto = resolveProtoConflict(serviceName, filePath, candidates ?? []);
+      const cid = proto
+        ? serviceContractId(proto.package, proto.serviceName)
+        : serviceOnlyContractId(serviceName);
+      const conf = proto ? 0.75 : 0.55;
       out.push(
-        makeContract(
-          serviceOnlyContractId(serviceName),
-          'consumer',
-          filePath,
-          `New${serviceName}Client`,
-          0.7,
-          { service: serviceName, source: 'go_client' },
-        ),
+        makeContract(cid, 'consumer', filePath, `New${serviceName}Client`, conf, {
+          service: serviceName,
+          source: 'go_client',
+        }),
       );
     }
     return out;
   }
 
-  private scanJavaProviders(content: string, filePath: string): ExtractedContract[] {
+  private scanJavaProviders(
+    content: string,
+    filePath: string,
+    protoMap: Map<string, ProtoServiceInfo[]>,
+  ): ExtractedContract[] {
     const out: ExtractedContract[] = [];
+
+    const resolveJava = (svcName: string): { cid: string; conf: number } => {
+      const candidates = protoMap.get(svcName);
+      const proto = resolveProtoConflict(svcName, filePath, candidates ?? []);
+      const cid = proto
+        ? serviceContractId(proto.package, proto.serviceName)
+        : serviceOnlyContractId(svcName);
+      const conf = proto ? 0.8 : 0.65;
+      return { cid, conf };
+    };
 
     // @GrpcService
     if (content.includes('@GrpcService')) {
       const implBaseRe = /extends\s+(\w+)Grpc\.(\w+)ImplBase/;
       const m = content.match(implBaseRe);
       if (m) {
+        const { cid, conf } = resolveJava(m[1]);
         out.push(
-          makeContract(serviceOnlyContractId(m[1]), 'provider', filePath, m[2], 0.8, {
+          makeContract(cid, 'provider', filePath, m[2], conf, {
             service: m[1],
             source: 'java_grpc_service',
           }),
@@ -234,8 +344,9 @@ export class GrpcExtractor implements ContractExtractor {
         const cm = content.match(classRe);
         if (cm) {
           const svcName = cm[2].replace(/Grpc$/, '');
+          const { cid, conf } = resolveJava(svcName);
           out.push(
-            makeContract(serviceOnlyContractId(svcName), 'provider', filePath, cm[1], 0.8, {
+            makeContract(cid, 'provider', filePath, cm[1], conf, {
               service: svcName,
               source: 'java_grpc_service',
             }),
@@ -250,8 +361,9 @@ export class GrpcExtractor implements ContractExtractor {
       const m = content.match(implRe);
       if (m) {
         const svcName = m[2] || m[1].replace(/Grpc$/, '');
+        const { cid, conf } = resolveJava(svcName);
         out.push(
-          makeContract(serviceOnlyContractId(svcName), 'provider', filePath, svcName, 0.8, {
+          makeContract(cid, 'provider', filePath, svcName, conf, {
             service: svcName,
             source: 'java_impl_base',
           }),
@@ -262,49 +374,65 @@ export class GrpcExtractor implements ContractExtractor {
     return out;
   }
 
-  private scanJavaConsumers(content: string, filePath: string): ExtractedContract[] {
+  private scanJavaConsumers(
+    content: string,
+    filePath: string,
+    protoMap: Map<string, ProtoServiceInfo[]>,
+  ): ExtractedContract[] {
     const out: ExtractedContract[] = [];
     // XxxGrpc.newBlockingStub( or XxxGrpc.newStub(
     const re = /(\w+)Grpc\.new(?:Blocking)?Stub\s*\(/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(content)) !== null) {
       const serviceName = m[1];
+      const candidates = protoMap.get(serviceName);
+      const proto = resolveProtoConflict(serviceName, filePath, candidates ?? []);
+      const cid = proto
+        ? serviceContractId(proto.package, proto.serviceName)
+        : serviceOnlyContractId(serviceName);
+      const conf = proto ? 0.75 : 0.55;
       out.push(
-        makeContract(
-          serviceOnlyContractId(serviceName),
-          'consumer',
-          filePath,
-          `${serviceName}Stub`,
-          0.7,
-          { service: serviceName, source: 'java_stub' },
-        ),
+        makeContract(cid, 'consumer', filePath, `${serviceName}Stub`, conf, {
+          service: serviceName,
+          source: 'java_stub',
+        }),
       );
     }
     return out;
   }
 
-  private scanPythonProviders(content: string, filePath: string): ExtractedContract[] {
+  private scanPythonProviders(
+    content: string,
+    filePath: string,
+    protoMap: Map<string, ProtoServiceInfo[]>,
+  ): ExtractedContract[] {
     const out: ExtractedContract[] = [];
     // add_XxxServicer_to_server(
     const re = /add_(\w+?)Servicer_to_server\s*\(/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(content)) !== null) {
       const serviceName = m[1];
+      const candidates = protoMap.get(serviceName);
+      const proto = resolveProtoConflict(serviceName, filePath, candidates ?? []);
+      const cid = proto
+        ? serviceContractId(proto.package, proto.serviceName)
+        : serviceOnlyContractId(serviceName);
+      const conf = proto ? 0.8 : 0.65;
       out.push(
-        makeContract(
-          serviceOnlyContractId(serviceName),
-          'provider',
-          filePath,
-          `add_${serviceName}Servicer_to_server`,
-          0.8,
-          { service: serviceName, source: 'python_servicer' },
-        ),
+        makeContract(cid, 'provider', filePath, `add_${serviceName}Servicer_to_server`, conf, {
+          service: serviceName,
+          source: 'python_servicer',
+        }),
       );
     }
     return out;
   }
 
-  private scanPythonConsumers(content: string, filePath: string): ExtractedContract[] {
+  private scanPythonConsumers(
+    content: string,
+    filePath: string,
+    protoMap: Map<string, ProtoServiceInfo[]>,
+  ): ExtractedContract[] {
     const out: ExtractedContract[] = [];
     // XxxStub(
     const re = /(\w+)Stub\s*\(/g;
@@ -313,8 +441,14 @@ export class GrpcExtractor implements ContractExtractor {
       const name = m[1];
       // Filter out common false positives
       if (['Mock', 'Test', 'Fake', 'Stub'].includes(name)) continue;
+      const candidates = protoMap.get(name);
+      const proto = resolveProtoConflict(name, filePath, candidates ?? []);
+      const cid = proto
+        ? serviceContractId(proto.package, proto.serviceName)
+        : serviceOnlyContractId(name);
+      const conf = proto ? 0.75 : 0.55;
       out.push(
-        makeContract(serviceOnlyContractId(name), 'consumer', filePath, `${name}Stub`, 0.7, {
+        makeContract(cid, 'consumer', filePath, `${name}Stub`, conf, {
           service: name,
           source: 'python_stub',
         }),
@@ -323,7 +457,11 @@ export class GrpcExtractor implements ContractExtractor {
     return out;
   }
 
-  private scanTsProviders(content: string, filePath: string): ExtractedContract[] {
+  private scanTsProviders(
+    content: string,
+    filePath: string,
+    protoMap: Map<string, ProtoServiceInfo[]>,
+  ): ExtractedContract[] {
     const out: ExtractedContract[] = [];
     // @GrpcMethod('ServiceName', 'MethodName')
     const re = /@GrpcMethod\s*\(\s*['"](\w+)['"]\s*,\s*['"](\w+)['"]\s*\)/g;
@@ -331,7 +469,10 @@ export class GrpcExtractor implements ContractExtractor {
     while ((m = re.exec(content)) !== null) {
       const serviceName = m[1];
       const methodName = m[2];
-      const cid = contractId('', serviceName, methodName);
+      const candidates = protoMap.get(serviceName);
+      const proto = resolveProtoConflict(serviceName, filePath, candidates ?? []);
+      const pkg = proto?.package ?? '';
+      const cid = contractId(pkg, serviceName, methodName);
       out.push(
         makeContract(cid, 'provider', filePath, `${serviceName}.${methodName}`, 0.8, {
           service: serviceName,

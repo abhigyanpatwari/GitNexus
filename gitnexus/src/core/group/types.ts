@@ -1,5 +1,5 @@
 export type ContractType = 'http' | 'grpc' | 'topic' | 'lib' | 'custom';
-export type MatchType = 'exact' | 'manifest' | 'bm25' | 'embedding';
+export type MatchType = 'exact' | 'manifest' | 'wildcard' | 'bm25' | 'embedding';
 export type ContractRole = 'provider' | 'consumer';
 
 export interface GroupConfig {
@@ -130,4 +130,26 @@ export interface OutOfScopeLink {
   to: string;
   contractId: string;
   confidence: number;
+}
+
+/**
+ * @deprecated Use bridge.lbug instead. Kept for JSON fallback during migration.
+ * This is a type alias — ContractRegistry is NOT removed yet.
+ * In Task 10 (cleanup), ContractRegistry will be renamed to LegacyContractRegistry
+ * and all imports updated. For now, both names work.
+ */
+export type LegacyContractRegistry = ContractRegistry;
+
+/** Opaque handle to an open bridge LadybugDB. */
+export interface BridgeHandle {
+  /** Internal — do not access directly. */
+  readonly _db: unknown;
+  readonly _conn: unknown;
+  readonly groupDir: string;
+}
+
+export interface BridgeMeta {
+  version: number;
+  generatedAt: string;
+  missingRepos: string[];
 }
