@@ -873,11 +873,11 @@ async function runChunkedParseAndResolve(
             );
           }
         }
-        deferredWorkerCalls.push(...chunkWorkerData.calls);
-        deferredWorkerHeritage.push(...chunkWorkerData.heritage);
-        deferredConstructorBindings.push(...chunkWorkerData.constructorBindings);
+        for (const _item of chunkWorkerData.calls) deferredWorkerCalls.push(_item);
+        for (const _item of chunkWorkerData.heritage) deferredWorkerHeritage.push(_item);
+        for (const _item of chunkWorkerData.constructorBindings) deferredConstructorBindings.push(_item);
         if (chunkWorkerData.assignments?.length) {
-          deferredAssignments.push(...chunkWorkerData.assignments);
+          for (const _item of chunkWorkerData.assignments) deferredAssignments.push(_item);
         }
 
         // Heritage + Routes — calls deferred until all chunks have contributed heritage
@@ -912,23 +912,23 @@ async function runChunkedParseAndResolve(
         ]);
         // Collect TypeEnv file-scope bindings for exported type enrichment
         if (chunkWorkerData.typeEnvBindings?.length) {
-          workerTypeEnvBindings.push(...chunkWorkerData.typeEnvBindings);
+          for (const _item of chunkWorkerData.typeEnvBindings) workerTypeEnvBindings.push(_item);
         }
         // Collect fetch() calls for Next.js route matching
         if (chunkWorkerData.fetchCalls?.length) {
-          allFetchCalls.push(...chunkWorkerData.fetchCalls);
+          for (const _item of chunkWorkerData.fetchCalls) allFetchCalls.push(_item);
         }
         if (chunkWorkerData.routes?.length) {
-          allExtractedRoutes.push(...chunkWorkerData.routes);
+          for (const _item of chunkWorkerData.routes) allExtractedRoutes.push(_item);
         }
         if (chunkWorkerData.decoratorRoutes?.length) {
-          allDecoratorRoutes.push(...chunkWorkerData.decoratorRoutes);
+          for (const _item of chunkWorkerData.decoratorRoutes) allDecoratorRoutes.push(_item);
         }
         if (chunkWorkerData.toolDefs?.length) {
-          allToolDefs.push(...chunkWorkerData.toolDefs);
+          for (const _item of chunkWorkerData.toolDefs) allToolDefs.push(_item);
         }
         if (chunkWorkerData.ormQueries?.length) {
-          allORMQueries.push(...chunkWorkerData.ormQueries);
+          for (const _item of chunkWorkerData.ormQueries) allORMQueries.push(_item);
         }
       } else {
         await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
@@ -1017,7 +1017,7 @@ async function runChunkedParseAndResolve(
     // Extract fetch() calls for Next.js route matching (sequential path)
     const chunkFetchCalls = await extractFetchCallsFromFiles(chunkFiles, astCache);
     if (chunkFetchCalls.length > 0) {
-      allFetchCalls.push(...chunkFetchCalls);
+      for (const _item of chunkFetchCalls) allFetchCalls.push(_item);
     }
     // Extract ORM queries (sequential path)
     for (const f of chunkFiles) {
