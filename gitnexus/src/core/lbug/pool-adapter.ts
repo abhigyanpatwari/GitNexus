@@ -58,8 +58,9 @@ const MAX_CONNS_PER_REPO = 8;
 
 let idleTimer: ReturnType<typeof setInterval> | null = null;
 
-/** Saved real stdout.write — used to silence LadybugDB native output without race conditions */
+/** Saved real stdout/stderr write — used to silence native module output without race conditions */
 export const realStdoutWrite = process.stdout.write.bind(process.stdout);
+export const realStderrWrite = process.stderr.write.bind(process.stderr);
 let stdoutSilenceCount = 0;
 /** True while pre-warming connections — prevents watchdog from prematurely restoring stdout */
 let preWarmActive = false;
@@ -163,13 +164,19 @@ function closeOne(repoId: string): void {
  */
 let activeQueryCount = 0;
 
-function silenceStdout(): void {
+/**
+ * Silence stdout by replacing process.stdout.write with a no-op.
+ * Uses a reference counter so nested silence/restore pairs are safe.
+ * Exported so other modules (e.g. embedder) use the same mechanism instead
+ * of independently patching stdout, which causes restore-order conflicts.
+ */
+export function silenceStdout(): void {
   if (stdoutSilenceCount++ === 0) {
     process.stdout.write = (() => true) as any;
   }
 }
 
-function restoreStdout(): void {
+export function restoreStdout(): void {
   if (--stdoutSilenceCount <= 0) {
     stdoutSilenceCount = 0;
     process.stdout.write = realStdoutWrite;
