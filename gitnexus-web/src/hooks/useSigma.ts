@@ -62,6 +62,7 @@ interface UseSigmaOptions {
   blastRadiusNodeIds?: Set<string>;
   animatedNodes?: Map<string, NodeAnimation>;
   visibleEdgeTypes?: EdgeType[];
+  highlightedRepos?: Set<string>;
 }
 
 interface UseSigmaReturn {
@@ -138,6 +139,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const blastRadiusRef = useRef<Set<string>>(new Set());
   const animatedNodesRef = useRef<Map<string, NodeAnimation>>(new Map());
   const visibleEdgeTypesRef = useRef<EdgeType[] | null>(null);
+  const highlightedReposRef = useRef<Set<string> | null>(null);
   const layoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const [isLayoutRunning, setIsLayoutRunning] = useState(false);
@@ -148,12 +150,14 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     blastRadiusRef.current = options.blastRadiusNodeIds || new Set();
     animatedNodesRef.current = options.animatedNodes || new Map();
     visibleEdgeTypesRef.current = options.visibleEdgeTypes || null;
+    highlightedReposRef.current = options.highlightedRepos || null;
     sigmaRef.current?.refresh();
   }, [
     options.highlightedNodeIds,
     options.blastRadiusNodeIds,
     options.animatedNodes,
     options.visibleEdgeTypes,
+    options.highlightedRepos,
   ]);
 
   // Animation loop for node effects
@@ -283,6 +287,21 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
           return res;
         }
 
+        // Dim nodes in deselected repos (group mode repo filtering)
+        const hRepos = highlightedReposRef.current;
+        if (hRepos) {
+          const nodeRepo = data.repoName;
+          if (nodeRepo && !hRepos.has(nodeRepo)) {
+            res.color = dimColor(data.color, 0.12);
+            res.size = (data.size || 8) * 0.35;
+            res.zIndex = -1;
+            return res;
+          }
+          if (nodeRepo) {
+            res.zIndex = 2;
+          }
+        }
+
         const currentSelected = selectedNodeRef.current;
         const highlighted = highlightedRef.current;
         const blastRadius = blastRadiusRef.current;
@@ -399,6 +418,26 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
           if (!visibleTypes.includes(data.relationType as EdgeType)) {
             res.hidden = true;
             return res;
+          }
+        }
+
+        // Dim edges touching deselected repos
+        const hReposEdge = highlightedReposRef.current;
+        if (hReposEdge) {
+          const graph = graphRef.current;
+          if (graph) {
+            const [source, target] = graph.extremities(edge);
+            const srcRepo = graph.getNodeAttribute(source, 'repoName') as string | undefined;
+            const tgtRepo = graph.getNodeAttribute(target, 'repoName') as string | undefined;
+            const srcDimmed = srcRepo && !hReposEdge.has(srcRepo);
+            const tgtDimmed = tgtRepo && !hReposEdge.has(tgtRepo);
+            if (srcDimmed || tgtDimmed) {
+              res.color = dimColor(data.color, 0.08);
+              res.size = 0.2;
+              res.zIndex = -1;
+              return res;
+            }
+            res.zIndex = 2;
           }
         }
 

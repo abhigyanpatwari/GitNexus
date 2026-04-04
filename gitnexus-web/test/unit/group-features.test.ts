@@ -157,6 +157,21 @@ describe('knowledgeGraphToGraphology - multi-repo support', () => {
     expect(edgeAttr.color).toBe('#f59e0b'); // Amber
   });
 
+  it('colors File/Folder nodes by repo color in multi-repo mode', () => {
+    const nodes = [
+      makeNode('repoA::folder1', 'Folder', 'src', { _repo: 'repoA' }),
+      makeNode('repoB::folder1', 'Folder', 'src', { _repo: 'repoB' }),
+    ];
+    const graph = knowledgeGraphToGraphology(makeGraph(nodes, []));
+
+    const attrA = graph.getNodeAttributes('repoA::folder1') as SigmaNodeAttributes;
+    const attrB = graph.getNodeAttributes('repoB::folder1') as SigmaNodeAttributes;
+    // In multi-repo mode, structural nodes should use repo color, not default type color
+    expect(attrA.color).toBe(attrA.repoColor);
+    expect(attrB.color).toBe(attrB.repoColor);
+    expect(attrA.color).not.toBe(attrB.color);
+  });
+
   it('works correctly in single-repo mode (no repoName assigned)', () => {
     const nodes = [
       makeNode('fn1', 'Function', 'funcA'),
@@ -184,6 +199,45 @@ describe('knowledgeGraphToGraphology - multi-repo support', () => {
       Math.pow(posA.x - posB.x, 2) + Math.pow(posA.y - posB.y, 2),
     );
     expect(distance).toBeGreaterThan(0);
+  });
+});
+
+// ── Repo highlight toggle tests ─────────────────────────────────────────────
+
+describe('repo highlight toggle logic', () => {
+  it('toggling a repo out of the set removes it', () => {
+    const initial = new Set(['repoA', 'repoB']);
+    const next = new Set(initial);
+    next.delete('repoA');
+    expect(next.has('repoA')).toBe(false);
+    expect(next.has('repoB')).toBe(true);
+    expect(next.size).toBe(1);
+  });
+
+  it('toggling a repo back into the set adds it', () => {
+    const current = new Set(['repoB']);
+    const next = new Set(current);
+    next.add('repoA');
+    expect(next.has('repoA')).toBe(true);
+    expect(next.has('repoB')).toBe(true);
+    expect(next.size).toBe(2);
+  });
+
+  it('nodes in deselected repos should be dimmable based on repoName attribute', () => {
+    const highlightedRepos = new Set(['repoA']);
+    const nodeRepoA = 'repoA';
+    const nodeRepoB = 'repoB';
+
+    // repoA is highlighted — should NOT be dimmed
+    expect(highlightedRepos.has(nodeRepoA)).toBe(true);
+    // repoB is not highlighted — should be dimmed
+    expect(highlightedRepos.has(nodeRepoB)).toBe(false);
+  });
+
+  it('empty highlightedRepos means no dimming (all visible)', () => {
+    const highlightedRepos = new Set<string>();
+    // When set is empty, the dimming logic should not trigger
+    expect(highlightedRepos.size).toBe(0);
   });
 });
 

@@ -141,7 +141,12 @@ const TreeItem = ({
         )}
 
         {/* Node icon */}
-        {node.type === 'folder' ? (
+        {node.path.startsWith('repo::') ? (
+          <>
+            <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-amber-400" />
+            <FolderOpen className="h-4 w-4 shrink-0 text-amber-400" />
+          </>
+        ) : node.type === 'folder' ? (
           isExpanded ? (
             <FolderOpen className="h-4 w-4 shrink-0" style={{ color: NODE_COLORS.Folder }} />
           ) : (
@@ -152,7 +157,9 @@ const TreeItem = ({
         )}
 
         {/* Name */}
-        <span className="truncate font-mono text-xs">{node.name}</span>
+        <span className={`truncate font-mono text-xs ${node.path.startsWith('repo::') ? 'font-semibold' : ''}`}>
+          {node.name}
+        </span>
       </button>
 
       {/* Children */}
@@ -222,6 +229,7 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
     openCodePanel,
     depthFilter,
     setDepthFilter,
+    groupMode,
   } = useAppState();
 
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -229,11 +237,38 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<'files' | 'filters'>('files');
 
-  // Build file tree from graph
+  // Build file tree from graph (with repo grouping in group mode)
   const fileTree = useMemo(() => {
     if (!graph) return [];
-    return buildFileTree(graph.nodes);
-  }, [graph]);
+
+    if (!groupMode) return buildFileTree(graph.nodes);
+
+    // Group nodes by repo, then build a tree per repo
+    const repoGroups = new Map<string, GraphNode[]>();
+    for (const node of graph.nodes) {
+      const repo = (node.properties as Record<string, unknown>)._repo as string | undefined;
+      const repoName = repo || 'unknown';
+      const group = repoGroups.get(repoName);
+      if (group) {
+        group.push(node);
+      } else {
+        repoGroups.set(repoName, [node]);
+      }
+    }
+
+    const repoTrees: TreeNode[] = [];
+    for (const [repoName, nodes] of repoGroups) {
+      const children = buildFileTree(nodes);
+      repoTrees.push({
+        id: `repo::${repoName}`,
+        name: repoName,
+        type: 'folder',
+        path: `repo::${repoName}`,
+        children,
+      });
+    }
+    return repoTrees;
+  }, [graph, groupMode]);
 
   // Auto-expand first level on initial load
   useEffect(() => {

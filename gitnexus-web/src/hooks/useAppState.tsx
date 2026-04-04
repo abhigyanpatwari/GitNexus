@@ -155,6 +155,8 @@ interface AppState {
   availableGroups: string[];
   setAvailableGroups: (groups: string[]) => void;
   connectToGroup: (groupName: string) => Promise<void>;
+  highlightedRepos: Set<string>;
+  setHighlightedRepos: (repos: Set<string>) => void;
 
   // Worker API (shared across app)
   runQuery: (cypher: string) => Promise<any[]>;
@@ -332,6 +334,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   const [groupMode, setGroupMode] = useState(false);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [availableGroups, setAvailableGroups] = useState<string[]>([]);
+  const [highlightedRepos, setHighlightedRepos] = useState<Set<string>>(new Set());
 
   // Embedding state
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus>('idle');
@@ -1188,8 +1191,6 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
   const connectToGroup = useCallback(
     async (groupName: string) => {
-      if (!serverBaseUrl) return;
-
       setProgress({
         phase: 'extracting',
         percent: 10,
@@ -1229,6 +1230,14 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         setActiveGroup(groupName);
         setProjectName(`Group: ${groupName}`);
 
+        // Populate highlightedRepos with all repos (all visible by default)
+        const repoNames = new Set<string>();
+        for (const node of result.nodes) {
+          const repo = (node.properties as Record<string, unknown>)._repo as string | undefined;
+          if (repo) repoNames.add(repo);
+        }
+        setHighlightedRepos(repoNames);
+
         setProgress(null);
         setViewMode('exploring');
       } catch (err) {
@@ -1245,7 +1254,6 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       }
     },
     [
-      serverBaseUrl,
       setProgress,
       setViewMode,
       setProjectName,
@@ -1356,6 +1364,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     availableGroups,
     setAvailableGroups,
     connectToGroup,
+    highlightedRepos,
+    setHighlightedRepos,
     runQuery,
     isDatabaseReady,
     // Embedding state and methods

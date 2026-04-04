@@ -216,12 +216,16 @@ export const knowledgeGraphToGraphology = (
     const baseSize = NODE_SIZES[node.label] || 8;
     const scaledSize = getScaledNodeSize(baseSize, nodeCount);
 
-    // Structural nodes keep their type-based color
+    // In multi-repo mode, color File/Folder nodes by repo for visual distinction
+    const structColor = isMultiRepo && repoCenter
+      ? repoCenter.color
+      : NODE_COLORS[node.label] || '#9ca3af';
+
     graph.addNode(node.id, {
       x,
       y,
       size: scaledSize,
-      color: NODE_COLORS[node.label] || '#9ca3af',
+      color: structColor,
       label: node.properties.name,
       nodeType: node.label,
       filePath: node.properties.filePath,

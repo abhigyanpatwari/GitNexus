@@ -4,6 +4,7 @@ import { DropZone } from './components/DropZone';
 import { LoadingOverlay } from './components/LoadingOverlay';
 import { Header } from './components/Header';
 import { GraphCanvas, GraphCanvasHandle } from './components/GraphCanvas';
+import { RepoLegend } from './components/RepoLegend';
 import { RightPanel } from './components/RightPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { StatusBar } from './components/StatusBar';
@@ -45,6 +46,7 @@ const AppContent = () => {
     setAvailableRepos,
     switchRepo,
     setCurrentRepo,
+    connectToGroup,
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
@@ -228,6 +230,13 @@ const AppContent = () => {
             window.history.replaceState(null, '', url.toString());
           }
         }}
+        onGroupSelect={(groupName, serverUrl) => {
+          if (serverUrl && !serverBaseUrl) {
+            const normalized = normalizeServerUrl(serverUrl);
+            setServerBaseUrl(normalized);
+          }
+          connectToGroup(groupName);
+        }}
       />
     );
   }
@@ -282,6 +291,7 @@ const AppContent = () => {
         {/* Graph area - takes remaining space */}
         <div className="relative min-w-0 flex-1">
           <GraphCanvas ref={graphCanvasRef} />
+          <RepoLegend />
 
           {/* Code References Panel (overlay) - does NOT resize the graph, it overlaps on top */}
           {isCodePanelOpen && (codeReferences.length > 0 || !!selectedNode) && (

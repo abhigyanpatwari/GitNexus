@@ -13,6 +13,7 @@ import { RepoLanding } from './RepoLanding';
 
 interface DropZoneProps {
   onServerConnect?: (result: ConnectResult, serverUrl?: string) => void | Promise<void>;
+  onGroupSelect?: (groupName: string, serverUrl?: string) => void;
 }
 
 // ── Crossfade wrapper ───────────────────────────────────────────────────────
@@ -133,7 +134,7 @@ function LoadingCard({ message }: { message: string }) {
 
 // ── DropZone ─────────────────────────────────────────────────────────────────
 
-export const DropZone = ({ onServerConnect }: DropZoneProps) => {
+export const DropZone = ({ onServerConnect, onGroupSelect }: DropZoneProps) => {
   const [error, setError] = useState<string | null>(null);
 
   // Backend polling for server detection
@@ -305,6 +306,9 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
               <RepoLanding
                 repos={detectedRepos}
                 onSelectRepo={connectToRepo}
+                onSelectGroup={onGroupSelect
+                  ? (groupName) => onGroupSelect(groupName, detectedBackendUrl ?? undefined)
+                  : undefined}
                 onAnalyzeComplete={connectToRepo}
               />
             )}

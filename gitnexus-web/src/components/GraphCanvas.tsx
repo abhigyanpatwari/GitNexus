@@ -46,8 +46,10 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     clearAICitationHighlights,
     clearBlastRadius,
     animatedNodes,
+    highlightedRepos,
   } = useAppState();
   const [hoveredNodeName, setHoveredNodeName] = useState<string | null>(null);
+  const [hoveredNodeRepo, setHoveredNodeRepo] = useState<string | null>(null);
 
   const effectiveHighlightedNodeIds = useMemo(() => {
     if (!isAIHighlightsEnabled) return highlightedNodeIds;
@@ -96,10 +98,13 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     (nodeId: string | null) => {
       if (!nodeId || !graph) {
         setHoveredNodeName(null);
+        setHoveredNodeRepo(null);
         return;
       }
       const node = nodeById.get(nodeId);
       setHoveredNodeName(node ? node.properties.name : null);
+      const repo = node ? (node.properties as Record<string, unknown>)._repo as string | undefined : undefined;
+      setHoveredNodeRepo(repo ?? null);
     },
     [graph, nodeById],
   );
@@ -147,6 +152,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     blastRadiusNodeIds: effectiveBlastRadiusNodeIds,
     animatedNodes: effectiveAnimatedNodes,
     visibleEdgeTypes,
+    highlightedRepos,
   });
 
   // Expose focusNode to parent via ref
@@ -253,6 +259,9 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
       {hoveredNodeName && !sigmaSelectedNode && (
         <div className="pointer-events-none absolute top-4 left-1/2 z-20 -translate-x-1/2 animate-fade-in rounded-lg border border-border-subtle bg-elevated/95 px-3 py-1.5 backdrop-blur-sm">
           <span className="font-mono text-sm text-text-primary">{hoveredNodeName}</span>
+          {hoveredNodeRepo && (
+            <span className="ml-2 text-xs text-text-muted">({hoveredNodeRepo})</span>
+          )}
         </div>
       )}
 
