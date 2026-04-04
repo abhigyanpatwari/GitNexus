@@ -399,6 +399,9 @@ export const C_QUERIES = `
 ; Calls
 (call_expression function: (identifier) @call.name) @call
 (call_expression function: (field_expression field: (field_identifier) @call.name)) @call
+; Calls inside cast expressions - e.g. (float)func(args)
+(cast_expression value: (call_expression function: (identifier) @call.name)) @call
+(cast_expression value: (call_expression function: (field_expression field: (field_identifier) @call.name))) @call
 `;
 
 // Go queries - works with tree-sitter-go
