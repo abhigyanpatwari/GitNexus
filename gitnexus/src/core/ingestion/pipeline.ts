@@ -875,7 +875,8 @@ async function runChunkedParseAndResolve(
         }
         for (const _item of chunkWorkerData.calls) deferredWorkerCalls.push(_item);
         for (const _item of chunkWorkerData.heritage) deferredWorkerHeritage.push(_item);
-        for (const _item of chunkWorkerData.constructorBindings) deferredConstructorBindings.push(_item);
+        for (const _item of chunkWorkerData.constructorBindings)
+          deferredConstructorBindings.push(_item);
         if (chunkWorkerData.assignments?.length) {
           for (const _item of chunkWorkerData.assignments) deferredAssignments.push(_item);
         }
