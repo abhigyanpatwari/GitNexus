@@ -137,17 +137,17 @@ const processParsingWithWorkers = async (
       });
     }
 
-    allImports.push(...result.imports);
-    allCalls.push(...result.calls);
-    allAssignments.push(...result.assignments);
-    allHeritage.push(...result.heritage);
-    allRoutes.push(...result.routes);
-    allFetchCalls.push(...result.fetchCalls);
-    allDecoratorRoutes.push(...result.decoratorRoutes);
-    allToolDefs.push(...result.toolDefs);
-    if (result.ormQueries) allORMQueries.push(...result.ormQueries);
-    allConstructorBindings.push(...result.constructorBindings);
-    allTypeEnvBindings.push(...result.typeEnvBindings);
+    for (const _item of result.imports) allImports.push(_item);
+    for (const _item of result.calls) allCalls.push(_item);
+    for (const _item of result.assignments) allAssignments.push(_item);
+    for (const _item of result.heritage) allHeritage.push(_item);
+    for (const _item of result.routes) allRoutes.push(_item);
+    for (const _item of result.fetchCalls) allFetchCalls.push(_item);
+    for (const _item of result.decoratorRoutes) allDecoratorRoutes.push(_item);
+    for (const _item of result.toolDefs) allToolDefs.push(_item);
+    if (result.ormQueries) for (const _item of result.ormQueries) allORMQueries.push(_item);
+    for (const _item of result.constructorBindings) allConstructorBindings.push(_item);
+    for (const _item of result.typeEnvBindings) allTypeEnvBindings.push(_item);
   }
 
   // Merge and log skipped languages from workers
