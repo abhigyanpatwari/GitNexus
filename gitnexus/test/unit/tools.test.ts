@@ -2,7 +2,7 @@
  * Unit Tests: MCP Tool Definitions
  *
  * Tests: GITNEXUS_TOOLS from tools.ts
- * - All 16 tools are defined (per-repo + group_*)
+ * - All 17 tools are defined (per-repo + group_*)
  * - Each tool has valid name, description, inputSchema
  * - Required fields are correct
  * - Optional repo parameter is present on tools that need it
@@ -14,13 +14,14 @@ const GROUP_TOOLS = new Set([
   'group_list',
   'group_sync',
   'group_contracts',
+  'group_impact',
   'group_query',
   'group_status',
 ]);
 
 describe('GITNEXUS_TOOLS', () => {
-  it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact + 5 group)', () => {
-    expect(GITNEXUS_TOOLS).toHaveLength(16);
+  it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact + 6 group)', () => {
+    expect(GITNEXUS_TOOLS).toHaveLength(17);
   });
 
   it('contains all expected tool names', () => {
@@ -99,6 +100,13 @@ describe('GITNEXUS_TOOLS', () => {
       expect(tool.inputSchema.properties.repo.type).toBe('string');
       expect(tool.inputSchema.required).not.toContain('repo');
     }
+  });
+
+  it('group_impact uses repo as required group path', () => {
+    const groupImpact = GITNEXUS_TOOLS.find((t) => t.name === 'group_impact')!;
+    expect(groupImpact.inputSchema.required).toContain('repo');
+    expect(groupImpact.inputSchema.required).toContain('name');
+    expect(groupImpact.inputSchema.required).toContain('target');
   });
 
   it('group_contracts has optional repo filter', () => {

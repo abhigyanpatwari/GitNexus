@@ -157,30 +157,142 @@ export function registerGroupCommands(program: Command): void {
       const { getGroupDir, getDefaultGitnexusDir } = await import('../core/group/storage.js');
       const { loadGroupConfig } = await import('../core/group/config-parser.js');
       const { syncGroup } = await import('../core/group/sync.js');
+      const { closeLbug } = await import('../core/lbug/pool-adapter.js');
+
+      try {
+        const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
+        const config = await loadGroupConfig(groupDir);
+
+        console.log(`Syncing group "${name}" (${Object.keys(config.repos).length} repos)...\n`);
+
+        const result = await syncGroup(config, {
+          groupDir,
+          allowStale: Boolean(opts.allowStale),
+          verbose: Boolean(opts.verbose),
+          skipEmbeddings: Boolean(opts.skipEmbeddings),
+          exactOnly: Boolean(opts.exactOnly),
+        });
+
+        if (opts.json) {
+          console.log(JSON.stringify(result, null, 2));
+        } else {
+          console.log(`\nMatching cascade:`);
+          const exactLinks = result.crossLinks.filter((l) => l.matchType === 'exact');
+          console.log(`  exact:     ${exactLinks.length} cross-links (confidence 1.0)`);
+          console.log(`  unmatched: ${result.unmatched.length} contracts`);
+          console.log(
+            `\nWrote contracts.json (${result.contracts.length} contracts, ${result.crossLinks.length} cross-links)`,
+          );
+        }
+      } finally {
+        await closeLbug().catch(() => {});
+      }
+    });
+
+  group
+    .command('impact <name>')
+    .description('Cross-index blast radius analysis')
+    .requiredOption('--target <symbol>', 'Symbol name to analyze')
+    .requiredOption('--repo <repo>', 'Repo group path (e.g. hr/hiring/backend)')
+    .option('--direction <dir>', 'upstream or downstream', 'upstream')
+    .option('--cross-depth <n>', 'Hops through boundaries (MVP: capped at 1)', '1')
+    .option('--max-depth <n>', 'Max depth within each repo', '3')
+    .option('--min-confidence <n>', 'Min confidence for cross-links', '0.5')
+    .option('--subgroup <path>', 'Limit fan-out scope')
+    .option('--timeout <ms>', 'Total wall time budget in ms', '30000')
+    .option('--json', 'JSON output')
+    .action(async (name: string, opts: Record<string, string | boolean | undefined>) => {
+      const { getGroupDir, getDefaultGitnexusDir, readContractRegistry } =
+        await import('../core/group/storage.js');
+      const { LocalBackend } = await import('../mcp/local/local-backend.js');
 
       const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
-      const config = await loadGroupConfig(groupDir);
+      const regFile = await readContractRegistry(groupDir);
+      if (!regFile) {
+        console.error(`No contracts.json found. Run: gitnexus group sync ${name}`);
+        process.exitCode = 1;
+        return;
+      }
 
-      console.log(`Syncing group "${name}" (${Object.keys(config.repos).length} repos)...\n`);
+      const repoGroupPath = opts.repo as string;
+      const targetSymbol = opts.target as string;
+      if (!repoGroupPath || !targetSymbol) {
+        console.error('Both --target and --repo are required.');
+        process.exitCode = 1;
+        return;
+      }
+      const direction = (opts.direction as string) ?? 'upstream';
+      const maxDepth = opts.maxDepth != null ? parseInt(String(opts.maxDepth), 10) : 3;
+      const minConfidence =
+        opts.minConfidence != null ? parseFloat(String(opts.minConfidence)) : 0.5;
+      const timeout = opts.timeout != null ? parseInt(String(opts.timeout), 10) : 30000;
+      const subgroup = opts.subgroup as string | undefined;
+      const requestedCrossDepth =
+        opts.crossDepth != null ? parseInt(String(opts.crossDepth), 10) : 1;
+      const crossDepth = Math.min(requestedCrossDepth, 1);
 
-      const result = await syncGroup(config, {
-        groupDir,
-        allowStale: Boolean(opts.allowStale),
-        verbose: Boolean(opts.verbose),
-        skipEmbeddings: Boolean(opts.skipEmbeddings),
-        exactOnly: Boolean(opts.exactOnly),
-      });
+      const crossDepthWarning =
+        requestedCrossDepth > 1
+          ? `Multi-hop cross-boundary traversal is not yet implemented. Using --cross-depth 1 (requested: ${requestedCrossDepth}).`
+          : undefined;
 
-      if (opts.json) {
-        console.log(JSON.stringify(result, null, 2));
-      } else {
-        console.log(`\nMatching cascade:`);
-        const exactLinks = result.crossLinks.filter((l) => l.matchType === 'exact');
-        console.log(`  exact:     ${exactLinks.length} cross-links (confidence 1.0)`);
-        console.log(`  unmatched: ${result.unmatched.length} contracts`);
+      if (crossDepthWarning && !opts.json) {
+        console.log(`WARNING: ${crossDepthWarning}\n`);
+      }
+
+      if (!opts.json) {
         console.log(
-          `\nWrote contracts.json (${result.contracts.length} contracts, ${result.crossLinks.length} cross-links)`,
+          `Analyzing impact of "${targetSymbol}" in ${repoGroupPath} (group: ${name})...\n`,
         );
+      }
+
+      const backend = new LocalBackend();
+      try {
+        await backend.init();
+        const result = (await backend.getGroupService().groupImpact({
+          name,
+          target: targetSymbol,
+          repo: repoGroupPath,
+          direction,
+          crossDepth,
+          maxDepth,
+          minConfidence,
+          subgroup,
+          timeout,
+        })) as import('../core/group/types.js').GroupImpactResult & { crossDepthWarning?: string };
+
+        if (opts.json) {
+          const jsonOutput = crossDepthWarning ? { ...result, crossDepthWarning } : result;
+          console.log(JSON.stringify(jsonOutput, null, 2));
+        } else {
+          console.log(`Target: ${targetSymbol} (${repoGroupPath})`);
+          console.log(`Risk: ${result.risk}`);
+          console.log(`\nLocal impact: ${result.summary.direct} direct callers`);
+          if (result.cross.length > 0) {
+            console.log(`\nCross-repo impact (${result.cross.length} repos):`);
+            for (const cr of result.cross) {
+              console.log(
+                `  ${cr.repo_path} (via ${cr.contract.id}, ${cr.contract.match_type}, conf=${cr.contract.confidence}):`,
+              );
+              for (const [depth, symbols] of Object.entries(cr.by_depth)) {
+                console.log(`    d=${depth}: ${(symbols as unknown[]).length} symbols`);
+              }
+            }
+          }
+          if (result.outOfScope.length > 0) {
+            console.log(`\nOut of scope (${result.outOfScope.length} cross-links not followed):`);
+            for (const oos of result.outOfScope) {
+              console.log(`  ${oos.from} -> ${oos.to} [${oos.contractId}]`);
+            }
+          }
+          if (result.truncated) {
+            console.log(
+              `\nWARNING: Timeout reached. Repos not analyzed: ${result.truncatedRepos.join(', ')}`,
+            );
+          }
+        }
+      } finally {
+        await backend.dispose().catch(() => {});
       }
     });
 

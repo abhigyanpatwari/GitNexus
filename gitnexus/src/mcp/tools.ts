@@ -381,7 +381,7 @@ Returns: single route object when one match, or { routes: [...], total: N } for 
     name: 'group_list',
     description: `List all configured repository groups, or return details for one group (repos, manifest links).
 
-WHEN TO USE: Discover groups before group_sync. Optional "name" returns a single group's config.`,
+WHEN TO USE: Discover groups before group_sync or group_impact. Optional "name" returns a single group's config.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -422,6 +422,44 @@ WHEN TO USE: Debug cross-repo links after group_sync.`,
         unmatchedOnly: { type: 'boolean', description: 'Only contracts with no cross-link' },
       },
       required: ['name'],
+    },
+  },
+  {
+    name: 'group_impact',
+    description: `Cross-repository blast radius: local impact in the source repo, then one-hop fan-out via Contract Registry (exact/manifest links).
+
+WHEN TO USE: When a symbol may affect other repos in the same group. Multi-hop cross-boundary is not implemented; crossDepth is capped at 1.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Group name' },
+        target: { type: 'string', description: 'Symbol name (same as impact tool)' },
+        repo: {
+          type: 'string',
+          description: 'Group path of the source repo (e.g. hr/hiring/backend)',
+        },
+        direction: {
+          type: 'string',
+          description: 'upstream or downstream',
+          enum: ['upstream', 'downstream'],
+        },
+        crossDepth: {
+          type: 'number',
+          description:
+            'Cross-boundary hops (MVP: capped at 1; values above 1 are ignored with a warning)',
+        },
+        maxDepth: { type: 'number', description: 'Max graph depth within each repo (default 3)' },
+        minConfidence: {
+          type: 'number',
+          description: 'Minimum cross-link confidence (default 0.5)',
+        },
+        subgroup: {
+          type: 'string',
+          description: 'Only fan out into repos under this group path prefix',
+        },
+        timeout: { type: 'number', description: 'Wall-clock budget in ms (default 30000)' },
+      },
+      required: ['name', 'target', 'repo'],
     },
   },
   {

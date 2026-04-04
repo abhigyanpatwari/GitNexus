@@ -1,10 +1,11 @@
 /**
- * Group orchestration shared by MCP (LocalBackend) and CLI.
+ * Cross-repo group orchestration shared by MCP (LocalBackend) and CLI.
  * DB access is injected via GroupToolPort so this module stays free of LocalBackend private API.
  */
 
 import { checkStaleness } from '../git-staleness.js';
 import { loadGroupConfig } from './config-parser.js';
+import { runGroupImpact } from './cross-impact.js';
 import { getDefaultGitnexusDir, getGroupDir, listGroups, readContractRegistry } from './storage.js';
 import { syncGroup } from './sync.js';
 
@@ -120,6 +121,98 @@ export class GroupService {
       contracts = contracts.filter((c) => !matchedIds.has(`${c.repo}::${c.contractId}`));
     }
     return { contracts, crossLinks: registry.crossLinks };
+  }
+
+  async groupImpact(params: Record<string, unknown>): Promise<unknown> {
+    const name = String(params.name ?? '').trim();
+    const targetSymbol = String(params.target ?? '').trim();
+    const repoGroupPath = String(params.repo ?? '').trim();
+    if (!name || !targetSymbol || !repoGroupPath) {
+      return { error: 'name, target, and repo are required' };
+    }
+
+    const direction = (params.direction as string) === 'downstream' ? 'downstream' : 'upstream';
+    const maxDepth =
+      typeof params.maxDepth === 'number' && Number.isFinite(params.maxDepth) ? params.maxDepth : 3;
+    const minConfidence =
+      typeof params.minConfidence === 'number' && Number.isFinite(params.minConfidence)
+        ? params.minConfidence
+        : 0.5;
+    const timeout =
+      typeof params.timeout === 'number' && Number.isFinite(params.timeout)
+        ? params.timeout
+        : 30000;
+    const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
+    const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
+
+    const config = await loadGroupConfig(groupDir);
+    const registry = await readContractRegistry(groupDir);
+    if (!registry) {
+      return { error: `No contracts.json for group "${name}". Run group_sync first.` };
+    }
+
+    const requestedCrossDepth =
+      typeof params.crossDepth === 'number' && Number.isFinite(params.crossDepth)
+        ? params.crossDepth
+        : 1;
+    const crossDepth = Math.min(requestedCrossDepth, 1);
+    const crossDepthWarning =
+      requestedCrossDepth > 1
+        ? `Multi-hop cross-boundary traversal is not yet implemented. Using --cross-depth 1 (requested: ${requestedCrossDepth}).`
+        : undefined;
+
+    const defaultRelTypes = ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
+
+    const resolveGroupRepo = async (groupPath: string): Promise<GroupRepoHandle> => {
+      const registryName = config.repos[groupPath];
+      if (!registryName) throw new Error(`Repo "${groupPath}" not found in group "${name}"`);
+      return this.port.resolveRepo(registryName);
+    };
+
+    const result = await runGroupImpact({
+      groupName: name,
+      target: targetSymbol,
+      repoPath: repoGroupPath,
+      direction,
+      registry,
+      localImpactFn: async (t: string, d: string) => {
+        const repoObj = await resolveGroupRepo(repoGroupPath);
+        return this.port.impact(repoObj, {
+          target: t,
+          direction: d as 'upstream' | 'downstream',
+          maxDepth,
+          relationTypes: defaultRelTypes,
+          minConfidence: 0,
+          includeTests: false,
+        });
+      },
+      crossImpactFn: async (targetGroupPath: string, uid: string, d: string) => {
+        const registryName = config.repos[targetGroupPath];
+        if (!registryName) return null;
+        try {
+          const repoObj = await this.port.resolveRepo(registryName);
+          return this.port.impactByUid(repoObj.id, uid, d, {
+            maxDepth,
+            relationTypes: defaultRelTypes,
+            minConfidence: 0,
+            includeTests: false,
+          });
+        } catch {
+          return null;
+        }
+      },
+      maxDepth,
+      minConfidence,
+      subgroup,
+      timeout,
+      crossDepth,
+    });
+
+    if (crossDepthWarning) {
+      (result as unknown as Record<string, unknown>).crossDepthWarning = crossDepthWarning;
+    }
+
+    return result;
   }
 
   async groupQuery(params: Record<string, unknown>): Promise<unknown> {

@@ -2447,6 +2447,8 @@ export class LocalBackend {
         return this.groupSync(params);
       case 'group_contracts':
         return this.groupContracts(params);
+      case 'group_impact':
+        return this.groupImpact(params);
       case 'group_query':
         return this.groupQuery(params);
       case 'group_status':
@@ -2466,6 +2468,11 @@ export class LocalBackend {
 
   private async groupContracts(params: Record<string, unknown>): Promise<unknown> {
     return this.getGroupService().groupContracts(params);
+  }
+
+  private async groupImpact(params: Record<string, unknown>): Promise<unknown> {
+    await this.refreshRepos();
+    return this.getGroupService().groupImpact(params);
   }
 
   private async groupQuery(params: Record<string, unknown>): Promise<unknown> {

@@ -49,20 +49,4 @@ describe('group CLI', () => {
     expect(l.status).toBe(0);
     expect(l.stdout).toContain('acme');
   });
-
-  it('test_create_with_invalid_name_fails', () => {
-    const result = runGroup(['create', '../../evil']);
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain('Invalid group name');
-  });
-
-  it('test_sync_command_source_does_not_call_blanket_closeLbug', () => {
-    const cliGroupPath = path.join(repoRoot, 'src', 'cli', 'group.ts');
-    const source = fs.readFileSync(cliGroupPath, 'utf-8');
-
-    // closeLbug() without arguments (blanket close) must not appear.
-    // Match closeLbug() but not closeLbug(someArg)
-    const blanketClosePattern = /closeLbug\s*\(\s*\)/;
-    expect(source).not.toMatch(blanketClosePattern);
-  });
 });

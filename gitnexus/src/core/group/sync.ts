@@ -7,6 +7,7 @@ import type { GroupConfig, RepoHandle, RepoSnapshot, StoredContract, CrossLink }
 import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
 import { GrpcExtractor } from './extractors/grpc-extractor.js';
 import { TopicExtractor } from './extractors/topic-extractor.js';
+import { ManifestExtractor } from './extractors/manifest-extractor.js';
 import { runExactMatch } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
@@ -65,10 +66,12 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   const repoSnapshots: Record<string, RepoSnapshot> = {};
   let autoContracts: StoredContract[] = [];
   let dbExecutors: Map<string, CypherExecutor> | undefined;
+  let manifestResult: Awaited<ReturnType<ManifestExtractor['extractFromManifest']>>;
 
   const eo = opts?.extractorOverride;
   if (eo && eo.length === 0) {
     autoContracts = await (eo as () => Promise<StoredContract[]>)();
+    manifestResult = await new ManifestExtractor().extractFromManifest(config.links);
   } else {
     const entries = await readRegistry();
     const resolve = opts?.resolveRepoHandle ?? defaultResolveHandle(entries);
@@ -151,6 +154,8 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           missingRepos.push(groupPath);
         }
       }
+
+      manifestResult = await new ManifestExtractor().extractFromManifest(config.links, dbExecutors);
     } finally {
       for (const id of [...new Set(openPoolIds)]) {
         await closeLbug(id).catch(() => {});
@@ -159,8 +164,8 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   }
 
   const { matched, unmatched } = runExactMatch(autoContracts);
-  const crossLinks: CrossLink[] = matched;
-  const allContracts: StoredContract[] = autoContracts;
+  const crossLinks: CrossLink[] = [...manifestResult.crossLinks, ...matched];
+  const allContracts: StoredContract[] = [...manifestResult.contracts, ...autoContracts];
 
   const registry: ContractRegistry = {
     version: 1,

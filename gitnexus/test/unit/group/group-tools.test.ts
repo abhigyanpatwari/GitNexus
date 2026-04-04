@@ -6,12 +6,13 @@ const GROUP_TOOL_NAMES = [
   'group_list',
   'group_sync',
   'group_contracts',
+  'group_impact',
   'group_query',
   'group_status',
 ];
 
 describe('Group MCP tools', () => {
-  it('all 5 group tools are registered', () => {
+  it('all 6 group tools are registered', () => {
     for (const name of GROUP_TOOL_NAMES) {
       const tool = GITNEXUS_TOOLS.find((t) => t.name === name);
       expect(tool, `tool ${name} should be registered`).toBeDefined();
@@ -20,8 +21,22 @@ describe('Group MCP tools', () => {
     }
   });
 
+  it('group_impact requires name, target, repo', () => {
+    const tool = GITNEXUS_TOOLS.find((t) => t.name === 'group_impact')!;
+    expect(tool.inputSchema.required).toContain('name');
+    expect(tool.inputSchema.required).toContain('target');
+    expect(tool.inputSchema.required).toContain('repo');
+  });
+
   it('group_sync requires name', () => {
     const tool = GITNEXUS_TOOLS.find((t) => t.name === 'group_sync')!;
     expect(tool.inputSchema.required).toContain('name');
+  });
+
+  it('group_impact has crossDepth param with max 1 note in description', () => {
+    const tool = GITNEXUS_TOOLS.find((t) => t.name === 'group_impact')!;
+    const crossDepth = tool.inputSchema.properties.crossDepth as { description?: string };
+    expect(crossDepth).toBeDefined();
+    expect(crossDepth.description).toContain('capped at 1');
   });
 });
