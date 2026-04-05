@@ -1,4 +1,5 @@
 import { createKnowledgeGraph } from '../graph/graph.js';
+import { safePushAll } from './array-utils.js';
 import { processStructure } from './structure-processor.js';
 import { processMarkdown } from './markdown-processor.js';
 import { processCobol, isCobolFile, isJclFile } from './cobol-processor.js';
@@ -71,20 +72,6 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const isDev = process.env.NODE_ENV === 'development';
-
-/**
- * Append all elements from `source` into `target` without using the spread
- * operator.  `target.push(...source)` converts every element into a function
- * argument which exceeds V8's call-stack limit when `source` has more than
- * ~65 000 entries (common in large monoliths with many symbols).
- *
- * Exported for regression testing — see safe-push-all.test.ts.
- */
-export function safePushAll<T>(target: T[], source: readonly T[]): void {
-  for (let i = 0; i < source.length; i++) {
-    target.push(source[i]);
-  }
-}
 
 const EXPO_NAV_PATTERNS = [
   /router\.(push|replace|navigate)\(\s*['"`]([^'"`]+)['"`]/g,
