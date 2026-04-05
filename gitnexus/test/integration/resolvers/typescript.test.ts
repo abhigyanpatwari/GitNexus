@@ -2482,10 +2482,11 @@ describe('TypeScript overloaded method disambiguation', () => {
     expect(saveEdge).toBeDefined();
   });
 
-  it('TypeScript overloads collapse — find has one implementation METHOD_IMPLEMENTS edge', () => {
+  it('TypeScript overloads collapse — find has one METHOD_IMPLEMENTS edge from implementation body', () => {
     const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
-    // TypeScript overloads collapse to one implementation signature,
-    // so we expect a single METHOD_IMPLEMENTS edge for find (not two)
+    // TS class overload signatures collapse to the implementation body's node ID.
+    // Type-hash is intentionally skipped for TS because overload signatures are
+    // declaration-only contracts, not true same-arity overloads like Java.
     const findEdges = mi.filter(
       (e) =>
         e.source === 'find' &&
@@ -2494,5 +2495,45 @@ describe('TypeScript overloaded method disambiguation', () => {
         e.targetFilePath.includes('repository'),
     );
     expect(findEdges.length).toBe(1);
+  });
+});
+
+// ── Phase P: Same-arity overloads — cross-file + chain resolution ─────────
+
+describe('TypeScript same-arity overload cross-file resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-same-arity-cross-file'), () => {});
+  }, 60000);
+
+  it('DbLookup.find overload signatures collapse to one node (type-hash skipped for TS)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const findNodes = methods.filter(
+      (m) => m.name === 'find' && m.properties.filePath?.includes('db-lookup'),
+    );
+    // TS overload signatures collapse to the implementation body — 1 node
+    expect(findNodes.length).toBe(1);
+  });
+
+  it('ILookup.find interface declarations collapse to one node (type-hash skipped for TS)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const findNodes = methods.filter(
+      (m) => m.name === 'find' && m.properties.filePath?.includes('ilookup'),
+    );
+    // Interface overloads also collapse — TS type-hash is skipped
+    expect(findNodes.length).toBe(1);
+  });
+
+  it('emits METHOD_IMPLEMENTS from DbLookup.find → ILookup.find', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edges = mi.filter(
+      (e) =>
+        e.source === 'find' &&
+        e.target === 'find' &&
+        e.sourceFilePath.includes('db-lookup') &&
+        e.targetFilePath.includes('ilookup'),
+    );
+    expect(edges.length).toBe(1);
   });
 });

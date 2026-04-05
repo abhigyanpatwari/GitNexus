@@ -1462,22 +1462,121 @@ describe('Java overload disambiguation by parameter types', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'java-overload-param-types'), () => {});
   }, 60000);
 
-  it('detects lookup method with parameterTypes on graph node', () => {
+  it('produces distinct graph nodes for same-arity overloads via type-hash suffix', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const lookupNodes = methods.filter((m) => m.name === 'lookup');
-    // generateId collision → 1 graph node, first overload's parameterTypes wins
-    expect(lookupNodes.length).toBe(1);
-    // The node has parameterTypes from whichever overload was registered first
-    expect(lookupNodes[0].properties.parameterTypes).toEqual(['int']);
+    // Type-hash disambiguation → 2 distinct graph nodes (lookup#1~int, lookup#1~String)
+    expect(lookupNodes.length).toBe(2);
+    const types = lookupNodes.map((n) => n.properties.parameterTypes).sort();
+    expect(types).toEqual([['String'], ['int']]);
   });
 
-  it('emits CALLS edge from run() → lookup() via overload disambiguation', () => {
+  it('callById() emits exactly one CALLS edge to lookup(int)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const lookupCalls = calls.filter((c) => c.source === 'run' && c.target === 'lookup');
-    // Phase 0 (fileIndex stores both overloads) + Phase 2 (literal type matching)
-    // enables resolution where previously 2 same-arity candidates → null.
-    // Both calls resolve to same nodeId (ID collision) → 1 CALLS edge after dedup.
-    expect(lookupCalls.length).toBe(1);
+    const fromCallById = calls.filter((c) => c.source === 'callById' && c.target === 'lookup');
+    expect(fromCallById.length).toBe(1);
+    const targetNode = result.graph.getNode(fromCallById[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('callByName() emits exactly one CALLS edge to lookup(String)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fromCallByName = calls.filter((c) => c.source === 'callByName' && c.target === 'lookup');
+    expect(fromCallByName.length).toBe(1);
+    const targetNode = result.graph.getNode(fromCallByName[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['String']);
+  });
+});
+
+// ── Phase P: Same-arity overloads — cross-file + chain resolution ─────────
+
+describe('Java same-arity overload cross-file and chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-same-arity-cross-file'), () => {});
+  }, 60000);
+
+  // -- Cross-file: caller in App.java → overloaded method in DbLookup.java --
+
+  it('crossFileById() emits exactly one CALLS edge to find(int) in DbLookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'crossFileById' &&
+        c.target === 'find' &&
+        c.targetFilePath.includes('DbLookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('crossFileByName() emits exactly one CALLS edge to find(String) in DbLookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'crossFileByName' &&
+        c.target === 'find' &&
+        c.targetFilePath.includes('DbLookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['String']);
+  });
+
+  // -- METHOD_IMPLEMENTS: DbLookup.find(int) → ILookup.find(int) etc. --
+
+  it('emits METHOD_IMPLEMENTS from DbLookup.find(int) → ILookup.find(int)', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edges = mi.filter(
+      (e) =>
+        e.source === 'find' &&
+        e.target === 'find' &&
+        e.sourceFilePath.includes('DbLookup') &&
+        e.targetFilePath.includes('ILookup'),
+    );
+    // Two distinct edges: find(int)→find(int) and find(String)→find(String)
+    expect(edges.length).toBe(2);
+    for (const edge of edges) {
+      const sourceNode = result.graph.getNode(edge.rel.sourceId);
+      const targetNode = result.graph.getNode(edge.rel.targetId);
+      expect(sourceNode?.properties.parameterTypes).toEqual(targetNode?.properties.parameterTypes);
+    }
+  });
+
+  // -- Chain: db.find(42) → result → fmt.format(result) --
+
+  it('chainIntToFormat() calls find and format — each resolves to exactly one overload', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findEdges = calls.filter((c) => c.source === 'chainIntToFormat' && c.target === 'find');
+    const formatEdges = calls.filter(
+      (c) => c.source === 'chainIntToFormat' && c.target === 'format',
+    );
+    // find(42) → find(int)
+    expect(findEdges.length).toBe(1);
+    const findTarget = result.graph.getNode(findEdges[0].rel.targetId);
+    expect(findTarget?.properties.parameterTypes).toEqual(['int']);
+    // format(result) where result is String → format(String)
+    expect(formatEdges.length).toBe(1);
+    const formatTarget = result.graph.getNode(formatEdges[0].rel.targetId);
+    expect(formatTarget?.properties.parameterTypes).toEqual(['String']);
+  });
+
+  it('chainNameToFormat() calls find and format — each resolves to exactly one overload', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findEdges = calls.filter((c) => c.source === 'chainNameToFormat' && c.target === 'find');
+    const formatEdges = calls.filter(
+      (c) => c.source === 'chainNameToFormat' && c.target === 'format',
+    );
+    // find("alice") → find(String)
+    expect(findEdges.length).toBe(1);
+    const findTarget = result.graph.getNode(findEdges[0].rel.targetId);
+    expect(findTarget?.properties.parameterTypes).toEqual(['String']);
+    // format(result) where result is String → format(String)
+    expect(formatEdges.length).toBe(1);
+    const formatTarget = result.graph.getNode(formatEdges[0].rel.targetId);
+    expect(formatTarget?.properties.parameterTypes).toEqual(['String']);
   });
 });
 

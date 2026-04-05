@@ -491,12 +491,9 @@ function parameterTypesMatch(
  *
  * Method node IDs include a `#<paramCount>` arity suffix, so overloaded
  * methods with different parameter counts are distinct nodes in the graph.
- *
- * **Remaining limitation — same-arity overloads:** When two overloads share
- * the same parameter count but differ only in types (e.g. `save(int)` vs
- * `save(String)`), they still collapse to one node ID. This is rare in
- * practice; a future enhancement may add type-hash disambiguation for
- * languages with reliable type extraction (see issue #574).
+ * For same-arity overloads with different parameter types, a `~type1,type2`
+ * suffix is appended when type info is available (issue #651), producing
+ * distinct nodes that `parameterTypesMatch` can resolve to correct edges.
  */
 function emitMethodImplementsEdges(
   graph: KnowledgeGraph,

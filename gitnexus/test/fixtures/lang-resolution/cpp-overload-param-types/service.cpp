@@ -12,8 +12,11 @@ public:
         return nullptr;
     }
 
-    void run() {
-        lookup(42);        // literal int → should disambiguate to lookup(int)
-        lookup("alice");   // literal string → should disambiguate to lookup(string)
+    void callById() {
+        lookup(42);        // literal int → must resolve to lookup(int) only
+    }
+
+    void callByName() {
+        lookup("alice");   // literal string → must resolve to lookup(string) only
     }
 };

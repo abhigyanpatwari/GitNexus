@@ -9,8 +9,11 @@ public class UserService {
         return new User();
     }
 
-    public void run() {
-        lookup(42);        // literal int → should disambiguate to lookup(int)
-        lookup("alice");   // literal String → should disambiguate to lookup(String)
+    public void callById() {
+        lookup(42);        // literal int → must resolve to lookup(int) only
+    }
+
+    public void callByName() {
+        lookup("alice");   // literal String → must resolve to lookup(String) only
     }
 }

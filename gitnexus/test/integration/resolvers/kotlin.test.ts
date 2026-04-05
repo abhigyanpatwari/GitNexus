@@ -1592,18 +1592,101 @@ describe('Kotlin overload disambiguation by parameter types', () => {
     );
   }, 60000);
 
-  it('detects lookup method with parameterTypes on graph node', () => {
+  it('produces distinct graph nodes for same-arity overloads via type-hash suffix', () => {
     const nodes = getNodesByLabelFull(result, 'Method');
     const lookupNodes = nodes.filter((m) => m.name === 'lookup');
-    expect(lookupNodes.length).toBe(1);
-    expect(lookupNodes[0].properties.parameterTypes).toEqual(['Int']);
+    // Type-hash disambiguation → 2 distinct graph nodes
+    expect(lookupNodes.length).toBe(2);
+    const types = lookupNodes.map((n) => n.properties.parameterTypes).sort();
+    expect(types).toEqual([['Int'], ['String']]);
   });
 
-  it('emits CALLS edge from run() → lookup() via overload disambiguation', () => {
+  it('callById() emits exactly one CALLS edge to lookup(Int)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const lookupCalls = calls.filter((c) => c.source === 'run' && c.target === 'lookup');
-    // Both lookup(42) and lookup("alice") resolve to same nodeId → 1 CALLS edge
-    expect(lookupCalls.length).toBe(1);
+    const fromCallById = calls.filter((c) => c.source === 'callById' && c.target === 'lookup');
+    expect(fromCallById.length).toBe(1);
+    const targetNode = result.graph.getNode(fromCallById[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['Int']);
+  });
+
+  it('callByName() emits exactly one CALLS edge to lookup(String)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fromCallByName = calls.filter((c) => c.source === 'callByName' && c.target === 'lookup');
+    expect(fromCallByName.length).toBe(1);
+    const targetNode = result.graph.getNode(fromCallByName[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['String']);
+  });
+});
+
+// ── Phase P: Same-arity overloads — cross-file + chain resolution ─────────
+
+describe('Kotlin same-arity overload cross-file and chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-same-arity-cross-file'),
+      () => {},
+    );
+  }, 60000);
+
+  it('crossFileById() emits exactly one CALLS edge to find(Int) in DbLookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'crossFileById' &&
+        c.target === 'find' &&
+        c.targetFilePath.includes('DbLookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['Int']);
+  });
+
+  it('crossFileByName() emits exactly one CALLS edge to find(String) in DbLookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'crossFileByName' &&
+        c.target === 'find' &&
+        c.targetFilePath.includes('DbLookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['String']);
+  });
+
+  it('emits METHOD_IMPLEMENTS from DbLookup.find → ILookup.find with matching types', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edges = mi.filter(
+      (e) =>
+        e.source === 'find' &&
+        e.target === 'find' &&
+        e.sourceFilePath.includes('DbLookup') &&
+        e.targetFilePath.includes('ILookup'),
+    );
+    expect(edges.length).toBe(2);
+    for (const edge of edges) {
+      const sourceNode = result.graph.getNode(edge.rel.sourceId);
+      const targetNode = result.graph.getNode(edge.rel.targetId);
+      expect(sourceNode?.properties.parameterTypes).toEqual(targetNode?.properties.parameterTypes);
+    }
+  });
+
+  it('chainIntToFormat() resolves find(42) → find(Int) cross-file', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findEdges = calls.filter((c) => c.source === 'chainIntToFormat' && c.target === 'find');
+    expect(findEdges.length).toBe(1);
+    const findTarget = result.graph.getNode(findEdges[0].rel.targetId);
+    expect(findTarget?.properties.parameterTypes).toEqual(['Int']);
+  });
+
+  it('chainNameToFormat() resolves find("alice") → find(String) cross-file', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findEdges = calls.filter((c) => c.source === 'chainNameToFormat' && c.target === 'find');
+    expect(findEdges.length).toBe(1);
+    const findTarget = result.graph.getNode(findEdges[0].rel.targetId);
+    expect(findTarget?.properties.parameterTypes).toEqual(['String']);
   });
 });
 

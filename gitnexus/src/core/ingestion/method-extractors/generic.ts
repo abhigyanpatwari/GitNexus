@@ -200,6 +200,7 @@ function buildMethod(
     ...(config.isOverride?.(node) ? { isOverride: true } : {}),
     ...(config.isAsync?.(node) ? { isAsync: true } : {}),
     ...(config.isPartial?.(node) ? { isPartial: true } : {}),
+    ...(config.isConst?.(node) ? { isConst: true } : {}),
     annotations: config.extractAnnotations?.(node) ?? [],
     sourceFile: context.filePath,
     line: node.startPosition.row + 1,

@@ -21,7 +21,12 @@ import { detectFrameworkFromAST } from './framework-detection.js';
 import { buildTypeEnv } from './type-env.js';
 import type { FieldInfo, FieldExtractorContext } from './field-types.js';
 import type { MethodInfo } from './method-types.js';
-import { buildMethodProps, arityForIdFromInfo } from './utils/method-props.js';
+import {
+  buildMethodProps,
+  arityForIdFromInfo,
+  typeTagForId,
+  constTagForId,
+} from './utils/method-props.js';
 import type { LanguageProvider } from './language-provider.js';
 import { WorkerPool } from './workers/worker-pool.js';
 import type {
@@ -397,6 +402,8 @@ const processParsingSequential = async (
         nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor';
       let methodProps: Record<string, unknown> = {};
       let arityForId: number | undefined; // raw param count for ID, even for variadic
+      let seqDefMethodInfo: MethodInfo | undefined;
+      let seqDefMethods: MethodInfo[] | undefined;
       if (isMethodLike && definitionNode) {
         let enriched = false;
 
@@ -425,6 +432,8 @@ const processParsingSequential = async (
                 enriched = true;
                 arityForId = arityForIdFromInfo(info);
                 methodProps = buildMethodProps(info);
+                seqDefMethodInfo = info;
+                seqDefMethods = result.methods;
               }
             }
           }
@@ -446,8 +455,16 @@ const processParsingSequential = async (
 
       // Append #<paramCount> to Method/Constructor IDs to disambiguate overloads.
       // Functions are not suffixed — they don't overload by name in the same scope.
+      // When same-arity collisions exist, append ~type1,type2 for further disambiguation.
       const needsAritySuffix = nodeLabel === 'Method' || nodeLabel === 'Constructor';
-      const arityTag = needsAritySuffix && arityForId !== undefined ? `#${arityForId}` : '';
+      let arityTag = needsAritySuffix && arityForId !== undefined ? `#${arityForId}` : '';
+      if (arityTag && seqDefMethods && seqDefMethodInfo) {
+        // Build a temporary method map from the class's methods array
+        const tempMap = new Map<string, MethodInfo>();
+        for (const m of seqDefMethods) tempMap.set(`${m.name}:${m.line}`, m);
+        arityTag += typeTagForId(tempMap, nodeName, arityForId, seqDefMethodInfo, language);
+        arityTag += constTagForId(tempMap, nodeName, arityForId, seqDefMethodInfo);
+      }
       const nodeId = generateId(nodeLabel, `${file.path}:${qualifiedName}${arityTag}`);
       const frameworkHint = definitionNode
         ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))

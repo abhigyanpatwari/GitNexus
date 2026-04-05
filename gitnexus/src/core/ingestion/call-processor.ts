@@ -17,6 +17,8 @@ import {
   genericFuncName,
   inferFunctionLabel,
 } from './utils/ast-helpers.js';
+import { typeTagForId, constTagForId } from './utils/method-props.js';
+import type { MethodInfo } from './method-types.js';
 import {
   countCallArguments,
   inferCallForm,
@@ -248,15 +250,20 @@ const findEnclosingFunction = (
           }
           const classInfo = findEnclosingClassInfo(current, filePath);
           if (classInfo) {
-            const match = resolved.candidates.find((c) => c.ownerId === classInfo.classId);
-            if (match) return match.nodeId;
+            const classMatches = resolved.candidates.filter((c) => c.ownerId === classInfo.classId);
+            // Unique class match — return it (no same-arity ambiguity)
+            if (classMatches.length === 1) return classMatches[0].nodeId;
+            // Multiple same-class candidates (same-arity overloads) — fall through
+            // to the fallback path which computes the exact ID with type-hash.
+            if (classMatches.length > 1) {
+              /* fall through to manual ID construction below */
+            } else {
+              // No class match — return first candidate as before
+              return resolved.candidates[0].nodeId;
+            }
+          } else {
+            return resolved.candidates[0].nodeId;
           }
-          if (process.env.NODE_ENV === 'development' && classInfo) {
-            console.warn(
-              `[CallProcessor] Enclosing class '${classInfo.className}' found but no candidate matched — falling back to ${resolved.candidates[0].nodeId}`,
-            );
-          }
-          return resolved.candidates[0].nodeId;
         }
 
         // Fallback: qualify the generated ID to match definition-phase node IDs
@@ -265,21 +272,41 @@ const findEnclosingFunction = (
           const override = provider.labelOverride(current, label);
           if (override !== null) finalLabel = override;
         }
-        const classInfo = findEnclosingClassInfo(current, filePath);
-        const qualifiedName = classInfo ? `${classInfo.className}.${funcName}` : funcName;
-        // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
-        // Use provider.methodExtractor.extractFromNode — same extractor as definition phase.
+        const classInfo2 = findEnclosingClassInfo(current, filePath);
+        const qualifiedName = classInfo2 ? `${classInfo2.className}.${funcName}` : funcName;
+        // Include #<arity> and ~typeTag suffix to match definition-phase Method/Constructor IDs.
+        const language = getLanguageFromFilename(filePath);
         let arity: number | undefined;
-        if (finalLabel === 'Method' || finalLabel === 'Constructor') {
-          const language = getLanguageFromFilename(filePath);
+        let encTypeTag = '';
+        if ((finalLabel === 'Method' || finalLabel === 'Constructor') && provider.methodExtractor) {
           const info = language
-            ? provider.methodExtractor?.extractFromNode?.(current, { filePath, language })
+            ? provider.methodExtractor.extractFromNode?.(current, { filePath, language })
             : undefined;
           if (info) {
             arity = info.parameters.some((p) => p.isVariadic) ? undefined : info.parameters.length;
           }
+          // Compute type-tag by extracting the class method map for collision detection
+          if (arity !== undefined && info) {
+            let classNode = current.parent;
+            while (classNode && !provider.methodExtractor.isTypeDeclaration(classNode)) {
+              classNode = classNode.parent;
+            }
+            if (classNode) {
+              const extracted = provider.methodExtractor.extract(classNode, {
+                filePath,
+                language: language!,
+              });
+              if (extracted?.methods?.length) {
+                const methodMap = new Map<string, MethodInfo>();
+                for (const m of extracted.methods) methodMap.set(`${m.name}:${m.line}`, m);
+                encTypeTag =
+                  typeTagForId(methodMap, funcName, arity, info, language) +
+                  constTagForId(methodMap, funcName, arity, info);
+              }
+            }
+          }
         }
-        const arityTag = arity !== undefined ? `#${arity}` : '';
+        const arityTag = arity !== undefined ? `#${arity}${encTypeTag}` : '';
         return generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag}`);
       }
     }
@@ -296,38 +323,59 @@ const findEnclosingFunction = (
           }
           const classInfo = findEnclosingClassInfo(current.previousSibling ?? current, filePath);
           if (classInfo) {
-            const match = resolved.candidates.find((c) => c.ownerId === classInfo.classId);
-            if (match) return match.nodeId;
+            const classMatches = resolved.candidates.filter((c) => c.ownerId === classInfo.classId);
+            if (classMatches.length === 1) return classMatches[0].nodeId;
+            if (classMatches.length > 1) {
+              /* fall through to manual ID construction below */
+            } else {
+              return resolved.candidates[0].nodeId;
+            }
+          } else {
+            return resolved.candidates[0].nodeId;
           }
-          if (process.env.NODE_ENV === 'development' && classInfo) {
-            console.warn(
-              `[CallProcessor] Enclosing class '${classInfo.className}' found but no candidate matched — falling back to ${resolved.candidates[0].nodeId}`,
-            );
-          }
-          return resolved.candidates[0].nodeId;
         }
         let finalLabel = customResult.label;
         if (provider.labelOverride) {
           const override = provider.labelOverride(current.previousSibling!, finalLabel);
           if (override !== null) finalLabel = override;
         }
-        const classInfo = findEnclosingClassInfo(current.previousSibling ?? current, filePath);
-        const qualifiedName = classInfo
-          ? `${classInfo.className}.${customResult.funcName}`
+        const classInfo2 = findEnclosingClassInfo(current.previousSibling ?? current, filePath);
+        const qualifiedName = classInfo2
+          ? `${classInfo2.className}.${customResult.funcName}`
           : customResult.funcName;
-        // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
+        // Include #<arity> and ~typeTag suffix to match definition-phase Method/Constructor IDs.
         const sigNode = current.previousSibling ?? current;
+        const language2 = getLanguageFromFilename(filePath);
         let arity2: number | undefined;
-        if (finalLabel === 'Method' || finalLabel === 'Constructor') {
-          const language = getLanguageFromFilename(filePath);
-          const info = language
-            ? provider.methodExtractor?.extractFromNode?.(sigNode, { filePath, language })
+        let encTypeTag2 = '';
+        if ((finalLabel === 'Method' || finalLabel === 'Constructor') && provider.methodExtractor) {
+          const info = language2
+            ? provider.methodExtractor.extractFromNode?.(sigNode, { filePath, language: language2 })
             : undefined;
           if (info) {
             arity2 = info.parameters.some((p) => p.isVariadic) ? undefined : info.parameters.length;
           }
+          if (arity2 !== undefined && info) {
+            let classNode = (current.previousSibling ?? current).parent;
+            while (classNode && !provider.methodExtractor.isTypeDeclaration(classNode)) {
+              classNode = classNode.parent;
+            }
+            if (classNode) {
+              const extracted = provider.methodExtractor.extract(classNode, {
+                filePath,
+                language: language2!,
+              });
+              if (extracted?.methods?.length) {
+                const methodMap = new Map<string, MethodInfo>();
+                for (const m of extracted.methods) methodMap.set(`${m.name}:${m.line}`, m);
+                encTypeTag2 =
+                  typeTagForId(methodMap, customResult.funcName, arity2, info, language2) +
+                  constTagForId(methodMap, customResult.funcName, arity2, info);
+              }
+            }
+          }
         }
-        const arityTag2 = arity2 !== undefined ? `#${arity2}` : '';
+        const arityTag2 = arity2 !== undefined ? `#${arity2}${encTypeTag2}` : '';
         return generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag2}`);
       }
     }
@@ -1448,6 +1496,12 @@ type ReceiverTypeIndex = Map<string, Map<string, ReceiverTypeEntry>>;
  * The verified map is keyed by `scope\0varName` where scope is either
  * "funcName@startIndex" (inside a function) or "" (file level).
  * Index structure: Map<funcName, Map<varName, ReceiverTypeEntry>>
+ *
+ * Known limitation: the index collapses scope keys to bare funcName,
+ * so two same-arity overloads with the same local variable name but
+ * different types will mark that variable as ambiguous. A future
+ * enhancement should key by full scope (funcName@startIndex) and carry
+ * scope keys through findEnclosingFunction's return type.
  */
 const buildReceiverTypeIndex = (map: Map<string, string>): ReceiverTypeIndex => {
   const index: ReceiverTypeIndex = new Map();

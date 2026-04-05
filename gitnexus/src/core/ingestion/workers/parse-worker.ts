@@ -76,7 +76,12 @@ import type { NamedBinding } from '../named-bindings/types.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import type { FieldInfo, FieldExtractorContext } from '../field-types.js';
 import type { MethodInfo, MethodExtractorContext } from '../method-types.js';
-import { buildMethodProps, arityForIdFromInfo } from '../utils/method-props.js';
+import {
+  buildMethodProps,
+  arityForIdFromInfo,
+  typeTagForId,
+  constTagForId,
+} from '../utils/method-props.js';
 import type { LanguageProvider } from '../language-provider.js';
 
 // ============================================================================
@@ -536,7 +541,9 @@ const findEnclosingFunctionId = (
         const qualifiedName = classInfo ? `${classInfo.className}.${funcName}` : funcName;
         // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
         // Use the same MethodExtractor (getMethodInfo) as the definition phase.
+        // When same-arity collisions exist, also append ~type1,type2.
         let arity: number | undefined;
+        let encTypeTag = '';
         if (finalLabel === 'Method' || finalLabel === 'Constructor') {
           const classNode =
             findEnclosingClassNode(current) ?? findClassNodeByQualifiedName(current);
@@ -551,10 +558,20 @@ const findEnclosingFunctionId = (
               arity = info.parameters.some((p) => p.isVariadic)
                 ? undefined
                 : info.parameters.length;
+              if (methodMap && arity !== undefined) {
+                encTypeTag =
+                  typeTagForId(
+                    methodMap,
+                    funcName,
+                    arity,
+                    info,
+                    getLanguageFromFilename(filePath),
+                  ) + constTagForId(methodMap, funcName, arity, info);
+              }
             }
           }
         }
-        const arityTag = arity !== undefined ? `#${arity}` : '';
+        const arityTag = arity !== undefined ? `#${arity}${encTypeTag}` : '';
         const result = generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag}`);
         functionIdCache.set(node, result);
         return result;
@@ -580,8 +597,10 @@ const findEnclosingFunctionId = (
           ? `${classInfo.className}.${customResult.funcName}`
           : customResult.funcName;
         // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
+        // When same-arity collisions exist, also append ~type1,type2.
         const sigNode = current.previousSibling ?? current;
         let arity2: number | undefined;
+        let encTypeTag2 = '';
         if (finalLabel === 'Method' || finalLabel === 'Constructor') {
           const classNode2 =
             findEnclosingClassNode(sigNode) ?? findClassNodeByQualifiedName(sigNode);
@@ -596,10 +615,20 @@ const findEnclosingFunctionId = (
               arity2 = info2.parameters.some((p) => p.isVariadic)
                 ? undefined
                 : info2.parameters.length;
+              if (methodMap2 && arity2 !== undefined) {
+                encTypeTag2 =
+                  typeTagForId(
+                    methodMap2,
+                    customResult.funcName,
+                    arity2,
+                    info2,
+                    getLanguageFromFilename(filePath),
+                  ) + constTagForId(methodMap2, customResult.funcName, arity2, info2);
+              }
             }
           }
         }
-        const arityTag2 = arity2 !== undefined ? `#${arity2}` : '';
+        const arityTag2 = arity2 !== undefined ? `#${arity2}${encTypeTag2}` : '';
         const result = generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag2}`);
         functionIdCache.set(node, result);
         return result;
@@ -1820,6 +1849,8 @@ const processFileGroup = (
       let declaredType: string | undefined;
       let methodProps: Record<string, unknown> = {};
       let arityForId: number | undefined; // raw param count for ID, even for variadic
+      let defMethodMap: Map<string, MethodInfo> | undefined;
+      let defMethodInfo: MethodInfo | undefined;
       if (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor') {
         // Use MethodExtractor for method metadata — provides parameterCount, parameterTypes,
         // returnType, isAbstract/isFinal/annotations, visibility, and more.
@@ -1838,6 +1869,8 @@ const processFileGroup = (
               enrichedByMethodExtractor = true;
               arityForId = arityForIdFromInfo(info);
               methodProps = buildMethodProps(info);
+              defMethodMap = methodMap;
+              defMethodInfo = info;
             }
           }
         }
@@ -1862,8 +1895,13 @@ const processFileGroup = (
 
       // Append #<paramCount> to Method/Constructor IDs to disambiguate overloads.
       // Functions are not suffixed — they don't overload by name in the same scope.
+      // When same-arity collisions exist, append ~type1,type2 for further disambiguation.
       const needsAritySuffix = nodeLabel === 'Method' || nodeLabel === 'Constructor';
-      const arityTag = needsAritySuffix && arityForId !== undefined ? `#${arityForId}` : '';
+      let arityTag = needsAritySuffix && arityForId !== undefined ? `#${arityForId}` : '';
+      if (arityTag && defMethodMap && defMethodInfo) {
+        arityTag += typeTagForId(defMethodMap, nodeName, arityForId, defMethodInfo, language);
+        arityTag += constTagForId(defMethodMap, nodeName, arityForId, defMethodInfo);
+      }
       const nodeId = generateId(nodeLabel, `${file.path}:${qualifiedName}${arityTag}`);
 
       const description = provider.descriptionExtractor?.(nodeLabel, nodeName, captureMap);

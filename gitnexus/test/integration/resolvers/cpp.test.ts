@@ -1040,18 +1040,89 @@ describe('C++ overload disambiguation by parameter types', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-overload-param-types'), () => {});
   }, 60000);
 
-  it('detects lookup method with parameterTypes on graph node', () => {
+  it('produces distinct graph nodes for same-arity overloads via type-hash suffix', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const lookupNodes = methods.filter((m) => m.name === 'lookup');
-    expect(lookupNodes.length).toBe(1);
-    expect(lookupNodes[0].properties.parameterTypes).toEqual(['int']);
+    // Type-hash disambiguation → 2 distinct graph nodes
+    expect(lookupNodes.length).toBe(2);
+    const types = lookupNodes.map((n) => n.properties.parameterTypes).sort();
+    expect(types).toEqual([['int'], ['string']]);
   });
 
-  it('emits CALLS edge from run() → lookup() via overload disambiguation', () => {
+  it('callById() emits exactly one CALLS edge to lookup(int)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const lookupCalls = calls.filter((c) => c.source === 'run' && c.target === 'lookup');
-    // Both lookup(42) and lookup("alice") resolve to same nodeId → 1 CALLS edge
-    expect(lookupCalls.length).toBe(1);
+    const fromCallById = calls.filter((c) => c.source === 'callById' && c.target === 'lookup');
+    expect(fromCallById.length).toBe(1);
+    const targetNode = result.graph.getNode(fromCallById[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('callByName() emits exactly one CALLS edge to lookup(string)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fromCallByName = calls.filter((c) => c.source === 'callByName' && c.target === 'lookup');
+    expect(fromCallByName.length).toBe(1);
+    const targetNode = result.graph.getNode(fromCallByName[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['string']);
+  });
+});
+
+// ── Phase P: Same-arity overloads — cross-file + chain resolution ─────────
+
+describe('C++ same-arity overload cross-file and chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-same-arity-cross-file'), () => {});
+  }, 60000);
+
+  it('callById() emits exactly one CALLS edge to find(int) in DbLookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'callById' && c.target === 'find' && c.targetFilePath.includes('db_lookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('callByName() emits exactly one CALLS edge to find(string) in DbLookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'callByName' && c.target === 'find' && c.targetFilePath.includes('db_lookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['string']);
+  });
+
+  it('chainIntToFormat() — find(42) → find(int), format(result) → format(string)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findEdges = calls.filter((c) => c.source === 'chainIntToFormat' && c.target === 'find');
+    const formatEdges = calls.filter(
+      (c) => c.source === 'chainIntToFormat' && c.target === 'format',
+    );
+    expect(findEdges.length).toBe(1);
+    const findTarget = result.graph.getNode(findEdges[0].rel.targetId);
+    expect(findTarget?.properties.parameterTypes).toEqual(['int']);
+    expect(formatEdges.length).toBe(1);
+    const formatTarget = result.graph.getNode(formatEdges[0].rel.targetId);
+    expect(formatTarget?.properties.parameterTypes).toEqual(['string']);
+  });
+
+  it('chainNameToFormat() — find("alice") → find(string), format(result) → format(string)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findEdges = calls.filter((c) => c.source === 'chainNameToFormat' && c.target === 'find');
+    const formatEdges = calls.filter(
+      (c) => c.source === 'chainNameToFormat' && c.target === 'format',
+    );
+    expect(findEdges.length).toBe(1);
+    const findTarget = result.graph.getNode(findEdges[0].rel.targetId);
+    expect(findTarget?.properties.parameterTypes).toEqual(['string']);
+    expect(formatEdges.length).toBe(1);
+    const formatTarget = result.graph.getNode(formatEdges[0].rel.targetId);
+    expect(formatTarget?.properties.parameterTypes).toEqual(['string']);
   });
 });
 
@@ -1203,5 +1274,98 @@ describe('C++ method enrichment', () => {
     if (classify?.properties.parameterTypes !== undefined) {
       expect(classify.properties.parameterTypes.length).toBeGreaterThan(0);
     }
+  });
+});
+
+// ── Phase P: C++ const-qualified method overload disambiguation ───────────
+
+describe('C++ const-qualified method overload disambiguation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-const-overload'), () => {});
+  }, 60000);
+
+  it('produces distinct nodes for begin() and begin() const', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const beginNodes = methods.filter((m) => m.name === 'begin');
+    expect(beginNodes.length).toBe(2);
+    const constFlags = beginNodes.map((n) => !!n.properties.isConst).sort();
+    expect(constFlags).toEqual([false, true]);
+  });
+
+  it('produces distinct nodes for end() and end() const', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const endNodes = methods.filter((m) => m.name === 'end');
+    expect(endNodes.length).toBe(2);
+    const constFlags = endNodes.map((n) => !!n.properties.isConst).sort();
+    expect(constFlags).toEqual([false, true]);
+  });
+
+  it('single const method (size) has isConst but no $const suffix (no collision)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const sizeNodes = methods.filter((m) => m.name === 'size');
+    expect(sizeNodes.length).toBe(1);
+    expect(sizeNodes[0].properties.isConst).toBe(true);
+  });
+
+  it('callNonConst has isConst falsy, callConst has isConst true', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const callNonConst = methods.find((m) => m.name === 'callNonConst');
+    const callConst = methods.find((m) => m.name === 'callConst');
+    expect(callNonConst).toBeDefined();
+    expect(callConst).toBeDefined();
+    expect(callNonConst!.properties.isConst).toBeFalsy();
+    expect(callConst!.properties.isConst).toBe(true);
+  });
+});
+
+// ── Phase P: C++ const-qualified cross-file + chain resolution ────────────
+
+describe('C++ const-qualified cross-file and chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-const-cross-file'), () => {});
+  }, 60000);
+
+  // -- Cross-file: const vs non-const get() called from App --
+
+  it('Container.get has distinct const and non-const nodes', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const getNodes = methods.filter(
+      (m) => m.name === 'get' && m.properties.filePath?.includes('container'),
+    );
+    expect(getNodes.length).toBe(2);
+    const constFlags = getNodes.map((n) => !!n.properties.isConst).sort();
+    expect(constFlags).toEqual([false, true]);
+  });
+
+  it('Container.size has distinct const and non-const nodes', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const sizeNodes = methods.filter(
+      (m) => m.name === 'size' && m.properties.filePath?.includes('container'),
+    );
+    expect(sizeNodes.length).toBe(2);
+    const constFlags = sizeNodes.map((n) => !!n.properties.isConst).sort();
+    expect(constFlags).toEqual([false, true]);
+  });
+
+  // -- Chain: format() calls resolve cross-file via receiver-type propagation --
+
+  it('chainMutableGet() calls format cross-file via string receiver type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fmtEdges = calls.filter((c) => c.source === 'chainMutableGet' && c.target === 'format');
+    expect(fmtEdges.length).toBe(1);
+    const fmtTarget = result.graph.getNode(fmtEdges[0].rel.targetId);
+    expect(fmtTarget?.properties.parameterTypes).toEqual(['string']);
+  });
+
+  it('chainConstSize() calls format cross-file via int receiver type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fmtEdges = calls.filter((c) => c.source === 'chainConstSize' && c.target === 'format');
+    expect(fmtEdges.length).toBe(1);
+    const fmtTarget = result.graph.getNode(fmtEdges[0].rel.targetId);
+    expect(fmtTarget?.properties.parameterTypes).toEqual(['int']);
   });
 });
