@@ -72,6 +72,18 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const isDev = process.env.NODE_ENV === 'development';
 
+/**
+ * Append all elements from `source` into `target` without using the spread
+ * operator.  `target.push(...source)` converts every element into a function
+ * argument which exceeds V8's call-stack limit when `source` has more than
+ * ~65 000 entries (common in large Ruby/Rails monoliths).
+ */
+function safePushAll<T>(target: T[], source: readonly T[]): void {
+  for (let i = 0; i < source.length; i++) {
+    target.push(source[i]);
+  }
+}
+
 const EXPO_NAV_PATTERNS = [
   /router\.(push|replace|navigate)\(\s*['"`]([^'"`]+)['"`]/g,
   /<Link\s+[^>]*href=\s*['"`]([^'"`]+)['"`]/g,
@@ -879,12 +891,14 @@ async function runChunkedParseAndResolve(
             );
           }
         }
-        for (const _item of chunkWorkerData.calls) deferredWorkerCalls.push(_item);
-        for (const _item of chunkWorkerData.heritage) deferredWorkerHeritage.push(_item);
-        for (const _item of chunkWorkerData.constructorBindings)
-          deferredConstructorBindings.push(_item);
+        // Use safe array concatenation to avoid stack overflow on large repos.
+        // `push(...arr)` spreads every element as a function argument, which
+        // exceeds V8's call-stack limit when `arr` has tens of thousands of entries.
+        safePushAll(deferredWorkerCalls, chunkWorkerData.calls);
+        safePushAll(deferredWorkerHeritage, chunkWorkerData.heritage);
+        safePushAll(deferredConstructorBindings, chunkWorkerData.constructorBindings);
         if (chunkWorkerData.assignments?.length) {
-          for (const _item of chunkWorkerData.assignments) deferredAssignments.push(_item);
+          safePushAll(deferredAssignments, chunkWorkerData.assignments);
         }
 
         // Heritage + Routes — calls deferred until all chunks have contributed heritage
@@ -919,23 +933,23 @@ async function runChunkedParseAndResolve(
         ]);
         // Collect TypeEnv file-scope bindings for exported type enrichment
         if (chunkWorkerData.typeEnvBindings?.length) {
-          for (const _item of chunkWorkerData.typeEnvBindings) workerTypeEnvBindings.push(_item);
+          safePushAll(workerTypeEnvBindings, chunkWorkerData.typeEnvBindings);
         }
         // Collect fetch() calls for Next.js route matching
         if (chunkWorkerData.fetchCalls?.length) {
-          for (const _item of chunkWorkerData.fetchCalls) allFetchCalls.push(_item);
+          safePushAll(allFetchCalls, chunkWorkerData.fetchCalls);
         }
         if (chunkWorkerData.routes?.length) {
-          for (const _item of chunkWorkerData.routes) allExtractedRoutes.push(_item);
+          safePushAll(allExtractedRoutes, chunkWorkerData.routes);
         }
         if (chunkWorkerData.decoratorRoutes?.length) {
-          for (const _item of chunkWorkerData.decoratorRoutes) allDecoratorRoutes.push(_item);
+          safePushAll(allDecoratorRoutes, chunkWorkerData.decoratorRoutes);
         }
         if (chunkWorkerData.toolDefs?.length) {
-          for (const _item of chunkWorkerData.toolDefs) allToolDefs.push(_item);
+          safePushAll(allToolDefs, chunkWorkerData.toolDefs);
         }
         if (chunkWorkerData.ormQueries?.length) {
-          for (const _item of chunkWorkerData.ormQueries) allORMQueries.push(_item);
+          safePushAll(allORMQueries, chunkWorkerData.ormQueries);
         }
       } else {
         await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
@@ -1024,7 +1038,7 @@ async function runChunkedParseAndResolve(
     // Extract fetch() calls for Next.js route matching (sequential path)
     const chunkFetchCalls = await extractFetchCallsFromFiles(chunkFiles, astCache);
     if (chunkFetchCalls.length > 0) {
-      for (const _item of chunkFetchCalls) allFetchCalls.push(_item);
+      safePushAll(allFetchCalls, chunkFetchCalls);
     }
     // Extract ORM queries (sequential path)
     for (const f of chunkFiles) {
