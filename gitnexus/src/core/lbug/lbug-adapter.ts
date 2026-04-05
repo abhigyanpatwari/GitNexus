@@ -440,7 +440,7 @@ const TABLES_WITH_EXPORTED = new Set<string>([
 const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   const t = escapeTableName(table);
   if (table === 'File') {
-    return `COPY ${t}(id, name, filePath, content) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, content, nodeCategory, isPseudocode, rawContent, definedSymbols, calledSymbols, docType, domain) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Folder') {
     return `COPY ${t}(id, name, filePath) FROM "${filePath}" ${COPY_CSV_OPTS}`;
@@ -452,7 +452,7 @@ const getCopyQuery = (table: NodeTableName, filePath: string): string => {
     return `COPY ${t}(id, label, heuristicLabel, processType, stepCount, communities, entryPointId, terminalId) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Section') {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, level, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, level, content, description, nodeCategory, isPseudocode, rawContent, definedSymbols, calledSymbols, docType, domain) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Route') {
     return `COPY ${t}(id, name, filePath, responseKeys, errorKeys, middleware) FROM "${filePath}" ${COPY_CSV_OPTS}`;
@@ -462,6 +462,9 @@ const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   }
   if (table === 'Method') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'CodeElement') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, nodeCategory, isPseudocode, rawContent, definedSymbols, calledSymbols, docType, domain) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   // TypeScript/JS code element tables have isExported; multi-language tables do not
   if (TABLES_WITH_EXPORTED.has(table)) {
@@ -492,6 +495,9 @@ export const insertNodeToLbug = async (
     const escapeValue = (v: any): string => {
       if (v === null || v === undefined) return 'NULL';
       if (typeof v === 'number') return String(v);
+      if (Array.isArray(v)) {
+        return `[${v.map((item) => `'${String(item).replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`).join(', ')}]`;
+      }
       // Escape backslashes first (for Windows paths), then single quotes
       return `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`;
     };
@@ -501,14 +507,19 @@ export const insertNodeToLbug = async (
     let query: string;
 
     if (label === 'File') {
-      query = `CREATE (n:File {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, content: ${escapeValue(properties.content || '')}})`;
+      query = `CREATE (n:File {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, content: ${escapeValue(properties.content || '')}, nodeCategory: ${escapeValue(properties.nodeCategory || '')}, isPseudocode: ${!!properties.isPseudocode}, rawContent: ${escapeValue(properties.rawContent || '')}, definedSymbols: ${escapeValue(properties.definedSymbols || [])}, calledSymbols: ${escapeValue(properties.calledSymbols || [])}, docType: ${escapeValue(properties.docType || '')}, domain: ${escapeValue(properties.domain || '')}})`;
     } else if (label === 'Folder') {
       query = `CREATE (n:Folder {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}})`;
     } else if (label === 'Section') {
       const descPart = properties.description
         ? `, description: ${escapeValue(properties.description)}`
         : '';
-      query = `CREATE (n:Section {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, level: ${properties.level || 1}, content: ${escapeValue(properties.content || '')}${descPart}})`;
+      query = `CREATE (n:Section {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, level: ${properties.level || 1}, content: ${escapeValue(properties.content || '')}${descPart}, nodeCategory: ${escapeValue(properties.nodeCategory || '')}, isPseudocode: ${!!properties.isPseudocode}, rawContent: ${escapeValue(properties.rawContent || '')}, definedSymbols: ${escapeValue(properties.definedSymbols || [])}, calledSymbols: ${escapeValue(properties.calledSymbols || [])}, docType: ${escapeValue(properties.docType || '')}, domain: ${escapeValue(properties.domain || '')}})`;
+    } else if (label === 'CodeElement') {
+      const descPart = properties.description
+        ? `, description: ${escapeValue(properties.description)}`
+        : '';
+      query = `CREATE (n:CodeElement {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${escapeValue(properties.content || '')}${descPart}, nodeCategory: ${escapeValue(properties.nodeCategory || '')}, isPseudocode: ${!!properties.isPseudocode}, rawContent: ${escapeValue(properties.rawContent || '')}, definedSymbols: ${escapeValue(properties.definedSymbols || [])}, calledSymbols: ${escapeValue(properties.calledSymbols || [])}, docType: ${escapeValue(properties.docType || '')}, domain: ${escapeValue(properties.domain || '')}})`;
     } else if (TABLES_WITH_EXPORTED.has(label)) {
       const descPart = properties.description
         ? `, description: ${escapeValue(properties.description)}`
@@ -566,6 +577,9 @@ export const batchInsertNodesToLbug = async (
   const escapeValue = (v: any): string => {
     if (v === null || v === undefined) return 'NULL';
     if (typeof v === 'number') return String(v);
+    if (Array.isArray(v)) {
+      return `[${v.map((item) => `'${String(item).replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`).join(', ')}]`;
+    }
     // Escape backslashes first (for Windows paths), then single quotes, then newlines
     return `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`;
   };
@@ -585,14 +599,19 @@ export const batchInsertNodesToLbug = async (
         // Use MERGE instead of CREATE for upsert behavior (handles duplicates gracefully)
         const t = escapeTableName(label);
         if (label === 'File') {
-          query = `MERGE (n:File {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.content = ${escapeValue(properties.content || '')}`;
+          query = `MERGE (n:File {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.content = ${escapeValue(properties.content || '')}, n.nodeCategory = ${escapeValue(properties.nodeCategory || '')}, n.isPseudocode = ${!!properties.isPseudocode}, n.rawContent = ${escapeValue(properties.rawContent || '')}, n.definedSymbols = ${escapeValue(properties.definedSymbols || [])}, n.calledSymbols = ${escapeValue(properties.calledSymbols || [])}, n.docType = ${escapeValue(properties.docType || '')}, n.domain = ${escapeValue(properties.domain || '')}`;
         } else if (label === 'Folder') {
           query = `MERGE (n:Folder {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}`;
         } else if (label === 'Section') {
           const descPart = properties.description
             ? `, n.description = ${escapeValue(properties.description)}`
             : '';
-          query = `MERGE (n:Section {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.level = ${properties.level || 1}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
+          query = `MERGE (n:Section {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.level = ${properties.level || 1}, n.content = ${escapeValue(properties.content || '')}${descPart}, n.nodeCategory = ${escapeValue(properties.nodeCategory || '')}, n.isPseudocode = ${!!properties.isPseudocode}, n.rawContent = ${escapeValue(properties.rawContent || '')}, n.definedSymbols = ${escapeValue(properties.definedSymbols || [])}, n.calledSymbols = ${escapeValue(properties.calledSymbols || [])}, n.docType = ${escapeValue(properties.docType || '')}, n.domain = ${escapeValue(properties.domain || '')}`;
+        } else if (label === 'CodeElement') {
+          const descPart = properties.description
+            ? `, n.description = ${escapeValue(properties.description)}`
+            : '';
+          query = `MERGE (n:CodeElement {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${escapeValue(properties.content || '')}${descPart}, n.nodeCategory = ${escapeValue(properties.nodeCategory || '')}, n.isPseudocode = ${!!properties.isPseudocode}, n.rawContent = ${escapeValue(properties.rawContent || '')}, n.definedSymbols = ${escapeValue(properties.definedSymbols || [])}, n.calledSymbols = ${escapeValue(properties.calledSymbols || [])}, n.docType = ${escapeValue(properties.docType || '')}, n.domain = ${escapeValue(properties.domain || '')}`;
         } else if (TABLES_WITH_EXPORTED.has(label)) {
           const descPart = properties.description
             ? `, n.description = ${escapeValue(properties.description)}`

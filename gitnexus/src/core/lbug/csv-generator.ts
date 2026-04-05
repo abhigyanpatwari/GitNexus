@@ -231,7 +231,7 @@ export const streamAllCSVsToDisk = async (
   // Create writers for every node type up-front
   const fileWriter = new BufferedCSVWriter(
     path.join(csvDir, 'file.csv'),
-    'id,name,filePath,content',
+    'id,name,filePath,content,nodeCategory,isPseudocode,rawContent,definedSymbols,calledSymbols,docType,domain',
   );
   const folderWriter = new BufferedCSVWriter(path.join(csvDir, 'folder.csv'), 'id,name,filePath');
   const codeElementHeader = 'id,name,filePath,startLine,endLine,isExported,content,description';
@@ -247,9 +247,11 @@ export const streamAllCSVsToDisk = async (
   const methodHeader =
     'id,name,filePath,startLine,endLine,isExported,content,description,parameterCount,returnType';
   const methodWriter = new BufferedCSVWriter(path.join(csvDir, 'method.csv'), methodHeader);
+  const codeElemSpecificHeader =
+    'id,name,filePath,startLine,endLine,isExported,content,description,nodeCategory,isPseudocode,rawContent,definedSymbols,calledSymbols,docType,domain';
   const codeElemWriter = new BufferedCSVWriter(
     path.join(csvDir, 'codeelement.csv'),
-    codeElementHeader,
+    codeElemSpecificHeader,
   );
   const communityWriter = new BufferedCSVWriter(
     path.join(csvDir, 'community.csv'),
@@ -263,7 +265,7 @@ export const streamAllCSVsToDisk = async (
   // Section nodes have an extra 'level' column
   const sectionWriter = new BufferedCSVWriter(
     path.join(csvDir, 'section.csv'),
-    'id,name,filePath,startLine,endLine,level,content,description',
+    'id,name,filePath,startLine,endLine,level,content,description,nodeCategory,isPseudocode,rawContent,definedSymbols,calledSymbols,docType,domain',
   );
 
   // Route nodes for API endpoint mapping
@@ -317,6 +319,11 @@ export const streamAllCSVsToDisk = async (
 
   const seenFileIds = new Set<string>();
 
+  const formatArray = (arr: any[] | undefined) => {
+    if (!arr) return '[]';
+    return `[${arr.map((k: string) => `'${k.replace(/'/g, "''")}'`).join(',')}]`;
+  };
+
   // --- SINGLE PASS over all nodes ---
   for (const node of graph.iterNodes()) {
     switch (node.label) {
@@ -330,6 +337,13 @@ export const streamAllCSVsToDisk = async (
             escapeCSVField(node.properties.name || ''),
             escapeCSVField(node.properties.filePath || ''),
             escapeCSVField(content),
+            escapeCSVField((node.properties.nodeCategory as string) || ''),
+            node.properties.isPseudocode ? 'true' : 'false',
+            escapeCSVField((node.properties.rawContent as string) || ''),
+            escapeCSVField(formatArray(node.properties.definedSymbols as string[])),
+            escapeCSVField(formatArray(node.properties.calledSymbols as string[])),
+            escapeCSVField((node.properties.docType as string) || ''),
+            escapeCSVField((node.properties.domain as string) || ''),
           ].join(','),
         );
         break;
@@ -407,6 +421,13 @@ export const streamAllCSVsToDisk = async (
             escapeCSVNumber(node.properties.level, 1),
             escapeCSVField(content),
             escapeCSVField(node.properties.description || ''),
+            escapeCSVField((node.properties.nodeCategory as string) || ''),
+            node.properties.isPseudocode ? 'true' : 'false',
+            escapeCSVField((node.properties.rawContent as string) || ''),
+            escapeCSVField(formatArray(node.properties.definedSymbols as string[])),
+            escapeCSVField(formatArray(node.properties.calledSymbols as string[])),
+            escapeCSVField((node.properties.docType as string) || ''),
+            escapeCSVField((node.properties.domain as string) || ''),
           ].join(','),
         );
         break;
@@ -447,18 +468,30 @@ export const streamAllCSVsToDisk = async (
         const writer = codeWriterMap[node.label];
         if (writer) {
           const content = await extractContent(node, contentCache);
-          await writer.addRow(
-            [
-              escapeCSVField(node.id),
-              escapeCSVField(node.properties.name || ''),
-              escapeCSVField(node.properties.filePath || ''),
-              escapeCSVNumber(node.properties.startLine, -1),
-              escapeCSVNumber(node.properties.endLine, -1),
-              node.properties.isExported ? 'true' : 'false',
-              escapeCSVField(content),
-              escapeCSVField(node.properties.description || ''),
-            ].join(','),
-          );
+          const baseRow = [
+            escapeCSVField(node.id),
+            escapeCSVField(node.properties.name || ''),
+            escapeCSVField(node.properties.filePath || ''),
+            escapeCSVNumber(node.properties.startLine, -1),
+            escapeCSVNumber(node.properties.endLine, -1),
+            node.properties.isExported ? 'true' : 'false',
+            escapeCSVField(content),
+            escapeCSVField(node.properties.description || ''),
+          ];
+
+          if (node.label === 'CodeElement') {
+            baseRow.push(
+              escapeCSVField((node.properties.nodeCategory as string) || ''),
+              node.properties.isPseudocode ? 'true' : 'false',
+              escapeCSVField((node.properties.rawContent as string) || ''),
+              escapeCSVField(formatArray(node.properties.definedSymbols as string[])),
+              escapeCSVField(formatArray(node.properties.calledSymbols as string[])),
+              escapeCSVField((node.properties.docType as string) || ''),
+              escapeCSVField((node.properties.domain as string) || '')
+            );
+          }
+
+          await writer.addRow(baseRow.join(','));
         } else {
           // Multi-language node types (Struct, Impl, Trait, Macro, etc.)
           const mlWriter = multiLangWriters.get(node.label);

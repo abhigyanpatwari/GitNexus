@@ -25,6 +25,13 @@ CREATE NODE TABLE File (
   name STRING,
   filePath STRING,
   content STRING,
+  nodeCategory STRING,
+  isPseudocode BOOLEAN,
+  rawContent STRING,
+  definedSymbols STRING[],
+  calledSymbols STRING[],
+  docType STRING,
+  domain STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -100,6 +107,13 @@ CREATE NODE TABLE CodeElement (
   isExported BOOLEAN,
   content STRING,
   description STRING,
+  nodeCategory STRING,
+  isPseudocode BOOLEAN,
+  rawContent STRING,
+  definedSymbols STRING[],
+  calledSymbols STRING[],
+  docType STRING,
+  domain STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -206,6 +220,13 @@ CREATE NODE TABLE Section (
   level INT64,
   content STRING,
   description STRING,
+  nodeCategory STRING,
+  isPseudocode BOOLEAN,
+  rawContent STRING,
+  definedSymbols STRING[],
+  calledSymbols STRING[],
+  docType STRING,
+  domain STRING,
   PRIMARY KEY (id)
 )`;
 

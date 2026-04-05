@@ -161,6 +161,48 @@ const generateFileText = (node: EmbeddableNode, maxSnippetLength: number): strin
 };
 
 /**
+ * Generate embedding text for a Section node (Design Section)
+ */
+const generateSectionText = (node: EmbeddableNode, maxSnippetLength: number): string => {
+  const parts: string[] = [`Design Section: ${node.name}`, `File: ${getFileName(node.filePath)}`];
+
+  const dir = getDirectory(node.filePath);
+  if (dir) {
+    parts.push(`Directory: ${dir}`);
+  }
+
+  if (node.content) {
+    const cleanedContent = cleanContent(node.content);
+    const snippet = truncateContent(cleanedContent, maxSnippetLength);
+    parts.push('', snippet);
+  }
+
+  return parts.join('\n');
+};
+
+/**
+ * Generate embedding text for a CodeElement node (Pseudocode Spec or Block)
+ */
+const generateCodeElementText = (node: EmbeddableNode, maxSnippetLength: number): string => {
+  const prefix = node.isPseudocode ? 'Pseudocode Spec' : 'Code Snippet';
+  const parts: string[] = [`${prefix}: ${node.name || 'Anonymous Block'}`, `File: ${getFileName(node.filePath)}`];
+
+  const dir = getDirectory(node.filePath);
+  if (dir) {
+    parts.push(`Directory: ${dir}`);
+  }
+
+  const content = node.isPseudocode && node.rawContent ? node.rawContent : node.content;
+  if (content) {
+    const cleanedContent = cleanContent(content);
+    const snippet = truncateContent(cleanedContent, maxSnippetLength);
+    parts.push('', snippet);
+  }
+
+  return parts.join('\n');
+};
+
+/**
  * Generate embedding text for any embeddable node
  * Dispatches to the appropriate generator based on node label
  *
@@ -185,6 +227,10 @@ export const generateEmbeddingText = (
       return generateInterfaceText(node, maxSnippetLength);
     case 'File':
       return generateFileText(node, maxSnippetLength);
+    case 'Section':
+      return generateSectionText(node, maxSnippetLength);
+    case 'CodeElement':
+      return generateCodeElementText(node, maxSnippetLength);
     default:
       // Fallback for any other embeddable type
       return `${node.label}: ${node.name}\nPath: ${node.filePath}`;
