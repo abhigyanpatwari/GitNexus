@@ -1948,3 +1948,70 @@ describe('Java overloaded method disambiguation (METHOD_IMPLEMENTS)', () => {
     expect(findCalls.length).toBe(2);
   });
 });
+
+// ── Phase P: Sequential path parity — same-arity overloads ────────────────
+
+describe('Java same-arity overloads via sequential path (skipWorkers)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-same-arity-cross-file'),
+      () => {},
+      { skipWorkers: true },
+    );
+  }, 60000);
+
+  it('produces distinct graph nodes for find(int) and find(String) — sequential path', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const findNodes = methods.filter(
+      (m) => m.name === 'find' && m.properties.filePath?.includes('DbLookup'),
+    );
+    expect(findNodes.length).toBe(2);
+    const types = findNodes.map((n) => n.properties.parameterTypes).sort();
+    expect(types).toEqual([['String'], ['int']]);
+  });
+
+  it('crossFileById() → find(int) — sequential path', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'crossFileById' &&
+        c.target === 'find' &&
+        c.targetFilePath.includes('DbLookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('crossFileByName() → find(String) — sequential path', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'crossFileByName' &&
+        c.target === 'find' &&
+        c.targetFilePath.includes('DbLookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['String']);
+  });
+
+  it('METHOD_IMPLEMENTS edges match interface methods — sequential path', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edges = mi.filter(
+      (e) =>
+        e.source === 'find' &&
+        e.target === 'find' &&
+        e.sourceFilePath.includes('DbLookup') &&
+        e.targetFilePath.includes('ILookup'),
+    );
+    expect(edges.length).toBe(2);
+    for (const edge of edges) {
+      const sourceNode = result.graph.getNode(edge.rel.sourceId);
+      const targetNode = result.graph.getNode(edge.rel.targetId);
+      expect(sourceNode?.properties.parameterTypes).toEqual(targetNode?.properties.parameterTypes);
+    }
+  });
+});

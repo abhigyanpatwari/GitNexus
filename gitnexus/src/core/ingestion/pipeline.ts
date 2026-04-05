@@ -484,6 +484,8 @@ async function runCrossFileBindingPropagation(
 export interface PipelineOptions {
   /** Skip MRO, community detection, and process extraction for faster test runs. */
   skipGraphPhases?: boolean;
+  /** Force sequential parsing (no worker pool). Useful for testing the sequential path. */
+  skipWorkers?: boolean;
 }
 
 // ── Extracted pipeline phases ──────────────────────────────────────────────
@@ -641,6 +643,7 @@ async function runChunkedParseAndResolve(
   repoPath: string,
   pipelineStart: number,
   onProgress: ProgressFn,
+  options?: PipelineOptions,
 ): Promise<{
   exportedTypeMap: ExportedTypeMap;
   allFetchCalls: ExtractedFetchCall[];
@@ -719,7 +722,10 @@ async function runChunkedParseAndResolve(
 
   // Create worker pool once, reuse across chunks
   let workerPool: WorkerPool | undefined;
-  if (totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS) {
+  if (
+    !options?.skipWorkers &&
+    (totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS)
+  ) {
     try {
       let workerUrl = new URL('./workers/parse-worker.js', import.meta.url);
       // When running under vitest, import.meta.url points to src/ where no .js exists.
@@ -1352,6 +1358,7 @@ export const runPipelineFromRepo = async (
       repoPath,
       pipelineStart,
       onProgress,
+      options,
     );
 
     // ── Phase 3.5: Route Registry (Next.js + PHP + Laravel + decorators) ──
