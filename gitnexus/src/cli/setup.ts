@@ -169,15 +169,16 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
     const dest = path.join(destHooksDir, 'gitnexus-hook.cjs');
     try {
       let content = await fs.readFile(src, 'utf-8');
-      // Inject resolved CLI path so the copied hook can find the CLI
-      // even when it's no longer inside the npm package tree
+      // Inject resolved CLI path as a constant at the top of the hook file.
+      // Previous approach used String.replace() targeting a specific line, but
+      // failed silently due to indentation mismatch (2-space indent in source
+      // vs no indent in the match string). Prepending a constant is robust
+      // regardless of formatting. See #108, #132.
       const resolvedCli = path.join(__dirname, '..', 'cli', 'index.js');
       const normalizedCli = path.resolve(resolvedCli).replace(/\\/g, '/');
       const jsonCli = JSON.stringify(normalizedCli);
-      content = content.replace(
-        "let cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');",
-        `let cliPath = ${jsonCli};`,
-      );
+      content = `const GITNEXUS_CLI_PATH = ${jsonCli};
+` + content;
       await fs.writeFile(dest, content, 'utf-8');
     } catch {
       // Script not found in source — skip

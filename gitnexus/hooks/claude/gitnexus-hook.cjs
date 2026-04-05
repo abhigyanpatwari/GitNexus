@@ -103,20 +103,68 @@ function extractPattern(toolName, toolInput) {
 
 /**
  * Resolve the gitnexus CLI path.
- * 1. Relative path (works when script is inside npm package)
- * 2. require.resolve (works when gitnexus is globally installed)
- * 3. Fall back to npx (returns empty string)
+ * 1. Injected constant (set by `gitnexus setup` when copying this file)
+ * 2. Relative path (works when script is inside npm package)
+ * 3. require.resolve (works when gitnexus is in Node module path)
+ * 4. Discover from installed binary via which/where
+ * 5. npm root -g fallback
+ * 6. Fall back to npx (returns empty string)
  */
 function resolveCliPath() {
-  let cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');
-  if (!fs.existsSync(cliPath)) {
-    try {
-      cliPath = require.resolve('gitnexus/dist/cli/index.js');
-    } catch {
-      cliPath = '';
-    }
+  // 1. Injected absolute path (populated by `gitnexus setup`)
+  if (typeof GITNEXUS_CLI_PATH !== 'undefined' && GITNEXUS_CLI_PATH && fs.existsSync(GITNEXUS_CLI_PATH)) {
+    return GITNEXUS_CLI_PATH;
   }
-  return cliPath;
+
+  // 2. Relative path (works when running from inside the npm package tree)
+  let cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');
+  if (fs.existsSync(cliPath)) return cliPath;
+
+  // 3. require.resolve
+  try {
+    return require.resolve('gitnexus/dist/cli/index.js');
+  } catch { /* continue */ }
+
+  // 4. Discover from installed binary location
+  const isWin = process.platform === 'win32';
+  try {
+    const whichResult = spawnSync(isWin ? 'where' : 'which', ['gitnexus'], {
+      encoding: 'utf-8',
+      timeout: 3000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const binPath = (whichResult.stdout || '').split(/\r?\n/)[0].trim();
+    if (binPath) {
+      const binDir = path.dirname(binPath);
+      const candidates = [
+        // npm global on Windows: <prefix>/gitnexus -> <prefix>/node_modules/gitnexus/
+        path.join(binDir, 'node_modules', 'gitnexus', 'dist', 'cli', 'index.js'),
+        // npm global on Unix: <prefix>/bin/gitnexus -> <prefix>/lib/node_modules/gitnexus/
+        path.join(binDir, '..', 'lib', 'node_modules', 'gitnexus', 'dist', 'cli', 'index.js'),
+      ];
+      for (const c of candidates) {
+        if (fs.existsSync(c)) return c;
+      }
+    }
+  } catch { /* continue */ }
+
+  // 5. npm root -g fallback (needs shell:true on Windows for .cmd wrapper)
+  try {
+    const npmResult = spawnSync(isWin ? 'npm.cmd' : 'npm', ['root', '-g'], {
+      encoding: 'utf-8',
+      timeout: 5000,
+      shell: isWin,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const globalRoot = (npmResult.stdout || '').trim();
+    if (globalRoot) {
+      const candidate = path.join(globalRoot, 'gitnexus', 'dist', 'cli', 'index.js');
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  } catch { /* continue */ }
+
+  // 6. Fall back to npx
+  return '';
 }
 
 /**
