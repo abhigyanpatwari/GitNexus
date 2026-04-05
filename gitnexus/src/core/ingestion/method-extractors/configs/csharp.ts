@@ -86,6 +86,7 @@ function extractParametersFromList(paramList: SyntaxNode): ParameterInfo[] {
           type: typeNode
             ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
             : null,
+          rawType: typeNode?.text?.trim() ?? null,
           isOptional: false,
           isVariadic: true,
         });
@@ -127,6 +128,7 @@ function extractParametersFromList(paramList: SyntaxNode): ParameterInfo[] {
         params.push({
           name: nameNode.text,
           type: typeName,
+          rawType: typeNode?.text?.trim() ?? null,
           isOptional,
           isVariadic: false,
         });

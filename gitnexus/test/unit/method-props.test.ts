@@ -5,10 +5,11 @@ import {
   constTagForId,
 } from '../../src/core/ingestion/utils/method-props.js';
 import type { MethodInfo } from '../../src/core/ingestion/method-types.js';
+import { SupportedLanguages } from 'gitnexus-shared';
 
 function makeMethodInfo(
   name: string,
-  params: Array<{ name: string; type: string | null }>,
+  params: Array<{ name: string; type: string | null; rawType?: string | null }>,
   overrides: Partial<MethodInfo> = {},
 ): MethodInfo {
   return {
@@ -18,6 +19,7 @@ function makeMethodInfo(
     parameters: params.map((p) => ({
       name: p.name,
       type: p.type,
+      ...(p.rawType !== undefined ? { rawType: p.rawType } : {}),
       isOptional: false,
       isVariadic: false,
     })),
@@ -157,8 +159,36 @@ describe('typeTagForId', () => {
     // Without language, same-arity collision → type tag
     expect(typeTagForId(map, 'find', 1, findNum)).toBe('~number');
     // With TypeScript language, type tag is skipped
-    expect(typeTagForId(map, 'find', 1, findNum, 'typescript' as any)).toBe('');
-    expect(typeTagForId(map, 'find', 1, findStr, 'javascript' as any)).toBe('');
+    expect(typeTagForId(map, 'find', 1, findNum, SupportedLanguages.TypeScript)).toBe('');
+    expect(typeTagForId(map, 'find', 1, findStr, SupportedLanguages.JavaScript)).toBe('');
+  });
+
+  it('rawType preserves generics: vector<int> vs vector<string> produce distinct tags', () => {
+    // With rawType, template/generic args are preserved for the type tag.
+    const vecInt = makeMethodInfo(
+      'process',
+      [{ name: 'items', type: 'vector', rawType: 'vector<int>' }],
+      { line: 10 },
+    );
+    const vecStr = makeMethodInfo(
+      'process',
+      [{ name: 'items', type: 'vector', rawType: 'vector<string>' }],
+      { line: 15 },
+    );
+    const map = buildMethodMap([vecInt, vecStr]);
+
+    expect(typeTagForId(map, 'process', 1, vecInt)).toBe('~vector<int>');
+    expect(typeTagForId(map, 'process', 1, vecStr)).toBe('~vector<string>');
+  });
+
+  it('falls back to type when rawType is not set', () => {
+    // Backward compat: old ParameterInfo without rawType still works
+    const findInt = makeMethodInfo('find', [{ name: 'id', type: 'int' }], { line: 10 });
+    const findStr = makeMethodInfo('find', [{ name: 'name', type: 'String' }], { line: 15 });
+    const map = buildMethodMap([findInt, findStr]);
+
+    expect(typeTagForId(map, 'find', 1, findInt)).toBe('~int');
+    expect(typeTagForId(map, 'find', 1, findStr)).toBe('~String');
   });
 });
 

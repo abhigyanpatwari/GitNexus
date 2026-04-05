@@ -17,7 +17,7 @@ import {
   genericFuncName,
   inferFunctionLabel,
 } from './utils/ast-helpers.js';
-import { typeTagForId, constTagForId } from './utils/method-props.js';
+import { typeTagForId, constTagForId, buildCollisionGroups } from './utils/method-props.js';
 import type { MethodInfo } from './method-types.js';
 import {
   countCallArguments,
@@ -223,6 +223,17 @@ const TYPE_PRESERVING_METHODS = new Set([
   'orElseThrow', // Java Optional
 ]);
 
+/** Cache for method extraction results in findEnclosingFunction fallback path.
+ *  Keyed by classNode.id to avoid re-extracting the same class body per call site.
+ *  Cleared between files by callers via clearEnclosingFunctionCache(). */
+const enclosingFnExtractCache = new Map<
+  number,
+  import('./method-types.js').ExtractedMethods | null
+>();
+export const clearEnclosingFunctionCache = (): void => {
+  enclosingFnExtractCache.clear();
+};
+
 /**
  * Walk up the AST from a node to find the enclosing function/method.
  * Returns null if the call is at module/file level (top-level code).
@@ -278,10 +289,12 @@ const findEnclosingFunction = (
         const language = getLanguageFromFilename(filePath);
         let arity: number | undefined;
         let encTypeTag = '';
-        if ((finalLabel === 'Method' || finalLabel === 'Constructor') && provider.methodExtractor) {
-          const info = language
-            ? provider.methodExtractor.extractFromNode?.(current, { filePath, language })
-            : undefined;
+        if (
+          (finalLabel === 'Method' || finalLabel === 'Constructor') &&
+          provider.methodExtractor &&
+          language
+        ) {
+          const info = provider.methodExtractor.extractFromNode?.(current, { filePath, language });
           if (info) {
             arity = info.parameters.some((p) => p.isVariadic) ? undefined : info.parameters.length;
           }
@@ -292,16 +305,19 @@ const findEnclosingFunction = (
               classNode = classNode.parent;
             }
             if (classNode) {
-              const extracted = provider.methodExtractor.extract(classNode, {
-                filePath,
-                language: language!,
-              });
+              let extracted = enclosingFnExtractCache.get(classNode.id);
+              if (extracted === undefined) {
+                extracted =
+                  provider.methodExtractor.extract(classNode, { filePath, language }) ?? null;
+                enclosingFnExtractCache.set(classNode.id, extracted);
+              }
               if (extracted?.methods?.length) {
                 const methodMap = new Map<string, MethodInfo>();
                 for (const m of extracted.methods) methodMap.set(`${m.name}:${m.line}`, m);
+                const groups = buildCollisionGroups(methodMap);
                 encTypeTag =
-                  typeTagForId(methodMap, funcName, arity, info, language) +
-                  constTagForId(methodMap, funcName, arity, info);
+                  typeTagForId(methodMap, funcName, arity, info, language, groups) +
+                  constTagForId(methodMap, funcName, arity, info, groups);
               }
             }
           }
@@ -348,10 +364,15 @@ const findEnclosingFunction = (
         const language2 = getLanguageFromFilename(filePath);
         let arity2: number | undefined;
         let encTypeTag2 = '';
-        if ((finalLabel === 'Method' || finalLabel === 'Constructor') && provider.methodExtractor) {
-          const info = language2
-            ? provider.methodExtractor.extractFromNode?.(sigNode, { filePath, language: language2 })
-            : undefined;
+        if (
+          (finalLabel === 'Method' || finalLabel === 'Constructor') &&
+          provider.methodExtractor &&
+          language2
+        ) {
+          const info = provider.methodExtractor.extractFromNode?.(sigNode, {
+            filePath,
+            language: language2,
+          });
           if (info) {
             arity2 = info.parameters.some((p) => p.isVariadic) ? undefined : info.parameters.length;
           }
@@ -361,16 +382,20 @@ const findEnclosingFunction = (
               classNode = classNode.parent;
             }
             if (classNode) {
-              const extracted = provider.methodExtractor.extract(classNode, {
-                filePath,
-                language: language2!,
-              });
-              if (extracted?.methods?.length) {
+              let extracted2 = enclosingFnExtractCache.get(classNode.id);
+              if (extracted2 === undefined) {
+                extracted2 =
+                  provider.methodExtractor.extract(classNode, { filePath, language: language2 }) ??
+                  null;
+                enclosingFnExtractCache.set(classNode.id, extracted2);
+              }
+              if (extracted2?.methods?.length) {
                 const methodMap = new Map<string, MethodInfo>();
-                for (const m of extracted.methods) methodMap.set(`${m.name}:${m.line}`, m);
+                for (const m of extracted2.methods) methodMap.set(`${m.name}:${m.line}`, m);
+                const groups2 = buildCollisionGroups(methodMap);
                 encTypeTag2 =
-                  typeTagForId(methodMap, customResult.funcName, arity2, info, language2) +
-                  constTagForId(methodMap, customResult.funcName, arity2, info);
+                  typeTagForId(methodMap, customResult.funcName, arity2, info, language2, groups2) +
+                  constTagForId(methodMap, customResult.funcName, arity2, info, groups2);
               }
             }
           }
@@ -583,6 +608,7 @@ export const processCalls = async (
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
+    enclosingFnExtractCache.clear();
     onProgress?.(i + 1, files.length);
     if (i % 20 === 0) await yieldToEventLoop();
 

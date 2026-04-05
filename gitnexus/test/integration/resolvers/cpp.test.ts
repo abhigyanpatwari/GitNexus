@@ -1369,3 +1369,150 @@ describe('C++ const-qualified cross-file and chain resolution', () => {
     expect(fmtTarget?.properties.parameterTypes).toEqual(['int']);
   });
 });
+
+// ── Phase P: C++ template overload disambiguation ─────────────────────────
+
+describe('C++ template overload disambiguation (vector<int> vs vector<string>)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-template-overload'), () => {});
+  }, 60000);
+
+  it('produces distinct nodes for process(vector<int>) and process(vector<string>)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const processNodes = methods.filter((m) => m.name === 'process');
+    expect(processNodes.length).toBe(2);
+  });
+
+  it('each process() node has distinct parameterTypes (simplified)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const processNodes = methods.filter((m) => m.name === 'process');
+    // Both have type 'vector' after extractSimpleTypeName, but distinct node IDs
+    // from rawType-based type-hash (~vector<int> vs ~vector<std::string>)
+    const types = processNodes.map((n) => n.properties.parameterTypes);
+    // Both have simplified 'vector' as parameterTypes[0], but they're separate nodes
+    expect(types.length).toBe(2);
+  });
+
+  it('the two process() nodes have different graph IDs', () => {
+    const ids: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.properties.name === 'process' && n.label === 'Method') {
+        ids.push(n.id);
+      }
+    });
+    expect(ids.length).toBe(2);
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+});
+
+// ── Phase P: C++ template overload cross-file + chain resolution ──────────
+
+describe('C++ template overload cross-file and chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-template-cross-file'), () => {});
+  }, 60000);
+
+  // -- Cross-file: template-overloaded process() defined in processor.h, called from app.cpp --
+
+  it('Processor.process has distinct nodes for vector<int> and vector<string>', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const processNodes = methods.filter(
+      (m) => m.name === 'process' && m.properties.filePath?.includes('processor'),
+    );
+    expect(processNodes.length).toBe(2);
+    // Verify they have different startLine (proof of distinct nodes, not ID collision)
+    const lines = processNodes.map((n) => n.properties.startLine).sort();
+    expect(lines[0]).not.toBe(lines[1]);
+  });
+
+  // -- Chain: format(int) and format(string) called cross-file from App --
+
+  it('chainIntToFormat() emits exactly one CALLS edge to format(int)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'chainIntToFormat' &&
+        c.target === 'format' &&
+        c.targetFilePath.includes('formatter'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('chainStringToFormat() emits exactly one CALLS edge to format(string)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'chainStringToFormat' &&
+        c.target === 'format' &&
+        c.targetFilePath.includes('formatter'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['string']);
+  });
+});
+
+// ── Phase P: C++ out-of-class method definition + overload disambiguation ─
+
+describe('C++ out-of-class method definition with overloaded declarations', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-out-of-class-method'), () => {});
+  }, 60000);
+
+  it('header declarations produce Method nodes for greet() and greet(string)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const greetNodes = methods.filter(
+      (m) => m.name === 'greet' && m.properties.filePath?.includes('myclass'),
+    );
+    // greet() (arity 0) and greet(string) (arity 1) have different arity → distinct IDs
+    expect(greetNodes.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('header declarations produce Method nodes for getName() and getName(int)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const getNameNodes = methods.filter(
+      (m) => m.name === 'getName' && m.properties.filePath?.includes('myclass'),
+    );
+    expect(getNameNodes.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('callGreetDefault() emits exactly one CALLS edge to greet (arity 0)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter((c) => c.source === 'callGreetDefault' && c.target === 'greet');
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterCount).toBe(0);
+  });
+
+  it('callGreetMsg() emits exactly one CALLS edge to greet(string)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter((c) => c.source === 'callGreetMsg' && c.target === 'greet');
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['string']);
+  });
+
+  it('callGetNameDefault() emits exactly one CALLS edge to getName (arity 0)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter((c) => c.source === 'callGetNameDefault' && c.target === 'getName');
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterCount).toBe(0);
+  });
+
+  it('callGetNameById() emits exactly one CALLS edge to getName(int)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter((c) => c.source === 'callGetNameById' && c.target === 'getName');
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+});

@@ -26,6 +26,7 @@ import {
   arityForIdFromInfo,
   typeTagForId,
   constTagForId,
+  buildCollisionGroups,
 } from './utils/method-props.js';
 import type { LanguageProvider } from './language-provider.js';
 import { WorkerPool } from './workers/worker-pool.js';
@@ -462,8 +463,9 @@ const processParsingSequential = async (
         // Build a temporary method map from the class's methods array
         const tempMap = new Map<string, MethodInfo>();
         for (const m of seqDefMethods) tempMap.set(`${m.name}:${m.line}`, m);
-        arityTag += typeTagForId(tempMap, nodeName, arityForId, seqDefMethodInfo, language);
-        arityTag += constTagForId(tempMap, nodeName, arityForId, seqDefMethodInfo);
+        const groups = buildCollisionGroups(tempMap);
+        arityTag += typeTagForId(tempMap, nodeName, arityForId, seqDefMethodInfo, language, groups);
+        arityTag += constTagForId(tempMap, nodeName, arityForId, seqDefMethodInfo, groups);
       }
       const nodeId = generateId(nodeLabel, `${file.path}:${qualifiedName}${arityTag}`);
       const frameworkHint = definitionNode

@@ -10,6 +10,10 @@ export type MethodVisibility = FieldVisibility;
 export interface ParameterInfo {
   name: string;
   type: string | null;
+  /** Full type text including generic/template args (e.g. 'vector<int>', 'List<String>').
+   *  Used by typeTagForId for overload disambiguation where generic args matter.
+   *  Falls back to `type` when not set. */
+  rawType?: string | null;
   isOptional: boolean;
   isVariadic: boolean;
 }

@@ -58,6 +58,7 @@ function extractTsJsParameters(node: SyntaxNode): ParameterInfo[] {
           type: typeNode
             ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
             : null,
+          rawType: typeNode?.text?.trim() ?? null,
           isOptional: hasDefault,
           isVariadic: isRest,
         });
@@ -73,6 +74,7 @@ function extractTsJsParameters(node: SyntaxNode): ParameterInfo[] {
           type: typeNode
             ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
             : null,
+          rawType: typeNode?.text?.trim() ?? null,
           isOptional: true,
           isVariadic: false,
         });
@@ -88,6 +90,7 @@ function extractTsJsParameters(node: SyntaxNode): ParameterInfo[] {
           type: typeNode
             ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
             : null,
+          rawType: typeNode?.text?.trim() ?? null,
           isOptional: false,
           isVariadic: true,
         });
@@ -95,14 +98,26 @@ function extractTsJsParameters(node: SyntaxNode): ParameterInfo[] {
       }
       case 'identifier': {
         // JS: bare parameter name, no type info
-        params.push({ name: param.text, type: null, isOptional: false, isVariadic: false });
+        params.push({
+          name: param.text,
+          type: null,
+          rawType: null,
+          isOptional: false,
+          isVariadic: false,
+        });
         break;
       }
       case 'assignment_pattern': {
         // JS: param = defaultValue — the left side is the name, isOptional = true
         const left = param.childForFieldName('left');
         if (left) {
-          params.push({ name: left.text, type: null, isOptional: true, isVariadic: false });
+          params.push({
+            name: left.text,
+            type: null,
+            rawType: null,
+            isOptional: true,
+            isVariadic: false,
+          });
         }
         break;
       }
@@ -110,14 +125,26 @@ function extractTsJsParameters(node: SyntaxNode): ParameterInfo[] {
         // JS: ...args
         const inner = param.firstNamedChild;
         if (inner) {
-          params.push({ name: inner.text, type: null, isOptional: false, isVariadic: true });
+          params.push({
+            name: inner.text,
+            type: null,
+            rawType: null,
+            isOptional: false,
+            isVariadic: true,
+          });
         }
         break;
       }
       case 'object_pattern':
       case 'array_pattern': {
         // Destructured parameter — use full text as name
-        params.push({ name: param.text, type: null, isOptional: false, isVariadic: false });
+        params.push({
+          name: param.text,
+          type: null,
+          rawType: null,
+          isOptional: false,
+          isVariadic: false,
+        });
         break;
       }
     }

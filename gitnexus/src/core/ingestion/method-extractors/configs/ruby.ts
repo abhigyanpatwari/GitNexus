@@ -125,14 +125,26 @@ function extractRubyParameters(node: SyntaxNode): ParameterInfo[] {
     switch (param.type) {
       case 'identifier': {
         // Plain parameter: def foo(x)
-        params.push({ name: param.text, type: null, isOptional: false, isVariadic: false });
+        params.push({
+          name: param.text,
+          type: null,
+          rawType: null,
+          isOptional: false,
+          isVariadic: false,
+        });
         break;
       }
       case 'optional_parameter': {
         // Default parameter: def foo(x = 10)
         const nameNode = param.childForFieldName('name');
         if (nameNode) {
-          params.push({ name: nameNode.text, type: null, isOptional: true, isVariadic: false });
+          params.push({
+            name: nameNode.text,
+            type: null,
+            rawType: null,
+            isOptional: true,
+            isVariadic: false,
+          });
         }
         break;
       }
@@ -140,7 +152,13 @@ function extractRubyParameters(node: SyntaxNode): ParameterInfo[] {
         // Splat: def foo(*args)
         const nameNode = param.childForFieldName('name');
         if (nameNode) {
-          params.push({ name: nameNode.text, type: null, isOptional: false, isVariadic: true });
+          params.push({
+            name: nameNode.text,
+            type: null,
+            rawType: null,
+            isOptional: false,
+            isVariadic: true,
+          });
         }
         break;
       }
@@ -148,7 +166,13 @@ function extractRubyParameters(node: SyntaxNode): ParameterInfo[] {
         // Double splat: def foo(**kwargs)
         const nameNode = param.childForFieldName('name');
         if (nameNode) {
-          params.push({ name: nameNode.text, type: null, isOptional: false, isVariadic: true });
+          params.push({
+            name: nameNode.text,
+            type: null,
+            rawType: null,
+            isOptional: false,
+            isVariadic: true,
+          });
         }
         break;
       }
@@ -156,7 +180,13 @@ function extractRubyParameters(node: SyntaxNode): ParameterInfo[] {
         // Block: def foo(&block)
         const nameNode = param.childForFieldName('name');
         if (nameNode) {
-          params.push({ name: nameNode.text, type: null, isOptional: false, isVariadic: false });
+          params.push({
+            name: nameNode.text,
+            type: null,
+            rawType: null,
+            isOptional: false,
+            isVariadic: false,
+          });
         }
         break;
       }
@@ -168,6 +198,7 @@ function extractRubyParameters(node: SyntaxNode): ParameterInfo[] {
           params.push({
             name: nameNode.text,
             type: null,
+            rawType: null,
             isOptional: !!valueNode,
             isVariadic: false,
           });

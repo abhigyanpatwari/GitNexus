@@ -184,6 +184,7 @@ function extractPhpParameters(node: SyntaxNode): ParameterInfo[] {
       params.push({
         name: stripDollar(nameNode.text),
         type: typeName ?? null,
+        rawType: typeNode?.text?.trim() ?? null,
         isOptional,
         isVariadic: false,
       });
@@ -196,6 +197,7 @@ function extractPhpParameters(node: SyntaxNode): ParameterInfo[] {
       params.push({
         name: stripDollar(nameNode.text),
         type: typeName ?? null,
+        rawType: typeNode?.text?.trim() ?? null,
         isOptional: false,
         isVariadic: true,
       });
@@ -218,6 +220,7 @@ function extractPhpParameters(node: SyntaxNode): ParameterInfo[] {
       params.push({
         name: stripDollar(nameNode.text),
         type: typeName ?? null,
+        rawType: typeNode?.text?.trim() ?? null,
         isOptional: false,
         isVariadic,
       });

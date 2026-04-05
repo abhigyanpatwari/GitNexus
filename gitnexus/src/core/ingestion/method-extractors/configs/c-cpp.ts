@@ -148,6 +148,7 @@ function extractCppParameters(node: SyntaxNode): ParameterInfo[] {
           type: typeNode
             ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
             : null,
+          rawType: typeNode?.text?.trim() ?? null,
           isOptional: false,
           isVariadic: false,
         });
@@ -162,6 +163,7 @@ function extractCppParameters(node: SyntaxNode): ParameterInfo[] {
           type: typeNode
             ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
             : null,
+          rawType: typeNode?.text?.trim() ?? null,
           isOptional: true,
           isVariadic: false,
         });
@@ -177,6 +179,7 @@ function extractCppParameters(node: SyntaxNode): ParameterInfo[] {
           type: typeNode
             ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
             : null,
+          rawType: typeNode?.text?.trim() ?? null,
           isOptional: false,
           isVariadic: true,
         });
@@ -187,6 +190,7 @@ function extractCppParameters(node: SyntaxNode): ParameterInfo[] {
         params.push({
           name: '...',
           type: null,
+          rawType: null,
           isOptional: false,
           isVariadic: true,
         });
@@ -204,6 +208,7 @@ function extractCppParameters(node: SyntaxNode): ParameterInfo[] {
         params.push({
           name: '...',
           type: null,
+          rawType: null,
           isOptional: false,
           isVariadic: true,
         });

@@ -57,6 +57,7 @@ function extractRustParameters(node: SyntaxNode): ParameterInfo[] {
       params.push({
         name: patternNode?.text ?? '?',
         type: typeNode ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null) : null,
+        rawType: typeNode?.text?.trim() ?? null,
         isOptional: false,
         isVariadic: false,
       });

@@ -81,6 +81,7 @@ import {
   arityForIdFromInfo,
   typeTagForId,
   constTagForId,
+  buildCollisionGroups,
 } from '../utils/method-props.js';
 import type { LanguageProvider } from '../language-provider.js';
 
@@ -545,12 +546,13 @@ const findEnclosingFunctionId = (
         let arity: number | undefined;
         let encTypeTag = '';
         if (finalLabel === 'Method' || finalLabel === 'Constructor') {
+          const encLang = getLanguageFromFilename(filePath);
           const classNode =
             findEnclosingClassNode(current) ?? findClassNodeByQualifiedName(current);
-          if (classNode) {
+          if (classNode && encLang) {
             const methodMap = getMethodInfo(classNode, provider, {
               filePath,
-              language: getLanguageFromFilename(filePath),
+              language: encLang,
             });
             const defLine = current.startPosition.row + 1;
             const info = methodMap?.get(`${funcName}:${defLine}`);
@@ -559,14 +561,10 @@ const findEnclosingFunctionId = (
                 ? undefined
                 : info.parameters.length;
               if (methodMap && arity !== undefined) {
+                const g = buildCollisionGroups(methodMap);
                 encTypeTag =
-                  typeTagForId(
-                    methodMap,
-                    funcName,
-                    arity,
-                    info,
-                    getLanguageFromFilename(filePath),
-                  ) + constTagForId(methodMap, funcName, arity, info);
+                  typeTagForId(methodMap, funcName, arity, info, encLang, g) +
+                  constTagForId(methodMap, funcName, arity, info, g);
               }
             }
           }
@@ -602,12 +600,13 @@ const findEnclosingFunctionId = (
         let arity2: number | undefined;
         let encTypeTag2 = '';
         if (finalLabel === 'Method' || finalLabel === 'Constructor') {
+          const encLang2 = getLanguageFromFilename(filePath);
           const classNode2 =
             findEnclosingClassNode(sigNode) ?? findClassNodeByQualifiedName(sigNode);
-          if (classNode2) {
+          if (classNode2 && encLang2) {
             const methodMap2 = getMethodInfo(classNode2, provider, {
               filePath,
-              language: getLanguageFromFilename(filePath),
+              language: encLang2,
             });
             const defLine2 = sigNode.startPosition.row + 1;
             const info2 = methodMap2?.get(`${customResult.funcName}:${defLine2}`);
@@ -616,14 +615,10 @@ const findEnclosingFunctionId = (
                 ? undefined
                 : info2.parameters.length;
               if (methodMap2 && arity2 !== undefined) {
+                const g2 = buildCollisionGroups(methodMap2);
                 encTypeTag2 =
-                  typeTagForId(
-                    methodMap2,
-                    customResult.funcName,
-                    arity2,
-                    info2,
-                    getLanguageFromFilename(filePath),
-                  ) + constTagForId(methodMap2, customResult.funcName, arity2, info2);
+                  typeTagForId(methodMap2, customResult.funcName, arity2, info2, encLang2, g2) +
+                  constTagForId(methodMap2, customResult.funcName, arity2, info2, g2);
               }
             }
           }
@@ -1899,8 +1894,16 @@ const processFileGroup = (
       const needsAritySuffix = nodeLabel === 'Method' || nodeLabel === 'Constructor';
       let arityTag = needsAritySuffix && arityForId !== undefined ? `#${arityForId}` : '';
       if (arityTag && defMethodMap && defMethodInfo) {
-        arityTag += typeTagForId(defMethodMap, nodeName, arityForId, defMethodInfo, language);
-        arityTag += constTagForId(defMethodMap, nodeName, arityForId, defMethodInfo);
+        const groups = buildCollisionGroups(defMethodMap);
+        arityTag += typeTagForId(
+          defMethodMap,
+          nodeName,
+          arityForId,
+          defMethodInfo,
+          language,
+          groups,
+        );
+        arityTag += constTagForId(defMethodMap, nodeName, arityForId, defMethodInfo, groups);
       }
       const nodeId = generateId(nodeLabel, `${file.path}:${qualifiedName}${arityTag}`);
 

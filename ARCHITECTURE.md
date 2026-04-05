@@ -84,6 +84,20 @@ qualification (e.g. `begin()` vs `begin() const`) are disambiguated via an
 variant when a non-const collision exists. The `$const` suffix appears after the
 type-hash suffix: e.g. `Method:file:Container.begin#0$const`.
 
+**Generic/template type preservation in type-hash:** The type-hash suffix uses
+`rawType` (full AST text including generic/template args) rather than the
+simplified `type` from `extractSimpleTypeName`. This means C++ template overloads
+like `process(vector<int>)` vs `process(vector<string>)` produce distinct IDs:
+`~vector<int>` vs `~vector<std::string>`. Java generic overloads like
+`process(List<String>)` vs `process(List<Integer>)` are a compile error due to
+type erasure, so this gap is theoretical for Java.
+
+**ID stability on first overload:** Type and const tags are collision-only. When
+a class has `save(int)` as its only `save` method, the ID is `save#1` (no tag).
+Adding `save(String)` changes the original to `save#1~int`. This is correct for
+fresh analysis but means IDs are not stable across overload additions. Future
+incremental re-analysis should account for this.
+
 **Variadic method matching:** When one side is variadic (`parameterCount`
 undefined) and the other has a fixed count, `METHOD_IMPLEMENTS` edges are
 emitted with confidence 0.7 instead of 1.0. Variadic methods like
