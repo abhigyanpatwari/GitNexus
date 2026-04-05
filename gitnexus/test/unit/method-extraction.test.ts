@@ -147,12 +147,14 @@ describe('Java MethodExtractor', () => {
       expect(m.parameters[0]).toEqual({
         name: 'id',
         type: 'Long',
+        rawType: 'Long',
         isOptional: false,
         isVariadic: false,
       });
       expect(m.parameters[1]).toEqual({
         name: 'active',
         type: 'boolean',
+        rawType: 'boolean',
         isOptional: false,
         isVariadic: false,
       });
@@ -738,12 +740,14 @@ describe('C# MethodExtractor', () => {
       expect(m.parameters[0]).toEqual({
         name: 'id',
         type: 'int',
+        rawType: 'int',
         isOptional: false,
         isVariadic: false,
       });
       expect(m.parameters[1]).toEqual({
         name: 'active',
         type: 'bool',
+        rawType: 'bool',
         isOptional: false,
         isVariadic: false,
       });
@@ -1159,6 +1163,7 @@ describe('C# MethodExtractor', () => {
       expect(ctor!.parameters[0]).toEqual({
         name: 'x',
         type: 'int',
+        rawType: 'int',
         isOptional: false,
         isVariadic: false,
       });
@@ -1403,12 +1408,14 @@ describe('TypeScript MethodExtractor', () => {
       expect(m.parameters[0]).toEqual({
         name: 'name',
         type: 'string',
+        rawType: 'string',
         isOptional: false,
         isVariadic: false,
       });
       expect(m.parameters[1]).toEqual({
         name: 'age',
         type: 'number',
+        rawType: 'number',
         isOptional: false,
         isVariadic: false,
       });
@@ -1467,6 +1474,7 @@ describe('TypeScript MethodExtractor', () => {
       expect(printMethod!.parameters[0]).toEqual({
         name: 'format',
         type: 'string',
+        rawType: 'string',
         isOptional: false,
         isVariadic: false,
       });
@@ -1507,6 +1515,7 @@ describe('TypeScript MethodExtractor', () => {
       expect(params[0]).toEqual({
         name: 'message',
         type: 'string',
+        rawType: 'string',
         isOptional: false,
         isVariadic: false,
       });
@@ -1838,6 +1847,7 @@ describe('JavaScript MethodExtractor', () => {
       expect(m.parameters[0]).toEqual({
         name: 'name',
         type: null,
+        rawType: null,
         isOptional: false,
         isVariadic: false,
       });
@@ -1874,6 +1884,7 @@ describe('JavaScript MethodExtractor', () => {
       expect(params[0]).toEqual({
         name: 'event',
         type: null,
+        rawType: null,
         isOptional: false,
         isVariadic: false,
       });
@@ -2482,6 +2493,7 @@ class UserService:
       expect(init.parameters[0]).toEqual({
         name: 'name',
         type: 'str',
+        rawType: 'str',
         isOptional: false,
         isVariadic: false,
       });
@@ -2494,6 +2506,7 @@ class UserService:
       expect(find.parameters[0]).toEqual({
         name: 'user_id',
         type: 'int',
+        rawType: 'int',
         isOptional: false,
         isVariadic: false,
       });
@@ -2568,6 +2581,7 @@ class Logger:
       expect(result!.methods[0].parameters[0]).toEqual({
         name: 'args',
         type: null,
+        rawType: null,
         isOptional: false,
         isVariadic: true,
       });
@@ -2586,6 +2600,7 @@ class Config:
       expect(result!.methods[0].parameters[0]).toEqual({
         name: 'kwargs',
         type: null,
+        rawType: null,
         isOptional: false,
         isVariadic: true,
       });
@@ -2604,12 +2619,14 @@ class Handler:
       expect(result!.methods[0].parameters[0]).toEqual({
         name: 'args',
         type: 'str',
+        rawType: 'str',
         isOptional: false,
         isVariadic: true,
       });
       expect(result!.methods[0].parameters[1]).toEqual({
         name: 'kwargs',
         type: 'int',
+        rawType: 'int',
         isOptional: false,
         isVariadic: true,
       });
@@ -2631,18 +2648,21 @@ class Service:
       expect(params[0]).toEqual({
         name: 'host',
         type: 'str',
+        rawType: 'str',
         isOptional: false,
         isVariadic: false,
       });
       expect(params[1]).toEqual({
         name: 'port',
         type: 'int',
+        rawType: 'int',
         isOptional: true,
         isVariadic: false,
       });
       expect(params[2]).toEqual({
         name: 'debug',
         type: 'bool',
+        rawType: 'bool',
         isOptional: true,
         isVariadic: false,
       });
@@ -3036,12 +3056,14 @@ end
       expect(result!.methods[0].parameters[0]).toEqual({
         name: 'x',
         type: null,
+        rawType: null,
         isOptional: false,
         isVariadic: false,
       });
       expect(result!.methods[0].parameters[1]).toEqual({
         name: 'y',
         type: null,
+        rawType: null,
         isOptional: false,
         isVariadic: false,
       });
@@ -3061,6 +3083,7 @@ end
       expect(result!.methods[0].parameters[0]).toEqual({
         name: 'args',
         type: null,
+        rawType: null,
         isOptional: false,
         isVariadic: true,
       });
@@ -3080,6 +3103,7 @@ end
       expect(result!.methods[0].parameters[0]).toEqual({
         name: 'kwargs',
         type: null,
+        rawType: null,
         isOptional: false,
         isVariadic: true,
       });
@@ -3099,6 +3123,7 @@ end
       expect(result!.methods[0].parameters[0]).toEqual({
         name: 'block',
         type: null,
+        rawType: null,
         isOptional: false,
         isVariadic: false,
       });
@@ -3118,12 +3143,14 @@ end
       expect(result!.methods[0].parameters[0]).toEqual({
         name: 'x',
         type: null,
+        rawType: null,
         isOptional: false,
         isVariadic: false,
       });
       expect(result!.methods[0].parameters[1]).toEqual({
         name: 'y',
         type: null,
+        rawType: null,
         isOptional: true,
         isVariadic: false,
       });
@@ -3143,12 +3170,14 @@ end
       expect(result!.methods[0].parameters[0]).toEqual({
         name: 'name',
         type: null,
+        rawType: null,
         isOptional: false,
         isVariadic: false,
       });
       expect(result!.methods[0].parameters[1]).toEqual({
         name: 'age',
         type: null,
+        rawType: null,
         isOptional: true,
         isVariadic: false,
       });
@@ -3166,18 +3195,38 @@ end
 
       const params = result!.methods[0].parameters;
       expect(params).toHaveLength(5);
-      expect(params[0]).toEqual({ name: 'x', type: null, isOptional: false, isVariadic: false });
-      expect(params[1]).toEqual({ name: 'y', type: null, isOptional: true, isVariadic: false });
-      expect(params[2]).toEqual({ name: 'args', type: null, isOptional: false, isVariadic: true });
+      expect(params[0]).toEqual({
+        name: 'x',
+        type: null,
+        rawType: null,
+        isOptional: false,
+        isVariadic: false,
+      });
+      expect(params[1]).toEqual({
+        name: 'y',
+        type: null,
+        rawType: null,
+        isOptional: true,
+        isVariadic: false,
+      });
+      expect(params[2]).toEqual({
+        name: 'args',
+        type: null,
+        rawType: null,
+        isOptional: false,
+        isVariadic: true,
+      });
       expect(params[3]).toEqual({
         name: 'kwargs',
         type: null,
+        rawType: null,
         isOptional: false,
         isVariadic: true,
       });
       expect(params[4]).toEqual({
         name: 'block',
         type: null,
+        rawType: null,
         isOptional: false,
         isVariadic: false,
       });
@@ -3409,8 +3458,20 @@ class Calculator {
 
       const params = result!.methods[0].parameters;
       expect(params).toHaveLength(2);
-      expect(params[0]).toEqual({ name: 'a', type: 'int', isOptional: false, isVariadic: false });
-      expect(params[1]).toEqual({ name: 'b', type: 'int', isOptional: false, isVariadic: false });
+      expect(params[0]).toEqual({
+        name: 'a',
+        type: 'int',
+        rawType: 'int',
+        isOptional: false,
+        isVariadic: false,
+      });
+      expect(params[1]).toEqual({
+        name: 'b',
+        type: 'int',
+        rawType: 'int',
+        isOptional: false,
+        isVariadic: false,
+      });
     });
 
     it('extracts return type', () => {
@@ -3717,12 +3778,14 @@ class User {
       expect(result!.methods[0].parameters[0]).toEqual({
         name: 'name',
         type: 'string',
+        rawType: 'string',
         isOptional: false,
         isVariadic: false,
       });
       expect(result!.methods[0].parameters[1]).toEqual({
         name: 'age',
         type: 'int',
+        rawType: 'int',
         isOptional: false,
         isVariadic: false,
       });
@@ -3755,6 +3818,7 @@ class Foo {
       expect(result!.methods[0].parameters[0]).toEqual({
         name: 'messages',
         type: 'string',
+        rawType: 'string',
         isOptional: false,
         isVariadic: true,
       });
@@ -3939,12 +4003,14 @@ describe('Rust MethodExtractor', () => {
       expect(m.parameters[0]).toEqual({
         name: 'id',
         type: 'u64',
+        rawType: 'u64',
         isOptional: false,
         isVariadic: false,
       });
       expect(m.parameters[1]).toEqual({
         name: 'active',
         type: 'bool',
+        rawType: 'bool',
         isOptional: false,
         isVariadic: false,
       });
@@ -4460,6 +4526,7 @@ func (r *Repo) Find(id int) error {
       expect(info!.parameters[0]).toEqual({
         name: 'id',
         type: 'int',
+        rawType: 'int',
         isOptional: false,
         isVariadic: false,
       });
@@ -4511,6 +4578,7 @@ func Format(pattern string, args ...interface{}) string {
       expect(info!.parameters[0]).toEqual({
         name: 'pattern',
         type: 'string',
+        rawType: 'string',
         isOptional: false,
         isVariadic: false,
       });
