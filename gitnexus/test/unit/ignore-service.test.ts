@@ -364,8 +364,9 @@ describe('createIgnoreFilter', () => {
 
   it('childrenIgnored respects negation patterns without trailing slash (!dir vs !dir/)', async () => {
     // Per gitignore spec: `!iOS` (no slash) negates both files and directories
-    // named `iOS`, while `!iOS/` is directory-only. The `ignore` package should
-    // normalize both forms so that `ig.ignores('iOS/')` returns false in either case.
+    // named `iOS`, while `!iOS/` is directory-only. The `ignore` package
+    // normalizes both forms so that `ig.ignores('iOS/')` returns false in either case.
+    // Ref: https://github.com/kaelzhang/node-ignore#2-filenames-and-dirnames (see #596)
     await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '*\n!iOS\n!iOS/**\n');
     const filter = await createIgnoreFilter(tmpDir);
 

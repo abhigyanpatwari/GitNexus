@@ -402,7 +402,9 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // a trailing slash. This ensures directory-only negation patterns (e.g.
       // `!iOS/`) are applied correctly — without the slash, `ig.ignores('iOS')`
       // treats the path as a file and misses the negation.
-      // Bare-name patterns (e.g. `local`) still match `local/` per gitignore spec.
+      // Bare-name patterns (e.g. `local`) still match `local/` per gitignore spec:
+      // the `ignore` package normalizes `dir` and `dir/` to match directories.
+      // See: https://github.com/kaelzhang/node-ignore#2-filenames-and-dirnames
       if (ig) {
         const rel = p.relative();
         if (rel && ig.ignores(rel + '/')) return true;
