@@ -225,14 +225,11 @@ const TYPE_PRESERVING_METHODS = new Set([
 
 /** Cache for method extraction results in findEnclosingFunction fallback path.
  *  Keyed by classNode.id to avoid re-extracting the same class body per call site.
- *  Cleared between files by callers via clearEnclosingFunctionCache(). */
+ *  Cleared between files at line ~611 in the processCalls file loop. */
 const enclosingFnExtractCache = new Map<
   number,
   import('./method-types.js').ExtractedMethods | null
 >();
-export const clearEnclosingFunctionCache = (): void => {
-  enclosingFnExtractCache.clear();
-};
 
 /**
  * Walk up the AST from a node to find the enclosing function/method.
@@ -294,24 +291,29 @@ const findEnclosingFunction = (
           provider.methodExtractor &&
           language
         ) {
-          const info = provider.methodExtractor.extractFromNode?.(current, { filePath, language });
-          if (info) {
-            arity = info.parameters.some((p) => p.isVariadic) ? undefined : info.parameters.length;
+          // Get class method map (cached per classNode.id) and look up current method
+          // by funcName:line. This avoids per-call-site extractFromNode AST walks.
+          let classNode = current.parent;
+          while (classNode && !provider.methodExtractor.isTypeDeclaration(classNode)) {
+            classNode = classNode.parent;
           }
-          // Compute type-tag by extracting the class method map for collision detection
-          if (arity !== undefined && info) {
-            let classNode = current.parent;
-            while (classNode && !provider.methodExtractor.isTypeDeclaration(classNode)) {
-              classNode = classNode.parent;
+          let info: MethodInfo | undefined;
+          if (classNode) {
+            let extracted = enclosingFnExtractCache.get(classNode.id);
+            if (extracted === undefined) {
+              extracted =
+                provider.methodExtractor.extract(classNode, { filePath, language }) ?? null;
+              enclosingFnExtractCache.set(classNode.id, extracted);
             }
-            if (classNode) {
-              let extracted = enclosingFnExtractCache.get(classNode.id);
-              if (extracted === undefined) {
-                extracted =
-                  provider.methodExtractor.extract(classNode, { filePath, language }) ?? null;
-                enclosingFnExtractCache.set(classNode.id, extracted);
+            if (extracted?.methods?.length) {
+              const defLine = current.startPosition.row + 1;
+              info = extracted.methods.find((m) => m.name === funcName && m.line === defLine);
+              if (info) {
+                arity = info.parameters.some((p) => p.isVariadic)
+                  ? undefined
+                  : info.parameters.length;
               }
-              if (extracted?.methods?.length) {
+              if (arity !== undefined && info) {
                 const methodMap = new Map<string, MethodInfo>();
                 for (const m of extracted.methods) methodMap.set(`${m.name}:${m.line}`, m);
                 const groups = buildCollisionGroups(methodMap);
@@ -319,6 +321,18 @@ const findEnclosingFunction = (
                   typeTagForId(methodMap, funcName, arity, info, language, groups) +
                   constTagForId(methodMap, funcName, arity, info, groups);
               }
+            }
+          }
+          // Fallback: extractFromNode for top-level methods without a class
+          if (!info && provider.methodExtractor.extractFromNode) {
+            const nodeInfo = provider.methodExtractor.extractFromNode(current, {
+              filePath,
+              language,
+            });
+            if (nodeInfo) {
+              arity = nodeInfo.parameters.some((p) => p.isVariadic)
+                ? undefined
+                : nodeInfo.parameters.length;
             }
           }
         }
@@ -369,34 +383,54 @@ const findEnclosingFunction = (
           provider.methodExtractor &&
           language2
         ) {
-          const info = provider.methodExtractor.extractFromNode?.(sigNode, {
-            filePath,
-            language: language2,
-          });
-          if (info) {
-            arity2 = info.parameters.some((p) => p.isVariadic) ? undefined : info.parameters.length;
+          let classNode2 = (current.previousSibling ?? current).parent;
+          while (classNode2 && !provider.methodExtractor.isTypeDeclaration(classNode2)) {
+            classNode2 = classNode2.parent;
           }
-          if (arity2 !== undefined && info) {
-            let classNode = (current.previousSibling ?? current).parent;
-            while (classNode && !provider.methodExtractor.isTypeDeclaration(classNode)) {
-              classNode = classNode.parent;
+          let info2: MethodInfo | undefined;
+          if (classNode2) {
+            let extracted2 = enclosingFnExtractCache.get(classNode2.id);
+            if (extracted2 === undefined) {
+              extracted2 =
+                provider.methodExtractor.extract(classNode2, { filePath, language: language2 }) ??
+                null;
+              enclosingFnExtractCache.set(classNode2.id, extracted2);
             }
-            if (classNode) {
-              let extracted2 = enclosingFnExtractCache.get(classNode.id);
-              if (extracted2 === undefined) {
-                extracted2 =
-                  provider.methodExtractor.extract(classNode, { filePath, language: language2 }) ??
-                  null;
-                enclosingFnExtractCache.set(classNode.id, extracted2);
+            if (extracted2?.methods?.length) {
+              const defLine2 = sigNode.startPosition.row + 1;
+              info2 = extracted2.methods.find(
+                (m) => m.name === customResult.funcName && m.line === defLine2,
+              );
+              if (info2) {
+                arity2 = info2.parameters.some((p) => p.isVariadic)
+                  ? undefined
+                  : info2.parameters.length;
               }
-              if (extracted2?.methods?.length) {
+              if (arity2 !== undefined && info2) {
                 const methodMap = new Map<string, MethodInfo>();
                 for (const m of extracted2.methods) methodMap.set(`${m.name}:${m.line}`, m);
                 const groups2 = buildCollisionGroups(methodMap);
                 encTypeTag2 =
-                  typeTagForId(methodMap, customResult.funcName, arity2, info, language2, groups2) +
-                  constTagForId(methodMap, customResult.funcName, arity2, info, groups2);
+                  typeTagForId(
+                    methodMap,
+                    customResult.funcName,
+                    arity2,
+                    info2,
+                    language2,
+                    groups2,
+                  ) + constTagForId(methodMap, customResult.funcName, arity2, info2, groups2);
               }
+            }
+          }
+          if (!info2 && provider.methodExtractor.extractFromNode) {
+            const nodeInfo = provider.methodExtractor.extractFromNode(sigNode, {
+              filePath,
+              language: language2,
+            });
+            if (nodeInfo) {
+              arity2 = nodeInfo.parameters.some((p) => p.isVariadic)
+                ? undefined
+                : nodeInfo.parameters.length;
             }
           }
         }

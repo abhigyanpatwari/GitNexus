@@ -228,6 +228,11 @@ const seqMethodExtractCache = new Map<
   number,
   { ownerName: string | undefined; methods: MethodInfo[] } | null
 >();
+// Derived method map + collision groups cache — avoids rebuilding per method.
+const seqMethodMapCache = new Map<
+  number,
+  { map: Map<string, MethodInfo>; groups: Map<string, MethodInfo[]> }
+>();
 
 function seqFindEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
   let current = node.parent;
@@ -282,6 +287,7 @@ const processParsingSequential = async (
     exportCache.clear();
     seqFieldInfoCache.clear();
     seqMethodExtractCache.clear();
+    seqMethodMapCache.clear();
 
     onFileProgress?.(i + 1, total, file.path);
 
@@ -405,6 +411,7 @@ const processParsingSequential = async (
       let arityForId: number | undefined; // raw param count for ID, even for variadic
       let seqDefMethodInfo: MethodInfo | undefined;
       let seqDefMethods: MethodInfo[] | undefined;
+      let seqClassNodeId: number | undefined;
       if (isMethodLike && definitionNode) {
         let enriched = false;
 
@@ -435,6 +442,7 @@ const processParsingSequential = async (
                 methodProps = buildMethodProps(info);
                 seqDefMethodInfo = info;
                 seqDefMethods = result.methods;
+                seqClassNodeId = classNode.id;
               }
             }
           }
@@ -459,13 +467,30 @@ const processParsingSequential = async (
       // When same-arity collisions exist, append ~type1,type2 for further disambiguation.
       const needsAritySuffix = nodeLabel === 'Method' || nodeLabel === 'Constructor';
       let arityTag = needsAritySuffix && arityForId !== undefined ? `#${arityForId}` : '';
-      if (arityTag && seqDefMethods && seqDefMethodInfo) {
-        // Build a temporary method map from the class's methods array
-        const tempMap = new Map<string, MethodInfo>();
-        for (const m of seqDefMethods) tempMap.set(`${m.name}:${m.line}`, m);
-        const groups = buildCollisionGroups(tempMap);
-        arityTag += typeTagForId(tempMap, nodeName, arityForId, seqDefMethodInfo, language, groups);
-        arityTag += constTagForId(tempMap, nodeName, arityForId, seqDefMethodInfo, groups);
+      if (arityTag && seqDefMethods && seqDefMethodInfo && seqClassNodeId !== undefined) {
+        // Use cached method map + collision groups (built once per class, not per method)
+        let cached = seqMethodMapCache.get(seqClassNodeId);
+        if (!cached) {
+          const tempMap = new Map<string, MethodInfo>();
+          for (const m of seqDefMethods) tempMap.set(`${m.name}:${m.line}`, m);
+          cached = { map: tempMap, groups: buildCollisionGroups(tempMap) };
+          seqMethodMapCache.set(seqClassNodeId, cached);
+        }
+        arityTag += typeTagForId(
+          cached.map,
+          nodeName,
+          arityForId,
+          seqDefMethodInfo,
+          language,
+          cached.groups,
+        );
+        arityTag += constTagForId(
+          cached.map,
+          nodeName,
+          arityForId,
+          seqDefMethodInfo,
+          cached.groups,
+        );
       }
       const nodeId = generateId(nodeLabel, `${file.path}:${qualifiedName}${arityTag}`);
       const frameworkHint = definitionNode
