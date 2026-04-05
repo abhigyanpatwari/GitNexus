@@ -362,6 +362,24 @@ describe('createIgnoreFilter', () => {
     await fs.unlink(path.join(tmpDir, '.gitnexusignore'));
   });
 
+  it('childrenIgnored respects negation patterns without trailing slash (!dir vs !dir/)', async () => {
+    // Per gitignore spec: `!iOS` (no slash) negates both files and directories
+    // named `iOS`, while `!iOS/` is directory-only. The `ignore` package should
+    // normalize both forms so that `ig.ignores('iOS/')` returns false in either case.
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '*\n!iOS\n!iOS/**\n');
+    const filter = await createIgnoreFilter(tmpDir);
+
+    // Bare negation `!iOS` must also un-ignore the iOS/ directory
+    const iosPath = { name: 'iOS', relative: () => 'iOS' } as any;
+    expect(filter.childrenIgnored(iosPath)).toBe(false);
+
+    // Non-whitelisted directories still pruned
+    const srcPath = { name: 'src', relative: () => 'src' } as any;
+    expect(filter.childrenIgnored(srcPath)).toBe(true);
+
+    await fs.unlink(path.join(tmpDir, '.gitnexusignore'));
+  });
+
   it('ignored respects negation patterns for files under whitelisted directories', async () => {
     await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '*\n!iOS/\n!iOS/**\n');
     const filter = await createIgnoreFilter(tmpDir);
