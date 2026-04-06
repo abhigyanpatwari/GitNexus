@@ -318,6 +318,13 @@ const processParsingSequential = async (
       isVueSetup = extracted.isSetup;
     }
 
+    // ObjC: strip NS_ASSUME_NONNULL_* macros that break class_interface/protocol parsing
+    if (language === SupportedLanguages.ObjectiveC) {
+      parseContent = parseContent
+        .replace(/NS_ASSUME_NONNULL_BEGIN\s*/g, '')
+        .replace(/NS_ASSUME_NONNULL_END\s*/g, '');
+    }
+
     try {
       await loadLanguage(language, file.path);
     } catch {

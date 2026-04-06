@@ -378,6 +378,76 @@ describe('Tree-sitter multi-language parsing', () => {
     });
   });
 
+  describe('Objective-C', () => {
+    it('parses class, method declarations if tree-sitter-objc is available', async () => {
+      try {
+        await loadLanguage(SupportedLanguages.ObjectiveC, 'simple.m');
+      } catch {
+        // tree-sitter-objc not installed — skip
+        return;
+      }
+
+      const content = readFixture('simple.m');
+      const provider = getProvider(SupportedLanguages.ObjectiveC);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+
+      expect(defs.length).toBeGreaterThan(0);
+      const names = defs.map((d) => d.name);
+      // Class names
+      expect(names).toContain('Calculator');
+      // Method names (keyword selectors captured as separate identifiers: add, to, multiply, with)
+      expect(names).toContain('reset');
+      expect(names).toContain('add');
+      expect(names).toContain('to');
+      expect(names).toContain('multiply');
+      expect(names).toContain('with');
+      expect(names).toContain('sharedCalculator');
+    });
+
+    it('captures class interface and implementation', async () => {
+      try {
+        await loadLanguage(SupportedLanguages.ObjectiveC, 'simple.m');
+      } catch {
+        return;
+      }
+
+      const content = readFixture('simple.m');
+      const provider = getProvider(SupportedLanguages.ObjectiveC);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+      const defTypes = defs.map((d) => d.type);
+      expect(defTypes).toContain('definition.class');
+    });
+
+    it('captures ObjC message expressions as calls', async () => {
+      try {
+        await loadLanguage(SupportedLanguages.ObjectiveC, 'simple.m');
+      } catch {
+        return;
+      }
+
+      const content = readFixture('simple.m');
+      const provider = getProvider(SupportedLanguages.ObjectiveC);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
+
+      const calls: string[] = [];
+      for (const match of matches) {
+        for (const capture of match.captures) {
+          if (capture.name === 'call.name') calls.push(capture.node.text);
+        }
+      }
+      // ObjC message calls capture method names (selectors), not receivers
+      // [calc reset] -> reset, [calc add:5 to:3] -> add, to, [Calculator sharedCalculator] -> sharedCalculator
+      // C function calls like NSLog() are also captured
+      expect(calls).toContain('reset');
+      expect(calls).toContain('sharedCalculator');
+      expect(calls).toContain('NSLog');
+      expect(calls).toContain('alloc');
+      expect(calls).toContain('init');
+    });
+  });
+
   describe('Swift', () => {
     it('parses class, struct, protocol, and function if tree-sitter-swift is available', async () => {
       try {

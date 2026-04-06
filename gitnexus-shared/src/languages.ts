@@ -22,4 +22,6 @@ export enum SupportedLanguages {
   Vue = 'vue',
   /** Standalone regex processor — no tree-sitter, no LanguageProvider. */
   Cobol = 'cobol',
+  /** Objective-C: uses tree-sitter-objc for .m/.mm implementation files. */
+  ObjectiveC = 'objectivec',
 }

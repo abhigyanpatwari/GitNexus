@@ -11,6 +11,7 @@ import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
+import ObjC from 'tree-sitter-objc';
 import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from '../languages/index.js';
@@ -20,21 +21,24 @@ import { SymbolTable } from '../symbol-table.js';
 /** Language grammar type accepted by Parser.setLanguage(). */
 type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
 
+/** Extended language type that includes grammar packages with optional name property */
+type GrammarLanguage = TreeSitterLanguage | { language: unknown; nodeTypeInfo?: unknown[] };
+
 // tree-sitter-swift is an optionalDependency — may not be installed
 const _require = createRequire(import.meta.url);
-let Swift: TreeSitterLanguage | null = null;
+let Swift: GrammarLanguage = null;
 try {
   Swift = _require('tree-sitter-swift');
 } catch {}
 
 // tree-sitter-dart is an optionalDependency — may not be installed
-let Dart: TreeSitterLanguage | null = null;
+let Dart: GrammarLanguage = null;
 try {
   Dart = _require('tree-sitter-dart');
 } catch {}
 
 // tree-sitter-kotlin is an optionalDependency — may not be installed
-let Kotlin: TreeSitterLanguage | null = null;
+let Kotlin: GrammarLanguage = null;
 try {
   Kotlin = _require('tree-sitter-kotlin');
 } catch {}
@@ -277,7 +281,7 @@ type WorkerIncomingMessage =
 
 const parser = new Parser();
 
-const languageMap: Record<string, TreeSitterLanguage> = {
+const languageMap: Record<string, GrammarLanguage> = {
   [SupportedLanguages.JavaScript]: JavaScript,
   [SupportedLanguages.TypeScript]: TypeScript.typescript,
   [`${SupportedLanguages.TypeScript}:tsx`]: TypeScript.tsx,
@@ -294,6 +298,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   [SupportedLanguages.Vue]: TypeScript.typescript,
   ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
+  [SupportedLanguages.ObjectiveC]: ObjC,
 };
 
 /**
@@ -317,7 +322,7 @@ const setLanguage = (language: SupportedLanguages, filePath: string): void => {
       : language;
   const lang = languageMap[key];
   if (!lang) throw new Error(`Unsupported language: ${language}`);
-  parser.setLanguage(lang);
+  parser.setLanguage(lang as TreeSitterLanguage);
 };
 
 // ============================================================================
@@ -1311,6 +1316,15 @@ const processFileGroup = (
       parseContent = extracted.scriptContent;
       lineOffset = extracted.lineOffset;
       isVueSetup = extracted.isSetup;
+    }
+
+    // ObjC: strip NS_ASSUME_NONNULL_* macros that break class_interface/protocol parsing
+    // tree-sitter-objc grammar doesn't handle these Apple nullability宏, causing
+    // @interface declarations after NS_ASSUME_NONNULL_BEGIN to become ERROR nodes
+    if (language === SupportedLanguages.ObjectiveC) {
+      parseContent = parseContent
+        .replace(/NS_ASSUME_NONNULL_BEGIN\s*/g, '')
+        .replace(/NS_ASSUME_NONNULL_END\s*/g, '');
     }
 
     clearCaches(); // Reset memoization before each new file
