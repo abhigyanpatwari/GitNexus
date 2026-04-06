@@ -2015,3 +2015,69 @@ describe('Java same-arity overloads via sequential path (skipWorkers)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cross-class pure method chain resolution via lookupMethodByOwner (#575)
+// ---------------------------------------------------------------------------
+
+describe('Cross-class method chain resolution (Java) — #575', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-method-chain-cross-class'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, App, City, User', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'App', 'City', 'User']);
+  });
+
+  it('two-step chain: user.getAddress().save() → Address#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((e) => e.target === 'save' && e.source === 'twoStepChain');
+    expect(saveCalls.length).toBe(1);
+    expect(saveCalls[0].targetFilePath).toContain('Address');
+  });
+
+  it('two-step chain: user.getAddress().save() also emits CALLS to User#getAddress', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getAddressCalls = calls.filter(
+      (e) => e.target === 'getAddress' && e.source === 'twoStepChain',
+    );
+    expect(getAddressCalls.length).toBe(1);
+    expect(getAddressCalls[0].targetFilePath).toContain('User');
+  });
+
+  it('three-step chain: user.getAddress().getCity().getZipCode() → City#getZipCode', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const zipCalls = calls.filter(
+      (e) => e.target === 'getZipCode' && e.source === 'threeStepChain',
+    );
+    expect(zipCalls.length).toBe(1);
+    expect(zipCalls[0].targetFilePath).toContain('City');
+  });
+
+  it('three-step chain emits CALLS for all intermediate steps', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const threeStepCalls = calls.filter((e) => e.source === 'threeStepChain');
+    const targets = threeStepCalls.map((e) => e.target).sort();
+    expect(targets).toContain('getAddress');
+    expect(targets).toContain('getCity');
+    expect(targets).toContain('getZipCode');
+  });
+
+  it('mixed chain: user.getAddress().city.getZipCode() → City#getZipCode', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const zipCalls = calls.filter((e) => e.target === 'getZipCode' && e.source === 'mixedChain');
+    expect(zipCalls.length).toBe(1);
+    expect(zipCalls[0].targetFilePath).toContain('City');
+  });
+
+  it('mixed chain emits ACCESSES edge for field step: .city on Address', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const cityAccess = accesses.filter((e) => e.target === 'city' && e.source === 'mixedChain');
+    expect(cityAccess.length).toBe(1);
+  });
+});

@@ -1671,6 +1671,33 @@ const resolveFieldOwnership = (
 };
 
 /**
+ * Resolve a method by owner type name using the eagerly-populated methodByOwner index.
+ * Returns the SymbolDefinition if an unambiguous method is found, undefined otherwise.
+ * Falls through to undefined for: unknown type, no class-like candidates, ambiguous overloads.
+ */
+const resolveMethodByOwner = (
+  receiverTypeName: string,
+  methodName: string,
+  filePath: string,
+  ctx: ResolutionContext,
+): SymbolDefinition | undefined => {
+  const typeResolved = ctx.resolve(receiverTypeName, filePath);
+  if (!typeResolved) return undefined;
+  const classDef = typeResolved.candidates.find(
+    (d) =>
+      d.type === 'Class' ||
+      d.type === 'Struct' ||
+      d.type === 'Interface' ||
+      d.type === 'Enum' ||
+      d.type === 'Record' ||
+      d.type === 'Impl',
+  );
+  if (!classDef) return undefined;
+
+  return ctx.symbols.lookupMethodByOwner(classDef.nodeId, methodName);
+};
+
+/**
  * Create a deduplicated ACCESSES edge emitter for a single source node.
  * Each (sourceId, fieldNodeId) pair is emitted at most once per source.
  */
@@ -1730,6 +1757,19 @@ const walkMixedChain = (
         currentType = fieldResolved.typeName;
         continue;
       }
+      // Fast path: O(1) owner-scoped method lookup via methodByOwner index.
+      // Avoids fuzzy lookup when the owner type is known and the method is unambiguous.
+      // Note: CALLS edges for intermediate chain steps are NOT emitted here — walkMixedChain
+      // only threads types. CALLS edges come from the outer per-call-expression loop in processCalls.
+      const methodDef = resolveMethodByOwner(currentType, step.name, filePath, ctx);
+      if (methodDef?.returnType) {
+        const fastRetType = extractReturnTypeName(methodDef.returnType);
+        if (fastRetType) {
+          currentType = fastRetType;
+          continue;
+        }
+      }
+      // Fallback: fuzzy resolution via resolveCallTarget (cross-file, inherited, etc.)
       const resolved = resolveCallTarget(
         { calledName: step.name, callForm: 'member', receiverTypeName: currentType },
         filePath,
