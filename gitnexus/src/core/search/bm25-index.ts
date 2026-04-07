@@ -16,6 +16,7 @@ export interface BM25SearchResult {
 /**
  * Execute a single FTS query via a custom executor (for MCP connection pool).
  * Returns the same shape as core queryFTS (from LadybugDB adapter).
+ * Optionally filters results by git_namespace.
  */
 async function queryFTSViaExecutor(
   executor: (cypher: string) => Promise<any[]>,
@@ -23,7 +24,8 @@ async function queryFTSViaExecutor(
   indexName: string,
   query: string,
   limit: number,
-): Promise<Array<{ filePath: string; score: number }>> {
+  gitNamespace?: string,
+): Promise<Array<{ filePath: string; score: number; git_namespace?: string }>> {
   // Escape single quotes and backslashes to prevent Cypher injection
   const escapedQuery = query.replace(/\\/g, '\\\\').replace(/'/g, "''");
   const cypher = `
@@ -34,14 +36,20 @@ async function queryFTSViaExecutor(
   `;
   try {
     const rows = await executor(cypher);
-    return rows.map((row: any) => {
+    const results: Array<{ filePath: string; score: number; git_namespace?: string }> = [];
+    for (const row of rows) {
       const node = row.node || row[0] || {};
       const score = row.score ?? row[1] ?? 0;
-      return {
+      const ns = node.git_namespace || '';
+      // Post-filter by git_namespace if specified
+      if (gitNamespace && ns !== gitNamespace) continue;
+      results.push({
         filePath: node.filePath || '',
         score: typeof score === 'number' ? score : parseFloat(score) || 0,
-      };
-    });
+        git_namespace: ns,
+      });
+    }
+    return results;
   } catch {
     return [];
   }
@@ -56,13 +64,18 @@ async function queryFTSViaExecutor(
  * @param query - Search query string
  * @param limit - Maximum results
  * @param repoId - If provided, queries will be routed via the MCP connection pool
+ * @param gitNamespace - If provided, post-filter results to this git_namespace only
  * @returns Ranked search results from FTS indexes
  */
 export const searchFTSFromLbug = async (
   query: string,
   limit: number = 20,
   repoId?: string,
+  gitNamespace?: string,
 ): Promise<BM25SearchResult[]> => {
+  // Over-fetch when filtering by namespace
+  const fetchLimit = gitNamespace ? limit * 3 : limit;
+
   let fileResults: any[],
     functionResults: any[],
     classResults: any[],
@@ -75,32 +88,33 @@ export const searchFTSFromLbug = async (
     // The MCP pool supports multiple connections, but FTS is best run serially.
     const { executeQuery } = await import('../lbug/pool-adapter.js');
     const executor = (cypher: string) => executeQuery(repoId, cypher);
-    fileResults = await queryFTSViaExecutor(executor, 'File', 'file_fts', query, limit);
-    functionResults = await queryFTSViaExecutor(executor, 'Function', 'function_fts', query, limit);
-    classResults = await queryFTSViaExecutor(executor, 'Class', 'class_fts', query, limit);
-    methodResults = await queryFTSViaExecutor(executor, 'Method', 'method_fts', query, limit);
+    fileResults = await queryFTSViaExecutor(executor, 'File', 'file_fts', query, fetchLimit, gitNamespace);
+    functionResults = await queryFTSViaExecutor(executor, 'Function', 'function_fts', query, fetchLimit, gitNamespace);
+    classResults = await queryFTSViaExecutor(executor, 'Class', 'class_fts', query, fetchLimit, gitNamespace);
+    methodResults = await queryFTSViaExecutor(executor, 'Method', 'method_fts', query, fetchLimit, gitNamespace);
     interfaceResults = await queryFTSViaExecutor(
       executor,
       'Interface',
       'interface_fts',
       query,
-      limit,
+      fetchLimit,
+      gitNamespace,
     );
   } else {
     // Use core lbug adapter (CLI / pipeline context) — also sequential for safety
-    fileResults = await queryFTS('File', 'file_fts', query, limit, false).catch(() => []);
-    functionResults = await queryFTS('Function', 'function_fts', query, limit, false).catch(
+    fileResults = await queryFTS('File', 'file_fts', query, fetchLimit, false).catch(() => []);
+    functionResults = await queryFTS('Function', 'function_fts', query, fetchLimit, false).catch(
       () => [],
     );
-    classResults = await queryFTS('Class', 'class_fts', query, limit, false).catch(() => []);
-    methodResults = await queryFTS('Method', 'method_fts', query, limit, false).catch(() => []);
-    interfaceResults = await queryFTS('Interface', 'interface_fts', query, limit, false).catch(
+    classResults = await queryFTS('Class', 'class_fts', query, fetchLimit, false).catch(() => []);
+    methodResults = await queryFTS('Method', 'method_fts', query, fetchLimit, false).catch(() => []);
+    interfaceResults = await queryFTS('Interface', 'interface_fts', query, fetchLimit, false).catch(
       () => [],
     );
   }
 
   // Merge results by filePath, summing scores for same file
-  const merged = new Map<string, { filePath: string; score: number }>();
+  const merged = new Map<string, { filePath: string; score: number; git_namespace?: string }>();
 
   const addResults = (results: any[]) => {
     for (const r of results) {
@@ -108,7 +122,7 @@ export const searchFTSFromLbug = async (
       if (existing) {
         existing.score += r.score;
       } else {
-        merged.set(r.filePath, { filePath: r.filePath, score: r.score });
+        merged.set(r.filePath, { filePath: r.filePath, score: r.score, git_namespace: r.git_namespace });
       }
     }
   };
@@ -119,8 +133,15 @@ export const searchFTSFromLbug = async (
   addResults(methodResults);
   addResults(interfaceResults);
 
+  // Post-filter by git_namespace for core adapter path (non-repoId)
+  // For repoId path, filtering is done in queryFTSViaExecutor
+  let entries = Array.from(merged.values());
+  if (gitNamespace && !repoId) {
+    entries = entries.filter((r) => r.git_namespace === gitNamespace);
+  }
+
   // Sort by score descending and add rank
-  const sorted = Array.from(merged.values())
+  const sorted = entries
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 
