@@ -1,5 +1,11 @@
 import { createRequire } from 'node:module';
-import type { GroupConfig, GroupManifestLink, ContractType, ContractRole } from './types.js';
+import type {
+  GroupConfig,
+  GroupManifestLink,
+  ContractType,
+  ContractRole,
+  HttpMappingRule,
+} from './types.js';
 
 const _require = createRequire(import.meta.url);
 const yaml = _require('js-yaml') as typeof import('js-yaml');
@@ -73,6 +79,66 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
     };
   });
 
+  const rawHttpMappings = (raw.http_mappings as unknown[]) || [];
+  const httpMappings: HttpMappingRule[] = rawHttpMappings.map((entry: unknown, i: number) => {
+    const mapping = entry as Record<string, unknown>;
+    if (!mapping.from || !repoPaths.has(mapping.from as string)) {
+      throw new Error(`http_mappings[${i}].from "${mapping.from}" does not match any repo path`);
+    }
+    if (!mapping.to || typeof mapping.to !== 'object' || Array.isArray(mapping.to)) {
+      throw new Error(`http_mappings[${i}].to is required and must be an object`);
+    }
+    const target = mapping.to as Record<string, unknown>;
+    if (!target.repo || !repoPaths.has(target.repo as string)) {
+      throw new Error(
+        `http_mappings[${i}].to.repo "${target.repo}" does not match any repo path`,
+      );
+    }
+    if (mapping.match === undefined || String(mapping.match).trim() === '') {
+      throw new Error(`http_mappings[${i}].match is required`);
+    }
+    if (mapping.rewrite === undefined || String(mapping.rewrite).trim() === '') {
+      throw new Error(`http_mappings[${i}].rewrite is required`);
+    }
+
+    let methods: string[] | undefined;
+    if (mapping.methods !== undefined) {
+      if (!Array.isArray(mapping.methods)) {
+        throw new Error(`http_mappings[${i}].methods must be an array when provided`);
+      }
+      methods = mapping.methods.map((method) => String(method).trim().toUpperCase()).filter(Boolean);
+      if (methods.length === 0) {
+        throw new Error(`http_mappings[${i}].methods must not be empty`);
+      }
+    }
+
+    let when: Record<string, string> | undefined;
+    if (mapping.when !== undefined) {
+      if (typeof mapping.when !== 'object' || Array.isArray(mapping.when) || mapping.when === null) {
+        throw new Error(`http_mappings[${i}].when must be an object when provided`);
+      }
+      when = Object.fromEntries(
+        Object.entries(mapping.when as Record<string, unknown>).map(([key, value]) => [
+          key,
+          String(value),
+        ]),
+      );
+    }
+
+    return {
+      from: mapping.from as string,
+      to: {
+        repo: target.repo as string,
+        service:
+          target.service === undefined || target.service === null ? undefined : String(target.service),
+      },
+      methods,
+      match: String(mapping.match),
+      rewrite: String(mapping.rewrite),
+      when,
+    };
+  });
+
   const detect = { ...DEFAULT_DETECT, ...((raw.detect as object) || {}) };
   const matching = { ...DEFAULT_MATCHING, ...((raw.matching as object) || {}) };
   const packages = (raw.packages as Record<string, Record<string, string>>) || {};
@@ -83,6 +149,7 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
     description: (raw.description as string) || '',
     repos,
     links,
+    httpMappings,
     packages,
     detect,
     matching,

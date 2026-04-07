@@ -17,6 +17,7 @@ describe('Group types', () => {
       description: 'All company microservices',
       repos: { 'hr/hiring/backend': 'hr-hiring-backend' },
       links: [],
+      httpMappings: [],
       packages: {},
       detect: {
         http: true,

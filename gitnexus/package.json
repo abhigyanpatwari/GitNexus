@@ -69,6 +69,7 @@
     "mnemonist": "^0.39.0",
     "onnxruntime-node": "^1.24.0",
     "pandemonium": "^2.4.0",
+    "path-to-regexp": "^8.4.2",
     "tree-sitter": "^0.21.1",
     "tree-sitter-c": "0.23.2",
     "tree-sitter-c-sharp": "^0.23.1",
@@ -89,7 +90,6 @@
     "tree-sitter-swift": "^0.6.0"
   },
   "devDependencies": {
-    "gitnexus-shared": "file:../gitnexus-shared",
     "@types/cli-progress": "^3.11.6",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
@@ -97,6 +97,7 @@
     "@types/node": "^20.0.0",
     "@types/uuid": "^10.0.0",
     "@vitest/coverage-v8": "^4.0.18",
+    "gitnexus-shared": "file:../gitnexus-shared",
     "tsx": "^4.0.0",
     "typescript": "^5.4.5",
     "vitest": "^4.0.18"

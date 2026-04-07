@@ -90,6 +90,8 @@ repos: {}
 
 links: []
 
+http_mappings: []
+
 packages: {}
 
 detect:

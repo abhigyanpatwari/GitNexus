@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { glob } from 'glob';
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
+import { collectRequestLikeImportBindings } from '../../ingestion/request-like-clients.js';
 
 const HANDLES_ROUTE_QUERY = `
 MATCH (handlerFile:File)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
@@ -418,6 +419,7 @@ export class HttpRouteExtractor implements ContractExtractor {
       if (!content) continue;
       out.push(...this.scanFetchConsumers(content, rel));
       out.push(...this.scanAxiosConsumers(content, rel));
+      out.push(...this.scanRequestLikeConsumers(content, rel));
     }
     return this.dedupeContracts(out);
   }
@@ -448,6 +450,40 @@ export class HttpRouteExtractor implements ContractExtractor {
       const pathNorm = normalizeHttpPath(this.templateToPattern(m[2]));
       out.push(this.makeConsumer(filePath, method, pathNorm, 0.7));
     }
+    return out;
+  }
+
+  private scanRequestLikeConsumers(content: string, filePath: string): ExtractedContract[] {
+    const bindings = collectRequestLikeImportBindings(content);
+    if (bindings.size === 0) return [];
+
+    const names = [...bindings].map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const bindingRe = `(?:${names.join('|')})`;
+    const out: ExtractedContract[] = [];
+
+    const directRe = new RegExp(
+      `${bindingRe}\\s*\\(\\s*[\\\`'"]([^\\\`'"]+)[\\\`'"](?:\\s*,\\s*\\{[^}]*method:\\s*['"](\\w+)['"][^}]*\\})?\\s*\\)`,
+      'gi',
+    );
+    let directMatch: RegExpExecArray | null;
+    while ((directMatch = directRe.exec(content)) !== null) {
+      const pathNorm = normalizeHttpPath(this.templateToPattern(directMatch[1]));
+      const method = (directMatch[2] || 'GET').toUpperCase();
+      out.push(this.makeConsumer(filePath, method, pathNorm, 0.75));
+    }
+
+    const memberRe = new RegExp(
+      `${bindingRe}\\.(get|post|put|delete|patch|head|options|request|ajax)\\s*\\(\\s*[\\\`'"]([^\\\`'"]+)[\\\`'"]`,
+      'gi',
+    );
+    let memberMatch: RegExpExecArray | null;
+    while ((memberMatch = memberRe.exec(content)) !== null) {
+      const rawMethod = memberMatch[1].toUpperCase();
+      const method = rawMethod === 'REQUEST' || rawMethod === 'AJAX' ? 'GET' : rawMethod;
+      const pathNorm = normalizeHttpPath(this.templateToPattern(memberMatch[2]));
+      out.push(this.makeConsumer(filePath, method, pathNorm, 0.75));
+    }
+
     return out;
   }
 

@@ -76,6 +76,7 @@ export class GroupService {
       description: config.description,
       repos: config.repos,
       links: config.links,
+      httpMappings: config.httpMappings,
     };
   }
 
@@ -113,8 +114,8 @@ export class GroupService {
     if (params.unmatchedOnly) {
       const matchedIds = new Set(
         registry.crossLinks.flatMap((l) => [
-          `${l.from.repo}::${l.contractId}`,
-          `${l.to.repo}::${l.contractId}`,
+          `${l.from.repo}::${l.fromContractId ?? l.contractId}`,
+          `${l.to.repo}::${l.toContractId ?? l.contractId}`,
         ]),
       );
       contracts = contracts.filter((c) => !matchedIds.has(`${c.repo}::${c.contractId}`));

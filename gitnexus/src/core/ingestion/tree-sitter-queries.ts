@@ -128,9 +128,17 @@ export const TYPESCRIPT_QUERIES = `
     [(string (string_fragment) @route.url)
      (template_string) @route.template_url])) @route.fetch
 
+; Imported request-like HTTP clients: request('/path'), apiClient('/path')
+(call_expression
+  function: (identifier) @request_like_client.fn
+  arguments: (arguments
+    [(string (string_fragment) @request_like_client.url)
+     (template_string) @request_like_client.template_url])) @request_like_client
+
 ; axios.get/post/put/delete/patch('/path'), $.get/post/ajax({url:'/path'})
 (call_expression
   function: (member_expression
+    object: (_) @http_client.receiver
     property: (property_identifier) @http_client.method)
   arguments: (arguments
     (string (string_fragment) @http_client.url))) @http_client
@@ -144,6 +152,7 @@ export const TYPESCRIPT_QUERIES = `
 ; Express/Hono route registration: app.get('/path', handler), router.post('/path', fn)
 (call_expression
   function: (member_expression
+    object: (_) @express_route.receiver
     property: (property_identifier) @express_route.method)
   arguments: (arguments
     (string (string_fragment) @express_route.path))) @express_route
@@ -236,9 +245,17 @@ export const JAVASCRIPT_QUERIES = `
     [(string (string_fragment) @route.url)
      (template_string) @route.template_url])) @route.fetch
 
+; Imported request-like HTTP clients: request('/path'), apiClient('/path')
+(call_expression
+  function: (identifier) @request_like_client.fn
+  arguments: (arguments
+    [(string (string_fragment) @request_like_client.url)
+     (template_string) @request_like_client.template_url])) @request_like_client
+
 ; axios.get/post, $.get/post/ajax
 (call_expression
   function: (member_expression
+    object: (_) @http_client.receiver
     property: (property_identifier) @http_client.method)
   arguments: (arguments
     (string (string_fragment) @http_client.url))) @http_client
@@ -246,6 +263,7 @@ export const JAVASCRIPT_QUERIES = `
 ; Express/Hono route registration
 (call_expression
   function: (member_expression
+    object: (_) @express_route.receiver
     property: (property_identifier) @express_route.method)
   arguments: (arguments
     (string (string_fragment) @express_route.path))) @express_route

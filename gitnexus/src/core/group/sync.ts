@@ -8,10 +8,15 @@ import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
 import { GrpcExtractor } from './extractors/grpc-extractor.js';
 import { TopicExtractor } from './extractors/topic-extractor.js';
 import { runExactMatch } from './matching.js';
+import { applyHttpMappings } from './http-mapping.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
 import { writeContractRegistry } from './storage.js';
 import type { ContractRegistry } from './types.js';
+
+function matchedContractKey(repo: string, contractId: string): string {
+  return `${repo}::${contractId}`;
+}
 
 export interface SyncOptions {
   extractorOverride?:
@@ -158,9 +163,26 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     }
   }
 
-  const { matched, unmatched } = runExactMatch(autoContracts);
-  const crossLinks: CrossLink[] = matched;
+  const manifestMatches = applyHttpMappings(autoContracts, config.httpMappings);
+  const exactContracts = autoContracts.filter(
+    (contract) =>
+      !(
+        contract.role === 'consumer' &&
+        manifestMatches.matchedConsumerIds.has(matchedContractKey(contract.repo, contract.contractId))
+      ),
+  );
+  const exactMatches = runExactMatch(exactContracts);
+  const crossLinks: CrossLink[] = [...manifestMatches.matched, ...exactMatches.matched];
   const allContracts: StoredContract[] = autoContracts;
+  const matchedIds = new Set(
+    crossLinks.flatMap((link) => [
+      matchedContractKey(link.from.repo, link.fromContractId ?? link.contractId),
+      matchedContractKey(link.to.repo, link.toContractId ?? link.contractId),
+    ]),
+  );
+  const unmatched = allContracts.filter(
+    (contract) => !matchedIds.has(matchedContractKey(contract.repo, contract.contractId)),
+  );
 
   const registry: ContractRegistry = {
     version: 1,

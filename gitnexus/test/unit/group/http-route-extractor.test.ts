@@ -206,6 +206,37 @@ export const deleteUser = (id: string) => axios.delete(\`/api/users/\${id}\`);
         consumers.find((c) => c.contractId === 'http::DELETE::/api/users/{param}'),
       ).toBeDefined();
     });
+
+    it('extracts request-like client calls', async () => {
+      const dir = path.join(tmpDir, 'request-like-fe');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/request.ts'),
+        `
+export default {
+  get(path: string) { return path; },
+  post(path: string) { return path; },
+};
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'src/api.ts'),
+        `
+import request from './request';
+
+export const loadUsers = () => request('/api/users');
+export const createUser = (data: unknown) => request('/api/users', { method: 'POST', data });
+export const updateUser = (id: string, data: unknown) => request.post(\`/api/users/\${id}\`, { data });
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/users')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::POST::/api/users')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::POST::/api/users/{param}')).toBeDefined();
+    });
   });
 
   describe('provider extraction — Laravel', () => {

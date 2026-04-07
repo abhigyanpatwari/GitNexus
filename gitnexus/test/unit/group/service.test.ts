@@ -233,6 +233,53 @@ describe('GroupService', () => {
         cleanup();
       }
     });
+
+    it('test_groupContracts_unmatchedOnly_respects_manifest_rewritten_contract_ids', async () => {
+      const { groupDir, cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const consumer = makeContract(
+          'http::POST::/api/titans/order/1.0.0/create',
+          'consumer',
+          'app/frontend',
+        );
+        const provider = makeContract('http::POST::/orders/create', 'provider', 'app/backend');
+        const orphan = makeContract('http::GET::/api/health', 'provider', 'app/backend');
+        const crossLink: CrossLink = {
+          from: {
+            repo: 'app/frontend',
+            symbolUid: consumer.symbolUid,
+            symbolRef: consumer.symbolRef,
+          },
+          to: {
+            repo: 'app/backend',
+            symbolUid: provider.symbolUid,
+            symbolRef: provider.symbolRef,
+          },
+          type: 'http',
+          contractId: 'http::POST::/orders/create',
+          fromContractId: consumer.contractId,
+          toContractId: provider.contractId,
+          matchType: 'manifest',
+          confidence: 1.0,
+        };
+        await writeContractRegistry(
+          groupDir,
+          makeRegistry([consumer, provider, orphan], [crossLink]),
+        );
+
+        const svc = new GroupService(makePort());
+        const result = (await svc.groupContracts({
+          name: 'test-group',
+          unmatchedOnly: true,
+        })) as { contracts: StoredContract[] };
+        expect(result.contracts).toHaveLength(1);
+        expect(result.contracts[0].contractId).toBe('http::GET::/api/health');
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
   });
 
   describe('groupSync', () => {

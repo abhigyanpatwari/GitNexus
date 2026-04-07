@@ -68,6 +68,11 @@ import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
 import { preprocessImportPath } from '../import-processor.js';
 import {
+  collectRequestLikeImportBindings,
+  getRequestLikeCapturedUrl,
+  getRequestLikeMemberCapturedUrl,
+} from '../request-like-clients.js';
+import {
   extractVueScript,
   extractTemplateComponents,
   isVueSetupTopLevel,
@@ -1397,6 +1402,7 @@ const processFileGroup = (
 
     // Per-file map: decorator end-line → decorator info, for associating with definitions
     const fileDecorators = new Map<number, { name: string; arg?: string; isTool?: boolean }>();
+    const requestLikeBindings = collectRequestLikeImportBindings(file.content);
 
     for (const match of matches) {
       const captureMap: Record<string, SyntaxNode> = {};
@@ -1500,13 +1506,32 @@ const processFileGroup = (
         continue;
       }
 
+      if (captureMap['request_like_client']) {
+        const url = getRequestLikeCapturedUrl(captureMap, requestLikeBindings);
+        if (url) {
+          result.fetchCalls.push({
+            filePath: file.path,
+            fetchURL: url,
+            lineNumber: captureMap['request_like_client'].startPosition.row + lineOffset,
+          });
+        }
+        continue;
+      }
+
       // HTTP client calls: axios.get('/path'), $.post('/path'), requests.get('/path')
       // Skip methods also in EXPRESS_ROUTE_METHODS to avoid double-registering Express
       // routes as both route definitions AND consumers (both queries match same AST node)
       if (captureMap['http_client'] && captureMap['http_client.url']) {
         const method = captureMap['http_client.method']?.text;
         const url = captureMap['http_client.url'].text;
-        if (method && HTTP_CLIENT_ONLY_METHODS.has(method) && url.startsWith('/')) {
+        const requestLikeUrl = getRequestLikeMemberCapturedUrl(captureMap, requestLikeBindings);
+        if (requestLikeUrl) {
+          result.fetchCalls.push({
+            filePath: file.path,
+            fetchURL: requestLikeUrl,
+            lineNumber: captureMap['http_client'].startPosition.row + lineOffset,
+          });
+        } else if (method && HTTP_CLIENT_ONLY_METHODS.has(method) && url.startsWith('/')) {
           result.fetchCalls.push({
             filePath: file.path,
             fetchURL: url,
@@ -1524,6 +1549,10 @@ const processFileGroup = (
       ) {
         const method = captureMap['express_route.method'].text;
         const routePath = captureMap['express_route.path'].text;
+        const requestLikeUrl = getRequestLikeMemberCapturedUrl(captureMap, requestLikeBindings);
+        if (requestLikeUrl) {
+          continue;
+        }
         if (EXPRESS_ROUTE_METHODS.has(method) && routePath.startsWith('/')) {
           const httpMethod =
             method === 'all' || method === 'use' || method === 'route'
