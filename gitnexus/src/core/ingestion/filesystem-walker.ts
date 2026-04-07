@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { glob } from 'glob';
 import { createIgnoreFilter } from '../../config/ignore-service.js';
+import { isVerboseIngestionEnabled } from './utils/verbose.js';
 
 export interface FileEntry {
   path: string;
@@ -43,6 +44,7 @@ export const walkRepositoryPaths = async (
   const entries: ScannedFile[] = [];
   let processed = 0;
   let skippedLarge = 0;
+  const skippedLargePaths: string[] = [];
 
   for (let start = 0; start < filtered.length; start += READ_CONCURRENCY) {
     const batch = filtered.slice(start, start + READ_CONCURRENCY);
@@ -52,6 +54,7 @@ export const walkRepositoryPaths = async (
         const stat = await fs.stat(fullPath);
         if (stat.size > MAX_FILE_SIZE) {
           skippedLarge++;
+          skippedLargePaths.push(relativePath.replace(/\\/g, '/'));
           return null;
         }
         return { path: relativePath.replace(/\\/g, '/'), size: stat.size };
@@ -73,6 +76,11 @@ export const walkRepositoryPaths = async (
     console.warn(
       `  Skipped ${skippedLarge} large files (>${MAX_FILE_SIZE / 1024}KB, likely generated/vendored)`,
     );
+    if (isVerboseIngestionEnabled()) {
+      for (const skippedPath of skippedLargePaths) {
+        console.warn(`    - ${skippedPath}`);
+      }
+    }
   }
 
   return entries;
