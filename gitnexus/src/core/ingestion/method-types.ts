@@ -10,6 +10,10 @@ export type MethodVisibility = FieldVisibility;
 export interface ParameterInfo {
   name: string;
   type: string | null;
+  /** Full type text including generic/template args (e.g. 'vector<int>', 'List<String>').
+   *  Used by typeTagForId for overload disambiguation where generic args matter.
+   *  Falls back to `type` when not set. */
+  rawType?: string | null;
   isOptional: boolean;
   isVariadic: boolean;
 }
@@ -27,6 +31,7 @@ export interface MethodInfo {
   isOverride?: boolean;
   isAsync?: boolean;
   isPartial?: boolean;
+  isConst?: boolean;
   annotations: string[];
   sourceFile: string;
   line: number;
@@ -48,6 +53,14 @@ export interface MethodExtractor {
   isTypeDeclaration(node: SyntaxNode): boolean;
   /** Extract method info from a standalone method node (e.g. Go top-level method_declaration). */
   extractFromNode?(node: SyntaxNode, context: MethodExtractorContext): MethodInfo | null;
+  /** Extract function name + label from an AST node during parent-walk.
+   *  Languages with non-standard AST structures (e.g. C/C++ declarator
+   *  unwrapping, Swift init/deinit, Rust impl_item) provide this hook
+   *  to replace the generic name-field lookup.
+   *  Return null to fall through to the generic extractor. */
+  extractFunctionName?(
+    node: SyntaxNode,
+  ): { funcName: string | null; label: import('gitnexus-shared').NodeLabel } | null;
 }
 
 export interface MethodExtractionConfig {
@@ -68,6 +81,7 @@ export interface MethodExtractionConfig {
   isOverride?: (node: SyntaxNode) => boolean;
   isAsync?: (node: SyntaxNode) => boolean;
   isPartial?: (node: SyntaxNode) => boolean;
+  isConst?: (node: SyntaxNode) => boolean;
   /** Resolve the owner name from a standalone method node (e.g. Go receiver type). */
   extractOwnerName?: (node: SyntaxNode) => string | undefined;
   /** Extract a primary constructor from the owner node itself (e.g. C# 12 class Point(int x, int y)). */
@@ -75,4 +89,9 @@ export interface MethodExtractionConfig {
     ownerNode: SyntaxNode,
     context: MethodExtractorContext,
   ) => MethodInfo | null;
+  /** Extract function name + label from an AST node during parent-walk.
+   *  Passed through to the MethodExtractor by createMethodExtractor. */
+  extractFunctionName?: (
+    node: SyntaxNode,
+  ) => { funcName: string | null; label: import('gitnexus-shared').NodeLabel } | null;
 }

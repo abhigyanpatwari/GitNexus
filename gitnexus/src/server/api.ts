@@ -4,7 +4,7 @@
  * REST API for browser-based clients to query the local .gitnexus/ index.
  * Also hosts the MCP server over StreamableHTTP for remote AI tool access.
  *
- * Security: binds to 127.0.0.1 by default (use --host to override).
+ * Security: binds to localhost by default (use --host to override).
  * CORS is restricted to localhost, private/LAN networks, and the deployed site.
  */
 
@@ -276,14 +276,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // CORS: allow localhost, private/LAN networks, and the deployed site.
   // Non-browser requests (curl, server-to-server) have no origin and are allowed.
+  // Disallowed origins get the response without Access-Control-Allow-Origin,
+  // so the browser blocks it. We pass `false` instead of throwing an Error to
+  // avoid crashing into Express's default error handler (which returned 500).
   app.use(
     cors({
       origin: (origin, callback) => {
-        if (isAllowedOrigin(origin)) {
-          callback(null, true);
-        } else {
-          callback(new Error('Not allowed by CORS'));
-        }
+        callback(null, isAllowedOrigin(origin));
       },
     }),
   );
@@ -1248,7 +1247,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // to the caller instead of crashing with an unhandled 'error' event.
   await new Promise<void>((resolve, reject) => {
     const server = app.listen(port, host, () => {
-      console.log(`GitNexus server running on http://${host}:${port}`);
+      const displayHost = host === '::' || host === '0.0.0.0' ? 'localhost' : host;
+      console.log(`GitNexus server running on http://${displayHost}:${port}`);
       resolve();
     });
     server.on('error', (err) => reject(err));

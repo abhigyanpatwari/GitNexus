@@ -11,12 +11,14 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import type { NodeLabel } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as swiftConfig } from '../type-extractors/swift.js';
 import { swiftExportChecker } from '../export-detection.js';
 import { resolveSwiftImport } from '../import-resolvers/swift.js';
 import { SWIFT_QUERIES } from '../tree-sitter-queries.js';
 import type { SwiftPackageConfig } from '../language-config.js';
+import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { swiftConfig as swiftFieldConfig } from '../field-extractors/configs/swift.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
@@ -108,6 +110,15 @@ function wireSwiftImplicitImports(
     }
   }
 }
+
+/** Swift init/deinit declarations have special names and Constructor label. */
+const swiftExtractFunctionName = (
+  node: SyntaxNode,
+): { funcName: string | null; label: NodeLabel } | null => {
+  if (node.type === 'init_declaration') return { funcName: 'init', label: 'Constructor' };
+  if (node.type === 'deinit_declaration') return { funcName: 'deinit', label: 'Constructor' };
+  return null; // fall through to generic
+};
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'print',
@@ -229,7 +240,10 @@ export const swiftProvider = defineLanguage({
   importSemantics: 'wildcard',
   heritageDefaultEdge: 'IMPLEMENTS',
   fieldExtractor: createFieldExtractor(swiftFieldConfig),
-  methodExtractor: createMethodExtractor(swiftMethodConfig),
+  methodExtractor: createMethodExtractor({
+    ...swiftMethodConfig,
+    extractFunctionName: swiftExtractFunctionName,
+  }),
   implicitImportWirer: wireSwiftImplicitImports,
   builtInNames: BUILT_INS,
 });

@@ -14,6 +14,57 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
 // PHP helpers
 // ---------------------------------------------------------------------------
 
+/** Regex to extract PHPDoc @return annotations: `@return User` */
+const PHPDOC_RETURN_RE = /@return\s+(\S+)/;
+
+/** Node types to skip when walking backwards through siblings for PHPDoc. */
+const PHPDOC_SKIP_NODE_TYPES: ReadonlySet<string> = new Set(['attribute_list', 'attribute']);
+
+/**
+ * Normalize a PHPDoc return type for the MethodExtractor.
+ * Strips nullable prefix, null/false/void unions, namespace prefixes, and
+ * rejects uninformative types (mixed, void, self, static, object, array).
+ */
+function normalizePhpReturnType(raw: string): string | undefined {
+  let type = raw.startsWith('?') ? raw.slice(1) : raw;
+  const parts = type
+    .split('|')
+    .filter((p) => p !== 'null' && p !== 'false' && p !== 'void' && p !== 'mixed');
+  if (parts.length !== 1) return undefined;
+  type = parts[0];
+  const segments = type.split('\\');
+  type = segments[segments.length - 1];
+  if (
+    type === 'mixed' ||
+    type === 'void' ||
+    type === 'self' ||
+    type === 'static' ||
+    type === 'object' ||
+    type === 'array'
+  )
+    return undefined;
+  if (/^\w+(\[\])?$/.test(type) || /^\w+\s*</.test(type)) return type;
+  return undefined;
+}
+
+/**
+ * Walk backwards through preceding siblings of `node` to find a PHPDoc
+ * `@return Type` annotation. Skips `attribute_list` nodes (PHP 8 attributes).
+ */
+function extractPhpDocReturnType(node: SyntaxNode): string | undefined {
+  let sibling = node.previousSibling;
+  while (sibling) {
+    if (sibling.type === 'comment') {
+      const match = PHPDOC_RETURN_RE.exec(sibling.text);
+      if (match) return normalizePhpReturnType(match[1]);
+    } else if (sibling.isNamed && !PHPDOC_SKIP_NODE_TYPES.has(sibling.type)) {
+      break;
+    }
+    sibling = sibling.previousSibling;
+  }
+  return undefined;
+}
+
 const PHP_VIS = new Set<MethodVisibility>(['public', 'private', 'protected']);
 
 /**
@@ -52,6 +103,9 @@ function hasModifierNode(node: SyntaxNode, modifierType: string): boolean {
  * It appears as a type node (primitive_type, named_type, union_type,
  * optional_type, nullable_type, intersection_type) after the formal_parameters
  * and a `:` token separator.
+ *
+ * When the AST return type is missing or uninformative (`array` / `iterable`),
+ * falls back to parsing PHPDoc `@return Type` from preceding doc comments.
  */
 function extractPhpReturnType(node: SyntaxNode): string | undefined {
   const TYPE_NODE_TYPES = new Set([
@@ -63,6 +117,7 @@ function extractPhpReturnType(node: SyntaxNode): string | undefined {
     'intersection_type',
   ]);
 
+  let astType: string | undefined;
   let seenParams = false;
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
@@ -73,14 +128,22 @@ function extractPhpReturnType(node: SyntaxNode): string | undefined {
     }
     // After the parameters node, look for the colon and then the type
     if (seenParams && child.isNamed && TYPE_NODE_TYPES.has(child.type)) {
-      return child.text?.trim();
+      astType = child.text?.trim();
+      break;
     }
     // Stop at body or semicolon
     if (child.type === 'compound_statement' || (!child.isNamed && child.text === ';')) {
       break;
     }
   }
-  return undefined;
+
+  // If AST type is missing or uninformative, try PHPDoc @return fallback
+  if (!astType || astType === 'array' || astType === 'iterable') {
+    const docType = extractPhpDocReturnType(node);
+    if (docType) return docType;
+  }
+
+  return astType;
 }
 
 /**
@@ -121,6 +184,7 @@ function extractPhpParameters(node: SyntaxNode): ParameterInfo[] {
       params.push({
         name: stripDollar(nameNode.text),
         type: typeName ?? null,
+        rawType: typeNode?.text?.trim() ?? null,
         isOptional,
         isVariadic: false,
       });
@@ -133,6 +197,7 @@ function extractPhpParameters(node: SyntaxNode): ParameterInfo[] {
       params.push({
         name: stripDollar(nameNode.text),
         type: typeName ?? null,
+        rawType: typeNode?.text?.trim() ?? null,
         isOptional: false,
         isVariadic: true,
       });
@@ -155,6 +220,7 @@ function extractPhpParameters(node: SyntaxNode): ParameterInfo[] {
       params.push({
         name: stripDollar(nameNode.text),
         type: typeName ?? null,
+        rawType: typeNode?.text?.trim() ?? null,
         isOptional: false,
         isVariadic,
       });
@@ -208,7 +274,7 @@ export const phpMethodConfig: MethodExtractionConfig = {
     'trait_declaration',
     'enum_declaration',
   ],
-  methodNodeTypes: ['method_declaration'],
+  methodNodeTypes: ['method_declaration', 'function_definition'],
   bodyNodeTypes: ['declaration_list'],
 
   extractName(node) {

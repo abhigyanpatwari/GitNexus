@@ -12,7 +12,6 @@ import { yieldToEventLoop } from './utils/event-loop.js';
 import {
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
-  extractMethodSignature,
   getLabelFromCaptures,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
@@ -22,6 +21,13 @@ import { detectFrameworkFromAST } from './framework-detection.js';
 import { buildTypeEnv } from './type-env.js';
 import type { FieldInfo, FieldExtractorContext } from './field-types.js';
 import type { MethodInfo } from './method-types.js';
+import {
+  buildMethodProps,
+  arityForIdFromInfo,
+  typeTagForId,
+  constTagForId,
+  buildCollisionGroups,
+} from './utils/method-props.js';
 import type { LanguageProvider } from './language-provider.js';
 import { WorkerPool } from './workers/worker-pool.js';
 import type {
@@ -137,17 +143,17 @@ const processParsingWithWorkers = async (
       });
     }
 
-    allImports.push(...result.imports);
-    allCalls.push(...result.calls);
-    allAssignments.push(...result.assignments);
-    allHeritage.push(...result.heritage);
-    allRoutes.push(...result.routes);
-    allFetchCalls.push(...result.fetchCalls);
-    allDecoratorRoutes.push(...result.decoratorRoutes);
-    allToolDefs.push(...result.toolDefs);
-    if (result.ormQueries) allORMQueries.push(...result.ormQueries);
-    allConstructorBindings.push(...result.constructorBindings);
-    allTypeEnvBindings.push(...result.typeEnvBindings);
+    for (const _item of result.imports) allImports.push(_item);
+    for (const _item of result.calls) allCalls.push(_item);
+    for (const _item of result.assignments) allAssignments.push(_item);
+    for (const _item of result.heritage) allHeritage.push(_item);
+    for (const _item of result.routes) allRoutes.push(_item);
+    for (const _item of result.fetchCalls) allFetchCalls.push(_item);
+    for (const _item of result.decoratorRoutes) allDecoratorRoutes.push(_item);
+    for (const _item of result.toolDefs) allToolDefs.push(_item);
+    if (result.ormQueries) for (const _item of result.ormQueries) allORMQueries.push(_item);
+    for (const _item of result.constructorBindings) allConstructorBindings.push(_item);
+    for (const _item of result.typeEnvBindings) allTypeEnvBindings.push(_item);
   }
 
   // Merge and log skipped languages from workers
@@ -222,6 +228,11 @@ const seqMethodExtractCache = new Map<
   number,
   { ownerName: string | undefined; methods: MethodInfo[] } | null
 >();
+// Derived method map + collision groups cache — avoids rebuilding per method.
+const seqMethodMapCache = new Map<
+  number,
+  { map: Map<string, MethodInfo>; groups: Map<string, MethodInfo[]> }
+>();
 
 function seqFindEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
   let current = node.parent;
@@ -230,35 +241,6 @@ function seqFindEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
     current = current.parent;
   }
   return null;
-}
-
-/** Convert MethodInfo from methodExtractor into flat properties for a graph node. */
-function buildMethodProps(info: MethodInfo): Record<string, unknown> {
-  const types: string[] = [];
-  let optionalCount = 0;
-  let hasVariadic = false;
-  for (const p of info.parameters) {
-    if (p.type !== null) types.push(p.type);
-    if (p.isOptional) optionalCount++;
-    if (p.isVariadic) hasVariadic = true;
-  }
-  return {
-    parameterCount: hasVariadic ? undefined : info.parameters.length,
-    ...(!hasVariadic && optionalCount > 0
-      ? { requiredParameterCount: info.parameters.length - optionalCount }
-      : {}),
-    ...(types.length > 0 ? { parameterTypes: types } : {}),
-    returnType: info.returnType ?? undefined,
-    visibility: info.visibility,
-    isStatic: info.isStatic,
-    isAbstract: info.isAbstract,
-    isFinal: info.isFinal,
-    ...(info.isVirtual ? { isVirtual: info.isVirtual } : {}),
-    ...(info.isOverride ? { isOverride: info.isOverride } : {}),
-    ...(info.isAsync ? { isAsync: info.isAsync } : {}),
-    ...(info.isPartial ? { isPartial: info.isPartial } : {}),
-    ...(info.annotations.length > 0 ? { annotations: info.annotations } : {}),
-  };
 }
 
 /** Minimal no-op SymbolTable stub for FieldExtractorContext (sequential path has a real
@@ -305,6 +287,7 @@ const processParsingSequential = async (
     exportCache.clear();
     seqFieldInfoCache.clear();
     seqMethodExtractCache.clear();
+    seqMethodMapCache.clear();
 
     onFileProgress?.(i + 1, total, file.path);
 
@@ -372,7 +355,10 @@ const processParsingSequential = async (
 
     // Build per-file type environment for FieldExtractor context (lightweight — skipped if no fieldExtractor)
     const typeEnv = provider.fieldExtractor
-      ? buildTypeEnv(tree, language, { enclosingFunctionFinder: provider.enclosingFunctionFinder })
+      ? buildTypeEnv(tree, language, {
+          enclosingFunctionFinder: provider.enclosingFunctionFinder,
+          extractFunctionName: provider.methodExtractor?.extractFunctionName,
+        })
       : null;
 
     matches.forEach((match) => {
@@ -414,18 +400,18 @@ const processParsingSequential = async (
       const qualifiedName = enclosingClassInfo
         ? `${enclosingClassInfo.className}.${nodeName}`
         : nodeName;
-      const nodeId = generateId(nodeLabel, `${file.path}:${qualifiedName}`);
-      const frameworkHint = definitionNode
-        ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
-        : null;
 
-      // Extract method metadata for Function/Method/Constructor nodes.
-      // Try the per-language methodExtractor first (provides isAbstract, isStatic,
-      // visibility, annotations, etc.). Fall back to extractMethodSignature for
-      // basic parameterCount/parameterTypes/returnType when no methodExtractor exists.
+      // Extract method metadata for Function/Method/Constructor nodes BEFORE generating
+      // the node ID — parameterCount is needed to disambiguate overloaded methods.
+      // Use the per-language MethodExtractor for method metadata (isAbstract, isStatic,
+      // visibility, annotations, parameterCount, parameterTypes, returnType, etc.).
       const isMethodLike =
         nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor';
       let methodProps: Record<string, unknown> = {};
+      let arityForId: number | undefined; // raw param count for ID, even for variadic
+      let seqDefMethodInfo: MethodInfo | undefined;
+      let seqDefMethods: MethodInfo[] | undefined;
+      let seqClassNodeId: number | undefined;
       if (isMethodLike && definitionNode) {
         let enriched = false;
 
@@ -452,7 +438,11 @@ const processParsingSequential = async (
               const info = result.methods.find((m) => m.name === nodeName && m.line === defLine);
               if (info) {
                 enriched = true;
+                arityForId = arityForIdFromInfo(info);
                 methodProps = buildMethodProps(info);
+                seqDefMethodInfo = info;
+                seqDefMethods = result.methods;
+                seqClassNodeId = classNode.id;
               }
             }
           }
@@ -465,35 +455,47 @@ const processParsingSequential = async (
             });
             if (info) {
               enriched = true;
+              arityForId = arityForIdFromInfo(info);
               methodProps = buildMethodProps(info);
             }
           }
         }
-
-        // Fallback to generic extractMethodSignature
-        if (!enriched) {
-          const sig = extractMethodSignature(definitionNode);
-          methodProps = {
-            parameterCount: sig.parameterCount,
-            ...(sig.requiredParameterCount !== undefined
-              ? { requiredParameterCount: sig.requiredParameterCount }
-              : {}),
-            ...(sig.parameterTypes ? { parameterTypes: sig.parameterTypes } : {}),
-            returnType: sig.returnType,
-          };
-        }
-
-        // Language-specific return type fallback (e.g. Ruby YARD @return [Type])
-        // Also upgrades uninformative AST types like PHP `array` with PHPDoc `@return User[]`
-        const rt = methodProps.returnType as string | undefined;
-        if (!rt || rt === 'array' || rt === 'iterable') {
-          const tc = provider.typeConfig;
-          if (tc?.extractReturnType) {
-            const docReturn = tc.extractReturnType(definitionNode);
-            if (docReturn) methodProps.returnType = docReturn;
-          }
-        }
       }
+
+      // Append #<paramCount> to Method/Constructor IDs to disambiguate overloads.
+      // Functions are not suffixed — they don't overload by name in the same scope.
+      // When same-arity collisions exist, append ~type1,type2 for further disambiguation.
+      const needsAritySuffix = nodeLabel === 'Method' || nodeLabel === 'Constructor';
+      let arityTag = needsAritySuffix && arityForId !== undefined ? `#${arityForId}` : '';
+      if (arityTag && seqDefMethods && seqDefMethodInfo && seqClassNodeId !== undefined) {
+        // Use cached method map + collision groups (built once per class, not per method)
+        let cached = seqMethodMapCache.get(seqClassNodeId);
+        if (!cached) {
+          const tempMap = new Map<string, MethodInfo>();
+          for (const m of seqDefMethods) tempMap.set(`${m.name}:${m.line}`, m);
+          cached = { map: tempMap, groups: buildCollisionGroups(tempMap) };
+          seqMethodMapCache.set(seqClassNodeId, cached);
+        }
+        arityTag += typeTagForId(
+          cached.map,
+          nodeName,
+          arityForId,
+          seqDefMethodInfo,
+          language,
+          cached.groups,
+        );
+        arityTag += constTagForId(
+          cached.map,
+          nodeName,
+          arityForId,
+          seqDefMethodInfo,
+          cached.groups,
+        );
+      }
+      const nodeId = generateId(nodeLabel, `${file.path}:${qualifiedName}${arityTag}`);
+      const frameworkHint = definitionNode
+        ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
+        : null;
 
       const node: GraphNode = {
         id: nodeId,

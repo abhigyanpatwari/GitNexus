@@ -66,7 +66,7 @@ describe('Rust trait implementation resolution', () => {
   });
 
   it('no OVERRIDES edges target Property nodes', () => {
-    const overrides = getRelationships(result, 'OVERRIDES');
+    const overrides = getRelationships(result, 'METHOD_OVERRIDES');
     for (const edge of overrides) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
@@ -1846,5 +1846,14 @@ describe('Rust abstract dispatch (Repository trait)', () => {
     expect(findCall).toBeDefined();
     expect(saveCall).toBeDefined();
     expect(countCall).toBeDefined();
+  });
+
+  it('emits METHOD_IMPLEMENTS edges from SqlRepo impl methods → Repository trait methods', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    // find and save are required trait methods; count has a default impl so no METHOD_IMPLEMENTS
+    const libEdges = mi.filter((e) => e.sourceFilePath.includes('lib.rs'));
+    expect(libEdges.length).toBe(2);
+    const names = libEdges.map((e) => e.source).sort();
+    expect(names).toEqual(['find', 'save']);
   });
 });

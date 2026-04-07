@@ -58,8 +58,65 @@ This repository is a **monorepo** with two main products: the **CLI / MCP packag
 | Web UI behavior | `gitnexus-web/src/` (components, workers, graph client). |
 | CI | `.github/workflows/*.yml`, `.github/actions/setup-gitnexus/`. |
 
+## Known limitations
+
+### Overloaded method resolution
+
+Method and Constructor node IDs include an arity suffix (`#<paramCount>`) to
+disambiguate overloaded methods. Two overloads with different parameter counts
+produce distinct graph nodes: `Method:file:Class.method#1` vs
+`Method:file:Class.method#2`.
+
+**Same-arity overload disambiguation:** When two overloads share the same
+parameter count but differ in types (e.g. `save(int)` vs `save(String)`), a
+type-hash suffix `~type1,type2` is appended to produce distinct node IDs:
+`Method:file:Class.save#1~int` vs `Method:file:Class.save#1~String`. The suffix
+is only added when a same-arity collision is detected within a class and all
+parameters have non-null type annotations. Languages without type info (Python,
+Ruby, JS) fall back to arity-only IDs. TypeScript/JavaScript overload signatures
+are intentionally excluded from type-hashing because they are declaration-only
+contracts that should collapse to the implementation body's node ID. See issue
+\#651.
+
+**C++ const-qualified overload disambiguation:** Methods overloaded by const
+qualification (e.g. `begin()` vs `begin() const`) are disambiguated via an
+`isConst` property and a `$const` ID suffix appended to the const-qualified
+variant when a non-const collision exists. The `$const` suffix appears after the
+type-hash suffix: e.g. `Method:file:Container.begin#0$const`.
+
+**Generic/template type preservation in type-hash:** The type-hash suffix uses
+`rawType` (full AST text including generic/template args) rather than the
+simplified `type` from `extractSimpleTypeName`. This means C++ template overloads
+like `process(vector<int>)` vs `process(vector<string>)` produce distinct IDs:
+`~vector<int>` vs `~vector<std::string>`. Java generic overloads like
+`process(List<String>)` vs `process(List<Integer>)` are a compile error due to
+type erasure, so this gap is theoretical for Java.
+
+**ID stability on first overload:** Type and const tags are collision-only. When
+a class has `save(int)` as its only `save` method, the ID is `save#1` (no tag).
+Adding `save(String)` changes the original to `save#1~int`. This is correct for
+fresh analysis but means IDs are not stable across overload additions. Future
+incremental re-analysis should account for this.
+
+**Variadic method matching:** When one side is variadic (`parameterCount`
+undefined) and the other has a fixed count, `METHOD_IMPLEMENTS` edges are
+emitted with confidence 0.7 instead of 1.0. Variadic methods like
+`foo(String... args)` may superficially match `foo(String s)` by type but
+are not guaranteed to be interchangeable across all languages (Java/Kotlin
+accept this via varargs sugar; TypeScript, C#, Rust do not).
+
+**Confidence tiering** for `METHOD_IMPLEMENTS` edges:
+
+| Match quality | Confidence | When |
+|---|---|---|
+| Exact parameter types match | 1.0 | Both sides have `parameterTypes` arrays and they match |
+| Arity (count) matches | 1.0 | Both sides have `parameterCount`, types unavailable |
+| Variadic vs fixed | 0.7 | One side is variadic, other has fixed count |
+| Lenient (insufficient info) | 0.7 | One or both sides lack type and count data |
+
 ## Related docs
 
+- [MIGRATION.md](MIGRATION.md) — breaking changes and migration guidance.
 - [RUNBOOK.md](RUNBOOK.md) — operational commands and recovery.  
 - [GUARDRAILS.md](GUARDRAILS.md) — safety boundaries for humans and agents.  
 - [TESTING.md](TESTING.md) — how to run tests.  

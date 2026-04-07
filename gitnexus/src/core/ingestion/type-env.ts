@@ -1,8 +1,8 @@
 import {
   type SyntaxNode,
   FUNCTION_NODE_TYPES,
-  extractFunctionName,
   CLASS_CONTAINER_TYPES,
+  genericFuncName,
 } from './utils/ast-helpers.js';
 import { CALL_EXPRESSION_TYPES } from './utils/call-analysis.js';
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -132,6 +132,7 @@ const lookupInEnv = (
   callNode: SyntaxNode,
   patternOverrides?: PatternOverrides,
   enclosingFunctionFinder?: (n: SyntaxNode) => { funcName: string; label: NodeLabel } | null,
+  extractFunctionNameHook?: (n: SyntaxNode) => { funcName: string | null; label: NodeLabel } | null,
 ): string | undefined => {
   // Self/this receiver: resolve to enclosing class name via AST walk
   if (varName === 'self' || varName === 'this' || varName === '$this') {
@@ -145,7 +146,11 @@ const lookupInEnv = (
   }
 
   // Determine the enclosing function scope for the call
-  const scopeKey = findEnclosingScopeKey(callNode, enclosingFunctionFinder);
+  const scopeKey = findEnclosingScopeKey(
+    callNode,
+    enclosingFunctionFinder,
+    extractFunctionNameHook,
+  );
 
   // Check position-indexed pattern overrides first (e.g., Kotlin when/is smart casts).
   // These take priority over flat scopeEnv because they represent per-branch narrowing.
@@ -361,11 +366,12 @@ const extractParentClassFromNode = (classNode: SyntaxNode): string | undefined =
 const findEnclosingScopeKey = (
   node: SyntaxNode,
   enclosingFunctionFinder?: (n: SyntaxNode) => { funcName: string; label: NodeLabel } | null,
+  extractFunctionNameHook?: (n: SyntaxNode) => { funcName: string | null; label: NodeLabel } | null,
 ): string | undefined => {
   let current = node.parent;
   while (current) {
     if (FUNCTION_NODE_TYPES.has(current.type)) {
-      const { funcName } = extractFunctionName(current);
+      const funcName = extractFunctionNameHook?.(current)?.funcName ?? genericFuncName(current);
       if (funcName) return `${funcName}@${current.startIndex}`;
     }
     // Language-specific hook (e.g., Dart function_body → sibling function_signature)
@@ -621,7 +627,15 @@ const resolveMethodReturnType = (
   parentMap?: ReadonlyMap<string, readonly string[]>,
 ): string | undefined => {
   if (!symbolTable) return undefined;
-  const receiverType = scopeEnv.get(receiver);
+  let receiverType = scopeEnv.get(receiver);
+  // When substituteThisReceiver replaced $this/self with the enclosing class name,
+  // the receiver IS the type — look it up directly as a class name.
+  if (!receiverType) {
+    const lookup =
+      getClassDefs ??
+      ((name: string) => symbolTable.lookupFuzzy(name).filter((d) => CLASS_LIKE_TYPES.has(d.type)));
+    if (lookup(receiver).length > 0) receiverType = receiver;
+  }
   if (!receiverType) return undefined;
   const lookup =
     getClassDefs ??
@@ -765,6 +779,11 @@ export interface BuildTypeEnvOptions {
   enclosingFunctionFinder?: (
     ancestorNode: SyntaxNode,
   ) => { funcName: string; label: NodeLabel } | null;
+  /** Language-specific function name extraction from an AST node.
+   *  Replaces the generic name-field lookup for languages with non-standard
+   *  AST structures (C/C++ declarator unwrapping, Swift init/deinit, etc.).
+   *  When null is returned or not provided, falls back to node.childForFieldName('name')?.text. */
+  extractFunctionName?: (node: SyntaxNode) => { funcName: string | null; label: NodeLabel } | null;
 }
 
 /** Seed cross-file type bindings into the file scope.
@@ -794,6 +813,7 @@ export const buildTypeEnv = (
 
   const symbolTable = options?.symbolTable;
   const parentMap = options?.parentMap;
+  const extractFuncNameHook = options?.extractFunctionName;
   const env: TypeEnv = new Map();
   const patternOverrides: PatternOverrides = new Map();
   // Phase P: maps `scope\0varName` → constructor type when a declaration has BOTH
@@ -1057,7 +1077,7 @@ export const buildTypeEnv = (
     // Detect scope boundaries (function/method definitions)
     let scope = currentScope;
     if (FUNCTION_NODE_TYPES.has(node.type)) {
-      const { funcName } = extractFunctionName(node);
+      const funcName = extractFuncNameHook?.(node)?.funcName ?? genericFuncName(node);
       if (funcName) scope = `${funcName}@${node.startIndex}`;
     }
 
@@ -1206,7 +1226,14 @@ export const buildTypeEnv = (
 
   return {
     lookup: (varName, callNode) =>
-      lookupInEnv(env, varName, callNode, patternOverrides, options?.enclosingFunctionFinder),
+      lookupInEnv(
+        env,
+        varName,
+        callNode,
+        patternOverrides,
+        options?.enclosingFunctionFinder,
+        extractFuncNameHook,
+      ),
     constructorBindings: bindings,
     fileScope: () => env.get(FILE_SCOPE) ?? EMPTY_FILE_SCOPE,
     allScopes: () => env as ReadonlyMap<string, ReadonlyMap<string, string>>,

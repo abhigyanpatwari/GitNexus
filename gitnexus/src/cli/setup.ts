@@ -9,7 +9,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { execFile } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { glob } from 'glob';
@@ -26,10 +26,43 @@ interface SetupResult {
 }
 
 /**
+ * Resolve the absolute path to the `gitnexus` binary if it's installed
+ * globally (or via npm -g / yarn global). Returns null when not found.
+ */
+function resolveGitnexusBin(): string | null {
+  try {
+    const cmd = process.platform === 'win32' ? 'where' : 'which';
+    const resolved = execFileSync(cmd, ['gitnexus'], {
+      encoding: 'utf-8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .split('\n')[0]
+      .trim();
+    return resolved || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The MCP server entry for all editors.
- * On Windows, npx must be invoked via cmd /c since it's a .cmd script.
+ *
+ * Prefers the globally-installed `gitnexus` binary (starts in ~1 s) over
+ * `npx -y gitnexus@latest` (cold-cache install of native deps can take
+ * >60 s, exceeding Claude Code's 30 s MCP connection timeout).
+ *
+ * Falls back to npx when the binary isn't on PATH — e.g. first-time
+ * users who ran `npx gitnexus analyze` but haven't done `npm i -g`.
  */
 function getMcpEntry() {
+  const bin = resolveGitnexusBin();
+
+  if (bin) {
+    return { command: bin, args: ['mcp'] };
+  }
+
+  // Fallback: npx (works without a global install, but slow cold-start)
   if (process.platform === 'win32') {
     return {
       command: 'cmd',

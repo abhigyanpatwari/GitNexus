@@ -113,7 +113,13 @@ function extractPythonParameters(node: SyntaxNode): ParameterInfo[] {
           continue;
         }
         isFirst = false;
-        params.push({ name: param.text, type: null, isOptional: false, isVariadic: false });
+        params.push({
+          name: param.text,
+          type: null,
+          rawType: null,
+          isOptional: false,
+          isVariadic: false,
+        });
         break;
       }
       case 'default_parameter': {
@@ -121,7 +127,13 @@ function extractPythonParameters(node: SyntaxNode): ParameterInfo[] {
         isFirst = false;
         const nameNode = param.childForFieldName('name');
         if (nameNode) {
-          params.push({ name: nameNode.text, type: null, isOptional: true, isVariadic: false });
+          params.push({
+            name: nameNode.text,
+            type: null,
+            rawType: null,
+            isOptional: true,
+            isVariadic: false,
+          });
         }
         break;
       }
@@ -142,20 +154,34 @@ function extractPythonParameters(node: SyntaxNode): ParameterInfo[] {
           ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
           : null;
 
+        const rawTypeText = typeNode?.text?.trim() ?? null;
         if (inner.type === 'list_splat_pattern') {
           const nameId = inner.firstNamedChild;
           if (nameId) {
-            params.push({ name: nameId.text, type: typeText, isOptional: false, isVariadic: true });
+            params.push({
+              name: nameId.text,
+              type: typeText,
+              rawType: rawTypeText,
+              isOptional: false,
+              isVariadic: true,
+            });
           }
         } else if (inner.type === 'dictionary_splat_pattern') {
           const nameId = inner.firstNamedChild;
           if (nameId) {
-            params.push({ name: nameId.text, type: typeText, isOptional: false, isVariadic: true });
+            params.push({
+              name: nameId.text,
+              type: typeText,
+              rawType: rawTypeText,
+              isOptional: false,
+              isVariadic: true,
+            });
           }
         } else {
           params.push({
             name: inner.text,
             type: typeText,
+            rawType: rawTypeText,
             isOptional: false,
             isVariadic: false,
           });
@@ -173,6 +199,7 @@ function extractPythonParameters(node: SyntaxNode): ParameterInfo[] {
             type: typeNode
               ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
               : null,
+            rawType: typeNode?.text?.trim() ?? null,
             isOptional: true,
             isVariadic: false,
           });
@@ -184,7 +211,13 @@ function extractPythonParameters(node: SyntaxNode): ParameterInfo[] {
         isFirst = false;
         const nameId = param.firstNamedChild;
         if (nameId) {
-          params.push({ name: nameId.text, type: null, isOptional: false, isVariadic: true });
+          params.push({
+            name: nameId.text,
+            type: null,
+            rawType: null,
+            isOptional: false,
+            isVariadic: true,
+          });
         }
         break;
       }
@@ -193,7 +226,13 @@ function extractPythonParameters(node: SyntaxNode): ParameterInfo[] {
         isFirst = false;
         const nameId = param.firstNamedChild;
         if (nameId) {
-          params.push({ name: nameId.text, type: null, isOptional: false, isVariadic: true });
+          params.push({
+            name: nameId.text,
+            type: null,
+            rawType: null,
+            isOptional: false,
+            isVariadic: true,
+          });
         }
         break;
       }

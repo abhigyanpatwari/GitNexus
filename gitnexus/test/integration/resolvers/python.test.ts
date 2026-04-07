@@ -64,7 +64,7 @@ describe('Python relative import & heritage resolution', () => {
   });
 
   it('no OVERRIDES edges target Property nodes', () => {
-    const overrides = getRelationships(result, 'OVERRIDES');
+    const overrides = getRelationships(result, 'METHOD_OVERRIDES');
     for (const edge of overrides) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
@@ -2099,5 +2099,15 @@ describe('Python abstract dispatch', () => {
       const params = baseFind.properties.parameterTypes;
       expect(params).toContain('int');
     }
+  });
+
+  it('does not emit METHOD_IMPLEMENTS for abstract-class inheritance (only interface/trait parents)', () => {
+    // Python ABC is modelled as a Class with EXTENDS (not Interface with IMPLEMENTS),
+    // so the MRO processor does not emit METHOD_IMPLEMENTS edges here.
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edges = mi.filter(
+      (e) => e.sourceFilePath.includes('impl.py') && e.targetFilePath.includes('base.py'),
+    );
+    expect(edges.length).toBe(0);
   });
 });

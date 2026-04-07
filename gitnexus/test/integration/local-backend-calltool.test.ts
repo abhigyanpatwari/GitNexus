@@ -160,10 +160,26 @@ withTestLbugDB(
         const result = await backend.callTool('impact', {
           target: 'authenticate',
           direction: 'downstream',
-          relationTypes: ['OVERRIDES'],
+          relationTypes: ['METHOD_OVERRIDES'],
         });
         expect(result).not.toHaveProperty('error');
         // AuthService.authenticate overrides BaseService.authenticate
+        expect(result.impactedCount).toBeGreaterThanOrEqual(1);
+        const d1 = result.byDepth[1] || result.byDepth['1'] || [];
+        const names = d1.map((d: any) => d.name);
+        expect(names).toContain('authenticate');
+      });
+
+      it('expands legacy OVERRIDES to include METHOD_OVERRIDES (dual-read)', async () => {
+        // Pass the LEGACY alias 'OVERRIDES' — impactByUid should flatMap-expand
+        // it to ['OVERRIDES', 'METHOD_OVERRIDES'] so the METHOD_OVERRIDES edge
+        // between BaseService.authenticate and AuthService.authenticate is found.
+        const result = await backend.callTool('impact', {
+          target: 'authenticate',
+          direction: 'downstream',
+          relationTypes: ['OVERRIDES'],
+        });
+        expect(result).not.toHaveProperty('error');
         expect(result.impactedCount).toBeGreaterThanOrEqual(1);
         const d1 = result.byDepth[1] || result.byDepth['1'] || [];
         const names = d1.map((d: any) => d.name);

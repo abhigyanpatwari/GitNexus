@@ -6,7 +6,6 @@ import type {
   InitializerExtractor,
   ClassNameLookup,
   ConstructorBindingScanner,
-  ReturnTypeExtractor,
   PendingAssignmentExtractor,
   ForLoopExtractor,
 } from './types.js';
@@ -337,60 +336,6 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   return undefined;
 };
 
-/** Regex to extract PHPDoc @return annotations: `@return User` */
-const PHPDOC_RETURN_RE = /@return\s+(\S+)/;
-
-/**
- * Normalize a PHPDoc return type for storage in the SymbolTable.
- * Unlike normalizePhpType (which strips User[] → User for scopeEnv), this preserves
- * array notation so lookupRawReturnType can extract element types for for-loop resolution.
- *   \App\Models\User[] → User[]
- *   ?User → User
- *   Collection<User> → Collection<User>  (preserved for extractElementTypeFromString)
- */
-const normalizePhpReturnType = (raw: string): string | undefined => {
-  // Strip nullable prefix: ?User[] → User[]
-  let type = raw.startsWith('?') ? raw.slice(1) : raw;
-  // Strip union with null/false/void: User[]|null → User[]
-  const parts = type
-    .split('|')
-    .filter((p) => p !== 'null' && p !== 'false' && p !== 'void' && p !== 'mixed');
-  if (parts.length !== 1) return undefined;
-  type = parts[0];
-  // Strip namespace: \App\Models\User[] → User[]
-  const segments = type.split('\\');
-  type = segments[segments.length - 1];
-  // Skip uninformative types
-  if (
-    type === 'mixed' ||
-    type === 'void' ||
-    type === 'self' ||
-    type === 'static' ||
-    type === 'object' ||
-    type === 'array'
-  )
-    return undefined;
-  if (/^\w+(\[\])?$/.test(type) || /^\w+\s*</.test(type)) return type;
-  return undefined;
-};
-
-/**
- * Extract return type from PHPDoc `@return Type` annotation preceding a method.
- * Walks backwards through preceding siblings looking for comment nodes.
- * Preserves array notation (e.g., User[]) for for-loop element type extraction.
- */
-const extractReturnType: ReturnTypeExtractor = (node) => {
-  let sibling = node.previousSibling;
-  while (sibling) {
-    if (sibling.type === 'comment') {
-      const match = PHPDOC_RETURN_RE.exec(sibling.text);
-      if (match) return normalizePhpReturnType(match[1]);
-    } else if (sibling.isNamed && !SKIP_NODE_TYPES.has(sibling.type)) break;
-    sibling = sibling.previousSibling;
-  }
-  return undefined;
-};
-
 /** PHP: $alias = $user → assignment_expression with variable_name left/right.
  *  PHP TypeEnv stores variables WITH $ prefix ($user → User), so we keep $ in lhs/rhs. */
 const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
@@ -605,7 +550,6 @@ export const typeConfig: LanguageTypeConfig = {
   extractParameter,
   extractInitializer,
   scanConstructorBinding,
-  extractReturnType,
   extractForLoopBinding,
   extractPendingAssignment,
 };

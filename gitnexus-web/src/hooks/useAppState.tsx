@@ -145,6 +145,7 @@ interface AppState {
   availableRepos: BackendRepo[];
   setAvailableRepos: (repos: BackendRepo[]) => void;
   switchRepo: (repoName: string) => Promise<void>;
+  setCurrentRepo: (repoName: string) => void;
 
   // Worker API (shared across app)
   runQuery: (cypher: string) => Promise<any[]>;
@@ -455,6 +456,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
   // Backend client — direct HTTP calls (no Worker/Comlink)
   const repoRef = useRef<string | undefined>(undefined);
+
+  const setCurrentRepo = useCallback((repoName: string) => {
+    repoRef.current = repoName;
+  }, []);
 
   const runQuery = useCallback(async (cypher: string): Promise<any[]> => {
     return backendRunQuery(cypher, repoRef.current);
@@ -1077,6 +1082,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         setProjectName(pName);
         repoRef.current = pName;
 
+        // Update URL so F5 / bookmarks open the correct repo
+        const url = new URL(window.location.href);
+        url.searchParams.set('project', pName);
+        window.history.replaceState(null, '', url.toString());
+
         const newGraph = createKnowledgeGraph();
         for (const node of result.nodes) newGraph.addNode(node);
         for (const rel of result.relationships) newGraph.addRelationship(rel);
@@ -1219,6 +1229,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     availableRepos,
     setAvailableRepos,
     switchRepo,
+    setCurrentRepo,
     runQuery,
     isDatabaseReady,
     // Embedding state and methods

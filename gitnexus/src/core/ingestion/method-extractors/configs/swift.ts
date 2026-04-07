@@ -129,20 +129,23 @@ function extractSwiftParameters(node: SyntaxNode): ParameterInfo[] {
 
     // Extract type — tree-sitter-swift uses user_type (not type_annotation)
     let typeName: string | null = null;
+    let rawTypeName: string | null = null;
     for (let j = 0; j < child.namedChildCount; j++) {
       const part = child.namedChild(j);
       if (part?.type === 'user_type' || part?.type === 'type_annotation') {
+        rawTypeName = part.text?.trim() ?? null;
         const inner = part.firstNamedChild;
         if (inner) {
           typeName = extractSimpleTypeName(inner) ?? inner.text?.trim() ?? null;
         } else {
-          typeName = part.text?.trim() ?? null;
+          typeName = rawTypeName;
         }
         break;
       }
       // Handle built-in types (array_type, dictionary_type, optional_type, tuple_type)
       if (part?.type.endsWith('_type') && part.type !== 'simple_identifier') {
-        typeName = extractSimpleTypeName(part) ?? part.text?.trim() ?? null;
+        rawTypeName = part.text?.trim() ?? null;
+        typeName = extractSimpleTypeName(part) ?? rawTypeName;
         break;
       }
     }
@@ -167,6 +170,7 @@ function extractSwiftParameters(node: SyntaxNode): ParameterInfo[] {
     params.push({
       name: paramName,
       type: typeName,
+      rawType: rawTypeName,
       isOptional,
       isVariadic,
     });

@@ -15,11 +15,25 @@ import { resolveKotlinImport } from '../import-resolvers/jvm.js';
 import { extractKotlinNamedBindings } from '../named-bindings/kotlin.js';
 import { appendKotlinWildcard } from '../import-resolvers/jvm.js';
 import { KOTLIN_QUERIES } from '../tree-sitter-queries.js';
-import { isKotlinClassMethod } from '../utils/ast-helpers.js';
+import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { kotlinConfig } from '../field-extractors/configs/jvm.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { kotlinMethodConfig } from '../method-extractors/configs/jvm.js';
+
+/** Check if a Kotlin function_declaration capture is inside a class_body (i.e., a method).
+ *  Kotlin grammar uses function_declaration for both top-level functions and class methods.
+ *  Returns true when the captured definition node has a class_body ancestor. */
+function isKotlinClassMethod(
+  captureNode: { parent?: SyntaxNode | null } | null | undefined,
+): boolean {
+  let ancestor = captureNode?.parent;
+  while (ancestor) {
+    if (ancestor.type === 'class_body') return true;
+    ancestor = ancestor.parent;
+  }
+  return false;
+}
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'println',

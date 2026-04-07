@@ -11,6 +11,7 @@ import {
   getHttpDimensions,
   httpEmbedQuery,
 } from '../../core/embeddings/http-client.js';
+import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
 
 // Model config
 const MODEL_ID = 'Snowflake/snowflake-arctic-embed-xs';
@@ -54,9 +55,9 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
           // Silence stdout and stderr during model load — ONNX Runtime and transformers.js
           // may write progress/init messages that corrupt MCP stdio protocol or produce
           // noisy warnings (e.g. node assignment to execution providers).
-          const origStdout = process.stdout.write;
-          const origStderr = process.stderr.write;
-          process.stdout.write = (() => true) as any;
+          // Use the centralized silenceStdout() to avoid conflicts with pool-adapter's
+          // own stdout patching (independent patching caused restore-order bugs).
+          silenceStdout();
           process.stderr.write = (() => true) as any;
           try {
             embedderInstance = await (pipeline as any)('feature-extraction', MODEL_ID, {
@@ -64,8 +65,8 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
               dtype: 'fp32',
             });
           } finally {
-            process.stdout.write = origStdout;
-            process.stderr.write = origStderr;
+            restoreStdout();
+            process.stderr.write = realStderrWrite;
           }
           console.error(`GitNexus: Embedding model loaded (${device})`);
           return embedderInstance!;

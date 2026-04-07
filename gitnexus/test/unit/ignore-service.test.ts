@@ -333,6 +333,69 @@ describe('createIgnoreFilter', () => {
     await fs.unlink(path.join(tmpDir, '.gitignore'));
   });
 
+  it('childrenIgnored respects negation patterns (exclude-all + whitelist)', async () => {
+    // Reproduces https://github.com/abhigyanpatwari/GitNexus/issues/596
+    // Pattern: `*` (exclude all) + `!iOS/` + `!iOS/**` (whitelist iOS)
+    await fs.writeFile(
+      path.join(tmpDir, '.gitnexusignore'),
+      '*\n!iOS/\n!iOS/**\n!backend/\n!backend/living_plan/\n!backend/living_plan/**\n',
+    );
+    const filter = await createIgnoreFilter(tmpDir);
+
+    // Whitelisted directories must NOT be pruned
+    const iosPath = { name: 'iOS', relative: () => 'iOS' } as any;
+    expect(filter.childrenIgnored(iosPath)).toBe(false);
+
+    const backendPath = { name: 'backend', relative: () => 'backend' } as any;
+    expect(filter.childrenIgnored(backendPath)).toBe(false);
+
+    const livingPlanPath = { name: 'living_plan', relative: () => 'backend/living_plan' } as any;
+    expect(filter.childrenIgnored(livingPlanPath)).toBe(false);
+
+    // Non-whitelisted directories must still be pruned
+    const srcPath = { name: 'src', relative: () => 'src' } as any;
+    expect(filter.childrenIgnored(srcPath)).toBe(true);
+
+    const libPath = { name: 'lib', relative: () => 'lib' } as any;
+    expect(filter.childrenIgnored(libPath)).toBe(true);
+
+    await fs.unlink(path.join(tmpDir, '.gitnexusignore'));
+  });
+
+  it('childrenIgnored respects negation patterns without trailing slash (!dir vs !dir/)', async () => {
+    // Per gitignore spec: `!iOS` (no slash) negates both files and directories
+    // named `iOS`, while `!iOS/` is directory-only. The `ignore` package
+    // normalizes both forms so that `ig.ignores('iOS/')` returns false in either case.
+    // Ref: https://github.com/kaelzhang/node-ignore#2-filenames-and-dirnames (see #596)
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '*\n!iOS\n!iOS/**\n');
+    const filter = await createIgnoreFilter(tmpDir);
+
+    // Bare negation `!iOS` must also un-ignore the iOS/ directory
+    const iosPath = { name: 'iOS', relative: () => 'iOS' } as any;
+    expect(filter.childrenIgnored(iosPath)).toBe(false);
+
+    // Non-whitelisted directories still pruned
+    const srcPath = { name: 'src', relative: () => 'src' } as any;
+    expect(filter.childrenIgnored(srcPath)).toBe(true);
+
+    await fs.unlink(path.join(tmpDir, '.gitnexusignore'));
+  });
+
+  it('ignored respects negation patterns for files under whitelisted directories', async () => {
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '*\n!iOS/\n!iOS/**\n');
+    const filter = await createIgnoreFilter(tmpDir);
+
+    // Files under whitelisted directory should NOT be ignored
+    const swiftFile = { name: 'App.swift', relative: () => 'iOS/App.swift' } as any;
+    expect(filter.ignored(swiftFile)).toBe(false);
+
+    // Files outside whitelisted directory should be ignored
+    const pyFile = { name: 'main.py', relative: () => 'scripts/main.py' } as any;
+    expect(filter.ignored(pyFile)).toBe(true);
+
+    await fs.unlink(path.join(tmpDir, '.gitnexusignore'));
+  });
+
   it('ignored returns true for file-glob patterns like *.log', async () => {
     await fs.writeFile(path.join(tmpDir, '.gitignore'), '*.log\n');
     const filter = await createIgnoreFilter(tmpDir);

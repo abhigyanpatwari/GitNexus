@@ -148,6 +148,7 @@ function extractCppParameters(node: SyntaxNode): ParameterInfo[] {
           type: typeNode
             ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
             : null,
+          rawType: typeNode?.text?.trim() ?? null,
           isOptional: false,
           isVariadic: false,
         });
@@ -162,6 +163,7 @@ function extractCppParameters(node: SyntaxNode): ParameterInfo[] {
           type: typeNode
             ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
             : null,
+          rawType: typeNode?.text?.trim() ?? null,
           isOptional: true,
           isVariadic: false,
         });
@@ -177,6 +179,7 @@ function extractCppParameters(node: SyntaxNode): ParameterInfo[] {
           type: typeNode
             ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
             : null,
+          rawType: typeNode?.text?.trim() ?? null,
           isOptional: false,
           isVariadic: true,
         });
@@ -187,6 +190,7 @@ function extractCppParameters(node: SyntaxNode): ParameterInfo[] {
         params.push({
           name: '...',
           type: null,
+          rawType: null,
           isOptional: false,
           isVariadic: true,
         });
@@ -204,6 +208,7 @@ function extractCppParameters(node: SyntaxNode): ParameterInfo[] {
         params.push({
           name: '...',
           type: null,
+          rawType: null,
           isOptional: false,
           isVariadic: true,
         });
@@ -310,8 +315,8 @@ function hasVirtualSpecifier(node: SyntaxNode, keyword: string): boolean {
 //     This includes namespace-wrapped and nested classes.
 //   - Friend declarations are not extracted.
 //   - Template method declarations with explicit specialization.
-//   - const-qualified method overloads (e.g. begin() vs begin() const) collapse
-//     to the same name — the schema has no isConst field to distinguish them.
+//   - const-qualified method overloads (e.g. begin() vs begin() const) are
+//     disambiguated via isConst flag and $const ID suffix.
 export const cppMethodConfig: MethodExtractionConfig = {
   language: SupportedLanguages.CPlusPlus,
   typeDeclarationNodes: ['class_specifier', 'struct_specifier', 'union_specifier'],
@@ -351,6 +356,20 @@ export const cppMethodConfig: MethodExtractionConfig = {
 
   isOverride(node) {
     return hasVirtualSpecifier(node, 'override');
+  },
+
+  isConst(node) {
+    // const qualifier appears as a type_qualifier child of function_declarator,
+    // after the parameter_list: e.g. `int size() const` → funcDecl has
+    // type_qualifier child with text "const". Not to be confused with return-type
+    // const (e.g. `const int& begin()`) which is at a different AST level.
+    const funcDecl = findFunctionDeclarator(node);
+    if (!funcDecl) return false;
+    for (let i = 0; i < funcDecl.namedChildCount; i++) {
+      const child = funcDecl.namedChild(i);
+      if (child?.type === 'type_qualifier' && child.text === 'const') return true;
+    }
+    return false;
   },
 };
 

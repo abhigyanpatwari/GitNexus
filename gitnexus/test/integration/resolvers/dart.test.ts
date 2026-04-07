@@ -429,3 +429,48 @@ describe.skipIf(!dartAvailable)('Dart async method detection', () => {
     expect(formatName!.properties.returnType).toBe('String');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Interface dispatch: METHOD_IMPLEMENTS edges from concrete → abstract methods
+// abstract Repository with find/save, SqlRepository implements them
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)('Dart interface dispatch (METHOD_IMPLEMENTS)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-interface-dispatch'), () => {});
+  }, 60000);
+
+  it('detects Repository class and SqlRepository class', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Repository');
+    expect(classes).toContain('SqlRepository');
+  });
+
+  it('emits IMPLEMENTS edge SqlRepository → Repository', () => {
+    const impl = getRelationships(result, 'IMPLEMENTS');
+    const edge = impl.find((e) => e.source === 'SqlRepository' && e.target === 'Repository');
+    expect(edge).toBeDefined();
+  });
+
+  it('emits METHOD_IMPLEMENTS edges for find and save', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const findEdge = mi.find(
+      (e) =>
+        e.source === 'find' &&
+        e.target === 'find' &&
+        e.sourceFilePath.includes('sql_repository') &&
+        e.targetFilePath.includes('repository'),
+    );
+    const saveEdge = mi.find(
+      (e) =>
+        e.source === 'save' &&
+        e.target === 'save' &&
+        e.sourceFilePath.includes('sql_repository') &&
+        e.targetFilePath.includes('repository'),
+    );
+    expect(findEdge).toBeDefined();
+    expect(saveEdge).toBeDefined();
+  });
+});

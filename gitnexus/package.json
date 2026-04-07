@@ -53,6 +53,7 @@
     "@huggingface/transformers": "^4.0.1",
     "@ladybugdb/core": "^0.15.2",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "@scarf/scarf": "^1.4.0",
     "cli-progress": "^3.12.0",
     "commander": "^12.0.0",
     "cors": "^2.8.5",

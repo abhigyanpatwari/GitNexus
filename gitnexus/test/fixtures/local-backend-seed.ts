@@ -37,7 +37,7 @@ export const LOCAL_BACKEND_SEED_DATA = [
    CREATE (c)-[:CodeRelation {type: 'HAS_METHOD', confidence: 1.0, reason: 'class-method', step: 0}]->(m)`,
   // OVERRIDES: AuthService.authenticate -> BaseService.authenticate
   `MATCH (a:Method), (b:Method) WHERE a.id = 'method:AuthService.authenticate' AND b.id = 'method:BaseService.authenticate'
-   CREATE (a)-[:CodeRelation {type: 'OVERRIDES', confidence: 1.0, reason: 'mro-resolution', step: 0}]->(b)`,
+   CREATE (a)-[:CodeRelation {type: 'METHOD_OVERRIDES', confidence: 1.0, reason: 'mro-resolution', step: 0}]->(b)`,
   // HAS_METHOD: BaseService -> authenticate
   `MATCH (c:Class), (m:Method) WHERE c.id = 'class:BaseService' AND m.id = 'method:BaseService.authenticate'
    CREATE (c)-[:CodeRelation {type: 'HAS_METHOD', confidence: 1.0, reason: 'class-method', step: 0}]->(m)`,

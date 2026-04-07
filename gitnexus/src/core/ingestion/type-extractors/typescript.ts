@@ -6,7 +6,6 @@ import type {
   InitializerExtractor,
   ClassNameLookup,
   ConstructorBindingScanner,
-  ReturnTypeExtractor,
   PendingAssignmentExtractor,
   PendingAssignment,
   ForLoopExtractor,
@@ -196,44 +195,6 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   const calleeName = extractCalleeName(value);
   if (!calleeName) return undefined;
   return { varName: nameNode.text, calleeName };
-};
-
-/** Regex to extract @returns or @return from JSDoc comments: `@returns {Type}` */
-const JSDOC_RETURN_RE = /@returns?\s*\{([^}]+)\}/;
-
-/**
- * Minimal sanitization for JSDoc return types — preserves generic wrappers
- * (e.g. `Promise<User>`) so that extractReturnTypeName in call-processor
- * can apply WRAPPER_GENERICS unwrapping. Unlike normalizeJsDocType (which
- * strips generics), this only strips JSDoc-specific syntax markers.
- */
-const sanitizeReturnType = (raw: string): string | undefined => {
-  let type = raw.trim();
-  // Strip JSDoc nullable/non-nullable prefixes: ?User → User, !User → User
-  if (type.startsWith('?') || type.startsWith('!')) type = type.slice(1);
-  // Strip module: prefix — module:models.User → models.User
-  if (type.startsWith('module:')) type = type.slice(7);
-  // Reject unions (ambiguous)
-  if (type.includes('|')) return undefined;
-  if (!type) return undefined;
-  return type;
-};
-
-/**
- * Extract return type from JSDoc `@returns {Type}` or `@return {Type}` annotation
- * preceding a function/method definition. Walks backwards through preceding siblings
- * looking for comment nodes containing the annotation.
- */
-const extractReturnType: ReturnTypeExtractor = (node) => {
-  let sibling = node.previousSibling;
-  while (sibling) {
-    if (sibling.type === 'comment') {
-      const match = JSDOC_RETURN_RE.exec(sibling.text);
-      if (match) return sanitizeReturnType(match[1]);
-    } else if (sibling.isNamed && sibling.type !== 'decorator') break;
-    sibling = sibling.previousSibling;
-  }
-  return undefined;
 };
 
 const FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set(['for_in_statement']);
@@ -742,7 +703,6 @@ export const typeConfig: LanguageTypeConfig = {
   extractParameter,
   extractInitializer,
   scanConstructorBinding,
-  extractReturnType,
   extractForLoopBinding,
   extractPendingAssignment,
   extractPatternBinding,

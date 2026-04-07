@@ -799,4 +799,69 @@ describe.skipIf(!swiftAvailable)('Swift abstract dispatch', () => {
     expect(sqlFind).toBeDefined();
     expect(sqlFind!.properties.returnType).toBe('String');
   });
+
+  it('emits METHOD_IMPLEMENTS edges from SqlRepository methods → Repository protocol methods', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edges = mi.filter((e) => e.sourceFilePath.includes('Repository.swift'));
+    expect(edges.length).toBe(2);
+    const names = edges.map((e) => e.source).sort();
+    expect(names).toEqual(['find', 'save']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Overloaded method disambiguation: protocol with overloaded find + save,
+// concrete class implements all three. Verifies METHOD_IMPLEMENTS edges
+// correctly distinguish between overloaded signatures.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift overloaded method disambiguation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'swift-overload-dispatch'), () => {});
+  }, 60000);
+
+  it('detects 2 distinct find Method nodes on SqlRepository', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const sqlRepoFinds = methods.filter(
+      (m) => m.name === 'find' && m.properties.filePath?.includes('SqlRepository'),
+    );
+    // Swift class methods may be emitted as Function nodes
+    const functions = getNodesByLabelFull(result, 'Function');
+    const sqlRepoFindFns = functions.filter(
+      (m) => m.name === 'find' && m.properties.filePath?.includes('SqlRepository'),
+    );
+    const totalFinds = sqlRepoFinds.length + sqlRepoFindFns.length;
+    expect(totalFinds).toBe(2);
+  });
+
+  it('emits METHOD_IMPLEMENTS edges for both find overloads', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const findEdges = mi.filter(
+      (e) =>
+        e.source === 'find' &&
+        e.target === 'find' &&
+        e.sourceFilePath.includes('SqlRepository') &&
+        e.targetFilePath.includes('Repository'),
+    );
+    expect(findEdges.length).toBe(2);
+  });
+
+  it('emits METHOD_IMPLEMENTS edge for save', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const saveEdge = mi.find(
+      (e) =>
+        e.source === 'save' &&
+        e.target === 'save' &&
+        e.sourceFilePath.includes('SqlRepository') &&
+        e.targetFilePath.includes('Repository'),
+    );
+    expect(saveEdge).toBeDefined();
+  });
+
+  it('emits exactly 3 METHOD_IMPLEMENTS edges total', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    expect(mi.length).toBe(3);
+  });
 });

@@ -398,11 +398,16 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // defense-in-depth — do not remove `dot: false` assuming this covers it.
       if (DEFAULT_IGNORE_LIST.has(p.name)) return true;
       // Check against .gitignore / .gitnexusignore patterns.
-      // Test both bare path and path with trailing slash to handle
-      // bare-name patterns (e.g. `local`) and dir-only patterns (e.g. `local/`).
+      // Since childrenIgnored is only called for directories, always test with
+      // a trailing slash. This ensures directory-only negation patterns (e.g.
+      // `!iOS/`) are applied correctly — without the slash, `ig.ignores('iOS')`
+      // treats the path as a file and misses the negation.
+      // Bare-name patterns (e.g. `local`) still match `local/` per gitignore spec:
+      // the `ignore` package normalizes `dir` and `dir/` to match directories.
+      // See: https://github.com/kaelzhang/node-ignore#2-filenames-and-dirnames
       if (ig) {
         const rel = p.relative();
-        if (rel && (ig.ignores(rel) || ig.ignores(rel + '/'))) return true;
+        if (rel && ig.ignores(rel + '/')) return true;
       }
       return false;
     },

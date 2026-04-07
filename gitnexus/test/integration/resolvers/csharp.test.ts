@@ -86,7 +86,7 @@ describe('C# heritage resolution', () => {
   });
 
   it('no OVERRIDES edges target Property nodes', () => {
-    const overrides = getRelationships(result, 'OVERRIDES');
+    const overrides = getRelationships(result, 'METHOD_OVERRIDES');
     for (const edge of overrides) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
@@ -1480,18 +1480,101 @@ describe('C# overload disambiguation by parameter types', () => {
     );
   }, 60000);
 
-  it('detects Lookup method with parameterTypes on graph node', () => {
+  it('produces distinct graph nodes for same-arity overloads via type-hash suffix', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const lookupNodes = methods.filter((m) => m.name === 'Lookup');
-    expect(lookupNodes.length).toBe(1);
-    expect(lookupNodes[0].properties.parameterTypes).toEqual(['int']);
+    // Type-hash disambiguation → 2 distinct graph nodes
+    expect(lookupNodes.length).toBe(2);
+    const types = lookupNodes.map((n) => n.properties.parameterTypes).sort();
+    expect(types).toEqual([['int'], ['string']]);
   });
 
-  it('emits CALLS edge from Run() → Lookup() via overload disambiguation', () => {
+  it('CallById() emits exactly one CALLS edge to Lookup(int)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const lookupCalls = calls.filter((c) => c.source === 'Run' && c.target === 'Lookup');
-    // Both Lookup(42) and Lookup("alice") resolve to same nodeId → 1 CALLS edge
-    expect(lookupCalls.length).toBe(1);
+    const fromCallById = calls.filter((c) => c.source === 'CallById' && c.target === 'Lookup');
+    expect(fromCallById.length).toBe(1);
+    const targetNode = result.graph.getNode(fromCallById[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('CallByName() emits exactly one CALLS edge to Lookup(string)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fromCallByName = calls.filter((c) => c.source === 'CallByName' && c.target === 'Lookup');
+    expect(fromCallByName.length).toBe(1);
+    const targetNode = result.graph.getNode(fromCallByName[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['string']);
+  });
+});
+
+// ── Phase P: Same-arity overloads — cross-file + chain resolution ─────────
+
+describe('C# same-arity overload cross-file and chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-same-arity-cross-file'),
+      () => {},
+    );
+  }, 60000);
+
+  it('CrossFileById() emits exactly one CALLS edge to Find(int) in DbLookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'CrossFileById' &&
+        c.target === 'Find' &&
+        c.targetFilePath.includes('DbLookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('CrossFileByName() emits exactly one CALLS edge to Find(string) in DbLookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'CrossFileByName' &&
+        c.target === 'Find' &&
+        c.targetFilePath.includes('DbLookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['string']);
+  });
+
+  it('emits METHOD_IMPLEMENTS from DbLookup.Find → ILookup.Find with matching types', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edges = mi.filter(
+      (e) =>
+        e.source === 'Find' &&
+        e.target === 'Find' &&
+        e.sourceFilePath.includes('DbLookup') &&
+        e.targetFilePath.includes('ILookup'),
+    );
+    expect(edges.length).toBe(2);
+    for (const edge of edges) {
+      const sourceNode = result.graph.getNode(edge.rel.sourceId);
+      const targetNode = result.graph.getNode(edge.rel.targetId);
+      expect(sourceNode?.properties.parameterTypes).toEqual(targetNode?.properties.parameterTypes);
+    }
+  });
+
+  it('ChainIntToFormat() resolves find(42) → Find(int) cross-file', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findEdges = calls.filter((c) => c.source === 'ChainIntToFormat' && c.target === 'Find');
+    expect(findEdges.length).toBe(1);
+    const findTarget = result.graph.getNode(findEdges[0].rel.targetId);
+    expect(findTarget?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('ChainNameToFormat() resolves find("alice") → Find(string) cross-file', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findEdges = calls.filter((c) => c.source === 'ChainNameToFormat' && c.target === 'Find');
+    expect(findEdges.length).toBe(1);
+    const findTarget = result.graph.getNode(findEdges[0].rel.targetId);
+    expect(findTarget?.properties.parameterTypes).toEqual(['string']);
   });
 });
 
@@ -1720,5 +1803,111 @@ describe('C# method enrichment', () => {
       (c) => c.target === 'Classify' && c.sourceFilePath.includes('App.cs'),
     );
     expect(classifyCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Interface dispatch: METHOD_IMPLEMENTS edges
+// ---------------------------------------------------------------------------
+
+describe('C# interface dispatch (METHOD_IMPLEMENTS)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-interface-dispatch'), () => {});
+  }, 60000);
+
+  it('detects IRepository interface and SqlRepository class', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    const ifaces = getNodesByLabel(result, 'Interface');
+    expect(classes).toContain('SqlRepository');
+    expect(ifaces).toContain('IRepository');
+  });
+
+  it('emits IMPLEMENTS edge SqlRepository → IRepository', () => {
+    const impl = getRelationships(result, 'IMPLEMENTS');
+    const edge = impl.find((e) => e.source === 'SqlRepository' && e.target === 'IRepository');
+    expect(edge).toBeDefined();
+  });
+
+  it('emits METHOD_IMPLEMENTS edges for Find and Save', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const findEdge = mi.find(
+      (e) =>
+        e.source === 'Find' &&
+        e.target === 'Find' &&
+        e.sourceFilePath.includes('SqlRepository') &&
+        e.targetFilePath.includes('IRepository'),
+    );
+    const saveEdge = mi.find(
+      (e) =>
+        e.source === 'Save' &&
+        e.target === 'Save' &&
+        e.sourceFilePath.includes('SqlRepository') &&
+        e.targetFilePath.includes('IRepository'),
+    );
+    expect(findEdge).toBeDefined();
+    expect(saveEdge).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Overloaded method disambiguation: METHOD_IMPLEMENTS with overloads
+// IRepository declares Find(int), Find(string), Save(string).
+// SqlRepository implements all three.
+// Overloaded methods (same name, different params) collapse into a single
+// graph node (generateId drops startLine), so Find appears once per file.
+// METHOD_IMPLEMENTS still emits one edge per unique (source, target) pair.
+// ---------------------------------------------------------------------------
+
+describe('C# overloaded method disambiguation (METHOD_IMPLEMENTS)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-overload-dispatch'), () => {});
+  }, 60000);
+
+  it('detects 2 distinct Find Method nodes on SqlRepository (different arities)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const findOnSql = methods.filter(
+      (m) => m.name === 'Find' && m.properties.filePath?.includes('SqlRepository'),
+    );
+    expect(findOnSql.length).toBe(2);
+  });
+
+  it('emits METHOD_IMPLEMENTS edges for both Find overloads', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const findEdges = mi.filter(
+      (e) =>
+        e.source === 'Find' &&
+        e.target === 'Find' &&
+        e.sourceFilePath.includes('SqlRepository') &&
+        e.targetFilePath.includes('IRepository'),
+    );
+    expect(findEdges.length).toBe(2);
+  });
+
+  it('emits METHOD_IMPLEMENTS for Save -> IRepository.Save', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const saveEdge = mi.find(
+      (e) =>
+        e.source === 'Save' &&
+        e.target === 'Save' &&
+        e.sourceFilePath.includes('SqlRepository') &&
+        e.targetFilePath.includes('IRepository'),
+    );
+    expect(saveEdge).toBeDefined();
+  });
+
+  it('emits exactly 3 METHOD_IMPLEMENTS edges', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    expect(mi.length).toBe(3);
+  });
+
+  it('detects SqlRepository class and IRepository interface', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    const ifaces = getNodesByLabel(result, 'Interface');
+    expect(classes).toContain('SqlRepository');
+    expect(ifaces).toContain('IRepository');
   });
 });

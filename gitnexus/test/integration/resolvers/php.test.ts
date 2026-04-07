@@ -128,7 +128,7 @@ describe('PHP heritage & import resolution', () => {
   // --- Property OVERRIDES exclusion ---
 
   it('does not emit OVERRIDES for property name collisions ($status in both traits)', () => {
-    const overrides = getRelationships(result, 'OVERRIDES');
+    const overrides = getRelationships(result, 'METHOD_OVERRIDES');
     // OVERRIDES should only target Method nodes, never Property nodes
     for (const edge of overrides) {
       const target = result.graph.getNode(edge.rel.targetId);
@@ -140,7 +140,7 @@ describe('PHP heritage & import resolution', () => {
   // --- MRO: OVERRIDES edge ---
 
   it('emits OVERRIDES edge for User overriding log (inherited from BaseModel)', () => {
-    const overrides = getRelationships(result, 'OVERRIDES');
+    const overrides = getRelationships(result, 'METHOD_OVERRIDES');
     expect(overrides.length).toBe(1);
     const logOverride = overrides.find((e) => e.source === 'User' && e.target === 'log');
     expect(logOverride).toBeDefined();
@@ -1768,5 +1768,15 @@ describe('PHP abstract dispatch', () => {
       const params = baseFind.properties.parameterTypes;
       expect(params).toContain('int');
     }
+  });
+
+  it('emits METHOD_IMPLEMENTS edges from SqlRepository methods → Repository interface methods', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edges = mi.filter(
+      (e) => e.sourceFilePath.includes('SqlRepository') && e.targetFilePath.includes('Repository'),
+    );
+    expect(edges.length).toBe(2);
+    const names = edges.map((e) => e.source).sort();
+    expect(names).toEqual(['find', 'save']);
   });
 });

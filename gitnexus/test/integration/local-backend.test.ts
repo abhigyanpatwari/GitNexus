@@ -94,7 +94,7 @@ withTestLbugDB(
           'EXTENDS',
           'IMPLEMENTS',
           'HAS_METHOD',
-          'OVERRIDES',
+          'METHOD_OVERRIDES',
           'ACCESSES',
           'CONTAINS',
           'DEFINES',

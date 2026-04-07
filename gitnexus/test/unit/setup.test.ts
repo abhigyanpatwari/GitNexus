@@ -10,8 +10,15 @@ const execFileMock = vi.fn((...args: any[]) => {
   }
 });
 
+// By default, execFileSync throws (simulating `which gitnexus` not found)
+// so getMcpEntry() falls back to the npx path.
+const execFileSyncMock = vi.fn(() => {
+  throw new Error('not found');
+});
+
 vi.mock('child_process', () => ({
   execFile: execFileMock,
+  execFileSync: execFileSyncMock,
 }));
 
 describe('setupClaudeCode', () => {
@@ -149,5 +156,39 @@ describe('setupClaudeCode', () => {
     const config = JSON.parse(raw);
 
     expect(config.mcpServers.gitnexus).toBeDefined();
+  });
+
+  it('uses global binary path when gitnexus is on PATH', async () => {
+    setPlatform('darwin');
+    execFileSyncMock.mockReturnValueOnce('/usr/local/bin/gitnexus\n');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.claude.json'), 'utf-8');
+    const config = JSON.parse(raw);
+
+    expect(config.mcpServers.gitnexus).toEqual({
+      command: '/usr/local/bin/gitnexus',
+      args: ['mcp'],
+    });
+  });
+
+  it('falls back to npx when gitnexus is not on PATH', async () => {
+    setPlatform('darwin');
+    execFileSyncMock.mockImplementationOnce(() => {
+      throw new Error('not found');
+    });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.claude.json'), 'utf-8');
+    const config = JSON.parse(raw);
+
+    expect(config.mcpServers.gitnexus).toEqual({
+      command: 'npx',
+      args: ['-y', 'gitnexus@latest', 'mcp'],
+    });
   });
 });

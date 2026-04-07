@@ -213,15 +213,18 @@ function extractSingleParam(param: SyntaxNode, isOptionalBlock: boolean): Parame
 
   // Find the type node
   let typeName: string | null = null;
+  let rawTypeName: string | null = null;
   for (let i = 0; i < param.namedChildCount; i++) {
     const child = param.namedChild(i);
     if (child && TYPE_NODE_TYPES.has(child.type)) {
-      typeName = extractSimpleTypeName(child) ?? child.text?.trim() ?? null;
+      rawTypeName = child.text?.trim() ?? null;
+      typeName = extractSimpleTypeName(child) ?? rawTypeName;
       break;
     }
     // Also check type_identifier
     if (child?.type === 'type_identifier') {
-      typeName = child.text?.trim() ?? null;
+      rawTypeName = child.text?.trim() ?? null;
+      typeName = rawTypeName;
       break;
     }
   }
@@ -256,6 +259,7 @@ function extractSingleParam(param: SyntaxNode, isOptionalBlock: boolean): Parame
   return {
     name,
     type: typeName,
+    rawType: rawTypeName,
     isOptional,
     isVariadic: false, // Dart has no variadic params
   };

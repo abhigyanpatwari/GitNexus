@@ -8,7 +8,9 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import type { NodeLabel } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
+import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { tsExportChecker } from '../export-detection.js';
 import { resolveTypescriptImport, resolveJavascriptImport } from '../import-resolvers/standard.js';
@@ -22,6 +24,31 @@ import {
   typescriptMethodConfig,
   javascriptMethodConfig,
 } from '../method-extractors/configs/typescript-javascript.js';
+
+/**
+ * TypeScript/JavaScript: arrow_function and function_expression get their name
+ * from the parent variable_declarator (e.g. `const foo = () => {}`).
+ */
+const tsExtractFunctionName = (
+  node: SyntaxNode,
+): { funcName: string | null; label: NodeLabel } | null => {
+  if (node.type !== 'arrow_function' && node.type !== 'function_expression') return null;
+
+  const parent = node.parent;
+  if (parent?.type !== 'variable_declarator') return null;
+
+  let nameNode = parent.childForFieldName?.('name');
+  if (!nameNode) {
+    for (let i = 0; i < parent.childCount; i++) {
+      const c = parent.child(i);
+      if (c?.type === 'identifier') {
+        nameNode = c;
+        break;
+      }
+    }
+  }
+  return { funcName: nameNode?.text ?? null, label: 'Function' };
+};
 
 export const BUILT_INS: ReadonlySet<string> = new Set([
   'console',
@@ -129,7 +156,10 @@ export const typescriptProvider = defineLanguage({
   importResolver: resolveTypescriptImport,
   namedBindingExtractor: extractTsNamedBindings,
   fieldExtractor: typescriptFieldExtractor,
-  methodExtractor: createMethodExtractor(typescriptMethodConfig),
+  methodExtractor: createMethodExtractor({
+    ...typescriptMethodConfig,
+    extractFunctionName: tsExtractFunctionName,
+  }),
   builtInNames: BUILT_INS,
 });
 
@@ -142,6 +172,9 @@ export const javascriptProvider = defineLanguage({
   importResolver: resolveJavascriptImport,
   namedBindingExtractor: extractTsNamedBindings,
   fieldExtractor: createFieldExtractor(javascriptConfig),
-  methodExtractor: createMethodExtractor(javascriptMethodConfig),
+  methodExtractor: createMethodExtractor({
+    ...javascriptMethodConfig,
+    extractFunctionName: tsExtractFunctionName,
+  }),
   builtInNames: BUILT_INS,
 });

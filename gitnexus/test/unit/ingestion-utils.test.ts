@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
-import { extractFunctionName } from '../../src/core/ingestion/utils/ast-helpers.js';
+import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
+import type { NodeLabel } from 'gitnexus-shared';
+import type { LanguageProvider } from '../../src/core/ingestion/language-provider.js';
 import {
   getTreeSitterBufferSize,
   TREE_SITTER_BUFFER_SIZE,
@@ -341,8 +343,23 @@ describe('isBuiltInOrNoise', () => {
   });
 });
 
-describe('extractFunctionName', () => {
+describe('extractFunctionName (via methodExtractor)', () => {
   const parser = new Parser();
+  const cProvider = getProvider(SupportedLanguages.C);
+  const cppProvider = getProvider(SupportedLanguages.CPlusPlus);
+  const tsProvider = getProvider(SupportedLanguages.TypeScript);
+
+  /** Test helper: extracts function name using methodExtractor hook with generic fallback. */
+  const extractFunctionName = (
+    node: SyntaxNode | null,
+    provider?: LanguageProvider,
+  ): { funcName: string | null; label: NodeLabel } => {
+    if (!node) return { funcName: null, label: 'Function' };
+    const result = provider?.methodExtractor?.extractFunctionName?.(node);
+    if (result) return result;
+    const funcName = node.childForFieldName?.('name')?.text ?? null;
+    return { funcName, label: 'Function' };
+  };
 
   describe('C', () => {
     it('extracts function name from C function definition', () => {
@@ -351,7 +368,7 @@ describe('extractFunctionName', () => {
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
 
-      const result = extractFunctionName(funcNode);
+      const result = extractFunctionName(funcNode, cProvider);
 
       expect(result.funcName).toBe('main');
       expect(result.label).toBe('Function');
@@ -363,7 +380,7 @@ describe('extractFunctionName', () => {
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
 
-      const result = extractFunctionName(funcNode);
+      const result = extractFunctionName(funcNode, cProvider);
 
       expect(result.funcName).toBe('helper');
       expect(result.label).toBe('Function');
@@ -377,7 +394,7 @@ describe('extractFunctionName', () => {
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
 
-      const result = extractFunctionName(funcNode);
+      const result = extractFunctionName(funcNode, cppProvider);
 
       expect(result.funcName).toBe('OnEncryptData');
       expect(result.label).toBe('Method');
@@ -389,7 +406,7 @@ describe('extractFunctionName', () => {
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
 
-      const result = extractFunctionName(funcNode);
+      const result = extractFunctionName(funcNode, cppProvider);
 
       expect(result.funcName).toBe('OnDataOprEvent');
       expect(result.label).toBe('Method');
@@ -401,7 +418,7 @@ describe('extractFunctionName', () => {
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
 
-      const result = extractFunctionName(funcNode);
+      const result = extractFunctionName(funcNode, cppProvider);
 
       expect(result.funcName).toBe('standalone_function');
       expect(result.label).toBe('Function');
@@ -413,7 +430,7 @@ describe('extractFunctionName', () => {
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
 
-      const result = extractFunctionName(funcNode);
+      const result = extractFunctionName(funcNode, cppProvider);
 
       expect(result.funcName).toBe('handler');
       expect(result.label).toBe('Method');
@@ -427,7 +444,7 @@ describe('extractFunctionName', () => {
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
 
-      const result = extractFunctionName(funcNode);
+      const result = extractFunctionName(funcNode, cProvider);
 
       expect(result.funcName).toBe('get_data');
       expect(result.label).toBe('Function');
@@ -439,7 +456,7 @@ describe('extractFunctionName', () => {
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
 
-      const result = extractFunctionName(funcNode);
+      const result = extractFunctionName(funcNode, cProvider);
 
       expect(result.funcName).toBe('get_strings');
       expect(result.label).toBe('Function');
@@ -451,7 +468,7 @@ describe('extractFunctionName', () => {
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
 
-      const result = extractFunctionName(funcNode);
+      const result = extractFunctionName(funcNode, cProvider);
 
       expect(result.funcName).toBe('create_node');
       expect(result.label).toBe('Function');
@@ -465,7 +482,7 @@ describe('extractFunctionName', () => {
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
 
-      const result = extractFunctionName(funcNode);
+      const result = extractFunctionName(funcNode, cppProvider);
 
       expect(result.funcName).toBe('getData');
       expect(result.label).toBe('Method');
@@ -477,7 +494,7 @@ describe('extractFunctionName', () => {
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
 
-      const result = extractFunctionName(funcNode);
+      const result = extractFunctionName(funcNode, cppProvider);
 
       expect(result.funcName).toBe('get_name');
       expect(result.label).toBe('Function');
@@ -489,7 +506,7 @@ describe('extractFunctionName', () => {
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
 
-      const result = extractFunctionName(funcNode);
+      const result = extractFunctionName(funcNode, cppProvider);
 
       expect(result.funcName).toBe('at');
       expect(result.label).toBe('Method');
@@ -501,7 +518,7 @@ describe('extractFunctionName', () => {
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
 
-      const result = extractFunctionName(funcNode);
+      const result = extractFunctionName(funcNode, cppProvider);
 
       expect(result.funcName).toBe('getName');
       expect(result.label).toBe('Method');
@@ -515,7 +532,7 @@ describe('extractFunctionName', () => {
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
 
-      const result = extractFunctionName(funcNode);
+      const result = extractFunctionName(funcNode, cppProvider);
 
       // destructor_name includes the ~ prefix
       expect(result.funcName).toBe('~MyClass');
@@ -533,7 +550,7 @@ describe('extractFunctionName', () => {
       const declarator = varDecl!.namedChild(0);
       const arrowFunc = declarator!.namedChild(1);
 
-      const result = extractFunctionName(arrowFunc);
+      const result = extractFunctionName(arrowFunc, tsProvider);
 
       expect(result.funcName).toBe('myHandler');
       expect(result.label).toBe('Function');
@@ -548,7 +565,7 @@ describe('extractFunctionName', () => {
       const declarator = varDecl!.namedChild(0);
       const funcExpr = declarator!.namedChild(1);
 
-      const result = extractFunctionName(funcExpr);
+      const result = extractFunctionName(funcExpr, tsProvider);
 
       expect(result.funcName).toBe('processItem');
       expect(result.label).toBe('Function');

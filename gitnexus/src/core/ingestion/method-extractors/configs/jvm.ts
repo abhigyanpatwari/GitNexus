@@ -70,6 +70,7 @@ function extractJavaParameters(node: SyntaxNode): ParameterInfo[] {
         params.push({
           name: nameNode.text,
           type: typeNode ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim()) : null,
+          rawType: typeNode?.text?.trim() ?? null,
           isOptional: false,
           isVariadic: false,
         });
@@ -78,6 +79,7 @@ function extractJavaParameters(node: SyntaxNode): ParameterInfo[] {
       // Varargs: type_identifier + "..." + variable_declarator
       let paramName: string | undefined;
       let paramType: string | null = null;
+      let paramRawType: string | null = null;
       for (let j = 0; j < param.namedChildCount; j++) {
         const c = param.namedChild(j);
         if (!c) continue;
@@ -92,13 +94,15 @@ function extractJavaParameters(node: SyntaxNode): ParameterInfo[] {
           c.type === 'floating_point_type' ||
           c.type === 'boolean_type'
         ) {
-          paramType = extractSimpleTypeName(c) ?? c.text?.trim();
+          paramRawType = c.text?.trim() ?? null;
+          paramType = extractSimpleTypeName(c) ?? paramRawType;
         }
       }
       if (paramName) {
         params.push({
           name: paramName,
           type: paramType,
+          rawType: paramRawType,
           isOptional: false,
           isVariadic: true,
         });
@@ -194,6 +198,7 @@ function extractKotlinParameters(node: SyntaxNode): ParameterInfo[] {
 
         let paramName: string | undefined;
         let paramType: string | null = null;
+        let paramRawType: string | null = null;
         let hasDefault = false;
         const isVariadic = nextIsVariadic;
         nextIsVariadic = false;
@@ -208,7 +213,8 @@ function extractKotlinParameters(node: SyntaxNode): ParameterInfo[] {
             part.type === 'nullable_type' ||
             part.type === 'function_type'
           ) {
-            paramType = extractSimpleTypeName(part) ?? part.text?.trim();
+            paramRawType = part.text?.trim() ?? null;
+            paramType = extractSimpleTypeName(part) ?? paramRawType;
           }
         }
 
@@ -225,6 +231,7 @@ function extractKotlinParameters(node: SyntaxNode): ParameterInfo[] {
           params.push({
             name: paramName,
             type: paramType,
+            rawType: paramRawType,
             isOptional: hasDefault,
             isVariadic: isVariadic,
           });

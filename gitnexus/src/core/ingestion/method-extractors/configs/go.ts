@@ -83,12 +83,19 @@ function extractGoParameters(node: SyntaxNode): ParameterInfo[] {
         }
       }
 
+      const rawType = typeNode?.text?.trim() ?? null;
       if (names.length === 0) {
         // Unnamed parameter: func(int, string)
-        params.push({ name: `_${i}`, type: typeName, isOptional: false, isVariadic: false });
+        params.push({
+          name: `_${i}`,
+          type: typeName,
+          rawType,
+          isOptional: false,
+          isVariadic: false,
+        });
       } else {
         for (const name of names) {
-          params.push({ name, type: typeName, isOptional: false, isVariadic: false });
+          params.push({ name, type: typeName, rawType, isOptional: false, isVariadic: false });
         }
       }
     } else if (param.type === 'variadic_parameter_declaration') {
@@ -100,6 +107,7 @@ function extractGoParameters(node: SyntaxNode): ParameterInfo[] {
       params.push({
         name: nameNode?.text ?? `_${i}`,
         type: typeName,
+        rawType: typeNode?.text?.trim() ?? null,
         isOptional: false,
         isVariadic: true,
       });

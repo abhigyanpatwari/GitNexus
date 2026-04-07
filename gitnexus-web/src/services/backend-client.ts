@@ -302,16 +302,26 @@ export const fetchServerInfo = async (): Promise<ServerInfo> => {
 };
 
 /**
- * Connect an SSE heartbeat to the backend. Fires `onDisconnect` when the
- * server goes down (after one retry to avoid false positives from transient
- * network hiccups). Returns a cleanup function.
+ * Connect an SSE heartbeat to the backend. Retries indefinitely with capped
+ * exponential backoff so transient hiccups don't reset the UI.
+ *
+ * - `onConnect` fires on every successful (re)connection.
+ * - `onReconnecting` fires on the first retry after a drop — use it to show
+ *   a "reconnecting" banner while keeping the current view intact.
+ *
+ * Returns a cleanup function that tears down the EventSource and timers.
  */
-export const connectHeartbeat = (onConnect: () => void, onDisconnect: () => void): (() => void) => {
+export const connectHeartbeat = (
+  onConnect: () => void,
+  onReconnecting: () => void,
+): (() => void) => {
   let closed = false;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let es: EventSource | null = null;
   let attempt = 0;
-  const MAX_RETRIES = 3;
+  /** Whether we've already fired onReconnecting for the current drop. */
+  let notifiedReconnecting = false;
+  const MAX_BACKOFF_MS = 15_000;
 
   const connect = () => {
     if (closed) return;
@@ -319,6 +329,7 @@ export const connectHeartbeat = (onConnect: () => void, onDisconnect: () => void
     es.onopen = () => {
       if (!closed) {
         attempt = 0;
+        notifiedReconnecting = false;
         onConnect();
       }
     };
@@ -326,13 +337,15 @@ export const connectHeartbeat = (onConnect: () => void, onDisconnect: () => void
       es?.close();
       es = null;
       if (closed) return;
-      if (attempt < MAX_RETRIES) {
-        const delay = 1_000 * Math.pow(2, attempt);
-        attempt++;
-        retryTimer = setTimeout(connect, delay);
-      } else {
-        onDisconnect();
+
+      if (!notifiedReconnecting) {
+        notifiedReconnecting = true;
+        onReconnecting();
       }
+
+      const delay = Math.min(1_000 * Math.pow(2, attempt), MAX_BACKOFF_MS);
+      attempt++;
+      retryTimer = setTimeout(connect, delay);
     };
   };
 
