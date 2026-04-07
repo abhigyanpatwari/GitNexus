@@ -239,7 +239,16 @@ const seqMethodMapCache = new Map<
 function seqFindEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
   let current = node.parent;
   while (current) {
-    if (CLASS_CONTAINER_TYPES.has(current.type)) return current;
+    if (CLASS_CONTAINER_TYPES.has(current.type)) {
+      // Ruby singleton_class (class << self) has no name field u2014 skip it and
+      // continue walking up to find the actual class/module container.
+      // This matches the behavior in parse-worker.ts findEnclosingClassNode().
+      if (current.type === 'singleton_class') {
+        current = current.parent;
+        continue;
+      }
+      return current;
+    }
     current = current.parent;
   }
   return null;
