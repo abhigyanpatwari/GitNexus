@@ -519,6 +519,16 @@ describe('TypeScript constructor-inferred type resolution', () => {
     expect(saveMethods.length).toBe(2);
   });
 
+  it('resolves explicit constructor calls for User and Repo', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userCtor = calls.find((c) => c.target === 'User' && c.targetFilePath === 'src/user.ts');
+    const repoCtor = calls.find((c) => c.target === 'Repo' && c.targetFilePath === 'src/repo.ts');
+    expect(userCtor).toBeDefined();
+    expect(repoCtor).toBeDefined();
+    expect(userCtor!.targetLabel).toBe('Class');
+    expect(repoCtor!.targetLabel).toBe('Class');
+  });
+
   it('resolves user.save() to src/user.ts via constructor-inferred type', () => {
     const calls = getRelationships(result, 'CALLS');
     const userSave = calls.find((c) => c.target === 'save' && c.targetFilePath === 'src/user.ts');
@@ -537,6 +547,14 @@ describe('TypeScript constructor-inferred type resolution', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCalls = calls.filter((c) => c.target === 'save');
     expect(saveCalls.length).toBe(2);
+  });
+
+  it('resolves constructor calls for both User and Repo', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userCtor = calls.find((c) => c.target === 'User');
+    const repoCtor = calls.find((c) => c.target === 'Repo');
+    expect(userCtor).toBeDefined();
+    expect(repoCtor).toBeDefined();
   });
 });
 

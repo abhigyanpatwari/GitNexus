@@ -183,8 +183,9 @@ export const createSymbolTable = (): SymbolTable => {
     }
     globalIndex.get(name)!.push(def);
 
-    // C2. Methods with ownerId go to methodByOwner index (in addition to globalIndex).
-    if (type === 'Method' && metadata?.ownerId) {
+    // C2. Methods and constructors with ownerId go to methodByOwner index
+    // (in addition to globalIndex).
+    if ((type === 'Method' || type === 'Constructor') && metadata?.ownerId) {
       const key = `${metadata.ownerId}\0${name}`;
       const existing = methodByOwner.get(key);
       if (existing) {
