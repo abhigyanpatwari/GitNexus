@@ -1178,24 +1178,38 @@ function extractLaravelRoutes(tree: Parser.Tree, filePath: string): ExtractedRou
     }
   }
 
-  function walk(node: SyntaxNode, groupStack: RouteGroupContext[]) {
+  // Iterative traversal using an explicit stack to avoid V8 call stack overflow
+  // on deeply nested ASTs (e.g. Go stdlib, large Grafana components).
+  // Each frame tracks the node and a snapshot of the group stack at that depth.
+  interface WalkFrame {
+    node: SyntaxNode;
+    groupSnapshot: RouteGroupContext[];
+  }
+
+  const walkStack: WalkFrame[] = [{ node: tree.rootNode, groupSnapshot: [] }];
+
+  while (walkStack.length > 0) {
+    const { node, groupSnapshot } = walkStack.pop()!;
+
     // Case 1: Simple Route::get(...), Route::post(...), etc.
     if (isRouteStaticCall(node)) {
       const method = getCallMethodName(node);
       if (method && (ROUTE_HTTP_METHODS.has(method) || ROUTE_RESOURCE_METHODS.has(method))) {
-        emitRoute(method, getArguments(node), node.startPosition.row, groupStack, []);
-        return;
+        emitRoute(method, getArguments(node), node.startPosition.row, groupSnapshot, []);
+        continue;
       }
       if (method === 'group') {
         const argsNode = getArguments(node);
         const groupCtx = parseArrayGroupArgs(argsNode);
         const body = findClosureBody(argsNode);
         if (body) {
-          groupStack.push(groupCtx);
-          walkChildren(body, groupStack);
-          groupStack.pop();
+          const childSnapshot = [...groupSnapshot, groupCtx];
+          const children = body.children ?? [];
+          for (let i = children.length - 1; i >= 0; i--) {
+            walkStack.push({ node: children[i], groupSnapshot: childSnapshot });
+          }
         }
-        return;
+        continue;
       }
     }
 
@@ -1212,11 +1226,13 @@ function extractLaravelRoutes(tree: Parser.Tree, filePath: string): ExtractedRou
         }
         const body = findClosureBody(chain.terminalArgs);
         if (body) {
-          groupStack.push(groupCtx);
-          walkChildren(body, groupStack);
-          groupStack.pop();
+          const childSnapshot = [...groupSnapshot, groupCtx];
+          const children = body.children ?? [];
+          for (let i = children.length - 1; i >= 0; i--) {
+            walkStack.push({ node: children[i], groupSnapshot: childSnapshot });
+          }
         }
-        return;
+        continue;
       }
       if (
         ROUTE_HTTP_METHODS.has(chain.terminalMethod) ||
@@ -1226,24 +1242,19 @@ function extractLaravelRoutes(tree: Parser.Tree, filePath: string): ExtractedRou
           chain.terminalMethod,
           chain.terminalArgs,
           node.startPosition.row,
-          groupStack,
+          groupSnapshot,
           chain.attributes,
         );
-        return;
+        continue;
       }
     }
 
-    // Default: recurse into children
-    walkChildren(node, groupStack);
-  }
-
-  function walkChildren(node: SyntaxNode, groupStack: RouteGroupContext[]) {
-    for (const child of node.children ?? []) {
-      walk(child, groupStack);
+    // Default: push children in reverse so leftmost is processed first
+    const children = node.children ?? [];
+    for (let i = children.length - 1; i >= 0; i--) {
+      walkStack.push({ node: children[i], groupSnapshot });
     }
   }
-
-  walk(tree.rootNode, []);
   return routes;
 }
 
@@ -2151,21 +2162,28 @@ let accumulated: ParseWorkerResult = {
 };
 let cumulativeProcessed = 0;
 
+// Use a loop instead of push(...spread) to avoid hitting V8's argument limit
+// when merging large result sets (push(...arr) calls apply() under the hood
+// and blows the stack when arr has >~65k elements).
+const appendAll = <T>(target: T[], src: T[]) => {
+  for (let i = 0; i < src.length; i++) target.push(src[i]);
+};
+
 const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
-  target.nodes.push(...src.nodes);
-  target.relationships.push(...src.relationships);
-  target.symbols.push(...src.symbols);
-  target.imports.push(...src.imports);
-  target.calls.push(...src.calls);
-  target.assignments.push(...src.assignments);
-  target.heritage.push(...src.heritage);
-  target.routes.push(...src.routes);
-  target.fetchCalls.push(...src.fetchCalls);
-  target.decoratorRoutes.push(...src.decoratorRoutes);
-  target.toolDefs.push(...src.toolDefs);
-  target.ormQueries.push(...src.ormQueries);
-  target.constructorBindings.push(...src.constructorBindings);
-  target.fileScopeBindings.push(...src.fileScopeBindings);
+  appendAll(target.nodes, src.nodes);
+  appendAll(target.relationships, src.relationships);
+  appendAll(target.symbols, src.symbols);
+  appendAll(target.imports, src.imports);
+  appendAll(target.calls, src.calls);
+  appendAll(target.assignments, src.assignments);
+  appendAll(target.heritage, src.heritage);
+  appendAll(target.routes, src.routes);
+  appendAll(target.fetchCalls, src.fetchCalls);
+  appendAll(target.decoratorRoutes, src.decoratorRoutes);
+  appendAll(target.toolDefs, src.toolDefs);
+  appendAll(target.ormQueries, src.ormQueries);
+  appendAll(target.constructorBindings, src.constructorBindings);
+  appendAll(target.fileScopeBindings, src.fileScopeBindings);
   for (const [lang, count] of Object.entries(src.skippedLanguages)) {
     target.skippedLanguages[lang] = (target.skippedLanguages[lang] || 0) + count;
   }
