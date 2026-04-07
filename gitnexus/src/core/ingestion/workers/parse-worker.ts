@@ -1569,6 +1569,25 @@ const processFileGroup = (
         const method = captureMap['express_route.method'].text;
         const routePath = captureMap['express_route.path'].text;
         if (EXPRESS_ROUTE_METHODS.has(method) && routePath.startsWith('/')) {
+          // Extract the receiver (the object the method is called on) to filter out
+          // HTTP client calls like axios.get('/api/users') that match the same pattern
+          // as Express route registrations.
+          const callNode = captureMap['express_route'];
+          const funcNode = callNode.childForFieldName?.('function') ?? callNode.children?.[0];
+          const receiverNode = funcNode?.childForFieldName?.('object') ?? funcNode?.children?.[0];
+          const receiverText = receiverNode?.text?.toLowerCase() ?? '';
+
+          // Known HTTP client receivers u2014 skip these, they're API consumers not routes
+          const HTTP_CLIENT_RECEIVERS = new Set([
+            'axios', 'request', 'fetch', 'http', 'https', 'got', 'ky',
+            'superagent', 'needle', 'undici', 'apiclient', 'client', 'httpclient',
+          ]);
+
+          if (HTTP_CLIENT_RECEIVERS.has(receiverText)) {
+            // This is an HTTP client call, not a route definition u2014 skip it
+            continue;
+          }
+
           const httpMethod =
             method === 'all' || method === 'use' || method === 'route'
               ? 'GET'
