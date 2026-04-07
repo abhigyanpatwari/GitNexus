@@ -54,7 +54,7 @@ function compileRules(rules: HttpMappingRule[]): CompiledHttpMappingRule[] {
   return rules.map((rule) => ({
     rule,
     matchPath: match<Record<string, string | string[]>>(rule.match, { decode: decodeURIComponent }),
-    rewritePath: compile(rule.rewrite),
+    rewritePath: compile(rule.rewrite, { encode: (value) => String(value) }),
   }));
 }
 

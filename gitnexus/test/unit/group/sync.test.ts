@@ -192,6 +192,47 @@ describe('syncGroup', () => {
     expect(result.crossLinks[0].fromContractId).toBe('http::GET::/api/titans/margin/1.0.0');
   });
 
+  it('preserves literal placeholder segments in rewritten http mapping paths', async () => {
+    const config = makeConfig({ frontend: 'frontend-repo', backend: 'backend-repo' });
+    config.httpMappings = [
+      {
+        from: 'frontend',
+        to: { repo: 'backend', service: 'services/order' },
+        methods: ['GET'],
+        match: '/api/titans/order/:version{/*rest}',
+        rewrite: '/orders/{*rest}',
+      },
+    ];
+
+    const mockContracts: StoredContract[] = [
+      {
+        ...makeContract(
+          'http::GET::/api/titans/order/1.0.0/items/{param}',
+          'consumer',
+          'frontend',
+        ),
+        meta: { method: 'GET', path: '/api/titans/order/1.0.0/items/{param}' },
+      },
+      {
+        ...makeContract('http::GET::/orders/items/{param}', 'provider', 'backend'),
+        service: 'services/order',
+        meta: { method: 'GET', path: '/orders/items/{param}' },
+      },
+    ];
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => mockContracts,
+      skipWrite: true,
+    });
+
+    expect(result.crossLinks).toHaveLength(1);
+    expect(result.crossLinks[0].contractId).toBe('http::GET::/orders/items/{param}');
+    expect(result.crossLinks[0].fromContractId).toBe(
+      'http::GET::/api/titans/order/1.0.0/items/{param}',
+    );
+    expect(result.unmatched).toHaveLength(0);
+  });
+
   function makeContract(id: string, role: 'provider' | 'consumer', repo: string): StoredContract {
     return {
       contractId: id,
