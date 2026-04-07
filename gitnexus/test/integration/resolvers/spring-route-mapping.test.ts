@@ -94,6 +94,25 @@ describe('Spring route mapping', () => {
     expect(expectDefined(statusRoute).sourceFilePath).toContain('HealthController.java');
   });
 
+  it('skips unresolved explicit constant mappings without emitting route links', () => {
+    const routes = getNodesByLabel(result, 'Route');
+    const handlesRouteEdges = getRelationships(result, 'HANDLES_ROUTE');
+    const callEdges = getRelationships(result, 'CALLS');
+
+    expect(routes).toHaveLength(7);
+    expect(
+      handlesRouteEdges.some(
+        (edge) =>
+          edge.sourceFilePath.includes('UserController.java') && edge.target.includes('broken'),
+      ),
+    ).toBe(false);
+    expect(
+      callEdges.some(
+        (edge) => edge.source === 'UserController.java' && edge.target === 'brokenUsers',
+      ),
+    ).toBe(false);
+  });
+
   it('creates framework CALLS edges from controller files to handler methods', () => {
     const edges = getRelationships(result, 'CALLS');
     expect(
