@@ -28,14 +28,18 @@ export function registerGroupCommands(program: Command): void {
     )
     .action(async (groupName: string, groupPath: string, registryName: string) => {
       const { getGroupDir, getDefaultGitnexusDir } = await import('../core/group/storage.js');
-      const { loadGroupConfig } = await import('../core/group/config-parser.js');
+      const { loadGroupConfig, serializeGroupConfig } = await import('../core/group/config-parser.js');
       const path = await import('node:path');
       const fs = await import('node:fs/promises');
       const groupDir = getGroupDir(getDefaultGitnexusDir(), groupName);
       const config = await loadGroupConfig(groupDir);
       config.repos[groupPath] = registryName;
 
-      await fs.writeFile(path.join(groupDir, 'group.yaml'), yaml.dump(config), 'utf-8');
+      await fs.writeFile(
+        path.join(groupDir, 'group.yaml'),
+        yaml.dump(serializeGroupConfig(config)),
+        'utf-8',
+      );
       console.log(`Added ${registryName} as "${groupPath}" to group "${groupName}"`);
       console.log(`Run: gitnexus group sync ${groupName}`);
     });
@@ -45,7 +49,7 @@ export function registerGroupCommands(program: Command): void {
     .description('Remove a repo from a group')
     .action(async (groupName: string, repoPath: string) => {
       const { getGroupDir, getDefaultGitnexusDir } = await import('../core/group/storage.js');
-      const { loadGroupConfig } = await import('../core/group/config-parser.js');
+      const { loadGroupConfig, serializeGroupConfig } = await import('../core/group/config-parser.js');
       const path = await import('node:path');
       const fs = await import('node:fs/promises');
       const groupDir = getGroupDir(getDefaultGitnexusDir(), groupName);
@@ -56,7 +60,11 @@ export function registerGroupCommands(program: Command): void {
         return;
       }
       delete config.repos[repoPath];
-      await fs.writeFile(path.join(groupDir, 'group.yaml'), yaml.dump(config), 'utf-8');
+      await fs.writeFile(
+        path.join(groupDir, 'group.yaml'),
+        yaml.dump(serializeGroupConfig(config)),
+        'utf-8',
+      );
       console.log(`Removed "${repoPath}" from group "${groupName}"`);
     });
 

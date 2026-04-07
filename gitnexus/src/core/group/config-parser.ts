@@ -27,6 +27,30 @@ const DEFAULT_MATCHING = {
   max_candidates_per_step: 3,
 };
 
+export function serializeGroupConfig(config: GroupConfig): Record<string, unknown> {
+  return {
+    version: config.version,
+    name: config.name,
+    description: config.description,
+    repos: config.repos,
+    links: config.links,
+    http_mappings: config.httpMappings.map((mapping) => ({
+      from: mapping.from,
+      to: {
+        repo: mapping.to.repo,
+        ...(mapping.to.service ? { service: mapping.to.service } : {}),
+      },
+      ...(mapping.methods ? { methods: mapping.methods } : {}),
+      match: mapping.match,
+      rewrite: mapping.rewrite,
+      ...(mapping.when ? { when: mapping.when } : {}),
+    })),
+    packages: config.packages,
+    detect: config.detect,
+    matching: config.matching,
+  };
+}
+
 export function parseGroupConfig(yamlContent: string): GroupConfig {
   const raw = yaml.load(yamlContent, { schema: yaml.JSON_SCHEMA }) as Record<string, unknown>;
 
@@ -79,7 +103,7 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
     };
   });
 
-  const rawHttpMappings = (raw.http_mappings as unknown[]) || [];
+  const rawHttpMappings = ((raw.http_mappings as unknown[]) || (raw.httpMappings as unknown[])) || [];
   const httpMappings: HttpMappingRule[] = rawHttpMappings.map((entry: unknown, i: number) => {
     const mapping = entry as Record<string, unknown>;
     if (!mapping.from || !repoPaths.has(mapping.from as string)) {

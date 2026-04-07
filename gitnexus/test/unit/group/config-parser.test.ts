@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { loadGroupConfig, parseGroupConfig } from '../../../src/core/group/config-parser.js';
+import {
+  loadGroupConfig,
+  parseGroupConfig,
+  serializeGroupConfig,
+} from '../../../src/core/group/config-parser.js';
 
 const VALID_YAML = `
 version: 1
@@ -95,6 +99,40 @@ repos:
       version: '1.0.0',
     });
     expect(config.httpMappings[0].rewrite).toBe('/orders/*rest');
+  });
+
+  it('accepts legacy camelCase httpMappings when loading existing YAML', () => {
+    const yaml = `
+version: 1
+name: company
+repos:
+  frontend: libra-client
+  backend: libra-server
+httpMappings:
+  - from: frontend
+    to:
+      repo: backend
+    match: /api/titans/trading/:version{/*rest}
+    rewrite: /{*rest}
+`;
+    const config = parseGroupConfig(yaml);
+    expect(config.httpMappings).toHaveLength(1);
+    expect(config.httpMappings[0].match).toBe('/api/titans/trading/:version{/*rest}');
+  });
+
+  it('serializes group config back to snake_case yaml shape', () => {
+    const config = parseGroupConfig(HTTP_MAPPING_YAML);
+    const serialized = serializeGroupConfig(config);
+    expect(serialized).toHaveProperty('http_mappings');
+    expect(serialized).not.toHaveProperty('httpMappings');
+    expect(serialized).toMatchObject({
+      version: 1,
+      name: 'company',
+      repos: {
+        frontend: 'libra-client',
+        backend: 'libra-server',
+      },
+    });
   });
 
   it('throws on missing required fields', () => {
