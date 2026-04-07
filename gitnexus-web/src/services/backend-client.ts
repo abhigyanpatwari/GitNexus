@@ -222,7 +222,7 @@ export function normalizeServerUrl(input: string): string {
 
 // ── Internal Helpers ───────────────────────────────────────────────────────
 
-const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
 const PROBE_TIMEOUT_MS = 2_000;
 
 const fetchWithTimeout = async (
@@ -408,7 +408,8 @@ export const fetchGraph = async (
     .filter(Boolean)
     .join('&');
   const url = `${_backendUrl}/api/graph${params ? `?${params}` : ''}`;
-  const response = await fetchWithTimeout(url, { signal: opts?.signal }, 60_000);
+  // Large repos can take a while to serialize the graph — use an elevated timeout
+  const response = await fetchWithTimeout(url, { signal: opts?.signal }, 120_000);
   await assertOk(response);
 
   const contentType = response.headers.get('Content-Type') || '';
