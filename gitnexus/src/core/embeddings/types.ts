@@ -8,7 +8,7 @@
  * Node labels that should be embedded for semantic search
  * These are code elements that benefit from semantic matching
  */
-export const EMBEDDABLE_LABELS = ['Function', 'Class', 'Method', 'Interface', 'File'] as const;
+export const EMBEDDABLE_LABELS = ['Function', 'Class', 'Method', 'Interface', 'File', 'Section', 'CodeElement'] as const;
 
 export type EmbeddableLabel = (typeof EMBEDDABLE_LABELS)[number];
 
@@ -96,6 +96,8 @@ export interface EmbeddableNode {
   content: string;
   startLine?: number;
   endLine?: number;
+  isPseudocode?: boolean;
+  rawContent?: string;
 }
 
 /**

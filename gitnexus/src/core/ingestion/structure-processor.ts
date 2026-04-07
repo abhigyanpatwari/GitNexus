@@ -1,8 +1,9 @@
 import { generateId } from '../../lib/utils.js';
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
+import { resolveGitNamespace, type GitNamespaceMap } from './git-namespace-detector.js';
 
-export const processStructure = (graph: KnowledgeGraph, paths: string[]) => {
+export const processStructure = (graph: KnowledgeGraph, paths: string[], namespaceMap?: GitNamespaceMap) => {
   paths.forEach((path) => {
     const parts = path.split('/');
     let currentPath = '';
@@ -22,6 +23,7 @@ export const processStructure = (graph: KnowledgeGraph, paths: string[]) => {
         properties: {
           name: part,
           filePath: currentPath,
+          ...(namespaceMap ? { git_namespace: resolveGitNamespace(currentPath, namespaceMap) } : {}),
         },
       };
       graph.addNode(node);

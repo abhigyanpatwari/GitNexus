@@ -96,9 +96,7 @@ export const VALID_RELATION_TYPES = new Set([
   'IMPLEMENTS',
   'HAS_METHOD',
   'HAS_PROPERTY',
-  'METHOD_OVERRIDES',
-  'OVERRIDES', // Legacy alias — dual-read for pre-rename indexes
-  'METHOD_IMPLEMENTS',
+  'OVERRIDES',
   'ACCESSES',
   'HANDLES_ROUTE',
   'FETCHES',
@@ -121,8 +119,7 @@ export const VALID_RELATION_TYPES = new Set([
  *   CALLS / IMPORTS  – direct, strongly-typed references → 0.9
  *   EXTENDS          – class hierarchy, statically verifiable → 0.85
  *   IMPLEMENTS       – interface contract, statically verifiable → 0.85
- *   METHOD_OVERRIDES  – method override, statically verifiable → 0.85
- *   METHOD_IMPLEMENTS – interface method implementation, statically verifiable → 0.85
+ *   OVERRIDES        – method override, statically verifiable → 0.85
  *   HAS_METHOD       – structural containment → 0.95
  *   HAS_PROPERTY     – structural containment → 0.95
  *   ACCESSES         – field read/write, may be indirect → 0.8
@@ -134,8 +131,7 @@ export const IMPACT_RELATION_CONFIDENCE: Readonly<Record<string, number>> = {
   IMPORTS: 0.9,
   EXTENDS: 0.85,
   IMPLEMENTS: 0.85,
-  METHOD_OVERRIDES: 0.85,
-  METHOD_IMPLEMENTS: 0.85,
+  OVERRIDES: 0.85,
   HAS_METHOD: 0.95,
   HAS_PROPERTY: 0.95,
   ACCESSES: 0.8,
@@ -153,48 +149,6 @@ const confidenceForRelType = (relType: string | undefined): number =>
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`GitNexus [${context}]: ${msg}`);
-}
-
-let warnedNsAvailability = false;
-
-/** 
- * Two-Tier Query Guard Pattern (Parameterized)
- * Gracefully falls back if git_namespace is missing from schema
- */
-async function executeWithNsGuard(repoId: string, query: string, params: Record<string, any> = {}): Promise<any[]> {
-  try {
-    return await executeParameterized(repoId, query, params);
-  } catch (e: any) {
-    if (String(e).includes('git_namespace')) {
-      if (!warnedNsAvailability) {
-        logQueryError('namespace:unavailable', 'git_namespace not in schema — re-index to enable');
-        warnedNsAvailability = true;
-      }
-      const safeQuery = query.replace(/,\s*[a-zA-Z0-9_]+\.git_namespace\s+AS\s+git_namespace/g, '');
-      return await executeParameterized(repoId, safeQuery, params);
-    }
-    throw e;
-  }
-}
-
-/** 
- * Two-Tier Query Guard Pattern (Direct Execution)
- * Gracefully falls back if git_namespace is missing from schema
- */
-async function executeQueryWithNsGuard(repoId: string, query: string): Promise<any[]> {
-  try {
-    return await executeQuery(repoId, query);
-  } catch (e: any) {
-    if (String(e).includes('git_namespace')) {
-      if (!warnedNsAvailability) {
-        logQueryError('namespace:unavailable', 'git_namespace not in schema — re-index to enable');
-        warnedNsAvailability = true;
-      }
-      const safeQuery = query.replace(/,\s*[a-zA-Z0-9_]+\.git_namespace\s+AS\s+git_namespace/g, '');
-      return await executeQuery(repoId, safeQuery);
-    }
-    throw e;
-  }
 }
 
 export interface CodebaseContext {
@@ -710,7 +664,6 @@ export class LocalBackend {
         filePath: sym.filePath,
         startLine: sym.startLine,
         endLine: sym.endLine,
-        ...(sym.git_namespace ? { git_namespace: sym.git_namespace } : {}),
         ...(module ? { module } : {}),
         ...(includeContent && content ? { content } : {}),
       };
@@ -880,12 +833,12 @@ export class LocalBackend {
     for (const bm25Result of bm25Results) {
       const fullPath = bm25Result.filePath;
       try {
-        const symbols = await executeWithNsGuard(
+        const symbols = await executeParameterized(
           repo.id,
           `
           MATCH (n)
           WHERE n.filePath = $filePath
-          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.git_namespace AS git_namespace
+          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
           LIMIT 3
         `,
           { filePath: fullPath },
@@ -900,7 +853,6 @@ export class LocalBackend {
               filePath: sym.filePath || sym[3],
               startLine: sym.startLine || sym[4],
               endLine: sym.endLine || sym[5],
-              git_namespace: sym.git_namespace || sym[6] || null,
               bm25Score: bm25Result.score,
             });
           }
@@ -978,7 +930,7 @@ export class LocalBackend {
               ? `MATCH (n:File {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath, n.git_namespace AS git_namespace`
               : `MATCH (n:\`${label}\` {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.git_namespace AS git_namespace`;
 
-          const nodeRows = await executeWithNsGuard(repo.id, nodeQuery, { nodeId });
+          const nodeRows = await executeParameterized(repo.id, nodeQuery, { nodeId });
           if (nodeRows.length > 0) {
             const nodeRow = nodeRows[0];
             // Post-filter by git_namespace if specified
@@ -1209,11 +1161,11 @@ export class LocalBackend {
     let symbols: any[];
 
     if (uid) {
-      symbols = await executeWithNsGuard(
+      symbols = await executeParameterized(
         repo.id,
         `
         MATCH (n {id: $uid})
-        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}, n.git_namespace AS git_namespace
+        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}
         LIMIT 1
       `,
         { uid },
@@ -1234,11 +1186,11 @@ export class LocalBackend {
         queryParams = { symName: name! };
       }
 
-      symbols = await executeWithNsGuard(
+      symbols = await executeParameterized(
         repo.id,
         `
         MATCH (n) ${whereClause}
-        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}, n.git_namespace AS git_namespace
+        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}
         LIMIT 10
       `,
         queryParams,
@@ -1305,7 +1257,6 @@ export class LocalBackend {
           kind: s.type || s[2],
           filePath: s.filePath || s[3],
           line: s.startLine || s[4],
-          git_namespace: s.git_namespace || s[7] || null,
         })),
       };
     }
@@ -1319,7 +1270,7 @@ export class LocalBackend {
       repo.id,
       `
       MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES']
       RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       LIMIT 30
     `,
@@ -1336,9 +1287,7 @@ export class LocalBackend {
       try {
         isDocNodeCheck = (symRawType === 'Section' || symRawType === 'CodeElement') ? true : 
           (await executeParameterized(repo.id,
-            `MATCH (n:Section) WHERE n.id = $symId RETURN n.id AS id LIMIT 1
-             UNION ALL
-             MATCH (n:CodeElement) WHERE n.id = $symId RETURN n.id AS id LIMIT 1`,
+            `MATCH (n) WHERE (n:Section OR n:CodeElement) AND n.id = $symId RETURN n.id LIMIT 1`,
             { symId }
           ).catch(() => [])).length > 0;
         
@@ -1440,7 +1389,7 @@ export class LocalBackend {
       repo.id,
       `
       MATCH (n {id: $symId})-[r:CodeRelation]->(target)
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES']
       RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       LIMIT 30
     `,
@@ -1559,7 +1508,6 @@ export class LocalBackend {
         filePath: sym.filePath || sym[3],
         startLine: sym.startLine || sym[4],
         endLine: sym.endLine || sym[5],
-        git_namespace: sym.git_namespace || sym[7] || null,
         ...(include_content && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
         ...(methodMetadata ? { methodMetadata } : {}),
       },
@@ -1617,12 +1565,12 @@ export class LocalBackend {
         weightedCohesion += (c.cohesion || 0) * s;
       }
 
-      const members = await executeWithNsGuard(
+      const members = await executeParameterized(
         repo.id,
         `
         MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
         WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
-        RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.git_namespace AS git_namespace
+        RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
         LIMIT 30
       `,
         { clusterName: name },
@@ -1641,7 +1589,6 @@ export class LocalBackend {
           name: m.name || m[0],
           type: m.type || m[1],
           filePath: m.filePath || m[2],
-          git_namespace: m.git_namespace || m[3] || null,
         })),
       };
     }
@@ -1661,11 +1608,11 @@ export class LocalBackend {
 
       const proc = processes[0];
       const procId = proc.id || proc[0];
-      const steps = await executeWithNsGuard(
+      const steps = await executeParameterized(
         repo.id,
         `
         MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: $procId})
-        RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step, n.git_namespace AS git_namespace
+        RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step
         ORDER BY r.step
       `,
         { procId },
@@ -1684,7 +1631,6 @@ export class LocalBackend {
           name: s.name || s[0],
           type: s.type || s[1],
           filePath: s.filePath || s[2],
-          git_namespace: s.git_namespace || s[4] || null,
         })),
       };
     }
@@ -1756,11 +1702,11 @@ export class LocalBackend {
     for (const file of changedFiles) {
       const normalizedFile = file.replace(/\\/g, '/');
       try {
-        const symbols = await executeWithNsGuard(
+        const symbols = await executeParameterized(
           repo.id,
           `
           MATCH (n) WHERE n.filePath CONTAINS $filePath
-          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.git_namespace AS git_namespace
+          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
           LIMIT 20
         `,
           { filePath: normalizedFile },
@@ -1771,7 +1717,6 @@ export class LocalBackend {
             name: sym.name || sym[1],
             type: sym.type || sym[2],
             filePath: sym.filePath || sym[3],
-            git_namespace: sym.git_namespace || sym[4] || null,
             change_type: 'Modified',
           });
         }
@@ -1784,7 +1729,7 @@ export class LocalBackend {
     const affectedProcesses = new Map<string, any>();
     for (const sym of changedSymbols) {
       try {
-        const procs = await executeWithNsGuard(
+        const procs = await executeParameterized(
           repo.id,
           `
           MATCH (n {id: $nodeId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
@@ -2115,34 +2060,12 @@ export class LocalBackend {
 
     const { target, direction } = params;
     const maxDepth = params.maxDepth || 3;
-    // Map legacy relation type names before filtering (backward compat for OVERRIDES → METHOD_OVERRIDES)
-    const mappedRelTypes = params.relationTypes?.flatMap((t: string) =>
-      t === 'OVERRIDES' ? ['OVERRIDES', 'METHOD_OVERRIDES'] : [t],
-    );
     const rawRelTypes =
-      mappedRelTypes && mappedRelTypes.length > 0
-        ? mappedRelTypes.filter((t: string) => VALID_RELATION_TYPES.has(t))
-        : [
-            'CALLS',
-            'IMPORTS',
-            'EXTENDS',
-            'IMPLEMENTS',
-            'METHOD_OVERRIDES',
-            'OVERRIDES',
-            'METHOD_IMPLEMENTS',
-          ];
+      params.relationTypes && params.relationTypes.length > 0
+        ? params.relationTypes.filter((t) => VALID_RELATION_TYPES.has(t))
+        : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
     const relationTypes =
-      rawRelTypes.length > 0
-        ? rawRelTypes
-        : [
-            'CALLS',
-            'IMPORTS',
-            'EXTENDS',
-            'IMPLEMENTS',
-            'METHOD_OVERRIDES',
-            'OVERRIDES',
-            'METHOD_IMPLEMENTS',
-          ];
+      rawRelTypes.length > 0 ? rawRelTypes : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
     const includeTests = params.includeTests ?? false;
     const minConfidence = params.minConfidence ?? 0;
 
@@ -2299,11 +2222,11 @@ export class LocalBackend {
       const idList = frontier.map((id) => `'${id.replace(/'/g, "''")}'`).join(', ');
       const query =
         direction === 'upstream'
-          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence, caller.git_namespace AS git_namespace`
-          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence, callee.git_namespace AS git_namespace`;
+          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
+          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
 
       try {
-        const related = await executeQueryWithNsGuard(repo.id, query);
+        const related = await executeQuery(repo.id, query);
 
         for (const rel of related) {
           const relId = rel.id || rel[1];
@@ -2329,7 +2252,6 @@ export class LocalBackend {
               type: rel.type || rel[3],
               filePath,
               relationType,
-              git_namespace: rel.git_namespace || rel[7] || null,
               confidence: effectiveConfidence,
             });
           }
@@ -2686,34 +2608,12 @@ export class LocalBackend {
     const symType =
       typeof labelRaw === 'string' && labelRaw.trim().length > 0 ? labelRaw.trim() : '';
 
-    // Map legacy relation type names (backward compat for OVERRIDES → METHOD_OVERRIDES)
-    const mappedRelTypes = opts.relationTypes?.flatMap((t: string) =>
-      t === 'OVERRIDES' ? ['OVERRIDES', 'METHOD_OVERRIDES'] : [t],
-    );
     const rawRelTypes =
-      mappedRelTypes && mappedRelTypes.length > 0
-        ? mappedRelTypes.filter((t: string) => VALID_RELATION_TYPES.has(t))
-        : [
-            'CALLS',
-            'IMPORTS',
-            'EXTENDS',
-            'IMPLEMENTS',
-            'METHOD_OVERRIDES',
-            'OVERRIDES',
-            'METHOD_IMPLEMENTS',
-          ];
+      opts.relationTypes && opts.relationTypes.length > 0
+        ? opts.relationTypes.filter((t) => VALID_RELATION_TYPES.has(t))
+        : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
     const relationTypes =
-      rawRelTypes.length > 0
-        ? rawRelTypes
-        : [
-            'CALLS',
-            'IMPORTS',
-            'EXTENDS',
-            'IMPLEMENTS',
-            'METHOD_OVERRIDES',
-            'OVERRIDES',
-            'METHOD_IMPLEMENTS',
-          ];
+      rawRelTypes.length > 0 ? rawRelTypes : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
 
     try {
       return await this._runImpactBFS(repo, sym, symType, dir, {
@@ -2782,7 +2682,6 @@ export class LocalBackend {
       responseKeys: string[] | null;
       errorKeys: string[] | null;
       middleware: string[] | null;
-      git_namespace?: string | null;
       consumers: Array<{
         name: string;
         filePath: string;
@@ -2791,7 +2690,7 @@ export class LocalBackend {
       }>;
     }>
   > {
-    const rows = await executeWithNsGuard(
+    const rows = await executeParameterized(
       repoId,
       `
       MATCH (n:Route)
@@ -2801,8 +2700,7 @@ export class LocalBackend {
       RETURN n.id AS routeId, n.name AS routeName, n.filePath AS handlerFile,
              n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware,
              consumer.name AS consumerName, consumer.filePath AS consumerFile,
-             r.reason AS fetchReason,
-             n.git_namespace AS git_namespace
+             r.reason AS fetchReason
     `,
       params,
     );
@@ -2821,7 +2719,6 @@ export class LocalBackend {
         responseKeys: string[] | null;
         errorKeys: string[] | null;
         middleware: string[] | null;
-        git_namespace: string | null;
         consumers: Array<{
           name: string;
           filePath: string;
@@ -2841,8 +2738,6 @@ export class LocalBackend {
       const consumerFile = row.consumerFile ?? row[7];
       const fetchReason: string | null = row.fetchReason ?? row[8] ?? null;
 
-      const git_namespace = row.git_namespace ?? row[9] ?? null;
-
       if (!routeMap.has(id)) {
         routeMap.set(id, {
           id,
@@ -2851,7 +2746,6 @@ export class LocalBackend {
           responseKeys,
           errorKeys,
           middleware,
-          git_namespace,
           consumers: [],
         });
       }
@@ -2949,7 +2843,6 @@ export class LocalBackend {
         middleware: r.middleware || [],
         consumers: r.consumers,
         flows: flowMap.get(r.id) || [],
-        git_namespace: r.git_namespace || null,
       })),
       total: routes.length,
     };
@@ -3043,12 +2936,12 @@ export class LocalBackend {
     const toolFilter = params.tool ? `AND n.name CONTAINS $tool` : '';
     const queryParams = params.tool ? { tool: params.tool } : {};
 
-    const rows = await executeWithNsGuard(
+    const rows = await executeParameterized(
       repo.id,
       `
       MATCH (n:Tool)
       WHERE n.id STARTS WITH 'Tool:' ${toolFilter}
-      RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.description AS description, n.git_namespace AS git_namespace
+      RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.description AS description
     `,
       queryParams,
     );
@@ -3072,7 +2965,6 @@ export class LocalBackend {
           filePath: r.filePath ?? r[2],
           description: (r.description ?? r[3] ?? '').slice(0, 200),
           flows: flowMap.get(id) || [],
-          git_namespace: r.git_namespace ?? r[4] ?? null,
         };
       }),
       total: rows.length,
@@ -3328,12 +3220,12 @@ export class LocalBackend {
       weightedCohesion += (c.cohesion || 0) * s;
     }
 
-    const members = await executeWithNsGuard(
+    const members = await executeParameterized(
       repo.id,
       `
       MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
       WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
-      RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.git_namespace AS git_namespace
+      RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
       LIMIT 30
     `,
       { clusterName: name },
@@ -3352,7 +3244,6 @@ export class LocalBackend {
         name: m.name || m[0],
         type: m.type || m[1],
         filePath: m.filePath || m[2],
-        git_namespace: m.git_namespace || m[3] || null,
       })),
     };
   }
@@ -3379,11 +3270,11 @@ export class LocalBackend {
 
     const proc = processes[0];
     const procId = proc.id || proc[0];
-    const steps = await executeWithNsGuard(
+    const steps = await executeParameterized(
       repo.id,
       `
       MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: $procId})
-      RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step, n.git_namespace AS git_namespace
+      RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step
       ORDER BY r.step
     `,
       { procId },
@@ -3402,7 +3293,6 @@ export class LocalBackend {
         name: s.name || s[0],
         type: s.type || s[1],
         filePath: s.filePath || s[2],
-        git_namespace: s.git_namespace || s[4] || null,
       })),
     };
   }

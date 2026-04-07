@@ -96,9 +96,7 @@ export const VALID_RELATION_TYPES = new Set([
   'IMPLEMENTS',
   'HAS_METHOD',
   'HAS_PROPERTY',
-  'METHOD_OVERRIDES',
-  'OVERRIDES', // Legacy alias — dual-read for pre-rename indexes
-  'METHOD_IMPLEMENTS',
+  'OVERRIDES',
   'ACCESSES',
   'HANDLES_ROUTE',
   'FETCHES',
@@ -121,8 +119,7 @@ export const VALID_RELATION_TYPES = new Set([
  *   CALLS / IMPORTS  – direct, strongly-typed references → 0.9
  *   EXTENDS          – class hierarchy, statically verifiable → 0.85
  *   IMPLEMENTS       – interface contract, statically verifiable → 0.85
- *   METHOD_OVERRIDES  – method override, statically verifiable → 0.85
- *   METHOD_IMPLEMENTS – interface method implementation, statically verifiable → 0.85
+ *   OVERRIDES        – method override, statically verifiable → 0.85
  *   HAS_METHOD       – structural containment → 0.95
  *   HAS_PROPERTY     – structural containment → 0.95
  *   ACCESSES         – field read/write, may be indirect → 0.8
@@ -134,8 +131,7 @@ export const IMPACT_RELATION_CONFIDENCE: Readonly<Record<string, number>> = {
   IMPORTS: 0.9,
   EXTENDS: 0.85,
   IMPLEMENTS: 0.85,
-  METHOD_OVERRIDES: 0.85,
-  METHOD_IMPLEMENTS: 0.85,
+  OVERRIDES: 0.85,
   HAS_METHOD: 0.95,
   HAS_PROPERTY: 0.95,
   ACCESSES: 0.8,
@@ -710,7 +706,6 @@ export class LocalBackend {
         filePath: sym.filePath,
         startLine: sym.startLine,
         endLine: sym.endLine,
-        ...(sym.git_namespace ? { git_namespace: sym.git_namespace } : {}),
         ...(module ? { module } : {}),
         ...(includeContent && content ? { content } : {}),
       };
@@ -1319,7 +1314,7 @@ export class LocalBackend {
       repo.id,
       `
       MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES']
       RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       LIMIT 30
     `,
@@ -1336,9 +1331,7 @@ export class LocalBackend {
       try {
         isDocNodeCheck = (symRawType === 'Section' || symRawType === 'CodeElement') ? true : 
           (await executeParameterized(repo.id,
-            `MATCH (n:Section) WHERE n.id = $symId RETURN n.id AS id LIMIT 1
-             UNION ALL
-             MATCH (n:CodeElement) WHERE n.id = $symId RETURN n.id AS id LIMIT 1`,
+            `MATCH (n) WHERE (n:Section OR n:CodeElement) AND n.id = $symId RETURN n.id LIMIT 1`,
             { symId }
           ).catch(() => [])).length > 0;
         
@@ -1440,7 +1433,7 @@ export class LocalBackend {
       repo.id,
       `
       MATCH (n {id: $symId})-[r:CodeRelation]->(target)
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES']
       RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       LIMIT 30
     `,
@@ -1617,12 +1610,12 @@ export class LocalBackend {
         weightedCohesion += (c.cohesion || 0) * s;
       }
 
-      const members = await executeWithNsGuard(
+      const members = await executeParameterized(
         repo.id,
         `
         MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
         WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
-        RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.git_namespace AS git_namespace
+        RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
         LIMIT 30
       `,
         { clusterName: name },
@@ -1641,7 +1634,6 @@ export class LocalBackend {
           name: m.name || m[0],
           type: m.type || m[1],
           filePath: m.filePath || m[2],
-          git_namespace: m.git_namespace || m[3] || null,
         })),
       };
     }
@@ -1661,11 +1653,11 @@ export class LocalBackend {
 
       const proc = processes[0];
       const procId = proc.id || proc[0];
-      const steps = await executeWithNsGuard(
+      const steps = await executeParameterized(
         repo.id,
         `
         MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: $procId})
-        RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step, n.git_namespace AS git_namespace
+        RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step
         ORDER BY r.step
       `,
         { procId },
@@ -1684,7 +1676,6 @@ export class LocalBackend {
           name: s.name || s[0],
           type: s.type || s[1],
           filePath: s.filePath || s[2],
-          git_namespace: s.git_namespace || s[4] || null,
         })),
       };
     }
@@ -2115,34 +2106,12 @@ export class LocalBackend {
 
     const { target, direction } = params;
     const maxDepth = params.maxDepth || 3;
-    // Map legacy relation type names before filtering (backward compat for OVERRIDES → METHOD_OVERRIDES)
-    const mappedRelTypes = params.relationTypes?.flatMap((t: string) =>
-      t === 'OVERRIDES' ? ['OVERRIDES', 'METHOD_OVERRIDES'] : [t],
-    );
     const rawRelTypes =
-      mappedRelTypes && mappedRelTypes.length > 0
-        ? mappedRelTypes.filter((t: string) => VALID_RELATION_TYPES.has(t))
-        : [
-            'CALLS',
-            'IMPORTS',
-            'EXTENDS',
-            'IMPLEMENTS',
-            'METHOD_OVERRIDES',
-            'OVERRIDES',
-            'METHOD_IMPLEMENTS',
-          ];
+      params.relationTypes && params.relationTypes.length > 0
+        ? params.relationTypes.filter((t) => VALID_RELATION_TYPES.has(t))
+        : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
     const relationTypes =
-      rawRelTypes.length > 0
-        ? rawRelTypes
-        : [
-            'CALLS',
-            'IMPORTS',
-            'EXTENDS',
-            'IMPLEMENTS',
-            'METHOD_OVERRIDES',
-            'OVERRIDES',
-            'METHOD_IMPLEMENTS',
-          ];
+      rawRelTypes.length > 0 ? rawRelTypes : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
     const includeTests = params.includeTests ?? false;
     const minConfidence = params.minConfidence ?? 0;
 
@@ -2686,34 +2655,12 @@ export class LocalBackend {
     const symType =
       typeof labelRaw === 'string' && labelRaw.trim().length > 0 ? labelRaw.trim() : '';
 
-    // Map legacy relation type names (backward compat for OVERRIDES → METHOD_OVERRIDES)
-    const mappedRelTypes = opts.relationTypes?.flatMap((t: string) =>
-      t === 'OVERRIDES' ? ['OVERRIDES', 'METHOD_OVERRIDES'] : [t],
-    );
     const rawRelTypes =
-      mappedRelTypes && mappedRelTypes.length > 0
-        ? mappedRelTypes.filter((t: string) => VALID_RELATION_TYPES.has(t))
-        : [
-            'CALLS',
-            'IMPORTS',
-            'EXTENDS',
-            'IMPLEMENTS',
-            'METHOD_OVERRIDES',
-            'OVERRIDES',
-            'METHOD_IMPLEMENTS',
-          ];
+      opts.relationTypes && opts.relationTypes.length > 0
+        ? opts.relationTypes.filter((t) => VALID_RELATION_TYPES.has(t))
+        : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
     const relationTypes =
-      rawRelTypes.length > 0
-        ? rawRelTypes
-        : [
-            'CALLS',
-            'IMPORTS',
-            'EXTENDS',
-            'IMPLEMENTS',
-            'METHOD_OVERRIDES',
-            'OVERRIDES',
-            'METHOD_IMPLEMENTS',
-          ];
+      rawRelTypes.length > 0 ? rawRelTypes : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
 
     try {
       return await this._runImpactBFS(repo, sym, symType, dir, {

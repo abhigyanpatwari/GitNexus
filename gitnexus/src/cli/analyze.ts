@@ -281,10 +281,9 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     console.log = origLog;
     console.warn = origWarn;
     console.error = origError;
-    bar.stop();
-    console.error(`\n  Analysis failed: ${err.message}\n`);
-    process.exitCode = 1;
-    return;
+    if (bar) bar.stop();
+    console.error(`\n  Analysis failed: \n`, err.stack);
+    process.exit(1);
   }
 
   // LadybugDB's native module holds open handles that prevent Node from exiting.

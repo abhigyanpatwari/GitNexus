@@ -106,6 +106,22 @@ withTestLbugDB(
         expect(totalResults).toBeGreaterThanOrEqual(1);
       });
 
+      // TC-INT-03: Missing Namespace Hint Generation Test (Red-Green)
+      it('query tool generates namespace_hint when matches span multiple namespaces but are standalone definitions', async () => {
+        // We query "design" which should match 'docs/design.md' (namespace: docs)
+        // and 'docs/ui.md' (namespace: core) in our seeded data.
+        const result = await backend.callTool('query', { query: 'design' });
+        expect(result).not.toHaveProperty('error');
+        
+        // These are standalone files, so they should be mapped to definitions
+        expect(result.definitions?.length).toBeGreaterThanOrEqual(2);
+        
+        // Because "git_namespace" was not specified AND results span > 1 namespace,
+        // it should yield a namespace_hint
+        expect(result).toHaveProperty('namespace_hint');
+        expect(result.namespace_hint.warning).toMatch(/Results span 2 git-namespaces/i);
+      });
+
       it('unknown tool throws', async () => {
         await expect(backend.callTool('nonexistent_tool', {})).rejects.toThrow(/unknown tool/i);
       });

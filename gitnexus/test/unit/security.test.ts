@@ -123,13 +123,14 @@ describe('VALID_RELATION_TYPES', () => {
       'HANDLES_TOOL',
       'ENTRY_POINT_OF',
       'WRAPS',
+      'CONTAINS',
+      'DEFINES',
     ]) {
       expect(VALID_RELATION_TYPES.has(t)).toBe(true);
     }
   });
 
   it('rejects invalid relation types', () => {
-    expect(VALID_RELATION_TYPES.has('CONTAINS')).toBe(false);
     expect(VALID_RELATION_TYPES.has('USES')).toBe(false);
     expect(VALID_RELATION_TYPES.has('calls')).toBe(false); // case-sensitive
     expect(VALID_RELATION_TYPES.has('DROP_TABLE')).toBe(false);

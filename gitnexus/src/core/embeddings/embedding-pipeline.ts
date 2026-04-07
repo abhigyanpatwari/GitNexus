@@ -326,6 +326,7 @@ export const semanticSearch = async (
   query: string,
   k: number = 10,
   maxDistance: number = 0.5,
+  gitNamespace?: string,
 ): Promise<SemanticSearchResult[]> => {
   if (!isEmbedderReady()) {
     throw new Error('Embedding model not initialized. Run embedding pipeline first.');
@@ -336,10 +337,13 @@ export const semanticSearch = async (
   const queryVec = embeddingToArray(queryEmbedding);
   const queryVecStr = `[${queryVec.join(',')}]`;
 
+  // Over-fetch when filtering by namespace to compensate for filtered-out results
+  const fetchK = gitNamespace ? k * 3 : k;
+
   // Query the vector index on CodeEmbedding to get nodeIds and distances
   const vectorQuery = `
     CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', 
-      CAST(${queryVecStr} AS FLOAT[${queryVec.length}]), ${k})
+      CAST(${queryVecStr} AS FLOAT[${queryVec.length}]), ${fetchK})
     YIELD node AS emb, distance
     WITH emb, distance
     WHERE distance < ${maxDistance}
@@ -364,7 +368,7 @@ export const semanticSearch = async (
     byLabel.get(label)!.push({ nodeId, distance });
   }
 
-  // Batch-fetch metadata per label
+  // Batch-fetch metadata per label (include git_namespace for filtering)
   const results: SemanticSearchResult[] = [];
 
   for (const [label, items] of byLabel) {
@@ -374,13 +378,13 @@ export const semanticSearch = async (
       if (label === 'File') {
         nodeQuery = `
           MATCH (n:File) WHERE n.id IN [${idList}]
-          RETURN n.id AS id, n.name AS name, n.filePath AS filePath
+          RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.git_namespace AS git_namespace
         `;
       } else {
         nodeQuery = `
           MATCH (n:${label}) WHERE n.id IN [${idList}]
           RETURN n.id AS id, n.name AS name, n.filePath AS filePath,
-                 n.startLine AS startLine, n.endLine AS endLine
+                 n.startLine AS startLine, n.endLine AS endLine, n.git_namespace AS git_namespace
         `;
       }
       const nodeRows = await executeQuery(nodeQuery);
@@ -392,6 +396,10 @@ export const semanticSearch = async (
       for (const item of items) {
         const nodeRow = rowMap.get(item.nodeId);
         if (nodeRow) {
+          // Post-filter by git_namespace if specified
+          const nodeNs = nodeRow.git_namespace ?? nodeRow[label === 'File' ? 3 : 5] ?? '';
+          if (gitNamespace && nodeNs !== gitNamespace) continue;
+
           results.push({
             nodeId: item.nodeId,
             name: nodeRow.name ?? nodeRow[1] ?? '',
@@ -411,7 +419,8 @@ export const semanticSearch = async (
   // Re-sort by distance since batch queries may have mixed order
   results.sort((a, b) => a.distance - b.distance);
 
-  return results;
+  // Trim to requested k after filtering
+  return results.slice(0, k);
 };
 
 /**

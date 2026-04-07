@@ -12,8 +12,11 @@ export const LOCAL_BACKEND_SEED_DATA = [
   `CREATE (c:Class {id: 'class:AuthService', name: 'AuthService', filePath: 'src/auth.ts', startLine: 30, endLine: 60, isExported: true, content: 'class AuthService {}', description: 'Authentication service'})`,
   `CREATE (c:Class {id: 'class:BaseService', name: 'BaseService', filePath: 'src/base.ts', startLine: 1, endLine: 20, isExported: true, content: 'class BaseService {}', description: 'Base service class'})`,
   // Methods
-  `CREATE (m:Method {id: 'method:AuthService.authenticate', name: 'authenticate', filePath: 'src/auth.ts', startLine: 35, endLine: 45, isExported: false, content: 'authenticate() {}', description: 'Authenticate user'})`,
-  `CREATE (m:Method {id: 'method:BaseService.authenticate', name: 'authenticate', filePath: 'src/base.ts', startLine: 5, endLine: 10, isExported: false, content: 'authenticate() {}', description: 'Base authenticate'})`,
+  `CREATE (m:Method {id: 'method:AuthService.authenticate', name: 'authenticate', filePath: 'src/auth.ts', startLine: 35, endLine: 45, isExported: false, content: 'authenticate() {}', description: 'Authenticate user', git_namespace: 'core'})`,
+  `CREATE (m:Method {id: 'method:BaseService.authenticate', name: 'authenticate', filePath: 'src/base.ts', startLine: 5, endLine: 10, isExported: false, content: 'authenticate() {}', description: 'Base authenticate', git_namespace: 'core'})`,
+  // Markdown Documentation
+  `CREATE (f:File {id: 'file:docs/design.md', name: 'design.md', filePath: 'docs/design.md', content: 'C4 Design old and new', git_namespace: 'docs'})`,
+  `CREATE (f:File {id: 'file:docs/ui.md', name: 'ui.md', filePath: 'docs/ui.md', content: 'UI System and Design', git_namespace: 'core'})`,
   // Community
   `CREATE (c:Community {id: 'comm:auth', label: 'Auth', heuristicLabel: 'Authentication', keywords: ['auth', 'login'], description: 'Auth module', enrichedBy: 'heuristic', cohesion: 0.8, symbolCount: 3})`,
   // Process

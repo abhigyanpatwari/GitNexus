@@ -72,6 +72,7 @@ Re-run the full relevant suite when:
 - Model or embedding-related code paths change
 - Graph schema, query contracts, or MCP tool shapes change
 - Dependencies with parsing or runtime impact upgrade
+- Markdown parsing or Namespace Boundary logic changes
 
 ## CI integration
 

@@ -96,8 +96,10 @@ withTestLbugDB(
           'HAS_METHOD',
           'METHOD_OVERRIDES',
           'ACCESSES',
+          'CONTAINS',
+          'DEFINES',
         ];
-        const invalidTypes = ['CONTAINS', 'STEP_IN_PROCESS', 'MEMBER_OF', 'DROP_TABLE'];
+        const invalidTypes = ['STEP_IN_PROCESS', 'MEMBER_OF', 'DROP_TABLE'];
 
         for (const t of validTypes) {
           expect(VALID_RELATION_TYPES.has(t)).toBe(true);
