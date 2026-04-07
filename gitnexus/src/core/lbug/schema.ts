@@ -25,6 +25,14 @@ CREATE NODE TABLE File (
   name STRING,
   filePath STRING,
   content STRING,
+  nodeCategory STRING,
+  isPseudocode BOOLEAN,
+  rawContent STRING,
+  definedSymbols STRING[],
+  calledSymbols STRING[],
+  docType STRING,
+  domain STRING,
+  git_namespace STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -33,6 +41,7 @@ CREATE NODE TABLE Folder (
   id STRING,
   name STRING,
   filePath STRING,
+  git_namespace STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -46,6 +55,7 @@ CREATE NODE TABLE Function (
   isExported BOOLEAN,
   content STRING,
   description STRING,
+  git_namespace STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -59,6 +69,7 @@ CREATE NODE TABLE Class (
   isExported BOOLEAN,
   content STRING,
   description STRING,
+  git_namespace STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -72,6 +83,7 @@ CREATE NODE TABLE Interface (
   isExported BOOLEAN,
   content STRING,
   description STRING,
+  git_namespace STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -87,6 +99,7 @@ CREATE NODE TABLE Method (
   description STRING,
   parameterCount INT32,
   returnType STRING,
+  git_namespace STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -100,6 +113,14 @@ CREATE NODE TABLE CodeElement (
   isExported BOOLEAN,
   content STRING,
   description STRING,
+  nodeCategory STRING,
+  isPseudocode BOOLEAN,
+  rawContent STRING,
+  definedSymbols STRING[],
+  calledSymbols STRING[],
+  docType STRING,
+  domain STRING,
+  git_namespace STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -152,6 +173,7 @@ CREATE NODE TABLE \`${name}\` (
   endLine INT64,
   content STRING,
   description STRING,
+  git_namespace STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -182,6 +204,7 @@ CREATE NODE TABLE Route (
   responseKeys STRING[],
   errorKeys STRING[],
   middleware STRING[],
+  git_namespace STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -192,6 +215,7 @@ CREATE NODE TABLE Tool (
   name STRING,
   filePath STRING,
   description STRING,
+  git_namespace STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -206,6 +230,14 @@ CREATE NODE TABLE Section (
   level INT64,
   content STRING,
   description STRING,
+  nodeCategory STRING,
+  isPseudocode BOOLEAN,
+  rawContent STRING,
+  definedSymbols STRING[],
+  calledSymbols STRING[],
+  docType STRING,
+  domain STRING,
+  git_namespace STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -419,7 +451,8 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   type STRING,
   confidence DOUBLE,
   reason STRING,
-  step INT32
+  step INT32,
+  targetAnchor STRING
 )`;
 
 // ============================================================================
