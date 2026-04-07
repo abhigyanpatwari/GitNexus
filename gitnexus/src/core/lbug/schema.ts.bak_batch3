@@ -451,8 +451,7 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   type STRING,
   confidence DOUBLE,
   reason STRING,
-  step INT32,
-  targetAnchor STRING
+  step INT32
 )`;
 
 // ============================================================================

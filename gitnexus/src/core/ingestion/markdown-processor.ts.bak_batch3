@@ -237,8 +237,7 @@ export const processMarkdown = (
                 sourceId,
                 targetId: targetFileId,
                 confidence: targetAnchor ? 0.95 : 0.85,
-                reason: 'markdown-link',
-                ...(targetAnchor ? { targetAnchor } : {})
+                reason: 'markdown-link'
              });
              totalLinks++;
            }

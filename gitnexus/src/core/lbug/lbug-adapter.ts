@@ -440,10 +440,10 @@ const TABLES_WITH_EXPORTED = new Set<string>([
 const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   const t = escapeTableName(table);
   if (table === 'File') {
-    return `COPY ${t}(id, name, filePath, content, nodeCategory, isPseudocode, rawContent, definedSymbols, calledSymbols, docType, domain) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, content, nodeCategory, isPseudocode, rawContent, definedSymbols, calledSymbols, docType, domain, git_namespace) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Folder') {
-    return `COPY ${t}(id, name, filePath) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, git_namespace) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Community') {
     return `COPY ${t}(id, label, heuristicLabel, keywords, description, enrichedBy, cohesion, symbolCount) FROM "${filePath}" ${COPY_CSV_OPTS}`;
@@ -452,26 +452,26 @@ const getCopyQuery = (table: NodeTableName, filePath: string): string => {
     return `COPY ${t}(id, label, heuristicLabel, processType, stepCount, communities, entryPointId, terminalId) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Section') {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, level, content, description, nodeCategory, isPseudocode, rawContent, definedSymbols, calledSymbols, docType, domain) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, level, content, description, nodeCategory, isPseudocode, rawContent, definedSymbols, calledSymbols, docType, domain, git_namespace) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Route') {
-    return `COPY ${t}(id, name, filePath, responseKeys, errorKeys, middleware) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, responseKeys, errorKeys, middleware, git_namespace) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Tool') {
-    return `COPY ${t}(id, name, filePath, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, description, git_namespace) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Method') {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType, git_namespace) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'CodeElement') {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, nodeCategory, isPseudocode, rawContent, definedSymbols, calledSymbols, docType, domain) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, nodeCategory, isPseudocode, rawContent, definedSymbols, calledSymbols, docType, domain, git_namespace) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   // TypeScript/JS code element tables have isExported; multi-language tables do not
   if (TABLES_WITH_EXPORTED.has(table)) {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, git_namespace) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   // Multi-language tables (Struct, Impl, Trait, Macro, etc.)
-  return `COPY ${t}(id, name, filePath, startLine, endLine, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, git_namespace) FROM "${filePath}" ${COPY_CSV_OPTS}`;
 };
 
 /**

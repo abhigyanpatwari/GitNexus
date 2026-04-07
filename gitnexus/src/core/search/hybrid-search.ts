@@ -148,6 +148,8 @@ export const formatHybridResults = (results: HybridSearchResult[]): string => {
  * Execute BM25 + semantic search and merge with RRF.
  * Uses LadybugDB FTS for always-fresh BM25 results (no cached data).
  * The semanticSearch function is injected to keep this module environment-agnostic.
+ *
+ * @param gitNamespace - Optional git_namespace filter for namespace isolation
  */
 export const hybridSearch = async (
   query: string,
@@ -158,9 +160,10 @@ export const hybridSearch = async (
     query: string,
     k?: number,
   ) => Promise<SemanticSearchResult[]>,
+  gitNamespace?: string,
 ): Promise<HybridSearchResult[]> => {
   // Use LadybugDB FTS for always-fresh BM25 results
-  const bm25Results = await searchFTSFromLbug(query, limit);
+  const bm25Results = await searchFTSFromLbug(query, limit, undefined, gitNamespace);
   const semanticResults = await semanticSearch(executeQuery, query, limit);
   return mergeWithRRF(bm25Results, semanticResults, limit);
 };

@@ -2,6 +2,7 @@ import { createKnowledgeGraph } from '../graph/graph.js';
 import { processStructure } from './structure-processor.js';
 import { processMarkdown, type PendingResolution } from './markdown-processor.js';
 import { resolveDocImplementations } from './doc-resolver.js';
+import { buildGitNamespaceMap, resolveGitNamespace, type GitNamespaceMap } from './git-namespace-detector.js';
 import { processCobol, isCobolFile, isJclFile } from './cobol-processor.js';
 import { processParsing } from './parsing-processor.js';
 import {
@@ -504,7 +505,7 @@ async function runScanAndStructure(
   repoPath: string,
   graph: ReturnType<typeof createKnowledgeGraph>,
   onProgress: ProgressFn,
-): Promise<{ scannedFiles: ScannedFile[]; allPaths: string[]; totalFiles: number; pendingResolutions: PendingResolution[] }> {
+): Promise<{ scannedFiles: ScannedFile[]; allPaths: string[]; totalFiles: number; pendingResolutions: PendingResolution[]; namespaceMap: GitNamespaceMap }> {
   // ── Phase 1: Scan paths only (no content read) ─────────────────────
   onProgress({
     phase: 'extracting',
@@ -541,7 +542,17 @@ async function runScanAndStructure(
   });
 
   const allPaths = scannedFiles.map((f) => f.path);
-  processStructure(graph, allPaths);
+
+  // ── Phase 1.5: Git-namespace boundary detection ─────────────────────
+  const namespaceMap = await buildGitNamespaceMap(repoPath);
+  if (isDev && namespaceMap.boundaries.length > 1) {
+    console.log(`  Git-namespaces: ${namespaceMap.boundaries.length - 1} nested .git boundaries`);
+    for (const [boundary, ns] of namespaceMap.namespaces) {
+      if (boundary) console.log(`    ${boundary} → ${ns}`);
+    }
+  }
+
+  processStructure(graph, allPaths, namespaceMap);
 
   onProgress({
     phase: 'structure',
@@ -571,7 +582,7 @@ async function runScanAndStructure(
       .filter((f) => mdContents.has(f.path))
       .map((f) => ({ path: f.path, content: mdContents.get(f.path)! }));
     const allPathSet = new Set(allPaths);
-    const mdResult = processMarkdown(graph, mdFiles, allPathSet);
+    const mdResult = processMarkdown(graph, mdFiles, allPathSet, namespaceMap);
     pendingResolutions = mdResult.pendingResolutions;
     if (isDev) {
       console.log(
@@ -611,7 +622,7 @@ async function runScanAndStructure(
     }
   }
 
-  return { scannedFiles, allPaths, totalFiles, pendingResolutions };
+  return { scannedFiles, allPaths, totalFiles, pendingResolutions, namespaceMap };
 }
 
 /**
@@ -1334,7 +1345,7 @@ export const runPipelineFromRepo = async (
 
   try {
     // Phase 1+2: Scan paths, build structure, process markdown
-    const { scannedFiles, allPaths, totalFiles, pendingResolutions } = await runScanAndStructure(
+    const { scannedFiles, allPaths, totalFiles, pendingResolutions, namespaceMap } = await runScanAndStructure(
       repoPath,
       graph,
       onProgress,
@@ -1453,6 +1464,7 @@ export const runPipelineFromRepo = async (
           properties: {
             name: routeURL,
             filePath: handlerPath,
+            git_namespace: resolveGitNamespace(handlerPath, namespaceMap),
             ...(responseKeys ? { responseKeys } : {}),
             ...(errorKeys ? { errorKeys } : {}),
             ...(middleware && middleware.length > 0 ? { middleware } : {}),
@@ -1645,7 +1657,7 @@ export const runPipelineFromRepo = async (
         graph.addNode({
           id: toolNodeId,
           label: 'Tool',
-          properties: { name: td.name, filePath: td.filePath, description: td.description },
+          properties: { name: td.name, filePath: td.filePath, description: td.description, git_namespace: resolveGitNamespace(td.filePath, namespaceMap) },
         });
 
         const handlerFileId = generateId('File', td.filePath);

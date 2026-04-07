@@ -1,10 +1,10 @@
-<!-- version: 1.2.0 -->
+<!-- version: 1.3.0 -->
 <!--
   Metadata: version, last reviewed, scope, model policy, reference docs, changelog.
-  Last updated: 2026-03-22
+  Last updated: 2026-04-07
 -->
 
-Last reviewed: 2026-03-24
+Last reviewed: 2026-04-07
 
 **Project:** GitNexus · **Environment:** dev · **Maintainer:** repository maintainers (see GitHub)
 
@@ -54,6 +54,7 @@ Generic “core standards” playbooks are often long and stack-specific. For th
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-04-07 | 1.3.0 | Added Git namespace isolation guidelines and MCP tool updates. |
 | 2026-03-24 | 1.2.0 | Fixed gitnexus:start block duplication (was inlined in Reference Docs bullet). |
 | 2026-03-23 | 1.1.0 | Updated agent instructions (sections, references, Cursor layout). |
 | 2026-03-22 | 1.0.0 | Added structured agent header and changelog. |
@@ -69,6 +70,7 @@ This project is indexed by GitNexus as **GitNexus** (3858 symbols, 9307 relation
 
 ## Always Do
 
+- **Namespace Isolation:** For monorepos or multi-root workspaces, be mindful of `git_namespace`. `gitnexus_query` may return a `namespace_hint` if results span multiple sub-repositories. Use the `git_namespace` parameter in tools to correctly isolate queries.
 - **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
 - **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
@@ -99,7 +101,7 @@ This project is indexed by GitNexus as **GitNexus** (3858 symbols, 9307 relation
 
 | Tool | When to use | Command |
 |------|-------------|---------|
-| `query` | Find code by concept | `gitnexus_query({query: "auth validation"})` |
+| `query` | Find code by concept | `gitnexus_query({query: "auth validation", git_namespace: "libs/auth"})` |
 | `context` | 360-degree view of one symbol | `gitnexus_context({name: "validateUser"})` |
 | `impact` | Blast radius before editing | `gitnexus_impact({target: "X", direction: "upstream"})` |
 | `detect_changes` | Pre-commit scope check | `gitnexus_detect_changes({scope: "staged"})` |

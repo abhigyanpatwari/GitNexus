@@ -55,7 +55,12 @@ Returns results grouped by process (execution flow):
 - process_symbols: all symbols in those flows with file locations and module (functional area)
 - definitions: standalone types/interfaces not in any process
 
-Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank Fusion.`,
+Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank Fusion.
+
+Namespace isolation: If the indexed repo contains nested git sub-repositories,
+results include a git_namespace property. Use the git_namespace parameter to
+filter to a specific namespace. When omitted and results span multiple
+namespaces, a namespace_hint object is returned with available namespaces.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -79,6 +84,11 @@ Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank
           type: 'boolean',
           description: 'Include full symbol source code (default: false)',
           default: false,
+        },
+        git_namespace: {
+          type: 'string',
+          description:
+            'Filter results to a specific git sub-repository namespace (e.g., "myproject/libs/auth"). Omit for all namespaces (returns namespace_hint if results span multiple).',
         },
         repo: {
           type: 'string',
@@ -155,8 +165,10 @@ WHEN TO USE: After query() to understand a specific symbol in depth. When you ne
 AFTER THIS: Use impact() if planning changes, or READ gitnexus://repo/{name}/process/{processName} for full execution trace.
 
 Handles disambiguation: if multiple symbols share the same name, returns candidates for you to pick from. Use uid param for zero-ambiguity lookup from prior results.
+Candidates include 'git_namespace' field to assist with disambiguation in multi-repo workspaces.
 
-NOTE: ACCESSES edges (field read/write tracking) are included in context results with reason 'read' or 'write'. CALLS edges resolve through field access chains and method-call chains (e.g., user.address.getCity().save() produces CALLS edges at each step).`,
+NOTE: ACCESSES edges (field read/write tracking) are included in context results with reason 'read' or 'write'. CALLS edges resolve through field access chains and method-call chains (e.g., user.address.getCity().save() produces CALLS edges at each step).
+Section nodes now include structural refs (CONTAINS/DEFINES) in incoming/outgoing refs.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -263,9 +275,9 @@ Depth groups:
 - d=2: LIKELY AFFECTED (indirect)
 - d=3: MAY NEED TESTING (transitive)
 
-TIP: Default traversal uses CALLS/IMPORTS/EXTENDS/IMPLEMENTS. For class members, include HAS_METHOD and HAS_PROPERTY in relationTypes. For field access analysis, include ACCESSES in relationTypes.
+TIP: Default traversal uses CALLS/IMPORTS/EXTENDS/IMPLEMENTS. For class members, include HAS_METHOD and HAS_PROPERTY in relationTypes. For field access analysis, include ACCESSES in relationTypes. Note: CONTAINS and DEFINES are valid relation types for tracing structural impact (e.g. Markdown changes).
 
-EdgeType: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, OVERRIDES, ACCESSES
+EdgeType: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, OVERRIDES, ACCESSES, CONTAINS, DEFINES
 Confidence: 1.0 = certain, <0.8 = fuzzy match`,
     inputSchema: {
       type: 'object',

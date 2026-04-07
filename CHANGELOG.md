@@ -4,6 +4,18 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Engineering Markdown Graph Ingestion** — structural parsing and embedding support for engineering documentation (`.md` files) such as Architectural Decision Records (ADRs) and specs. Sections and documents are now vector-searchable alongside raw code AST, unified within the same Knowledge Graph.
+- **Git namespace isolation** — automatic sub-git boundary detection via deepest-wins `.git` resolution; namespace tagging on all graph nodes (`git_namespace` property); namespace-aware RAG filtering across BM25, semantic search, and hybrid search with over-fetching (k×3) post-filter strategy; `git_namespace` parameter on MCP `query` tool with `namespace_hint` for cross-namespace result disambiguation. See `docs/plans/2026-04-06-feat-namespace-isolation-plan.md` for architectural details.
+- **`resolveGitNamespace()` utility** (`git-namespace-detector.ts`) — discovers nested `.git` boundaries relative to workspace root.
+- 17 new unit tests for git namespace detection (deepest-wins, nested repos, workspace boundary).
+
+### Fixed
+- **Structural graph connectivity** — added `CONTAINS` and `DEFINES` missing relation definitions from integration graph query filters
+- **KuzuDB syntax in metadata resolution** — resolved `isDocNodeCheck` failing with logic operands by implementing explicit `UNION ALL` patterns
+- **Node-level namespace ambiguity** — established Two-Tier Fallback handling for `Community` and `Process` nodes absent of `git_namespace` parameters
+- **Query MCP tool hydration defect** — `symbolEntry` output models updated to reliably propagate `git_namespace` to downstream RAG invocations
+
 ### Changed
 - Migrated from KuzuDB to LadybugDB v0.15 (`@ladybugdb/core`, `@ladybugdb/wasm-core`)
 - Renamed all internal paths from `kuzu` to `lbug` (storage: `.gitnexus/kuzu` → `.gitnexus/lbug`)

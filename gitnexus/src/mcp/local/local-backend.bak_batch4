@@ -706,7 +706,6 @@ export class LocalBackend {
         filePath: sym.filePath,
         startLine: sym.startLine,
         endLine: sym.endLine,
-        ...(sym.git_namespace ? { git_namespace: sym.git_namespace } : {}),
         ...(module ? { module } : {}),
         ...(includeContent && content ? { content } : {}),
       };
@@ -1332,9 +1331,7 @@ export class LocalBackend {
       try {
         isDocNodeCheck = (symRawType === 'Section' || symRawType === 'CodeElement') ? true : 
           (await executeParameterized(repo.id,
-            `MATCH (n:Section) WHERE n.id = $symId RETURN n.id AS id LIMIT 1
-             UNION ALL
-             MATCH (n:CodeElement) WHERE n.id = $symId RETURN n.id AS id LIMIT 1`,
+            `MATCH (n) WHERE (n:Section OR n:CodeElement) AND n.id = $symId RETURN n.id LIMIT 1`,
             { symId }
           ).catch(() => [])).length > 0;
         
@@ -1613,12 +1610,12 @@ export class LocalBackend {
         weightedCohesion += (c.cohesion || 0) * s;
       }
 
-      const members = await executeWithNsGuard(
+      const members = await executeParameterized(
         repo.id,
         `
         MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
         WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
-        RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.git_namespace AS git_namespace
+        RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
         LIMIT 30
       `,
         { clusterName: name },
@@ -1637,7 +1634,6 @@ export class LocalBackend {
           name: m.name || m[0],
           type: m.type || m[1],
           filePath: m.filePath || m[2],
-          git_namespace: m.git_namespace || m[3] || null,
         })),
       };
     }
@@ -1657,11 +1653,11 @@ export class LocalBackend {
 
       const proc = processes[0];
       const procId = proc.id || proc[0];
-      const steps = await executeWithNsGuard(
+      const steps = await executeParameterized(
         repo.id,
         `
         MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: $procId})
-        RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step, n.git_namespace AS git_namespace
+        RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step
         ORDER BY r.step
       `,
         { procId },
@@ -1680,7 +1676,6 @@ export class LocalBackend {
           name: s.name || s[0],
           type: s.type || s[1],
           filePath: s.filePath || s[2],
-          git_namespace: s.git_namespace || s[4] || null,
         })),
       };
     }
