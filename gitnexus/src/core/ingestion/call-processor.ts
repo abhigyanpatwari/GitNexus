@@ -52,7 +52,7 @@ import { extractParsedCallSite } from './call-sites/extract-language-call-site.j
 export type ExportedTypeMap = Map<string, Map<string, string>>;
 
 /** Types that represent class-like declarations (used for receiver/owner resolution). */
-const CLASS_LIKE_TYPES = new Set(['Class','Struct','Interface','Enum','Record','Impl',]);
+const CLASS_LIKE_TYPES = new Set(['Class', 'Struct', 'Interface', 'Enum', 'Record', 'Impl']);
 
 const MAX_EXPORTS_PER_FILE = 500;
 const MAX_TYPE_NAME_LENGTH = 256;
@@ -787,9 +787,7 @@ export const processCalls = async (
         }
         if (!receiverTypeName && receiverText) {
           const resolved = ctx.resolve(receiverText, file.path);
-          if (
-           resolved?.candidates.some((d) => CLASS_LIKE_TYPES.has(d.type))
-          ) {
+          if (resolved?.candidates.some((d) => CLASS_LIKE_TYPES.has(d.type))) {
             receiverTypeName = receiverText;
           }
         }
@@ -2015,9 +2013,7 @@ export const processAssignmentsFromExtracted = (
     // Tier 3: static class-as-receiver fallback
     if (!receiverTypeName) {
       const resolved = ctx.resolve(asn.receiverText, asn.filePath);
-      if (
-       resolved?.candidates.some((d) => CLASS_LIKE_TYPES.has(d.type))
-      ) {
+      if (resolved?.candidates.some((d) => CLASS_LIKE_TYPES.has(d.type))) {
         receiverTypeName = asn.receiverText;
       }
     }
