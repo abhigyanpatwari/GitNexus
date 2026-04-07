@@ -56,4 +56,27 @@ describe('Express/Hono route detection', () => {
     expect(healthEdge).toBeDefined();
     expect(healthEdge!.sourceFilePath).toContain('server.ts');
   });
+
+  it('creates FETCHES edges for request-like client member calls', () => {
+    const edges = getRelationships(result, 'FETCHES');
+    const clientFetch = edges.find(
+      (e) => e.sourceFilePath.includes('client.ts') && e.target === '/api/items',
+    );
+
+    expect(clientFetch).toBeDefined();
+  });
+
+  it('does not create HANDLES_ROUTE edges from request-like client files', () => {
+    const edges = getRelationships(result, 'HANDLES_ROUTE');
+    const clientRouteEdge = edges.find((e) => e.sourceFilePath.includes('client.ts'));
+
+    expect(clientRouteEdge).toBeUndefined();
+  });
+
+  it('does not create Route nodes from request-like client-only paths', () => {
+    const routes = getNodesByLabel(result, 'Route');
+
+    expect(routes).not.toContain('/api/client-only');
+    expect(routes).not.toContain('/api/client-post-only');
+  });
 });

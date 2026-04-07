@@ -4,9 +4,11 @@ import {
   seedCrossFileReceiverTypes,
   extractConsumerAccessedKeys,
   processNextjsFetchRoutes,
+  extractFetchCallsFromFiles,
   buildImplementorMap,
   mergeImplementorMaps,
 } from '../../src/core/ingestion/call-processor.js';
+import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
 import { extractReturnTypeName } from '../../src/core/ingestion/type-extractors/shared.js';
 import {
   createResolutionContext,
@@ -1394,6 +1396,108 @@ describe('processNextjsFetchRoutes', () => {
     const rels = graph.relationships.filter((r) => r.type === 'FETCHES');
     expect(rels).toHaveLength(1);
     expect(rels[0].reason).not.toContain('|fetches:');
+  });
+});
+
+describe('extractFetchCallsFromFiles', () => {
+  it('extracts imported request-like client GET calls as fetch calls', async () => {
+    const files = [
+      {
+        path: 'src/api/users.ts',
+        content: `
+import request from 'umi-request';
+
+export async function loadUsers() {
+  return request('/api/users');
+}
+`,
+      },
+    ];
+
+    const fetchCalls = await extractFetchCallsFromFiles(files, createASTCache());
+
+    expect(fetchCalls).toEqual([
+      {
+        filePath: 'src/api/users.ts',
+        fetchURL: '/api/users',
+        lineNumber: 4,
+      },
+    ]);
+  });
+
+  it('extracts imported request-like client calls with explicit POST method', async () => {
+    const files = [
+      {
+        path: 'src/api/users.ts',
+        content: `
+import request from '@/utils/request';
+
+export async function createUser(data: unknown) {
+  return request('/api/users', { method: 'POST', data });
+}
+`,
+      },
+    ];
+
+    const fetchCalls = await extractFetchCallsFromFiles(files, createASTCache());
+
+    expect(fetchCalls).toEqual([
+      {
+        filePath: 'src/api/users.ts',
+        fetchURL: '/api/users',
+        lineNumber: 4,
+      },
+    ]);
+  });
+
+  it('extracts imported request-like client member GET calls as fetch calls', async () => {
+    const files = [
+      {
+        path: 'src/api/users.ts',
+        content: `
+import request from '@/utils/request';
+
+export async function loadUsers() {
+  return request.get('/api/users');
+}
+`,
+      },
+    ];
+
+    const fetchCalls = await extractFetchCallsFromFiles(files, createASTCache());
+
+    expect(fetchCalls).toEqual([
+      {
+        filePath: 'src/api/users.ts',
+        fetchURL: '/api/users',
+        lineNumber: 4,
+      },
+    ]);
+  });
+
+  it('extracts imported request-like client member POST calls as fetch calls', async () => {
+    const files = [
+      {
+        path: 'src/api/users.ts',
+        content: `
+import request from '@/utils/request';
+
+export async function createUser(data: unknown) {
+  return request.post('/api/users', { data });
+}
+`,
+      },
+    ];
+
+    const fetchCalls = await extractFetchCallsFromFiles(files, createASTCache());
+
+    expect(fetchCalls).toEqual([
+      {
+        filePath: 'src/api/users.ts',
+        fetchURL: '/api/users',
+        lineNumber: 4,
+      },
+    ]);
   });
 });
 

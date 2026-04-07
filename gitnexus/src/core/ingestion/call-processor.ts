@@ -11,6 +11,11 @@ import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import {
+  collectRequestLikeImportBindings,
+  getRequestLikeCapturedUrl,
+  getRequestLikeMemberCapturedUrl,
+} from './request-like-clients.js';
+import {
   FUNCTION_NODE_TYPES,
   findEnclosingClassId,
   findEnclosingClassInfo,
@@ -2376,6 +2381,8 @@ export const extractFetchCallsFromFiles = async (
       continue;
     }
 
+    const requestLikeBindings = collectRequestLikeImportBindings(file.content);
+
     for (const match of matches) {
       const captureMap: Record<string, any> = {};
       match.captures.forEach((c) => (captureMap[c.name] = c.node));
@@ -2389,11 +2396,27 @@ export const extractFetchCallsFromFiles = async (
             lineNumber: captureMap['route.fetch'].startPosition.row,
           });
         }
+      } else if (captureMap['request_like_client']) {
+        const url = getRequestLikeCapturedUrl(captureMap, requestLikeBindings);
+        if (url) {
+          result.push({
+            filePath: file.path,
+            fetchURL: url,
+            lineNumber: captureMap['request_like_client'].startPosition.row,
+          });
+        }
       } else if (captureMap['http_client'] && captureMap['http_client.url']) {
         const method = captureMap['http_client.method']?.text;
         const url = captureMap['http_client.url'].text;
         const HTTP_CLIENT_ONLY = new Set(['head', 'options', 'request', 'ajax']);
-        if (method && HTTP_CLIENT_ONLY.has(method) && url.startsWith('/')) {
+        const requestLikeUrl = getRequestLikeMemberCapturedUrl(captureMap, requestLikeBindings);
+        if (requestLikeUrl) {
+          result.push({
+            filePath: file.path,
+            fetchURL: requestLikeUrl,
+            lineNumber: captureMap['http_client'].startPosition.row,
+          });
+        } else if (method && HTTP_CLIENT_ONLY.has(method) && url.startsWith('/')) {
           result.push({
             filePath: file.path,
             fetchURL: url,
