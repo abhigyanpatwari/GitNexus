@@ -103,7 +103,7 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
     };
   });
 
-  const rawHttpMappings = ((raw.http_mappings as unknown[]) || (raw.httpMappings as unknown[])) || [];
+  const rawHttpMappings = (raw.http_mappings as unknown[]) || [];
   const httpMappings: HttpMappingRule[] = rawHttpMappings.map((entry: unknown, i: number) => {
     const mapping = entry as Record<string, unknown>;
     if (!mapping.from || !repoPaths.has(mapping.from as string)) {

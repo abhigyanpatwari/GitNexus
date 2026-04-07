@@ -101,25 +101,6 @@ repos:
     expect(config.httpMappings[0].rewrite).toBe('/orders/*rest');
   });
 
-  it('accepts legacy camelCase httpMappings when loading existing YAML', () => {
-    const yaml = `
-version: 1
-name: company
-repos:
-  frontend: libra-client
-  backend: libra-server
-httpMappings:
-  - from: frontend
-    to:
-      repo: backend
-    match: /api/titans/trading/:version{/*rest}
-    rewrite: /{*rest}
-`;
-    const config = parseGroupConfig(yaml);
-    expect(config.httpMappings).toHaveLength(1);
-    expect(config.httpMappings[0].match).toBe('/api/titans/trading/:version{/*rest}');
-  });
-
   it('serializes group config back to snake_case yaml shape', () => {
     const config = parseGroupConfig(HTTP_MAPPING_YAML);
     const serialized = serializeGroupConfig(config);
