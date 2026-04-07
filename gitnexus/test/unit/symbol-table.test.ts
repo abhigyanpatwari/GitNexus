@@ -383,12 +383,18 @@ describe('SymbolTable', () => {
       expect(table.lookupMethodByOwner('class:Handler', 'process')).toBeUndefined();
     });
 
-    it('does NOT index Constructor in methodByOwner', () => {
+    it('indexes Constructor in methodByOwner', () => {
       table.add('src/models.ts', 'User', 'ctor:User', 'Constructor', {
         parameterCount: 0,
         ownerId: 'class:User',
       });
-      expect(table.lookupMethodByOwner('class:User', 'User')).toBeUndefined();
+      expect(table.lookupMethodByOwner('class:User', 'User')).toEqual({
+        nodeId: 'ctor:User',
+        filePath: 'src/models.ts',
+        type: 'Constructor',
+        parameterCount: 0,
+        ownerId: 'class:User',
+      });
       // But it should be in lookupFuzzyCallable
       expect(table.lookupFuzzyCallable('User')).toHaveLength(1);
     });
