@@ -1398,3 +1398,119 @@ describe('lookupMethodByOwnerWithMRO', () => {
     expect(result!.nodeId).toBe('method:User:getName');
   });
 });
+
+// ---------------------------------------------------------------------------
+// resolveMemberCall — SM-11: owner-scoped + MRO member-call resolution
+// ---------------------------------------------------------------------------
+
+import { resolveMemberCall } from '../../src/core/ingestion/call-processor.js';
+
+describe('resolveMemberCall', () => {
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    ctx = createResolutionContext();
+  });
+
+  it('resolves direct method on owner type', () => {
+    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.symbols.add('src/user.ts', 'save', 'method:User:save', 'Method', {
+      returnType: 'void',
+      ownerId: 'class:User',
+    });
+    ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
+
+    const result = resolveMemberCall('User', 'save', 'src/app.ts', ctx);
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('method:User:save');
+    expect(result!.returnType).toBe('void');
+    expect(result!.confidence).toBeGreaterThan(0);
+  });
+
+  it('resolves inherited method via MRO walk', () => {
+    ctx.symbols.add('src/parent.java', 'Parent', 'class:Parent', 'Class');
+    ctx.symbols.add('src/child.java', 'Child', 'class:Child', 'Class');
+    ctx.symbols.add('src/parent.java', 'validate', 'method:Parent:validate', 'Method', {
+      returnType: 'boolean',
+      ownerId: 'class:Parent',
+    });
+    ctx.importMap.set('src/app.java', new Set(['src/child.java', 'src/parent.java']));
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/child.java', className: 'Child', parentName: 'Parent', kind: 'extends' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = resolveMemberCall('Child', 'validate', 'src/app.java', ctx, map);
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('method:Parent:validate');
+    expect(result!.returnType).toBe('boolean');
+  });
+
+  it('returns null for unknown owner type', () => {
+    const result = resolveMemberCall('NonExistent', 'save', 'src/app.ts', ctx);
+    expect(result).toBeNull();
+  });
+
+  it('returns null for unknown method on known owner', () => {
+    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
+
+    const result = resolveMemberCall('User', 'nonExistentMethod', 'src/app.ts', ctx);
+    expect(result).toBeNull();
+  });
+
+  it('returns result with correct confidence tier for same-file resolution', () => {
+    ctx.symbols.add('src/app.ts', 'User', 'class:User', 'Class');
+    ctx.symbols.add('src/app.ts', 'save', 'method:User:save', 'Method', {
+      returnType: 'void',
+      ownerId: 'class:User',
+    });
+
+    const result = resolveMemberCall('User', 'save', 'src/app.ts', ctx);
+
+    expect(result).not.toBeNull();
+    expect(result!.confidence).toBe(0.95); // same-file tier
+    expect(result!.reason).toBe('same-file');
+  });
+
+  it('returns result with import-scoped tier for cross-file resolution', () => {
+    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.symbols.add('src/user.ts', 'save', 'method:User:save', 'Method', {
+      returnType: 'void',
+      ownerId: 'class:User',
+    });
+    ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
+
+    const result = resolveMemberCall('User', 'save', 'src/app.ts', ctx);
+
+    expect(result).not.toBeNull();
+    expect(result!.confidence).toBe(0.9); // import-scoped tier
+    expect(result!.reason).toBe('import-resolved');
+  });
+
+  it('resolves with heritage map across C3 MRO chain (Python)', () => {
+    ctx.symbols.add('src/a.py', 'A', 'class:A', 'Class');
+    ctx.symbols.add('src/b.py', 'B', 'class:B', 'Class');
+    ctx.symbols.add('src/c.py', 'C', 'class:C', 'Class');
+    ctx.symbols.add('src/a.py', 'foo', 'method:A:foo', 'Method', {
+      returnType: 'str',
+      ownerId: 'class:A',
+    });
+    ctx.importMap.set('src/main.py', new Set(['src/a.py', 'src/b.py', 'src/c.py']));
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/c.py', className: 'C', parentName: 'B', kind: 'extends' },
+      { filePath: 'src/b.py', className: 'B', parentName: 'A', kind: 'extends' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = resolveMemberCall('C', 'foo', 'src/main.py', ctx, map);
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('method:A:foo');
+    expect(result!.returnType).toBe('str');
+  });
+});

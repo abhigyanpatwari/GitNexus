@@ -1365,33 +1365,29 @@ const resolveCallTarget = (
   // belong to the wrong class (e.g. super.save() should hit the parent's save,
   // not the child's own save method in the same file).
   if (call.callForm === 'member' && call.receiverTypeName) {
-    // D0. MRO fast path: when heritageMap is available, try owner-scoped + MRO
-    //     lookup before falling back to the expensive D2 fuzzy widening.
-    //     This short-circuits the lookupFuzzy call for every cross-file member call.
+    // D0. Delegate to resolveMemberCall (SM-11): owner-scoped + MRO lookup
+    //     before falling back to the expensive D1-D4 fuzzy widening.
     //     Skip conditions:
     //     (a) overloadHints or preComputedArgTypes present — the MRO lookup may
     //         pick the wrong overload for same-return-type overloads since it
-    //         does not consider argument types. D2-D4+E handles those correctly.
+    //         does not consider argument types. D1-D4+E handles those correctly.
     //     (b) A module alias on call.receiverName is active for this file — the
     //         alias block above already narrowed `filteredCandidates` to a
-    //         specific file (e.g. Python `import auth; auth.user.save()`).
-    //         resolveMethodByOwner re-resolves `receiverTypeName` from scratch
-    //         via `ctx.resolve`, which ignores that narrowing and could pick a
-    //         homonymous class from the wrong file. Fall through to D1-D4 which
-    //         respects the alias-filtered candidate pool.
+    //         specific file. resolveMemberCall re-resolves `receiverTypeName`
+    //         from scratch via `ctx.resolve`, which ignores that narrowing and
+    //         could pick a homonymous class from the wrong file. Fall through to
+    //         D1-D4 which respects the alias-filtered candidate pool.
     const hasActiveModuleAlias =
       !!call.receiverName && ctx.moduleAliasMap?.get(currentFile)?.has(call.receiverName) === true;
     if (!overloadHints && !preComputedArgTypes && !hasActiveModuleAlias) {
-      const mroResult = resolveMethodByOwner(
+      const memberResult = resolveMemberCall(
         call.receiverTypeName,
         call.calledName,
         currentFile,
         ctx,
         heritageMap,
       );
-      if (mroResult) {
-        return toResolveResult(mroResult, tiered.tier);
-      }
+      if (memberResult) return memberResult;
     }
 
     // D1. Resolve the receiver type
@@ -1672,6 +1668,46 @@ const resolveMethodByOwner = (
 };
 
 // ---------------------------------------------------------------------------
+// SM-11: Owner-scoped + MRO member-call resolution (no fuzzy lookup)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a member call using owner-scoped + MRO resolution only (no fuzzy lookup).
+ * Used for `obj.method()` calls where the receiver type is known.
+ *
+ * Delegates to {@link resolveMethodByOwner} which performs an O(1) owner-scoped
+ * method lookup and, when a {@link HeritageMap} is provided, walks the MRO chain
+ * via {@link lookupMethodByOwnerWithMRO}.
+ *
+ * {@link resolveCallTarget} delegates here for member calls before falling back
+ * to the more expensive fuzzy-widening path (D1-D4).
+ *
+ * @param ownerType   - The receiver's type name (e.g. 'User')
+ * @param methodName  - The method being called (e.g. 'save')
+ * @param currentFile - File path of the call site
+ * @param ctx         - Resolution context
+ * @param heritageMap - Optional heritage map for MRO-aware ancestor walking
+ */
+export const resolveMemberCall = (
+  ownerType: string,
+  methodName: string,
+  currentFile: string,
+  ctx: ResolutionContext,
+  heritageMap?: HeritageMap,
+): ResolveResult | null => {
+  const methodDef = resolveMethodByOwner(ownerType, methodName, currentFile, ctx, heritageMap);
+  if (!methodDef) return null;
+
+  // Determine confidence tier from how the owner type was resolved.
+  // ctx.resolve is per-file cached so this second call (resolveMethodByOwner
+  // already called it internally) is essentially free.
+  const ownerResolved = ctx.resolve(ownerType, currentFile);
+  const tier = ownerResolved?.tier ?? 'global';
+
+  return toResolveResult(methodDef, tier);
+};
+
+// ---------------------------------------------------------------------------
 // MRO-aware method resolution via HeritageMap (SM-9)
 // ---------------------------------------------------------------------------
 
@@ -1860,13 +1896,12 @@ const walkMixedChain = (
         currentType = fieldResolved.typeName;
         continue;
       }
-      // Fast path: O(1) owner-scoped method lookup via methodByOwner index.
-      // Avoids fuzzy lookup when the owner type is known and the method is unambiguous.
+      // SM-11: delegate to resolveMemberCall for owner-scoped + MRO resolution.
       // Note: CALLS edges for intermediate chain steps are NOT emitted here — walkMixedChain
       // only threads types. CALLS edges come from the outer per-call-expression loop in processCalls.
-      const methodDef = resolveMethodByOwner(currentType, step.name, filePath, ctx, heritageMap);
-      if (methodDef?.returnType) {
-        const fastRetType = extractReturnTypeName(methodDef.returnType);
+      const memberResult = resolveMemberCall(currentType, step.name, filePath, ctx, heritageMap);
+      if (memberResult?.returnType) {
+        const fastRetType = extractReturnTypeName(memberResult.returnType);
         if (fastRetType) {
           currentType = fastRetType;
           continue;
