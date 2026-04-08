@@ -2078,6 +2078,141 @@ def main():
       });
     });
 
+    describe('lookupClassByName regression coverage', () => {
+      const makeClassLookupTable = (
+        classDefs: Record<
+          string,
+          Array<{ nodeId: string; type: 'Class' | 'Struct' | 'Interface' }>
+        >,
+      ) => ({
+        lookupClassByName: (name: string) => classDefs[name] ?? [],
+        lookupFieldByOwner: () => undefined,
+        lookupFuzzyCallable: () => [],
+        lookupExact: () => undefined,
+        lookupExactFull: () => undefined,
+        add: () => {},
+        getStats: () => ({ fileCount: 0, globalSymbolCount: 0 }),
+        clear: () => {},
+      });
+
+      it('Python cross-file constructor inference uses lookupClassByName', () => {
+        const tree = parse(
+          `
+def main():
+    user = User("alice")
+`,
+          Python,
+        );
+        const typeEnv = buildTypeEnv(tree, 'python', {
+          symbolTable: makeClassLookupTable({
+            User: [{ nodeId: 'class:User', type: 'Class' }],
+          }) as any,
+        });
+        expect(flatGet(typeEnv, 'user')).toBe('User');
+      });
+
+      it('Python cross-file constructor inference does not bind plain functions', () => {
+        const tree = parse(
+          `
+def main():
+    result = get_user()
+`,
+          Python,
+        );
+        const typeEnv = buildTypeEnv(tree, 'python', {
+          symbolTable: makeClassLookupTable({}) as any,
+        });
+        expect(flatGet(typeEnv, 'result')).toBeUndefined();
+      });
+
+      it('C++ cross-file constructor inference uses lookupClassByName', () => {
+        const tree = parse(
+          `
+void run() {
+  auto user = User();
+}
+`,
+          CPP,
+        );
+        const typeEnv = buildTypeEnv(tree, 'cpp', {
+          symbolTable: makeClassLookupTable({
+            User: [{ nodeId: 'class:User', type: 'Class' }],
+          }) as any,
+        });
+        expect(flatGet(typeEnv, 'user')).toBe('User');
+      });
+
+      it('C++ cross-file constructor inference does not bind plain functions', () => {
+        const tree = parse(
+          `
+void run() {
+  auto result = getUser();
+}
+`,
+          CPP,
+        );
+        const typeEnv = buildTypeEnv(tree, 'cpp', {
+          symbolTable: makeClassLookupTable({}) as any,
+        });
+        expect(flatGet(typeEnv, 'result')).toBeUndefined();
+      });
+
+      it('field type resolution uses lookupClassByName-backed class defs', () => {
+        const tree = parse(
+          `
+function process(user: User) {
+  const addr = user.address;
+}
+`,
+          TypeScript.typescript,
+        );
+        const symbolTable = {
+          lookupClassByName: (name: string) =>
+            name === 'User' ? [{ nodeId: 'class:User', filePath: 'models.ts', type: 'Class' }] : [],
+          lookupFieldByOwner: (ownerNodeId: string, fieldName: string) =>
+            ownerNodeId === 'class:User' && fieldName === 'address'
+              ? {
+                  nodeId: 'prop:User:address',
+                  filePath: 'models.ts',
+                  type: 'Property' as const,
+                  declaredType: 'Address',
+                }
+              : undefined,
+          lookupFuzzyCallable: () => [],
+          lookupExact: () => undefined,
+          lookupExactFull: () => undefined,
+          add: () => {},
+          getStats: () => ({ fileCount: 0, globalSymbolCount: 0 }),
+          clear: () => {},
+        };
+        const typeEnv = buildTypeEnv(tree, 'typescript', { symbolTable: symbolTable as any });
+        expect(flatGet(typeEnv, 'addr')).toBe('Address');
+      });
+
+      it('field type resolution stays unresolved when lookupClassByName finds no class', () => {
+        const tree = parse(
+          `
+function process(user: User) {
+  const addr = user.address;
+}
+`,
+          TypeScript.typescript,
+        );
+        const symbolTable = {
+          lookupClassByName: () => [],
+          lookupFieldByOwner: () => undefined,
+          lookupFuzzyCallable: () => [],
+          lookupExact: () => undefined,
+          lookupExactFull: () => undefined,
+          add: () => {},
+          getStats: () => ({ fileCount: 0, globalSymbolCount: 0 }),
+          clear: () => {},
+        };
+        const typeEnv = buildTypeEnv(tree, 'typescript', { symbolTable: symbolTable as any });
+        expect(flatGet(typeEnv, 'addr')).toBeUndefined();
+      });
+    });
+
     describe('Python walrus operator type inference', () => {
       it('infers type from walrus operator with constructor call', () => {
         const tree = parse(
