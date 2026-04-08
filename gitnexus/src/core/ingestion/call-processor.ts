@@ -1612,11 +1612,9 @@ const resolveMethodByOwner = (
   const classDef = typeResolved.candidates.find((d) => CLASS_LIKE_TYPES.has(d.type));
   if (!classDef) return undefined;
 
-  // Direct lookup on owner first
-  const direct = ctx.symbols.lookupMethodByOwner(classDef.nodeId, methodName);
-  if (direct) return direct;
-
-  // MRO-aware parent chain walking when HeritageMap is available
+  // When HeritageMap is available, delegate to MRO-aware lookup which performs
+  // the direct owner lookup itself before walking ancestors — avoids a double
+  // direct lookup on the hot path.
   if (heritageMap) {
     const language = getLanguageFromFilename(filePath);
     if (language) {
@@ -1630,12 +1628,44 @@ const resolveMethodByOwner = (
     }
   }
 
-  return undefined;
+  // Fallback when no HeritageMap (or the file extension is unrecognized):
+  // plain direct lookup with no ancestor walk.
+  return ctx.symbols.lookupMethodByOwner(classDef.nodeId, methodName);
 };
 
 // ---------------------------------------------------------------------------
 // MRO-aware method resolution via HeritageMap (SM-9)
 // ---------------------------------------------------------------------------
+
+/**
+ * Per-HeritageMap cache of C3 linearization results keyed by owner nodeId.
+ *
+ * HeritageMap instances are immutable after construction, so C3 output is
+ * stable for the lifetime of a HeritageMap. WeakMap lets the cache auto-drain
+ * when the HeritageMap is garbage collected (end of ingestion run), so we
+ * never need to manually invalidate it.
+ *
+ * `null` is a sentinel for "C3 failed for this owner" (cyclic or inconsistent
+ * hierarchy) so we don't re-run the expensive linearization repeatedly.
+ */
+const c3LinearizationCache = new WeakMap<HeritageMap, Map<string, readonly string[] | null>>();
+
+const getCachedC3Linearization = (
+  ownerNodeId: string,
+  heritageMap: HeritageMap,
+): readonly string[] | null => {
+  let perHmCache = c3LinearizationCache.get(heritageMap);
+  if (!perHmCache) {
+    perHmCache = new Map();
+    c3LinearizationCache.set(heritageMap, perHmCache);
+  }
+  const cached = perHmCache.get(ownerNodeId);
+  if (cached !== undefined) return cached;
+  const parentMap = buildParentMapFromHeritage(ownerNodeId, heritageMap);
+  const result = c3Linearize(ownerNodeId, parentMap, new Map()) ?? null;
+  perHmCache.set(ownerNodeId, result);
+  return result;
+};
 
 /**
  * Build a parentMap from HeritageMap for use with c3Linearize.
@@ -1699,15 +1729,19 @@ export const lookupMethodByOwnerWithMRO = (
   // Rust: requires qualified syntax (<Type as Trait>::method), no auto-resolution
   if (strategy === 'qualified-syntax') return undefined;
 
-  // Determine ancestor walk order based on MRO strategy
-  let ancestors: string[];
+  // Determine ancestor walk order based on MRO strategy.
+  // readonly to accept the cached (frozen) c3 linearization without copying.
+  let ancestors: readonly string[];
   if (strategy === 'c3') {
-    // Delegate to mro-processor.ts C3 linearization
-    const parentMap = buildParentMapFromHeritage(ownerNodeId, heritageMap);
-    const c3Result = c3Linearize(ownerNodeId, parentMap, new Map());
+    // Delegate to mro-processor.ts C3 linearization (memoized per HeritageMap
+    // so repeated calls for the same owner within an ingestion run reuse the
+    // linearization instead of rebuilding the parent map and re-running C3).
+    // c3Linearize returns ancestors only (excludes the owner itself),
+    // matching heritageMap.getAncestors() semantics.
+    const c3Result = getCachedC3Linearization(ownerNodeId, heritageMap);
     // Fall back to BFS order if C3 fails (cyclic or inconsistent hierarchy).
-    // Note: BFS order may not preserve Python MRO semantics in these edge cases,
-    // but cyclic/inconsistent hierarchies are invalid in Python anyway.
+    // Note: BFS order may not preserve Python MRO semantics in these edge
+    // cases, but cyclic/inconsistent hierarchies are invalid in Python anyway.
     ancestors = c3Result ?? heritageMap.getAncestors(ownerNodeId);
   } else {
     // first-wins, leftmost-base, implements-split: BFS order via HeritageMap

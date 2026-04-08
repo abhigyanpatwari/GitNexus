@@ -1187,6 +1187,123 @@ describe('lookupMethodByOwnerWithMRO', () => {
     expect(result!.nodeId).toBe('method:Base:save');
   });
 
+  it('implements-split (Kotlin): walks ancestors to find inherited method', () => {
+    ctx.symbols.add('src/base.kt', 'Base', 'class:Base', 'Class');
+    ctx.symbols.add('src/child.kt', 'Child', 'class:Child', 'Class');
+    ctx.symbols.add('src/base.kt', 'handle', 'method:Base:handle', 'Method', {
+      returnType: 'Unit',
+      ownerId: 'class:Base',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/child.kt', className: 'Child', parentName: 'Base', kind: 'extends' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:Child',
+      'handle',
+      map,
+      ctx.symbols,
+      SupportedLanguages.Kotlin,
+    );
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:Base:handle');
+  });
+
+  it('implements-split (C#): walks ancestors to find inherited method', () => {
+    ctx.symbols.add('src/Base.cs', 'Base', 'class:Base', 'Class');
+    ctx.symbols.add('src/Child.cs', 'Child', 'class:Child', 'Class');
+    ctx.symbols.add('src/Base.cs', 'Execute', 'method:Base:Execute', 'Method', {
+      returnType: 'void',
+      ownerId: 'class:Base',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/Child.cs', className: 'Child', parentName: 'Base', kind: 'extends' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:Child',
+      'Execute',
+      map,
+      ctx.symbols,
+      SupportedLanguages.CSharp,
+    );
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:Base:Execute');
+  });
+
+  it('first-wins (JavaScript): walks ancestors to find inherited method', () => {
+    // JavaScript provider is wired separately from TypeScript — this guards
+    // the provider wiring independent of the TS path.
+    ctx.symbols.add('src/animal.js', 'Animal', 'class:Animal', 'Class');
+    ctx.symbols.add('src/dog.js', 'Dog', 'class:Dog', 'Class');
+    ctx.symbols.add('src/animal.js', 'speak', 'method:Animal:speak', 'Method', {
+      returnType: 'string',
+      ownerId: 'class:Animal',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/dog.js', className: 'Dog', parentName: 'Animal', kind: 'extends' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:Dog',
+      'speak',
+      map,
+      ctx.symbols,
+      SupportedLanguages.JavaScript,
+    );
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:Animal:speak');
+  });
+
+  it('leftmost-base (C++): diamond inheritance resolves leftmost branch first', () => {
+    // Diamond: D extends B, C; B extends A; C extends A.
+    // Both B and C define render(). leftmost-base must return B#render (first
+    // branch in declaration order), not A#render or C#render.
+    ctx.symbols.add('src/a.cpp', 'A', 'class:A', 'Class');
+    ctx.symbols.add('src/b.cpp', 'B', 'class:B', 'Class');
+    ctx.symbols.add('src/c.cpp', 'C', 'class:C', 'Class');
+    ctx.symbols.add('src/d.cpp', 'D', 'class:D', 'Class');
+    ctx.symbols.add('src/a.cpp', 'render', 'method:A:render', 'Method', {
+      returnType: 'void',
+      ownerId: 'class:A',
+    });
+    ctx.symbols.add('src/b.cpp', 'render', 'method:B:render', 'Method', {
+      returnType: 'void',
+      ownerId: 'class:B',
+    });
+    ctx.symbols.add('src/c.cpp', 'render', 'method:C:render', 'Method', {
+      returnType: 'void',
+      ownerId: 'class:C',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      // Declaration order matters: B before C for leftmost-base semantics.
+      { filePath: 'src/d.cpp', className: 'D', parentName: 'B', kind: 'extends' },
+      { filePath: 'src/d.cpp', className: 'D', parentName: 'C', kind: 'extends' },
+      { filePath: 'src/b.cpp', className: 'B', parentName: 'A', kind: 'extends' },
+      { filePath: 'src/c.cpp', className: 'C', parentName: 'A', kind: 'extends' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:D',
+      'render',
+      map,
+      ctx.symbols,
+      SupportedLanguages.CPlusPlus,
+    );
+    expect(result).toBeDefined();
+    // BFS via HeritageMap visits B before C (insertion order), so leftmost
+    // branch wins — matches C++ leftmost-base semantics for non-virtual base.
+    expect(result!.nodeId).toBe('method:B:render');
+  });
+
   it('returns direct method on owner without walking (no heritage needed)', () => {
     ctx.symbols.add('src/user.java', 'User', 'class:User', 'Class');
     ctx.symbols.add('src/user.java', 'getName', 'method:User:getName', 'Method', {
