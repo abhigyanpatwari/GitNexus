@@ -1516,3 +1516,35 @@ describe('C++ out-of-class method definition with overloaded declarations', () =
     expect(targetNode?.properties.parameterTypes).toEqual(['int']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// SM-9: lookupMethodByOwnerWithMRO — c.parentMethod() via leftmost-base walk
+// ---------------------------------------------------------------------------
+
+describe('C++ Child extends Parent — inherited method resolution (SM-9)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-child-extends-parent'), () => {});
+  }, 60000);
+
+  it('detects Parent and Child classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Parent');
+    expect(classes).toContain('Child');
+  });
+
+  it('emits EXTENDS edge: Child → Parent', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Child → Parent');
+  });
+
+  it('resolves c.parentMethod() to Parent.parentMethod via leftmost-base MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const parentMethodCall = calls.find(
+      (c) => c.target === 'parentMethod' && c.targetFilePath.includes('Parent.h'),
+    );
+    expect(parentMethodCall).toBeDefined();
+    expect(parentMethodCall!.source).toBe('run');
+  });
+});
