@@ -277,7 +277,9 @@ export const OnboardingGuide = ({ isPolling }: OnboardingGuideProps) => {
           state={step2State}
           number={2}
           title={isPolling ? 'Waiting for server to start' : 'Paste and run in your terminal'}
-          description={isPolling ? undefined : 'Open a terminal at the project root, paste, and hit Enter.'}
+          description={
+            isPolling ? undefined : 'Open a terminal at the project root, paste, and hit Enter.'
+          }
         >
           {isPolling && <PollingBar />}
         </StepRow>
