@@ -2108,10 +2108,7 @@ describe('Java Child extends Parent — inherited method resolution (SM-9)', () 
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'java-child-extends-parent'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-child-extends-parent'), () => {});
   }, 60000);
 
   it('detects Parent and Child classes', () => {
@@ -2131,5 +2128,8 @@ describe('Java Child extends Parent — inherited method resolution (SM-9)', () 
       (c) => c.target === 'parentMethod' && c.targetFilePath.includes('Parent'),
     );
     expect(parentMethodCall).toBeDefined();
+    // Pin the caller too — not just the target — so a regression that
+    // misattributes the edge to a different source would fail loudly.
+    expect(parentMethodCall!.source).toBe('run');
   });
 });

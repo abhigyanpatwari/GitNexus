@@ -1712,6 +1712,10 @@ const buildParentMapFromHeritage = (
  * - `qualified-syntax`: No auto-resolution (Rust) — returns undefined
  *
  * Delegates to mro-processor.ts c3Linearize for C3 strategy.
+ *
+ * @internal Exported only to enable unit testing in isolation. The proper
+ * entry point for callers outside this module is {@link resolveMethodByOwner},
+ * which handles receiver-type resolution before delegating here.
  */
 export const lookupMethodByOwnerWithMRO = (
   ownerNodeId: string,

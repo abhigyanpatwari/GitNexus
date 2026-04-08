@@ -1187,6 +1187,80 @@ describe('lookupMethodByOwnerWithMRO', () => {
     expect(result!.nodeId).toBe('method:Base:save');
   });
 
+  it('implements-split (Java): ambiguous default from two interfaces → BFS first-wins', () => {
+    // Java: class C implements I1, I2; both I1 and I2 declare the same
+    // default method. Full ambiguity detection (Java's "class must override
+    // conflicting defaults" rule) is deferred to computeMRO at the graph
+    // level. lookupMethodByOwnerWithMRO itself uses BFS order and returns
+    // the first match — this test pins that contract so a future regression
+    // that starts returning undefined (or flips the order) fails loudly.
+    ctx.symbols.add('src/I1.java', 'I1', 'iface:I1', 'Interface');
+    ctx.symbols.add('src/I2.java', 'I2', 'iface:I2', 'Interface');
+    ctx.symbols.add('src/C.java', 'C', 'class:C', 'Class');
+    ctx.symbols.add('src/I1.java', 'handle', 'method:I1:handle', 'Method', {
+      returnType: 'void',
+      ownerId: 'iface:I1',
+    });
+    ctx.symbols.add('src/I2.java', 'handle', 'method:I2:handle', 'Method', {
+      returnType: 'void',
+      ownerId: 'iface:I2',
+    });
+
+    // Insertion order is I1 then I2, so BFS returns I1 first.
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/C.java', className: 'C', parentName: 'I1', kind: 'implements' },
+      { filePath: 'src/C.java', className: 'C', parentName: 'I2', kind: 'implements' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:C',
+      'handle',
+      map,
+      ctx.symbols,
+      SupportedLanguages.Java,
+    );
+    expect(result).toBeDefined();
+    // BFS first-wins — I1 was declared first, so it wins.
+    expect(result!.nodeId).toBe('method:I1:handle');
+  });
+
+  it('implements-split (Java): class method takes precedence over interface default in BFS order', () => {
+    // Child extends Base implements IFoo. Both Base (class) and IFoo
+    // (interface) declare the same method. HeritageMap records extends
+    // before implements in the emitter's declaration order, so BFS visits
+    // Base before IFoo — class wins. Documents the current BFS-level
+    // behavior; the strict Java "class always wins" rule is enforced at
+    // the mro-processor graph pass.
+    ctx.symbols.add('src/Base.java', 'Base', 'class:Base', 'Class');
+    ctx.symbols.add('src/IFoo.java', 'IFoo', 'iface:IFoo', 'Interface');
+    ctx.symbols.add('src/Child.java', 'Child', 'class:Child', 'Class');
+    ctx.symbols.add('src/Base.java', 'handle', 'method:Base:handle', 'Method', {
+      returnType: 'void',
+      ownerId: 'class:Base',
+    });
+    ctx.symbols.add('src/IFoo.java', 'handle', 'method:IFoo:handle', 'Method', {
+      returnType: 'void',
+      ownerId: 'iface:IFoo',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/Child.java', className: 'Child', parentName: 'Base', kind: 'extends' },
+      { filePath: 'src/Child.java', className: 'Child', parentName: 'IFoo', kind: 'implements' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:Child',
+      'handle',
+      map,
+      ctx.symbols,
+      SupportedLanguages.Java,
+    );
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:Base:handle');
+  });
+
   it('implements-split (Kotlin): walks ancestors to find inherited method', () => {
     ctx.symbols.add('src/base.kt', 'Base', 'class:Base', 'Class');
     ctx.symbols.add('src/child.kt', 'Child', 'class:Child', 'Class');
