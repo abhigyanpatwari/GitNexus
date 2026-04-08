@@ -1459,14 +1459,20 @@ const resolveCallTarget = (
       // D2. Widen candidates: same-file tier may miss the parent's method when
       //     it lives in another file. Query the symbol table directly for all
       //     global methods with this name, then apply arity/kind filtering.
-      const methodPool =
-        filteredCandidates.length <= 1
-          ? filterCallableCandidates(
-              ctx.symbols.lookupFuzzy(call.calledName),
-              call.argCount,
-              call.callForm,
-            )
-          : filteredCandidates;
+      // Also widen when none of the current candidates are in the type's file —
+      // this handles scoped calls (Rust Foo::new(), C++ Ns::func()) where the
+      // same-file tier finds many unrelated matches (e.g. 80+ `new()` functions
+      // in a large main.rs) but none belong to the target type.
+      const needsWiden =
+        filteredCandidates.length <= 1 ||
+        !filteredCandidates.some((c) => typeFiles.has(c.filePath));
+      const methodPool = needsWiden
+        ? filterCallableCandidates(
+            ctx.symbols.lookupFuzzy(call.calledName),
+            call.argCount,
+            call.callForm,
+          )
+        : filteredCandidates;
 
       // D3. File-based: prefer candidates whose filePath matches the resolved type's file
       const fileFiltered = methodPool.filter((c) => typeFiles.has(c.filePath));
@@ -1918,6 +1924,32 @@ export const processCallsFromExtracted = async (
           if (walkedType) {
             effectiveCall = { ...effectiveCall, receiverTypeName: walkedType };
           }
+        }
+      }
+
+      // Step 2: Scoped qualifier resolution for Rust Foo::new(), C++ Ns::func().
+      // Workers pre-extract the qualifier; resolve it to a type and promote callForm.
+      if (
+        effectiveCall.scopedQualifier &&
+        effectiveCall.callForm === 'free' &&
+        !effectiveCall.receiverTypeName
+      ) {
+        const typeResolved = ctx.resolve(effectiveCall.scopedQualifier, effectiveCall.filePath);
+        if (
+          typeResolved &&
+          typeResolved.candidates.some(
+            (d) =>
+              d.type === 'Class' ||
+              d.type === 'Struct' ||
+              d.type === 'Enum' ||
+              d.type === 'Impl',
+          )
+        ) {
+          effectiveCall = {
+            ...effectiveCall,
+            receiverTypeName: effectiveCall.scopedQualifier,
+            callForm: 'member',
+          };
         }
       }
 

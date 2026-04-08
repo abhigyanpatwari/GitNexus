@@ -55,6 +55,7 @@ import {
 import {
   countCallArguments,
   inferCallForm,
+  extractScopedQualifier,
   extractReceiverName,
   extractReceiverNode,
   extractMixedChain,
@@ -167,6 +168,8 @@ export interface ExtractedCall {
    */
   receiverMixedChain?: MixedChainStep[];
   argTypes?: (string | undefined)[];
+  /** Type qualifier from scoped calls (e.g. 'PeerRegistry' from PeerRegistry::new()) */
+  scopedQualifier?: string;
 }
 
 export interface ExtractedAssignment {
@@ -1738,6 +1741,10 @@ const processFileGroup = (
               }
             }
 
+            // Extract scoped qualifier for Rust Foo::new(), C++ Ns::func()
+            const scopedQualifier =
+              callForm === 'free' ? extractScopedQualifier(callNameNode) : undefined;
+
             const inferLiteralType = provider.typeConfig?.inferLiteralType;
             const argCountForOverloadHints = countCallArguments(callNode);
             // Skip when no arg list / zero args: nothing to infer for overload typing; saves AST walks + payload size.
@@ -1760,6 +1767,7 @@ const processFileGroup = (
               ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
               ...(receiverMixedChain !== undefined ? { receiverMixedChain } : {}),
               ...(argTypes !== undefined ? { argTypes } : {}),
+              ...(scopedQualifier !== undefined ? { scopedQualifier } : {}),
             });
           }
         }
