@@ -263,11 +263,14 @@ describe('buildHeritageMap', () => {
 
       const map = buildHeritageMap(heritage, ctx);
       const ancestors = map.getAncestors('class:Level0');
-      // Should have at most 32 ancestors (bounded), not all 40
-      expect(ancestors.length).toBeLessThanOrEqual(32);
-      expect(ancestors.length).toBeGreaterThan(0);
+      // Strictly linear chain of depth > MAX_ANCESTOR_DEPTH must terminate
+      // at exactly 32 BFS iterations. The tight `toBe(32)` guards against a
+      // future regression that silently returns fewer ancestors.
+      expect(ancestors.length).toBe(32);
       // First ancestor should be the direct parent
       expect(ancestors[0]).toBe('class:Level1');
+      // Last ancestor should be the 32nd level — beyond that is cut off
+      expect(ancestors[31]).toBe('class:Level32');
     });
   });
 
@@ -387,6 +390,22 @@ describe('buildHeritageMap', () => {
       ];
       const map = buildHeritageMap(heritage, ctx);
       expect(map.getImplementorFiles('Iface')).toEqual(new Set(['src/Impl.kt']));
+    });
+
+    it('records TypeScript implements edges', () => {
+      ctx.symbols.add('src/Service.ts', 'UserService', 'class:UserService', 'Class');
+      ctx.symbols.add('src/IService.ts', 'IUserService', 'iface:IUserService', 'Interface');
+
+      const heritage: ExtractedHeritage[] = [
+        {
+          filePath: 'src/Service.ts',
+          className: 'UserService',
+          parentName: 'IUserService',
+          kind: 'implements',
+        },
+      ];
+      const map = buildHeritageMap(heritage, ctx);
+      expect(map.getImplementorFiles('IUserService')).toEqual(new Set(['src/Service.ts']));
     });
 
     it('records PHP implements edges', () => {
