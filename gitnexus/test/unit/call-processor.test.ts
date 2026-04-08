@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
+  processCalls,
   processCallsFromExtracted,
   seedCrossFileReceiverTypes,
   extractConsumerAccessedKeys,
@@ -7,6 +8,7 @@ import {
   buildImplementorMap,
   mergeImplementorMaps,
 } from '../../src/core/ingestion/call-processor.js';
+import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
 import { extractReturnTypeName } from '../../src/core/ingestion/type-extractors/shared.js';
 import {
   createResolutionContext,
@@ -751,6 +753,113 @@ describe('processCallsFromExtracted', () => {
     // last-write-wins would give both calls the same receiver type)
     expect(rels[0].sourceId).toBe('Function:src/index.ts:processUser');
     expect(rels[1].sourceId).toBe('Function:src/index.ts:processRepo');
+  });
+});
+
+describe('processCalls — Phase P class lookup fallback', () => {
+  let graph: ReturnType<typeof createKnowledgeGraph>;
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    graph = createKnowledgeGraph();
+    ctx = createResolutionContext();
+  });
+
+  it('uses lookupClassByName to override interface receiver types for cross-file virtual dispatch', async () => {
+    const appFile = 'services/App.java';
+    const contractFile = 'models/Pet.java';
+    const dogFile = 'models/Dog.java';
+    const petId = 'Interface:models/Pet.java:Pet';
+    const dogId = 'Class:models/Dog.java:Dog';
+    const fetchBallId = 'Method:models/Dog.java:fetchBall';
+
+    ctx.symbols.add(contractFile, 'Pet', petId, 'Interface');
+    ctx.symbols.add(dogFile, 'Dog', dogId, 'Class');
+    ctx.symbols.add(dogFile, 'fetchBall', fetchBallId, 'Method', { ownerId: dogId });
+    ctx.importMap.set(appFile, new Set([contractFile, dogFile]));
+
+    const classLookupSpy = vi.spyOn(ctx.symbols, 'lookupClassByName');
+
+    await processCalls(
+      graph,
+      [
+        {
+          path: appFile,
+          content: `
+package services;
+
+import models.Pet;
+import models.Dog;
+
+class App {
+  void run() {
+    Pet pet = new Dog();
+    pet.fetchBall();
+  }
+}
+`,
+        },
+      ],
+      createASTCache(),
+      ctx,
+    );
+
+    const fetchBallCalls = graph.relationships.filter(
+      (r) => r.type === 'CALLS' && r.targetId === fetchBallId,
+    );
+    expect(fetchBallCalls).toHaveLength(1);
+    expect(classLookupSpy).toHaveBeenCalledWith('Dog');
+    expect(classLookupSpy).toHaveBeenCalledWith('Pet');
+  });
+
+  it('does not override when the constructor type is not indexed as class-like', async () => {
+    const appFile = 'services/App.java';
+    const contractFile = 'models/Pet.java';
+    const dogFile = 'models/Dog.java';
+    const otherDogFile = 'models/OtherDog.java';
+    const petId = 'Interface:models/Pet.java:Pet';
+
+    ctx.symbols.add(contractFile, 'Pet', petId, 'Interface');
+    ctx.symbols.add(dogFile, 'fetchBall', 'Method:models/Dog.java:fetchBall', 'Method', {
+      ownerId: 'Class:models/Dog.java:Dog',
+    });
+    ctx.symbols.add(otherDogFile, 'fetchBall', 'Method:models/OtherDog.java:fetchBall', 'Method', {
+      ownerId: 'Class:models/OtherDog.java:OtherDog',
+    });
+    ctx.importMap.set(appFile, new Set([contractFile, dogFile, otherDogFile]));
+
+    const classLookupSpy = vi.spyOn(ctx.symbols, 'lookupClassByName');
+
+    await processCalls(
+      graph,
+      [
+        {
+          path: appFile,
+          content: `
+package services;
+
+import models.Pet;
+import models.Dog;
+
+class App {
+  void run() {
+    Pet pet = new Dog();
+    pet.fetchBall();
+  }
+}
+`,
+        },
+      ],
+      createASTCache(),
+      ctx,
+    );
+
+    const fetchBallCalls = graph.relationships.filter(
+      (r) => r.type === 'CALLS' && r.targetId === 'Method:models/Dog.java:fetchBall',
+    );
+    expect(fetchBallCalls).toHaveLength(0);
+    expect(classLookupSpy).toHaveBeenCalledWith('Dog');
+    expect(classLookupSpy).not.toHaveBeenCalledWith('Pet');
   });
 });
 
