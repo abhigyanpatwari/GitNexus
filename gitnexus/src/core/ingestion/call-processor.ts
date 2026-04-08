@@ -787,6 +787,8 @@ export const processCalls = async (
           ctx,
           undefined,
           widenCache,
+          undefined,
+          heritageMap,
         );
 
         if (!resolved) return;
@@ -1033,6 +1035,8 @@ export const processCalls = async (
         ctx,
         hints,
         widenCache,
+        undefined,
+        heritageMap,
       );
 
       if (!resolved) return;
@@ -1285,6 +1289,7 @@ const resolveCallTarget = (
   overloadHints?: OverloadHints,
   widenCache?: WidenCache,
   preComputedArgTypes?: (string | undefined)[],
+  heritageMap?: HeritageMap,
 ): ResolveResult | null => {
   const tiered = ctx.resolve(call.calledName, currentFile);
   if (!tiered) return null;
@@ -1360,6 +1365,26 @@ const resolveCallTarget = (
   // belong to the wrong class (e.g. super.save() should hit the parent's save,
   // not the child's own save method in the same file).
   if (call.callForm === 'member' && call.receiverTypeName) {
+    // D0. MRO fast path: when heritageMap is available, try owner-scoped + MRO
+    //     lookup before falling back to the expensive D2 fuzzy widening.
+    //     This short-circuits the lookupFuzzy call for every cross-file member call.
+    //     Skip the fast path when overload disambiguation hints are available
+    //     (overloadHints or preComputedArgTypes) — the MRO lookup may pick the
+    //     wrong overload for same-return-type overloads since it doesn't consider
+    //     argument types. D2-D4+E handles those correctly.
+    if (!overloadHints && !preComputedArgTypes) {
+      const mroResult = resolveMethodByOwner(
+        call.receiverTypeName,
+        call.calledName,
+        currentFile,
+        ctx,
+        heritageMap,
+      );
+      if (mroResult) {
+        return toResolveResult(mroResult, tiered.tier);
+      }
+    }
+
     // D1. Resolve the receiver type
     const typeResolved = ctx.resolve(call.receiverTypeName, currentFile);
     if (typeResolved && typeResolved.candidates.length > 0) {
@@ -1839,6 +1864,10 @@ const walkMixedChain = (
         { calledName: step.name, callForm: 'member', receiverTypeName: currentType },
         filePath,
         ctx,
+        undefined,
+        undefined,
+        undefined,
+        heritageMap,
       );
       if (!resolved) {
         // Stdlib passthrough: unwrap(), clone(), etc. preserve the receiver type
@@ -1988,6 +2017,7 @@ export const processCallsFromExtracted = async (
         undefined,
         widenCache,
         effectiveCall.argTypes,
+        heritageMap,
       );
       if (!resolved) {
         // Vue template component fallback: match calledName against imported .vue basenames
