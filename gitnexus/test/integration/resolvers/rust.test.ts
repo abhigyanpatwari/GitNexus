@@ -1857,3 +1857,38 @@ describe('Rust abstract dispatch (Repository trait)', () => {
     expect(names).toEqual(['find', 'save']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Scoped qualified calls: PeerRegistry::new() without `use` imports
+// Tests that fully-qualified paths (crate::module::Type::method()) produce
+// CALLS edges even when there is no `use` import statement.
+// ---------------------------------------------------------------------------
+
+describe('Rust scoped qualified calls (no use imports)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-scoped-qualified-calls'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects PeerRegistry struct and its impl methods', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    expect(structs).toContain('PeerRegistry');
+    const fns = getNodesByLabel(result, 'Function');
+    expect(fns).toContain('new');
+    expect(fns).toContain('peers');
+    expect(fns).toContain('default_poll_interval');
+    expect(fns).toContain('main');
+  });
+
+  it('resolves crate::registry::PeerRegistry::new() to PeerRegistry#new in registry.rs', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const newCall = calls.find(
+      (c) => c.target === 'new' && c.source === 'main' && c.targetFilePath.includes('registry'),
+    );
+    expect(newCall).toBeDefined();
+  });
+});

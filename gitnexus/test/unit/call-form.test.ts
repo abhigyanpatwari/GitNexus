@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   inferCallForm,
   extractReceiverName,
+  extractScopedQualifier,
 } from '../../src/core/ingestion/utils/call-analysis.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 import { createSymbolTable } from '../../src/core/ingestion/symbol-table.js';
@@ -461,5 +462,73 @@ describe('ownerId on SymbolDefinition', () => {
     const defs = st.lookupFuzzy('save');
     expect(defs).toHaveLength(1);
     expect(defs[0].ownerId).toBe('Class:src/foo.ts:User');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractScopedQualifier: extract type qualifier from scoped calls
+// ---------------------------------------------------------------------------
+
+describe('extractScopedQualifier', () => {
+  const parser = new Parser();
+
+  describe('Rust', () => {
+    beforeAll(() => {
+      parser.setLanguage(Rust);
+    });
+
+    it('returns qualifier for simple Foo::new()', () => {
+      const code = `fn main() { Foo::new(); }`;
+      const captures = extractCallCaptures(parser, code, SupportedLanguages.Rust);
+      const match = captures.find((c) => c.calledName === 'new');
+      expect(match).toBeDefined();
+      expect(extractScopedQualifier(match!.nameNode)).toBe('Foo');
+    });
+
+    it('returns penultimate segment for nested module::Foo::bar()', () => {
+      const code = `fn main() { module::Foo::bar(); }`;
+      const captures = extractCallCaptures(parser, code, SupportedLanguages.Rust);
+      const match = captures.find((c) => c.calledName === 'bar');
+      expect(match).toBeDefined();
+      expect(extractScopedQualifier(match!.nameNode)).toBe('Foo');
+    });
+
+    it('returns penultimate segment for deeply nested crate::a::b::Foo::new()', () => {
+      const code = `fn main() { crate::a::b::Foo::new(); }`;
+      const captures = extractCallCaptures(parser, code, SupportedLanguages.Rust);
+      const match = captures.find((c) => c.calledName === 'new');
+      expect(match).toBeDefined();
+      expect(extractScopedQualifier(match!.nameNode)).toBe('Foo');
+    });
+
+    it('returns undefined for plain free call do_stuff()', () => {
+      const code = `fn main() { do_stuff(); }`;
+      const captures = extractCallCaptures(parser, code, SupportedLanguages.Rust);
+      const match = captures.find((c) => c.calledName === 'do_stuff');
+      expect(match).toBeDefined();
+      expect(extractScopedQualifier(match!.nameNode)).toBeUndefined();
+    });
+
+    it('returns undefined for member call obj.method()', () => {
+      const code = `fn main() { obj.method(); }`;
+      const captures = extractCallCaptures(parser, code, SupportedLanguages.Rust);
+      const match = captures.find((c) => c.calledName === 'method');
+      expect(match).toBeDefined();
+      expect(extractScopedQualifier(match!.nameNode)).toBeUndefined();
+    });
+  });
+
+  describe('C++', () => {
+    beforeAll(() => {
+      parser.setLanguage(CPP);
+    });
+
+    it('returns qualifier for Class::method()', () => {
+      const code = `void main() { MyClass::create(); }`;
+      const captures = extractCallCaptures(parser, code, SupportedLanguages.CPlusPlus);
+      const match = captures.find((c) => c.calledName === 'create');
+      expect(match).toBeDefined();
+      expect(extractScopedQualifier(match!.nameNode)).toBe('MyClass');
+    });
   });
 });

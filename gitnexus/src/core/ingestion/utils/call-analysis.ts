@@ -149,6 +149,40 @@ export const inferCallForm = (callNode: SyntaxNode, nameNode: SyntaxNode): CallF
 };
 
 /**
+ * Extract the type qualifier from a scoped/qualified call.
+ * For Rust `PeerRegistry::new()`, returns "PeerRegistry".
+ * For nested `engine::peer_registry::PeerRegistry::new()`, returns "PeerRegistry"
+ * (the penultimate segment — the type, not the module path).
+ * Also handles C++ `Ns::Class::method()` via qualified_identifier.
+ */
+export const extractScopedQualifier = (nameNode: SyntaxNode): string | undefined => {
+  const parent = nameNode.parent;
+  if (!parent || !SCOPED_CALL_NODE_TYPES.has(parent.type)) return undefined;
+
+  // Rust uses 'path' field, C++ uses 'scope' field
+  const pathNode = parent.childForFieldName('path') ?? parent.childForFieldName('scope');
+  if (!pathNode) return undefined;
+
+  // Simple case: Foo::bar() — path is a plain identifier, type_identifier, or namespace_identifier
+  if (
+    pathNode.type === 'identifier' ||
+    pathNode.type === 'type_identifier' ||
+    pathNode.type === 'namespace_identifier'
+  ) {
+    return pathNode.text;
+  }
+
+  // Nested case: engine::module::Foo::bar() — path is another scoped_identifier.
+  // Extract its name field (the penultimate segment, i.e. the type qualifier).
+  if (SCOPED_CALL_NODE_TYPES.has(pathNode.type)) {
+    const nameField = pathNode.childForFieldName('name');
+    return nameField?.text;
+  }
+
+  return pathNode.text;
+};
+
+/**
  * Extract the receiver identifier for member calls.
  * Only captures simple identifiers — returns undefined for complex expressions
  * like getUser().save() or arr[0].method().

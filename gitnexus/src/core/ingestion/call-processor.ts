@@ -22,6 +22,7 @@ import type { MethodInfo } from './method-types.js';
 import {
   countCallArguments,
   inferCallForm,
+  extractScopedQualifier,
   extractReceiverName,
   extractReceiverNode,
   extractMixedChain,
@@ -1028,6 +1029,29 @@ export const processCalls = async (
           receiverTypeName = receiverName;
         }
       }
+      // Scoped call qualifier resolution: for Rust Foo::bar(), C++ Ns::func(),
+      // extract the type qualifier from the scoped_identifier path and use it
+      // as a synthetic receiver type. This enables the existing D1-D4 receiver-type
+      // filtering to disambiguate calls like PeerRegistry::new() across the codebase.
+      if (callForm === 'free' && !receiverTypeName) {
+        const qualifier = extractScopedQualifier(nameNode);
+        if (qualifier) {
+          const typeResolved = ctx.resolve(qualifier, file.path);
+          if (
+            typeResolved &&
+            typeResolved.candidates.some(
+              (d) =>
+                d.type === 'Class' ||
+                d.type === 'Struct' ||
+                d.type === 'Enum' ||
+                d.type === 'Impl',
+            )
+          ) {
+            receiverTypeName = qualifier;
+          }
+        }
+      }
+
       // Hoist sourceId so it's available for ACCESSES edge emission during chain walk.
       const enclosingFuncId = findEnclosingFunction(callNode, file.path, ctx, provider);
       const sourceId = enclosingFuncId || generateId('File', file.path);
@@ -1082,11 +1106,16 @@ export const processCalls = async (
         ? { callNode, inferLiteralType: langConfig.inferLiteralType, typeEnv }
         : undefined;
 
+      // When a scoped qualifier resolved to a type (e.g. Rust PeerRegistry::new()),
+      // promote callForm to 'member' so receiver-type filtering (D1-D4) kicks in.
+      const effectiveCallForm =
+        receiverTypeName && callForm === 'free' ? 'member' : callForm;
+
       const resolved = resolveCallTarget(
         {
           calledName,
           argCount: countCallArguments(callNode),
-          callForm,
+          callForm: effectiveCallForm,
           receiverTypeName,
           receiverName,
         },
