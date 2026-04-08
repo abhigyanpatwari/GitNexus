@@ -61,6 +61,10 @@ export interface AnalyzeOptions {
   skipAgentsMd?: boolean;
   /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
   noStats?: boolean;
+  /** Skip installing standard GitNexus skill files to .claude/skills/gitnexus/. */
+  skipSkills?: boolean;
+  /** Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills). */
+  indexOnly?: boolean;
   /** Index the folder even when no .git directory is present. */
   skipGit?: boolean;
   /**
@@ -202,6 +206,9 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   // ── Run shared analysis orchestrator ───────────────────────────────
   try {
+    const skipAll = options?.indexOnly;
+    const skipAgentsMd = skipAll || options?.skipAgentsMd;
+    const skipSkills = skipAll || options?.skipSkills;
     const result = await runFullAnalysis(
       repoPath,
       {
@@ -211,7 +218,8 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         force: options?.force || options?.skills,
         embeddings: options?.embeddings,
         skipGit: options?.skipGit,
-        skipAgentsMd: options?.skipAgentsMd,
+        skipAgentsMd,
+        skipSkills,
         noStats: options?.noStats,
         registryName: options?.name,
         // Registry-collision bypass — its own CLI flag, intentionally NOT
@@ -282,7 +290,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
               processes: s.processes,
             },
             skillResult.skills,
-            { skipAgentsMd: options?.skipAgentsMd, noStats: options?.noStats },
+            { skipAgentsMd, skipSkills, noStats: options?.noStats },
           );
         }
       } catch {

@@ -27,6 +27,8 @@ program
   .option('--skills', 'Generate repo-specific skill files from detected communities')
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
+  .option('--skip-skills', 'Skip installing standard GitNexus skill files to .claude/skills/gitnexus/')
+  .option('--index-only', 'Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills)')
   .option('--skip-git', 'Index a folder without requiring a .git directory')
   .option(
     '--name <alias>',
