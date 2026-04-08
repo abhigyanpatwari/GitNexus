@@ -30,6 +30,12 @@ try {
   Kotlin = _require('tree-sitter-kotlin');
 } catch {}
 
+// tree-sitter-scala is an optionalDependency — may not be installed
+let Scala: any = null;
+try {
+  Scala = _require('tree-sitter-scala');
+} catch {}
+
 let parser: Parser | null = null;
 
 const languageMap: Record<string, any> = {
@@ -44,6 +50,7 @@ const languageMap: Record<string, any> = {
   [SupportedLanguages.Go]: Go,
   [SupportedLanguages.Rust]: Rust,
   ...(Kotlin ? { [SupportedLanguages.Kotlin]: Kotlin } : {}),
+  ...(Scala ? { [SupportedLanguages.Scala]: Scala } : {}),
   [SupportedLanguages.PHP]: PHP.php_only,
   [SupportedLanguages.Ruby]: Ruby,
   [SupportedLanguages.Vue]: TypeScript.typescript,

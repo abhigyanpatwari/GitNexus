@@ -892,6 +892,20 @@ export const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE = {
     },
   ],
   [SupportedLanguages.Vue]: [], // Vue uses TypeScript AST framework detection
+  [SupportedLanguages.Scala]: [
+    {
+      framework: 'play-framework',
+      entryPointMultiplier: 2.5,
+      reason: 'play-controller',
+      patterns: ['Controller', 'BaseController', 'AbstractController', 'InjectedController', 'Action'],
+    },
+    {
+      framework: 'akka',
+      entryPointMultiplier: 2.0,
+      reason: 'akka-actor',
+      patterns: ['Actor', 'ActorRef', 'Props', 'receive', 'ActorSystem'],
+    },
+  ],
   [SupportedLanguages.Cobol]: [], // Standalone regex processor — no AST framework patterns
 } satisfies Record<SupportedLanguages, AstFrameworkPatternConfig[]>;
 

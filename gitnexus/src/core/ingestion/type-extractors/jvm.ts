@@ -847,6 +847,233 @@ const extractKotlinPatternBinding: PatternBindingExtractor = (
   return undefined;
 };
 
+// ── Scala ─────────────────────────────────────────────────────────────────
+
+/** Infer Scala literal types (Int, Double, String, Boolean, Char). */
+const inferScalaLiteralType: LiteralTypeInferrer = (node) => {
+  switch (node.type) {
+    case 'integer_literal':
+      return 'Int';
+    case 'floating_point_literal':
+      return 'Double';
+    case 'string_literal':
+      return 'String';
+    case 'boolean_literal':
+    case 'true':
+    case 'false':
+      return 'Boolean';
+    case 'character_literal':
+      return 'Char';
+    case 'null_literal':
+      return 'Null';
+    default:
+      return undefined;
+  }
+};
+
+const SCALA_DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
+  'val_definition',
+  'val_declaration',
+  'var_definition',
+  'var_declaration',
+  'class_parameter',
+]);
+
+/** Helper to get the binding name from a Scala val/var/class_parameter node. */
+const getScalaBindingName = (node: SyntaxNode): string | undefined => {
+  return (
+    node.childForFieldName('name')?.text ??
+    node.childForFieldName('pattern')?.text ??
+    findChild(node, 'identifier')?.text
+  );
+};
+
+/** Helper to get the type annotation from a Scala node. */
+const getScalaBindingType = (node: SyntaxNode): string | undefined => {
+  const typeNode = node.childForFieldName('type');
+  if (typeNode) return extractSimpleTypeName(typeNode) ?? typeNode.text;
+  return undefined;
+};
+
+/** Scala: val x: Foo = ... or class_parameter(name: Type) */
+const extractScalaDeclaration: TypeBindingExtractor = (
+  node: SyntaxNode,
+  env: Map<string, string>,
+): void => {
+  // class_parameter: constructor parameter binding
+  if (node.type === 'class_parameter') {
+    const name = getScalaBindingName(node);
+    const typeName = getScalaBindingType(node);
+    if (name && typeName) env.set(name, typeName);
+    return;
+  }
+
+  const explicitName = getScalaBindingName(node);
+  const explicitType = getScalaBindingType(node);
+  if (explicitName && explicitType) {
+    env.set(explicitName, explicitType);
+    return;
+  }
+
+  // Multi-identifier declarations: val (a, b): Foo = ...
+  const identifiers = findChild(node, 'identifiers');
+  if (identifiers && explicitType) {
+    for (let i = 0; i < identifiers.namedChildCount; i++) {
+      const child = identifiers.namedChild(i);
+      if (child?.type === 'identifier') env.set(child.text, explicitType);
+    }
+  }
+};
+
+/** Scala: parameter → type name */
+const extractScalaParameter: ParameterExtractor = (
+  node: SyntaxNode,
+  env: Map<string, string>,
+): void => {
+  const nameNode = node.childForFieldName('name');
+  const typeNode = node.childForFieldName('type');
+  if (!nameNode || !typeNode) return;
+  const typeName = extractSimpleTypeName(typeNode) ?? typeNode.text;
+  if (typeName) env.set(nameNode.text, typeName);
+};
+
+/** Find a constructor call in a val/var initializer (new Foo() or Foo()). */
+const findScalaConstructorCall = (
+  node: SyntaxNode,
+  classNames: ClassNameLookup,
+): string | undefined => {
+  const valueNode = node.childForFieldName('value');
+  if (!valueNode) return undefined;
+
+  if (valueNode.type === 'call_expression') {
+    const callee = valueNode.childForFieldName('function') ?? valueNode.firstNamedChild;
+    const calleeName = callee ? (extractSimpleTypeName(callee) ?? callee.text) : undefined;
+    if (calleeName && classNames.has(calleeName)) return calleeName;
+  }
+  if (valueNode.type === 'instance_expression') {
+    const typeNode = valueNode.childForFieldName('type') ?? valueNode.firstNamedChild;
+    const typeName = typeNode ? (extractSimpleTypeName(typeNode) ?? typeNode.text) : undefined;
+    if (typeName && classNames.has(typeName)) return typeName;
+  }
+  if (valueNode.type === 'identifier' && classNames.has(valueNode.text)) {
+    return valueNode.text;
+  }
+  return undefined;
+};
+
+/** Scala: val user = new User() or val user = User() — infer type from constructor. */
+const extractScalaInitializer: InitializerExtractor = (
+  node: SyntaxNode,
+  env: Map<string, string>,
+  classNames: ClassNameLookup,
+): void => {
+  const name = getScalaBindingName(node);
+  if (!name || env.has(name)) return;
+  const ctorType = findScalaConstructorCall(node, classNames);
+  if (ctorType) env.set(name, ctorType);
+};
+
+/** Scala: detect constructor type even for typed declarations (virtual dispatch). */
+const detectScalaConstructorType: ConstructorTypeDetector = (node, classNames) => {
+  return findScalaConstructorCall(node, classNames);
+};
+
+const SCALA_FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set(['for_expression']);
+
+/** Scala: for (user <- users) yield ... — extract loop variable binding */
+const extractScalaForLoopBinding: ForLoopExtractor = (node, ctx): void => {
+  const { scopeEnv } = ctx;
+  const enumerators = findChild(node, 'enumerators');
+  if (!enumerators) return;
+
+  for (let i = 0; i < enumerators.namedChildCount; i++) {
+    const enum_ = enumerators.namedChild(i);
+    if (!enum_ || enum_.type !== 'enumerator') continue;
+
+    const pattern = enum_.childForFieldName('pattern');
+    const value = enum_.childForFieldName('value');
+    if (!pattern || pattern.type !== 'identifier' || !value) continue;
+
+    const varName = extractVarName(pattern);
+    if (!varName) continue;
+
+    if (value.type === 'identifier') {
+      const containerType = scopeEnv.get(value.text);
+      if (containerType) {
+        const inner = containerType.match(/<(.+)>$/)?.[1] ?? containerType.match(/\[(.+)\]$/)?.[1];
+        if (inner) scopeEnv.set(varName, inner);
+      }
+    }
+  }
+};
+
+/** Scala: val alias = u — pending assignments with call, field access, method call support. */
+const extractScalaPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
+  const lhs = getScalaBindingName(node);
+  if (!lhs || scopeEnv.has(lhs)) return undefined;
+
+  const valueNode = node.childForFieldName('value');
+  if (!valueNode) return undefined;
+
+  if (valueNode.type === 'identifier') {
+    return { kind: 'copy', lhs, rhs: valueNode.text };
+  }
+
+  if (valueNode.type === 'call_expression') {
+    const fn = valueNode.childForFieldName('function') ?? valueNode.firstNamedChild;
+    if (!fn) return undefined;
+    if (fn.type === 'identifier') return { kind: 'callResult', lhs, callee: fn.text };
+    if (fn.type === 'generic_function') {
+      const inner = fn.childForFieldName('function') ?? fn.firstNamedChild;
+      if (inner?.type === 'identifier') return { kind: 'callResult', lhs, callee: inner.text };
+      if (inner?.type === 'field_expression') {
+        const receiver = inner.childForFieldName('object') ?? inner.childForFieldName('value');
+        const field = inner.childForFieldName('field');
+        if (receiver?.type === 'identifier' && field?.type === 'identifier') {
+          return { kind: 'methodCallResult', lhs, receiver: receiver.text, method: field.text };
+        }
+      }
+    }
+    if (fn.type === 'field_expression') {
+      const receiver = fn.childForFieldName('object') ?? fn.childForFieldName('value');
+      const field = fn.childForFieldName('field');
+      if (receiver?.type === 'identifier' && field?.type === 'identifier') {
+        return { kind: 'methodCallResult', lhs, receiver: receiver.text, method: field.text };
+      }
+    }
+  }
+
+  if (valueNode.type === 'instance_expression') {
+    const typeNode = valueNode.childForFieldName('type') ?? valueNode.firstNamedChild;
+    if (typeNode?.type === 'type_identifier' || typeNode?.type === 'identifier') {
+      return { kind: 'callResult', lhs, callee: typeNode.text };
+    }
+  }
+
+  if (valueNode.type === 'field_expression') {
+    const receiver = valueNode.childForFieldName('object') ?? valueNode.childForFieldName('value');
+    const field = valueNode.childForFieldName('field');
+    if (receiver?.type === 'identifier' && field?.type === 'identifier') {
+      return { kind: 'fieldAccess', lhs, receiver: receiver.text, field: field.text };
+    }
+  }
+
+  return undefined;
+};
+
+export const scalaTypeConfig: LanguageTypeConfig = {
+  declarationNodeTypes: SCALA_DECLARATION_NODE_TYPES,
+  forLoopNodeTypes: SCALA_FOR_LOOP_NODE_TYPES,
+  patternBindingNodeTypes: new Set([]),
+  extractDeclaration: extractScalaDeclaration,
+  extractParameter: extractScalaParameter,
+  extractInitializer: extractScalaInitializer,
+  extractForLoopBinding: extractScalaForLoopBinding,
+  extractPendingAssignment: extractScalaPendingAssignment,
+  inferLiteralType: inferScalaLiteralType,
+  detectConstructorType: detectScalaConstructorType,
+};
+
 export const kotlinTypeConfig: LanguageTypeConfig = {
   allowPatternBindingOverwrite: true,
   declarationNodeTypes: KOTLIN_DECLARATION_NODE_TYPES,

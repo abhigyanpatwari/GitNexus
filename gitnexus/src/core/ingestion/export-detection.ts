@@ -246,3 +246,35 @@ export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 
 /** Dart: public if no leading underscore (convention, same as Python). */
 export const dartExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
+
+/**
+ * Scala: default visibility is public (like Kotlin).
+ * access_modifier inside modifiers or as direct child marks private/protected.
+ */
+export const scalaExportChecker: ExportChecker = (node, _name) => {
+  let current: SyntaxNode | null = node;
+  while (current) {
+    if (current.parent) {
+      for (let i = 0; i < current.parent.childCount; i++) {
+        const child = current.parent.child(i);
+        if (child?.type === 'modifiers') {
+          for (let j = 0; j < child.namedChildCount; j++) {
+            const mod = child.namedChild(j);
+            if (mod?.type === 'access_modifier') {
+              const text = mod.text;
+              if (text.startsWith('private')) return false;
+              if (text.startsWith('protected')) return false;
+            }
+          }
+        }
+        if (child?.type === 'access_modifier') {
+          const text = child.text;
+          if (text.startsWith('private')) return false;
+          if (text.startsWith('protected')) return false;
+        }
+      }
+    }
+    current = current.parent;
+  }
+  return true;
+};

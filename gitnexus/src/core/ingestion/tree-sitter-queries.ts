@@ -1174,6 +1174,127 @@ export const DART_QUERIES = `
       (type_identifier) @heritage.trait))) @heritage
 `;
 
+// Scala queries - works with tree-sitter-scala
+export const SCALA_QUERIES = `
+; ── Classes ─────────────────────────────────────────────────────────────
+(class_definition name: (identifier) @name) @definition.class
+(object_definition name: (identifier) @name) @definition.class
+(package_object name: (identifier) @name) @definition.module
+
+; ── Traits (mapped to interface) ────────────────────────────────────────
+(trait_definition name: (identifier) @name) @definition.interface
+
+; ── Enum definitions (Scala 3) ──────────────────────────────────────────
+(enum_definition name: (identifier) @name) @definition.enum
+
+; ── Functions / Methods ─────────────────────────────────────────────────
+(function_definition name: (identifier) @name) @definition.function
+(function_declaration name: (identifier) @name) @definition.function
+
+; ── Primary constructor on class definitions ────────────────────────────
+(class_definition
+  name: (identifier) @name
+  class_parameters: (class_parameters) @definition.constructor)
+
+; ── Properties ──────────────────────────────────────────────────────────
+(val_definition pattern: (identifier) @name) @definition.property
+(val_definition pattern: (identifiers (identifier) @name)) @definition.property
+(val_declaration name: (identifier) @name) @definition.property
+(var_definition pattern: (identifier) @name) @definition.property
+(var_definition pattern: (identifiers (identifier) @name)) @definition.property
+(var_declaration name: (identifier) @name) @definition.property
+
+; ── Type aliases ────────────────────────────────────────────────────────
+(type_definition name: (type_identifier) @name) @definition.type
+
+; ── Imports ─────────────────────────────────────────────────────────────
+(import_declaration) @import
+
+; ── Calls ───────────────────────────────────────────────────────────────
+(call_expression function: (identifier) @call.name) @call
+(call_expression function: (field_expression field: (identifier) @call.name)) @call
+(call_expression function: (generic_function function: (identifier) @call.name)) @call
+(call_expression function: (generic_function function: (field_expression field: (identifier) @call.name))) @call
+(instance_expression (type_identifier) @call.name) @call
+
+; ── Infix method calls: list flatMap f, actor ! msg ─────────────────────
+(infix_expression operator: (identifier) @call.name) @call
+(infix_expression operator: (operator_identifier) @call.name) @call
+
+; ── Postfix method calls: list sorted, option isEmpty ───────────────────
+(postfix_expression (_) (identifier) @call.name) @call
+
+; ── Heritage: compound_type (extends Base with Trait1 with Trait2) ──────
+(class_definition
+  name: (identifier) @heritage.class
+  extend: (extends_clause
+    type: (compound_type
+      base: (_) @heritage.extends))) @heritage
+
+(class_definition
+  name: (identifier) @heritage.class
+  extend: (extends_clause
+    type: (compound_type
+      extra: (_) @heritage.implements))) @heritage.impl
+
+(class_definition
+  name: (identifier) @heritage.class
+  extend: (extends_clause
+    type: (_) @heritage.extends)) @heritage
+
+(trait_definition
+  name: (identifier) @heritage.class
+  extend: (extends_clause
+    type: (compound_type
+      base: (_) @heritage.extends))) @heritage
+
+(trait_definition
+  name: (identifier) @heritage.class
+  extend: (extends_clause
+    type: (compound_type
+      extra: (_) @heritage.implements))) @heritage.impl
+
+(object_definition
+  name: (identifier) @heritage.class
+  extend: (extends_clause
+    type: (compound_type
+      base: (_) @heritage.extends))) @heritage
+
+(object_definition
+  name: (identifier) @heritage.class
+  extend: (extends_clause
+    type: (compound_type
+      extra: (_) @heritage.implements))) @heritage.impl
+
+; ── Write access: obj.field = value ─────────────────────────────────────
+(assignment_expression
+  left: (field_expression
+    value: (_) @assignment.receiver
+    field: (identifier) @assignment.property)
+  right: (_)) @assignment
+
+; ── Field reads: obj.field ──────────────────────────────────────────────
+(field_expression
+  value: (identifier) @read.receiver
+  field: (identifier) @read.property) @read
+
+; ── Chained field reads: obj.a.b, method().field ───────────────────────
+(field_expression
+  value: (field_expression) @read.receiver
+  field: (identifier) @read.property) @read
+
+(field_expression
+  value: (call_expression) @read.receiver
+  field: (identifier) @read.property) @read
+
+; ── Compound assignment via infix: obj.field += value ──────────────────
+(infix_expression
+  left: (field_expression
+    value: (_) @assignment.receiver
+    field: (identifier) @assignment.property)
+  operator: (operator_identifier)) @assignment
+`;
+
 import { SupportedLanguages } from 'gitnexus-shared';
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
@@ -1192,5 +1313,6 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
   [SupportedLanguages.Dart]: DART_QUERIES,
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
+  [SupportedLanguages.Scala]: SCALA_QUERIES,
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
 };

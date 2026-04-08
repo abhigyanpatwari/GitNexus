@@ -24,6 +24,10 @@ export const EXTENSIONS = [
   // Kotlin
   '.kt',
   '.kts',
+  // Scala
+  '.scala',
+  '.sc',
+  '/package.scala',
   // C/C++
   '.c',
   '.h',

@@ -38,6 +38,12 @@ let Kotlin: TreeSitterLanguage | null = null;
 try {
   Kotlin = _require('tree-sitter-kotlin');
 } catch {}
+
+// tree-sitter-scala is an optionalDependency — may not be installed
+let Scala: TreeSitterLanguage | null = null;
+try {
+  Scala = _require('tree-sitter-scala');
+} catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
   FUNCTION_NODE_TYPES,
@@ -290,6 +296,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   [SupportedLanguages.Go]: Go,
   [SupportedLanguages.Rust]: Rust,
   ...(Kotlin ? { [SupportedLanguages.Kotlin]: Kotlin } : {}),
+  ...(Scala ? { [SupportedLanguages.Scala]: Scala } : {}),
   [SupportedLanguages.PHP]: PHP.php_only,
   [SupportedLanguages.Ruby]: Ruby,
   [SupportedLanguages.Vue]: TypeScript.typescript,
@@ -1406,9 +1413,10 @@ const processFileGroup = (
       }
 
       // Extract import paths before skipping
-      if (captureMap['import'] && captureMap['import.source']) {
+      if (captureMap['import']) {
+        const sourceNode = captureMap['import.source'] ?? captureMap['import'];
         const rawImportPath = preprocessImportPath(
-          captureMap['import.source'].text,
+          sourceNode.text,
           captureMap['import'],
           provider,
         );
@@ -1562,7 +1570,8 @@ const processFileGroup = (
               languageSeed.callForm === 'member' &&
               (language === SupportedLanguages.Java ||
                 language === SupportedLanguages.CSharp ||
-                language === SupportedLanguages.Kotlin)
+                language === SupportedLanguages.Kotlin ||
+                language === SupportedLanguages.Scala)
             ) {
               const c0 = receiverName.charCodeAt(0);
               if (c0 >= 65 && c0 <= 90) receiverTypeName = receiverName;

@@ -361,7 +361,7 @@ export const processImports = async (
       match.captures.forEach((c) => (captureMap[c.name] = c.node));
 
       if (captureMap['import']) {
-        const sourceNode = captureMap['import.source'];
+        const sourceNode = captureMap['import.source'] ?? captureMap['import'];
         if (!sourceNode) {
           if (isDev) {
             console.log(`⚠️ Import captured but no source node in ${file.path}`);

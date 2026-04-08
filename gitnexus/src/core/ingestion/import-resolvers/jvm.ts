@@ -12,6 +12,9 @@ import { resolveStandard } from './standard.js';
 /** Kotlin file extensions for JVM resolver reuse */
 export const KOTLIN_EXTENSIONS: readonly string[] = ['.kt', '.kts'];
 
+/** Scala file extensions for JVM resolver reuse */
+export const SCALA_EXTENSIONS: readonly string[] = ['.scala', '.sc'];
+
 /**
  * Append .* to a Kotlin import path if the AST has a wildcard_import sibling node.
  * Pure function — returns a new string without mutating the input.
@@ -229,4 +232,153 @@ export function resolveKotlinImport(
     }
   }
   return resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Kotlin);
+}
+
+/**
+ * Normalize a raw Scala import path: strip `import ` prefix, `_root_` prefix, backticks.
+ */
+function normalizeScalaImportPath(rawImportPath: string): string {
+  return rawImportPath
+    .trim()
+    .replace(/^\s*import\s+/, '')
+    .replace(/^_root_\./, '')
+    .replace(/`/g, '');
+}
+
+/**
+ * Extract the module/package path from a Scala import, stripping selector braces and wildcards.
+ */
+function extractScalaModulePath(rawImportPath: string): string {
+  const trimmed = normalizeScalaImportPath(rawImportPath);
+  const braceIndex = trimmed.indexOf('{');
+  if (braceIndex !== -1) {
+    return trimmed.slice(0, braceIndex).replace(/\.$/, '');
+  }
+  if (trimmed.endsWith('._') || trimmed.endsWith('.*')) {
+    return trimmed.slice(0, -2);
+  }
+  return trimmed;
+}
+
+/**
+ * Resolve a Scala package object file (package.scala) for a given package path.
+ */
+function resolveScalaPackageObject(
+  packagePath: string,
+  ctx: ResolveCtx,
+): string | null {
+  const normalizedPkgPath = packagePath.replace(/\./g, '/').replace(/^\/+|\/+$/g, '');
+  if (!normalizedPkgPath) return null;
+  const suffix = `${normalizedPkgPath}/package.scala`;
+
+  if (ctx.index) {
+    return ctx.index.get(suffix) || ctx.index.getInsensitive(suffix) || null;
+  }
+  for (let i = 0; i < ctx.normalizedFileList.length; i++) {
+    const normalized = ctx.normalizedFileList[i];
+    if (
+      normalized === suffix ||
+      normalized.endsWith(`/${suffix}`) ||
+      normalized.toLowerCase().endsWith(`/${suffix.toLowerCase()}`)
+    ) {
+      return ctx.allFileList[i];
+    }
+  }
+  return null;
+}
+
+/**
+ * Append a package object file to the resolved files list if found.
+ */
+function appendScalaPackageObject(
+  files: string[],
+  packagePath: string,
+  ctx: ResolveCtx,
+): string[] {
+  const pkgObject = resolveScalaPackageObject(packagePath, ctx);
+  if (!pkgObject || files.includes(pkgObject)) return files;
+  return [...files, pkgObject];
+}
+
+/**
+ * Scala: Full import resolution with _root_ stripping, backtick handling,
+ * selector imports, package object resolution, and Java interop fallback.
+ */
+export function resolveScalaImport(
+  rawImportPath: string,
+  filePath: string,
+  ctx: ResolveCtx,
+): ImportResult {
+  const cleaned = normalizeScalaImportPath(rawImportPath);
+  const normalized = extractScalaModulePath(cleaned);
+
+  // Selector imports: import com.example.{User, Order}
+  if (cleaned.includes('{') && cleaned.includes('}')) {
+    const wildcardPath = `${normalized}.*`;
+    const matches = appendScalaPackageObject(
+      resolveJvmWildcard(wildcardPath, ctx.normalizedFileList, ctx.allFileList, SCALA_EXTENSIONS, ctx.index),
+      normalized, ctx,
+    );
+    if (matches.length > 0) return { kind: 'files', files: matches };
+    const javaMatches = resolveJvmWildcard(wildcardPath, ctx.normalizedFileList, ctx.allFileList, ['.java'], ctx.index);
+    if (javaMatches.length > 0) return { kind: 'files', files: javaMatches };
+  }
+
+  // Wildcard imports: import com.example._ or .*
+  if (cleaned.endsWith('._') || cleaned.endsWith('.*')) {
+    const wildcardPath = `${normalized}.*`;
+    const matches = appendScalaPackageObject(
+      resolveJvmWildcard(wildcardPath, ctx.normalizedFileList, ctx.allFileList, SCALA_EXTENSIONS, ctx.index),
+      normalized, ctx,
+    );
+    if (matches.length > 0) return { kind: 'files', files: matches };
+    const javaMatches = resolveJvmWildcard(wildcardPath, ctx.normalizedFileList, ctx.allFileList, ['.java'], ctx.index);
+    if (javaMatches.length > 0) return { kind: 'files', files: javaMatches };
+  } else {
+    // Member imports: import com.example.User
+    let memberResolved = resolveJvmMemberImport(
+      normalized, ctx.normalizedFileList, ctx.allFileList, SCALA_EXTENSIONS, ctx.index,
+    );
+    if (!memberResolved) {
+      memberResolved = resolveJvmMemberImport(
+        normalized, ctx.normalizedFileList, ctx.allFileList, ['.java'], ctx.index,
+      );
+    }
+    if (memberResolved) return { kind: 'files', files: [memberResolved] };
+
+    // Direct class import: import com.example.User → try com/example/User.scala
+    const classPath = normalized.replace(/\./g, '/');
+    for (const ext of [...SCALA_EXTENSIONS, '.java']) {
+      const classSuffix = classPath + ext;
+      if (ctx.index) {
+        const result = ctx.index.get(classSuffix) || ctx.index.getInsensitive(classSuffix);
+        if (result) return { kind: 'files', files: [result] };
+      } else {
+        const fullSuffix = '/' + classSuffix;
+        for (let i = 0; i < ctx.normalizedFileList.length; i++) {
+          if (ctx.normalizedFileList[i].endsWith(fullSuffix) ||
+              ctx.normalizedFileList[i].toLowerCase().endsWith(fullSuffix.toLowerCase())) {
+            return { kind: 'files', files: [ctx.allFileList[i]] };
+          }
+        }
+      }
+    }
+
+    // Top-level function / companion object imports → package directory scan
+    const segments = normalized.split('.');
+    const lastSeg = segments[segments.length - 1];
+    if (segments.length >= 2 && lastSeg) {
+      const packagePath = segments.slice(0, -1).join('.');
+      const pkgWildcard = `${packagePath}.*`;
+      let dirFiles = appendScalaPackageObject(
+        resolveJvmWildcard(pkgWildcard, ctx.normalizedFileList, ctx.allFileList, SCALA_EXTENSIONS, ctx.index),
+        packagePath, ctx,
+      );
+      if (dirFiles.length === 0) {
+        dirFiles = resolveJvmWildcard(pkgWildcard, ctx.normalizedFileList, ctx.allFileList, ['.java'], ctx.index);
+      }
+      if (dirFiles.length > 0) return { kind: 'files', files: dirFiles };
+    }
+  }
+  return resolveStandard(normalized, filePath, ctx, SupportedLanguages.Scala);
 }

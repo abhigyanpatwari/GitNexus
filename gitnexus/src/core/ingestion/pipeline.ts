@@ -921,7 +921,6 @@ async function runChunkedParseAndResolve(
         if (chunkWorkerData.typeEnvBindings?.length) {
           for (const _item of chunkWorkerData.typeEnvBindings) workerTypeEnvBindings.push(_item);
         }
-        // Collect fetch() calls for Next.js route matching
         if (chunkWorkerData.fetchCalls?.length) {
           for (const _item of chunkWorkerData.fetchCalls) allFetchCalls.push(_item);
         }

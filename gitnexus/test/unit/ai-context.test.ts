@@ -45,6 +45,17 @@ describe('generateAIContextFiles', () => {
     expect(content).toContain('TestProject');
   });
 
+  it('does not embed dynamic stats in the injected block', async () => {
+    const stats = { nodes: 12345, edges: 67890, processes: 42 };
+    await generateAIContextFiles(tmpDir, storagePath, 'StatsProject', stats);
+
+    const claudeMdPath = path.join(tmpDir, 'CLAUDE.md');
+    const content = await fs.readFile(claudeMdPath, 'utf-8');
+    expect(content).not.toContain('12345');
+    expect(content).not.toContain('67890');
+    expect(content).toContain('.gitnexus/meta.json');
+  });
+
   it('handles empty stats', async () => {
     const stats = {};
     const result = await generateAIContextFiles(tmpDir, storagePath, 'EmptyProject', stats);
@@ -64,6 +75,21 @@ describe('generateAIContextFiles', () => {
     // Should only have one gitnexus section
     const starts = (content.match(/gitnexus:start/g) || []).length;
     expect(starts).toBe(1);
+  });
+
+  it('returns unchanged when content has not changed', async () => {
+    const freshDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-idem-'));
+    const stats = { nodes: 10 };
+
+    // First run creates files
+    const result1 = await generateAIContextFiles(freshDir, storagePath, 'IdempotentProject', stats);
+    expect(result1.files.some((f) => f.includes('created') || f.includes('updated'))).toBe(true);
+
+    // Second run with identical content should be unchanged
+    const result2 = await generateAIContextFiles(freshDir, storagePath, 'IdempotentProject', stats);
+    expect(result2.files.filter((f) => f.includes('unchanged')).length).toBeGreaterThanOrEqual(1);
+
+    await fs.rm(freshDir, { recursive: true, force: true }).catch(() => {});
   });
 
   it('installs skills files', async () => {
