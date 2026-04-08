@@ -1670,6 +1670,52 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
     expect(parentMethodCalls).toHaveLength(1);
   });
 
+  it('D0 miss: heritageMap provided but method not in MRO chain falls through to D1-D4', async () => {
+    // Setup: Class Obj has a method `doWork` that is findable via tiered
+    // resolution (import-scoped lookup), but intentionally NOT registered in
+    // methodByOwner (no `ownerId` property). heritageMap is provided but has
+    // no ancestry entry for class:Obj. Expected flow:
+    //   D0: lookupMethodByOwner(classId, 'doWork') → undefined
+    //       heritageMap.getAncestors(classId) → []
+    //       lookupMethodByOwnerWithMRO returns undefined → D0 miss
+    //   D1-D4: receiver type resolves to Obj; D2 widens via lookupFuzzy;
+    //          D3 file-filter picks the only candidate in Obj's file.
+    // Guarantees D0 miss does not swallow the call — D1-D4 still runs.
+    const classFile = 'src/models/Obj.java';
+    const appFile = 'src/services/App.java';
+    const classId = 'class:models/Obj.java:Obj';
+    const doWorkId = 'method:models/Obj.java:doWork';
+
+    ctx.symbols.add(classFile, 'Obj', classId, 'Class');
+    // Intentionally omit ownerId so methodByOwner has no entry — forces D0 miss.
+    ctx.symbols.add(classFile, 'doWork', doWorkId, 'Method', {
+      returnType: 'void',
+      parameterCount: 0,
+    });
+    ctx.importMap.set(appFile, new Set([classFile]));
+
+    // Empty heritage — no ancestry for Obj, so the MRO walk yields no parents.
+    const heritageMap = buildHeritageMap([], ctx);
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: appFile,
+        calledName: 'doWork',
+        sourceId: 'method:services/App.java:run',
+        argCount: 0,
+        callForm: 'member',
+        receiverTypeName: 'Obj',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx, undefined, undefined, heritageMap);
+
+    const doWorkCalls = graph.relationships.filter(
+      (r) => r.type === 'CALLS' && r.targetId === doWorkId,
+    );
+    expect(doWorkCalls).toHaveLength(1);
+  });
+
   it('D0 skipped: same scenario still resolves via D1-D4 when heritageMap is undefined', async () => {
     const { parentMethodId, appFile, parentFile, childFile } = setupChildParent();
 
