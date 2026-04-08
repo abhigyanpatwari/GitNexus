@@ -917,3 +917,293 @@ describe('SymbolTable', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// lookupMethodByOwnerWithMRO — MRO-aware method resolution via HeritageMap
+// ---------------------------------------------------------------------------
+
+import { buildHeritageMap } from '../../src/core/ingestion/heritage-map.js';
+import { lookupMethodByOwnerWithMRO } from '../../src/core/ingestion/call-processor.js';
+import {
+  createResolutionContext,
+  type ResolutionContext,
+} from '../../src/core/ingestion/resolution-context.js';
+import { SupportedLanguages } from 'gitnexus-shared';
+import type { ExtractedHeritage } from '../../src/core/ingestion/workers/parse-worker.js';
+
+describe('lookupMethodByOwnerWithMRO', () => {
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    ctx = createResolutionContext();
+  });
+
+  it('child.parentMethod() resolves to Parent#parentMethod via MRO walk', () => {
+    ctx.symbols.add('src/parent.java', 'Parent', 'class:Parent', 'Class');
+    ctx.symbols.add('src/child.java', 'Child', 'class:Child', 'Class');
+    ctx.symbols.add('src/parent.java', 'parentMethod', 'method:Parent:parentMethod', 'Method', {
+      returnType: 'String',
+      ownerId: 'class:Parent',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/child.java', className: 'Child', parentName: 'Parent', kind: 'extends' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:Child',
+      'parentMethod',
+      map,
+      ctx.symbols,
+      SupportedLanguages.Java,
+    );
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:Parent:parentMethod');
+    expect(result!.returnType).toBe('String');
+  });
+
+  it('child override returns child version (direct hit, no walk)', () => {
+    ctx.symbols.add('src/parent.java', 'Parent', 'class:Parent', 'Class');
+    ctx.symbols.add('src/child.java', 'Child', 'class:Child', 'Class');
+    ctx.symbols.add('src/parent.java', 'save', 'method:Parent:save', 'Method', {
+      returnType: 'void',
+      ownerId: 'class:Parent',
+    });
+    ctx.symbols.add('src/child.java', 'save', 'method:Child:save', 'Method', {
+      returnType: 'void',
+      ownerId: 'class:Child',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/child.java', className: 'Child', parentName: 'Parent', kind: 'extends' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:Child',
+      'save',
+      map,
+      ctx.symbols,
+      SupportedLanguages.Java,
+    );
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:Child:save');
+  });
+
+  it('3-level inheritance: grandchild → child → parent, method on parent found', () => {
+    ctx.symbols.add('src/a.java', 'A', 'class:A', 'Class');
+    ctx.symbols.add('src/b.java', 'B', 'class:B', 'Class');
+    ctx.symbols.add('src/c.java', 'C', 'class:C', 'Class');
+    ctx.symbols.add('src/a.java', 'greet', 'method:A:greet', 'Method', {
+      returnType: 'Greeting',
+      ownerId: 'class:A',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/c.java', className: 'C', parentName: 'B', kind: 'extends' },
+      { filePath: 'src/b.java', className: 'B', parentName: 'A', kind: 'extends' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:C',
+      'greet',
+      map,
+      ctx.symbols,
+      SupportedLanguages.Java,
+    );
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:A:greet');
+    expect(result!.returnType).toBe('Greeting');
+  });
+
+  it('diamond pattern: first-wins strategy returns first ancestor match in BFS order', () => {
+    ctx.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
+    ctx.symbols.add('src/b.ts', 'B', 'class:B', 'Class');
+    ctx.symbols.add('src/c.ts', 'C', 'class:C', 'Class');
+    ctx.symbols.add('src/d.ts', 'D', 'class:D', 'Class');
+    ctx.symbols.add('src/b.ts', 'foo', 'method:B:foo', 'Method', {
+      returnType: 'String',
+      ownerId: 'class:B',
+    });
+    ctx.symbols.add('src/c.ts', 'foo', 'method:C:foo', 'Method', {
+      returnType: 'String',
+      ownerId: 'class:C',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/d.ts', className: 'D', parentName: 'B', kind: 'extends' },
+      { filePath: 'src/d.ts', className: 'D', parentName: 'C', kind: 'extends' },
+      { filePath: 'src/b.ts', className: 'B', parentName: 'A', kind: 'extends' },
+      { filePath: 'src/c.ts', className: 'C', parentName: 'A', kind: 'extends' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    // TypeScript uses 'first-wins' — B is first parent, so B.foo wins
+    const result = lookupMethodByOwnerWithMRO(
+      'class:D',
+      'foo',
+      map,
+      ctx.symbols,
+      SupportedLanguages.TypeScript,
+    );
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:B:foo');
+  });
+
+  it('diamond pattern: c3 strategy uses C3 linearization order', () => {
+    ctx.symbols.add('src/a.py', 'A', 'class:A', 'Class');
+    ctx.symbols.add('src/b.py', 'B', 'class:B', 'Class');
+    ctx.symbols.add('src/c.py', 'C', 'class:C', 'Class');
+    ctx.symbols.add('src/d.py', 'D', 'class:D', 'Class');
+    ctx.symbols.add('src/b.py', 'foo', 'method:B:foo', 'Method', {
+      returnType: 'str',
+      ownerId: 'class:B',
+    });
+    ctx.symbols.add('src/c.py', 'foo', 'method:C:foo', 'Method', {
+      returnType: 'str',
+      ownerId: 'class:C',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/d.py', className: 'D', parentName: 'B', kind: 'extends' },
+      { filePath: 'src/d.py', className: 'D', parentName: 'C', kind: 'extends' },
+      { filePath: 'src/b.py', className: 'B', parentName: 'A', kind: 'extends' },
+      { filePath: 'src/c.py', className: 'C', parentName: 'A', kind: 'extends' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    // Python uses 'c3' — C3 linearization for D(B,C): [B, C, A]
+    const result = lookupMethodByOwnerWithMRO(
+      'class:D',
+      'foo',
+      map,
+      ctx.symbols,
+      SupportedLanguages.Python,
+    );
+    expect(result).toBeDefined();
+    // C3 linearization: B comes first (leftmost parent)
+    expect(result!.nodeId).toBe('method:B:foo');
+  });
+
+  it('qualified-syntax (Rust): returns undefined for inherited methods', () => {
+    ctx.symbols.add('src/parent.rs', 'Parent', 'class:Parent', 'Class');
+    ctx.symbols.add('src/child.rs', 'Child', 'class:Child', 'Class');
+    ctx.symbols.add('src/parent.rs', 'process', 'method:Parent:process', 'Method', {
+      returnType: 'void',
+      ownerId: 'class:Parent',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/child.rs', className: 'Child', parentName: 'Parent', kind: 'extends' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:Child',
+      'process',
+      map,
+      ctx.symbols,
+      SupportedLanguages.Rust,
+    );
+    // Rust requires qualified syntax — no auto-resolution
+    expect(result).toBeUndefined();
+  });
+
+  it('method not on any ancestor returns undefined', () => {
+    ctx.symbols.add('src/parent.java', 'Parent', 'class:Parent', 'Class');
+    ctx.symbols.add('src/child.java', 'Child', 'class:Child', 'Class');
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/child.java', className: 'Child', parentName: 'Parent', kind: 'extends' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:Child',
+      'nonExistent',
+      map,
+      ctx.symbols,
+      SupportedLanguages.Java,
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it('leftmost-base (C++): walks ancestors in BFS order', () => {
+    ctx.symbols.add('src/a.cpp', 'A', 'class:A', 'Class');
+    ctx.symbols.add('src/b.cpp', 'B', 'class:B', 'Class');
+    ctx.symbols.add('src/c.cpp', 'C', 'class:C', 'Class');
+    ctx.symbols.add('src/a.cpp', 'render', 'method:A:render', 'Method', {
+      returnType: 'void',
+      ownerId: 'class:A',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/c.cpp', className: 'C', parentName: 'B', kind: 'extends' },
+      { filePath: 'src/b.cpp', className: 'B', parentName: 'A', kind: 'extends' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:C',
+      'render',
+      map,
+      ctx.symbols,
+      SupportedLanguages.CPlusPlus,
+    );
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:A:render');
+  });
+
+  it('implements-split (Java): walks ancestors to find inherited method', () => {
+    ctx.symbols.add('src/base.java', 'Base', 'class:Base', 'Class');
+    ctx.symbols.add('src/iface.java', 'IRepo', 'iface:IRepo', 'Interface');
+    ctx.symbols.add('src/child.java', 'Child', 'class:Child', 'Class');
+    ctx.symbols.add('src/base.java', 'save', 'method:Base:save', 'Method', {
+      returnType: 'void',
+      ownerId: 'class:Base',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/child.java', className: 'Child', parentName: 'Base', kind: 'extends' },
+      {
+        filePath: 'src/child.java',
+        className: 'Child',
+        parentName: 'IRepo',
+        kind: 'implements',
+      },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:Child',
+      'save',
+      map,
+      ctx.symbols,
+      SupportedLanguages.Java,
+    );
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:Base:save');
+  });
+
+  it('returns direct method on owner without walking (no heritage needed)', () => {
+    ctx.symbols.add('src/user.java', 'User', 'class:User', 'Class');
+    ctx.symbols.add('src/user.java', 'getName', 'method:User:getName', 'Method', {
+      returnType: 'String',
+      ownerId: 'class:User',
+    });
+
+    const map = buildHeritageMap([], ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:User',
+      'getName',
+      map,
+      ctx.symbols,
+      SupportedLanguages.Java,
+    );
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:User:getName');
+  });
+});

@@ -127,7 +127,7 @@ function gatherAncestors(classId: string, parentMap: Map<string, string[]>): str
  * Returns an array of ancestor IDs in C3 order (excluding the class itself),
  * or null if linearization fails (inconsistent or cyclic hierarchy).
  */
-function c3Linearize(
+export function c3Linearize(
   classId: string,
   parentMap: Map<string, string[]>,
   cache: Map<string, string[] | null>,
