@@ -298,7 +298,7 @@ describe('buildHeritageMap', () => {
       expect(map.getImplementorFiles('Runnable')).toEqual(new Set(['a.java', 'b.java']));
     });
 
-    it('ignores extends when parent is a Class (not Interface)', () => {
+    it('only records implementors for interface parents, not class parents', () => {
       ctx.symbols.add('a.java', 'C', 'class:C', 'Class');
       ctx.symbols.add('base.java', 'Base', 'class:Base', 'Class');
       ctx.symbols.add('iface.java', 'I', 'iface:I', 'Interface');
