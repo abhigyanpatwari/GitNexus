@@ -192,6 +192,7 @@ export async function runGroupImpactLegacy(
         from: link.from.repo,
         to: link.to.repo,
         contractId: link.contractId,
+        matchType: link.matchType,
         confidence: link.confidence,
       });
       continue;

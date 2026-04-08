@@ -129,6 +129,7 @@ export interface OutOfScopeLink {
   from: string;
   to: string;
   contractId: string;
+  matchType: MatchType;
   confidence: number;
 }
 
