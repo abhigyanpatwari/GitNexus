@@ -1672,7 +1672,9 @@ const buildParentMapFromHeritage = (
  *
  * Respects the 5 per-language MRO strategies:
  * - `first-wins`:       BFS ancestor walk, first match wins (default)
- * - `leftmost-base`:    BFS ancestor walk, first match wins (C++)
+ * - `leftmost-base`:    BFS ancestor walk, leftmost base in declaration order wins (C++);
+ *                        HeritageMap preserves insertion order matching source declaration,
+ *                        so BFS order is equivalent to leftmost-base semantics
  * - `c3`:               C3-linearized ancestor order, first match wins (Python)
  * - `implements-split`: BFS ancestor walk, first match wins (Java/C#) —
  *                        full ambiguity detection for multiple interface defaults
@@ -1703,7 +1705,9 @@ export const lookupMethodByOwnerWithMRO = (
     // Delegate to mro-processor.ts C3 linearization
     const parentMap = buildParentMapFromHeritage(ownerNodeId, heritageMap);
     const c3Result = c3Linearize(ownerNodeId, parentMap, new Map());
-    // Fall back to BFS order if C3 fails (cyclic or inconsistent hierarchy)
+    // Fall back to BFS order if C3 fails (cyclic or inconsistent hierarchy).
+    // Note: BFS order may not preserve Python MRO semantics in these edge cases,
+    // but cyclic/inconsistent hierarchies are invalid in Python anyway.
     ancestors = c3Result ?? heritageMap.getAncestors(ownerNodeId);
   } else {
     // first-wins, leftmost-base, implements-split: BFS order via HeritageMap

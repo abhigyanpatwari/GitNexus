@@ -1083,7 +1083,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       SupportedLanguages.Python,
     );
     expect(result).toBeDefined();
-    // C3 linearization: B comes first (leftmost parent)
+    // C3 linearization resolves to B before C in this hierarchy
     expect(result!.nodeId).toBe('method:B:foo');
   });
 
