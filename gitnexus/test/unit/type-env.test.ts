@@ -1134,6 +1134,7 @@ class RepoService {
             type: 'Function' as const,
             returnType: c.returnType,
           })),
+      lookupClassByName: () => [],
       lookupFuzzy: () => [],
       lookupExact: () => undefined,
       lookupExactFull: () => undefined,
@@ -1979,7 +1980,7 @@ class RepoService {
         );
         // User is NOT defined in this file, but SymbolTable knows it's a Class
         const mockSymbolTable = {
-          lookupFuzzy: (name: string) =>
+          lookupClassByName: (name: string) =>
             name === 'User' ? [{ nodeId: 'n1', filePath: 'models.kt', type: 'Class' }] : [],
           lookupExact: () => undefined,
           lookupExactFull: () => undefined,
@@ -2001,6 +2002,7 @@ class RepoService {
           Kotlin,
         );
         const mockSymbolTable = {
+          lookupClassByName: () => [],
           lookupFuzzy: (name: string) =>
             name === 'doStuff' ? [{ nodeId: 'n1', filePath: 'utils.kt', type: 'Function' }] : [],
           lookupFuzzyCallable: () => [],
@@ -4992,6 +4994,7 @@ function process() {
             type: 'Function' as const,
             returnType: c.returnType,
           })),
+      lookupClassByName: () => [],
       lookupFuzzy: () => [],
       lookupExact: () => undefined,
       lookupExactFull: () => undefined,

@@ -395,7 +395,7 @@ const findEnclosingScopeKey = (
  * using cross-file type information when available.
  *
  * Only `.has()` is exposed — the SymbolTable doesn't support iteration.
- * Results are memoized to avoid redundant lookupFuzzy scans across declarations.
+ * Results are memoized to avoid redundant class-index scans across declarations.
  */
 const createClassNameLookup = (
   localNames: Set<string>,
@@ -410,7 +410,7 @@ const createClassNameLookup = (
       const cached = memo.get(name);
       if (cached !== undefined) return cached;
       const result = symbolTable
-        .lookupFuzzy(name)
+        .lookupClassByName(name)
         .some((def) => def.type === 'Class' || def.type === 'Enum' || def.type === 'Struct');
       memo.set(name, result);
       return result;
@@ -460,6 +460,13 @@ const SKIP_SUBTREE_TYPES = new Set([
 
 const CLASS_LIKE_TYPES = new Set(['Class', 'Struct', 'Interface']);
 
+const lookupClassDefsByName = (
+  symbolTable: SymbolTable,
+  name: string,
+  allowedTypes: ReadonlySet<string> = CLASS_LIKE_TYPES,
+): Array<{ nodeId: string; type: string }> =>
+  symbolTable.lookupClassByName(name).filter((d) => allowedTypes.has(d.type));
+
 /** Memoize class definition lookups during fixpoint iteration.
  *  SymbolTable is immutable during type resolution, so results never change.
  *  Eliminates redundant array allocations + filter scans across iterations. */
@@ -468,9 +475,7 @@ const createClassDefCache = (symbolTable?: SymbolTable) => {
   return (typeName: string) => {
     let result = cache.get(typeName);
     if (result === undefined) {
-      result = symbolTable
-        ? symbolTable.lookupFuzzy(typeName).filter((d) => CLASS_LIKE_TYPES.has(d.type))
-        : [];
+      result = symbolTable ? lookupClassDefsByName(symbolTable, typeName) : [];
       cache.set(typeName, result);
     }
     return result;
@@ -598,9 +603,7 @@ const resolveFieldType = (
   if (!symbolTable) return undefined;
   const receiverType = scopeEnv.get(receiver);
   if (!receiverType) return undefined;
-  const lookup =
-    getClassDefs ??
-    ((name: string) => symbolTable.lookupFuzzy(name).filter((d) => CLASS_LIKE_TYPES.has(d.type)));
+  const lookup = getClassDefs ?? ((name: string) => lookupClassDefsByName(symbolTable, name));
   const classDefs = lookup(receiverType);
   if (classDefs.length !== 1) return undefined;
   // Direct lookup first
@@ -631,15 +634,11 @@ const resolveMethodReturnType = (
   // When substituteThisReceiver replaced $this/self with the enclosing class name,
   // the receiver IS the type — look it up directly as a class name.
   if (!receiverType) {
-    const lookup =
-      getClassDefs ??
-      ((name: string) => symbolTable.lookupFuzzy(name).filter((d) => CLASS_LIKE_TYPES.has(d.type)));
+    const lookup = getClassDefs ?? ((name: string) => lookupClassDefsByName(symbolTable, name));
     if (lookup(receiver).length > 0) receiverType = receiver;
   }
   if (!receiverType) return undefined;
-  const lookup =
-    getClassDefs ??
-    ((name: string) => symbolTable.lookupFuzzy(name).filter((d) => CLASS_LIKE_TYPES.has(d.type)));
+  const lookup = getClassDefs ?? ((name: string) => lookupClassDefsByName(symbolTable, name));
   const classDefs = lookup(receiverType);
   if (classDefs.length === 0) return undefined;
   // Direct lookup first
