@@ -318,6 +318,113 @@ describe('buildHeritageMap', () => {
       expect(result.size).toBe(0);
     });
 
+    it('records C# extends→IMPLEMENTS via interfaceNamePattern when parent is unresolved', () => {
+      // C# provider has interfaceNamePattern: /^I[A-Z]/.
+      // Only the child class is registered; the parent interface has no symbol.
+      // resolveExtendsType must fall through to the provider heuristic and
+      // classify `IDisposable` as IMPLEMENTS.
+      ctx.symbols.add('src/Service.cs', 'Service', 'class:Service', 'Class');
+
+      const heritage: ExtractedHeritage[] = [
+        {
+          filePath: 'src/Service.cs',
+          className: 'Service',
+          parentName: 'IDisposable',
+          kind: 'extends',
+        },
+      ];
+      const map = buildHeritageMap(heritage, ctx);
+      expect(map.getImplementorFiles('IDisposable')).toEqual(new Set(['src/Service.cs']));
+    });
+
+    it('records Swift extends→IMPLEMENTS via heritageDefaultEdge when parent is unresolved', () => {
+      // Swift provider has heritageDefaultEdge: 'IMPLEMENTS'.
+      // Unresolved parents should default to IMPLEMENTS (protocol conformance).
+      ctx.symbols.add('src/MyView.swift', 'MyView', 'class:MyView', 'Class');
+
+      const heritage: ExtractedHeritage[] = [
+        {
+          filePath: 'src/MyView.swift',
+          className: 'MyView',
+          parentName: 'SomeProtocol',
+          kind: 'extends',
+        },
+      ];
+      const map = buildHeritageMap(heritage, ctx);
+      expect(map.getImplementorFiles('SomeProtocol')).toEqual(new Set(['src/MyView.swift']));
+    });
+
+    it('records Java extends→IMPLEMENTS when parent is registered as an Interface symbol', () => {
+      // Java/C# path: when ctx.resolve finds a matching symbol whose type is
+      // Interface, resolveExtendsType returns IMPLEMENTS via the symbol lookup
+      // (not the interfaceNamePattern fallback).
+      ctx.symbols.add('src/Impl.java', 'Impl', 'class:Impl', 'Class');
+      ctx.symbols.add('src/MyContract.java', 'MyContract', 'iface:MyContract', 'Interface');
+
+      const heritage: ExtractedHeritage[] = [
+        {
+          filePath: 'src/Impl.java',
+          className: 'Impl',
+          parentName: 'MyContract',
+          kind: 'extends',
+        },
+      ];
+      const map = buildHeritageMap(heritage, ctx);
+      expect(map.getImplementorFiles('MyContract')).toEqual(new Set(['src/Impl.java']));
+    });
+
+    it('records Kotlin implements edges', () => {
+      ctx.symbols.add('src/Impl.kt', 'Impl', 'class:Impl', 'Class');
+      ctx.symbols.add('src/Iface.kt', 'Iface', 'iface:Iface', 'Interface');
+
+      const heritage: ExtractedHeritage[] = [
+        {
+          filePath: 'src/Impl.kt',
+          className: 'Impl',
+          parentName: 'Iface',
+          kind: 'implements',
+        },
+      ];
+      const map = buildHeritageMap(heritage, ctx);
+      expect(map.getImplementorFiles('Iface')).toEqual(new Set(['src/Impl.kt']));
+    });
+
+    it('records PHP implements edges', () => {
+      ctx.symbols.add('src/Impl.php', 'Impl', 'class:Impl', 'Class');
+      ctx.symbols.add('src/Iface.php', 'Iface', 'iface:Iface', 'Interface');
+
+      const heritage: ExtractedHeritage[] = [
+        {
+          filePath: 'src/Impl.php',
+          className: 'Impl',
+          parentName: 'Iface',
+          kind: 'implements',
+        },
+      ];
+      const map = buildHeritageMap(heritage, ctx);
+      expect(map.getImplementorFiles('Iface')).toEqual(new Set(['src/Impl.php']));
+    });
+
+    it('does not record Rust trait-impl entries in the implementor index', () => {
+      // Documented limitation: trait-impl is intentionally not added to the
+      // implementor index — interface dispatch does not traverse trait objects.
+      ctx.symbols.add('src/point.rs', 'Point', 'struct:Point', 'Struct');
+      ctx.symbols.add('src/display.rs', 'Display', 'trait:Display', 'Interface');
+
+      const heritage: ExtractedHeritage[] = [
+        {
+          filePath: 'src/point.rs',
+          className: 'Point',
+          parentName: 'Display',
+          kind: 'trait-impl',
+        },
+      ];
+      const map = buildHeritageMap(heritage, ctx);
+      expect(map.getImplementorFiles('Display').size).toBe(0);
+      // Parent lookup still works — only the implementor index skips trait-impl.
+      expect(map.getParents('struct:Point')).toEqual(['trait:Display']);
+    });
+
     it('heritage merged across chunks matches single-pass (chunk-order invariant)', () => {
       ctx.symbols.add('a.java', 'A', 'class:A', 'Class');
       ctx.symbols.add('b.java', 'B', 'class:B', 'Class');

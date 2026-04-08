@@ -90,6 +90,18 @@ export const buildHeritageMap = (
     }
 
     // ── Implementor index (name-based) ──────────────────────────────
+    //
+    // Known limitation: Rust `kind: 'trait-impl'` entries are intentionally NOT
+    // added to the implementor index. Interface dispatch resolution currently
+    // does not traverse Rust trait objects, so recording them here would
+    // inflate the index without a consumer. Revisit if/when trait-object
+    // dispatch is added.
+    //
+    // Known limitation: `getImplementorFiles` is keyed by interface **name**
+    // (string), so two interfaces with the same unqualified name in different
+    // packages (e.g. `pkgA.IRepository` vs `pkgB.IRepository`) collide. This
+    // matches the behavior of the prior standalone `ImplementorMap` and is
+    // not a regression introduced by this consolidation.
     let isImpl = false;
     if (h.kind === 'implements') {
       isImpl = true;
