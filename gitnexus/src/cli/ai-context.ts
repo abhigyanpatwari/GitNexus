@@ -26,6 +26,8 @@ interface RepoStats {
 
 export interface AIContextOptions {
   skipAgentsMd?: boolean;
+  /** When true, omit stats numbers from the introductory line to reduce git noise. */
+  noStats?: boolean;
 }
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
@@ -64,6 +66,7 @@ function generateGitNexusContent(
   stats: RepoStats,
   generatedSkills?: GeneratedSkillInfo[],
   groupNames?: string[],
+  noStats?: boolean,
 ): string {
   const generatedRows =
     generatedSkills && generatedSkills.length > 0
@@ -84,10 +87,14 @@ function generateGitNexusContent(
 | Tools, resources, schema reference | \`.claude/skills/gitnexus/gitnexus-guide/SKILL.md\` |
 | Index, status, clean, wiki CLI commands | \`.claude/skills/gitnexus/gitnexus-cli/SKILL.md\` |${generatedRows ? '\n' + generatedRows : ''}`;
 
+  const statsStr = noStats
+    ? ''
+    : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`;
+
   return `${GITNEXUS_START_MARKER}
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **${projectName}** (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **${projectName}**${statsStr}. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run \`npx gitnexus analyze\` in terminal first.
 
@@ -332,7 +339,7 @@ export async function generateAIContextFiles(
   options?: AIContextOptions,
 ): Promise<{ files: string[] }> {
   const groupNames = await findGroupsContainingRegistryName(projectName);
-  const content = generateGitNexusContent(projectName, stats, generatedSkills, groupNames);
+  const content = generateGitNexusContent(projectName, stats, generatedSkills, groupNames, options?.noStats);
   const createdFiles: string[] = [];
 
   if (!options?.skipAgentsMd) {
