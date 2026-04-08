@@ -105,6 +105,19 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
   return false;
 };
 
+export const validateAnalyzePath = (repoLocalPath: string): string | null => {
+  if (!path.isAbsolute(repoLocalPath)) {
+    return '"path" must be an absolute path';
+  }
+
+  const pathSegments = repoLocalPath.split(/[\\/]+/);
+  if (pathSegments.includes('..')) {
+    return '"path" must not contain traversal sequences';
+  }
+
+  return null;
+};
+
 const buildGraph = async (
   includeContent = false,
 ): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
@@ -864,30 +877,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      // Path validation: require absolute path, reject traversal (e.g. /tmp/../etc/passwd)
-      // while still accepting common absolute-path variants with trailing separators.
+      // Path validation: require absolute path and reject explicit traversal segments.
       if (repoLocalPath) {
-        if (!path.isAbsolute(repoLocalPath)) {
-          res.status(400).json({ error: '"path" must be an absolute path' });
-          return;
-        }
-
-        const normalizedInput = path.normalize(repoLocalPath);
-        const resolvedInput = path.resolve(repoLocalPath);
-        // normalize() may keep a trailing separator (e.g. /home/user/project/)
-        // while resolve() typically strips it. Compare without trailing separators
-        // so valid absolute paths are accepted consistently.
-        const stripTrailingSeparator = (p: string): string => {
-          if (p.length <= 1) return p;
-          // Preserve root paths, including Windows drive roots like C:\\
-          if (p === path.parse(p).root || /^[A-Za-z]:[\\/]?$/.test(p)) return p;
-          return p.replace(/[\\/]+$/, '');
-        };
-
-        if (
-          stripTrailingSeparator(normalizedInput) !== stripTrailingSeparator(resolvedInput)
-        ) {
-          res.status(400).json({ error: '"path" must not contain traversal sequences' });
+        const pathError = validateAnalyzePath(repoLocalPath);
+        if (pathError) {
+          res.status(400).json({ error: pathError });
           return;
         }
       }

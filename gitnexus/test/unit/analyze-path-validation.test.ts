@@ -1,43 +1,27 @@
-import path from 'path';
 import { describe, expect, it } from 'vitest';
-
-const hasTraversalSequence = (repoLocalPath: string): boolean => {
-  const normalizedInput = path.normalize(repoLocalPath);
-  const resolvedInput = path.resolve(repoLocalPath);
-  const stripTrailingSeparator = (p: string): string => {
-    if (p.length <= 1) return p;
-    return p.replace(/[\\/]+$/, '');
-  };
-
-  return stripTrailingSeparator(normalizedInput) !== stripTrailingSeparator(resolvedInput);
-};
+import { validateAnalyzePath } from '../../src/server/api.js';
 
 describe('analyze path validation', () => {
   it('accepts absolute paths with trailing separator', () => {
-    expect(hasTraversalSequence('/home/user/project/')).toBe(false);
-    expect(hasTraversalSequence('/home/user/project//')).toBe(false);
+    expect(validateAnalyzePath('/home/user/project/')).toBeNull();
+    expect(validateAnalyzePath('/home/user/project//')).toBeNull();
   });
 
   it('accepts normalized absolute paths', () => {
-    expect(hasTraversalSequence('/home/user/project')).toBe(false);
+    expect(validateAnalyzePath('/home/user/project')).toBeNull();
   });
 
-  it('rejects traversal sequences', () => {
-    expect(hasTraversalSequence('/tmp/project/../other')).toBe(true);
+  it('rejects traversal segments from raw input', () => {
+    expect(validateAnalyzePath('/tmp/project/../other')).toBe(
+      '"path" must not contain traversal sequences',
+    );
   });
 
+  it('rejects relative paths', () => {
+    expect(validateAnalyzePath('tmp/project')).toBe('"path" must be an absolute path');
+  });
 
-  it('preserves Windows drive root semantics when stripping separators', () => {
-    const normalizedRoot = path.win32.normalize('C:\\');
-    const resolvedRoot = path.win32.resolve('C:\\');
-
-    const stripTrailingSeparator = (p: string): string => {
-      if (p.length <= 1) return p;
-      if (p === path.win32.parse(p).root || /^[A-Za-z]:[\\/]?$/.test(p)) return p;
-      return p.replace(/[\\/]+$/, '');
-    };
-
-    expect(stripTrailingSeparator(normalizedRoot)).toBe('C:\\');
-    expect(stripTrailingSeparator(resolvedRoot)).toBe('C:\\');
+  it('accepts Windows drive roots', () => {
+    expect(validateAnalyzePath('C:\\')).toBeNull();
   });
 });
