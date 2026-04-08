@@ -104,7 +104,8 @@
   "overrides": {
     "@huggingface/transformers": {
       "onnxruntime-node": "$onnxruntime-node"
-    }
+    },
+    "tree-sitter-c": "0.23.2"
   },
   "engines": {
     "node": ">=20.0.0"
