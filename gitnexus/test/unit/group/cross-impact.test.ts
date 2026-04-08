@@ -188,6 +188,42 @@ describe('runGroupImpactLegacy', () => {
 
     expect(result.truncated).toBe(true);
   });
+
+  it.each([
+    [500, 500],
+    [5000, 1500],
+    [30000, 9000],
+    [60000, 10000],
+  ])(
+    'test_runGroupImpactLegacy_phase1_timeout_contract_%i_to_%i',
+    async (timeout, expectedPhase1Timeout) => {
+      const t0 = Date.now();
+      const result = await runGroupImpactLegacy({
+        groupName: 'test',
+        target: 'slowTarget',
+        repoPath: 'app/backend',
+        direction: 'upstream',
+        timeout,
+        registry: mockRegistry,
+        localImpactFn: async () => {
+          await new Promise((resolve) => setTimeout(resolve, expectedPhase1Timeout + 50));
+          return {
+            target: { id: '', name: 'slowTarget', filePath: '' },
+            direction: 'upstream',
+            impactedCount: 0,
+            risk: 'LOW',
+            summary: {},
+            affected_processes: [],
+            affected_modules: [],
+            byDepth: {},
+          };
+        },
+        crossImpactFn: async () => null,
+      });
+      expect(result.truncated).toBe(true);
+      expect(Date.now() - t0).toBeLessThan(expectedPhase1Timeout + 250);
+    },
+  );
 });
 
 describe('runGroupImpact (Cypher-based)', () => {
@@ -368,6 +404,45 @@ describe('runGroupImpact (Cypher-based)', () => {
     expect(cypher).toContain('$subgroup');
   });
 
+  it('test_runGroupImpact_subgroup_filtered_rows_are_reported_out_of_scope', async () => {
+    const bridgeQuery = makeBridgeQuery([
+      {
+        fanOutRepo: 'other/team/frontend',
+        fanOutUid: 'uid-fetch',
+        fanOutFilePath: 'src/api.ts',
+        fanOutSymbolName: 'fetchUsers',
+        matchedLocalUid: 'uid-ctrl',
+        matchedLocalFilePath: 'src/ctrl.ts',
+        matchedLocalSymbolName: 'UserController.list',
+        matchType: 'exact',
+        confidence: 1.0,
+        contractId: 'http::GET::/api/users',
+        contractType: 'http',
+      },
+    ]);
+
+    const result = await runGroupImpact({
+      groupName: 'test',
+      target: 'UserController.list',
+      repoPath: 'app/backend',
+      direction: 'upstream',
+      subgroup: 'team/backend',
+      bridgeQuery,
+      localImpactFn,
+      crossImpactFn: vi.fn().mockResolvedValue(null),
+    });
+
+    expect(result.cross).toHaveLength(0);
+    expect(result.outOfScope).toEqual([
+      expect.objectContaining({
+        from: 'other/team/frontend',
+        to: 'app/backend',
+        contractId: 'http::GET::/api/users',
+        matchType: 'exact',
+      }),
+    ]);
+  });
+
   it('test_runGroupImpact_error_object_not_counted_as_hit', async () => {
     const bridgeQuery = makeBridgeQuery([
       {
@@ -399,4 +474,40 @@ describe('runGroupImpact (Cypher-based)', () => {
     expect(result.cross).toHaveLength(0);
     expect(result.summary.cross_repo_hits).toBe(0);
   });
+
+  it.each([
+    [500, 500],
+    [5000, 1500],
+    [30000, 9000],
+    [60000, 10000],
+  ])(
+    'test_runGroupImpact_phase1_timeout_contract_%i_to_%i',
+    async (timeout, expectedPhase1Timeout) => {
+      const t0 = Date.now();
+      const result = await runGroupImpact({
+        groupName: 'test',
+        target: 'slowTarget',
+        repoPath: 'app/backend',
+        direction: 'upstream',
+        timeout,
+        bridgeQuery: vi.fn().mockResolvedValue([]),
+        localImpactFn: async () => {
+          await new Promise((resolve) => setTimeout(resolve, expectedPhase1Timeout + 50));
+          return {
+            target: { id: '', name: 'slowTarget', filePath: '' },
+            direction: 'upstream',
+            impactedCount: 0,
+            risk: 'LOW',
+            summary: {},
+            affected_processes: [],
+            affected_modules: [],
+            byDepth: {},
+          };
+        },
+        crossImpactFn: vi.fn().mockResolvedValue(null),
+      });
+      expect(result.truncated).toBe(true);
+      expect(Date.now() - t0).toBeLessThan(expectedPhase1Timeout + 250);
+    },
+  );
 });

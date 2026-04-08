@@ -117,6 +117,11 @@ function mergeRisk(
   return order[idx] ?? base;
 }
 
+function computePhase1Timeout(timeout: number): number {
+  if (timeout <= 1000) return timeout;
+  return Math.min(Math.ceil(timeout * 0.3), 10000);
+}
+
 export async function runGroupImpactLegacy(
   opts: LegacyGroupImpactOptions,
 ): Promise<GroupImpactResult> {
@@ -126,7 +131,7 @@ export async function runGroupImpactLegacy(
 
   const tStart = Date.now();
   const wallDeadline = tStart + timeout;
-  const phase1Timeout = Math.min(5000, timeout);
+  const phase1Timeout = computePhase1Timeout(timeout);
 
   const localResult = await Promise.race([
     opts.localImpactFn(opts.target, opts.direction).then((v) => ({ ok: true as const, v })),
@@ -309,7 +314,7 @@ export async function runGroupImpact(opts: GroupImpactOptions): Promise<GroupImp
 
   const tStart = Date.now();
   const wallDeadline = tStart + timeout;
-  const phase1Timeout = Math.min(5000, timeout);
+  const phase1Timeout = computePhase1Timeout(timeout);
 
   const localResult = await Promise.race([
     opts.localImpactFn(opts.target, opts.direction).then((v) => ({ ok: true as const, v })),
@@ -335,6 +340,7 @@ export async function runGroupImpact(opts: GroupImpactOptions): Promise<GroupImp
   const uids = collectPhase1Uids(local);
   const phase1Refs = collectPhase1Refs(local);
   const cross: CrossRepoImpact[] = [];
+  const outOfScope: OutOfScopeLink[] = [];
   const truncatedRepos: string[] = [];
 
   /* Phase 2 — Cypher bridge query */
@@ -365,6 +371,17 @@ export async function runGroupImpact(opts: GroupImpactOptions): Promise<GroupImp
   const distinctRepos = new Set<string>();
 
   for (const row of rows) {
+    if (!inSubgroup(row.fanOutRepo, opts.subgroup)) {
+      outOfScope.push({
+        from: row.fanOutRepo,
+        to: opts.repoPath,
+        contractId: row.contractId,
+        matchType: row.matchType as OutOfScopeLink['matchType'],
+        confidence: row.confidence,
+      });
+      continue;
+    }
+
     if (Date.now() > wallDeadline) {
       truncated = true;
       break;
@@ -414,7 +431,7 @@ export async function runGroupImpact(opts: GroupImpactOptions): Promise<GroupImp
     local,
     group: opts.groupName,
     cross,
-    outOfScope: [],
+    outOfScope,
     truncated,
     truncatedRepos,
     summary: {
