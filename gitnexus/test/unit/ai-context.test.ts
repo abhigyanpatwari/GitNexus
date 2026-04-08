@@ -80,6 +80,41 @@ describe('generateAIContextFiles', () => {
     }
   });
 
+  it('omits stats numbers when noStats is enabled', async () => {
+    const noStatsTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-nostats-'));
+    const noStatsStoragePath = path.join(noStatsTmpDir, '.gitnexus');
+    await fs.mkdir(noStatsStoragePath, { recursive: true });
+
+    const stats = { nodes: 100, edges: 200, processes: 10 };
+    await generateAIContextFiles(noStatsTmpDir, noStatsStoragePath, 'TestProject', stats, undefined, {
+      noStats: true,
+    });
+
+    const claudeMdPath = path.join(noStatsTmpDir, 'CLAUDE.md');
+    const content = await fs.readFile(claudeMdPath, 'utf-8');
+    expect(content).toContain('indexed by GitNexus as **TestProject**.');
+    expect(content).not.toContain('100 symbols');
+    expect(content).not.toContain('200 relationships');
+    expect(content).not.toContain('10 execution flows');
+
+    await fs.rm(noStatsTmpDir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('includes stats numbers by default', async () => {
+    const defaultTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-stats-'));
+    const defaultStoragePath = path.join(defaultTmpDir, '.gitnexus');
+    await fs.mkdir(defaultStoragePath, { recursive: true });
+
+    const stats = { nodes: 100, edges: 200, processes: 10 };
+    await generateAIContextFiles(defaultTmpDir, defaultStoragePath, 'TestProject', stats);
+
+    const claudeMdPath = path.join(defaultTmpDir, 'CLAUDE.md');
+    const content = await fs.readFile(claudeMdPath, 'utf-8');
+    expect(content).toContain('100 symbols, 200 relationships, 10 execution flows');
+
+    await fs.rm(defaultTmpDir, { recursive: true, force: true }).catch(() => {});
+  });
+
   it('preserves manual AGENTS.md and CLAUDE.md edits when skipAgentsMd is enabled', async () => {
     const stats = { nodes: 42, edges: 84, processes: 3 };
     const agentsPath = path.join(tmpDir, 'AGENTS.md');
