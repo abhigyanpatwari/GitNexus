@@ -24,6 +24,7 @@ import {
   buildImplementorMap,
   mergeImplementorMaps,
 } from './call-processor.js';
+import { buildHeritageMap } from './heritage-map.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from './route-extractors/nextjs.js';
 import { expoFileToRouteURL } from './route-extractors/expo.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';
@@ -955,6 +956,12 @@ async function runChunkedParseAndResolve(
         ? buildImplementorMap(deferredWorkerHeritage, ctx)
         : new Map<string, Set<string>>();
 
+    // Build HeritageMap for MRO-aware method lookup (after all chunks contribute heritage).
+    const fullWorkerHeritageMap =
+      deferredWorkerHeritage.length > 0
+        ? buildHeritageMap(deferredWorkerHeritage, ctx)
+        : undefined;
+
     if (deferredWorkerCalls.length > 0) {
       await processCallsFromExtracted(
         graph,
@@ -975,6 +982,7 @@ async function runChunkedParseAndResolve(
         },
         deferredConstructorBindings.length > 0 ? deferredConstructorBindings : undefined,
         fullWorkerImplementorMap,
+        fullWorkerHeritageMap,
       );
     }
 
@@ -994,9 +1002,11 @@ async function runChunkedParseAndResolve(
   // Synthesize wildcard import bindings once after ALL imports are processed,
   // before any call resolution — same rationale as the worker-path inline synthesis.
   if (sequentialChunkPaths.length > 0) synthesizeWildcardImportBindings(graph, ctx);
-  // Merge implementor-map deltas per chunk (O(heritage per chunk)), not O(|edges|) graph scans
-  // per chunk — mirrors worker-path deferred heritage without re-iterating all relationships.
+  // Pass 1: Extract heritage from all sequential chunks and build maps.
+  // Heritage must be fully accumulated BEFORE call resolution so the HeritageMap
+  // has the complete ancestor chain (same constraint as the worker path).
   const sequentialImplementorMap = new Map<string, Set<string>>();
+  const allSequentialHeritage: ExtractedHeritage[] = [];
   for (const chunkPaths of sequentialChunkPaths) {
     const chunkContents = await readFileContents(repoPath, chunkPaths);
     const chunkFiles = chunkPaths
@@ -1004,7 +1014,21 @@ async function runChunkedParseAndResolve(
       .map((p) => ({ path: p, content: chunkContents.get(p)! }));
     astCache = createASTCache(chunkFiles.length);
     const sequentialHeritage = await extractExtractedHeritageFromFiles(chunkFiles, astCache);
+    for (const h of sequentialHeritage) allSequentialHeritage.push(h);
     mergeImplementorMaps(sequentialImplementorMap, buildImplementorMap(sequentialHeritage, ctx));
+    astCache.clear();
+  }
+  // Build HeritageMap from all sequential heritage (MRO-aware method lookup).
+  const sequentialHeritageMap =
+    allSequentialHeritage.length > 0 ? buildHeritageMap(allSequentialHeritage, ctx) : undefined;
+
+  // Pass 2: Process calls, heritage edges, fetch calls, and ORM queries per chunk.
+  for (const chunkPaths of sequentialChunkPaths) {
+    const chunkContents = await readFileContents(repoPath, chunkPaths);
+    const chunkFiles = chunkPaths
+      .filter((p) => chunkContents.has(p))
+      .map((p) => ({ path: p, content: chunkContents.get(p)! }));
+    astCache = createASTCache(chunkFiles.length);
     const rubyHeritage = await processCalls(
       graph,
       chunkFiles,
@@ -1016,6 +1040,7 @@ async function runChunkedParseAndResolve(
       undefined,
       undefined,
       sequentialImplementorMap,
+      sequentialHeritageMap,
     );
     await processHeritage(graph, chunkFiles, astCache, ctx);
     if (rubyHeritage.length > 0) {

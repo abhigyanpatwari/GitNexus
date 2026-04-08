@@ -31,6 +31,7 @@ import {
 import { buildTypeEnv, isSubclassOf } from './type-env.js';
 import type { ConstructorBinding, TypeEnvironment } from './type-env.js';
 import { resolveExtendsType } from './heritage-processor.js';
+import type { HeritageMap } from './heritage-map.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type {
   ExtractedCall,
@@ -625,6 +626,7 @@ export const processCalls = async (
   /** Phase 14 E3: cross-file RAW return types for for-loop element extraction. Keyed by filePath → Map<calleeName, rawReturnType>. */
   importedRawReturnTypesMap?: ReadonlyMap<string, ReadonlyMap<string, string>>,
   implementorMap?: ImplementorMap,
+  heritageMap?: HeritageMap,
 ): Promise<ExtractedHeritage[]> => {
   const parser = await loadParser();
   const collectedHeritage: ExtractedHeritage[] = [];
@@ -1780,6 +1782,7 @@ export const processCallsFromExtracted = async (
   onProgress?: (current: number, total: number) => void,
   constructorBindings?: FileConstructorBindings[],
   implementorMap?: ImplementorMap,
+  heritageMap?: HeritageMap,
 ) => {
   // Scope-aware receiver types: keyed by filePath → "funcName\0varName" → typeName.
   // The scope dimension prevents collisions when two functions in the same file
