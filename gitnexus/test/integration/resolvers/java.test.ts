@@ -2098,3 +2098,38 @@ describe('Cross-class method chain resolution (Java) — #575', () => {
     expect(cityAccess.length).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// SM-9: lookupMethodByOwnerWithMRO — class Child extends Parent
+// child.parentMethod() resolves to Parent#parentMethod via MRO parent walk.
+// ---------------------------------------------------------------------------
+
+describe('Java Child extends Parent — inherited method resolution (SM-9)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-child-extends-parent'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Parent and Child classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Parent');
+    expect(classes).toContain('Child');
+  });
+
+  it('emits EXTENDS edge: Child → Parent', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Child → Parent');
+  });
+
+  it('resolves c.parentMethod() to Parent#parentMethod via MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const parentMethodCall = calls.find(
+      (c) => c.target === 'parentMethod' && c.targetFilePath.includes('Parent'),
+    );
+    expect(parentMethodCall).toBeDefined();
+  });
+});
