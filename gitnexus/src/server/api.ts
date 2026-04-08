@@ -18,6 +18,7 @@ import {
   executeQuery,
   executePrepared,
   executeWithReusedStatement,
+  streamQuery,
   closeLbug,
   withLbugDb,
 } from '../core/lbug/lbug-adapter.js';
@@ -111,44 +112,9 @@ const buildGraph = async (
   const nodes: GraphNode[] = [];
   for (const table of NODE_TABLES) {
     try {
-      let query = '';
-      if (table === 'File') {
-        query = includeContent
-          ? `MATCH (n:File) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.content AS content`
-          : `MATCH (n:File) RETURN n.id AS id, n.name AS name, n.filePath AS filePath`;
-      } else if (table === 'Folder') {
-        query = `MATCH (n:Folder) RETURN n.id AS id, n.name AS name, n.filePath AS filePath`;
-      } else if (table === 'Community') {
-        query = `MATCH (n:Community) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.cohesion AS cohesion, n.symbolCount AS symbolCount`;
-      } else if (table === 'Process') {
-        query = `MATCH (n:Process) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.processType AS processType, n.stepCount AS stepCount, n.communities AS communities, n.entryPointId AS entryPointId, n.terminalId AS terminalId`;
-      } else {
-        query = includeContent
-          ? `MATCH (n:${table}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`
-          : `MATCH (n:${table}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
-      }
-
-      const rows = await executeQuery(query);
+      const rows = await executeQuery(getNodeQuery(table, includeContent));
       for (const row of rows) {
-        nodes.push({
-          id: row.id ?? row[0],
-          label: table as GraphNode['label'],
-          properties: {
-            name: row.name ?? row.label ?? row[1],
-            filePath: row.filePath ?? row[2],
-            startLine: row.startLine,
-            endLine: row.endLine,
-            content: includeContent ? row.content : undefined,
-            heuristicLabel: row.heuristicLabel,
-            cohesion: row.cohesion,
-            symbolCount: row.symbolCount,
-            processType: row.processType,
-            stepCount: row.stepCount,
-            communities: row.communities,
-            entryPointId: row.entryPointId,
-            terminalId: row.terminalId,
-          } as GraphNode['properties'],
-        });
+        nodes.push(mapGraphNodeRow(table, row, includeContent));
       }
     } catch {
       // ignore empty tables
@@ -156,22 +122,95 @@ const buildGraph = async (
   }
 
   const relationships: GraphRelationship[] = [];
-  const relRows = await executeQuery(
-    `MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`,
-  );
+  const relRows = await executeQuery(GRAPH_RELATIONSHIP_QUERY);
   for (const row of relRows) {
-    relationships.push({
-      id: `${row.sourceId}_${row.type}_${row.targetId}`,
-      type: row.type,
-      sourceId: row.sourceId,
-      targetId: row.targetId,
-      confidence: row.confidence,
-      reason: row.reason,
-      step: row.step,
-    });
+    relationships.push(mapGraphRelationshipRow(row));
   }
 
   return { nodes, relationships };
+};
+
+const GRAPH_RELATIONSHIP_QUERY =
+  `MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId, ` +
+  `r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`;
+
+const getNodeQuery = (table: string, includeContent: boolean): string => {
+  if (table === 'File') {
+    return includeContent
+      ? `MATCH (n:File) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.content AS content`
+      : `MATCH (n:File) RETURN n.id AS id, n.name AS name, n.filePath AS filePath`;
+  }
+  if (table === 'Folder') {
+    return `MATCH (n:Folder) RETURN n.id AS id, n.name AS name, n.filePath AS filePath`;
+  }
+  if (table === 'Community') {
+    return `MATCH (n:Community) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.cohesion AS cohesion, n.symbolCount AS symbolCount`;
+  }
+  if (table === 'Process') {
+    return `MATCH (n:Process) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.processType AS processType, n.stepCount AS stepCount, n.communities AS communities, n.entryPointId AS entryPointId, n.terminalId AS terminalId`;
+  }
+  return includeContent
+    ? `MATCH (n:${table}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`
+    : `MATCH (n:${table}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
+};
+
+const mapGraphNodeRow = (table: string, row: any, includeContent: boolean): GraphNode => ({
+  id: row.id ?? row[0],
+  label: table as GraphNode['label'],
+  properties: {
+    name: row.name ?? row.label ?? row[1],
+    filePath: row.filePath ?? row[2],
+    startLine: row.startLine,
+    endLine: row.endLine,
+    content: includeContent ? row.content : undefined,
+    heuristicLabel: row.heuristicLabel,
+    cohesion: row.cohesion,
+    symbolCount: row.symbolCount,
+    processType: row.processType,
+    stepCount: row.stepCount,
+    communities: row.communities,
+    entryPointId: row.entryPointId,
+    terminalId: row.terminalId,
+  } as GraphNode['properties'],
+});
+
+const mapGraphRelationshipRow = (row: any): GraphRelationship => ({
+  id: `${row.sourceId}_${row.type}_${row.targetId}`,
+  type: row.type,
+  sourceId: row.sourceId,
+  targetId: row.targetId,
+  confidence: row.confidence,
+  reason: row.reason,
+  step: row.step,
+});
+
+const streamGraphNdjson = async (
+  res: express.Response,
+  includeContent = false,
+): Promise<void> => {
+  for (const table of NODE_TABLES) {
+    try {
+      await streamQuery(getNodeQuery(table, includeContent), async (row) => {
+        res.write(
+          JSON.stringify({
+            type: 'node',
+            data: mapGraphNodeRow(table, row, includeContent),
+          }) + '\n',
+        );
+      });
+    } catch {
+      // ignore empty tables
+    }
+  }
+
+  await streamQuery(GRAPH_RELATIONSHIP_QUERY, async (row) => {
+    res.write(
+      JSON.stringify({
+        type: 'relationship',
+        data: mapGraphRelationshipRow(row),
+      }) + '\n',
+    );
+  });
 };
 
 /**
@@ -464,10 +503,31 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const includeContent = req.query.includeContent === 'true';
+      const stream = req.query.stream === 'true';
+
+      if (stream) {
+        res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.flushHeaders();
+        await withLbugDb(lbugPath, async () => streamGraphNdjson(res, includeContent));
+        res.end();
+        return;
+      }
+
       const graph = await withLbugDb(lbugPath, async () => buildGraph(includeContent));
       res.json(graph);
     } catch (err: any) {
-      res.status(500).json({ error: err.message || 'Failed to build graph' });
+      const message = err.message || 'Failed to build graph';
+      if (res.headersSent) {
+        try {
+          res.write(JSON.stringify({ type: 'error', error: message }) + '\n');
+        } catch {
+          // Best-effort only after streaming has started.
+        }
+        res.end();
+        return;
+      }
+      res.status(500).json({ error: message });
     }
   });
 

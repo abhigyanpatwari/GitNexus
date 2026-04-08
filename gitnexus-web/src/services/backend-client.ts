@@ -404,12 +404,17 @@ export const fetchGraph = async (
     onProgress?: (downloaded: number, total: number | null) => void;
   },
 ): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
-  const params = [repoParam(repo), opts?.includeContent ? 'includeContent=true' : '']
+  const params = [repoParam(repo), opts?.includeContent ? 'includeContent=true' : '', 'stream=true']
     .filter(Boolean)
     .join('&');
   const url = `${_backendUrl}/api/graph${params ? `?${params}` : ''}`;
   const response = await fetchWithTimeout(url, { signal: opts?.signal }, 60_000);
   await assertOk(response);
+
+  const contentType = response.headers.get('Content-Type') || '';
+  if (contentType.includes('application/x-ndjson')) {
+    return parseNdjsonGraphResponse(response, opts?.onProgress);
+  }
 
   if (!opts?.onProgress || !response.body) {
     return response.json() as Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }>;
@@ -437,6 +442,66 @@ export const fetchGraph = async (
     offset += chunk.length;
   }
   return JSON.parse(new TextDecoder().decode(combined));
+};
+
+const parseNdjsonGraphResponse = async (
+  response: Response,
+  onProgress?: (downloaded: number, total: number | null) => void,
+): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
+  if (!response.body) {
+    throw new BackendError('No response body', response.status, 'server');
+  }
+
+  const contentLength = response.headers.get('Content-Length');
+  const total = contentLength ? parseInt(contentLength, 10) : null;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const nodes: GraphNode[] = [];
+  const relationships: GraphRelationship[] = [];
+  let buffer = '';
+  let downloaded = 0;
+
+  const parseLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+
+    const record = JSON.parse(trimmed) as
+      | { type: 'node'; data: GraphNode }
+      | { type: 'relationship'; data: GraphRelationship }
+      | { type: 'error'; error: string };
+
+    if (record.type === 'node') {
+      nodes.push(record.data);
+      return;
+    }
+    if (record.type === 'relationship') {
+      relationships.push(record.data);
+      return;
+    }
+    if (record.type === 'error') {
+      throw new BackendError(record.error, response.status || 500, 'server');
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    downloaded += value.length;
+    onProgress?.(downloaded, total);
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      parseLine(line);
+    }
+  }
+
+  buffer += decoder.decode();
+  parseLine(buffer);
+
+  return { nodes, relationships };
 };
 
 /** Execute a Cypher query. Returns rows. */

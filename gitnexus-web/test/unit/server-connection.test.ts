@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { normalizeServerUrl } from '../../src/services/backend-client';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  fetchGraph,
+  normalizeServerUrl,
+  setBackendUrl,
+} from '../../src/services/backend-client';
 
 describe('normalizeServerUrl', () => {
   it('adds http:// to localhost', () => {
@@ -29,5 +33,51 @@ describe('normalizeServerUrl', () => {
 
   it('preserves existing https://', () => {
     expect(normalizeServerUrl('https://gitnexus.example.com')).toBe('https://gitnexus.example.com');
+  });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('fetchGraph', () => {
+  it('parses NDJSON graph streams incrementally', async () => {
+    setBackendUrl('http://localhost:4747');
+
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            [
+              '{"type":"node","data":{"id":"File:src/app.ts","label":"File","properties":{"name":"app.ts","filePath":"src/app.ts"}}}\n',
+              '{"type":"relationship","data":{"id":"File:src/app.ts_CONTAINS_Function:src/app.ts:main","type":"CONTAINS","sourceId":"File:src/app.ts","targetId":"Function:src/app.ts:main"}}\n',
+            ].join(''),
+          ),
+        );
+        controller.close();
+      },
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(stream, {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/x-ndjson',
+          },
+        }),
+      ),
+    );
+
+    const progress = vi.fn();
+    const result = await fetchGraph('big-repo', { onProgress: progress });
+
+    expect(result.nodes).toHaveLength(1);
+    expect(result.relationships).toHaveLength(1);
+    expect(result.nodes[0].id).toBe('File:src/app.ts');
+    expect(result.relationships[0].type).toBe('CONTAINS');
+    expect(progress).toHaveBeenCalled();
   });
 });

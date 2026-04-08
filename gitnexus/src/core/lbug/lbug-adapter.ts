@@ -637,6 +637,34 @@ export const executeQuery = async (cypher: string): Promise<any[]> => {
   return rows;
 };
 
+export const streamQuery = async (
+  cypher: string,
+  onRow: (row: any) => void | Promise<void>,
+): Promise<number> => {
+  if (!conn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+
+  const queryResult = await conn.query(cypher);
+  const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+  let rowCount = 0;
+
+  try {
+    while (await result.hasNext()) {
+      const row = await result.getNext();
+      await onRow(row);
+      rowCount++;
+    }
+    return rowCount;
+  } finally {
+    try {
+      await result.close();
+    } catch {
+      // Best-effort cleanup only.
+    }
+  }
+};
+
 /**
  * Execute a single parameterized query (prepare/execute pattern).
  * Prevents Cypher injection by binding values as parameters.
