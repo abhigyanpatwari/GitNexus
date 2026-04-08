@@ -278,6 +278,59 @@ describe('buildHeritageMap', () => {
       const map = buildHeritageMap([], ctx);
       expect(map.getParents('any')).toEqual([]);
       expect(map.getAncestors('any')).toEqual([]);
+      expect(map.getImplementorFiles('any').size).toBe(0);
+    });
+  });
+
+  // ── getImplementorFiles ─────────────────────────────────────────────
+
+  describe('getImplementorFiles', () => {
+    it('records direct implements edges per interface name', () => {
+      ctx.symbols.add('a.java', 'C', 'class:C', 'Class');
+      ctx.symbols.add('b.java', 'D', 'class:D', 'Class');
+      ctx.symbols.add('iface.java', 'Runnable', 'iface:Runnable', 'Interface');
+
+      const heritage: ExtractedHeritage[] = [
+        { filePath: 'a.java', className: 'C', parentName: 'Runnable', kind: 'implements' },
+        { filePath: 'b.java', className: 'D', parentName: 'Runnable', kind: 'implements' },
+      ];
+      const map = buildHeritageMap(heritage, ctx);
+      expect(map.getImplementorFiles('Runnable')).toEqual(new Set(['a.java', 'b.java']));
+    });
+
+    it('ignores extends when parent is a Class (not Interface)', () => {
+      ctx.symbols.add('a.java', 'C', 'class:C', 'Class');
+      ctx.symbols.add('base.java', 'Base', 'class:Base', 'Class');
+      ctx.symbols.add('iface.java', 'I', 'iface:I', 'Interface');
+
+      const heritage: ExtractedHeritage[] = [
+        { filePath: 'a.java', className: 'C', parentName: 'Base', kind: 'extends' },
+        { filePath: 'a.java', className: 'C', parentName: 'I', kind: 'implements' },
+      ];
+      const map = buildHeritageMap(heritage, ctx);
+      expect(map.getImplementorFiles('Base').size).toBe(0);
+      expect(map.getImplementorFiles('I')).toEqual(new Set(['a.java']));
+    });
+
+    it('returns empty set for unknown interface name', () => {
+      const map = buildHeritageMap([], ctx);
+      const result = map.getImplementorFiles('NonExistent');
+      expect(result.size).toBe(0);
+    });
+
+    it('heritage merged across chunks matches single-pass (chunk-order invariant)', () => {
+      ctx.symbols.add('a.java', 'A', 'class:A', 'Class');
+      ctx.symbols.add('b.java', 'B', 'class:B', 'Class');
+      ctx.symbols.add('iface.java', 'Iface', 'iface:Iface', 'Interface');
+
+      const chunk1: ExtractedHeritage[] = [
+        { filePath: 'a.java', className: 'A', parentName: 'Iface', kind: 'implements' },
+      ];
+      const chunk2: ExtractedHeritage[] = [
+        { filePath: 'b.java', className: 'B', parentName: 'Iface', kind: 'implements' },
+      ];
+      const oneShot = buildHeritageMap([...chunk1, ...chunk2], ctx);
+      expect(oneShot.getImplementorFiles('Iface')).toEqual(new Set(['a.java', 'b.java']));
     });
   });
 

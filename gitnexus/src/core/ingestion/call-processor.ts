@@ -30,7 +30,6 @@ import {
 } from './utils/call-analysis.js';
 import { buildTypeEnv, isSubclassOf } from './type-env.js';
 import type { ConstructorBinding, TypeEnvironment } from './type-env.js';
-import { resolveExtendsType } from './heritage-processor.js';
 import type { HeritageMap } from './heritage-map.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type {
@@ -516,65 +515,6 @@ interface ResolveResult {
   returnType?: string;
 }
 
-/** Maps interface/abstract-class name → set of file paths of direct implementors. */
-export type ImplementorMap = ReadonlyMap<string, ReadonlySet<string>>;
-
-/**
- * Build an ImplementorMap from extracted heritage data.
- * Only direct `implements` relationships are tracked (transitive not needed for
- * the common Java/Kotlin/C# interface dispatch pattern).
- * `extends` is ignored — dispatch keyed on abstract class bases is not modeled here.
- */
-/**
- * Maps interface name → file paths of classes that implement it (direct only).
- * When `ctx` is set, `kind: 'extends'` rows are classified like heritage-processor
- * (C#/Java base_list: class vs interface parents share one capture name).
- */
-export const buildImplementorMap = (
-  heritage: readonly ExtractedHeritage[],
-  ctx?: ResolutionContext,
-): Map<string, Set<string>> => {
-  const map = new Map<string, Set<string>>();
-  for (const h of heritage) {
-    let record = false;
-    if (h.kind === 'implements') {
-      record = true;
-    } else if (h.kind === 'extends' && ctx) {
-      const lang = getLanguageFromFilename(h.filePath);
-      if (lang) {
-        const { type } = resolveExtendsType(h.parentName, h.filePath, ctx, lang);
-        record = type === 'IMPLEMENTS';
-      }
-    }
-    if (record) {
-      let files = map.get(h.parentName);
-      if (!files) {
-        files = new Set();
-        map.set(h.parentName, files);
-      }
-      files.add(h.filePath);
-    }
-  }
-  return map;
-};
-
-/**
- * Merge a chunk's implementor map into the global accumulator.
- */
-export const mergeImplementorMaps = (
-  target: Map<string, Set<string>>,
-  source: ReadonlyMap<string, ReadonlySet<string>>,
-): void => {
-  for (const [name, files] of source) {
-    let existing = target.get(name);
-    if (!existing) {
-      existing = new Set();
-      target.set(name, existing);
-    }
-    for (const f of files) existing.add(f);
-  }
-};
-
 /**
  * After resolving a call to an interface method, find additional targets
  * in classes implementing that interface. Returns implementation method
@@ -585,11 +525,11 @@ function findInterfaceDispatchTargets(
   receiverTypeName: string,
   currentFile: string,
   ctx: ResolutionContext,
-  implementorMap: ImplementorMap,
+  heritageMap: HeritageMap,
   primaryNodeId: string,
 ): ResolveResult[] {
-  const implFiles = implementorMap.get(receiverTypeName);
-  if (!implFiles || implFiles.size === 0) return [];
+  const implFiles = heritageMap.getImplementorFiles(receiverTypeName);
+  if (implFiles.size === 0) return [];
 
   const typeResolved = ctx.resolve(receiverTypeName, currentFile);
   if (!typeResolved) return [];
@@ -625,7 +565,6 @@ export const processCalls = async (
   importedReturnTypesMap?: ReadonlyMap<string, ReadonlyMap<string, string>>,
   /** Phase 14 E3: cross-file RAW return types for for-loop element extraction. Keyed by filePath → Map<calleeName, rawReturnType>. */
   importedRawReturnTypesMap?: ReadonlyMap<string, ReadonlyMap<string, string>>,
-  implementorMap?: ImplementorMap,
   heritageMap?: HeritageMap,
 ): Promise<ExtractedHeritage[]> => {
   const parser = await loadParser();
@@ -859,13 +798,13 @@ export const processCalls = async (
           reason: resolved.reason,
         });
 
-        if (implementorMap && languageSeed.callForm === 'member' && receiverTypeName) {
+        if (heritageMap && languageSeed.callForm === 'member' && receiverTypeName) {
           const implTargets = findInterfaceDispatchTargets(
             languageSeed.calledName,
             receiverTypeName,
             file.path,
             ctx,
-            implementorMap,
+            heritageMap,
             resolved.nodeId,
           );
           for (const impl of implTargets) {
@@ -1106,13 +1045,13 @@ export const processCalls = async (
         reason: resolved.reason,
       });
 
-      if (implementorMap && callForm === 'member' && receiverTypeName) {
+      if (heritageMap && callForm === 'member' && receiverTypeName) {
         const implTargets = findInterfaceDispatchTargets(
           calledName,
           receiverTypeName,
           file.path,
           ctx,
-          implementorMap,
+          heritageMap,
           resolved.nodeId,
         );
         for (const impl of implTargets) {
@@ -1781,7 +1720,6 @@ export const processCallsFromExtracted = async (
   ctx: ResolutionContext,
   onProgress?: (current: number, total: number) => void,
   constructorBindings?: FileConstructorBindings[],
-  implementorMap?: ImplementorMap,
   heritageMap?: HeritageMap,
 ) => {
   // Scope-aware receiver types: keyed by filePath → "funcName\0varName" → typeName.
@@ -1945,13 +1883,13 @@ export const processCallsFromExtracted = async (
         reason: resolved.reason,
       });
 
-      if (implementorMap && effectiveCall.callForm === 'member' && effectiveCall.receiverTypeName) {
+      if (heritageMap && effectiveCall.callForm === 'member' && effectiveCall.receiverTypeName) {
         const implTargets = findInterfaceDispatchTargets(
           effectiveCall.calledName,
           effectiveCall.receiverTypeName,
           effectiveCall.filePath,
           ctx,
-          implementorMap,
+          heritageMap,
           resolved.nodeId,
         );
         for (const impl of implTargets) {

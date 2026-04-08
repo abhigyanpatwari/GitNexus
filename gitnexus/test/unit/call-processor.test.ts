@@ -5,9 +5,8 @@ import {
   seedCrossFileReceiverTypes,
   extractConsumerAccessedKeys,
   processNextjsFetchRoutes,
-  buildImplementorMap,
-  mergeImplementorMaps,
 } from '../../src/core/ingestion/call-processor.js';
+import { buildHeritageMap } from '../../src/core/ingestion/heritage-map.js';
 import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
 import { extractReturnTypeName } from '../../src/core/ingestion/type-extractors/shared.js';
 import {
@@ -1506,56 +1505,6 @@ describe('processNextjsFetchRoutes', () => {
   });
 });
 
-describe('buildImplementorMap / mergeImplementorMaps', () => {
-  it('records direct implements edges per interface name', () => {
-    const heritage: ExtractedHeritage[] = [
-      { filePath: 'a.java', className: 'C', parentName: 'Runnable', kind: 'implements' },
-      { filePath: 'b.java', className: 'D', parentName: 'Runnable', kind: 'implements' },
-    ];
-    const map = buildImplementorMap(heritage);
-    expect(map.get('Runnable')).toEqual(new Set(['a.java', 'b.java']));
-  });
-
-  it('ignores extends and other heritage kinds', () => {
-    const heritage: ExtractedHeritage[] = [
-      { filePath: 'a.java', className: 'C', parentName: 'Base', kind: 'extends' },
-      { filePath: 'a.java', className: 'C', parentName: 'I', kind: 'implements' },
-    ];
-    const map = buildImplementorMap(heritage);
-    expect(map.has('Base')).toBe(false);
-    expect(map.get('I')).toEqual(new Set(['a.java']));
-  });
-
-  it('mergeImplementorMaps unions files per interface and adds new keys', () => {
-    const acc = new Map<string, Set<string>>();
-    mergeImplementorMaps(acc, new Map([['I', new Set(['a.java'])]]));
-    mergeImplementorMaps(
-      acc,
-      new Map([
-        ['I', new Set(['b.java'])],
-        ['J', new Set(['c.java'])],
-      ]),
-    );
-    expect(acc.get('I')).toEqual(new Set(['a.java', 'b.java']));
-    expect(acc.get('J')).toEqual(new Set(['c.java']));
-  });
-
-  it('heritage merged across disjoint lists matches single buildImplementorMap (chunk-order invariant)', () => {
-    const chunk1: ExtractedHeritage[] = [
-      { filePath: 'a.java', className: 'A', parentName: 'Iface', kind: 'implements' },
-    ];
-    const chunk2: ExtractedHeritage[] = [
-      { filePath: 'b.java', className: 'B', parentName: 'Iface', kind: 'implements' },
-    ];
-    const oneShot = buildImplementorMap([...chunk1, ...chunk2]);
-    const acc = new Map<string, Set<string>>();
-    mergeImplementorMaps(acc, buildImplementorMap(chunk1));
-    mergeImplementorMaps(acc, buildImplementorMap(chunk2));
-    expect(oneShot.get('Iface')).toEqual(acc.get('Iface'));
-    expect(oneShot.get('Iface')).toEqual(new Set(['a.java', 'b.java']));
-  });
-});
-
 describe('processCallsFromExtracted — interface dispatch', () => {
   let graph: ReturnType<typeof createKnowledgeGraph>;
   let ctx: ResolutionContext;
@@ -1606,9 +1555,14 @@ describe('processCallsFromExtracted — interface dispatch', () => {
   });
 
   it('adds CALLS to interface method plus lower-confidence edges to implementing methods', async () => {
-    const implementorMap = new Map<string, ReadonlySet<string>>([
-      ['Action', new Set(['impl/A.java', 'impl/B.java'])],
-    ]);
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'impl/A.java', className: 'A', parentName: 'Action', kind: 'implements' },
+      { filePath: 'impl/B.java', className: 'B', parentName: 'Action', kind: 'implements' },
+    ];
+    // Need class symbols for heritage map to resolve implementors
+    ctx.symbols.add('impl/A.java', 'A', 'Class:impl/A.java:A', 'Class');
+    ctx.symbols.add('impl/B.java', 'B', 'Class:impl/B.java:B', 'Class');
+    const heritageMap = buildHeritageMap(heritage, ctx);
 
     const calls: ExtractedCall[] = [
       {
@@ -1621,7 +1575,7 @@ describe('processCallsFromExtracted — interface dispatch', () => {
       },
     ];
 
-    await processCallsFromExtracted(graph, calls, ctx, undefined, undefined, implementorMap);
+    await processCallsFromExtracted(graph, calls, ctx, undefined, undefined, heritageMap);
 
     const rels = graph.relationships.filter((r) => r.type === 'CALLS');
     expect(rels).toHaveLength(3);
