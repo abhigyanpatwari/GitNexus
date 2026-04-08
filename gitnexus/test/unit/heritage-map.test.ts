@@ -211,7 +211,7 @@ describe('buildHeritageMap', () => {
       expect(ancestorsB).toEqual(['class:A']);
     });
 
-    it('protects against self-referencing cycles', () => {
+    it('protects against multi-node cycles (A→B→C→A)', () => {
       ctx.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
       ctx.symbols.add('src/b.ts', 'B', 'class:B', 'Class');
       ctx.symbols.add('src/c.ts', 'C', 'class:C', 'Class');
