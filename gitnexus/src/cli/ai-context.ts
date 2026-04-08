@@ -28,6 +28,7 @@ interface RepoStats {
 export interface AIContextOptions {
   skipAgentsMd?: boolean;
   noStats?: boolean;
+  skipSkills?: boolean;
 }
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
@@ -337,10 +338,14 @@ export async function generateAIContextFiles(
     createdFiles.push('CLAUDE.md (skipped via --skip-agents-md)');
   }
 
-  // Install skills to .claude/skills/gitnexus/
-  const installedSkills = await installSkills(repoPath);
-  if (installedSkills.length > 0) {
-    createdFiles.push(`.claude/skills/gitnexus/ (${installedSkills.length} skills)`);
+  // Install skills to .claude/skills/gitnexus/ (unless --skip-skills)
+  if (!options?.skipSkills) {
+    const installedSkills = await installSkills(repoPath);
+    if (installedSkills.length > 0) {
+      createdFiles.push(`.claude/skills/gitnexus/ (${installedSkills.length} skills)`);
+    }
+  } else {
+    createdFiles.push('.claude/skills/gitnexus/ (skipped via --skip-skills)');
   }
 
   return { files: createdFiles };

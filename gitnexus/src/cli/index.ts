@@ -37,6 +37,11 @@ program
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
+    '--skip-skills',
+    'Skip installing standard GitNexus skill files to .claude/skills/gitnexus/',
+  )
+  .option('--index-only', 'Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills)')
+  .option(
     '--skip-git',
     'Treat the provided path/cwd as the index root and skip parent git-root discovery',
   )
