@@ -459,19 +459,19 @@ const SKIP_SUBTREE_TYPES = new Set([
 ]);
 
 const CLASS_LIKE_TYPES = new Set(['Class', 'Struct', 'Interface']);
+type ClassDefRef = { nodeId: string; type: string; filePath: string };
 
 const lookupClassDefsByName = (
   symbolTable: SymbolTable,
   name: string,
   allowedTypes: ReadonlySet<string> = CLASS_LIKE_TYPES,
-): Array<{ nodeId: string; type: string }> =>
-  symbolTable.lookupClassByName(name).filter((d) => allowedTypes.has(d.type));
+): ClassDefRef[] => symbolTable.lookupClassByName(name).filter((d) => allowedTypes.has(d.type));
 
 /** Memoize class definition lookups during fixpoint iteration.
  *  SymbolTable is immutable during type resolution, so results never change.
  *  Eliminates redundant array allocations + filter scans across iterations. */
 const createClassDefCache = (symbolTable?: SymbolTable) => {
-  const cache = new Map<string, Array<{ nodeId: string; type: string }>>();
+  const cache = new Map<string, ClassDefRef[]>();
   return (typeName: string) => {
     let result = cache.get(typeName);
     if (result === undefined) {
@@ -561,7 +561,7 @@ export const isSubclassOf = (
 const walkParentChain = <T>(
   typeName: string,
   parentMap: ReadonlyMap<string, readonly string[]> | undefined,
-  getClassDefs: (name: string) => Array<{ nodeId: string; type: string }>,
+  getClassDefs: (name: string) => ClassDefRef[],
   lookupOnClass: (nodeId: string) => T | undefined,
 ): T | undefined => {
   if (!parentMap) return undefined;
@@ -597,7 +597,7 @@ const resolveFieldType = (
   field: string,
   scopeEnv: ReadonlyMap<string, string>,
   symbolTable?: SymbolTable,
-  getClassDefs?: (typeName: string) => Array<{ nodeId: string; type: string }>,
+  getClassDefs?: (typeName: string) => ClassDefRef[],
   parentMap?: ReadonlyMap<string, readonly string[]>,
 ): string | undefined => {
   if (!symbolTable) return undefined;
@@ -626,7 +626,7 @@ const resolveMethodReturnType = (
   method: string,
   scopeEnv: ReadonlyMap<string, string>,
   symbolTable?: SymbolTable,
-  getClassDefs?: (typeName: string) => Array<{ nodeId: string; type: string }>,
+  getClassDefs?: (typeName: string) => ClassDefRef[],
   parentMap?: ReadonlyMap<string, readonly string[]>,
 ): string | undefined => {
   if (!symbolTable) return undefined;
@@ -642,8 +642,19 @@ const resolveMethodReturnType = (
   const classDefs = lookup(receiverType);
   if (classDefs.length === 0) return undefined;
   // Direct lookup first
-  const methods = classDefs
-    .map((d) => symbolTable.lookupMethodByOwner(d.nodeId, method))
+  const directMethodLookups = classDefs.map((d) => ({
+    classDef: d,
+    methodDef: symbolTable.lookupMethodByOwner(d.nodeId, method),
+  }));
+  const hasAmbiguousDirectLookup = directMethodLookups.some(({ classDef, methodDef }) => {
+    if (methodDef) return false;
+    return symbolTable
+      .lookupExactAll(classDef.filePath, method)
+      .some((d) => d.ownerId === classDef.nodeId);
+  });
+  if (hasAmbiguousDirectLookup) return undefined;
+  const methods = directMethodLookups
+    .map(({ methodDef }) => methodDef)
     .filter((d): d is NonNullable<typeof d> => d !== undefined);
   if (methods.length === 1 && methods[0].returnType) {
     return extractReturnTypeName(methods[0].returnType);
