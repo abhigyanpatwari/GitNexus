@@ -1702,6 +1702,124 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
     expect(parentMethodCalls).toHaveLength(1);
   });
 
+  it('overloadHints guard: D0 skipped so literal-inferred overload disambiguation picks the right overload', async () => {
+    // Java sequential path: processCalls auto-generates `overloadHints` for
+    // languages whose provider exposes `inferLiteralType` (Java/Kotlin/C#/C++).
+    // When two overloads share the same return type, lookupMethodByOwner
+    // returns defs[0] (the first-added overload) regardless of argument
+    // types. Without the D0 guard this would mis-resolve `o.method("hello")`
+    // to method(int). With the guard, D0 is skipped because overloadHints
+    // is present, and the literal-inferred overload path in D2-D4+E picks
+    // method(String) correctly.
+    const classFile = 'src/models/Obj.java';
+    const appFile = 'src/services/App.java';
+    const classId = 'class:models/Obj.java:Obj';
+    const methodIntId = 'method:models/Obj.java:method(int)';
+    const methodStringId = 'method:models/Obj.java:method(String)';
+
+    ctx.symbols.add(classFile, 'Obj', classId, 'Class');
+    // int overload added FIRST so lookupMethodByOwner would return it.
+    ctx.symbols.add(classFile, 'method', methodIntId, 'Method', {
+      ownerId: classId,
+      returnType: 'String',
+      parameterCount: 1,
+      parameterTypes: ['int'],
+    });
+    ctx.symbols.add(classFile, 'method', methodStringId, 'Method', {
+      ownerId: classId,
+      returnType: 'String',
+      parameterCount: 1,
+      parameterTypes: ['String'],
+    });
+    ctx.importMap.set(appFile, new Set([classFile]));
+
+    const heritageMap = buildHeritageMap([], ctx);
+
+    await processCalls(
+      graph,
+      [
+        {
+          path: classFile,
+          content:
+            'package models;\npublic class Obj {\n  public String method(int x) { return ""; }\n  public String method(String s) { return ""; }\n}\n',
+        },
+        {
+          path: appFile,
+          content:
+            'package services;\nimport models.Obj;\npublic class App {\n  public void run() {\n    Obj o = new Obj();\n    o.method("hello");\n  }\n}\n',
+        },
+      ],
+      createASTCache(),
+      ctx,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      heritageMap,
+    );
+
+    // Exactly one resolved call, and it must target the String overload.
+    const methodCalls = graph.relationships.filter(
+      (r) => r.type === 'CALLS' && (r.targetId === methodIntId || r.targetId === methodStringId),
+    );
+    expect(methodCalls).toHaveLength(1);
+    expect(methodCalls[0].targetId).toBe(methodStringId);
+  });
+
+  it('preComputedArgTypes guard: D0 skipped so arg-type disambiguation picks the right overload', async () => {
+    // Two overloads of the same method with identical return types live on
+    // the same owner class. Without the D0 guard, lookupMethodByOwner would
+    // return defs[0] (the first overload added) regardless of argument types,
+    // silently mis-resolving an `obj.method("hello")` call to method(int).
+    // With the guard, preComputedArgTypes forces D0 to be skipped and D2-D4+E
+    // disambiguates by parameter type.
+    const classFile = 'src/models/Obj.java';
+    const appFile = 'src/services/App.java';
+    const classId = 'class:models/Obj.java:Obj';
+    const methodIntId = 'method:models/Obj.java:method(int)';
+    const methodStringId = 'method:models/Obj.java:method(String)';
+
+    ctx.symbols.add(classFile, 'Obj', classId, 'Class');
+    // int overload added FIRST — without the guard this would be returned by
+    // lookupMethodByOwner's same-return-type fast path.
+    ctx.symbols.add(classFile, 'method', methodIntId, 'Method', {
+      ownerId: classId,
+      returnType: 'String',
+      parameterCount: 1,
+      parameterTypes: ['int'],
+    });
+    ctx.symbols.add(classFile, 'method', methodStringId, 'Method', {
+      ownerId: classId,
+      returnType: 'String',
+      parameterCount: 1,
+      parameterTypes: ['String'],
+    });
+    ctx.importMap.set(appFile, new Set([classFile]));
+
+    const heritageMap = buildHeritageMap([], ctx);
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: appFile,
+        calledName: 'method',
+        sourceId: 'method:services/App.java:run',
+        argCount: 1,
+        callForm: 'member',
+        receiverTypeName: 'Obj',
+        argTypes: ['String'],
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx, undefined, undefined, heritageMap);
+
+    const methodCalls = graph.relationships.filter((r) => r.type === 'CALLS');
+    // Exactly one resolved call, and it must target the String overload —
+    // NOT the int overload that lookupMethodByOwner would have returned.
+    expect(methodCalls).toHaveLength(1);
+    expect(methodCalls[0].targetId).toBe(methodStringId);
+  });
+
   it('module-alias guard: D0 skipped when receiverName matches an active module alias', async () => {
     // Setup: two files each define a class named User with a method save().
     // The caller has a Python-style module alias `import auth_mod as auth`,

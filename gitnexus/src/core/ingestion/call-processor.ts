@@ -1662,8 +1662,12 @@ const resolveMethodByOwner = (
     }
   }
 
-  // Fallback when no HeritageMap (or the file extension is unrecognized):
-  // plain direct lookup with no ancestor walk.
+  // Fallback when no HeritageMap (or the file extension is unrecognized by
+  // `getLanguageFromFilename`, e.g. a synthetic path or an extension that is
+  // not registered in supported-languages.ts): plain direct lookup with no
+  // ancestor walk. All primary languages register their extensions, so this
+  // branch is only reached for edge cases where the MRO walk would not be
+  // applicable anyway. D1-D4 in resolveCallTarget still runs on D0 miss.
   return ctx.symbols.lookupMethodByOwner(classDef.nodeId, methodName);
 };
 

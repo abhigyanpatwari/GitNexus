@@ -474,3 +474,41 @@ describe.skipIf(!dartAvailable)('Dart interface dispatch (METHOD_IMPLEMENTS)', (
     expect(saveEdge).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// SM-9/SM-10: lookupMethodByOwnerWithMRO + D0 fast path — Dart first-wins
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)(
+  'Dart Child extends Parent — inherited method resolution (SM-9)',
+  () => {
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(
+        path.join(FIXTURES, 'dart-child-extends-parent'),
+        () => {},
+      );
+    }, 60000);
+
+    it('detects Parent and Child classes', () => {
+      const classes = getNodesByLabel(result, 'Class');
+      expect(classes).toContain('Parent');
+      expect(classes).toContain('Child');
+    });
+
+    it('emits EXTENDS edge: Child → Parent', () => {
+      const extends_ = getRelationships(result, 'EXTENDS');
+      expect(edgeSet(extends_)).toContain('Child → Parent');
+    });
+
+    it('resolves c.parentMethod() to Parent.parentMethod via first-wins MRO walk', () => {
+      const calls = getRelationships(result, 'CALLS');
+      const parentMethodCall = calls.find(
+        (c) => c.target === 'parentMethod' && c.targetFilePath.includes('parent.dart'),
+      );
+      expect(parentMethodCall).toBeDefined();
+      expect(parentMethodCall!.source).toBe('run');
+    });
+  },
+);
