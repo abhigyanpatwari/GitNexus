@@ -130,6 +130,107 @@ public class UserController {
       expect(getByIdRoute).toBeDefined();
     });
 
+    it('attributes annotated interface routes to concrete Spring controllers', async () => {
+      const dir = path.join(tmpDir, 'spring-interface-impl');
+      fs.mkdirSync(path.join(dir, 'src/rest'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(dir, 'src/rest/DepartmentRestInterface.java'),
+        `
+package com.example.rest;
+import org.springframework.web.bind.annotation.*;
+
+public interface DepartmentRestInterface {
+    @GetMapping("/department")
+    Object getDepartmentList();
+
+    @GetMapping("/department/{name}")
+    Object getDepartmentByName(@PathVariable String name);
+}
+`,
+      );
+
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/DepartmentController.java'),
+        `
+package com.example.controller;
+import com.example.rest.DepartmentRestInterface;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/department")
+public class DepartmentController implements DepartmentRestInterface {
+    @Override
+    @GetMapping("")
+    public Object getDepartmentList() { return null; }
+
+    @Override
+    @GetMapping("/{name}")
+    public Object getDepartmentByName(@PathVariable String name) { return null; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const rootRoute = providers.find((c) => c.contractId === 'http::GET::/department');
+      expect(rootRoute).toBeDefined();
+      expect(rootRoute!.symbolRef.filePath).toBe('src/controller/DepartmentController.java');
+
+      const byNameRoute = providers.find((c) => c.contractId === 'http::GET::/department/{param}');
+      expect(byNameRoute).toBeDefined();
+      expect(byNameRoute!.symbolRef.filePath).toBe('src/controller/DepartmentController.java');
+
+      const interfaceProviders = providers.filter((c) =>
+        c.symbolRef.filePath.includes('DepartmentRestInterface.java'),
+      );
+      expect(interfaceProviders).toHaveLength(0);
+    });
+
+    it('inherits Spring interface route mappings when concrete controller omits method annotations', async () => {
+      const dir = path.join(tmpDir, 'spring-interface-inherit');
+      fs.mkdirSync(path.join(dir, 'src/rest'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(dir, 'src/rest/StatusRestInterface.java'),
+        `
+package com.example.rest;
+import org.springframework.web.bind.annotation.*;
+
+@RequestMapping("/status")
+public interface StatusRestInterface {
+    @GetMapping("")
+    Object getStatus();
+}
+`,
+      );
+
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/StatusController.java'),
+        `
+package com.example.controller;
+import com.example.rest.StatusRestInterface;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class StatusController implements StatusRestInterface {
+    @Override
+    public Object getStatus() { return null; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const statusRoute = providers.find((c) => c.contractId === 'http::GET::/status');
+      expect(statusRoute).toBeDefined();
+      expect(statusRoute!.symbolRef.filePath).toBe('src/controller/StatusController.java');
+    });
+
     it('extracts Express router.get patterns', async () => {
       const dir = path.join(tmpDir, 'express');
       fs.mkdirSync(path.join(dir, 'src/routes'), { recursive: true });

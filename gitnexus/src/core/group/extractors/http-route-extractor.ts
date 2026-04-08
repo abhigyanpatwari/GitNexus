@@ -114,6 +114,99 @@ function pickSymbolUid(
   };
 }
 
+type SpringRouteBinding = {
+  method: string;
+  path: string;
+};
+
+type SpringMethodModel = {
+  name: string;
+  routes: SpringRouteBinding[];
+};
+
+type SpringFileModel = {
+  filePath: string;
+  kind: 'class' | 'interface' | 'other';
+  className: string | null;
+  implementedInterfaces: string[];
+  isController: boolean;
+  classPrefix: string;
+  methods: SpringMethodModel[];
+};
+
+function combineSpringPaths(prefix: string, methodPath: string): string {
+  const classPrefix = prefix.trim();
+  const routePart = methodPath.trim();
+  if (!classPrefix && !routePart) return '/';
+  if (!classPrefix) return routePart.startsWith('/') ? routePart : `/${routePart}`;
+  if (!routePart) return classPrefix.startsWith('/') ? classPrefix : `/${classPrefix}`;
+  const normalizedPrefix = classPrefix.startsWith('/') ? classPrefix : `/${classPrefix}`;
+  return `${normalizedPrefix.replace(/\/+$/, '')}/${routePart.replace(/^\//, '')}`;
+}
+
+function parseSpringRouteBindings(annotationBlock: string): SpringRouteBinding[] {
+  const routes: SpringRouteBinding[] = [];
+  const shortcutRe = /@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*"([^"]*)"/g;
+  let shortcut: RegExpExecArray | null;
+  while ((shortcut = shortcutRe.exec(annotationBlock)) !== null) {
+    routes.push({
+      method: shortcut[1].toUpperCase(),
+      path: shortcut[2],
+    });
+  }
+  return routes;
+}
+
+function parseSpringFileModel(content: string, filePath: string): SpringFileModel | null {
+  const interfaceMatch = content.match(/\binterface\s+(\w+)/);
+  const classMatch = content.match(/\bclass\s+(\w+)/);
+  const kind = interfaceMatch ? 'interface' : classMatch ? 'class' : 'other';
+  const className = interfaceMatch?.[1] ?? classMatch?.[1] ?? null;
+  if (!className || kind === 'other') return null;
+
+  const typeMatch = interfaceMatch || classMatch;
+  const declIndex = typeMatch ? typeMatch.index ?? 0 : 0;
+  const prelude = content.slice(0, declIndex);
+
+  let classPrefix = '';
+  const classPrefixMatches = prelude.matchAll(/@RequestMapping\s*\(\s*"([^"]*)"/g);
+  for (const match of classPrefixMatches) classPrefix = match[1];
+
+  let implementedInterfaces: string[] = [];
+  if (kind === 'class') {
+    const implMatch = content.match(/\bclass\s+\w+[^{]*\bimplements\s+([^{]+)/);
+    if (implMatch?.[1]) {
+      implementedInterfaces = implMatch[1]
+        .split(',')
+        .map((name) => name.trim().split(/\s+/)[0])
+        .filter(Boolean);
+    }
+  }
+
+  const methodPattern =
+    /((?:@[A-Za-z_]\w*(?:\s*\([^)]*\))?\s*)+)\s*(?:public|protected|private)?\s*(?:static\s+)?(?:final\s+)?(?:default\s+)?[\w<>,\s\[\]?]+\s+(\w+)\s*\([^)]*\)\s*(?:\{|;)/gms;
+  const methods: SpringMethodModel[] = [];
+  let methodMatch: RegExpExecArray | null;
+  while ((methodMatch = methodPattern.exec(content)) !== null) {
+    const annotationBlock = methodMatch[1] ?? '';
+    const routes = parseSpringRouteBindings(annotationBlock);
+    methods.push({
+      name: methodMatch[2],
+      routes,
+    });
+  }
+
+  return {
+    filePath,
+    kind,
+    className,
+    implementedInterfaces,
+    isController: /@RestController\b|@Controller\b/.test(prelude),
+    classPrefix,
+    methods,
+  };
+}
+
 export class HttpRouteExtractor implements ContractExtractor {
   type = 'http' as const;
 
@@ -232,14 +325,19 @@ export class HttpRouteExtractor implements ContractExtractor {
       nodir: true,
     });
     const out: ExtractedContract[] = [];
+    const springFiles = new Map<string, string>();
     for (const rel of files) {
       const content = readSafe(repoPath, rel);
       if (!content) continue;
-      out.push(...this.scanSpringProviders(content, rel));
+      if (rel.endsWith('.java')) {
+        springFiles.set(rel, content);
+        continue;
+      }
       out.push(...this.scanExpressProviders(content, rel));
       out.push(...this.scanLaravelProviders(content, rel));
       out.push(...this.scanFastApiProviders(content, rel));
     }
+    out.push(...this.scanSpringProvidersProject(springFiles));
     return this.dedupeContracts(out);
   }
 
@@ -273,6 +371,68 @@ export class HttpRouteExtractor implements ContractExtractor {
       const name = nameM ? nameM[1] : m[0];
       out.push(this.makeProvider(filePath, method, pathNorm, name, 0.8));
     }
+    return out;
+  }
+
+  private scanSpringProvidersProject(files: ReadonlyMap<string, string>): ExtractedContract[] {
+    const out: ExtractedContract[] = [];
+    const models = [...files.entries()]
+      .map(([filePath, content]) => parseSpringFileModel(content, filePath))
+      .filter((model): model is SpringFileModel => model !== null);
+
+    const interfaceRoutes = new Map<string, Map<string, SpringRouteBinding[]>>();
+    for (const model of models) {
+      if (model.kind !== 'interface' || !model.className) continue;
+      const methodMap = new Map<string, SpringRouteBinding[]>();
+      for (const method of model.methods) {
+        if (method.routes.length === 0) continue;
+        methodMap.set(
+          method.name,
+          method.routes.map((route) => ({
+            method: route.method,
+            path: model.classPrefix
+              ? combineSpringPaths(model.classPrefix, route.path)
+              : route.path,
+          })),
+        );
+      }
+      interfaceRoutes.set(model.className, methodMap);
+    }
+
+    for (const model of models) {
+      if (model.kind !== 'class' || !model.isController) continue;
+      for (const method of model.methods) {
+        const ownRoutes =
+          method.routes.length > 0
+            ? method.routes.map((route) => ({
+                method: route.method,
+                path: combineSpringPaths(model.classPrefix, route.path),
+              }))
+            : [];
+
+        const inheritedRoutes =
+          ownRoutes.length > 0
+            ? []
+            : model.implementedInterfaces.flatMap((interfaceName) => {
+                const methodMap = interfaceRoutes.get(interfaceName);
+                if (!methodMap) return [];
+                const routes = methodMap.get(method.name) ?? [];
+                return routes.map((route) => ({
+                  method: route.method,
+                  path: route.path.startsWith('/')
+                    ? route.path
+                    : combineSpringPaths(model.classPrefix, route.path),
+                }));
+              });
+
+        const effectiveRoutes = ownRoutes.length > 0 ? ownRoutes : inheritedRoutes;
+        for (const route of effectiveRoutes) {
+          const pathNorm = normalizeHttpPath(route.path);
+          out.push(this.makeProvider(model.filePath, route.method, pathNorm, method.name, 0.8));
+        }
+      }
+    }
+
     return out;
   }
 
