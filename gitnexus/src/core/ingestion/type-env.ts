@@ -619,7 +619,7 @@ const resolveFieldType = (
 
 /** Resolve a method's return type given a receiver variable and method name.
  *  Uses SymbolTable to find class nodeIds for the receiver's type, then
- *  looks up the method via lookupFuzzyCallable filtered by ownerId.
+ *  looks up the method via owner-scoped lookupMethodByOwner.
  *  Falls back to MRO parent chain walking if direct lookup fails (Phase 11A). */
 const resolveMethodReturnType = (
   receiver: string,
@@ -642,21 +642,18 @@ const resolveMethodReturnType = (
   const classDefs = lookup(receiverType);
   if (classDefs.length === 0) return undefined;
   // Direct lookup first
-  const classNodeIds = new Set(classDefs.map((d) => d.nodeId));
-  const methods = symbolTable
-    .lookupFuzzyCallable(method)
-    .filter((d) => d.ownerId && classNodeIds.has(d.ownerId));
+  const methods = classDefs
+    .map((d) => symbolTable.lookupMethodByOwner(d.nodeId, method))
+    .filter((d): d is NonNullable<typeof d> => d !== undefined);
   if (methods.length === 1 && methods[0].returnType) {
     return extractReturnTypeName(methods[0].returnType);
   }
   // MRO parent chain walking on miss
   if (methods.length === 0) {
     const inherited = walkParentChain(receiverType, parentMap, lookup, (nodeId) => {
-      const parentMethods = symbolTable
-        .lookupFuzzyCallable(method)
-        .filter((d) => d.ownerId === nodeId);
-      if (parentMethods.length !== 1 || !parentMethods[0].returnType) return undefined;
-      return extractReturnTypeName(parentMethods[0].returnType);
+      const parentMethod = symbolTable.lookupMethodByOwner(nodeId, method);
+      if (!parentMethod?.returnType) return undefined;
+      return extractReturnTypeName(parentMethod.returnType);
     });
     return inherited;
   }
