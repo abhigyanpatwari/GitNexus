@@ -1962,25 +1962,40 @@ export class LocalBackend {
         MATCH (n:\`Interface\`) WHERE n.name = $targetName
         RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 1 AS priority LIMIT 1
         UNION ALL
-        MATCH (n:\`Function\`) WHERE n.name = $targetName
+        MATCH (n:\`Struct\`) WHERE n.name = $targetName
         RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 2 AS priority LIMIT 1
         UNION ALL
-        MATCH (n:\`Method\`) WHERE n.name = $targetName
+        MATCH (n:\`Enum\`) WHERE n.name = $targetName
         RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 3 AS priority LIMIT 1
         UNION ALL
-        MATCH (n:\`Constructor\`) WHERE n.name = $targetName
+        MATCH (n:\`Trait\`) WHERE n.name = $targetName
         RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 4 AS priority LIMIT 1
+        UNION ALL
+        MATCH (n:\`Impl\`) WHERE n.name = $targetName
+        RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 5 AS priority LIMIT 1
+        UNION ALL
+        MATCH (n:\`Function\`) WHERE n.name = $targetName
+        RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 6 AS priority LIMIT 1
+        UNION ALL
+        MATCH (n:\`Method\`) WHERE n.name = $targetName
+        RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 7 AS priority LIMIT 1
+        UNION ALL
+        MATCH (n:\`Constructor\`) WHERE n.name = $targetName
+        RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 8 AS priority LIMIT 1
       `,
         { targetName: target },
       ).catch(() => []);
 
       if (rows.length > 0) {
-        // Pick the row with the lowest priority value (Class wins over Constructor)
+        // Pick the row with the lowest priority value (Class/Struct wins over Function/Constructor)
         const best = rows.reduce((a: any, b: any) =>
           (a.priority ?? a[3] ?? 99) <= (b.priority ?? b[3] ?? 99) ? a : b,
         );
         sym = best;
-        const priorityToLabel = ['Class', 'Interface', 'Function', 'Method', 'Constructor'];
+        const priorityToLabel = [
+          'Class', 'Interface', 'Struct', 'Enum', 'Trait', 'Impl',
+          'Function', 'Method', 'Constructor',
+        ];
         symType = priorityToLabel[best.priority ?? best[3]] ?? '';
       }
     } catch {
@@ -2038,23 +2053,32 @@ export class LocalBackend {
     let frontier = [symId];
     let traversalComplete = true;
 
-    // Fix #480: For Java (and other JVM) Class/Interface nodes, CALLS edges
-    // point to Constructor nodes and IMPORTS edges point to File nodes — not
-    // the Class/Interface itself. Seed the frontier with the Constructor(s)
-    // and owning File so the BFS traversal finds those edges naturally.
+    // Fix #480: For type-definition nodes (Class, Interface, Struct, Enum, Trait, Impl),
+    // CALLS edges point to methods/constructors — not the type node itself.
+    // Seed the frontier with all methods (via HAS_METHOD) and the owning File
+    // (via DEFINES) so the BFS traversal finds callers naturally.
     // The owning File is kept only as an internal seed (frontier/visited) and
     // is NOT added to impacted — it is the definition container, not an
     // upstream dependent. The BFS will discover IMPORTS edges on it naturally.
-    if (symType === 'Class' || symType === 'Interface') {
+    const TYPE_DEFINITION_LABELS = new Set([
+      'Class', 'Interface', 'Struct', 'Enum', 'Trait', 'Impl',
+    ]);
+    if (TYPE_DEFINITION_LABELS.has(symType)) {
       try {
-        // Run both seed queries in parallel — they are independent.
-        const [ctorRows, fileRows] = await Promise.all([
+        // Run seed queries in parallel — they are independent.
+        // 1. HAS_METHOD: direct method ownership (Java/TS Class → Constructor/Method)
+        // 2. DEFINES File: the owning file (for IMPORTS edge discovery)
+        // 3. ID-prefix methods: Rust/C++ methods named TypeName.method in the
+        //    same file (Impl blocks don't always have HAS_METHOD edges)
+        const symName = sym.name || sym[2] || '';
+        const symFile = sym.filePath || sym[3] || '';
+        const [methodRows, fileRows, prefixRows] = await Promise.all([
           executeParameterized(
             repo.id,
             `
-            MATCH (n)-[hm:CodeRelation]->(c:Constructor)
+            MATCH (n)-[hm:CodeRelation]->(m)
             WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
-            RETURN c.id AS id, c.name AS name, labels(c)[0] AS type, c.filePath AS filePath
+            RETURN m.id AS id, m.name AS name, labels(m)[0] AS type, m.filePath AS filePath
           `,
             { symId },
           ),
@@ -2069,13 +2093,31 @@ export class LocalBackend {
           `,
             { symId },
           ),
+          // Rust/C++ methods: function IDs use "TypeName.methodName" convention.
+          // Match functions in the same file whose ID starts with the type prefix.
+          symName && symFile
+            ? executeParameterized(
+                repo.id,
+                `
+              MATCH (m:Function)
+              WHERE m.filePath = $filePath AND starts_with(m.id, $idPrefix)
+              RETURN m.id AS id, m.name AS name, labels(m)[0] AS type, m.filePath AS filePath
+            `,
+                {
+                  filePath: symFile,
+                  idPrefix: `Function:${symFile}:${symName}.`,
+                },
+              )
+            : Promise.resolve([]),
         ]);
 
-        for (const r of ctorRows) {
-          const rid = r.id || r[0];
-          if (rid && !visited.has(rid)) {
-            visited.add(rid);
-            frontier.push(rid);
+        for (const rows of [methodRows, prefixRows]) {
+          for (const r of rows) {
+            const rid = r.id || r[0];
+            if (rid && !visited.has(rid)) {
+              visited.add(rid);
+              frontier.push(rid);
+            }
           }
         }
         for (const r of fileRows) {
