@@ -47,6 +47,8 @@ export interface AnalyzeOptions {
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
+  /** Omit stats numbers from CLAUDE.md/AGENTS.md to reduce git noise. */
+  noStats?: boolean;
   /** Index the folder even when no .git directory is present. */
   skipGit?: boolean;
 }
@@ -177,6 +179,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         embeddings: options?.embeddings,
         skipGit: options?.skipGit,
         skipAgentsMd: options?.skipAgentsMd,
+        noStats: options?.noStats,
       },
       {
         onProgress: (_phase, percent, message) => {
@@ -240,7 +243,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
               processes: s.processes,
             },
             skillResult.skills,
-            { skipAgentsMd: options?.skipAgentsMd },
+            { skipAgentsMd: options?.skipAgentsMd, noStats: options?.noStats },
           );
         }
       } catch {
