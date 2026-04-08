@@ -1330,3 +1330,30 @@ describe('Ruby overload dispatch (format vs format_with_prefix)', () => {
     expect(methods).toContain('run');
   });
 });
+
+// ---------------------------------------------------------------------------
+// SM-9/SM-10: lookupMethodByOwnerWithMRO + D0 fast path — Ruby first-wins
+// ---------------------------------------------------------------------------
+
+describe('Ruby Child extends Parent — inherited method resolution (SM-9)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-child-extends-parent'), () => {});
+  }, 60000);
+
+  it('detects Parent and Child classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Parent');
+    expect(classes).toContain('Child');
+  });
+
+  it('resolves c.parent_method to Parent#parent_method via first-wins MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const parentMethodCall = calls.find(
+      (c) => c.target === 'parent_method' && c.targetFilePath.includes('parent.rb'),
+    );
+    expect(parentMethodCall).toBeDefined();
+    expect(parentMethodCall!.source).toBe('run');
+  });
+});

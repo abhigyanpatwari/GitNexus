@@ -1591,3 +1591,184 @@ describe('processCallsFromExtracted — interface dispatch', () => {
     expect(toB?.reason).toBe('interface-dispatch');
   });
 });
+
+// ---------------------------------------------------------------------------
+// SM-10: D0 MRO fast path in resolveCallTarget
+// ---------------------------------------------------------------------------
+
+describe('processCalls — D0 MRO fast path (SM-10)', () => {
+  let graph: ReturnType<typeof createKnowledgeGraph>;
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    graph = createKnowledgeGraph();
+    ctx = createResolutionContext();
+  });
+
+  const setupChildParent = () => {
+    const parentFile = 'src/models/Parent.java';
+    const childFile = 'src/models/Child.java';
+    const appFile = 'src/services/App.java';
+    const parentId = 'class:models/Parent.java:Parent';
+    const childId = 'class:models/Child.java:Child';
+    const parentMethodId = 'method:models/Parent.java:parentMethod';
+
+    ctx.symbols.add(parentFile, 'Parent', parentId, 'Class');
+    ctx.symbols.add(childFile, 'Child', childId, 'Class');
+    ctx.symbols.add(parentFile, 'parentMethod', parentMethodId, 'Method', {
+      ownerId: parentId,
+      returnType: 'String',
+    });
+    ctx.importMap.set(appFile, new Set([childFile, parentFile]));
+    return { parentFile, childFile, appFile, parentId, childId, parentMethodId };
+  };
+
+  it('D0 hit: child.parentMethod() resolves via MRO walk when heritageMap is provided', async () => {
+    const { parentMethodId, appFile, parentFile, childFile } = setupChildParent();
+
+    const heritage: ExtractedHeritage[] = [
+      {
+        filePath: childFile,
+        className: 'Child',
+        parentName: 'Parent',
+        kind: 'extends',
+      },
+    ];
+    const heritageMap = buildHeritageMap(heritage, ctx);
+
+    await processCalls(
+      graph,
+      [
+        {
+          path: parentFile,
+          content:
+            'package models;\npublic class Parent {\n  public String parentMethod() { return ""; }\n}\n',
+        },
+        {
+          path: childFile,
+          content: 'package models;\npublic class Child extends Parent {}\n',
+        },
+        {
+          path: appFile,
+          content:
+            'package services;\nimport models.Child;\npublic class App {\n  public void run() {\n    Child c = new Child();\n    c.parentMethod();\n  }\n}\n',
+        },
+      ],
+      createASTCache(),
+      ctx,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      heritageMap,
+    );
+
+    const parentMethodCalls = graph.relationships.filter(
+      (r) => r.type === 'CALLS' && r.targetId === parentMethodId,
+    );
+    expect(parentMethodCalls).toHaveLength(1);
+  });
+
+  it('D0 skipped: same scenario still resolves via D1-D4 when heritageMap is undefined', async () => {
+    const { parentMethodId, appFile, parentFile, childFile } = setupChildParent();
+
+    await processCalls(
+      graph,
+      [
+        {
+          path: parentFile,
+          content:
+            'package models;\npublic class Parent {\n  public String parentMethod() { return ""; }\n}\n',
+        },
+        {
+          path: childFile,
+          content: 'package models;\npublic class Child extends Parent {}\n',
+        },
+        {
+          path: appFile,
+          content:
+            'package services;\nimport models.Child;\npublic class App {\n  public void run() {\n    Child c = new Child();\n    c.parentMethod();\n  }\n}\n',
+        },
+      ],
+      createASTCache(),
+      ctx,
+      // no heritageMap — D0 fast path must be skipped, D1-D4 must still resolve
+    );
+
+    const parentMethodCalls = graph.relationships.filter(
+      (r) => r.type === 'CALLS' && r.targetId === parentMethodId,
+    );
+    expect(parentMethodCalls).toHaveLength(1);
+  });
+
+  it('module-alias guard: D0 skipped when receiverName matches an active module alias', async () => {
+    // Setup: two files each define a class named User with a method save().
+    // The caller has a Python-style module alias `import auth_mod as auth`,
+    // so auth.User().save() must resolve to auth_mod.py, NOT user_mod.py.
+    // D0 would call ctx.resolve('User') and could pick the wrong file; the
+    // alias guard must short-circuit D0 so the alias-filtered D1-D4 path
+    // runs and picks the correct file.
+    const authModFile = 'auth_mod.py';
+    const userModFile = 'user_mod.py';
+    const appFile = 'app.py';
+    const authUserId = 'class:auth_mod.py:User';
+    const userUserId = 'class:user_mod.py:User';
+    const authSaveId = 'method:auth_mod.py:save';
+    const userSaveId = 'method:user_mod.py:save';
+
+    ctx.symbols.add(authModFile, 'User', authUserId, 'Class');
+    ctx.symbols.add(userModFile, 'User', userUserId, 'Class');
+    ctx.symbols.add(authModFile, 'save', authSaveId, 'Method', {
+      ownerId: authUserId,
+      returnType: 'bool',
+    });
+    ctx.symbols.add(userModFile, 'save', userSaveId, 'Method', {
+      ownerId: userUserId,
+      returnType: 'bool',
+    });
+    // Register the module alias: in app.py, `auth` points to auth_mod.py.
+    const aliasMap = new Map<string, string>([['auth', authModFile]]);
+    ctx.moduleAliasMap.set(appFile, aliasMap);
+    ctx.importMap.set(appFile, new Set([authModFile]));
+
+    const heritageMap = buildHeritageMap([], ctx);
+
+    await processCalls(
+      graph,
+      [
+        {
+          path: authModFile,
+          content: 'class User:\n    def save(self):\n        return True\n',
+        },
+        {
+          path: userModFile,
+          content: 'class User:\n    def save(self):\n        return True\n',
+        },
+        {
+          path: appFile,
+          content:
+            'import auth_mod as auth\n\ndef run():\n    user = auth.User()\n    user.save()\n',
+        },
+      ],
+      createASTCache(),
+      ctx,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      heritageMap,
+    );
+
+    // save() must resolve to auth_mod.py, NOT user_mod.py.
+    const authSave = graph.relationships.find(
+      (r) => r.type === 'CALLS' && r.targetId === authSaveId,
+    );
+    const userSave = graph.relationships.find(
+      (r) => r.type === 'CALLS' && r.targetId === userSaveId,
+    );
+    expect(authSave).toBeDefined();
+    expect(userSave).toBeUndefined();
+  });
+});

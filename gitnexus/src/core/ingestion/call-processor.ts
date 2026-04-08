@@ -1368,11 +1368,20 @@ const resolveCallTarget = (
     // D0. MRO fast path: when heritageMap is available, try owner-scoped + MRO
     //     lookup before falling back to the expensive D2 fuzzy widening.
     //     This short-circuits the lookupFuzzy call for every cross-file member call.
-    //     Skip the fast path when overload disambiguation hints are available
-    //     (overloadHints or preComputedArgTypes) — the MRO lookup may pick the
-    //     wrong overload for same-return-type overloads since it doesn't consider
-    //     argument types. D2-D4+E handles those correctly.
-    if (!overloadHints && !preComputedArgTypes) {
+    //     Skip conditions:
+    //     (a) overloadHints or preComputedArgTypes present — the MRO lookup may
+    //         pick the wrong overload for same-return-type overloads since it
+    //         does not consider argument types. D2-D4+E handles those correctly.
+    //     (b) A module alias on call.receiverName is active for this file — the
+    //         alias block above already narrowed `filteredCandidates` to a
+    //         specific file (e.g. Python `import auth; auth.user.save()`).
+    //         resolveMethodByOwner re-resolves `receiverTypeName` from scratch
+    //         via `ctx.resolve`, which ignores that narrowing and could pick a
+    //         homonymous class from the wrong file. Fall through to D1-D4 which
+    //         respects the alias-filtered candidate pool.
+    const hasActiveModuleAlias =
+      !!call.receiverName && ctx.moduleAliasMap?.get(currentFile)?.has(call.receiverName) === true;
+    if (!overloadHints && !preComputedArgTypes && !hasActiveModuleAlias) {
       const mroResult = resolveMethodByOwner(
         call.receiverTypeName,
         call.calledName,

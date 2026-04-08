@@ -865,3 +865,36 @@ describe.skipIf(!swiftAvailable)('Swift overloaded method disambiguation', () =>
     expect(mi.length).toBe(3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// SM-9/SM-10: lookupMethodByOwnerWithMRO + D0 fast path — Swift first-wins
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)(
+  'Swift Child extends Parent — inherited method resolution (SM-9)',
+  () => {
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(
+        path.join(FIXTURES, 'swift-child-extends-parent'),
+        () => {},
+      );
+    }, 60000);
+
+    it('detects Parent and Child classes', () => {
+      const classes = getNodesByLabel(result, 'Class');
+      expect(classes).toContain('Parent');
+      expect(classes).toContain('Child');
+    });
+
+    it('resolves c.parentMethod() to Parent.parentMethod via first-wins MRO walk', () => {
+      const calls = getRelationships(result, 'CALLS');
+      const parentMethodCall = calls.find(
+        (c) => c.target === 'parentMethod' && c.targetFilePath.includes('Parent.swift'),
+      );
+      expect(parentMethodCall).toBeDefined();
+      expect(parentMethodCall!.source).toBe('run');
+    });
+  },
+);

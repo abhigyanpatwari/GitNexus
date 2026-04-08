@@ -1780,3 +1780,30 @@ describe('PHP abstract dispatch', () => {
     expect(names).toEqual(['find', 'save']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// SM-9/SM-10: lookupMethodByOwnerWithMRO + D0 fast path — PHP first-wins
+// ---------------------------------------------------------------------------
+
+describe('PHP Child extends ParentClass — inherited method resolution (SM-9)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-child-extends-parent'), () => {});
+  }, 60000);
+
+  it('detects ParentClass and Child classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('ParentClass');
+    expect(classes).toContain('Child');
+  });
+
+  it('resolves $c->parentMethod() to ParentClass::parentMethod via first-wins MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const parentMethodCall = calls.find(
+      (c) => c.target === 'parentMethod' && c.targetFilePath.includes('Parent.php'),
+    );
+    expect(parentMethodCall).toBeDefined();
+    expect(parentMethodCall!.source).toBe('run');
+  });
+});
