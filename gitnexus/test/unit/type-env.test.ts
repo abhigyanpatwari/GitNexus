@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { buildTypeEnv, type TypeEnvironment } from '../../src/core/ingestion/type-env.js';
-import type { SymbolDefinition, SymbolTable } from '../../src/core/ingestion/symbol-table.js';
+import {
+  createSymbolTable,
+  type SymbolDefinition,
+  type SymbolTable,
+} from '../../src/core/ingestion/symbol-table.js';
 import {
   stripNullable,
   extractSimpleTypeName,
@@ -2551,6 +2555,99 @@ function process(repo: Repo) {
         expect(lookupFuzzyCallable).not.toHaveBeenCalledWith('getProfile');
       });
 
+      it('method return type resolution with multiple class defs falls back to MRO when direct owners miss', () => {
+        const tree = parse(
+          `
+function process(repo: Repo) {
+  const profile = repo.getProfile();
+}
+`,
+          TypeScript.typescript,
+        );
+        const lookupFuzzyCallable = vi.fn(() => []);
+        const symbolTable = createMockSymbolTable({
+          lookupClassByName: (name: string) => {
+            if (name === 'Repo') {
+              return [
+                createClassDef('Repo', 'Class', 'models-a.ts'),
+                { ...createClassDef('Repo', 'Class', 'models-b.ts'), nodeId: 'class:Repo:partial' },
+              ];
+            }
+            if (name === 'BaseRepo') return [createClassDef('BaseRepo', 'Class', 'base.ts')];
+            return [];
+          },
+          lookupMethodByOwner: (ownerNodeId: string, methodName: string) =>
+            ownerNodeId === 'class:BaseRepo' && methodName === 'getProfile'
+              ? {
+                  nodeId: 'method:BaseRepo:getProfile',
+                  filePath: 'base.ts',
+                  type: 'Method',
+                  ownerId: 'class:BaseRepo',
+                  returnType: 'Profile',
+                }
+              : undefined,
+          lookupExactAll: () => [],
+          lookupFuzzyCallable,
+        });
+        const typeEnv = buildTypeEnv(tree, 'typescript', {
+          symbolTable,
+          parentMap: new Map([['Repo', ['BaseRepo']]]),
+        });
+        expect(flatGet(typeEnv, 'profile')).toBe('Profile');
+        expect(lookupFuzzyCallable).not.toHaveBeenCalledWith('getProfile');
+      });
+
+      it('method return type resolution stays unresolved when multiple class defs each define the method', () => {
+        const tree = parse(
+          `
+function process(repo: Repo) {
+  const profile = repo.getProfile();
+}
+`,
+          TypeScript.typescript,
+        );
+        const lookupFuzzyCallable = vi.fn(() => []);
+        const symbolTable = createMockSymbolTable({
+          lookupClassByName: (name: string) =>
+            name === 'Repo'
+              ? [
+                  createClassDef('Repo', 'Class', 'models-a.ts'),
+                  {
+                    ...createClassDef('Repo', 'Class', 'models-b.ts'),
+                    nodeId: 'class:Repo:partial',
+                  },
+                ]
+              : [],
+          lookupMethodByOwner: (ownerNodeId: string, methodName: string) => {
+            if (methodName !== 'getProfile') return undefined;
+            if (ownerNodeId === 'class:Repo') {
+              return {
+                nodeId: 'method:Repo:getProfile#a',
+                filePath: 'models-a.ts',
+                type: 'Method',
+                ownerId: 'class:Repo',
+                returnType: 'Profile',
+              };
+            }
+            if (ownerNodeId === 'class:Repo:partial') {
+              return {
+                nodeId: 'method:Repo:getProfile#b',
+                filePath: 'models-b.ts',
+                type: 'Method',
+                ownerId: 'class:Repo:partial',
+                returnType: 'Profile',
+              };
+            }
+            return undefined;
+          },
+          lookupExactAll: () => [],
+          lookupFuzzyCallable,
+        });
+        const typeEnv = buildTypeEnv(tree, 'typescript', { symbolTable });
+        expect(flatGet(typeEnv, 'profile')).toBeUndefined();
+        expect(lookupFuzzyCallable).not.toHaveBeenCalledWith('getProfile');
+      });
+
       it('method return type resolution preserves same-return overload success', () => {
         const tree = parse(
           `
@@ -2653,6 +2750,92 @@ function process(repo: Repo) {
         });
         expect(flatGet(typeEnv, 'profile')).toBeUndefined();
         expect(lookupFuzzyCallable).not.toHaveBeenCalledWith('getProfile');
+      });
+
+      it('inherited method return type resolution preserves same-return overload success on parent owners', () => {
+        const tree = parse(
+          `
+function process(repo: Repo) {
+  const profile = repo.getProfile();
+}
+`,
+          TypeScript.typescript,
+        );
+        const lookupFuzzyCallable = vi.fn(() => []);
+        const symbolTable = createMockSymbolTable({
+          lookupClassByName: (name: string) => {
+            if (name === 'Repo') return [createClassDef('Repo', 'Class', 'models.ts')];
+            if (name === 'BaseRepo') return [createClassDef('BaseRepo', 'Class', 'base.ts')];
+            return [];
+          },
+          lookupMethodByOwner: (ownerNodeId: string, methodName: string) =>
+            ownerNodeId === 'class:BaseRepo' && methodName === 'getProfile'
+              ? {
+                  nodeId: 'method:BaseRepo:getProfile#1',
+                  filePath: 'base.ts',
+                  type: 'Method',
+                  ownerId: 'class:BaseRepo',
+                  returnType: 'Profile',
+                }
+              : undefined,
+          lookupExactAll: (filePath: string, name: string) =>
+            filePath === 'base.ts' && name === 'getProfile'
+              ? [
+                  {
+                    nodeId: 'method:BaseRepo:getProfile#1',
+                    filePath: 'base.ts',
+                    type: 'Method',
+                    ownerId: 'class:BaseRepo',
+                    returnType: 'Profile',
+                  },
+                  {
+                    nodeId: 'method:BaseRepo:getProfile#2',
+                    filePath: 'base.ts',
+                    type: 'Method',
+                    ownerId: 'class:BaseRepo',
+                    returnType: 'Profile',
+                  },
+                ]
+              : [],
+          lookupFuzzyCallable,
+        });
+        const typeEnv = buildTypeEnv(tree, 'typescript', {
+          symbolTable,
+          parentMap: new Map([['Repo', ['BaseRepo']]]),
+        });
+        expect(flatGet(typeEnv, 'profile')).toBe('Profile');
+        expect(lookupFuzzyCallable).not.toHaveBeenCalledWith('getProfile');
+      });
+
+      it('inherited method return type resolution stays unresolved for ambiguous overloads on parent owners', () => {
+        const tree = parse(
+          `
+function process(repo: Repo) {
+  const profile = repo.getProfile();
+}
+`,
+          TypeScript.typescript,
+        );
+        const symbolTable = createSymbolTable();
+        symbolTable.add('models.ts', 'Repo', 'class:Repo', 'Class');
+        symbolTable.add('base.ts', 'BaseRepo', 'class:BaseRepo', 'Class');
+        symbolTable.add('base.ts', 'getProfile', 'method:BaseRepo:getProfile#1', 'Method', {
+          ownerId: 'class:BaseRepo',
+          parameterCount: 1,
+          returnType: 'User',
+        });
+        symbolTable.add('base.ts', 'getProfile', 'method:BaseRepo:getProfile#2', 'Method', {
+          ownerId: 'class:BaseRepo',
+          parameterCount: 2,
+          returnType: 'Admin',
+        });
+        const lookupFuzzyCallable = vi.spyOn(symbolTable, 'lookupFuzzyCallable');
+        const typeEnv = buildTypeEnv(tree, 'typescript', {
+          symbolTable,
+          parentMap: new Map([['Repo', ['BaseRepo']]]),
+        });
+        expect(flatGet(typeEnv, 'profile')).toBeUndefined();
+        expect(lookupFuzzyCallable).not.toHaveBeenCalled();
       });
     });
 
