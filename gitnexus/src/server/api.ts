@@ -127,19 +127,13 @@ export const isIgnorableGraphQueryError = (err: unknown): boolean => {
   );
 };
 
-const ensureStreamIsWritable = (
-  res: express.Response,
-  signal?: AbortSignal,
-): void => {
+const ensureStreamIsWritable = (res: express.Response, signal?: AbortSignal): void => {
   if (signal?.aborted || res.destroyed || res.writableEnded) {
     throw new ClientDisconnectedError();
   }
 };
 
-const waitForDrain = async (
-  res: express.Response,
-  signal?: AbortSignal,
-): Promise<void> => {
+const waitForDrain = async (res: express.Response, signal?: AbortSignal): Promise<void> => {
   ensureStreamIsWritable(res, signal);
 
   await new Promise<void>((resolve, reject) => {
@@ -234,24 +228,34 @@ const GRAPH_RELATIONSHIP_QUERY =
   `MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId, ` +
   `r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`;
 
+const quoteNodeTable = (table: string): string => `\`${table.replace(/`/g, '``')}\``;
+
 const getNodeQuery = (table: string, includeContent: boolean): string => {
+  const tableLabel = quoteNodeTable(table);
+
   if (table === 'File') {
     return includeContent
-      ? `MATCH (n:File) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.content AS content`
-      : `MATCH (n:File) RETURN n.id AS id, n.name AS name, n.filePath AS filePath`;
+      ? `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.content AS content`
+      : `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath`;
   }
   if (table === 'Folder') {
-    return `MATCH (n:Folder) RETURN n.id AS id, n.name AS name, n.filePath AS filePath`;
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath`;
   }
   if (table === 'Community') {
-    return `MATCH (n:Community) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.cohesion AS cohesion, n.symbolCount AS symbolCount`;
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.cohesion AS cohesion, n.symbolCount AS symbolCount`;
   }
   if (table === 'Process') {
-    return `MATCH (n:Process) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.processType AS processType, n.stepCount AS stepCount, n.communities AS communities, n.entryPointId AS entryPointId, n.terminalId AS terminalId`;
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.processType AS processType, n.stepCount AS stepCount, n.communities AS communities, n.entryPointId AS entryPointId, n.terminalId AS terminalId`;
+  }
+  if (table === 'Route') {
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware`;
+  }
+  if (table === 'Tool') {
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.description AS description`;
   }
   return includeContent
-    ? `MATCH (n:${table}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`
-    : `MATCH (n:${table}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
+    ? `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`
+    : `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
 };
 
 const mapGraphNodeRow = (table: string, row: any, includeContent: boolean): GraphNode => ({
@@ -263,9 +267,13 @@ const mapGraphNodeRow = (table: string, row: any, includeContent: boolean): Grap
     startLine: row.startLine,
     endLine: row.endLine,
     content: includeContent ? row.content : undefined,
+    responseKeys: row.responseKeys,
+    errorKeys: row.errorKeys,
+    middleware: row.middleware,
     heuristicLabel: row.heuristicLabel,
     cohesion: row.cohesion,
     symbolCount: row.symbolCount,
+    description: row.description,
     processType: row.processType,
     stepCount: row.stepCount,
     communities: row.communities,

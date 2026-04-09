@@ -1,9 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  fetchGraph,
-  normalizeServerUrl,
-  setBackendUrl,
-} from '../../src/services/backend-client';
+import { fetchGraph, normalizeServerUrl, setBackendUrl } from '../../src/services/backend-client';
 
 describe('normalizeServerUrl', () => {
   it('adds http:// to localhost', () => {
