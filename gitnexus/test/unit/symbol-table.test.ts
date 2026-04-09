@@ -1958,7 +1958,7 @@ describe('resolveStaticCall', () => {
     expect(result).toBeNull();
   });
 
-  it('returns null when Constructor nodes exist without ownerId (defers to filterCallableCandidates)', () => {
+  it('returns null when Constructor nodes lack ownerId', () => {
     ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
     ctx.symbols.add('src/user.ts', 'User', 'ctor:User', 'Constructor', {
       parameterCount: 1,
