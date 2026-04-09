@@ -408,7 +408,7 @@ export const fetchGraph = async (
     .filter(Boolean)
     .join('&');
   const url = `${_backendUrl}/api/graph${params ? `?${params}` : ''}`;
-  const response = await fetchWithTimeout(url, { signal: opts?.signal }, 60_000);
+  const response = await fetchWithTimeout(url, { signal: opts?.signal }, 300_000);
   await assertOk(response);
 
   if (!opts?.onProgress || !response.body) {

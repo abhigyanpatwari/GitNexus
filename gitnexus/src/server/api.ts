@@ -454,7 +454,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     }
   });
 
-  // Get full graph
+  // Get full graph — streamed as chunked JSON to avoid buffering the entire
+  // response in memory. This keeps RSS flat for large repos (70K+ nodes).
   app.get('/api/graph', async (req, res) => {
     try {
       const entry = await resolveRepo(requestedRepo(req));
@@ -464,10 +465,108 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const includeContent = req.query.includeContent === 'true';
-      const graph = await withLbugDb(lbugPath, async () => buildGraph(includeContent));
-      res.json(graph);
+
+      // Track client disconnect so we can abort iteration early.
+      let clientDisconnected = false;
+      req.on('close', () => {
+        clientDisconnected = true;
+      });
+
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Transfer-Encoding', 'chunked');
+
+      await withLbugDb(lbugPath, async () => {
+        // ── Stream nodes ──────────────────────────────────────────────
+        res.write('{"nodes":[');
+        let firstNode = true;
+
+        for (const table of NODE_TABLES) {
+          if (clientDisconnected) break;
+          try {
+            let query = '';
+            if (table === 'File') {
+              query = includeContent
+                ? `MATCH (n:File) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.content AS content`
+                : `MATCH (n:File) RETURN n.id AS id, n.name AS name, n.filePath AS filePath`;
+            } else if (table === 'Folder') {
+              query = `MATCH (n:Folder) RETURN n.id AS id, n.name AS name, n.filePath AS filePath`;
+            } else if (table === 'Community') {
+              query = `MATCH (n:Community) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.cohesion AS cohesion, n.symbolCount AS symbolCount`;
+            } else if (table === 'Process') {
+              query = `MATCH (n:Process) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.processType AS processType, n.stepCount AS stepCount, n.communities AS communities, n.entryPointId AS entryPointId, n.terminalId AS terminalId`;
+            } else {
+              query = includeContent
+                ? `MATCH (n:${table}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`
+                : `MATCH (n:${table}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
+            }
+
+            const rows = await executeQuery(query);
+            for (const row of rows) {
+              if (clientDisconnected) break;
+              const node = {
+                id: row.id ?? row[0],
+                label: table,
+                properties: {
+                  name: row.name ?? row.label ?? row[1],
+                  filePath: row.filePath ?? row[2],
+                  startLine: row.startLine,
+                  endLine: row.endLine,
+                  content: includeContent ? row.content : undefined,
+                  heuristicLabel: row.heuristicLabel,
+                  cohesion: row.cohesion,
+                  symbolCount: row.symbolCount,
+                  processType: row.processType,
+                  stepCount: row.stepCount,
+                  communities: row.communities,
+                  entryPointId: row.entryPointId,
+                  terminalId: row.terminalId,
+                },
+              };
+              if (!firstNode) res.write(',');
+              res.write(JSON.stringify(node));
+              firstNode = false;
+            }
+          } catch {
+            // ignore empty tables
+          }
+        }
+
+        // ── Stream relationships ──────────────────────────────────────
+        res.write('],"relationships":[');
+
+        if (!clientDisconnected) {
+          const relRows = await executeQuery(
+            `MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`,
+          );
+          let firstRel = true;
+          for (const row of relRows) {
+            if (clientDisconnected) break;
+            const rel = {
+              id: `${row.sourceId}_${row.type}_${row.targetId}`,
+              type: row.type,
+              sourceId: row.sourceId,
+              targetId: row.targetId,
+              confidence: row.confidence,
+              reason: row.reason,
+              step: row.step,
+            };
+            if (!firstRel) res.write(',');
+            res.write(JSON.stringify(rel));
+            firstRel = false;
+          }
+        }
+
+        res.write(']}');
+        res.end();
+      });
     } catch (err: any) {
-      res.status(500).json({ error: err.message || 'Failed to build graph' });
+      // If headers have already been sent (streaming started), we can't send
+      // a JSON error — just destroy the connection so the client sees a failure.
+      if (res.headersSent) {
+        res.destroy();
+      } else {
+        res.status(500).json({ error: err.message || 'Failed to build graph' });
+      }
     }
   });
 
