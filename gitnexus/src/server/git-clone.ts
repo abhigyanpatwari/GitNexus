@@ -25,6 +25,7 @@ export function getCloneDir(repoName: string): string {
 
 // Cloud metadata hostnames that must never be reachable via user-supplied URLs
 const BLOCKED_HOSTNAMES = new Set([
+  'localhost',
   'metadata.google.internal',
   'metadata.azure.com',
   'metadata.internal',
@@ -50,8 +51,7 @@ export function validateGitUrl(url: string): void {
   const host = parsed.hostname.toLowerCase();
 
   // Block known dangerous hostnames (cloud metadata services)
-  const blockedHostnames = ['localhost', 'metadata.google.internal', 'metadata.azure.com'];
-  if (blockedHostnames.includes(host)) {
+  if (BLOCKED_HOSTNAMES.has(host)) {
     throw new Error('Cloning from private/internal addresses is not allowed');
   }
 
