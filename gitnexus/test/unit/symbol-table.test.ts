@@ -1905,3 +1905,157 @@ describe('resolveCallTarget D0 skip conditions (SM-11)', () => {
     expect(result!.nodeId).toBe('method:User:save');
   });
 });
+
+// ---------------------------------------------------------------------------
+// resolveStaticCall — SM-12: constructor/static call resolution
+// ---------------------------------------------------------------------------
+
+import { resolveStaticCall } from '../../src/core/ingestion/call-processor.js';
+
+describe('resolveStaticCall', () => {
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    ctx = createResolutionContext();
+  });
+
+  it('resolves constructor with ownerId via lookupMethodByOwner', () => {
+    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.symbols.add('src/user.ts', 'User', 'ctor:User', 'Constructor', {
+      returnType: 'User',
+      ownerId: 'class:User',
+    });
+    ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
+
+    const result = resolveStaticCall('User', 'User', 'src/app.ts', ctx);
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('ctor:User');
+  });
+
+  it('returns class node when no constructor exists', () => {
+    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
+
+    const result = resolveStaticCall('User', 'User', 'src/app.ts', ctx);
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('class:User');
+  });
+
+  it('returns null for non-class symbol', () => {
+    ctx.symbols.add('src/utils.ts', 'helper', 'func:helper', 'Function');
+    ctx.importMap.set('src/app.ts', new Set(['src/utils.ts']));
+
+    const result = resolveStaticCall('helper', 'helper', 'src/app.ts', ctx);
+
+    expect(result).toBeNull();
+  });
+
+  it('returns null when className does not exist', () => {
+    const result = resolveStaticCall('NonExistent', 'NonExistent', 'src/app.ts', ctx);
+
+    expect(result).toBeNull();
+  });
+
+  it('returns null when Constructor nodes exist without ownerId (defers to filterCallableCandidates)', () => {
+    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.symbols.add('src/user.ts', 'User', 'ctor:User', 'Constructor', {
+      parameterCount: 1,
+    });
+    ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
+
+    // Constructor lacks ownerId, so lookupMethodByOwner won't find it.
+    // resolveStaticCall detects Constructor nodes and returns null to
+    // let filterCallableCandidates handle the Constructor-vs-Class preference.
+    const result = resolveStaticCall('User', 'User', 'src/app.ts', ctx);
+
+    expect(result).toBeNull();
+  });
+
+  it('disambiguates constructor by arity', () => {
+    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.symbols.add('src/user.ts', 'User', 'ctor:User:0', 'Constructor', {
+      parameterCount: 0,
+      returnType: 'User',
+      ownerId: 'class:User',
+    });
+    ctx.symbols.add('src/user.ts', 'User', 'ctor:User:2', 'Constructor', {
+      parameterCount: 2,
+      returnType: 'User',
+      ownerId: 'class:User',
+    });
+    ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
+
+    const result = resolveStaticCall('User', 'User', 'src/app.ts', ctx, 2);
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('ctor:User:2');
+  });
+
+  it('returns correct confidence tier for import-scoped class', () => {
+    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
+
+    const result = resolveStaticCall('User', 'User', 'src/app.ts', ctx);
+
+    expect(result).not.toBeNull();
+    expect(result!.confidence).toBe(0.9); // import-scoped tier
+    expect(result!.reason).toBe('import-resolved');
+  });
+
+  it('returns correct confidence tier for same-file class', () => {
+    ctx.symbols.add('src/app.ts', 'User', 'class:User', 'Class');
+
+    const result = resolveStaticCall('User', 'User', 'src/app.ts', ctx);
+
+    expect(result).not.toBeNull();
+    expect(result!.confidence).toBe(0.95); // same-file tier
+    expect(result!.reason).toBe('same-file');
+  });
+
+  it('returns null for ambiguous homonym classes without constructor', () => {
+    ctx.symbols.add('src/a.ts', 'User', 'class:a:User', 'Class');
+    ctx.symbols.add('src/b.ts', 'User', 'class:b:User', 'Class');
+    ctx.importMap.set('src/app.ts', new Set(['src/a.ts', 'src/b.ts']));
+
+    const result = resolveStaticCall('User', 'User', 'src/app.ts', ctx);
+
+    // Two classes with same name — ambiguous, should return null
+    expect(result).toBeNull();
+  });
+
+  it('routes through resolveCallTarget for constructor callForm', () => {
+    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
+
+    const result = _resolveCallTargetForTesting(
+      {
+        calledName: 'User',
+        callForm: 'constructor',
+      },
+      'src/app.ts',
+      ctx,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('class:User');
+  });
+
+  it('routes through resolveCallTarget for free-form call targeting a class (Swift/Kotlin)', () => {
+    ctx.symbols.add('src/user.swift', 'User', 'class:User', 'Class');
+    ctx.importMap.set('src/app.swift', new Set(['src/user.swift']));
+
+    const result = _resolveCallTargetForTesting(
+      {
+        calledName: 'User',
+        callForm: 'free',
+      },
+      'src/app.swift',
+      ctx,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('class:User');
+  });
+});

@@ -1331,6 +1331,31 @@ const resolveCallTarget = (
     call.callForm,
   );
 
+  // S0. Constructor/static fast path (SM-12): O(1) class + constructor lookup
+  //     via lookupClassByName + lookupMethodByOwner before falling back to the
+  //     existing filtering + fuzzy-widening path.
+  //
+  //     Handles:
+  //     (a) callForm === 'constructor' — explicit `new User()` in Java/TS/C#/etc.
+  //     (b) callForm === 'free' with class target — implicit `User()` in Swift/Kotlin
+  if (
+    call.callForm === 'constructor' ||
+    (call.callForm === 'free' &&
+      filteredCandidates.length === 0 &&
+      tiered.candidates.some(
+        (c) => c.type === 'Class' || c.type === 'Struct' || c.type === 'Enum',
+      ))
+  ) {
+    const staticResult = resolveStaticCall(
+      call.calledName,
+      call.calledName,
+      currentFile,
+      ctx,
+      call.argCount,
+    );
+    if (staticResult) return staticResult;
+  }
+
   // Swift/Kotlin: constructor calls look like free function calls (no `new` keyword).
   // If free-form filtering found no callable candidates but the symbol resolves to a
   // Class/Struct, retry with constructor form so CONSTRUCTOR_TARGET_TYPES applies.
@@ -1841,6 +1866,91 @@ export const resolveMemberCall = (
   );
   if (!resolved) return null;
   return toResolveResult(resolved.def, resolved.tier);
+};
+
+// ---------------------------------------------------------------------------
+// SM-12: Constructor/static call resolution (no fuzzy lookup)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a constructor or static call using class-scoped lookup (no fuzzy lookup).
+ * Used for `new User()` / `User()` calls where the calledName targets a class.
+ *
+ * Uses {@link SymbolTable.lookupClassByName} for O(1) class lookup and
+ * {@link SymbolTable.lookupMethodByOwner} for constructor resolution.
+ * {@link resolveCallTarget} delegates here for constructor and free-form calls
+ * that target a class, before falling back to the more expensive fuzzy-widening
+ * path (D1-D4).
+ *
+ * Resolution strategy:
+ *   1. `lookupClassByName(className)` — O(1) pre-check; bail early if no class exists.
+ *   2. `ctx.resolve(className, currentFile)` — import-scoped tier for confidence.
+ *   3. Filter to class-like candidates (Class, Struct, Interface, Enum, Record, Impl).
+ *   4. `lookupMethodByOwner(classNodeId, methodName, argCount)` — O(1) constructor lookup.
+ *   5. If a unique constructor is found, return it; otherwise return the class itself
+ *      when there is exactly one class candidate.
+ *
+ * @param className   - The class name (e.g. 'User')
+ * @param methodName  - The method/constructor name (typically same as className)
+ * @param currentFile - File path of the call site
+ * @param ctx         - Resolution context
+ * @param argCount    - Optional argument count for arity filtering
+ */
+export const resolveStaticCall = (
+  className: string,
+  methodName: string,
+  currentFile: string,
+  ctx: ResolutionContext,
+  argCount?: number,
+): ResolveResult | null => {
+  // 1. Pre-check: does a class with this name exist at all? (O(1))
+  const allClasses = ctx.symbols.lookupClassByName(className);
+  if (allClasses.length === 0) return null;
+
+  // 2. Scope via ctx.resolve for import-tier information
+  const typeResolved = ctx.resolve(className, currentFile);
+  if (!typeResolved) return null;
+
+  const classCandidates = typeResolved.candidates.filter((c) => CLASS_LIKE_TYPES.has(c.type));
+  if (classCandidates.length === 0) return null;
+
+  // 3. Try lookupMethodByOwner for explicit Constructor nodes.
+  //    Only accept results with type === 'Constructor' — a Method or Function
+  //    that happens to share the class name (e.g. C++ methods named after
+  //    their class) is not a constructor for resolution purposes.
+  //    Same dedup logic as resolveMethodByOwner: diamond inheritance converging
+  //    on the same constructor collapses to one hit.
+  let firstDef: SymbolDefinition | undefined;
+  let ambiguous = false;
+  for (const candidate of classCandidates) {
+    const def = ctx.symbols.lookupMethodByOwner(candidate.nodeId, methodName, argCount);
+    if (!def || def.type !== 'Constructor') continue;
+    if (!firstDef) {
+      firstDef = def;
+    } else if (def.nodeId !== firstDef.nodeId) {
+      ambiguous = true;
+      break;
+    }
+  }
+
+  if (firstDef && !ambiguous) {
+    return toResolveResult(firstDef, typeResolved.tier);
+  }
+
+  // 4. lookupMethodByOwner found nothing — check whether the tiered pool
+  //    contains Constructor nodes that lack ownerId (common in some extractors).
+  //    If so, bail out so the existing filterCallableCandidates path handles
+  //    Constructor-vs-Class preference correctly.
+  if (typeResolved.candidates.some((c) => c.type === 'Constructor')) {
+    return null;
+  }
+
+  // 5. No constructor nodes at all — return the class itself if unique
+  if (classCandidates.length === 1) {
+    return toResolveResult(classCandidates[0], typeResolved.tier);
+  }
+
+  return null;
 };
 
 // ---------------------------------------------------------------------------
