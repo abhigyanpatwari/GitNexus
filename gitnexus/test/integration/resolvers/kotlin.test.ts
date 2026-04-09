@@ -2026,3 +2026,37 @@ describe('Kotlin Child extends Parent — inherited method resolution (SM-9)', (
     expect(parentMethodCall!.source).toBe('run');
   });
 });
+
+// ---------------------------------------------------------------------------
+// SM-11: Kotlin User : Validator — interface default method via implements-split
+// ---------------------------------------------------------------------------
+
+describe('Kotlin User implements Validator — interface default method (SM-11)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-interface-default-method'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Validator interface and User class', () => {
+    expect(getNodesByLabel(result, 'Interface')).toContain('Validator');
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+  });
+
+  it('emits IMPLEMENTS edge: User → Validator', () => {
+    const impls = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(impls)).toContain('User → Validator');
+  });
+
+  it('resolves user.validate() to Validator.validate via implements-split MRO', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const validateCall = calls.find(
+      (c) => c.target === 'validate' && c.targetFilePath.includes('Validator.kt'),
+    );
+    expect(validateCall).toBeDefined();
+    expect(validateCall!.source).toBe('run');
+  });
+});

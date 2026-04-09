@@ -1406,6 +1406,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
 import {
   _resolveCallTargetForTesting,
   resolveMemberCall,
+  type OverloadHints,
 } from '../../src/core/ingestion/call-processor.js';
 
 describe('resolveMemberCall', () => {
@@ -1702,6 +1703,72 @@ describe('resolveMemberCall', () => {
     expect(result!.nodeId).toBe('method:Base:method');
     expect(result!.returnType).toBe('int');
   });
+
+  // -------------------------------------------------------------------------
+  // L1: C# / Kotlin implements-split strategy through resolveMemberCall.
+  // lookupMethodByOwnerWithMRO already has strategy-level coverage for these
+  // languages; these tests add the resolveMemberCall layer (tier resolution
+  // + class candidate iteration + MRO walk) on top.
+  // -------------------------------------------------------------------------
+  it('C#: walks implements-split to find inherited method via interface', () => {
+    // C# uses implements-split MRO: class base chain walked first, then
+    // interfaces. Here IService declares Save which is implemented by the
+    // base class BaseService — MyService inherits Save through the class.
+    ctx.symbols.add('src/iservice.cs', 'IService', 'interface:IService', 'Interface');
+    ctx.symbols.add('src/base.cs', 'BaseService', 'class:BaseService', 'Class');
+    ctx.symbols.add('src/my.cs', 'MyService', 'class:MyService', 'Class');
+    ctx.symbols.add('src/base.cs', 'Save', 'method:BaseService:Save', 'Method', {
+      returnType: 'void',
+      ownerId: 'class:BaseService',
+    });
+    ctx.importMap.set('src/app.cs', new Set(['src/iservice.cs', 'src/base.cs', 'src/my.cs']));
+
+    const heritage: ExtractedHeritage[] = [
+      {
+        filePath: 'src/base.cs',
+        className: 'BaseService',
+        parentName: 'IService',
+        kind: 'implements',
+      },
+      { filePath: 'src/my.cs', className: 'MyService', parentName: 'BaseService', kind: 'extends' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = resolveMemberCall('MyService', 'Save', 'src/app.cs', ctx, map);
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('method:BaseService:Save');
+    expect(result!.returnType).toBe('void');
+  });
+
+  it('Kotlin: walks implements-split to find inherited method via interface', () => {
+    // Kotlin shares the implements-split MRO strategy with Java/C#. A class
+    // inheriting from an interface that provides a default method should
+    // resolve `obj.method()` to the interface's implementation.
+    ctx.symbols.add('src/validator.kt', 'Validator', 'interface:Validator', 'Interface');
+    ctx.symbols.add('src/user.kt', 'User', 'class:User', 'Class');
+    ctx.symbols.add('src/validator.kt', 'validate', 'method:Validator:validate', 'Method', {
+      returnType: 'Boolean',
+      ownerId: 'interface:Validator',
+    });
+    ctx.importMap.set('src/app.kt', new Set(['src/validator.kt', 'src/user.kt']));
+
+    const heritage: ExtractedHeritage[] = [
+      {
+        filePath: 'src/user.kt',
+        className: 'User',
+        parentName: 'Validator',
+        kind: 'implements',
+      },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = resolveMemberCall('User', 'validate', 'src/app.kt', ctx, map);
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('method:Validator:validate');
+    expect(result!.returnType).toBe('Boolean');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1717,23 +1784,41 @@ describe('resolveCallTarget D0 skip conditions (SM-11)', () => {
     ctx = createResolutionContext();
   });
 
-  it('module alias: resolution succeeds when hasActiveModuleAlias triggers D0 skip', () => {
-    // Python-style: `import auth; auth.User.save()`. The `receiverName='auth'`
-    // matches a moduleAliasMap entry, which sets `hasActiveModuleAlias=true`
-    // and bypasses the D0 fast path. The test verifies that D1-D4 still
-    // produces the correct result in this skip scenario — a regression here
-    // (e.g. D0 being called when it shouldn't) would silently pick a homonym
-    // from another file, and an unintentional skip would cause resolution to
-    // fail entirely.
+  it('module alias: picks alias-scoped class over homonym (D0 actually bypassed)', () => {
+    // Python-style: `import auth; auth.User.save()` where BOTH auth.py and
+    // other.py define a `User` class with a `save` method. The test proves:
+    //
+    //   1. Without the alias: resolveMemberCall sees two homonym Users,
+    //      both own `save`, and correctly returns null (refuses to guess).
+    //   2. With the alias: D0 is skipped via `hasActiveModuleAlias`, and
+    //      D1-D4 — respecting the alias-narrowed filteredCandidates — picks
+    //      the auth.py User.save method.
+    //
+    // A regression where D0 silently ran would produce null (ambiguous)
+    // instead of the correct answer, so this test actually exercises the
+    // skip path rather than just verifying a single-candidate happy path.
     ctx.symbols.add('src/auth.py', 'User', 'class:auth:User', 'Class');
     ctx.symbols.add('src/auth.py', 'save', 'method:auth:User:save', 'Method', {
       returnType: 'None',
       ownerId: 'class:auth:User',
     });
-    ctx.importMap.set('src/app.py', new Set(['src/auth.py']));
+    ctx.symbols.add('src/other.py', 'User', 'class:other:User', 'Class');
+    ctx.symbols.add('src/other.py', 'save', 'method:other:User:save', 'Method', {
+      returnType: 'None',
+      ownerId: 'class:other:User',
+    });
+    ctx.importMap.set('src/app.py', new Set(['src/auth.py', 'src/other.py']));
     ctx.moduleAliasMap.set('src/app.py', new Map([['auth', 'src/auth.py']]));
 
-    const result = _resolveCallTargetForTesting(
+    // Control: without alias narrowing, resolveMemberCall sees both Users
+    // own `save` and correctly refuses to pick one.
+    const ambiguous = resolveMemberCall('User', 'save', 'src/app.py', ctx);
+    expect(ambiguous).toBeNull();
+
+    // With alias narrowing active, D0 is skipped and D1-D4 picks auth.py's
+    // User.save because the alias block already narrowed filteredCandidates
+    // to auth.py (and the D2 widening step is gated on `!aliasNarrowed`).
+    const aliased = _resolveCallTargetForTesting(
       {
         calledName: 'save',
         callForm: 'member',
@@ -1744,26 +1829,8 @@ describe('resolveCallTarget D0 skip conditions (SM-11)', () => {
       ctx,
     );
 
-    expect(result).not.toBeNull();
-    expect(result!.nodeId).toBe('method:auth:User:save');
-  });
-
-  it('module alias: resolveMemberCall called directly still works (control)', () => {
-    // Control case: calling resolveMemberCall directly (the path D0 would have
-    // taken) produces the same result. Demonstrates that the skip is a safety
-    // measure for the D2-widening interaction with alias narrowing, not because
-    // resolveMemberCall itself is broken here.
-    ctx.symbols.add('src/auth.py', 'User', 'class:auth:User', 'Class');
-    ctx.symbols.add('src/auth.py', 'save', 'method:auth:User:save', 'Method', {
-      returnType: 'None',
-      ownerId: 'class:auth:User',
-    });
-    ctx.importMap.set('src/app.py', new Set(['src/auth.py']));
-
-    const result = resolveMemberCall('User', 'save', 'src/app.py', ctx);
-
-    expect(result).not.toBeNull();
-    expect(result!.nodeId).toBe('method:auth:User:save');
+    expect(aliased).not.toBeNull();
+    expect(aliased!.nodeId).toBe('method:auth:User:save');
   });
 
   it('overloadHints present: D0 bypassed, D1-D4 handles resolution', () => {
@@ -1783,13 +1850,7 @@ describe('resolveCallTarget D0 skip conditions (SM-11)', () => {
 
     // Minimal stub; D1-D4 only calls tryOverloadDisambiguation when there are
     // multiple candidates, so an empty object is fine for single-candidate cases.
-    const dummyHints = {} as unknown as Parameters<
-      typeof _resolveCallTargetForTesting
-    >[3] extends infer O
-      ? O extends { overloadHints?: infer H }
-        ? H
-        : never
-      : never;
+    const dummyHints = {} as OverloadHints;
 
     const result = _resolveCallTargetForTesting(
       {

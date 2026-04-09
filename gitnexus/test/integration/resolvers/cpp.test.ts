@@ -1548,3 +1548,37 @@ describe('C++ Child extends Parent — inherited method resolution (SM-9)', () =
     expect(parentMethodCall!.source).toBe('run');
   });
 });
+
+describe('C++ Derived : A, B — diamond inheritance via leftmost-base MRO (SM-11)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-diamond-inheritance'), () => {});
+  }, 60000);
+
+  it('detects Base, A, B, and Derived classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Base');
+    expect(classes).toContain('A');
+    expect(classes).toContain('B');
+    expect(classes).toContain('Derived');
+  });
+
+  it('emits EXTENDS edges for both branches: A → Base, B → Base, Derived → A, Derived → B', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const edges = edgeSet(extends_);
+    expect(edges).toContain('A → Base');
+    expect(edges).toContain('B → Base');
+    expect(edges).toContain('Derived → A');
+    expect(edges).toContain('Derived → B');
+  });
+
+  it('resolves d.method() to Base::method via leftmost-base MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const methodCall = calls.find(
+      (c) => c.target === 'method' && c.targetFilePath.includes('Base.h'),
+    );
+    expect(methodCall).toBeDefined();
+    expect(methodCall!.source).toBe('run');
+  });
+});

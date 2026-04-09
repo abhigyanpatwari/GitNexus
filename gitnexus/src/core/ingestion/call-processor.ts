@@ -1191,9 +1191,15 @@ const toResolveResult = (definition: SymbolDefinition, tier: ResolutionTier): Re
   returnType: definition.returnType,
 });
 
-/** Optional hints for overload disambiguation via argument literal types.
- *  Only available on the sequential path (has AST); worker path passes undefined. */
-interface OverloadHints {
+/**
+ * Optional hints for overload disambiguation via argument literal types.
+ * Only available on the sequential path (has AST); worker path passes undefined.
+ *
+ * @internal Exported so tests can exercise the D0 skip-condition path without
+ *           constructing a real SyntaxNode. Do not use outside `call-processor.ts`
+ *           and its unit tests.
+ */
+export interface OverloadHints {
   callNode: SyntaxNode;
   inferLiteralType: LiteralTypeInferrer;
   typeEnv?: TypeEnvironment;
@@ -1353,6 +1359,10 @@ const resolveCallTarget = (
   // selects auth.py via moduleAliasMap. Runs for ALL member calls with a known module alias,
   // not just ambiguous ones — same-file tier may shadow the correct cross-module target when
   // the caller defines a function with the same name as the callee (Issue #417).
+  //
+  // Tracks `aliasNarrowed` so the D2 widening step below does NOT undo the alias filtering
+  // by calling lookupFuzzy again (which would re-introduce homonym candidates from other files).
+  let aliasNarrowed = false;
   if (call.callForm === 'member' && call.receiverName) {
     const aliasMap = ctx.moduleAliasMap?.get(currentFile);
     if (aliasMap) {
@@ -1361,6 +1371,7 @@ const resolveCallTarget = (
         const aliasFiltered = filteredCandidates.filter((c) => c.filePath === moduleFile);
         if (aliasFiltered.length > 0) {
           filteredCandidates = aliasFiltered;
+          aliasNarrowed = true;
         } else {
           // Same-file tier returned a local match, but the alias points elsewhere.
           // Widen to global candidates and filter to the aliased module's file.
@@ -1375,7 +1386,10 @@ const resolveCallTarget = (
           const widened = filterCallableCandidates(fuzzyDefs, call.argCount, call.callForm).filter(
             (c) => c.filePath === moduleFile,
           );
-          if (widened.length > 0) filteredCandidates = widened;
+          if (widened.length > 0) {
+            filteredCandidates = widened;
+            aliasNarrowed = true;
+          }
         }
       }
     }
@@ -1424,8 +1438,13 @@ const resolveCallTarget = (
       // D2. Widen candidates: same-file tier may miss the parent's method when
       //     it lives in another file. Query the symbol table directly for all
       //     global methods with this name, then apply arity/kind filtering.
+      //
+      //     When the candidate set was already narrowed by module-alias
+      //     disambiguation, do NOT widen back to the full fuzzy pool — that
+      //     would undo the alias narrowing and reintroduce homonym candidates
+      //     from other files.
       const methodPool =
-        filteredCandidates.length <= 1
+        filteredCandidates.length <= 1 && !aliasNarrowed
           ? filterCallableCandidates(
               ctx.symbols.lookupFuzzy(call.calledName),
               call.argCount,
@@ -1694,22 +1713,33 @@ const resolveMethodByOwner = (
   const language = heritageMap ? getLanguageFromFilename(filePath) : null;
   const canWalkMRO = heritageMap != null && language != null;
 
-  // Iterate ALL class-like candidates. Unique hits (by nodeId) land in `matches`:
-  //   matches.size === 0 → owner-scoped resolution found nothing
-  //   matches.size === 1 → unambiguous answer
-  //   matches.size  > 1 → genuine homonym ambiguity — refuse to pick one
-  const matches = new Map<string, SymbolDefinition>();
+  // Iterate all class-like candidates tracking the first unambiguous hit.
+  // Zero-allocation fast path: the common case is exactly one class candidate,
+  // so we avoid building a Map. A second hit with a different `nodeId` flips
+  // `ambiguous` and short-circuits the loop. Diamond MRO convergence on the
+  // same inherited method collapses to one hit because `nodeId` matches.
+  //
+  //   firstDef === undefined → owner-scoped resolution found nothing
+  //   firstDef && !ambiguous → unambiguous answer
+  //   ambiguous              → genuine homonym ambiguity — refuse to pick
+  let firstDef: SymbolDefinition | undefined;
+  let ambiguous = false;
   for (const candidate of typeResolved.candidates) {
     if (!CLASS_LIKE_TYPES.has(candidate.type)) continue;
     const def = canWalkMRO
       ? lookupMethodByOwnerWithMRO(candidate.nodeId, methodName, heritageMap, ctx.symbols, language)
       : ctx.symbols.lookupMethodByOwner(candidate.nodeId, methodName);
-    if (def) matches.set(def.nodeId, def);
+    if (!def) continue;
+    if (!firstDef) {
+      firstDef = def;
+    } else if (def.nodeId !== firstDef.nodeId) {
+      ambiguous = true;
+      break;
+    }
   }
 
-  if (matches.size !== 1) return undefined;
-  const [def] = matches.values();
-  return { def: def!, tier: typeResolved.tier };
+  if (!firstDef || ambiguous) return undefined;
+  return { def: firstDef, tier: typeResolved.tier };
 };
 
 // ---------------------------------------------------------------------------

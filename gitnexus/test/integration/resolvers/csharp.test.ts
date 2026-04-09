@@ -1963,3 +1963,37 @@ describe('C# Child extends Parent — inherited method resolution (SM-9)', () =>
     expect(parentMethodCall!.source).toBe('Run');
   });
 });
+
+// ---------------------------------------------------------------------------
+// SM-11: C# User : IValidator — interface default method via implements-split
+// ---------------------------------------------------------------------------
+
+describe('C# User implements IValidator — interface default method (SM-11)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-interface-default-method'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects IValidator interface and User class', () => {
+    expect(getNodesByLabel(result, 'Interface')).toContain('IValidator');
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+  });
+
+  it('emits IMPLEMENTS edge: User → IValidator', () => {
+    const impls = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(impls)).toContain('User → IValidator');
+  });
+
+  it('resolves user.Validate() to IValidator.Validate via implements-split MRO', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const validateCall = calls.find(
+      (c) => c.target === 'Validate' && c.targetFilePath.includes('Validator.cs'),
+    );
+    expect(validateCall).toBeDefined();
+    expect(validateCall!.source).toBe('Run');
+  });
+});

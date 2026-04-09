@@ -1857,3 +1857,46 @@ describe('Rust abstract dispatch (Repository trait)', () => {
     expect(names).toEqual(['find', 'save']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// SM-11: Rust Child struct — direct impl method resolution via D0
+//
+// Companion integration test for the unit-level Rust qualified-syntax tests
+// in symbol-table.test.ts. Validates end-to-end that Rust direct-impl methods
+// resolve through the owner-scoped D0 path (`resolveMemberCall`).
+//
+// NOTE on trait-inherited methods: Rust's qualified-syntax MRO strategy in
+// `lookupMethodByOwnerWithMRO` correctly returns null for trait-inherited
+// methods at the unit level. However, in the current pipeline, Rust trait
+// default methods are captured as `Function` nodes (not `Method` with
+// ownerId), so the owner-scoped index does not contain them. This means
+// direct `obj.trait_method()` calls currently fall through to D1-D4 fuzzy
+// widening rather than being correctly null-routed. Rust trait capture as
+// Method-with-ownerId is a Phase 5 (SM-16) fix — out of SM-11 scope.
+// ---------------------------------------------------------------------------
+
+describe('Rust Child direct-impl method resolution (SM-11)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-child-extends-parent'), () => {});
+  }, 60000);
+
+  it('detects Child struct and Parent trait', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    expect(structs).toContain('Child');
+    const traits = getNodesByLabel(result, 'Trait');
+    expect(traits).toContain('Parent');
+  });
+
+  it('resolves c.own_method() to Child::own_method via D0 owner-scoped path', () => {
+    // Direct impl method — D0 short-circuits to lookupMethodByOwner which
+    // returns Child::own_method without falling through to D1-D4 fuzzy.
+    const calls = getRelationships(result, 'CALLS');
+    const ownCall = calls.find(
+      (c) =>
+        c.target === 'own_method' && c.source === 'run' && c.targetFilePath.includes('child.rs'),
+    );
+    expect(ownCall).toBeDefined();
+  });
+});
