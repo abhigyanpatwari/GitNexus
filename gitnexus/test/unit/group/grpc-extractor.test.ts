@@ -380,7 +380,7 @@ export class AuthController {
       expect(providers[0].confidence).toBe(0.8);
     });
 
-    it('test_extract_ts_grpc_client_decorator_and_getService_returns_consumer', async () => {
+    it('test_extract_ts_grpc_client_decorator_returns_consumer', async () => {
       writeFile(
         'proto/auth.proto',
         `syntax = "proto3";
@@ -391,15 +391,12 @@ service AuthService {
       );
       writeFile(
         'src/auth.client.ts',
-        `import { ClientGrpc, GrpcClient } from '@nestjs/microservices';
+        `import { GrpcClient } from '@nestjs/microservices';
+import type { AuthServiceClient } from './generated/auth';
 
 export class AuthGateway {
-  @GrpcClient('AUTH_PACKAGE')
-  private readonly client!: ClientGrpc;
-
-  onModuleInit(): void {
-    this.client.getService<AuthService>('AuthService');
-  }
+  @GrpcClient({ package: 'auth.v1', protoPath: 'proto/auth.proto' })
+  private readonly authClient!: AuthServiceClient;
 }`,
       );
 
@@ -457,6 +454,28 @@ export const authClient = new AuthServiceClient('localhost:50051', credentials.c
 
       expect(consumers).toHaveLength(1);
       expect(consumers[0].contractId).toBe('grpc::auth.v1.AuthService/*');
+    });
+
+    it('test_extract_ts_non_service_client_constructor_is_ignored', async () => {
+      writeFile(
+        'proto/auth.proto',
+        `syntax = "proto3";
+package auth.v1;
+service AuthService {
+  rpc Login (LoginRequest) returns (LoginResponse);
+}`,
+      );
+      writeFile(
+        'src/auth.client.ts',
+        `import { AuthClient } from './generated/auth';
+
+export const authClient = new AuthClient('localhost:50051');`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(0);
     });
 
     it('test_extract_ts_loadPackageDefinition_constructor_returns_consumer', async () => {

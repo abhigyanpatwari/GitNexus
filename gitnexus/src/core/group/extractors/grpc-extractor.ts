@@ -595,13 +595,19 @@ export class GrpcExtractor implements ContractExtractor {
       );
     };
 
-    const getServiceRe = /\.getService(?:<[^>]+>)?\s*\(\s*['"](\w+)['"]\s*\)/g;
+    const grpcClientDecoratorRe =
+      /@GrpcClient\s*\([^)]*\)\s*(?:private|protected|public)?\s*(?:readonly\s+)?\w+[!?]?\s*:\s*(\w+Service)Client\b/g;
     let match: RegExpExecArray | null;
+    while ((match = grpcClientDecoratorRe.exec(content)) !== null) {
+      pushConsumer(match[1], `${match[1]}Client`, 'ts_grpc_client_decorator');
+    }
+
+    const getServiceRe = /\.getService(?:<[^>]+>)?\s*\(\s*['"](\w+)['"]\s*\)/g;
     while ((match = getServiceRe.exec(content)) !== null) {
       pushConsumer(match[1], `${match[1]}Client`, 'ts_client_grpc_get_service');
     }
 
-    const clientCtorRe = /new\s+(\w+)Client\s*\(/g;
+    const clientCtorRe = /new\s+(\w+Service)Client\s*\(/g;
     while ((match = clientCtorRe.exec(content)) !== null) {
       pushConsumer(match[1], `${match[1]}Client`, 'ts_generated_client');
     }
