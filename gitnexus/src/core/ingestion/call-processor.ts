@@ -56,7 +56,9 @@ export type ExportedTypeMap = Map<string, Map<string, string>>;
 
 /** Types that represent class-like declarations (used for receiver/owner resolution). */
 /**
- * Type labels treated as class-like receivers by the call resolver.
+ * Type labels treated as class-like **method-dispatch receivers** by the call
+ * resolver — the set walked by the MRO / heritage path for member and static
+ * method calls.
  *
  * Derived from `CLASS_TYPES` (the heritage-index set in symbol-table) plus
  * `Impl` — Rust `impl` blocks are the definition site of methods for a struct
@@ -69,11 +71,35 @@ export type ExportedTypeMap = Map<string, Map<string, string>>;
  * `Interface` is included even though interfaces cannot be directly
  * instantiated in Java/C#/TypeScript: the resolver still needs to reach
  * interface nodes for static-method dispatch (`Interface.staticMethod()`) and
- * default-method resolution via the MRO walker. Constructor-shaped calls that
- * resolve to an Interface are guarded downstream by the `Constructor`-type
- * check in `resolveStaticCall`.
+ * default-method resolution via the MRO walker.
+ *
+ * **Do not reuse this set for constructor-fallback filtering.** Constructors
+ * can only instantiate a narrower subset — see `INSTANTIABLE_CLASS_TYPES`
+ * below. `resolveStaticCall`'s step-5 class-node fallback uses the narrower
+ * set to prevent false `CALLS` edges from constructor-shaped calls to
+ * `Interface`, `Trait`, or `Impl` nodes.
  */
 const CLASS_LIKE_TYPES = new Set<string>([...CLASS_TYPES, 'Impl']);
+
+/**
+ * Type labels that can be the target of a constructor-shaped call when no
+ * explicit `Constructor` symbol is indexed — the "return the type itself as
+ * the call target" fallback set.
+ *
+ * Strict subset of both `CLASS_LIKE_TYPES` and `CONSTRUCTOR_TARGET_TYPES`.
+ * Excludes:
+ *   - `Interface` / `Trait` — not instantiable by definition in any
+ *     supported language.
+ *   - `Impl` — Rust `impl` blocks are method-definition containers, not
+ *     the type itself; the owning `Struct` is the correct target.
+ *   - `Enum` — excluded pending language-specific support with motivating
+ *     test fixtures (matches `CONSTRUCTOR_TARGET_TYPES`).
+ *
+ * Used exclusively by `resolveStaticCall`'s step-5 class-node fallback.
+ * Keep in sync with `CONSTRUCTOR_TARGET_TYPES` (which additionally contains
+ * `'Constructor'` for explicit-constructor-node filtering) when extending.
+ */
+const INSTANTIABLE_CLASS_TYPES = new Set<string>(['Class', 'Struct', 'Record']);
 
 const MAX_EXPORTS_PER_FILE = 500;
 const MAX_TYPE_NAME_LENGTH = 256;
@@ -1991,9 +2017,19 @@ export const resolveStaticCall = (
     return null;
   }
 
-  // 5. No constructor nodes at all — return the class itself if unique
-  if (classCandidates.length === 1) {
-    return toResolveResult(classCandidates[0], typeResolved.tier);
+  // 5. No constructor nodes at all — fall back to the class node itself, but
+  //    ONLY when it is actually instantiable. Interface / Trait / Impl / Enum
+  //    are deliberately excluded via `INSTANTIABLE_CLASS_TYPES` to prevent
+  //    false `CALLS` edges from constructor-shaped calls to non-instantiable
+  //    nodes. This also disambiguates the Rust same-file shadowing case
+  //    (`struct User` + `impl User` both present at same-file tier): the
+  //    Impl is stripped, leaving the Struct as the sole instantiable target.
+  //    Addresses Codex review finding on PR #754.
+  const instantiableCandidates = classCandidates.filter((c) =>
+    INSTANTIABLE_CLASS_TYPES.has(c.type),
+  );
+  if (instantiableCandidates.length === 1) {
+    return toResolveResult(instantiableCandidates[0], typeResolved.tier);
   }
 
   return null;

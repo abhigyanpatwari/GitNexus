@@ -2141,4 +2141,138 @@ describe('resolveStaticCall', () => {
     expect(result).not.toBeNull();
     expect(result!.nodeId).toBe('class:kt:User');
   });
+
+  // -------------------------------------------------------------------------
+  // Instantiability guard (Codex review follow-up, plan 2026-04-09-002):
+  // The step-5 class-node fallback must only return instantiable kinds
+  // (Class / Struct / Record). Interface / Trait / Impl / Enum targets are
+  // null-routed to prevent false CALLS edges to non-instantiable nodes.
+  // -------------------------------------------------------------------------
+
+  it('returns a Struct node when no constructor exists (positive regression guard)', () => {
+    ctx.symbols.add('src/user.rs', 'User', 'struct:User', 'Struct');
+    ctx.importMap.set('src/app.rs', new Set(['src/user.rs']));
+
+    const result = resolveStaticCall('User', 'src/app.rs', ctx);
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('struct:User');
+  });
+
+  it('returns a Record node when no constructor exists (positive regression guard)', () => {
+    ctx.symbols.add('src/User.cs', 'User', 'record:User', 'Record');
+    ctx.importMap.set('src/App.cs', new Set(['src/User.cs']));
+
+    const result = resolveStaticCall('User', 'src/App.cs', ctx);
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('record:User');
+  });
+
+  it('null-routes when the sole candidate is an Interface (Java/C#/TS)', () => {
+    // Constructor-shaped call on an interface name — not legal source, but
+    // the resolver must refuse to emit a CALLS edge to a non-instantiable node.
+    ctx.symbols.add('src/validator.java', 'IValidator', 'iface:IValidator', 'Interface');
+    ctx.importMap.set('src/app.java', new Set(['src/validator.java']));
+
+    const result = resolveStaticCall('IValidator', 'src/app.java', ctx);
+
+    expect(result).toBeNull();
+  });
+
+  it('null-routes when the sole candidate is a Trait (PHP/Rust/Scala)', () => {
+    // PHP `HasTimestamps` trait — not instantiable via constructor syntax.
+    ctx.symbols.add('src/timestamps.php', 'HasTimestamps', 'trait:HasTimestamps', 'Trait');
+    ctx.importMap.set('src/model.php', new Set(['src/timestamps.php']));
+
+    const result = resolveStaticCall('HasTimestamps', 'src/model.php', ctx);
+
+    expect(result).toBeNull();
+  });
+
+  it('null-routes when the sole candidate is a Rust Trait (Display)', () => {
+    ctx.symbols.add('src/fmt.rs', 'Display', 'trait:rs:Display', 'Trait');
+    ctx.importMap.set('src/app.rs', new Set(['src/fmt.rs']));
+
+    const result = resolveStaticCall('Display', 'src/app.rs', ctx);
+
+    expect(result).toBeNull();
+  });
+
+  it('prefers the Struct over the Impl when both share the same name and file (Rust shadowing)', () => {
+    // Rust `impl User { ... }` alongside `struct User { ... }` in the same file.
+    // Same-file tier returns both via lookupExactAll, both pass CLASS_LIKE_TYPES,
+    // but the instantiability filter must strip the Impl so the Struct wins.
+    ctx.symbols.add('src/user.rs', 'User', 'struct:rs:User', 'Struct');
+    ctx.symbols.add('src/user.rs', 'User', 'impl:rs:User', 'Impl');
+
+    const result = resolveStaticCall('User', 'src/user.rs', ctx);
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('struct:rs:User');
+  });
+
+  it('null-routes when the sole candidate is a Rust Impl block (no Struct present)', () => {
+    // Pathological extractor output: only the Impl survives tier resolution.
+    // The instantiability filter must reject it rather than emit a wrong edge.
+    ctx.symbols.add('src/user.rs', 'User', 'impl:rs:User', 'Impl');
+
+    const result = resolveStaticCall('User', 'src/user.rs', ctx);
+
+    expect(result).toBeNull();
+  });
+
+  it('still returns an explicit Constructor even when the owner is an Impl (step-3 preservation)', () => {
+    // Step 3 (lookupMethodByOwner walk) must not be affected by the step-5
+    // tightening — a legitimate Constructor node owned by an Impl in a Rust
+    // extractor still resolves correctly. The Struct is also present so that
+    // step-1's lookupClassByName pre-check succeeds (Impl alone isn't in the
+    // classByName index).
+    ctx.symbols.add('src/user.rs', 'User', 'struct:rs:User', 'Struct');
+    ctx.symbols.add('src/user.rs', 'User', 'impl:rs:User', 'Impl');
+    ctx.symbols.add('src/user.rs', 'User', 'ctor:rs:User', 'Constructor', {
+      returnType: 'User',
+      ownerId: 'impl:rs:User',
+    });
+    ctx.importMap.set('src/app.rs', new Set(['src/user.rs']));
+
+    const result = resolveStaticCall('User', 'src/app.rs', ctx);
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('ctor:rs:User');
+  });
+
+  it('routes through resolveCallTarget and null-routes Interface constructor-shaped calls', () => {
+    ctx.symbols.add('src/validator.java', 'IValidator', 'iface:IValidator', 'Interface');
+    ctx.importMap.set('src/app.java', new Set(['src/validator.java']));
+
+    const result = _resolveCallTargetForTesting(
+      {
+        calledName: 'IValidator',
+        callForm: 'constructor',
+      },
+      'src/app.java',
+      ctx,
+    );
+
+    // Full cascade: S0 → resolveStaticCall → step-5 instantiability filter → null.
+    // If any downstream path silently re-introduces the wrong edge, this fails.
+    expect(result).toBeNull();
+  });
+
+  it('routes through resolveCallTarget and null-routes Trait free-form calls', () => {
+    ctx.symbols.add('src/timestamps.php', 'HasTimestamps', 'trait:HasTimestamps', 'Trait');
+    ctx.importMap.set('src/model.php', new Set(['src/timestamps.php']));
+
+    const result = _resolveCallTargetForTesting(
+      {
+        calledName: 'HasTimestamps',
+        callForm: 'free',
+      },
+      'src/model.php',
+      ctx,
+    );
+
+    expect(result).toBeNull();
+  });
 });
