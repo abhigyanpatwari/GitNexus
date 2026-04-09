@@ -1279,6 +1279,31 @@ const tryOverloadDisambiguation = (
 /** Per-file cache for the widen path's lookupFuzzy calls. Cleared between files. */
 type WidenCache = Map<string, readonly SymbolDefinition[]>;
 
+/** @internal Exported for unit tests of D0 skip conditions (SM-11). Do not use outside tests. */
+export const _resolveCallTargetForTesting = (
+  call: Pick<
+    ExtractedCall,
+    'calledName' | 'argCount' | 'callForm' | 'receiverTypeName' | 'receiverName'
+  >,
+  currentFile: string,
+  ctx: ResolutionContext,
+  opts?: {
+    overloadHints?: OverloadHints;
+    widenCache?: WidenCache;
+    preComputedArgTypes?: (string | undefined)[];
+    heritageMap?: HeritageMap;
+  },
+): ResolveResult | null =>
+  resolveCallTarget(
+    call,
+    currentFile,
+    ctx,
+    opts?.overloadHints,
+    opts?.widenCache,
+    opts?.preComputedArgTypes,
+    opts?.heritageMap,
+  );
+
 const resolveCallTarget = (
   call: Pick<
     ExtractedCall,
@@ -1626,9 +1651,33 @@ const resolveFieldOwnership = (
 
 /**
  * Resolve a method by owner type name using the eagerly-populated methodByOwner index.
- * Returns the SymbolDefinition if an unambiguous method is found, undefined otherwise.
- * Falls through to undefined for: unknown type, no class-like candidates, ambiguous overloads.
- * When heritageMap is provided, falls back to MRO-aware parent chain walking.
+ * Returns `{ def, tier }` when an unambiguous method is found, `undefined` otherwise.
+ *
+ * **Multi-candidate iteration (homonym disambiguation):** when `ctx.resolve(ownerType)`
+ * returns multiple class-like candidates (e.g. two classes named `User` in different
+ * files reachable from the call site), each is probed with `lookupMethodByOwnerWithMRO`.
+ * Results are deduplicated by `nodeId` so that:
+ *
+ *   - homonym classes that both walk up to the SAME ancestor's method collapse to 1 hit
+ *   - aliased re-exports that produce two candidates pointing at the same def collapse too
+ *
+ * After deduplication:
+ *
+ *   - 0 unique matches → `undefined` (owner-scoped path has no answer; D1-D4 fuzzy
+ *     fallback in `resolveCallTarget` may still find something via lookupFuzzy)
+ *   - 1 unique match   → return it
+ *   - ≥2 unique matches → `undefined` (genuine homonym ambiguity; don't silently pick one)
+ *
+ * This absorbs what was previously D4's job inside `resolveCallTarget` — "filter fuzzy
+ * candidates to those whose ownerId is in the receiver type's nodeId set" — into the
+ * owner-scoped path, aligning with the plan's target:
+ *
+ *     `resolveCallTarget` D2 widening → `model.lookupMethodWithMRO(ownerNodeId, name)`
+ *
+ * The returned `tier` reflects how the owner TYPE was resolved (not the method name).
+ * Threaded out here so callers don't need a second `ctx.resolve(ownerType, ...)` call —
+ * this decouples callers from `ctx.resolve`'s per-file caching contract, which SM-16
+ * will restructure when it replaces the `lookupFuzzy` data source.
  */
 const resolveMethodByOwner = (
   receiverTypeName: string,
@@ -1636,35 +1685,31 @@ const resolveMethodByOwner = (
   filePath: string,
   ctx: ResolutionContext,
   heritageMap?: HeritageMap,
-): SymbolDefinition | undefined => {
+): { def: SymbolDefinition; tier: ResolutionTier } | undefined => {
   const typeResolved = ctx.resolve(receiverTypeName, filePath);
   if (!typeResolved) return undefined;
-  const classDef = typeResolved.candidates.find((d) => CLASS_LIKE_TYPES.has(d.type));
-  if (!classDef) return undefined;
 
-  // When HeritageMap is available, delegate to MRO-aware lookup which performs
-  // the direct owner lookup itself before walking ancestors — avoids a double
-  // direct lookup on the hot path.
-  if (heritageMap) {
-    const language = getLanguageFromFilename(filePath);
-    if (language) {
-      return lookupMethodByOwnerWithMRO(
-        classDef.nodeId,
-        methodName,
-        heritageMap,
-        ctx.symbols,
-        language,
-      );
-    }
+  // MRO walking needs a language hint; compute once and reuse for every candidate.
+  // Unknown extension → fall back to plain direct lookup (D1-D4 still runs on miss).
+  const language = heritageMap ? getLanguageFromFilename(filePath) : null;
+  const canWalkMRO = heritageMap != null && language != null;
+
+  // Iterate ALL class-like candidates. Unique hits (by nodeId) land in `matches`:
+  //   matches.size === 0 → owner-scoped resolution found nothing
+  //   matches.size === 1 → unambiguous answer
+  //   matches.size  > 1 → genuine homonym ambiguity — refuse to pick one
+  const matches = new Map<string, SymbolDefinition>();
+  for (const candidate of typeResolved.candidates) {
+    if (!CLASS_LIKE_TYPES.has(candidate.type)) continue;
+    const def = canWalkMRO
+      ? lookupMethodByOwnerWithMRO(candidate.nodeId, methodName, heritageMap, ctx.symbols, language)
+      : ctx.symbols.lookupMethodByOwner(candidate.nodeId, methodName);
+    if (def) matches.set(def.nodeId, def);
   }
 
-  // Fallback when no HeritageMap (or the file extension is unrecognized by
-  // `getLanguageFromFilename`, e.g. a synthetic path or an extension that is
-  // not registered in supported-languages.ts): plain direct lookup with no
-  // ancestor walk. All primary languages register their extensions, so this
-  // branch is only reached for edge cases where the MRO walk would not be
-  // applicable anyway. D1-D4 in resolveCallTarget still runs on D0 miss.
-  return ctx.symbols.lookupMethodByOwner(classDef.nodeId, methodName);
+  if (matches.size !== 1) return undefined;
+  const [def] = matches.values();
+  return { def: def!, tier: typeResolved.tier };
 };
 
 // ---------------------------------------------------------------------------
@@ -1682,6 +1727,21 @@ const resolveMethodByOwner = (
  * {@link resolveCallTarget} delegates here for member calls before falling back
  * to the more expensive fuzzy-widening path (D1-D4).
  *
+ * **SEMANTIC CHANGE (2026-04-09):** The confidence tier now reflects how the
+ * owner TYPE was resolved, not how the method NAME was resolved globally. The
+ * previous D0 fast path in `resolveCallTarget` used `tiered.tier` from
+ * `ctx.resolve(calledName, ...)` — a name-based tier that matched what D1-D4
+ * fuzzy widening would produce. The new tier is owner-type-based, which is
+ * more accurate for owner-scoped resolution (the discriminant IS the class,
+ * not the method name). Downstream consumers that filter CALLS edges by
+ * confidence threshold may see shifted values on otherwise-unchanged code.
+ * See the "returns result with correct confidence tier" tests below for the
+ * locked-in behavior.
+ *
+ * **Performance:** Callers that only need the return type (e.g. `walkMixedChain`)
+ * should call {@link resolveMethodByOwner} directly and use the `.def.returnType`
+ * field instead, to avoid building a throwaway `ResolveResult`.
+ *
  * @param ownerType   - The receiver's type name (e.g. 'User')
  * @param methodName  - The method being called (e.g. 'save')
  * @param currentFile - File path of the call site
@@ -1695,16 +1755,9 @@ export const resolveMemberCall = (
   ctx: ResolutionContext,
   heritageMap?: HeritageMap,
 ): ResolveResult | null => {
-  const methodDef = resolveMethodByOwner(ownerType, methodName, currentFile, ctx, heritageMap);
-  if (!methodDef) return null;
-
-  // Determine confidence tier from how the owner type was resolved.
-  // ctx.resolve is per-file cached so this second call (resolveMethodByOwner
-  // already called it internally) is essentially free.
-  const ownerResolved = ctx.resolve(ownerType, currentFile);
-  const tier = ownerResolved?.tier ?? 'global';
-
-  return toResolveResult(methodDef, tier);
+  const resolved = resolveMethodByOwner(ownerType, methodName, currentFile, ctx, heritageMap);
+  if (!resolved) return null;
+  return toResolveResult(resolved.def, resolved.tier);
 };
 
 // ---------------------------------------------------------------------------
@@ -1896,12 +1949,17 @@ const walkMixedChain = (
         currentType = fieldResolved.typeName;
         continue;
       }
-      // SM-11: delegate to resolveMemberCall for owner-scoped + MRO resolution.
+      // Fast path: O(1) owner-scoped method lookup via methodByOwner index.
       // Note: CALLS edges for intermediate chain steps are NOT emitted here — walkMixedChain
       // only threads types. CALLS edges come from the outer per-call-expression loop in processCalls.
-      const memberResult = resolveMemberCall(currentType, step.name, filePath, ctx, heritageMap);
-      if (memberResult?.returnType) {
-        const fastRetType = extractReturnTypeName(memberResult.returnType);
+      //
+      // We call `resolveMethodByOwner` directly (NOT `resolveMemberCall`) because this is
+      // a hot path — called per chain step per call expression — and we only need the
+      // return type string. Going through `resolveMemberCall` would allocate a throwaway
+      // `ResolveResult` with confidence/reason that we immediately discard.
+      const owned = resolveMethodByOwner(currentType, step.name, filePath, ctx, heritageMap);
+      if (owned?.def.returnType) {
+        const fastRetType = extractReturnTypeName(owned.def.returnType);
         if (fastRetType) {
           currentType = fastRetType;
           continue;
