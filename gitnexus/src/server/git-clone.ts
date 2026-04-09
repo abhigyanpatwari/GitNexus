@@ -55,15 +55,24 @@ export function validateGitUrl(url: string): void {
     throw new Error('Cloning from private/internal addresses is not allowed');
   }
 
+  // Strip IPv6 brackets if present (URL parser behavior varies across Node versions)
+  let normalizedHost = host;
+  if (host.startsWith('[') && host.endsWith(']')) {
+    normalizedHost = host.slice(1, -1);
+  }
+
   // Check if this is an IPv6 address
-  if (isIP(host) === 6) {
-    assertNotPrivateIPv6(host);
+  // Use manual colon detection as fallback since isIP may return 0 for some
+  // normalized IPv6 forms (e.g. ::ffff:7f00:1)
+  const isIPv6 = isIP(normalizedHost) === 6 || normalizedHost.includes(':');
+  if (isIPv6) {
+    assertNotPrivateIPv6(normalizedHost);
     return;
   }
 
   // Check if this is an IPv4 address (including numeric encodings)
-  if (isIP(host) === 4) {
-    assertNotPrivateIPv4(host);
+  if (isIP(normalizedHost) === 4) {
+    assertNotPrivateIPv4(normalizedHost);
     return;
   }
 
