@@ -798,8 +798,19 @@ describe('SymbolTable', () => {
       expect(table.lookupClassByName('Qux')).toEqual([]);
     });
 
+    it('includes Trait in the class set (PHP use, Rust impl, Scala traits)', () => {
+      // Traits are class-like for heritage resolution — they contribute
+      // methods to the using/implementing type's hierarchy. buildHeritageMap
+      // relies on this to resolve `use Trait;` edges in PHP, `impl Trait for
+      // Struct` in Rust, etc. Added as part of PR #744 (SM-11 Codex review
+      // fixes) after the PHP HasTimestamps trait walk gap was discovered.
+      table.add('src/a.rs', 'Writer', 'trait:Writer', 'Trait');
+      const results = table.lookupClassByName('Writer');
+      expect(results).toHaveLength(1);
+      expect(results[0].nodeId).toBe('trait:Writer');
+    });
+
     it('does NOT include other type-like labels outside the allowed class set', () => {
-      table.add('src/a.rs', 'User', 'trait:User', 'Trait');
       table.add('src/a.ts', 'User', 'type:User', 'Type');
       expect(table.lookupClassByName('User')).toEqual([]);
     });

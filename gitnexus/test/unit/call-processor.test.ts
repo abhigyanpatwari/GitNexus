@@ -1716,7 +1716,24 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
     expect(doWorkCalls).toHaveLength(1);
   });
 
-  it('D0 skipped: same scenario still resolves via D1-D4 when heritageMap is undefined', async () => {
+  it('no heritageMap: inherited methods are unresolvable (null-routed, not false-positive)', async () => {
+    // Without a HeritageMap, the resolver cannot know that Parent.parentMethod
+    // belongs to Child's ancestry. The old D1-D4 tail-return would silently
+    // pick the lone fuzzy candidate and emit a CALLS edge — but that was an
+    // accidental match that happened to line up because `parentMethod`
+    // was unique in the global index.
+    //
+    // After the R3 tail-return tightening (PR #744 Codex review), member
+    // calls whose D1-D4 narrowing produces zero file-matched and zero
+    // owner-matched candidates null-route instead of falling through.
+    // The test now asserts the honest answer: without heritage information,
+    // we cannot attribute `c.parentMethod()` to `Parent` and therefore
+    // emit no edge.
+    //
+    // In the real ingestion pipeline, heritageMap is always threaded
+    // through, so this scenario is only reachable in tests that explicitly
+    // omit it. Keeping the test confirms the null-route behavior and
+    // documents the invariant "no heritage → no inherited-method edges".
     const { parentMethodId, appFile, parentFile, childFile } = setupChildParent();
 
     await processCalls(
@@ -1739,13 +1756,14 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
       ],
       createASTCache(),
       ctx,
-      // no heritageMap — D0 fast path must be skipped, D1-D4 must still resolve
+      // no heritageMap — D0 MRO walk is unavailable, D1-D4 receiver filtering
+      // also cannot link c.parentMethod() to Parent, so no edge is emitted.
     );
 
     const parentMethodCalls = graph.relationships.filter(
       (r) => r.type === 'CALLS' && r.targetId === parentMethodId,
     );
-    expect(parentMethodCalls).toHaveLength(1);
+    expect(parentMethodCalls).toHaveLength(0);
   });
 
   it('overloadHints guard: D0 skipped so literal-inferred overload disambiguation picks the right overload', async () => {

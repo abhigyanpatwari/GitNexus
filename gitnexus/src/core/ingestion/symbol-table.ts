@@ -1,6 +1,18 @@
 import type { NodeLabel } from 'gitnexus-shared';
 
-export const CLASS_TYPES = new Set(['Class', 'Struct', 'Interface', 'Enum', 'Record']);
+export const CLASS_TYPES = new Set([
+  'Class',
+  'Struct',
+  'Interface',
+  'Enum',
+  'Record',
+  // Traits are class-like for heritage resolution: PHP `use Trait;`, Rust
+  // `impl Trait for Struct`, and Scala traits all contribute methods to the
+  // hierarchy of their using/implementing type. Including Trait here lets
+  // buildHeritageMap resolve `h.parentName` to a Trait nodeId so the MRO
+  // walker can visit the trait and find its methods.
+  'Trait',
+]);
 
 export interface SymbolDefinition {
   nodeId: string;
@@ -93,7 +105,24 @@ export interface SymbolTable {
    * overloads share the same returnType, undefined when return types differ (ambiguous).
    * Used by walkMixedChain for deterministic cross-class chain resolution.
    */
-  lookupMethodByOwner: (ownerNodeId: string, methodName: string) => SymbolDefinition | undefined;
+  /**
+   * Lookup a method by owner class + name, optionally filtered by arity.
+   *
+   * When `argCount` is provided, overloads whose parameter count doesn't
+   * accommodate the call's argument count are filtered out before the
+   * returnType dedup runs. This lets D0 (`resolveMemberCall`) disambiguate
+   * arity-differing overloads (e.g. C++ `greet()` vs `greet(string)`) that
+   * would otherwise collide on the shared `ownerId + methodName` key.
+   *
+   * Same-arity, same-returnType overloads (e.g. `save(int)` vs `save(String)`,
+   * both returning `void`) still collapse to the first match — callers must
+   * gate D0 on overload concern before invoking this function for that case.
+   */
+  lookupMethodByOwner: (
+    ownerNodeId: string,
+    methodName: string,
+    argCount?: number,
+  ) => SymbolDefinition | undefined;
 
   /**
    * Look up class-like definitions (Class, Struct, Interface, Enum, Record) by name.
@@ -225,9 +254,16 @@ export const createSymbolTable = (): SymbolTable => {
     }
     globalIndex.get(name)!.push(def);
 
-    // C2. Methods and constructors with ownerId go to methodByOwner index
-    // (in addition to globalIndex).
-    if ((type === 'Method' || type === 'Constructor') && metadata?.ownerId) {
+    // C2. Methods, constructors, and ownerId-bound Functions go to
+    // methodByOwner index (in addition to globalIndex).
+    //
+    // Some language extractors emit class methods as `Function` with an
+    // `ownerId` — notably Python (`def method(self):` inside a class body),
+    // Rust trait methods, and Kotlin object/companion methods. Treating
+    // `Function` with ownerId the same as `Method` here makes D0
+    // (`resolveMemberCall`) work uniformly across all supported languages
+    // instead of silently falling through to D1-D4 fuzzy widening.
+    if ((type === 'Method' || type === 'Constructor' || type === 'Function') && metadata?.ownerId) {
       const key = `${metadata.ownerId}\0${name}`;
       const existing = methodByOwner.get(key);
       if (existing) {
@@ -303,18 +339,42 @@ export const createSymbolTable = (): SymbolTable => {
   const lookupMethodByOwner = (
     ownerNodeId: string,
     methodName: string,
+    argCount?: number,
   ): SymbolDefinition | undefined => {
     const defs = methodByOwner.get(`${ownerNodeId}\0${methodName}`);
     if (!defs || defs.length === 0) return undefined;
-    if (defs.length === 1) return defs[0];
-    // Multiple overloads: return first if all share the same defined returnType (safe for chain resolution).
-    // Return undefined if return types differ or are absent (truly ambiguous — can't determine which overload).
-    const firstReturnType = defs[0].returnType;
-    if (firstReturnType === undefined) return undefined;
-    for (let i = 1; i < defs.length; i++) {
-      if (defs[i].returnType !== firstReturnType) return undefined;
+
+    // Arity narrowing: when an argCount is provided and there are multiple
+    // overloads, keep only those whose parameterCount can accommodate the
+    // call. This resolves arity-differing overloads (e.g. C++ `greet()` vs
+    // `greet(string)`) that share the same `ownerId + methodName` key.
+    //
+    // Candidates with `parameterCount === undefined` (extractor didn't
+    // populate the count — typically variadic or unknown) are retained
+    // conservatively so that legitimate variadic matches still resolve.
+    let pool = defs;
+    if (argCount !== undefined && defs.length > 1) {
+      const arityMatched = defs.filter((d) => {
+        if (d.parameterCount === undefined) return true;
+        const min = d.requiredParameterCount ?? d.parameterCount;
+        return argCount >= min && argCount <= d.parameterCount;
+      });
+      // Only adopt the arity-narrowed pool when it found matches; if arity
+      // rules out every candidate, fall back to the unfiltered set so the
+      // caller's fuzzy path still has something to work with.
+      if (arityMatched.length > 0) pool = arityMatched;
     }
-    return defs[0];
+
+    if (pool.length === 1) return pool[0];
+    // Multiple overloads after arity narrowing: return first if all share
+    // the same defined returnType (safe for chain resolution), undefined if
+    // return types differ (truly ambiguous — can't determine which overload).
+    const firstReturnType = pool[0].returnType;
+    if (firstReturnType === undefined) return undefined;
+    for (let i = 1; i < pool.length; i++) {
+      if (pool[i].returnType !== firstReturnType) return undefined;
+    }
+    return pool[0];
   };
 
   const lookupClassByName = (name: string): SymbolDefinition[] => {

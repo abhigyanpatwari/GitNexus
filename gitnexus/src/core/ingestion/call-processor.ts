@@ -1416,15 +1416,31 @@ const resolveCallTarget = (
     //         from scratch via `ctx.resolve`, which ignores that narrowing and
     //         could pick a homonymous class from the wrong file. Fall through to
     //         D1-D4 which respects the alias-filtered candidate pool.
-    const hasActiveModuleAlias =
-      !!call.receiverName && ctx.moduleAliasMap?.get(currentFile)?.has(call.receiverName) === true;
-    if (!overloadHints && !preComputedArgTypes && !hasActiveModuleAlias) {
+    // D0 skip for overload disambiguation: only fires when the name actually
+    // has multiple candidates in the tiered pool. The sequential path sets
+    // `overloadHints` for every call regardless of whether the method is
+    // overloaded — skipping D0 unconditionally would make this fast path
+    // dead code for the sequential pipeline. By gating on
+    // `filteredCandidates.length > 1`, we preserve the original intent
+    // (let D1-D4+E pick the right overload when there are multiple) while
+    // allowing D0 to fire for the common single-candidate case.
+    const hasOverloadConcern =
+      (!!overloadHints || !!preComputedArgTypes) && filteredCandidates.length > 1;
+    // D0 skip for active module alias: only fires when the alias block above
+    // actually narrowed filteredCandidates. In Python, a local variable can
+    // shadow an imported module name (e.g. `from models.c import C; c = C()`
+    // creates both a module alias `c → models/c.py` AND a typed local `c`).
+    // Checking `aliasNarrowed` rather than `ctx.moduleAliasMap.has(receiverName)`
+    // ensures D0 still runs when the method isn't in the aliased module —
+    // which means the receiver is a typed local variable, not a module reference.
+    if (!hasOverloadConcern && !aliasNarrowed) {
       const memberResult = resolveMemberCall(
         call.receiverTypeName,
         call.calledName,
         currentFile,
         ctx,
         heritageMap,
+        call.argCount,
       );
       if (memberResult) return memberResult;
     }
@@ -1473,6 +1489,23 @@ const resolveCallTarget = (
             ? matchCandidatesByArgTypes(overloadPool, preComputedArgTypes)
             : null;
         if (disambiguated) return toResolveResult(disambiguated, tiered.tier);
+        return null;
+      }
+
+      // Zero-match null-route: we committed to receiver narrowing (D1 succeeded)
+      // but both file-based (D3) and owner-based (D4) filters produced zero
+      // matches. The lone candidate in `filteredCandidates` does not belong to
+      // this receiver type — refuse to emit a CALLS edge rather than fall
+      // through to the permissive single-candidate tail return.
+      //
+      // Addresses Codex review finding R3 (PR #744): member calls where
+      // fuzzy fallback picked a globally-matching symbol that has no
+      // relationship to the receiver's class hierarchy were silently
+      // producing false-positive edges. Example: Rust `c.trait_only()` where
+      // `trait_only` is captured as a Function node with no ownerId — it
+      // matches the name but fails both file and owner narrowing, so the
+      // old tail return would pick it incorrectly.
+      if (fileFiltered.length === 0 && ownerFiltered.length === 0) {
         return null;
       }
     }
@@ -1704,6 +1737,7 @@ const resolveMethodByOwner = (
   filePath: string,
   ctx: ResolutionContext,
   heritageMap?: HeritageMap,
+  argCount?: number,
 ): { def: SymbolDefinition; tier: ResolutionTier } | undefined => {
   const typeResolved = ctx.resolve(receiverTypeName, filePath);
   if (!typeResolved) return undefined;
@@ -1722,13 +1756,24 @@ const resolveMethodByOwner = (
   //   firstDef === undefined → owner-scoped resolution found nothing
   //   firstDef && !ambiguous → unambiguous answer
   //   ambiguous              → genuine homonym ambiguity — refuse to pick
+  //
+  // argCount is threaded through so arity-differing overloads
+  // (e.g. C++ `greet()` vs `greet(string)`) are disambiguated inside the
+  // owner-scoped lookup rather than collapsing to an arbitrary first pick.
   let firstDef: SymbolDefinition | undefined;
   let ambiguous = false;
   for (const candidate of typeResolved.candidates) {
     if (!CLASS_LIKE_TYPES.has(candidate.type)) continue;
     const def = canWalkMRO
-      ? lookupMethodByOwnerWithMRO(candidate.nodeId, methodName, heritageMap, ctx.symbols, language)
-      : ctx.symbols.lookupMethodByOwner(candidate.nodeId, methodName);
+      ? lookupMethodByOwnerWithMRO(
+          candidate.nodeId,
+          methodName,
+          heritageMap,
+          ctx.symbols,
+          language,
+          argCount,
+        )
+      : ctx.symbols.lookupMethodByOwner(candidate.nodeId, methodName, argCount);
     if (!def) continue;
     if (!firstDef) {
       firstDef = def;
@@ -1784,8 +1829,16 @@ export const resolveMemberCall = (
   currentFile: string,
   ctx: ResolutionContext,
   heritageMap?: HeritageMap,
+  argCount?: number,
 ): ResolveResult | null => {
-  const resolved = resolveMethodByOwner(ownerType, methodName, currentFile, ctx, heritageMap);
+  const resolved = resolveMethodByOwner(
+    ownerType,
+    methodName,
+    currentFile,
+    ctx,
+    heritageMap,
+    argCount,
+  );
   if (!resolved) return null;
   return toResolveResult(resolved.def, resolved.tier);
 };
@@ -1880,9 +1933,12 @@ export const lookupMethodByOwnerWithMRO = (
   heritageMap: HeritageMap,
   symbols: SymbolTable,
   language: SupportedLanguages,
+  argCount?: number,
 ): SymbolDefinition | undefined => {
-  // Direct lookup first (child override — no walk needed)
-  const direct = symbols.lookupMethodByOwner(ownerNodeId, methodName);
+  // Direct lookup first (child override — no walk needed).
+  // argCount is threaded through so arity-differing overloads on the direct
+  // owner can be disambiguated before the MRO walk starts.
+  const direct = symbols.lookupMethodByOwner(ownerNodeId, methodName, argCount);
   if (direct) return direct;
 
   const strategy = getProvider(language).mroStrategy;
@@ -1909,9 +1965,10 @@ export const lookupMethodByOwnerWithMRO = (
     ancestors = heritageMap.getAncestors(ownerNodeId);
   }
 
-  // Walk ancestors in MRO order — first match wins
+  // Walk ancestors in MRO order — first match wins.
+  // argCount narrows overloaded ancestors the same way as the direct lookup.
   for (const ancestorId of ancestors) {
-    const method = symbols.lookupMethodByOwner(ancestorId, methodName);
+    const method = symbols.lookupMethodByOwner(ancestorId, methodName, argCount);
     if (method) return method;
   }
 

@@ -1859,23 +1859,26 @@ describe('Rust abstract dispatch (Repository trait)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SM-11: Rust Child struct — direct impl method resolution via D0
+// SM-11: Rust Child extends Parent — qualified-syntax MRO
 //
 // Companion integration test for the unit-level Rust qualified-syntax tests
-// in symbol-table.test.ts. Validates end-to-end that Rust direct-impl methods
-// resolve through the owner-scoped D0 path (`resolveMemberCall`).
+// in symbol-table.test.ts. Validates end-to-end that:
 //
-// NOTE on trait-inherited methods: Rust's qualified-syntax MRO strategy in
-// `lookupMethodByOwnerWithMRO` correctly returns null for trait-inherited
-// methods at the unit level. However, in the current pipeline, Rust trait
-// default methods are captured as `Function` nodes (not `Method` with
-// ownerId), so the owner-scoped index does not contain them. This means
-// direct `obj.trait_method()` calls currently fall through to D1-D4 fuzzy
-// widening rather than being correctly null-routed. Rust trait capture as
-// Method-with-ownerId is a Phase 5 (SM-16) fix — out of SM-11 scope.
+//   1. Direct `impl` methods on a struct resolve through the D0 owner-scoped
+//      path (`resolveMemberCall`) — the positive control.
+//
+//   2. Trait-inherited default methods are NOT reachable via direct
+//      `obj.trait_method()` syntax. Rust requires the trait to be in scope
+//      and uses qualified syntax for trait dispatch; the resolver correctly
+//      treats direct member calls as opaque to trait ancestry.
+//
+//      Previously this case emitted a false-positive CALLS edge via the
+//      permissive tail-return in resolveCallTarget — Codex review finding
+//      R3 (PR #744). The tail-return is now null-routed when D1-D4 receiver
+//      filtering produces zero matches on both file and owner dimensions.
 // ---------------------------------------------------------------------------
 
-describe('Rust Child direct-impl method resolution (SM-11)', () => {
+describe('Rust Child extends Parent — qualified-syntax MRO (SM-11)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -1898,5 +1901,22 @@ describe('Rust Child direct-impl method resolution (SM-11)', () => {
         c.target === 'own_method' && c.source === 'run' && c.targetFilePath.includes('child.rs'),
     );
     expect(ownCall).toBeDefined();
+  });
+
+  it('does NOT resolve c.trait_only() to Parent::trait_only via direct member call', () => {
+    // Qualified-syntax MRO: direct member calls on structs do not walk trait
+    // ancestry. `c.trait_only()` must null-route because `trait_only` is
+    // defined on the trait, not on the Child struct.
+    //
+    // The resolveCallTarget tail-return tightening (R3) is what makes this
+    // assertion testable: before the fix, resolveCallTarget would fall
+    // through D1-D4 (zero file matches, zero owner matches) and silently
+    // pick the single fuzzy candidate as a false-positive edge.
+    const calls = getRelationships(result, 'CALLS');
+    const traitCall = calls.find(
+      (c) =>
+        c.target === 'trait_only' && c.source === 'run' && c.targetFilePath.includes('parent.rs'),
+    );
+    expect(traitCall).toBeUndefined();
   });
 });
