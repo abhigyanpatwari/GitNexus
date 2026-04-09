@@ -51,7 +51,7 @@ export interface WithTestLbugDBOptions {
   poolAdapter?: boolean;
   /** Run after all lifecycle phases complete (mocks, dynamic imports, etc). */
   afterSetup?: (handle: IndexedDBHandle) => Promise<void>;
-  /** Timeout for beforeAll in ms (default: 30000). */
+  /** Timeout for beforeAll in ms (default: 120000). */
   timeout?: number;
 }
 
@@ -72,7 +72,9 @@ export function withTestLbugDB(
   options?: WithTestLbugDBOptions,
 ): void {
   const ref: { handle: IndexedDBHandle | undefined } = { handle: undefined };
-  const timeout = options?.timeout ?? 30000;
+  // Default must match vitest.config hookTimeout (120s). KuzuDB pool-adapter
+  // init on Windows CI regularly exceeds 30s due to native resource setup.
+  const timeout = options?.timeout ?? 120_000;
 
   const setup = async () => {
     // Get shared DB path from globalSetup (created once with full schema)
