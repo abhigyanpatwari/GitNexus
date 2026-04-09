@@ -1927,7 +1927,7 @@ describe('resolveStaticCall', () => {
     });
     ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
 
-    const result = resolveStaticCall('User', 'User', 'src/app.ts', ctx);
+    const result = resolveStaticCall('User', 'src/app.ts', ctx);
 
     expect(result).not.toBeNull();
     expect(result!.nodeId).toBe('ctor:User');
@@ -1937,7 +1937,7 @@ describe('resolveStaticCall', () => {
     ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
     ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
 
-    const result = resolveStaticCall('User', 'User', 'src/app.ts', ctx);
+    const result = resolveStaticCall('User', 'src/app.ts', ctx);
 
     expect(result).not.toBeNull();
     expect(result!.nodeId).toBe('class:User');
@@ -1947,13 +1947,13 @@ describe('resolveStaticCall', () => {
     ctx.symbols.add('src/utils.ts', 'helper', 'func:helper', 'Function');
     ctx.importMap.set('src/app.ts', new Set(['src/utils.ts']));
 
-    const result = resolveStaticCall('helper', 'helper', 'src/app.ts', ctx);
+    const result = resolveStaticCall('helper', 'src/app.ts', ctx);
 
     expect(result).toBeNull();
   });
 
   it('returns null when className does not exist', () => {
-    const result = resolveStaticCall('NonExistent', 'NonExistent', 'src/app.ts', ctx);
+    const result = resolveStaticCall('NonExistent', 'src/app.ts', ctx);
 
     expect(result).toBeNull();
   });
@@ -1968,7 +1968,7 @@ describe('resolveStaticCall', () => {
     // Constructor lacks ownerId, so lookupMethodByOwner won't find it.
     // resolveStaticCall detects Constructor nodes and returns null to
     // let filterCallableCandidates handle the Constructor-vs-Class preference.
-    const result = resolveStaticCall('User', 'User', 'src/app.ts', ctx);
+    const result = resolveStaticCall('User', 'src/app.ts', ctx);
 
     expect(result).toBeNull();
   });
@@ -1987,7 +1987,7 @@ describe('resolveStaticCall', () => {
     });
     ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
 
-    const result = resolveStaticCall('User', 'User', 'src/app.ts', ctx, 2);
+    const result = resolveStaticCall('User', 'src/app.ts', ctx, 2);
 
     expect(result).not.toBeNull();
     expect(result!.nodeId).toBe('ctor:User:2');
@@ -1997,7 +1997,7 @@ describe('resolveStaticCall', () => {
     ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
     ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
 
-    const result = resolveStaticCall('User', 'User', 'src/app.ts', ctx);
+    const result = resolveStaticCall('User', 'src/app.ts', ctx);
 
     expect(result).not.toBeNull();
     expect(result!.confidence).toBe(0.9); // import-scoped tier
@@ -2007,7 +2007,7 @@ describe('resolveStaticCall', () => {
   it('returns correct confidence tier for same-file class', () => {
     ctx.symbols.add('src/app.ts', 'User', 'class:User', 'Class');
 
-    const result = resolveStaticCall('User', 'User', 'src/app.ts', ctx);
+    const result = resolveStaticCall('User', 'src/app.ts', ctx);
 
     expect(result).not.toBeNull();
     expect(result!.confidence).toBe(0.95); // same-file tier
@@ -2019,7 +2019,7 @@ describe('resolveStaticCall', () => {
     ctx.symbols.add('src/b.ts', 'User', 'class:b:User', 'Class');
     ctx.importMap.set('src/app.ts', new Set(['src/a.ts', 'src/b.ts']));
 
-    const result = resolveStaticCall('User', 'User', 'src/app.ts', ctx);
+    const result = resolveStaticCall('User', 'src/app.ts', ctx);
 
     // Two classes with same name — ambiguous, should return null
     expect(result).toBeNull();
@@ -2057,5 +2057,88 @@ describe('resolveStaticCall', () => {
 
     expect(result).not.toBeNull();
     expect(result!.nodeId).toBe('class:User');
+  });
+
+  it('reuses the pre-computed tiered result instead of calling ctx.resolve twice', () => {
+    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.symbols.add('src/user.ts', 'User', 'ctor:User', 'Constructor', {
+      returnType: 'User',
+      ownerId: 'class:User',
+    });
+    ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
+
+    // Spy on ctx.resolve to prove the override short-circuits the second lookup.
+    const originalResolve = ctx.resolve.bind(ctx);
+    let resolveCallCount = 0;
+    ctx.resolve = ((name: string, fromFile: string) => {
+      resolveCallCount++;
+      return originalResolve(name, fromFile);
+    }) as typeof ctx.resolve;
+
+    const tieredOverride = originalResolve('User', 'src/app.ts');
+    expect(tieredOverride).not.toBeNull();
+    resolveCallCount = 0; // reset after the setup call
+
+    const result = resolveStaticCall('User', 'src/app.ts', ctx, undefined, tieredOverride!);
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('ctor:User');
+    expect(resolveCallCount).toBe(0); // ctx.resolve must not have been called again
+  });
+
+  it('routes through resolveCallTarget for Java constructor call (new User())', () => {
+    ctx.symbols.add('src/User.java', 'User', 'class:java:User', 'Class');
+    ctx.symbols.add('src/User.java', 'User', 'ctor:java:User', 'Constructor', {
+      returnType: 'User',
+      ownerId: 'class:java:User',
+    });
+    ctx.importMap.set('src/App.java', new Set(['src/User.java']));
+
+    const result = _resolveCallTargetForTesting(
+      {
+        calledName: 'User',
+        callForm: 'constructor',
+      },
+      'src/App.java',
+      ctx,
+    );
+
+    expect(result).not.toBeNull();
+    // Prefers Constructor node over Class node when ownerId is present.
+    expect(result!.nodeId).toBe('ctor:java:User');
+  });
+
+  it('routes through resolveCallTarget for Python free-form constructor (User())', () => {
+    ctx.symbols.add('models/user.py', 'User', 'class:py:User', 'Class');
+    ctx.importMap.set('app.py', new Set(['models/user.py']));
+
+    const result = _resolveCallTargetForTesting(
+      {
+        calledName: 'User',
+        callForm: 'free',
+      },
+      'app.py',
+      ctx,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('class:py:User');
+  });
+
+  it('routes through resolveCallTarget for Kotlin free-form constructor (User())', () => {
+    ctx.symbols.add('src/User.kt', 'User', 'class:kt:User', 'Class');
+    ctx.importMap.set('src/App.kt', new Set(['src/User.kt']));
+
+    const result = _resolveCallTargetForTesting(
+      {
+        calledName: 'User',
+        callForm: 'free',
+      },
+      'src/App.kt',
+      ctx,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('class:kt:User');
   });
 });

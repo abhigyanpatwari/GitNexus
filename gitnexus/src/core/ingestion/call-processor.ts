@@ -1,9 +1,11 @@
 import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
 import type { SymbolDefinition, SymbolTable } from './symbol-table.js';
+import { CLASS_TYPES } from './symbol-table.js';
 import Parser from 'tree-sitter';
 import type { ResolutionContext } from './resolution-context.js';
 import { TIER_CONFIDENCE, type ResolutionTier } from './resolution-context.js';
+import type { TieredCandidates } from './resolution-context.js';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
@@ -53,7 +55,25 @@ import { extractParsedCallSite } from './call-sites/extract-language-call-site.j
 export type ExportedTypeMap = Map<string, Map<string, string>>;
 
 /** Types that represent class-like declarations (used for receiver/owner resolution). */
-const CLASS_LIKE_TYPES = new Set(['Class', 'Struct', 'Interface', 'Enum', 'Record', 'Impl']);
+/**
+ * Type labels treated as class-like receivers by the call resolver.
+ *
+ * Derived from `CLASS_TYPES` (the heritage-index set in symbol-table) plus
+ * `Impl` — Rust `impl` blocks are the definition site of methods for a struct
+ * and must be walkable as receiver-type candidates even though they are not
+ * indexed by `lookupClassByName` (which keys off struct/trait names). Keeping
+ * this set a strict superset of `CLASS_TYPES` guarantees that anything
+ * reachable via `lookupClassByName` also passes this filter, so the two call
+ * paths cannot diverge silently.
+ *
+ * `Interface` is included even though interfaces cannot be directly
+ * instantiated in Java/C#/TypeScript: the resolver still needs to reach
+ * interface nodes for static-method dispatch (`Interface.staticMethod()`) and
+ * default-method resolution via the MRO walker. Constructor-shaped calls that
+ * resolve to an Interface are guarded downstream by the `Constructor`-type
+ * check in `resolveStaticCall`.
+ */
+const CLASS_LIKE_TYPES = new Set<string>([...CLASS_TYPES, 'Impl']);
 
 const MAX_EXPORTS_PER_FILE = 500;
 const MAX_TYPE_NAME_LENGTH = 256;
@@ -1333,25 +1353,32 @@ const resolveCallTarget = (
 
   // S0. Constructor/static fast path (SM-12): O(1) class + constructor lookup
   //     via lookupClassByName + lookupMethodByOwner before falling back to the
-  //     existing filtering + fuzzy-widening path.
+  //     existing filtering + fuzzy-widening path. Falls back to the class node
+  //     itself when no Constructor symbol is indexed for the type.
   //
   //     Handles:
   //     (a) callForm === 'constructor' — explicit `new User()` in Java/TS/C#/etc.
   //     (b) callForm === 'free' with class target — implicit `User()` in Swift/Kotlin
-  if (
-    call.callForm === 'constructor' ||
-    (call.callForm === 'free' &&
-      filteredCandidates.length === 0 &&
-      tiered.candidates.some(
-        (c) => c.type === 'Class' || c.type === 'Struct' || c.type === 'Enum',
-      ))
-  ) {
+  //
+  //     Known gap: `callForm === 'member'` constructor patterns (e.g. Python
+  //     `models.User()` after `import models`) are handled by the existing
+  //     tail fallback at the bottom of this function, not S0. Extending S0
+  //     to cover them would require threading receiver-type resolution
+  //     through the module-alias logic; revisit if it shows up as a hot spot.
+  const freeFormHasClassTarget =
+    call.callForm === 'free' &&
+    filteredCandidates.length === 0 &&
+    tiered.candidates.some((c) => c.type === 'Class' || c.type === 'Struct' || c.type === 'Enum');
+  if (call.callForm === 'constructor' || freeFormHasClassTarget) {
+    // Reuse the pre-computed `tiered` result — resolveStaticCall's class name
+    // is identical to `call.calledName` here, so re-running ctx.resolve would
+    // duplicate the tiered-lookup work performed at the top of this function.
     const staticResult = resolveStaticCall(
-      call.calledName,
       call.calledName,
       currentFile,
       ctx,
       call.argCount,
+      tiered,
     );
     if (staticResult) return staticResult;
   }
@@ -1360,10 +1387,10 @@ const resolveCallTarget = (
   // If free-form filtering found no callable candidates but the symbol resolves to a
   // Class/Struct, retry with constructor form so CONSTRUCTOR_TARGET_TYPES applies.
   if (filteredCandidates.length === 0 && call.callForm === 'free') {
-    const hasTypeTarget = tiered.candidates.some(
-      (c) => c.type === 'Class' || c.type === 'Struct' || c.type === 'Enum',
-    );
-    if (hasTypeTarget) {
+    // `freeFormHasClassTarget` was already computed for the S0 fast path
+    // above under the same `callForm === 'free' && filteredCandidates.length === 0`
+    // precondition. Reuse it to avoid a second `.some()` scan on the same pool.
+    if (freeFormHasClassTarget) {
       filteredCandidates = filterCallableCandidates(
         tiered.candidates,
         call.argCount,
@@ -1890,25 +1917,44 @@ export const resolveMemberCall = (
  *   5. If a unique constructor is found, return it; otherwise return the class itself
  *      when there is exactly one class candidate.
  *
- * @param className   - The class name (e.g. 'User')
- * @param methodName  - The method/constructor name (typically same as className)
+ * @param className   - The class name (e.g. 'User'). Also used as the method
+ *                       name for the `lookupMethodByOwner` scan, because the
+ *                       only constructor-shaped call we handle today is
+ *                       `ClassName(...)` / `new ClassName(...)`. Named
+ *                       constructors like Dart `User.fromJson()` arrive as
+ *                       member calls and route through `resolveMemberCall`,
+ *                       so this function does not yet need a separate
+ *                       `methodName` parameter. Revisit if a language surfaces
+ *                       a static-method-shaped call with a distinct member
+ *                       name.
  * @param currentFile - File path of the call site
  * @param ctx         - Resolution context
  * @param argCount    - Optional argument count for arity filtering
+ * @param tieredOverride - Pre-computed tiered candidates for `className` from
+ *                       an upstream `ctx.resolve` call. When provided, skips
+ *                       the redundant lookup inside this function. Leave
+ *                       unset for direct callers without a prior resolution.
  */
 export const resolveStaticCall = (
   className: string,
-  methodName: string,
   currentFile: string,
   ctx: ResolutionContext,
   argCount?: number,
+  tieredOverride?: TieredCandidates,
 ): ResolveResult | null => {
   // 1. Pre-check: does a class with this name exist at all? (O(1))
+  //    This guards against the expensive `ctx.resolve` walk when the name
+  //    is clearly not class-like (e.g. plain functions). When `tieredOverride`
+  //    is supplied, the caller has already paid for the tiered lookup, so this
+  //    pre-check still prevents the class-candidate filter + lookupMethodByOwner
+  //    loop from running on obviously non-class targets.
   const allClasses = ctx.symbols.lookupClassByName(className);
   if (allClasses.length === 0) return null;
 
-  // 2. Scope via ctx.resolve for import-tier information
-  const typeResolved = ctx.resolve(className, currentFile);
+  // 2. Scope via ctx.resolve for import-tier information. Reuse the caller's
+  //    tiered result when provided — it is computed from the same name and
+  //    file context, so re-running the walk would be a pure waste.
+  const typeResolved = tieredOverride ?? ctx.resolve(className, currentFile);
   if (!typeResolved) return null;
 
   const classCandidates = typeResolved.candidates.filter((c) => CLASS_LIKE_TYPES.has(c.type));
@@ -1923,7 +1969,7 @@ export const resolveStaticCall = (
   let firstDef: SymbolDefinition | undefined;
   let ambiguous = false;
   for (const candidate of classCandidates) {
-    const def = ctx.symbols.lookupMethodByOwner(candidate.nodeId, methodName, argCount);
+    const def = ctx.symbols.lookupMethodByOwner(candidate.nodeId, className, argCount);
     if (!def || def.type !== 'Constructor') continue;
     if (!firstDef) {
       firstDef = def;
