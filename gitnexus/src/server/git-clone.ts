@@ -49,48 +49,103 @@ export function validateGitUrl(url: string): void {
 
   const host = parsed.hostname.toLowerCase();
 
-  // Block well-known internal hostnames
-  if (host === 'localhost' || BLOCKED_HOSTNAMES.has(host)) {
+  // Block known dangerous hostnames (cloud metadata services)
+  const blockedHostnames = ['localhost', 'metadata.google.internal', 'metadata.azure.com'];
+  if (blockedHostnames.includes(host)) {
     throw new Error('Cloning from private/internal addresses is not allowed');
   }
 
-  // IPv6 loopback — URL parser strips brackets, so hostname is "::1" not "[::1]"
-  if (host === '::1') {
+  // Check if this is an IPv6 address
+  if (isIP(host) === 6) {
+    assertNotPrivateIPv6(host);
+    return;
+  }
+
+  // Check if this is an IPv4 address (including numeric encodings)
+  if (isIP(host) === 4) {
+    assertNotPrivateIPv4(host);
+    return;
+  }
+
+  // For non-IP hostnames, check for numeric IP tricks
+  // Decimal encoding: 2130706433 = 127.0.0.1
+  // Hex encoding: 0x7f000001 = 127.0.0.1
+  if (/^\d+$/.test(host) || /^0x[0-9a-f]+$/i.test(host)) {
     throw new Error('Cloning from private/internal addresses is not allowed');
   }
 
-  // IPv6 private ranges: ULA (fc00::/7), link-local (fe80::), IPv4-mapped (::ffff:)
+  // Standard IPv4 regex checks for dotted notation
   if (
-    host.startsWith('fc') ||
-    host.startsWith('fd') ||
-    host.startsWith('fe80') ||
-    host.startsWith('::ffff:')
+    /^127\./.test(host) ||
+    /^10\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^169\.254\./.test(host) ||
+    /^0\./.test(host) ||
+    host === '0.0.0.0' ||
+    /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host) ||
+    /^198\.1[89]\./.test(host)
+  ) {
+    throw new Error('Cloning from private/internal addresses is not allowed');
+  }
+}
+
+function assertNotPrivateIPv6(ip: string): void {
+  // Expand common compressed forms for comparison
+  const lower = ip.toLowerCase();
+
+  // IPv6 loopback
+  if (lower === '::1' || lower === '0:0:0:0:0:0:0:1') {
+    throw new Error('Cloning from private/internal addresses is not allowed');
+  }
+
+  // Unspecified address
+  if (lower === '::' || lower === '0:0:0:0:0:0:0:0') {
+    throw new Error('Cloning from private/internal addresses is not allowed');
+  }
+
+  // IPv6 Unique Local Address (fc00::/7 = fc and fd prefixes)
+  if (lower.startsWith('fc') || lower.startsWith('fd')) {
+    throw new Error('Cloning from private/internal addresses is not allowed');
+  }
+
+  // IPv6 link-local (fe80::/10)
+  if (
+    lower.startsWith('fe80') ||
+    lower.startsWith('fe8') ||
+    lower.startsWith('fe9') ||
+    lower.startsWith('fea') ||
+    lower.startsWith('feb')
   ) {
     throw new Error('Cloning from private/internal addresses is not allowed');
   }
 
-  // IPv4 validation — use net.isIP() to catch decimal/hex encoding bypasses
-  // (e.g. 2130706433, 0x7f000001 both resolve to 127.0.0.1)
-  if (isIP(host) === 4) {
-    const octets = host.split('.').map(Number);
-    const [a, b] = octets;
-    if (
-      a === 127 ||                             // 127.0.0.0/8 loopback
-      a === 10 ||                              // 10.0.0.0/8 private
-      (a === 172 && b >= 16 && b <= 31) ||     // 172.16.0.0/12 private
-      (a === 192 && b === 168) ||              // 192.168.0.0/16 private
-      (a === 169 && b === 254) ||              // 169.254.0.0/16 link-local
-      a === 0 ||                               // 0.0.0.0/8
-      (a === 100 && b >= 64 && b <= 127) ||    // 100.64.0.0/10 CGN (RFC 6598)
-      (a === 198 && (b === 18 || b === 19))    // 198.18.0.0/15 benchmarking
-    ) {
-      throw new Error('Cloning from private/internal addresses is not allowed');
-    }
+  // IPv4-mapped IPv6 (::ffff:x.x.x.x or ::ffff:hex:hex)
+  // Node may normalize ::ffff:127.0.0.1 to ::ffff:7f00:1
+  if (lower.startsWith('::ffff:')) {
+    throw new Error('Cloning from private/internal addresses is not allowed');
   }
 
-  // Reject bare numeric IPs that aren't valid dotted-quad — could be decimal/hex encoding
-  if (/^\d+$/.test(host) || /^0x[0-9a-f]+$/i.test(host)) {
-    throw new Error('Numeric IP encoding is not allowed');
+  // Also catch the expanded form: 0:0:0:0:0:ffff:
+  if (lower.includes(':ffff:')) {
+    throw new Error('Cloning from private/internal addresses is not allowed');
+  }
+}
+
+function assertNotPrivateIPv4(ip: string): void {
+  const parts = ip.split('.').map(Number);
+  const [a, b] = parts;
+  if (
+    a === 127 ||
+    a === 10 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 169 && b === 254) ||
+    a === 0 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 198 && (b === 18 || b === 19))
+  ) {
+    throw new Error('Cloning from private/internal addresses is not allowed');
   }
 }
 
@@ -137,7 +192,7 @@ function runGit(args: string[], cwd?: string): Promise<void> {
         // Prevent git from prompting for credentials (hangs the process)
         GIT_TERMINAL_PROMPT: '0',
         // Ensure no credential helper tries to open a GUI prompt
-        GIT_ASKPASS: '/bin/true',
+        GIT_ASKPASS: process.platform === 'win32' ? 'echo' : '/bin/true',
       },
     });
 

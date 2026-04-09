@@ -50,9 +50,7 @@ describe('git-clone', () => {
     });
 
     it('blocks file:// protocol', () => {
-      expect(() => validateGitUrl('file:///etc/passwd')).toThrow(
-        'Only https:// and http://',
-      );
+      expect(() => validateGitUrl('file:///etc/passwd')).toThrow('Only https:// and http://');
     });
 
     it('blocks IPv4 loopback', () => {
@@ -80,9 +78,7 @@ describe('git-clone', () => {
       expect(() => validateGitUrl('http://metadata.google.internal/repo')).toThrow(
         'private/internal',
       );
-      expect(() => validateGitUrl('http://metadata.azure.com/repo')).toThrow(
-        'private/internal',
-      );
+      expect(() => validateGitUrl('http://metadata.azure.com/repo')).toThrow('private/internal');
     });
 
     it('blocks IPv6 ULA (fc/fd)', () => {
@@ -112,6 +108,18 @@ describe('git-clone', () => {
     it('blocks benchmarking range (198.18.0.0/15)', () => {
       expect(() => validateGitUrl('http://198.18.0.1/repo.git')).toThrow('private/internal');
       expect(() => validateGitUrl('http://198.19.255.255/repo.git')).toThrow('private/internal');
+    });
+
+    it('blocks numeric decimal IP encoding', () => {
+      expect(() => validateGitUrl('http://2130706433/repo.git')).toThrow('private/internal');
+    });
+
+    it('blocks hex IP encoding', () => {
+      expect(() => validateGitUrl('http://0x7f000001/repo.git')).toThrow('private/internal');
+    });
+
+    it('blocks 0.0.0.0', () => {
+      expect(() => validateGitUrl('http://0.0.0.0/repo.git')).toThrow('private/internal');
     });
   });
 });

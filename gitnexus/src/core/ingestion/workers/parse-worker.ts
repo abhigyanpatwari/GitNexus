@@ -378,12 +378,9 @@ function findEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
   let current = node.parent;
   while (current) {
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
-      // Ruby singleton_class (class << self) has no name field — walk up to
-      // the enclosing class/module so the caller gets a node with a findable name.
-      if (current.type === 'singleton_class') {
-        current = current.parent;
-        continue;
-      }
+      // Return singleton_class directly so the method extractor sees it as
+      // the owner node and correctly marks methods as static. Name resolution
+      // for qualified names is handled separately by findEnclosingClassInfo.
       return current;
     }
     current = current.parent;
@@ -840,6 +837,23 @@ const EXPRESS_ROUTE_METHODS = new Set([
 // the express_route handler as route definitions, not consumers. The fetch() global
 // function is captured separately by the route.fetch query.
 const HTTP_CLIENT_ONLY_METHODS = new Set(['head', 'options', 'request', 'ajax']);
+
+// Known HTTP client receivers u2014 skip these, they're API consumers not routes
+const HTTP_CLIENT_RECEIVERS = new Set([
+  'axios',
+  'request',
+  'fetch',
+  'http',
+  'https',
+  'got',
+  'ky',
+  'superagent',
+  'needle',
+  'undici',
+  'apiclient',
+  'client',
+  'httpclient',
+]);
 
 // Decorator names that indicate HTTP route handlers (NestJS, Flask, FastAPI, Spring)
 const ROUTE_DECORATOR_NAMES = new Set([
@@ -1576,12 +1590,6 @@ const processFileGroup = (
           const funcNode = callNode.childForFieldName?.('function') ?? callNode.children?.[0];
           const receiverNode = funcNode?.childForFieldName?.('object') ?? funcNode?.children?.[0];
           const receiverText = receiverNode?.text?.toLowerCase() ?? '';
-
-          // Known HTTP client receivers u2014 skip these, they're API consumers not routes
-          const HTTP_CLIENT_RECEIVERS = new Set([
-            'axios', 'request', 'fetch', 'http', 'https', 'got', 'ky',
-            'superagent', 'needle', 'undici', 'apiclient', 'client', 'httpclient',
-          ]);
 
           if (HTTP_CLIENT_RECEIVERS.has(receiverText)) {
             // This is an HTTP client call, not a route definition u2014 skip it

@@ -240,13 +240,9 @@ function seqFindEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
   let current = node.parent;
   while (current) {
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
-      // Ruby singleton_class (class << self) has no name field u2014 skip it and
-      // continue walking up to find the actual class/module container.
-      // This matches the behavior in parse-worker.ts findEnclosingClassNode().
-      if (current.type === 'singleton_class') {
-        current = current.parent;
-        continue;
-      }
+      // Return singleton_class directly so the method extractor sees it as
+      // the owner node and correctly marks methods as static. Name resolution
+      // for qualified names is handled separately by findEnclosingClassInfo.
       return current;
     }
     current = current.parent;

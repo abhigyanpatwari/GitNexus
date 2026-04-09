@@ -452,10 +452,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // Handle PNA preflight: Chromium sends Access-Control-Request-Private-Network
   // on OPTIONS requests and expects the allow header in the response.
+  // Note: the actual Allow-Private-Network header is already set by the global
+  // middleware above, so we just need to call next() here.
   app.options('*', (_req, res, next) => {
-    if (_req.headers['access-control-request-private-network'] === 'true') {
-      res.setHeader('Access-Control-Allow-Private-Network', 'true');
-    }
     next();
   });
 
