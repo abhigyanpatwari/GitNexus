@@ -2275,4 +2275,57 @@ describe('resolveStaticCall', () => {
 
     expect(result).toBeNull();
   });
+
+  it('routes Record free-form constructor call through S0 (C# record / Kotlin data class)', () => {
+    // Verifies that `freeFormHasClassTarget` triggers S0 for Record candidates.
+    // Before the alignment fix, `Record` was absent from the trigger `.some()`,
+    // so S0 was bypassed and Record free-form calls fell through to the
+    // constructor-form retry path. This test would have silently passed with
+    // the old (wasteful) code path — with the fix, S0 resolves it directly.
+    ctx.symbols.add('src/User.cs', 'User', 'record:cs:User', 'Record');
+    ctx.importMap.set('src/App.cs', new Set(['src/User.cs']));
+
+    const result = _resolveCallTargetForTesting(
+      {
+        calledName: 'User',
+        callForm: 'free',
+      },
+      'src/App.cs',
+      ctx,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('record:cs:User');
+  });
+
+  it('threads argCount through resolveCallTarget → S0 → resolveStaticCall for arity disambiguation', () => {
+    // Regression guard: if call.argCount were ever dropped at the S0 call
+    // site, the 2-arg constructor would resolve to the 0-arg overload (or
+    // return null via ambiguity). This test fails in either case.
+    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.symbols.add('src/user.ts', 'User', 'ctor:User:0', 'Constructor', {
+      parameterCount: 0,
+      returnType: 'User',
+      ownerId: 'class:User',
+    });
+    ctx.symbols.add('src/user.ts', 'User', 'ctor:User:2', 'Constructor', {
+      parameterCount: 2,
+      returnType: 'User',
+      ownerId: 'class:User',
+    });
+    ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
+
+    const result = _resolveCallTargetForTesting(
+      {
+        calledName: 'User',
+        callForm: 'constructor',
+        argCount: 2,
+      },
+      'src/app.ts',
+      ctx,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.nodeId).toBe('ctor:User:2');
+  });
 });
