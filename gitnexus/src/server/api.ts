@@ -106,6 +106,104 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
   return false;
 };
 
+type GraphStreamRecord =
+  | { type: 'node'; data: GraphNode }
+  | { type: 'relationship'; data: GraphRelationship }
+  | { type: 'error'; error: string };
+
+export class ClientDisconnectedError extends Error {
+  constructor() {
+    super('Client disconnected during graph stream');
+    this.name = 'ClientDisconnectedError';
+  }
+}
+
+export const isIgnorableGraphQueryError = (err: unknown): boolean => {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    message.includes('does not exist') ||
+    message.includes('not found') ||
+    message.includes('No table named')
+  );
+};
+
+const ensureStreamIsWritable = (
+  res: express.Response,
+  signal?: AbortSignal,
+): void => {
+  if (signal?.aborted || res.destroyed || res.writableEnded) {
+    throw new ClientDisconnectedError();
+  }
+};
+
+const waitForDrain = async (
+  res: express.Response,
+  signal?: AbortSignal,
+): Promise<void> => {
+  ensureStreamIsWritable(res, signal);
+
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      res.off('drain', onDrain);
+      res.off('close', onClose);
+      signal?.removeEventListener('abort', onAbort);
+    };
+
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new ClientDisconnectedError());
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(new ClientDisconnectedError());
+    };
+
+    res.once('drain', onDrain);
+    res.once('close', onClose);
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    if (signal?.aborted || res.destroyed || res.writableEnded) {
+      onAbort();
+    }
+  });
+
+  ensureStreamIsWritable(res, signal);
+};
+
+const isClientDisconnectWriteError = (err: unknown): boolean => {
+  if (!(err instanceof Error)) return false;
+  return (
+    (err as NodeJS.ErrnoException).code === 'ERR_STREAM_DESTROYED' ||
+    (err as NodeJS.ErrnoException).code === 'EPIPE' ||
+    (err as NodeJS.ErrnoException).code === 'ECONNRESET' ||
+    err.message.includes('write after end')
+  );
+};
+
+export const writeNdjsonRecord = async (
+  res: express.Response,
+  record: GraphStreamRecord,
+  signal?: AbortSignal,
+): Promise<void> => {
+  ensureStreamIsWritable(res, signal);
+
+  try {
+    const canContinue = res.write(JSON.stringify(record) + '\n');
+    if (!canContinue) {
+      await waitForDrain(res, signal);
+    }
+  } catch (err) {
+    if (isClientDisconnectWriteError(err)) {
+      throw new ClientDisconnectedError();
+    }
+    throw err;
+  }
+};
+
 const buildGraph = async (
   includeContent = false,
 ): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
@@ -116,8 +214,10 @@ const buildGraph = async (
       for (const row of rows) {
         nodes.push(mapGraphNodeRow(table, row, includeContent));
       }
-    } catch {
-      // ignore empty tables
+    } catch (err) {
+      if (!isIgnorableGraphQueryError(err)) {
+        throw err;
+      }
     }
   }
 
@@ -184,31 +284,38 @@ const mapGraphRelationshipRow = (row: any): GraphRelationship => ({
   step: row.step,
 });
 
-const streamGraphNdjson = async (
+export const streamGraphNdjson = async (
   res: express.Response,
   includeContent = false,
+  signal?: AbortSignal,
 ): Promise<void> => {
   for (const table of NODE_TABLES) {
     try {
       await streamQuery(getNodeQuery(table, includeContent), async (row) => {
-        res.write(
-          JSON.stringify({
+        await writeNdjsonRecord(
+          res,
+          {
             type: 'node',
             data: mapGraphNodeRow(table, row, includeContent),
-          }) + '\n',
+          },
+          signal,
         );
       });
-    } catch {
-      // ignore empty tables
+    } catch (err) {
+      if (!isIgnorableGraphQueryError(err)) {
+        throw err;
+      }
     }
   }
 
   await streamQuery(GRAPH_RELATIONSHIP_QUERY, async (row) => {
-    res.write(
-      JSON.stringify({
+    await writeNdjsonRecord(
+      res,
+      {
         type: 'relationship',
         data: mapGraphRelationshipRow(row),
-      }) + '\n',
+      },
+      signal,
     );
   });
 };
@@ -506,17 +613,46 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const stream = req.query.stream === 'true';
 
       if (stream) {
+        const abortController = new AbortController();
+        let responseFinished = false;
+        const markFinished = () => {
+          responseFinished = true;
+        };
+        const abortStreaming = () => {
+          if (!responseFinished) {
+            abortController.abort();
+          }
+        };
+
         res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
         res.setHeader('Cache-Control', 'no-cache');
         res.flushHeaders();
-        await withLbugDb(lbugPath, async () => streamGraphNdjson(res, includeContent));
-        res.end();
+
+        req.once('aborted', abortStreaming);
+        res.once('finish', markFinished);
+        res.once('close', abortStreaming);
+
+        try {
+          await withLbugDb(lbugPath, async () =>
+            streamGraphNdjson(res, includeContent, abortController.signal),
+          );
+          if (!abortController.signal.aborted && !res.writableEnded) {
+            res.end();
+          }
+        } finally {
+          req.off('aborted', abortStreaming);
+          res.off('finish', markFinished);
+          res.off('close', abortStreaming);
+        }
         return;
       }
 
       const graph = await withLbugDb(lbugPath, async () => buildGraph(includeContent));
       res.json(graph);
     } catch (err: any) {
+      if (err instanceof ClientDisconnectedError) {
+        return;
+      }
       const message = err.message || 'Failed to build graph';
       if (res.headersSent) {
         try {
