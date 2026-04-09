@@ -379,6 +379,146 @@ export class AuthController {
       expect(providers[0].contractId).toContain('Login');
       expect(providers[0].confidence).toBe(0.8);
     });
+
+    it('test_extract_ts_grpc_client_decorator_and_getService_returns_consumer', async () => {
+      writeFile(
+        'proto/auth.proto',
+        `syntax = "proto3";
+package auth.v1;
+service AuthService {
+  rpc Login (LoginRequest) returns (LoginResponse);
+}`,
+      );
+      writeFile(
+        'src/auth.client.ts',
+        `import { ClientGrpc, GrpcClient } from '@nestjs/microservices';
+
+export class AuthGateway {
+  @GrpcClient('AUTH_PACKAGE')
+  private readonly client!: ClientGrpc;
+
+  onModuleInit(): void {
+    this.client.getService<AuthService>('AuthService');
+  }
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(1);
+      expect(consumers[0].contractId).toBe('grpc::auth.v1.AuthService/*');
+    });
+
+    it('test_extract_ts_getService_without_decorator_returns_consumer', async () => {
+      writeFile(
+        'proto/auth.proto',
+        `syntax = "proto3";
+package auth.v1;
+service AuthService {
+  rpc Login (LoginRequest) returns (LoginResponse);
+}`,
+      );
+      writeFile(
+        'src/auth.client.ts',
+        `import type { ClientGrpc } from '@nestjs/microservices';
+
+export function createAuthClient(client: ClientGrpc) {
+  return client.getService<AuthService>('AuthService');
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(1);
+      expect(consumers[0].contractId).toBe('grpc::auth.v1.AuthService/*');
+    });
+
+    it('test_extract_ts_generated_client_constructor_returns_consumer', async () => {
+      writeFile(
+        'proto/auth.proto',
+        `syntax = "proto3";
+package auth.v1;
+service AuthService {
+  rpc Login (LoginRequest) returns (LoginResponse);
+}`,
+      );
+      writeFile(
+        'src/auth.client.ts',
+        `import { credentials } from '@grpc/grpc-js';
+import { AuthServiceClient } from './generated/auth';
+
+export const authClient = new AuthServiceClient('localhost:50051', credentials.createInsecure());`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(1);
+      expect(consumers[0].contractId).toBe('grpc::auth.v1.AuthService/*');
+    });
+
+    it('test_extract_ts_loadPackageDefinition_constructor_returns_consumer', async () => {
+      writeFile(
+        'proto/auth.proto',
+        `syntax = "proto3";
+package auth.v1;
+service AuthService {
+  rpc Login (LoginRequest) returns (LoginResponse);
+}`,
+      );
+      writeFile(
+        'src/auth.client.ts',
+        `import * as grpc from '@grpc/grpc-js';
+import * as protoLoader from '@grpc/proto-loader';
+
+const definition = protoLoader.loadSync('proto/auth.proto');
+const authProto = grpc.loadPackageDefinition(definition) as any;
+export const authClient = new authProto.auth.v1.AuthService(
+  'localhost:50051',
+  grpc.credentials.createInsecure(),
+);`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(1);
+      expect(consumers[0].contractId).toBe('grpc::auth.v1.AuthService/*');
+    });
+
+    it('test_extract_ts_duplicate_consumer_patterns_in_one_file_dedupes_deterministically', async () => {
+      writeFile(
+        'proto/auth.proto',
+        `syntax = "proto3";
+package auth.v1;
+service AuthService {
+  rpc Login (LoginRequest) returns (LoginResponse);
+}`,
+      );
+      writeFile(
+        'src/auth.client.ts',
+        `import * as grpc from '@grpc/grpc-js';
+import type { ClientGrpc } from '@nestjs/microservices';
+import { AuthServiceClient } from './generated/auth';
+
+export class AuthGateway {
+  constructor(private readonly client: ClientGrpc) {}
+
+  connect() {
+    this.client.getService<AuthService>('AuthService');
+    return new AuthServiceClient('localhost:50051', grpc.credentials.createInsecure());
+  }
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(1);
+      expect(consumers[0].contractId).toBe('grpc::auth.v1.AuthService/*');
+    });
   });
 
   describe('edge cases', () => {
@@ -459,6 +599,25 @@ service Foo { rpc Bar (Req) returns (Res); }`;
     const map = await buildProtoMap(tmpDir);
     expect(map.get('Svc')).toHaveLength(2);
   });
+
+  it('test_buildProtoMap_imported_package_is_inherited_for_split_service_definition', async () => {
+    await fsp.mkdir(path.join(tmpDir, 'proto', 'shared'), { recursive: true });
+    await fsp.mkdir(path.join(tmpDir, 'proto', 'services'), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, 'proto', 'shared', 'package.proto'),
+      'package auth.v1;\nmessage LoginRequest {}',
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, 'proto', 'services', 'auth.proto'),
+      'import "../shared/package.proto";\nservice AuthService { rpc Login (LoginRequest) returns (LoginRequest); }',
+    );
+
+    const map = await buildProtoMap(tmpDir);
+    const entries = map.get('AuthService')!;
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0].package).toBe('auth.v1');
+  });
 });
 
 describe('resolveProtoConflict', () => {
@@ -481,6 +640,15 @@ describe('resolveProtoConflict', () => {
     ];
     const result = resolveProtoConflict('Svc', 'src/server.go', candidates);
     expect(result?.package).toBe('close');
+  });
+
+  it('test_centralized_proto_layout_prefers_shared_path_segments_over_prefix_only', () => {
+    const candidates = [
+      makeInfo('billing', 'proto/services/billing/svc.proto'),
+      makeInfo('auth', 'proto/services/auth/svc.proto'),
+    ];
+    const result = resolveProtoConflict('Svc', 'services/auth/src/server.ts', candidates);
+    expect(result?.package).toBe('auth');
   });
 
   it('test_no_candidates_returns_null', () => {
@@ -635,5 +803,30 @@ stub = UserServiceStub(channel)`,
     expect(tsProvider).toBeDefined();
     expect(tsProvider!.contractId).toBe('grpc::com.example.UserService/GetUser');
     expect(tsProvider!.confidence).toBe(0.8);
+  });
+
+  it('test_proto_provider_inherits_package_from_imported_definition', async () => {
+    await fsp.mkdir(path.join(tmpDir, 'proto', 'shared'), { recursive: true });
+    await fsp.mkdir(path.join(tmpDir, 'proto', 'services'), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, 'proto', 'shared', 'package.proto'),
+      'package auth.v1;\nmessage LoginRequest {}',
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, 'proto', 'services', 'auth.proto'),
+      `syntax = "proto3";
+import "../shared/package.proto";
+service AuthService {
+  rpc Login (LoginRequest) returns (LoginRequest);
+}`,
+    );
+
+    const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+
+    const protoProvider = contracts.find(
+      (c) => c.symbolRef.filePath === 'proto/services/auth.proto',
+    );
+    expect(protoProvider).toBeDefined();
+    expect(protoProvider!.contractId).toBe('grpc::auth.v1.AuthService/Login');
   });
 });

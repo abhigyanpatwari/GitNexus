@@ -363,10 +363,12 @@ Note: `responseKeys`/`accessedKeys` from the original design require response sh
 `.proto` files are not a supported language in GitNexus — no symbols are extracted during indexing. This extractor is **source-scan only**.
 
 - Scan for `.proto` files in repo directory
-- Parse `service` and `rpc` declarations with regex
-- For consumers: scan source files for generated stub/client class usage patterns
+- Parse `service` and `rpc` declarations with regex, inheriting package context through imported proto files when definitions are split
+- For consumers: scan source files for generated stub/client class usage patterns (`@GrpcClient`, `ClientGrpc.getService(...)`, `new XxxServiceClient(...)`, `grpc.loadPackageDefinition(...)`-based construction)
 
 In MVP, `canExtract` returns `true` only when `.proto` files exist in the repo's file tree. Extraction confidence is lower (0.7) due to regex-only parsing.
+
+Explicitly unsupported in this extractor today: `C#`, `Ruby`, and `Rust` gRPC client/server ecosystems. Those require follow-up extractor coverage and should not be treated as implicitly supported by the TypeScript/Go/Java/Python patterns above.
 
 **Contract ID:** `grpc::{package}.{Service}/{Method}`
 

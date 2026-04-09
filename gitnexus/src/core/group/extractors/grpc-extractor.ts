@@ -82,21 +82,100 @@ export interface ProtoServiceInfo {
   protoPath: string;
 }
 
-export async function buildProtoMap(repoPath: string): Promise<Map<string, ProtoServiceInfo[]>> {
-  const map = new Map<string, ProtoServiceInfo[]>();
+function normalizeProtoPath(rel: string): string {
+  return rel.replace(/\\/g, '/');
+}
+
+function extractProtoImports(content: string): string[] {
+  const imports: string[] = [];
+  const re = /^\s*import\s+"([^"]+)"\s*;/gm;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(content)) !== null) {
+    imports.push(match[1]);
+  }
+  return imports;
+}
+
+function longestSharedSegmentRun(aPath: string, bPath: string): number {
+  const a = aPath.split('/').filter(Boolean);
+  const b = bPath.split('/').filter(Boolean);
+  let best = 0;
+
+  for (let i = 0; i < a.length; i++) {
+    for (let j = 0; j < b.length; j++) {
+      let run = 0;
+      while (a[i + run] && b[j + run] && a[i + run] === b[j + run]) {
+        run++;
+      }
+      if (run > best) best = run;
+    }
+  }
+
+  return best;
+}
+
+async function buildProtoContext(repoPath: string): Promise<{
+  packagesByProto: Map<string, string>;
+  servicesByName: Map<string, ProtoServiceInfo[]>;
+}> {
+  const servicesByName = new Map<string, ProtoServiceInfo[]>();
   const protoFiles = await glob('**/*.proto', {
     cwd: repoPath,
     absolute: false,
     nodir: true,
     ignore: ['**/node_modules/**', '**/.git/**', '**/vendor/**'],
   });
+  const contents = new Map<string, string>();
 
   for (const rel of protoFiles) {
     const content = readSafe(repoPath, rel);
     if (!content) continue;
+    contents.set(normalizeProtoPath(rel), content);
+  }
 
+  const packagesByProto = new Map<string, string>();
+
+  const resolvePackage = (protoPath: string, seen = new Set<string>()): string => {
+    if (packagesByProto.has(protoPath)) return packagesByProto.get(protoPath) ?? '';
+    if (seen.has(protoPath)) return '';
+
+    const content = contents.get(protoPath);
+    if (!content) return '';
+
+    seen.add(protoPath);
     const pkgMatch = content.match(/^\s*package\s+([\w.]+)\s*;/m);
-    const pkg = pkgMatch?.[1] ?? '';
+    if (pkgMatch?.[1]) {
+      packagesByProto.set(protoPath, pkgMatch[1]);
+      return pkgMatch[1];
+    }
+
+    for (const importPath of extractProtoImports(content)) {
+      const normalizedImport = normalizeProtoPath(importPath);
+      const candidates = [
+        normalizeProtoPath(
+          path.posix.normalize(path.posix.join(path.posix.dirname(protoPath), normalizedImport)),
+        ),
+        normalizedImport,
+      ];
+      for (const candidate of candidates) {
+        if (!contents.has(candidate)) continue;
+        const inheritedPackage = resolvePackage(candidate, seen);
+        if (inheritedPackage) {
+          packagesByProto.set(protoPath, inheritedPackage);
+          return inheritedPackage;
+        }
+      }
+    }
+
+    packagesByProto.set(protoPath, '');
+    return '';
+  };
+
+  for (const rel of protoFiles) {
+    const normalizedRel = normalizeProtoPath(rel);
+    const content = contents.get(normalizedRel);
+    if (!content) continue;
+    const pkg = resolvePackage(normalizedRel);
 
     const serviceBlocks = extractServiceBlocks(content);
     for (const block of serviceBlocks) {
@@ -110,14 +189,20 @@ export async function buildProtoMap(repoPath: string): Promise<Map<string, Proto
         package: pkg,
         serviceName: block.name,
         methods,
-        protoPath: rel.replace(/\\/g, '/'),
+        protoPath: normalizedRel,
       };
-      const existing = map.get(block.name) ?? [];
+      const existing = servicesByName.get(block.name) ?? [];
       existing.push(info);
-      map.set(block.name, existing);
+      servicesByName.set(block.name, existing);
     }
   }
-  return map;
+
+  return { packagesByProto, servicesByName };
+}
+
+export async function buildProtoMap(repoPath: string): Promise<Map<string, ProtoServiceInfo[]>> {
+  const { servicesByName } = await buildProtoContext(repoPath);
+  return servicesByName;
 }
 
 export function resolveProtoConflict(
@@ -128,20 +213,14 @@ export function resolveProtoConflict(
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0];
 
-  // Directory proximity heuristic
-  const sourceDir = path.dirname(sourceFilePath).replace(/\\/g, '/');
+  const sourceDir = normalizeProtoPath(path.dirname(sourceFilePath));
   let best = candidates[0];
-  let bestScore = 0;
+  let bestScore = -1;
   for (const c of candidates) {
-    const protoDir = path.dirname(c.protoPath).replace(/\\/g, '/');
-    let shared = 0;
-    const min = Math.min(sourceDir.length, protoDir.length);
-    for (let i = 0; i < min; i++) {
-      if (sourceDir[i] === protoDir[i]) shared++;
-      else break;
-    }
-    if (shared > bestScore) {
-      bestScore = shared;
+    const protoDir = normalizeProtoPath(path.dirname(c.protoPath));
+    const sharedRun = longestSharedSegmentRun(sourceDir, protoDir);
+    if (sharedRun > bestScore) {
+      bestScore = sharedRun;
       best = c;
     }
   }
@@ -166,6 +245,7 @@ export class GrpcExtractor implements ContractExtractor {
     _repo: RepoHandle,
   ): Promise<ExtractedContract[]> {
     const out: ExtractedContract[] = [];
+    const protoContext = await buildProtoContext(repoPath);
 
     // Proto files — definitive provider source
     const protoFiles = await glob('**/*.proto', {
@@ -175,11 +255,17 @@ export class GrpcExtractor implements ContractExtractor {
     });
     for (const rel of protoFiles) {
       const content = readSafe(repoPath, rel);
-      if (content) out.push(...this.parseProtoFile(content, rel));
+      if (content) {
+        out.push(
+          ...this.parseProtoFile(
+            content,
+            rel,
+            protoContext.packagesByProto.get(normalizeProtoPath(rel)) ?? '',
+          ),
+        );
+      }
     }
-
-    // Build proto map for source scanner resolution
-    const protoMap = await buildProtoMap(repoPath);
+    const protoMap = protoContext.servicesByName;
 
     // Source files — server/client detection
     const sourceFiles = await glob('**/*.{go,java,py,ts,tsx,js,jsx}', {
@@ -203,17 +289,15 @@ export class GrpcExtractor implements ContractExtractor {
         out.push(...this.scanPythonConsumers(content, rel, protoMap));
       } else if (['.ts', '.tsx', '.js', '.jsx'].includes(ext)) {
         out.push(...this.scanTsProviders(content, rel, protoMap));
+        out.push(...this.scanTsConsumers(content, rel, protoMap));
       }
     }
 
     return this.dedupe(out);
   }
 
-  private parseProtoFile(content: string, filePath: string): ExtractedContract[] {
+  private parseProtoFile(content: string, filePath: string, pkg: string): ExtractedContract[] {
     const out: ExtractedContract[] = [];
-
-    const pkgMatch = content.match(/^package\s+([\w.]+)\s*;/m);
-    const pkg = pkgMatch ? pkgMatch[1] : '';
 
     for (const { name: serviceName, body } of extractServiceBlocks(content)) {
       const rpcRe = /rpc\s+(\w+)\s*\(/g;
@@ -484,15 +568,68 @@ export class GrpcExtractor implements ContractExtractor {
     return out;
   }
 
-  private dedupe(items: ExtractedContract[]): ExtractedContract[] {
-    const seen = new Set<string>();
+  private scanTsConsumers(
+    content: string,
+    filePath: string,
+    protoMap: Map<string, ProtoServiceInfo[]>,
+  ): ExtractedContract[] {
     const out: ExtractedContract[] = [];
+    const pushConsumer = (
+      serviceName: string,
+      symbolName: string,
+      source: string,
+      confidenceWithProto = 0.75,
+      confidenceWithoutProto = 0.55,
+    ): void => {
+      const candidates = protoMap.get(serviceName);
+      const proto = resolveProtoConflict(serviceName, filePath, candidates ?? []);
+      const cid = proto
+        ? serviceContractId(proto.package, proto.serviceName)
+        : serviceOnlyContractId(serviceName);
+      const conf = proto ? confidenceWithProto : confidenceWithoutProto;
+      out.push(
+        makeContract(cid, 'consumer', filePath, symbolName, conf, {
+          service: serviceName,
+          source,
+        }),
+      );
+    };
+
+    const getServiceRe = /\.getService(?:<[^>]+>)?\s*\(\s*['"](\w+)['"]\s*\)/g;
+    let match: RegExpExecArray | null;
+    while ((match = getServiceRe.exec(content)) !== null) {
+      pushConsumer(match[1], `${match[1]}Client`, 'ts_client_grpc_get_service');
+    }
+
+    const clientCtorRe = /new\s+(\w+)Client\s*\(/g;
+    while ((match = clientCtorRe.exec(content)) !== null) {
+      pushConsumer(match[1], `${match[1]}Client`, 'ts_generated_client');
+    }
+
+    if (content.includes('loadPackageDefinition')) {
+      const packageCtorRe = /new\s+[\w$.]*\.([A-Z]\w+)\s*\(/g;
+      while ((match = packageCtorRe.exec(content)) !== null) {
+        pushConsumer(match[1], `${match[1]}Client`, 'ts_load_package_definition');
+      }
+    }
+
+    return out;
+  }
+
+  private dedupe(items: ExtractedContract[]): ExtractedContract[] {
+    const byKey = new Map<string, ExtractedContract>();
     for (const c of items) {
       const k = `${c.contractId}|${c.role}|${c.symbolRef.filePath}`;
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push(c);
+      const existing = byKey.get(k);
+      if (
+        !existing ||
+        c.confidence > existing.confidence ||
+        (c.confidence === existing.confidence &&
+          String(c.meta.source) < String(existing.meta.source))
+      ) {
+        byKey.set(k, c);
+      }
     }
-    return out;
+    return Array.from(byKey.values());
   }
 }
