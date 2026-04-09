@@ -191,24 +191,50 @@ export async function writeBridge(groupDir: string, input: WriteBridgeInput): Pr
   // Use repo-scoped matching: find FROM node by (repo, role=consumer) and TO by (repo, role=provider)
   // with symbolRef matching, because link.contractId is the consumer's ID which may differ
   // from the provider's contractId (e.g. wildcard consumer vs method-level provider).
+  const findContractNode = async (
+    repo: string,
+    role: 'consumer' | 'provider',
+    symbolUid: string,
+    filePath: string,
+    symbolName: string,
+  ): Promise<string | null> => {
+    if (symbolUid) {
+      const uidRows = await queryBridge<{ id: string }>(
+        handle,
+        `MATCH (c:Contract) WHERE c.repo = $repo AND c.role = $role
+         AND c.symbolUid = $symbolUid RETURN c.id AS id LIMIT 1`,
+        { repo, role, symbolUid },
+      );
+      if (uidRows.length > 0) return uidRows[0].id;
+    }
+
+    const refRows = await queryBridge<{ id: string }>(
+      handle,
+      `MATCH (c:Contract) WHERE c.repo = $repo AND c.role = $role
+       AND c.filePath = $filePath AND c.symbolName = $symbolName
+       RETURN c.id AS id LIMIT 1`,
+      { repo, role, filePath, symbolName },
+    );
+    if (refRows.length > 0) return refRows[0].id;
+    return null;
+  };
+
   for (const link of input.crossLinks) {
-    // Find from-node: match by repo + role + symbolRef (consumer side)
-    const fromRows = await queryBridge<{ id: string }>(
-      handle,
-      `MATCH (c:Contract) WHERE c.repo = $repo AND c.role = 'consumer'
-       AND c.filePath = $fp AND c.symbolName = $sn RETURN c.id AS id LIMIT 1`,
-      { repo: link.from.repo, fp: link.from.symbolRef.filePath, sn: link.from.symbolRef.name },
+    const fromId = await findContractNode(
+      link.from.repo,
+      'consumer',
+      link.from.symbolUid,
+      link.from.symbolRef.filePath,
+      link.from.symbolRef.name,
     );
-    // Find to-node: match by repo + role + symbolRef (provider side)
-    const toRows = await queryBridge<{ id: string }>(
-      handle,
-      `MATCH (c:Contract) WHERE c.repo = $repo AND c.role = 'provider'
-       AND c.filePath = $fp AND c.symbolName = $sn RETURN c.id AS id LIMIT 1`,
-      { repo: link.to.repo, fp: link.to.symbolRef.filePath, sn: link.to.symbolRef.name },
+    const toId = await findContractNode(
+      link.to.repo,
+      'provider',
+      link.to.symbolUid,
+      link.to.symbolRef.filePath,
+      link.to.symbolRef.name,
     );
-    if (!fromRows.length || !toRows.length) continue;
-    const fromId = fromRows[0].id;
-    const toId = toRows[0].id;
+    if (!fromId || !toId) continue;
     await queryBridge(
       handle,
       `

@@ -121,4 +121,70 @@ describe('bridge-db edge cases', () => {
     expect(contractRows).toHaveLength(2);
     await closeBridgeDb(handle!);
   });
+
+  it('test_writeBridge_manifest_grpc_link_with_symbol_uids_persists_queryable_contract_edge', async () => {
+    const provider = makeContract({
+      contractId: 'grpc::auth.AuthService/Login',
+      type: 'grpc',
+      role: 'provider',
+      repo: 'platform/auth',
+      symbolUid: 'uid-auth-login',
+      symbolRef: { filePath: 'src/auth.proto', name: 'Login' },
+      symbolName: 'auth.AuthService/Login',
+    });
+    const consumer = makeContract({
+      contractId: 'grpc::auth.AuthService/Login',
+      type: 'grpc',
+      role: 'consumer',
+      repo: 'platform/orders',
+      symbolUid: 'uid-orders-client',
+      symbolRef: { filePath: 'src/client.ts', name: 'AuthServiceClient' },
+      symbolName: 'auth.AuthService/Login',
+    });
+    const link: CrossLink = {
+      from: {
+        repo: 'platform/orders',
+        symbolUid: 'uid-orders-client',
+        symbolRef: { filePath: 'src/client.ts', name: 'AuthServiceClient' },
+      },
+      to: {
+        repo: 'platform/auth',
+        symbolUid: 'uid-auth-login',
+        symbolRef: { filePath: 'src/auth.proto', name: 'Login' },
+      },
+      type: 'grpc',
+      contractId: 'grpc::auth.AuthService/Login',
+      matchType: 'manifest',
+      confidence: 1.0,
+    };
+
+    await writeBridge(tmpDir, {
+      contracts: [provider, consumer],
+      crossLinks: [link],
+      repoSnapshots: {},
+      missingRepos: [],
+    });
+
+    const handle = await openBridgeDbReadOnly(tmpDir);
+    expect(handle).not.toBeNull();
+    const rows = await queryBridge<{
+      contractId: string;
+      matchType: string;
+      fromRepo: string;
+      toRepo: string;
+    }>(
+      handle!,
+      `MATCH (a:Contract)-[l:ContractLink]->(b:Contract)
+       RETURN l.contractId AS contractId, l.matchType AS matchType, l.fromRepo AS fromRepo, l.toRepo AS toRepo`,
+    );
+    expect(rows).toEqual([
+      {
+        contractId: 'grpc::auth.AuthService/Login',
+        matchType: 'manifest',
+        fromRepo: 'platform/orders',
+        toRepo: 'platform/auth',
+      },
+    ]);
+    await closeBridgeDb(handle!);
+  });
 });

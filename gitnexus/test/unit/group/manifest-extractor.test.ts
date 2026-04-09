@@ -60,6 +60,116 @@ describe('ManifestExtractor', () => {
     expect(result.crossLinks[0].to.repo).toBe('sales/crm/backend');
   });
 
+  it('resolves grpc manifest links to concrete provider and consumer symbols', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'platform/orders',
+        to: 'platform/auth',
+        type: 'grpc',
+        contract: 'auth.AuthService/Login',
+        role: 'consumer',
+      },
+    ];
+
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      [
+        'platform/auth',
+        async (_cypher, params) => {
+          if (params?.contract !== 'auth.AuthService/Login') return [];
+          return [
+            {
+              uid: 'uid-auth-login',
+              name: 'Login',
+              filePath: 'src/auth.proto',
+            },
+          ];
+        },
+      ],
+      [
+        'platform/orders',
+        async (_cypher, params) => {
+          if (params?.contract !== 'auth.AuthService/Login') return [];
+          return [
+            {
+              uid: 'uid-orders-client',
+              name: 'AuthServiceClient',
+              filePath: 'src/client.ts',
+            },
+          ];
+        },
+      ],
+    ]);
+
+    const result = await extractor.extractFromManifest(links, dbExecutors);
+
+    const provider = result.contracts.find((c) => c.role === 'provider');
+    const consumer = result.contracts.find((c) => c.role === 'consumer');
+
+    expect(provider?.symbolUid).toBe('uid-auth-login');
+    expect(provider?.symbolRef.filePath).toBe('src/auth.proto');
+    expect(consumer?.symbolUid).toBe('uid-orders-client');
+    expect(consumer?.symbolRef.filePath).toBe('src/client.ts');
+    expect(result.crossLinks[0].to.symbolRef.filePath).toBe('src/auth.proto');
+    expect(result.crossLinks[0].from.symbolRef.filePath).toBe('src/client.ts');
+  });
+
+  it('resolves lib manifest links to concrete provider and consumer symbols', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'platform/web',
+        to: 'platform/shared-lib',
+        type: 'lib',
+        contract: '@platform/contracts',
+        role: 'consumer',
+      },
+    ];
+
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      [
+        'platform/shared-lib',
+        async (_cypher, params) => {
+          if (params?.contract !== '@platform/contracts') return [];
+          return [
+            {
+              uid: 'uid-lib',
+              name: '@platform/contracts',
+              filePath: 'src/index.ts',
+            },
+          ];
+        },
+      ],
+      [
+        'platform/web',
+        async (_cypher, params) => {
+          if (params?.contract !== '@platform/contracts') return [];
+          return [
+            {
+              uid: 'uid-importer',
+              name: 'contractsClient',
+              filePath: 'src/app.ts',
+            },
+          ];
+        },
+      ],
+    ]);
+
+    const result = await extractor.extractFromManifest(links, dbExecutors);
+
+    const provider = result.contracts.find((c) => c.role === 'provider');
+    const consumer = result.contracts.find((c) => c.role === 'consumer');
+
+    expect(provider?.symbolUid).toBe('uid-lib');
+    expect(consumer?.symbolUid).toBe('uid-importer');
+    expect(result.crossLinks[0].to.symbolUid).toBe('uid-lib');
+    expect(result.crossLinks[0].from.symbolUid).toBe('uid-importer');
+  });
+
   it('returns empty for no links', async () => {
     const result = await extractor.extractFromManifest([]);
     expect(result.contracts).toHaveLength(0);

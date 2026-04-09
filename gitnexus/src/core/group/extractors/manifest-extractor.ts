@@ -89,6 +89,28 @@ export class ManifestExtractor {
            LIMIT 1`,
           { contract: link.contract },
         );
+      } else if (link.type === 'grpc') {
+        const [serviceName, methodName = ''] = link.contract.split('/');
+        rows = await executor(
+          `MATCH (n)
+           WHERE n.name CONTAINS $serviceName
+              OR n.name CONTAINS $methodName
+              OR n.filePath ENDS WITH '.proto'
+           RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
+           LIMIT 1`,
+          { contract: link.contract, serviceName, methodName },
+        );
+      } else if (link.type === 'lib') {
+        const packageName = link.contract.split('/').pop() ?? link.contract;
+        rows = await executor(
+          `MATCH (n)
+           WHERE n.name = $contract
+              OR n.name CONTAINS $packageName
+              OR n.filePath CONTAINS $packageName
+           RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
+           LIMIT 1`,
+          { contract: link.contract, packageName },
+        );
       } else {
         return null;
       }
