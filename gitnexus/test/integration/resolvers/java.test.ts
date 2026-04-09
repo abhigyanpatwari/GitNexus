@@ -137,6 +137,23 @@ describe('Java ambiguous symbol resolution', () => {
   });
 });
 
+describe('Java qualified class names', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-qualified-types'), () => {});
+  }, 60000);
+
+  it('stores distinct qualified names for same-named classes across packages', () => {
+    const users = getNodesByLabelFull(result, 'Class').filter((node) => node.name === 'User');
+    expect(users).toHaveLength(2);
+    expect(users.map((node) => node.properties.qualifiedName).sort()).toEqual([
+      'com.example.admin.User',
+      'com.example.models.User',
+    ]);
+  });
+});
+
 describe('Java call resolution with arity filtering', () => {
   let result: PipelineResult;
 
@@ -2079,5 +2096,40 @@ describe('Cross-class method chain resolution (Java) — #575', () => {
     const accesses = getRelationships(result, 'ACCESSES');
     const cityAccess = accesses.filter((e) => e.target === 'city' && e.source === 'mixedChain');
     expect(cityAccess.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SM-9: lookupMethodByOwnerWithMRO — class Child extends Parent
+// child.parentMethod() resolves to Parent#parentMethod via MRO parent walk.
+// ---------------------------------------------------------------------------
+
+describe('Java Child extends Parent — inherited method resolution (SM-9)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-child-extends-parent'), () => {});
+  }, 60000);
+
+  it('detects Parent and Child classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Parent');
+    expect(classes).toContain('Child');
+  });
+
+  it('emits EXTENDS edge: Child → Parent', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Child → Parent');
+  });
+
+  it('resolves c.parentMethod() to Parent#parentMethod via MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const parentMethodCall = calls.find(
+      (c) => c.target === 'parentMethod' && c.targetFilePath.includes('Parent'),
+    );
+    expect(parentMethodCall).toBeDefined();
+    // Pin the caller too — not just the target — so a regression that
+    // misattributes the edge to a different source would fail loudly.
+    expect(parentMethodCall!.source).toBe('run');
   });
 });

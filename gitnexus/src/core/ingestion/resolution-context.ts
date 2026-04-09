@@ -70,6 +70,8 @@ export interface ResolutionContext {
   getStats(): {
     fileCount: number;
     globalSymbolCount: number;
+    fuzzyCallCount: number;
+    fuzzyCallableCallCount: number;
     cacheHits: number;
     cacheMisses: number;
   };

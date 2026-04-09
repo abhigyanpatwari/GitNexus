@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
+  processCalls,
   processCallsFromExtracted,
   seedCrossFileReceiverTypes,
   extractConsumerAccessedKeys,
   processNextjsFetchRoutes,
-  buildImplementorMap,
-  mergeImplementorMaps,
 } from '../../src/core/ingestion/call-processor.js';
+import { buildHeritageMap } from '../../src/core/ingestion/heritage-map.js';
+import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
 import { extractReturnTypeName } from '../../src/core/ingestion/type-extractors/shared.js';
 import {
   createResolutionContext,
@@ -754,6 +755,113 @@ describe('processCallsFromExtracted', () => {
   });
 });
 
+describe('processCalls — Phase P class lookup fallback', () => {
+  let graph: ReturnType<typeof createKnowledgeGraph>;
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    graph = createKnowledgeGraph();
+    ctx = createResolutionContext();
+  });
+
+  it('uses lookupClassByName to override interface receiver types for cross-file virtual dispatch', async () => {
+    const appFile = 'services/App.java';
+    const contractFile = 'models/Pet.java';
+    const dogFile = 'models/Dog.java';
+    const petId = 'Interface:models/Pet.java:Pet';
+    const dogId = 'Class:models/Dog.java:Dog';
+    const fetchBallId = 'Method:models/Dog.java:fetchBall';
+
+    ctx.symbols.add(contractFile, 'Pet', petId, 'Interface');
+    ctx.symbols.add(dogFile, 'Dog', dogId, 'Class');
+    ctx.symbols.add(dogFile, 'fetchBall', fetchBallId, 'Method', { ownerId: dogId });
+    ctx.importMap.set(appFile, new Set([contractFile, dogFile]));
+
+    const classLookupSpy = vi.spyOn(ctx.symbols, 'lookupClassByName');
+
+    await processCalls(
+      graph,
+      [
+        {
+          path: appFile,
+          content: `
+package services;
+
+import models.Pet;
+import models.Dog;
+
+class App {
+  void run() {
+    Pet pet = new Dog();
+    pet.fetchBall();
+  }
+}
+`,
+        },
+      ],
+      createASTCache(),
+      ctx,
+    );
+
+    const fetchBallCalls = graph.relationships.filter(
+      (r) => r.type === 'CALLS' && r.targetId === fetchBallId,
+    );
+    expect(fetchBallCalls).toHaveLength(1);
+    expect(classLookupSpy).toHaveBeenCalledWith('Dog');
+    expect(classLookupSpy).toHaveBeenCalledWith('Pet');
+  });
+
+  it('does not override when the constructor type is not indexed as class-like', async () => {
+    const appFile = 'services/App.java';
+    const contractFile = 'models/Pet.java';
+    const dogFile = 'models/Dog.java';
+    const otherDogFile = 'models/OtherDog.java';
+    const petId = 'Interface:models/Pet.java:Pet';
+
+    ctx.symbols.add(contractFile, 'Pet', petId, 'Interface');
+    ctx.symbols.add(dogFile, 'fetchBall', 'Method:models/Dog.java:fetchBall', 'Method', {
+      ownerId: 'Class:models/Dog.java:Dog',
+    });
+    ctx.symbols.add(otherDogFile, 'fetchBall', 'Method:models/OtherDog.java:fetchBall', 'Method', {
+      ownerId: 'Class:models/OtherDog.java:OtherDog',
+    });
+    ctx.importMap.set(appFile, new Set([contractFile, dogFile, otherDogFile]));
+
+    const classLookupSpy = vi.spyOn(ctx.symbols, 'lookupClassByName');
+
+    await processCalls(
+      graph,
+      [
+        {
+          path: appFile,
+          content: `
+package services;
+
+import models.Pet;
+import models.Dog;
+
+class App {
+  void run() {
+    Pet pet = new Dog();
+    pet.fetchBall();
+  }
+}
+`,
+        },
+      ],
+      createASTCache(),
+      ctx,
+    );
+
+    const fetchBallCalls = graph.relationships.filter(
+      (r) => r.type === 'CALLS' && r.targetId === 'Method:models/Dog.java:fetchBall',
+    );
+    expect(fetchBallCalls).toHaveLength(0);
+    expect(classLookupSpy).toHaveBeenCalledWith('Dog');
+    expect(classLookupSpy).not.toHaveBeenCalledWith('Pet');
+  });
+});
+
 describe('extractReturnTypeName', () => {
   it('extracts simple type name', () => {
     expect(extractReturnTypeName('User')).toBe('User');
@@ -1397,56 +1505,6 @@ describe('processNextjsFetchRoutes', () => {
   });
 });
 
-describe('buildImplementorMap / mergeImplementorMaps', () => {
-  it('records direct implements edges per interface name', () => {
-    const heritage: ExtractedHeritage[] = [
-      { filePath: 'a.java', className: 'C', parentName: 'Runnable', kind: 'implements' },
-      { filePath: 'b.java', className: 'D', parentName: 'Runnable', kind: 'implements' },
-    ];
-    const map = buildImplementorMap(heritage);
-    expect(map.get('Runnable')).toEqual(new Set(['a.java', 'b.java']));
-  });
-
-  it('ignores extends and other heritage kinds', () => {
-    const heritage: ExtractedHeritage[] = [
-      { filePath: 'a.java', className: 'C', parentName: 'Base', kind: 'extends' },
-      { filePath: 'a.java', className: 'C', parentName: 'I', kind: 'implements' },
-    ];
-    const map = buildImplementorMap(heritage);
-    expect(map.has('Base')).toBe(false);
-    expect(map.get('I')).toEqual(new Set(['a.java']));
-  });
-
-  it('mergeImplementorMaps unions files per interface and adds new keys', () => {
-    const acc = new Map<string, Set<string>>();
-    mergeImplementorMaps(acc, new Map([['I', new Set(['a.java'])]]));
-    mergeImplementorMaps(
-      acc,
-      new Map([
-        ['I', new Set(['b.java'])],
-        ['J', new Set(['c.java'])],
-      ]),
-    );
-    expect(acc.get('I')).toEqual(new Set(['a.java', 'b.java']));
-    expect(acc.get('J')).toEqual(new Set(['c.java']));
-  });
-
-  it('heritage merged across disjoint lists matches single buildImplementorMap (chunk-order invariant)', () => {
-    const chunk1: ExtractedHeritage[] = [
-      { filePath: 'a.java', className: 'A', parentName: 'Iface', kind: 'implements' },
-    ];
-    const chunk2: ExtractedHeritage[] = [
-      { filePath: 'b.java', className: 'B', parentName: 'Iface', kind: 'implements' },
-    ];
-    const oneShot = buildImplementorMap([...chunk1, ...chunk2]);
-    const acc = new Map<string, Set<string>>();
-    mergeImplementorMaps(acc, buildImplementorMap(chunk1));
-    mergeImplementorMaps(acc, buildImplementorMap(chunk2));
-    expect(oneShot.get('Iface')).toEqual(acc.get('Iface'));
-    expect(oneShot.get('Iface')).toEqual(new Set(['a.java', 'b.java']));
-  });
-});
-
 describe('processCallsFromExtracted — interface dispatch', () => {
   let graph: ReturnType<typeof createKnowledgeGraph>;
   let ctx: ResolutionContext;
@@ -1497,9 +1555,14 @@ describe('processCallsFromExtracted — interface dispatch', () => {
   });
 
   it('adds CALLS to interface method plus lower-confidence edges to implementing methods', async () => {
-    const implementorMap = new Map<string, ReadonlySet<string>>([
-      ['Action', new Set(['impl/A.java', 'impl/B.java'])],
-    ]);
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'impl/A.java', className: 'A', parentName: 'Action', kind: 'implements' },
+      { filePath: 'impl/B.java', className: 'B', parentName: 'Action', kind: 'implements' },
+    ];
+    // Need class symbols for heritage map to resolve implementors
+    ctx.symbols.add('impl/A.java', 'A', 'Class:impl/A.java:A', 'Class');
+    ctx.symbols.add('impl/B.java', 'B', 'Class:impl/B.java:B', 'Class');
+    const heritageMap = buildHeritageMap(heritage, ctx);
 
     const calls: ExtractedCall[] = [
       {
@@ -1512,7 +1575,7 @@ describe('processCallsFromExtracted — interface dispatch', () => {
       },
     ];
 
-    await processCallsFromExtracted(graph, calls, ctx, undefined, undefined, implementorMap);
+    await processCallsFromExtracted(graph, calls, ctx, undefined, undefined, heritageMap);
 
     const rels = graph.relationships.filter((r) => r.type === 'CALLS');
     expect(rels).toHaveLength(3);
@@ -1526,5 +1589,350 @@ describe('processCallsFromExtracted — interface dispatch', () => {
     expect(toA?.reason).toBe('interface-dispatch');
     expect(toB?.confidence).toBe(0.7);
     expect(toB?.reason).toBe('interface-dispatch');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SM-10: D0 MRO fast path in resolveCallTarget
+// ---------------------------------------------------------------------------
+
+describe('processCalls — D0 MRO fast path (SM-10)', () => {
+  let graph: ReturnType<typeof createKnowledgeGraph>;
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    graph = createKnowledgeGraph();
+    ctx = createResolutionContext();
+  });
+
+  const setupChildParent = () => {
+    const parentFile = 'src/models/Parent.java';
+    const childFile = 'src/models/Child.java';
+    const appFile = 'src/services/App.java';
+    const parentId = 'class:models/Parent.java:Parent';
+    const childId = 'class:models/Child.java:Child';
+    const parentMethodId = 'method:models/Parent.java:parentMethod';
+
+    ctx.symbols.add(parentFile, 'Parent', parentId, 'Class');
+    ctx.symbols.add(childFile, 'Child', childId, 'Class');
+    ctx.symbols.add(parentFile, 'parentMethod', parentMethodId, 'Method', {
+      ownerId: parentId,
+      returnType: 'String',
+    });
+    ctx.importMap.set(appFile, new Set([childFile, parentFile]));
+    return { parentFile, childFile, appFile, parentId, childId, parentMethodId };
+  };
+
+  it('D0 hit: child.parentMethod() resolves via MRO walk when heritageMap is provided', async () => {
+    const { parentMethodId, appFile, parentFile, childFile } = setupChildParent();
+
+    const heritage: ExtractedHeritage[] = [
+      {
+        filePath: childFile,
+        className: 'Child',
+        parentName: 'Parent',
+        kind: 'extends',
+      },
+    ];
+    const heritageMap = buildHeritageMap(heritage, ctx);
+
+    await processCalls(
+      graph,
+      [
+        {
+          path: parentFile,
+          content:
+            'package models;\npublic class Parent {\n  public String parentMethod() { return ""; }\n}\n',
+        },
+        {
+          path: childFile,
+          content: 'package models;\npublic class Child extends Parent {}\n',
+        },
+        {
+          path: appFile,
+          content:
+            'package services;\nimport models.Child;\npublic class App {\n  public void run() {\n    Child c = new Child();\n    c.parentMethod();\n  }\n}\n',
+        },
+      ],
+      createASTCache(),
+      ctx,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      heritageMap,
+    );
+
+    const parentMethodCalls = graph.relationships.filter(
+      (r) => r.type === 'CALLS' && r.targetId === parentMethodId,
+    );
+    expect(parentMethodCalls).toHaveLength(1);
+  });
+
+  it('D0 miss: heritageMap provided but method not in MRO chain falls through to D1-D4', async () => {
+    // Setup: Class Obj has a method `doWork` that is findable via tiered
+    // resolution (import-scoped lookup), but intentionally NOT registered in
+    // methodByOwner (no `ownerId` property). heritageMap is provided but has
+    // no ancestry entry for class:Obj. Expected flow:
+    //   D0: lookupMethodByOwner(classId, 'doWork') → undefined
+    //       heritageMap.getAncestors(classId) → []
+    //       lookupMethodByOwnerWithMRO returns undefined → D0 miss
+    //   D1-D4: receiver type resolves to Obj; D2 widens via lookupFuzzy;
+    //          D3 file-filter picks the only candidate in Obj's file.
+    // Guarantees D0 miss does not swallow the call — D1-D4 still runs.
+    const classFile = 'src/models/Obj.java';
+    const appFile = 'src/services/App.java';
+    const classId = 'class:models/Obj.java:Obj';
+    const doWorkId = 'method:models/Obj.java:doWork';
+
+    ctx.symbols.add(classFile, 'Obj', classId, 'Class');
+    // Intentionally omit ownerId so methodByOwner has no entry — forces D0 miss.
+    ctx.symbols.add(classFile, 'doWork', doWorkId, 'Method', {
+      returnType: 'void',
+      parameterCount: 0,
+    });
+    ctx.importMap.set(appFile, new Set([classFile]));
+
+    // Empty heritage — no ancestry for Obj, so the MRO walk yields no parents.
+    const heritageMap = buildHeritageMap([], ctx);
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: appFile,
+        calledName: 'doWork',
+        sourceId: 'method:services/App.java:run',
+        argCount: 0,
+        callForm: 'member',
+        receiverTypeName: 'Obj',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx, undefined, undefined, heritageMap);
+
+    const doWorkCalls = graph.relationships.filter(
+      (r) => r.type === 'CALLS' && r.targetId === doWorkId,
+    );
+    expect(doWorkCalls).toHaveLength(1);
+  });
+
+  it('D0 skipped: same scenario still resolves via D1-D4 when heritageMap is undefined', async () => {
+    const { parentMethodId, appFile, parentFile, childFile } = setupChildParent();
+
+    await processCalls(
+      graph,
+      [
+        {
+          path: parentFile,
+          content:
+            'package models;\npublic class Parent {\n  public String parentMethod() { return ""; }\n}\n',
+        },
+        {
+          path: childFile,
+          content: 'package models;\npublic class Child extends Parent {}\n',
+        },
+        {
+          path: appFile,
+          content:
+            'package services;\nimport models.Child;\npublic class App {\n  public void run() {\n    Child c = new Child();\n    c.parentMethod();\n  }\n}\n',
+        },
+      ],
+      createASTCache(),
+      ctx,
+      // no heritageMap — D0 fast path must be skipped, D1-D4 must still resolve
+    );
+
+    const parentMethodCalls = graph.relationships.filter(
+      (r) => r.type === 'CALLS' && r.targetId === parentMethodId,
+    );
+    expect(parentMethodCalls).toHaveLength(1);
+  });
+
+  it('overloadHints guard: D0 skipped so literal-inferred overload disambiguation picks the right overload', async () => {
+    // Java sequential path: processCalls auto-generates `overloadHints` for
+    // languages whose provider exposes `inferLiteralType` (Java/Kotlin/C#/C++).
+    // When two overloads share the same return type, lookupMethodByOwner
+    // returns defs[0] (the first-added overload) regardless of argument
+    // types. Without the D0 guard this would mis-resolve `o.method("hello")`
+    // to method(int). With the guard, D0 is skipped because overloadHints
+    // is present, and the literal-inferred overload path in D2-D4+E picks
+    // method(String) correctly.
+    const classFile = 'src/models/Obj.java';
+    const appFile = 'src/services/App.java';
+    const classId = 'class:models/Obj.java:Obj';
+    const methodIntId = 'method:models/Obj.java:method(int)';
+    const methodStringId = 'method:models/Obj.java:method(String)';
+
+    ctx.symbols.add(classFile, 'Obj', classId, 'Class');
+    // int overload added FIRST so lookupMethodByOwner would return it.
+    ctx.symbols.add(classFile, 'method', methodIntId, 'Method', {
+      ownerId: classId,
+      returnType: 'String',
+      parameterCount: 1,
+      parameterTypes: ['int'],
+    });
+    ctx.symbols.add(classFile, 'method', methodStringId, 'Method', {
+      ownerId: classId,
+      returnType: 'String',
+      parameterCount: 1,
+      parameterTypes: ['String'],
+    });
+    ctx.importMap.set(appFile, new Set([classFile]));
+
+    const heritageMap = buildHeritageMap([], ctx);
+
+    await processCalls(
+      graph,
+      [
+        {
+          path: classFile,
+          content:
+            'package models;\npublic class Obj {\n  public String method(int x) { return ""; }\n  public String method(String s) { return ""; }\n}\n',
+        },
+        {
+          path: appFile,
+          content:
+            'package services;\nimport models.Obj;\npublic class App {\n  public void run() {\n    Obj o = new Obj();\n    o.method("hello");\n  }\n}\n',
+        },
+      ],
+      createASTCache(),
+      ctx,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      heritageMap,
+    );
+
+    // Exactly one resolved call, and it must target the String overload.
+    const methodCalls = graph.relationships.filter(
+      (r) => r.type === 'CALLS' && (r.targetId === methodIntId || r.targetId === methodStringId),
+    );
+    expect(methodCalls).toHaveLength(1);
+    expect(methodCalls[0].targetId).toBe(methodStringId);
+  });
+
+  it('preComputedArgTypes guard: D0 skipped so arg-type disambiguation picks the right overload', async () => {
+    // Two overloads of the same method with identical return types live on
+    // the same owner class. Without the D0 guard, lookupMethodByOwner would
+    // return defs[0] (the first overload added) regardless of argument types,
+    // silently mis-resolving an `obj.method("hello")` call to method(int).
+    // With the guard, preComputedArgTypes forces D0 to be skipped and D2-D4+E
+    // disambiguates by parameter type.
+    const classFile = 'src/models/Obj.java';
+    const appFile = 'src/services/App.java';
+    const classId = 'class:models/Obj.java:Obj';
+    const methodIntId = 'method:models/Obj.java:method(int)';
+    const methodStringId = 'method:models/Obj.java:method(String)';
+
+    ctx.symbols.add(classFile, 'Obj', classId, 'Class');
+    // int overload added FIRST — without the guard this would be returned by
+    // lookupMethodByOwner's same-return-type fast path.
+    ctx.symbols.add(classFile, 'method', methodIntId, 'Method', {
+      ownerId: classId,
+      returnType: 'String',
+      parameterCount: 1,
+      parameterTypes: ['int'],
+    });
+    ctx.symbols.add(classFile, 'method', methodStringId, 'Method', {
+      ownerId: classId,
+      returnType: 'String',
+      parameterCount: 1,
+      parameterTypes: ['String'],
+    });
+    ctx.importMap.set(appFile, new Set([classFile]));
+
+    const heritageMap = buildHeritageMap([], ctx);
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: appFile,
+        calledName: 'method',
+        sourceId: 'method:services/App.java:run',
+        argCount: 1,
+        callForm: 'member',
+        receiverTypeName: 'Obj',
+        argTypes: ['String'],
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx, undefined, undefined, heritageMap);
+
+    const methodCalls = graph.relationships.filter((r) => r.type === 'CALLS');
+    // Exactly one resolved call, and it must target the String overload —
+    // NOT the int overload that lookupMethodByOwner would have returned.
+    expect(methodCalls).toHaveLength(1);
+    expect(methodCalls[0].targetId).toBe(methodStringId);
+  });
+
+  it('module-alias guard: D0 skipped when receiverName matches an active module alias', async () => {
+    // Setup: two files each define a class named User with a method save().
+    // The caller has a Python-style module alias `import auth_mod as auth`,
+    // so auth.User().save() must resolve to auth_mod.py, NOT user_mod.py.
+    // D0 would call ctx.resolve('User') and could pick the wrong file; the
+    // alias guard must short-circuit D0 so the alias-filtered D1-D4 path
+    // runs and picks the correct file.
+    const authModFile = 'auth_mod.py';
+    const userModFile = 'user_mod.py';
+    const appFile = 'app.py';
+    const authUserId = 'class:auth_mod.py:User';
+    const userUserId = 'class:user_mod.py:User';
+    const authSaveId = 'method:auth_mod.py:save';
+    const userSaveId = 'method:user_mod.py:save';
+
+    ctx.symbols.add(authModFile, 'User', authUserId, 'Class');
+    ctx.symbols.add(userModFile, 'User', userUserId, 'Class');
+    ctx.symbols.add(authModFile, 'save', authSaveId, 'Method', {
+      ownerId: authUserId,
+      returnType: 'bool',
+    });
+    ctx.symbols.add(userModFile, 'save', userSaveId, 'Method', {
+      ownerId: userUserId,
+      returnType: 'bool',
+    });
+    // Register the module alias: in app.py, `auth` points to auth_mod.py.
+    const aliasMap = new Map<string, string>([['auth', authModFile]]);
+    ctx.moduleAliasMap.set(appFile, aliasMap);
+    ctx.importMap.set(appFile, new Set([authModFile]));
+
+    const heritageMap = buildHeritageMap([], ctx);
+
+    await processCalls(
+      graph,
+      [
+        {
+          path: authModFile,
+          content: 'class User:\n    def save(self):\n        return True\n',
+        },
+        {
+          path: userModFile,
+          content: 'class User:\n    def save(self):\n        return True\n',
+        },
+        {
+          path: appFile,
+          content:
+            'import auth_mod as auth\n\ndef run():\n    user = auth.User()\n    user.save()\n',
+        },
+      ],
+      createASTCache(),
+      ctx,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      heritageMap,
+    );
+
+    // save() must resolve to auth_mod.py, NOT user_mod.py.
+    const authSave = graph.relationships.find(
+      (r) => r.type === 'CALLS' && r.targetId === authSaveId,
+    );
+    const userSave = graph.relationships.find(
+      (r) => r.type === 'CALLS' && r.targetId === userSaveId,
+    );
+    expect(authSave).toBeDefined();
+    expect(userSave).toBeUndefined();
   });
 });

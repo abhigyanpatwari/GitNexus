@@ -1,9 +1,15 @@
 import type { NodeLabel } from 'gitnexus-shared';
 
+export const CLASS_TYPES = new Set(['Class', 'Struct', 'Interface', 'Enum', 'Record']);
+
 export interface SymbolDefinition {
   nodeId: string;
   filePath: string;
   type: NodeLabel;
+  /** Canonical dot-separated qualified type name for class-like symbols
+   *  (e.g. `App.Models.User`). Falls back to the simple symbol name when no
+   *  package/namespace/module scope exists or no explicit qualified metadata is provided. */
+  qualifiedName?: string;
   parameterCount?: number;
   /** Number of required (non-optional, non-default) parameters.
    *  Enables range-based arity filtering: argCount >= requiredParameterCount && argCount <= parameterCount. */
@@ -36,6 +42,7 @@ export interface SymbolTable {
       returnType?: string;
       declaredType?: string;
       ownerId?: string;
+      qualifiedName?: string;
     },
   ) => void;
 
@@ -89,9 +96,30 @@ export interface SymbolTable {
   lookupMethodByOwner: (ownerNodeId: string, methodName: string) => SymbolDefinition | undefined;
 
   /**
+   * Look up class-like definitions (Class, Struct, Interface, Enum, Record) by name.
+   * O(1) via dedicated eagerly-populated index keyed by symbol name.
+   * Returns all matching definitions across files (e.g. partial classes).
+   * Used by Phase 1 semantic-model tasks to replace filtered lookupFuzzy calls.
+   */
+  lookupClassByName: (name: string) => SymbolDefinition[];
+
+  /**
+   * Look up class-like definitions by canonical qualified name.
+   * Qualified names are normalized to dot-separated scope segments across languages,
+   * e.g. `App.Models.User`, `com.example.User`, or `Admin.User`.
+   * Top-level class-like symbols with no explicit scope are indexed under their simple name.
+   */
+  lookupClassByQualifiedName: (qualifiedName: string) => SymbolDefinition[];
+
+  /**
    * Debugging: See how many symbols are tracked
    */
-  getStats: () => { fileCount: number; globalSymbolCount: number };
+  getStats: () => {
+    fileCount: number;
+    globalSymbolCount: number;
+    fuzzyCallCount: number;
+    fuzzyCallableCallCount: number;
+  };
 
   /**
    * Cleanup memory
@@ -122,6 +150,15 @@ export const createSymbolTable = (): SymbolTable => {
   // Method symbols with ownerId are indexed. Supports overloads (array values).
   const methodByOwner = new Map<string, SymbolDefinition[]>();
 
+  // 6. Eagerly-populated Class-type Index — keyed by symbol name.
+  // Only Class, Struct, Interface, Enum, Record symbols are indexed.
+  const classByName = new Map<string, SymbolDefinition[]>();
+  const classByQualifiedName = new Map<string, SymbolDefinition[]>();
+
+  let fuzzyCallCount = 0;
+
+  let fuzzyCallableCallCount = 0;
+
   const CALLABLE_TYPES = new Set(['Function', 'Method', 'Constructor']);
 
   const add = (
@@ -136,12 +173,17 @@ export const createSymbolTable = (): SymbolTable => {
       returnType?: string;
       declaredType?: string;
       ownerId?: string;
+      qualifiedName?: string;
     },
   ) => {
+    const qualifiedName = CLASS_TYPES.has(type)
+      ? (metadata?.qualifiedName ?? name)
+      : metadata?.qualifiedName;
     const def: SymbolDefinition = {
       nodeId,
       filePath,
       type,
+      ...(qualifiedName !== undefined ? { qualifiedName } : {}),
       ...(metadata?.parameterCount !== undefined
         ? { parameterCount: metadata.parameterCount }
         : {}),
@@ -183,14 +225,33 @@ export const createSymbolTable = (): SymbolTable => {
     }
     globalIndex.get(name)!.push(def);
 
-    // C2. Methods with ownerId go to methodByOwner index (in addition to globalIndex).
-    if (type === 'Method' && metadata?.ownerId) {
+    // C2. Methods and constructors with ownerId go to methodByOwner index
+    // (in addition to globalIndex).
+    if ((type === 'Method' || type === 'Constructor') && metadata?.ownerId) {
       const key = `${metadata.ownerId}\0${name}`;
       const existing = methodByOwner.get(key);
       if (existing) {
         existing.push(def);
       } else {
         methodByOwner.set(key, [def]);
+      }
+    }
+
+    // C3. Class-like types go to classByName index (in addition to globalIndex).
+    if (CLASS_TYPES.has(type)) {
+      const existing = classByName.get(name);
+      if (existing) {
+        existing.push(def);
+      } else {
+        classByName.set(name, [def]);
+      }
+
+      const qualifiedKey = qualifiedName ?? name;
+      const qualifiedMatches = classByQualifiedName.get(qualifiedKey);
+      if (qualifiedMatches) {
+        qualifiedMatches.push(def);
+      } else {
+        classByQualifiedName.set(qualifiedKey, [def]);
       }
     }
 
@@ -215,10 +276,12 @@ export const createSymbolTable = (): SymbolTable => {
   };
 
   const lookupFuzzy = (name: string): SymbolDefinition[] => {
+    fuzzyCallCount++;
     return globalIndex.get(name) || [];
   };
 
   const lookupFuzzyCallable = (name: string): SymbolDefinition[] => {
+    fuzzyCallableCallCount++;
     if (!callableIndex) {
       // Build the callable index lazily on first use
       callableIndex = new Map();
@@ -254,9 +317,19 @@ export const createSymbolTable = (): SymbolTable => {
     return defs[0];
   };
 
+  const lookupClassByName = (name: string): SymbolDefinition[] => {
+    return classByName.get(name) ?? [];
+  };
+
+  const lookupClassByQualifiedName = (qualifiedName: string): SymbolDefinition[] => {
+    return classByQualifiedName.get(qualifiedName) ?? [];
+  };
+
   const getStats = () => ({
     fileCount: fileIndex.size,
     globalSymbolCount: globalIndex.size,
+    fuzzyCallableCallCount: fuzzyCallableCallCount,
+    fuzzyCallCount: fuzzyCallCount,
   });
 
   const clear = () => {
@@ -265,6 +338,10 @@ export const createSymbolTable = (): SymbolTable => {
     callableIndex = null;
     fieldByOwner.clear();
     methodByOwner.clear();
+    classByName.clear();
+    classByQualifiedName.clear();
+    fuzzyCallCount = 0;
+    fuzzyCallableCallCount = 0;
   };
 
   return {
@@ -276,6 +353,8 @@ export const createSymbolTable = (): SymbolTable => {
     lookupFuzzyCallable,
     lookupFieldByOwner,
     lookupMethodByOwner,
+    lookupClassByName,
+    lookupClassByQualifiedName,
     getStats,
     clear,
   };

@@ -1345,3 +1345,35 @@ describe('Go method enrichment', () => {
     expect(classifyCall).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// SM-9/SM-10: lookupMethodByOwnerWithMRO + D0 fast path — Go struct embedding
+// ---------------------------------------------------------------------------
+
+describe('Go Child embeds Parent — inherited method resolution (SM-9)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-child-extends-parent'), () => {});
+  }, 60000);
+
+  it('detects Parent and Child structs', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    expect(structs).toContain('Parent');
+    expect(structs).toContain('Child');
+  });
+
+  it('emits EXTENDS edge: Child → Parent (struct embedding)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Child → Parent');
+  });
+
+  it('resolves c.ParentMethod() to Parent.ParentMethod via first-wins MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const parentMethodCall = calls.find(
+      (c) => c.target === 'ParentMethod' && c.targetFilePath.includes('parent.go'),
+    );
+    expect(parentMethodCall).toBeDefined();
+    expect(parentMethodCall!.source).toBe('Run');
+  });
+});

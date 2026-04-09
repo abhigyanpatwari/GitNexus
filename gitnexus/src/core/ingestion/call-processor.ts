@@ -30,7 +30,8 @@ import {
 } from './utils/call-analysis.js';
 import { buildTypeEnv, isSubclassOf } from './type-env.js';
 import type { ConstructorBinding, TypeEnvironment } from './type-env.js';
-import { resolveExtendsType } from './heritage-processor.js';
+import type { HeritageMap } from './heritage-map.js';
+import { c3Linearize } from './mro-processor.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type {
   ExtractedCall,
@@ -50,6 +51,9 @@ import { extractParsedCallSite } from './call-sites/extract-language-call-site.j
 /** Per-file resolved type bindings for exported symbols.
  *  Populated during call processing, consumed by Phase 14 re-resolution pass. */
 export type ExportedTypeMap = Map<string, Map<string, string>>;
+
+/** Types that represent class-like declarations (used for receiver/owner resolution). */
+const CLASS_LIKE_TYPES = new Set(['Class', 'Struct', 'Interface', 'Enum', 'Record', 'Impl']);
 
 const MAX_EXPORTS_PER_FILE = 500;
 const MAX_TYPE_NAME_LENGTH = 256;
@@ -512,65 +516,6 @@ interface ResolveResult {
   returnType?: string;
 }
 
-/** Maps interface/abstract-class name → set of file paths of direct implementors. */
-export type ImplementorMap = ReadonlyMap<string, ReadonlySet<string>>;
-
-/**
- * Build an ImplementorMap from extracted heritage data.
- * Only direct `implements` relationships are tracked (transitive not needed for
- * the common Java/Kotlin/C# interface dispatch pattern).
- * `extends` is ignored — dispatch keyed on abstract class bases is not modeled here.
- */
-/**
- * Maps interface name → file paths of classes that implement it (direct only).
- * When `ctx` is set, `kind: 'extends'` rows are classified like heritage-processor
- * (C#/Java base_list: class vs interface parents share one capture name).
- */
-export const buildImplementorMap = (
-  heritage: readonly ExtractedHeritage[],
-  ctx?: ResolutionContext,
-): Map<string, Set<string>> => {
-  const map = new Map<string, Set<string>>();
-  for (const h of heritage) {
-    let record = false;
-    if (h.kind === 'implements') {
-      record = true;
-    } else if (h.kind === 'extends' && ctx) {
-      const lang = getLanguageFromFilename(h.filePath);
-      if (lang) {
-        const { type } = resolveExtendsType(h.parentName, h.filePath, ctx, lang);
-        record = type === 'IMPLEMENTS';
-      }
-    }
-    if (record) {
-      let files = map.get(h.parentName);
-      if (!files) {
-        files = new Set();
-        map.set(h.parentName, files);
-      }
-      files.add(h.filePath);
-    }
-  }
-  return map;
-};
-
-/**
- * Merge a chunk's implementor map into the global accumulator.
- */
-export const mergeImplementorMaps = (
-  target: Map<string, Set<string>>,
-  source: ReadonlyMap<string, ReadonlySet<string>>,
-): void => {
-  for (const [name, files] of source) {
-    let existing = target.get(name);
-    if (!existing) {
-      existing = new Set();
-      target.set(name, existing);
-    }
-    for (const f of files) existing.add(f);
-  }
-};
-
 /**
  * After resolving a call to an interface method, find additional targets
  * in classes implementing that interface. Returns implementation method
@@ -581,11 +526,11 @@ function findInterfaceDispatchTargets(
   receiverTypeName: string,
   currentFile: string,
   ctx: ResolutionContext,
-  implementorMap: ImplementorMap,
+  heritageMap: HeritageMap,
   primaryNodeId: string,
 ): ResolveResult[] {
-  const implFiles = implementorMap.get(receiverTypeName);
-  if (!implFiles || implFiles.size === 0) return [];
+  const implFiles = heritageMap.getImplementorFiles(receiverTypeName);
+  if (implFiles.size === 0) return [];
 
   const typeResolved = ctx.resolve(receiverTypeName, currentFile);
   if (!typeResolved) return [];
@@ -621,7 +566,7 @@ export const processCalls = async (
   importedReturnTypesMap?: ReadonlyMap<string, ReadonlyMap<string, string>>,
   /** Phase 14 E3: cross-file RAW return types for for-loop element extraction. Keyed by filePath → Map<calleeName, rawReturnType>. */
   importedRawReturnTypesMap?: ReadonlyMap<string, ReadonlyMap<string, string>>,
-  implementorMap?: ImplementorMap,
+  heritageMap?: HeritageMap,
 ): Promise<ExtractedHeritage[]> => {
   const parser = await loadParser();
   const collectedHeritage: ExtractedHeritage[] = [];
@@ -784,17 +729,7 @@ export const processCalls = async (
         }
         if (!receiverTypeName && receiverText) {
           const resolved = ctx.resolve(receiverText, file.path);
-          if (
-            resolved?.candidates.some(
-              (d) =>
-                d.type === 'Class' ||
-                d.type === 'Struct' ||
-                d.type === 'Interface' ||
-                d.type === 'Enum' ||
-                d.type === 'Record' ||
-                d.type === 'Impl',
-            )
-          ) {
+          if (resolved?.candidates.some((d) => CLASS_LIKE_TYPES.has(d.type))) {
             receiverTypeName = receiverText;
           }
         }
@@ -852,6 +787,8 @@ export const processCalls = async (
           ctx,
           undefined,
           widenCache,
+          undefined,
+          heritageMap,
         );
 
         if (!resolved) return;
@@ -864,13 +801,13 @@ export const processCalls = async (
           reason: resolved.reason,
         });
 
-        if (implementorMap && languageSeed.callForm === 'member' && receiverTypeName) {
+        if (heritageMap && languageSeed.callForm === 'member' && receiverTypeName) {
           const implTargets = findInterfaceDispatchTargets(
             languageSeed.calledName,
             receiverTypeName,
             file.path,
             ctx,
-            implementorMap,
+            heritageMap,
             resolved.nodeId,
           );
           for (const impl of implTargets) {
@@ -1000,12 +937,8 @@ export const processCalls = async (
           if (
             isSubclassOf(ctorType, receiverTypeName, parentMap) ||
             isSubclassOf(ctorType, receiverTypeName, globalParentMap) ||
-            (ctx.symbols
-              .lookupFuzzy(ctorType)
-              .some((d) => d.type === 'Class' || d.type === 'Struct') &&
-              ctx.symbols
-                .lookupFuzzy(receiverTypeName)
-                .some((d) => d.type === 'Class' || d.type === 'Struct' || d.type === 'Interface'))
+            (ctx.symbols.lookupClassByName(ctorType).length > 0 &&
+              ctx.symbols.lookupClassByName(receiverTypeName).length > 0)
           ) {
             receiverTypeName = ctorType;
           }
@@ -1076,6 +1009,7 @@ export const processCalls = async (
                 file.path,
                 ctx,
                 makeAccessEmitter(graph, sourceId),
+                heritageMap,
               );
             }
           }
@@ -1101,6 +1035,8 @@ export const processCalls = async (
         ctx,
         hints,
         widenCache,
+        undefined,
+        heritageMap,
       );
 
       if (!resolved) return;
@@ -1115,13 +1051,13 @@ export const processCalls = async (
         reason: resolved.reason,
       });
 
-      if (implementorMap && callForm === 'member' && receiverTypeName) {
+      if (heritageMap && callForm === 'member' && receiverTypeName) {
         const implTargets = findInterfaceDispatchTargets(
           calledName,
           receiverTypeName,
           file.path,
           ctx,
-          implementorMap,
+          heritageMap,
           resolved.nodeId,
         );
         for (const impl of implTargets) {
@@ -1353,6 +1289,7 @@ const resolveCallTarget = (
   overloadHints?: OverloadHints,
   widenCache?: WidenCache,
   preComputedArgTypes?: (string | undefined)[],
+  heritageMap?: HeritageMap,
 ): ResolveResult | null => {
   const tiered = ctx.resolve(call.calledName, currentFile);
   if (!tiered) return null;
@@ -1428,6 +1365,35 @@ const resolveCallTarget = (
   // belong to the wrong class (e.g. super.save() should hit the parent's save,
   // not the child's own save method in the same file).
   if (call.callForm === 'member' && call.receiverTypeName) {
+    // D0. MRO fast path: when heritageMap is available, try owner-scoped + MRO
+    //     lookup before falling back to the expensive D2 fuzzy widening.
+    //     This short-circuits the lookupFuzzy call for every cross-file member call.
+    //     Skip conditions:
+    //     (a) overloadHints or preComputedArgTypes present — the MRO lookup may
+    //         pick the wrong overload for same-return-type overloads since it
+    //         does not consider argument types. D2-D4+E handles those correctly.
+    //     (b) A module alias on call.receiverName is active for this file — the
+    //         alias block above already narrowed `filteredCandidates` to a
+    //         specific file (e.g. Python `import auth; auth.user.save()`).
+    //         resolveMethodByOwner re-resolves `receiverTypeName` from scratch
+    //         via `ctx.resolve`, which ignores that narrowing and could pick a
+    //         homonymous class from the wrong file. Fall through to D1-D4 which
+    //         respects the alias-filtered candidate pool.
+    const hasActiveModuleAlias =
+      !!call.receiverName && ctx.moduleAliasMap?.get(currentFile)?.has(call.receiverName) === true;
+    if (!overloadHints && !preComputedArgTypes && !hasActiveModuleAlias) {
+      const mroResult = resolveMethodByOwner(
+        call.receiverTypeName,
+        call.calledName,
+        currentFile,
+        ctx,
+        heritageMap,
+      );
+      if (mroResult) {
+        return toResolveResult(mroResult, tiered.tier);
+      }
+    }
+
     // D1. Resolve the receiver type
     const typeResolved = ctx.resolve(call.receiverTypeName, currentFile);
     if (typeResolved && typeResolved.candidates.length > 0) {
@@ -1656,15 +1622,7 @@ const resolveFieldOwnership = (
 ): { nodeId: string; declaredType?: string } | undefined => {
   const typeResolved = ctx.resolve(receiverName, filePath);
   if (!typeResolved) return undefined;
-  const classDef = typeResolved.candidates.find(
-    (d) =>
-      d.type === 'Class' ||
-      d.type === 'Struct' ||
-      d.type === 'Interface' ||
-      d.type === 'Enum' ||
-      d.type === 'Record' ||
-      d.type === 'Impl',
-  );
+  const classDef = typeResolved.candidates.find((d) => CLASS_LIKE_TYPES.has(d.type));
   if (!classDef) return undefined;
 
   return ctx.symbols.lookupFieldByOwner(classDef.nodeId, fieldName) ?? undefined;
@@ -1674,27 +1632,171 @@ const resolveFieldOwnership = (
  * Resolve a method by owner type name using the eagerly-populated methodByOwner index.
  * Returns the SymbolDefinition if an unambiguous method is found, undefined otherwise.
  * Falls through to undefined for: unknown type, no class-like candidates, ambiguous overloads.
+ * When heritageMap is provided, falls back to MRO-aware parent chain walking.
  */
 const resolveMethodByOwner = (
   receiverTypeName: string,
   methodName: string,
   filePath: string,
   ctx: ResolutionContext,
+  heritageMap?: HeritageMap,
 ): SymbolDefinition | undefined => {
   const typeResolved = ctx.resolve(receiverTypeName, filePath);
   if (!typeResolved) return undefined;
-  const classDef = typeResolved.candidates.find(
-    (d) =>
-      d.type === 'Class' ||
-      d.type === 'Struct' ||
-      d.type === 'Interface' ||
-      d.type === 'Enum' ||
-      d.type === 'Record' ||
-      d.type === 'Impl',
-  );
+  const classDef = typeResolved.candidates.find((d) => CLASS_LIKE_TYPES.has(d.type));
   if (!classDef) return undefined;
 
+  // When HeritageMap is available, delegate to MRO-aware lookup which performs
+  // the direct owner lookup itself before walking ancestors — avoids a double
+  // direct lookup on the hot path.
+  if (heritageMap) {
+    const language = getLanguageFromFilename(filePath);
+    if (language) {
+      return lookupMethodByOwnerWithMRO(
+        classDef.nodeId,
+        methodName,
+        heritageMap,
+        ctx.symbols,
+        language,
+      );
+    }
+  }
+
+  // Fallback when no HeritageMap (or the file extension is unrecognized by
+  // `getLanguageFromFilename`, e.g. a synthetic path or an extension that is
+  // not registered in supported-languages.ts): plain direct lookup with no
+  // ancestor walk. All primary languages register their extensions, so this
+  // branch is only reached for edge cases where the MRO walk would not be
+  // applicable anyway. D1-D4 in resolveCallTarget still runs on D0 miss.
   return ctx.symbols.lookupMethodByOwner(classDef.nodeId, methodName);
+};
+
+// ---------------------------------------------------------------------------
+// MRO-aware method resolution via HeritageMap (SM-9)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-HeritageMap cache of C3 linearization results keyed by owner nodeId.
+ *
+ * HeritageMap instances are immutable after construction, so C3 output is
+ * stable for the lifetime of a HeritageMap. WeakMap lets the cache auto-drain
+ * when the HeritageMap is garbage collected (end of ingestion run), so we
+ * never need to manually invalidate it.
+ *
+ * `null` is a sentinel for "C3 failed for this owner" (cyclic or inconsistent
+ * hierarchy) so we don't re-run the expensive linearization repeatedly.
+ */
+const c3LinearizationCache = new WeakMap<HeritageMap, Map<string, readonly string[] | null>>();
+
+const getCachedC3Linearization = (
+  ownerNodeId: string,
+  heritageMap: HeritageMap,
+): readonly string[] | null => {
+  let perHmCache = c3LinearizationCache.get(heritageMap);
+  if (!perHmCache) {
+    perHmCache = new Map();
+    c3LinearizationCache.set(heritageMap, perHmCache);
+  }
+  const cached = perHmCache.get(ownerNodeId);
+  if (cached !== undefined) return cached;
+  const parentMap = buildParentMapFromHeritage(ownerNodeId, heritageMap);
+  const result = c3Linearize(ownerNodeId, parentMap, new Map()) ?? null;
+  perHmCache.set(ownerNodeId, result);
+  return result;
+};
+
+/**
+ * Build a parentMap from HeritageMap for use with c3Linearize.
+ * Traverses the parent chain starting from startNodeId, collecting all
+ * parent→children relationships into a Map<string, string[]>.
+ */
+const buildParentMapFromHeritage = (
+  startNodeId: string,
+  heritageMap: HeritageMap,
+): Map<string, string[]> => {
+  const parentMap = new Map<string, string[]>();
+  const visited = new Set<string>();
+  const queue = [startNodeId];
+
+  while (queue.length > 0) {
+    const nodeId = queue.shift()!;
+    if (visited.has(nodeId)) continue;
+    visited.add(nodeId);
+    const parents = heritageMap.getParents(nodeId);
+    if (parents.length > 0) {
+      parentMap.set(nodeId, parents);
+      for (const p of parents) {
+        if (!visited.has(p)) queue.push(p);
+      }
+    }
+  }
+
+  return parentMap;
+};
+
+/**
+ * Look up a method on an owner class, walking the parent chain via HeritageMap
+ * when the method isn't found on the direct owner.
+ *
+ * Respects the 5 per-language MRO strategies:
+ * - `first-wins`:       BFS ancestor walk, first match wins (default)
+ * - `leftmost-base`:    BFS ancestor walk, leftmost base in declaration order wins (C++);
+ *                        HeritageMap preserves insertion order matching source declaration,
+ *                        so BFS order is equivalent to leftmost-base semantics
+ * - `c3`:               C3-linearized ancestor order, first match wins (Python)
+ * - `implements-split`: BFS ancestor walk, first match wins (Java/C#) —
+ *                        full ambiguity detection for multiple interface defaults
+ *                        is handled by computeMRO at graph level
+ * - `qualified-syntax`: No auto-resolution (Rust) — returns undefined
+ *
+ * Delegates to mro-processor.ts c3Linearize for C3 strategy.
+ *
+ * @internal Exported only to enable unit testing in isolation. The proper
+ * entry point for callers outside this module is {@link resolveMethodByOwner},
+ * which handles receiver-type resolution before delegating here.
+ */
+export const lookupMethodByOwnerWithMRO = (
+  ownerNodeId: string,
+  methodName: string,
+  heritageMap: HeritageMap,
+  symbols: SymbolTable,
+  language: SupportedLanguages,
+): SymbolDefinition | undefined => {
+  // Direct lookup first (child override — no walk needed)
+  const direct = symbols.lookupMethodByOwner(ownerNodeId, methodName);
+  if (direct) return direct;
+
+  const strategy = getProvider(language).mroStrategy;
+
+  // Rust: requires qualified syntax (<Type as Trait>::method), no auto-resolution
+  if (strategy === 'qualified-syntax') return undefined;
+
+  // Determine ancestor walk order based on MRO strategy.
+  // readonly to accept the cached (frozen) c3 linearization without copying.
+  let ancestors: readonly string[];
+  if (strategy === 'c3') {
+    // Delegate to mro-processor.ts C3 linearization (memoized per HeritageMap
+    // so repeated calls for the same owner within an ingestion run reuse the
+    // linearization instead of rebuilding the parent map and re-running C3).
+    // c3Linearize returns ancestors only (excludes the owner itself),
+    // matching heritageMap.getAncestors() semantics.
+    const c3Result = getCachedC3Linearization(ownerNodeId, heritageMap);
+    // Fall back to BFS order if C3 fails (cyclic or inconsistent hierarchy).
+    // Note: BFS order may not preserve Python MRO semantics in these edge
+    // cases, but cyclic/inconsistent hierarchies are invalid in Python anyway.
+    ancestors = c3Result ?? heritageMap.getAncestors(ownerNodeId);
+  } else {
+    // first-wins, leftmost-base, implements-split: BFS order via HeritageMap
+    ancestors = heritageMap.getAncestors(ownerNodeId);
+  }
+
+  // Walk ancestors in MRO order — first match wins
+  for (const ancestorId of ancestors) {
+    const method = symbols.lookupMethodByOwner(ancestorId, methodName);
+    if (method) return method;
+  }
+
+  return undefined;
 };
 
 /**
@@ -1735,6 +1837,7 @@ const walkMixedChain = (
   filePath: string,
   ctx: ResolutionContext,
   onFieldResolved?: OnFieldResolved,
+  heritageMap?: HeritageMap,
 ): string | undefined => {
   let currentType: string | undefined = startType;
   for (const step of chain) {
@@ -1761,7 +1864,7 @@ const walkMixedChain = (
       // Avoids fuzzy lookup when the owner type is known and the method is unambiguous.
       // Note: CALLS edges for intermediate chain steps are NOT emitted here — walkMixedChain
       // only threads types. CALLS edges come from the outer per-call-expression loop in processCalls.
-      const methodDef = resolveMethodByOwner(currentType, step.name, filePath, ctx);
+      const methodDef = resolveMethodByOwner(currentType, step.name, filePath, ctx, heritageMap);
       if (methodDef?.returnType) {
         const fastRetType = extractReturnTypeName(methodDef.returnType);
         if (fastRetType) {
@@ -1774,6 +1877,10 @@ const walkMixedChain = (
         { calledName: step.name, callForm: 'member', receiverTypeName: currentType },
         filePath,
         ctx,
+        undefined,
+        undefined,
+        undefined,
+        heritageMap,
       );
       if (!resolved) {
         // Stdlib passthrough: unwrap(), clone(), etc. preserve the receiver type
@@ -1806,7 +1913,7 @@ export const processCallsFromExtracted = async (
   ctx: ResolutionContext,
   onProgress?: (current: number, total: number) => void,
   constructorBindings?: FileConstructorBindings[],
-  implementorMap?: ImplementorMap,
+  heritageMap?: HeritageMap,
 ) => {
   // Scope-aware receiver types: keyed by filePath → "funcName\0varName" → typeName.
   // The scope dimension prevents collisions when two functions in the same file
@@ -1908,6 +2015,7 @@ export const processCallsFromExtracted = async (
             effectiveCall.filePath,
             ctx,
             makeAccessEmitter(graph, effectiveCall.sourceId),
+            heritageMap,
           );
           if (walkedType) {
             effectiveCall = { ...effectiveCall, receiverTypeName: walkedType };
@@ -1922,6 +2030,7 @@ export const processCallsFromExtracted = async (
         undefined,
         widenCache,
         effectiveCall.argTypes,
+        heritageMap,
       );
       if (!resolved) {
         // Vue template component fallback: match calledName against imported .vue basenames
@@ -1969,13 +2078,13 @@ export const processCallsFromExtracted = async (
         reason: resolved.reason,
       });
 
-      if (implementorMap && effectiveCall.callForm === 'member' && effectiveCall.receiverTypeName) {
+      if (heritageMap && effectiveCall.callForm === 'member' && effectiveCall.receiverTypeName) {
         const implTargets = findInterfaceDispatchTargets(
           effectiveCall.calledName,
           effectiveCall.receiverTypeName,
           effectiveCall.filePath,
           ctx,
-          implementorMap,
+          heritageMap,
           resolved.nodeId,
         );
         for (const impl of implTargets) {
@@ -2036,17 +2145,7 @@ export const processAssignmentsFromExtracted = (
     // Tier 3: static class-as-receiver fallback
     if (!receiverTypeName) {
       const resolved = ctx.resolve(asn.receiverText, asn.filePath);
-      if (
-        resolved?.candidates.some(
-          (d) =>
-            d.type === 'Class' ||
-            d.type === 'Struct' ||
-            d.type === 'Interface' ||
-            d.type === 'Enum' ||
-            d.type === 'Record' ||
-            d.type === 'Impl',
-        )
-      ) {
+      if (resolved?.candidates.some((d) => CLASS_LIKE_TYPES.has(d.type))) {
         receiverTypeName = asn.receiverText;
       }
     }

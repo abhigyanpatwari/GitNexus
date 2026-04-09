@@ -132,6 +132,23 @@ describe('C# ambiguous symbol resolution', () => {
   });
 });
 
+describe('C# qualified class names', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-qualified-types'), () => {});
+  }, 60000);
+
+  it('stores distinct qualified names for same-named classes across namespaces', () => {
+    const users = getNodesByLabelFull(result, 'Class').filter((node) => node.name === 'User');
+    expect(users).toHaveLength(2);
+    expect(users.map((node) => node.properties.qualifiedName).sort()).toEqual([
+      'Data.Auth.User',
+      'Services.Auth.User',
+    ]);
+  });
+});
+
 describe('C# call resolution with arity filtering', () => {
   let result: PipelineResult;
 
@@ -1909,5 +1926,40 @@ describe('C# overloaded method disambiguation (METHOD_IMPLEMENTS)', () => {
     const ifaces = getNodesByLabel(result, 'Interface');
     expect(classes).toContain('SqlRepository');
     expect(ifaces).toContain('IRepository');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SM-9: lookupMethodByOwnerWithMRO — c.ParentMethod() via implements-split walk
+// ---------------------------------------------------------------------------
+
+describe('C# Child extends Parent — inherited method resolution (SM-9)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-child-extends-parent'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Parent and Child classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Parent');
+    expect(classes).toContain('Child');
+  });
+
+  it('emits EXTENDS edge: Child → Parent', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Child → Parent');
+  });
+
+  it('resolves c.ParentMethod() to Parent.ParentMethod via implements-split MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const parentMethodCall = calls.find(
+      (c) => c.target === 'ParentMethod' && c.targetFilePath.includes('Parent.cs'),
+    );
+    expect(parentMethodCall).toBeDefined();
+    expect(parentMethodCall!.source).toBe('Run');
   });
 });

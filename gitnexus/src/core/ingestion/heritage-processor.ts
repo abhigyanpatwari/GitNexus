@@ -372,7 +372,7 @@ export const processHeritageFromExtracted = async (
 /**
  * Walk source files with the same heritage captures as parse-worker, producing
  * {@link ExtractedHeritage} rows without mutating the graph. Used on the
- * sequential pipeline path so `buildImplementorMap(..., ctx)` can run before
+ * sequential pipeline path so `buildHeritageMap(..., ctx)` can run before
  * `processCalls` (worker path defers calls until heritage from all chunks exists).
  */
 export async function extractExtractedHeritageFromFiles(

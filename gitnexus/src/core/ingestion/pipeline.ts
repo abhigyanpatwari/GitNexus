@@ -21,9 +21,8 @@ import {
   buildImportedRawReturnTypes,
   type ExportedTypeMap,
   buildExportedTypeMapFromGraph,
-  buildImplementorMap,
-  mergeImplementorMaps,
 } from './call-processor.js';
+import { buildHeritageMap } from './heritage-map.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from './route-extractors/nextjs.js';
 import { expoFileToRouteURL } from './route-extractors/expo.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';
@@ -949,11 +948,9 @@ async function runChunkedParseAndResolve(
       // chunkContents + chunkFiles + chunkWorkerData go out of scope → GC reclaims
     }
 
-    // Complete implementor map from all worker heritage, then resolve CALLS once (interface dispatch).
-    const fullWorkerImplementorMap =
-      deferredWorkerHeritage.length > 0
-        ? buildImplementorMap(deferredWorkerHeritage, ctx)
-        : new Map<string, Set<string>>();
+    // Build unified HeritageMap (parent lookup + implementor index) after all chunks.
+    const fullWorkerHeritageMap =
+      deferredWorkerHeritage.length > 0 ? buildHeritageMap(deferredWorkerHeritage, ctx) : undefined;
 
     if (deferredWorkerCalls.length > 0) {
       await processCallsFromExtracted(
@@ -974,7 +971,7 @@ async function runChunkedParseAndResolve(
           });
         },
         deferredConstructorBindings.length > 0 ? deferredConstructorBindings : undefined,
-        fullWorkerImplementorMap,
+        fullWorkerHeritageMap,
       );
     }
 
@@ -994,17 +991,38 @@ async function runChunkedParseAndResolve(
   // Synthesize wildcard import bindings once after ALL imports are processed,
   // before any call resolution — same rationale as the worker-path inline synthesis.
   if (sequentialChunkPaths.length > 0) synthesizeWildcardImportBindings(graph, ctx);
-  // Merge implementor-map deltas per chunk (O(heritage per chunk)), not O(|edges|) graph scans
-  // per chunk — mirrors worker-path deferred heritage without re-iterating all relationships.
-  const sequentialImplementorMap = new Map<string, Set<string>>();
+  // Pass 1: Extract heritage from all sequential chunks.
+  // Heritage must be fully accumulated BEFORE call resolution so the HeritageMap
+  // has the complete ancestor chain and implementor index (same constraint as
+  // the worker path).
+  //
+  // File contents are read once here and cached for Pass 2 to avoid a 2× I/O
+  // cost on the sequential path (ASTs are intentionally NOT cached — rebuilding
+  // them in Pass 2 keeps peak memory bounded to one chunk at a time).
+  const allSequentialHeritage: ExtractedHeritage[] = [];
+  const cachedSequentialChunkFiles: Array<Array<{ path: string; content: string }>> = [];
   for (const chunkPaths of sequentialChunkPaths) {
     const chunkContents = await readFileContents(repoPath, chunkPaths);
     const chunkFiles = chunkPaths
       .filter((p) => chunkContents.has(p))
       .map((p) => ({ path: p, content: chunkContents.get(p)! }));
+    cachedSequentialChunkFiles.push(chunkFiles);
     astCache = createASTCache(chunkFiles.length);
     const sequentialHeritage = await extractExtractedHeritageFromFiles(chunkFiles, astCache);
-    mergeImplementorMaps(sequentialImplementorMap, buildImplementorMap(sequentialHeritage, ctx));
+    // Manual loop (not spread) — `push(...arr)` blows the stack on very large
+    // arrays, see #650. Pay the explicit iteration cost for safety.
+    for (const h of sequentialHeritage) allSequentialHeritage.push(h);
+    astCache.clear();
+  }
+  // Build unified HeritageMap from all sequential heritage (parent lookup + implementor index).
+  const sequentialHeritageMap =
+    allSequentialHeritage.length > 0 ? buildHeritageMap(allSequentialHeritage, ctx) : undefined;
+
+  // Pass 2: Process calls, heritage edges, fetch calls, and ORM queries per chunk.
+  // Reuse the file contents cached in Pass 1 instead of re-reading from disk.
+  for (let chunkIdx = 0; chunkIdx < sequentialChunkPaths.length; chunkIdx++) {
+    const chunkFiles = cachedSequentialChunkFiles[chunkIdx];
+    astCache = createASTCache(chunkFiles.length);
     const rubyHeritage = await processCalls(
       graph,
       chunkFiles,
@@ -1015,7 +1033,7 @@ async function runChunkedParseAndResolve(
       undefined,
       undefined,
       undefined,
-      sequentialImplementorMap,
+      sequentialHeritageMap,
     );
     await processHeritage(graph, chunkFiles, astCache, ctx);
     if (rubyHeritage.length > 0) {
@@ -1031,6 +1049,10 @@ async function runChunkedParseAndResolve(
       extractORMQueriesInline(f.path, f.content, allORMQueries);
     }
     astCache.clear();
+    // Release cached chunk content as soon as Pass 2 finishes with it so the
+    // Pass-1 content map drains incrementally rather than being held for the
+    // full duration of Pass 2.
+    cachedSequentialChunkFiles[chunkIdx] = [];
   }
 
   // Log resolution cache stats
@@ -1040,6 +1062,9 @@ async function runChunkedParseAndResolve(
     const hitRate = total > 0 ? ((rcStats.cacheHits / total) * 100).toFixed(1) : '0';
     console.log(
       `🔍 Resolution cache: ${rcStats.cacheHits} hits, ${rcStats.cacheMisses} misses (${hitRate}% hit rate)`,
+    );
+    console.log(
+      `🔍 Fuzzy Lookups: ${rcStats.fuzzyCallCount} total, ${rcStats.fuzzyCallableCallCount} callable`,
     );
   }
 

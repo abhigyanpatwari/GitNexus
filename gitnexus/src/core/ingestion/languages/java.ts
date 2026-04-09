@@ -8,6 +8,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { createClassExtractor } from '../class-extractors/generic.js';
 import { defineLanguage } from '../language-provider.js';
 import { javaTypeConfig } from '../type-extractors/jvm.js';
 import { javaExportChecker } from '../export-detection.js';
@@ -31,4 +32,20 @@ export const javaProvider = defineLanguage({
   mroStrategy: 'implements-split',
   fieldExtractor: createFieldExtractor(javaConfig),
   methodExtractor: createMethodExtractor(javaMethodConfig),
+  classExtractor: createClassExtractor({
+    language: SupportedLanguages.Java,
+    typeDeclarationNodes: [
+      'class_declaration',
+      'interface_declaration',
+      'enum_declaration',
+      'record_declaration',
+    ],
+    fileScopeNodeTypes: ['package_declaration'],
+    ancestorScopeNodeTypes: [
+      'class_declaration',
+      'interface_declaration',
+      'enum_declaration',
+      'record_declaration',
+    ],
+  }),
 });

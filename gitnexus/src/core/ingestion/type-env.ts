@@ -395,7 +395,7 @@ const findEnclosingScopeKey = (
  * using cross-file type information when available.
  *
  * Only `.has()` is exposed — the SymbolTable doesn't support iteration.
- * Results are memoized to avoid redundant lookupFuzzy scans across declarations.
+ * Results are memoized to avoid redundant class-index scans across declarations.
  */
 const createClassNameLookup = (
   localNames: Set<string>,
@@ -410,7 +410,7 @@ const createClassNameLookup = (
       const cached = memo.get(name);
       if (cached !== undefined) return cached;
       const result = symbolTable
-        .lookupFuzzy(name)
+        .lookupClassByName(name)
         .some((def) => def.type === 'Class' || def.type === 'Enum' || def.type === 'Struct');
       memo.set(name, result);
       return result;
@@ -459,18 +459,23 @@ const SKIP_SUBTREE_TYPES = new Set([
 ]);
 
 const CLASS_LIKE_TYPES = new Set(['Class', 'Struct', 'Interface']);
+type ClassDefRef = { nodeId: string; type: string; filePath: string };
+
+const lookupClassDefsByName = (
+  symbolTable: SymbolTable,
+  name: string,
+  allowedTypes: ReadonlySet<string> = CLASS_LIKE_TYPES,
+): ClassDefRef[] => symbolTable.lookupClassByName(name).filter((d) => allowedTypes.has(d.type));
 
 /** Memoize class definition lookups during fixpoint iteration.
  *  SymbolTable is immutable during type resolution, so results never change.
  *  Eliminates redundant array allocations + filter scans across iterations. */
 const createClassDefCache = (symbolTable?: SymbolTable) => {
-  const cache = new Map<string, Array<{ nodeId: string; type: string }>>();
+  const cache = new Map<string, ClassDefRef[]>();
   return (typeName: string) => {
     let result = cache.get(typeName);
     if (result === undefined) {
-      result = symbolTable
-        ? symbolTable.lookupFuzzy(typeName).filter((d) => CLASS_LIKE_TYPES.has(d.type))
-        : [];
+      result = symbolTable ? lookupClassDefsByName(symbolTable, typeName) : [];
       cache.set(typeName, result);
     }
     return result;
@@ -556,7 +561,7 @@ export const isSubclassOf = (
 const walkParentChain = <T>(
   typeName: string,
   parentMap: ReadonlyMap<string, readonly string[]> | undefined,
-  getClassDefs: (name: string) => Array<{ nodeId: string; type: string }>,
+  getClassDefs: (name: string) => ClassDefRef[],
   lookupOnClass: (nodeId: string) => T | undefined,
 ): T | undefined => {
   if (!parentMap) return undefined;
@@ -592,15 +597,13 @@ const resolveFieldType = (
   field: string,
   scopeEnv: ReadonlyMap<string, string>,
   symbolTable?: SymbolTable,
-  getClassDefs?: (typeName: string) => Array<{ nodeId: string; type: string }>,
+  getClassDefs?: (typeName: string) => ClassDefRef[],
   parentMap?: ReadonlyMap<string, readonly string[]>,
 ): string | undefined => {
   if (!symbolTable) return undefined;
   const receiverType = scopeEnv.get(receiver);
   if (!receiverType) return undefined;
-  const lookup =
-    getClassDefs ??
-    ((name: string) => symbolTable.lookupFuzzy(name).filter((d) => CLASS_LIKE_TYPES.has(d.type)));
+  const lookup = getClassDefs ?? ((name: string) => lookupClassDefsByName(symbolTable, name));
   const classDefs = lookup(receiverType);
   if (classDefs.length !== 1) return undefined;
   // Direct lookup first
@@ -616,14 +619,14 @@ const resolveFieldType = (
 
 /** Resolve a method's return type given a receiver variable and method name.
  *  Uses SymbolTable to find class nodeIds for the receiver's type, then
- *  looks up the method via lookupFuzzyCallable filtered by ownerId.
+ *  looks up the method via owner-scoped lookupMethodByOwner.
  *  Falls back to MRO parent chain walking if direct lookup fails (Phase 11A). */
 const resolveMethodReturnType = (
   receiver: string,
   method: string,
   scopeEnv: ReadonlyMap<string, string>,
   symbolTable?: SymbolTable,
-  getClassDefs?: (typeName: string) => Array<{ nodeId: string; type: string }>,
+  getClassDefs?: (typeName: string) => ClassDefRef[],
   parentMap?: ReadonlyMap<string, readonly string[]>,
 ): string | undefined => {
   if (!symbolTable) return undefined;
@@ -631,33 +634,37 @@ const resolveMethodReturnType = (
   // When substituteThisReceiver replaced $this/self with the enclosing class name,
   // the receiver IS the type — look it up directly as a class name.
   if (!receiverType) {
-    const lookup =
-      getClassDefs ??
-      ((name: string) => symbolTable.lookupFuzzy(name).filter((d) => CLASS_LIKE_TYPES.has(d.type)));
+    const lookup = getClassDefs ?? ((name: string) => lookupClassDefsByName(symbolTable, name));
     if (lookup(receiver).length > 0) receiverType = receiver;
   }
   if (!receiverType) return undefined;
-  const lookup =
-    getClassDefs ??
-    ((name: string) => symbolTable.lookupFuzzy(name).filter((d) => CLASS_LIKE_TYPES.has(d.type)));
+  const lookup = getClassDefs ?? ((name: string) => lookupClassDefsByName(symbolTable, name));
   const classDefs = lookup(receiverType);
   if (classDefs.length === 0) return undefined;
   // Direct lookup first
-  const classNodeIds = new Set(classDefs.map((d) => d.nodeId));
-  const methods = symbolTable
-    .lookupFuzzyCallable(method)
-    .filter((d) => d.ownerId && classNodeIds.has(d.ownerId));
+  const directMethodLookups = classDefs.map((d) => ({
+    classDef: d,
+    methodDef: symbolTable.lookupMethodByOwner(d.nodeId, method),
+  }));
+  const hasAmbiguousDirectLookup = directMethodLookups.some(({ classDef, methodDef }) => {
+    if (methodDef) return false;
+    return symbolTable
+      .lookupExactAll(classDef.filePath, method)
+      .some((d) => d.ownerId === classDef.nodeId);
+  });
+  if (hasAmbiguousDirectLookup) return undefined;
+  const methods = directMethodLookups
+    .map(({ methodDef }) => methodDef)
+    .filter((d): d is NonNullable<typeof d> => d !== undefined);
   if (methods.length === 1 && methods[0].returnType) {
     return extractReturnTypeName(methods[0].returnType);
   }
   // MRO parent chain walking on miss
   if (methods.length === 0) {
     const inherited = walkParentChain(receiverType, parentMap, lookup, (nodeId) => {
-      const parentMethods = symbolTable
-        .lookupFuzzyCallable(method)
-        .filter((d) => d.ownerId === nodeId);
-      if (parentMethods.length !== 1 || !parentMethods[0].returnType) return undefined;
-      return extractReturnTypeName(parentMethods[0].returnType);
+      const parentMethod = symbolTable.lookupMethodByOwner(nodeId, method);
+      if (!parentMethod?.returnType) return undefined;
+      return extractReturnTypeName(parentMethod.returnType);
     });
     return inherited;
   }

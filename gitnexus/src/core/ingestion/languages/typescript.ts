@@ -10,6 +10,8 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { NodeLabel } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
+import { createClassExtractor } from '../class-extractors/generic.js';
+import type { ClassExtractionConfig } from '../class-types.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { tsExportChecker } from '../export-detection.js';
@@ -147,6 +149,22 @@ export const BUILT_INS: ReadonlySet<string> = new Set([
   'valueOf',
 ]);
 
+const tsJsClassConfig: ClassExtractionConfig = {
+  language: SupportedLanguages.TypeScript,
+  typeDeclarationNodes: [
+    'class_declaration',
+    'abstract_class_declaration',
+    'interface_declaration',
+    'enum_declaration',
+  ],
+  ancestorScopeNodeTypes: [
+    'class_declaration',
+    'abstract_class_declaration',
+    'interface_declaration',
+    'enum_declaration',
+  ],
+};
+
 export const typescriptProvider = defineLanguage({
   id: SupportedLanguages.TypeScript,
   extensions: ['.ts', '.tsx'],
@@ -160,6 +178,7 @@ export const typescriptProvider = defineLanguage({
     ...typescriptMethodConfig,
     extractFunctionName: tsExtractFunctionName,
   }),
+  classExtractor: createClassExtractor(tsJsClassConfig),
   builtInNames: BUILT_INS,
 });
 
@@ -175,6 +194,10 @@ export const javascriptProvider = defineLanguage({
   methodExtractor: createMethodExtractor({
     ...javascriptMethodConfig,
     extractFunctionName: tsExtractFunctionName,
+  }),
+  classExtractor: createClassExtractor({
+    ...tsJsClassConfig,
+    language: SupportedLanguages.JavaScript,
   }),
   builtInNames: BUILT_INS,
 });

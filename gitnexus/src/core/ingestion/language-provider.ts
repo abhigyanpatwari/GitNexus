@@ -12,6 +12,7 @@
 import type { SupportedLanguages } from 'gitnexus-shared';
 import type { LanguageTypeConfig } from './type-extractors/types.js';
 import type { CallRouter } from './call-routing.js';
+import type { ClassExtractor } from './class-types.js';
 import type { ExportChecker } from './export-detection.js';
 import type { FieldExtractor } from './field-extractor.js';
 import type { MethodExtractor } from './method-types.js';
@@ -131,6 +132,10 @@ interface LanguageProviderConfig {
    *  declarations. Produces MethodInfo[] with name, parameters, visibility, isAbstract,
    *  isFinal, annotations metadata. Default: undefined (no method extraction). */
   readonly methodExtractor?: MethodExtractor;
+  /** Class/type extractor for deriving canonical qualified names for class-like symbols.
+   *  Uses the same provider-driven strategy pattern as method/field extraction so
+   *  namespace/package/module rules stay language-specific. */
+  readonly classExtractor?: ClassExtractor;
   /** Extract a semantic description for a definition node (e.g., PHP Eloquent
    *  property arrays, relation method descriptions).
    *  Default: undefined (no description extraction). */

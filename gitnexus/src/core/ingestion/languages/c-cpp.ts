@@ -9,6 +9,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { createClassExtractor } from '../class-extractors/generic.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as cCppConfig } from '../type-extractors/c-cpp.js';
 import { cCppExportChecker } from '../export-detection.js';
@@ -143,6 +144,17 @@ const C_BUILT_INS: ReadonlySet<string> = new Set([
   'get',
   'put',
 ]);
+
+const cClassExtractor = createClassExtractor({
+  language: SupportedLanguages.C,
+  typeDeclarationNodes: ['struct_specifier', 'enum_specifier'],
+});
+
+const cppClassExtractor = createClassExtractor({
+  language: SupportedLanguages.CPlusPlus,
+  typeDeclarationNodes: ['class_specifier', 'struct_specifier', 'enum_specifier'],
+  ancestorScopeNodeTypes: ['namespace_definition', 'class_specifier', 'struct_specifier'],
+});
 
 /**
  * C/C++ function name extraction — unwraps pointer_declarator / reference_declarator /
@@ -315,6 +327,7 @@ export const cProvider = defineLanguage({
     ...cMethodConfig,
     extractFunctionName: cCppExtractFunctionName,
   }),
+  classExtractor: cClassExtractor,
   labelOverride: cppLabelOverride,
   builtInNames: C_BUILT_INS,
 });
@@ -333,6 +346,7 @@ export const cppProvider = defineLanguage({
     ...cppMethodConfig,
     extractFunctionName: cCppExtractFunctionName,
   }),
+  classExtractor: cppClassExtractor,
   labelOverride: cppLabelOverride,
   builtInNames: C_BUILT_INS,
 });
