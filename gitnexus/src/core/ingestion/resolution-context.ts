@@ -10,15 +10,15 @@
  * 2a-named. Named binding chain (walkBindingChain via NamedImportMap)
  * 2a. Import-scoped (iterate importedFiles with lookupExactAll per file)
  * 2b. Package-scoped (iterate indexed files matching package dir with lookupExactAll)
- * 3. Global (lookupClassByName + lookupFuzzyCallable — consumers must check count)
+ * 3. Global (lookupClassByName + lookupImplByName + lookupFuzzyCallable — consumers must check count)
  *
  * SM-16: resolveUncached no longer calls lookupFuzzy. Each tier queries the
  * minimum necessary scope directly:
  * - Tier 2a iterates the caller's import set (O(imports) × O(1) lookupExactAll).
  * - Tier 2b iterates all indexed files filtered by package dir
  *   (O(files) × O(1) lookupExactAll — avoids a global name scan).
- * - Tier 3 combines lookupClassByName + lookupFuzzyCallable (two O(1) index
- *   lookups vs one O(1) lookupFuzzy, with a narrower result set).
+ * - Tier 3 combines lookupClassByName + lookupImplByName + lookupFuzzyCallable
+ *   (three O(1) index lookups vs one O(1) lookupFuzzy, with a narrower result set).
  */
 
 import type { SymbolTable, SymbolDefinition } from './symbol-table.js';
@@ -160,15 +160,22 @@ export const createResolutionContext = (): ResolutionContext => {
     const classDefs = symbols.lookupClassByName(name);
     const implDefs = symbols.lookupImplByName(name);
     const callableDefs = symbols.lookupFuzzyCallable(name);
-    // Build combined list without allocation when only one group has results.
-    const globalDefs: SymbolDefinition[] =
-      implDefs.length === 0 && callableDefs.length === 0
-        ? classDefs
-        : classDefs.length === 0 && implDefs.length === 0
-          ? callableDefs
-          : classDefs.length === 0 && callableDefs.length === 0
-            ? implDefs
-            : [...classDefs, ...implDefs, ...callableDefs];
+
+    // Avoid allocation when only one group has results (the common case).
+    let globalDefs: SymbolDefinition[];
+    const hasClass = classDefs.length > 0;
+    const hasImpl = implDefs.length > 0;
+    const hasCallable = callableDefs.length > 0;
+    if (hasClass && !hasImpl && !hasCallable) {
+      globalDefs = classDefs;
+    } else if (!hasClass && !hasImpl && hasCallable) {
+      globalDefs = callableDefs;
+    } else if (!hasClass && hasImpl && !hasCallable) {
+      globalDefs = implDefs;
+    } else {
+      globalDefs = [...classDefs, ...implDefs, ...callableDefs];
+    }
+
     if (globalDefs.length === 0) return null;
     return { candidates: globalDefs, tier: 'global' };
   };
