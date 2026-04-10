@@ -1,7 +1,7 @@
 import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
 import type { SymbolDefinition, SymbolTable } from './symbol-table.js';
-import { CLASS_TYPES } from './symbol-table.js';
+import { CLASS_TYPES, CALLABLE_TYPES } from './symbol-table.js';
 import Parser from 'tree-sitter';
 import type { ResolutionContext } from './resolution-context.js';
 import { TIER_CONFIDENCE, type ResolutionTier } from './resolution-context.js';
@@ -1299,7 +1299,7 @@ export const processCalls = async (
   return collectedHeritage;
 };
 
-const CALLABLE_SYMBOL_TYPES = new Set(['Function', 'Method', 'Constructor', 'Macro', 'Delegate']);
+// CALLABLE_TYPES imported from symbol-table.ts — single source of truth.
 
 const CONSTRUCTOR_TARGET_TYPES = new Set(['Constructor', 'Class', 'Struct', 'Record']);
 
@@ -1317,10 +1317,10 @@ const filterCallableCandidates = (
     } else {
       const types = candidates.filter((c) => CONSTRUCTOR_TARGET_TYPES.has(c.type));
       kindFiltered =
-        types.length > 0 ? types : candidates.filter((c) => CALLABLE_SYMBOL_TYPES.has(c.type));
+        types.length > 0 ? types : candidates.filter((c) => CALLABLE_TYPES.has(c.type));
     }
   } else {
-    kindFiltered = candidates.filter((c) => CALLABLE_SYMBOL_TYPES.has(c.type));
+    kindFiltered = candidates.filter((c) => CALLABLE_TYPES.has(c.type));
   }
 
   if (kindFiltered.length === 0) return [];

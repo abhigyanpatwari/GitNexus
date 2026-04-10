@@ -88,6 +88,8 @@ const createMockSymbolTable = (overrides: Partial<SymbolTable> = {}): SymbolTabl
   lookupMethodByOwner: () => undefined,
   lookupClassByName: () => [],
   lookupClassByQualifiedName: () => [],
+  lookupImplByName: () => [],
+  getFiles: () => [][Symbol.iterator](),
   getStats: () => ({
     fileCount: 0,
   }),

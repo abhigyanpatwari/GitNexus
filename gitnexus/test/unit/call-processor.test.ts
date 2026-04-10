@@ -2550,3 +2550,44 @@ describe('processAssignmentsFromExtracted', () => {
     expect(accesses[0].targetId).toBe('Property:src/models.ts:address');
   });
 });
+
+// ---- D2 widen: module-alias + lookupCallableByName resolves method in aliased file ----
+
+describe('D2 widen path: lookupCallableByName via module alias', () => {
+  let graph: ReturnType<typeof createKnowledgeGraph>;
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    graph = createKnowledgeGraph();
+    ctx = createResolutionContext();
+  });
+
+  it('resolves method via module alias widen using lookupCallableByName', async () => {
+    // Python pattern: `import auth; auth.login()` — auth is a module alias
+    // pointing to auth.py. login() is defined only in auth.py (not imported
+    // by consumer.py). The D2 widen path should find login via the global
+    // callable index filtered to the aliased module file.
+    ctx.symbols.add('src/auth.py', 'login', 'Function:src/auth.py:login', 'Function');
+    // Consumer has a same-file function that shadows 'login' at Tier 1
+    ctx.symbols.add('src/consumer.py', 'login', 'Function:src/consumer.py:login', 'Function');
+    // Module alias: consumer.py → auth → src/auth.py
+    ctx.moduleAliasMap.set('src/consumer.py', new Map([['auth', 'src/auth.py']]));
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.py',
+        calledName: 'login',
+        sourceId: 'Function:src/consumer.py:main',
+        receiverName: 'auth',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx);
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    // Should resolve to auth.py's login, NOT consumer.py's same-file shadow
+    expect(rels[0].targetId).toBe('Function:src/auth.py:login');
+  });
+});

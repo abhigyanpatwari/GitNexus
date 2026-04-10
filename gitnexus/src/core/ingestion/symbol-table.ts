@@ -14,6 +14,17 @@ export const CLASS_TYPES = new Set([
   'Trait',
 ]);
 
+/** Callable symbol types indexed in callableByName for Tier 3 resolution
+ *  and D2 widen in call-processor.ts. Single source of truth — do not
+ *  duplicate this set elsewhere. */
+export const CALLABLE_TYPES = new Set([
+  'Function',
+  'Method',
+  'Constructor',
+  'Macro', // C/C++
+  'Delegate', // C#
+]);
+
 export interface SymbolDefinition {
   nodeId: string;
   filePath: string;
@@ -193,9 +204,7 @@ export const createSymbolTable = (): SymbolTable => {
   // reachable from Tier 3 resolution for method lookup.
   const implByName = new Map<string, SymbolDefinition[]>();
 
-  // Must match CALLABLE_SYMBOL_TYPES in call-processor.ts — Macro (C/C++)
-  // and Delegate (C#) are callable targets that Tier 3 must surface.
-  const CALLABLE_TYPES = new Set(['Function', 'Method', 'Constructor', 'Macro', 'Delegate']);
+  // Use the module-level CALLABLE_TYPES constant (exported for call-processor.ts).
 
   const add = (
     filePath: string,

@@ -77,6 +77,10 @@ export interface ResolutionContext {
     fileCount: number;
     cacheHits: number;
     cacheMisses: number;
+    tierSameFile: number;
+    tierImportScoped: number;
+    tierGlobal: number;
+    tierMiss: number;
   };
   clear(): void;
 }
@@ -100,6 +104,11 @@ export const createResolutionContext = (): ResolutionContext => {
   let cache: Map<string, TieredCandidates | null> | null = null;
   let cacheHits = 0;
   let cacheMisses = 0;
+  // Tier hit counters — replaces the lost fuzzyCallCount diagnostic
+  let tierSameFile = 0;
+  let tierImportScoped = 0;
+  let tierGlobal = 0;
+  let tierMiss = 0;
 
   // --- Core resolution (single implementation of tier logic) ---
 
@@ -107,6 +116,7 @@ export const createResolutionContext = (): ResolutionContext => {
     // Tier 1: Same file — authoritative match (returns all overloads)
     const localDefs = symbols.lookupExactAll(fromFile, name);
     if (localDefs.length > 0) {
+      tierSameFile++;
       return { candidates: localDefs, tier: 'same-file' };
     }
 
@@ -115,6 +125,7 @@ export const createResolutionContext = (): ResolutionContext => {
     // correctly even when lookupExactAll on the alias name returns nothing.
     const chainResult = walkBindingChain(name, fromFile, symbols, namedImportMap);
     if (chainResult && chainResult.length > 0) {
+      tierImportScoped++;
       return { candidates: chainResult, tier: 'import-scoped' };
     }
 
@@ -127,6 +138,7 @@ export const createResolutionContext = (): ResolutionContext => {
         importedDefs.push(...symbols.lookupExactAll(file, name));
       }
       if (importedDefs.length > 0) {
+        tierImportScoped++;
         return { candidates: importedDefs, tier: 'import-scoped' };
       }
     }
@@ -174,6 +186,7 @@ export const createResolutionContext = (): ResolutionContext => {
         }
       }
       if (packageDefs.length > 0) {
+        tierImportScoped++;
         return { candidates: packageDefs, tier: 'import-scoped' };
       }
     }
@@ -197,8 +210,12 @@ export const createResolutionContext = (): ResolutionContext => {
     const implDefs = symbols.lookupImplByName(name);
     const callableDefs = symbols.lookupCallableByName(name);
 
-    if (classDefs.length === 0 && implDefs.length === 0 && callableDefs.length === 0) return null;
+    if (classDefs.length === 0 && implDefs.length === 0 && callableDefs.length === 0) {
+      tierMiss++;
+      return null;
+    }
     const globalDefs = [...classDefs, ...implDefs, ...callableDefs];
+    tierGlobal++;
     return { candidates: globalDefs, tier: 'global' };
   };
 
@@ -247,6 +264,10 @@ export const createResolutionContext = (): ResolutionContext => {
     ...symbols.getStats(),
     cacheHits,
     cacheMisses,
+    tierSameFile,
+    tierImportScoped,
+    tierGlobal,
+    tierMiss,
   });
 
   const clear = (): void => {
@@ -259,6 +280,10 @@ export const createResolutionContext = (): ResolutionContext => {
     clearCache();
     cacheHits = 0;
     cacheMisses = 0;
+    tierSameFile = 0;
+    tierImportScoped = 0;
+    tierGlobal = 0;
+    tierMiss = 0;
   };
 
   return {

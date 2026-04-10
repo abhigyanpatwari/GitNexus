@@ -192,6 +192,18 @@ describe('SymbolTable', () => {
       // Class is not callable, should not appear
       expect(table.lookupCallableByName('foo')).toHaveLength(1);
     });
+
+    it('Macro (C/C++) is indexed in callable index', () => {
+      table.add('src/macros.h', 'ASSERT', 'macro:ASSERT', 'Macro' as any);
+      expect(table.lookupCallableByName('ASSERT')).toHaveLength(1);
+      expect(table.lookupCallableByName('ASSERT')[0].type).toBe('Macro');
+    });
+
+    it('Delegate (C#) is indexed in callable index', () => {
+      table.add('src/Events.cs', 'OnClick', 'delegate:OnClick', 'Delegate' as any);
+      expect(table.lookupCallableByName('OnClick')).toHaveLength(1);
+      expect(table.lookupCallableByName('OnClick')[0].type).toBe('Delegate');
+    });
   });
 
   describe('lookupFieldByOwner', () => {
