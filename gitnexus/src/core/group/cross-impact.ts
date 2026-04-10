@@ -122,6 +122,25 @@ function computePhase1Timeout(timeout: number): number {
   return Math.min(Math.ceil(timeout * 0.3), 10000);
 }
 
+async function runPhase1WithTimeout(
+  timeout: number,
+  localImpactFn: (target: string, direction: string) => Promise<unknown>,
+  target: string,
+  direction: 'upstream' | 'downstream',
+): Promise<{ ok: true; v: unknown } | { ok: false }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      localImpactFn(target, direction).then((v) => ({ ok: true as const, v })),
+      new Promise<{ ok: false }>((resolve) => {
+        timer = setTimeout(() => resolve({ ok: false }), timeout);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function runGroupImpactLegacy(
   opts: LegacyGroupImpactOptions,
 ): Promise<GroupImpactResult> {
@@ -133,12 +152,12 @@ export async function runGroupImpactLegacy(
   const wallDeadline = tStart + timeout;
   const phase1Timeout = computePhase1Timeout(timeout);
 
-  const localResult = await Promise.race([
-    opts.localImpactFn(opts.target, opts.direction).then((v) => ({ ok: true as const, v })),
-    new Promise<{ ok: false }>((resolve) =>
-      setTimeout(() => resolve({ ok: false }), phase1Timeout),
-    ),
-  ]);
+  const localResult = await runPhase1WithTimeout(
+    phase1Timeout,
+    opts.localImpactFn,
+    opts.target,
+    opts.direction,
+  );
 
   let truncated = !localResult.ok;
   const local = localResult.ok
@@ -256,15 +275,6 @@ export async function runGroupImpactLegacy(
 /*  Cypher-based Phase 2                                               */
 /* ------------------------------------------------------------------ */
 
-const UPSTREAM_QUERY_BASE = `
-MATCH (consumer:Contract)-[l:ContractLink]->(provider:Contract)
-WHERE provider.repo = $sourceRepo
-  AND (provider.symbolUid IN $localUids
-       OR (NOT provider.symbolUid IN $localUids AND (provider.filePath + '::' + provider.symbolName) IN $localRefs))
-  AND l.confidence >= $minConfidence`;
-
-const UPSTREAM_QUERY_SUBGROUP = ` AND (consumer.repo = $subgroup OR consumer.repo STARTS WITH $subgroup + '/')`;
-
 const UPSTREAM_QUERY_RETURN = `
 RETURN consumer.repo AS fanOutRepo, consumer.symbolUid AS fanOutUid,
        consumer.filePath AS fanOutFilePath, consumer.symbolName AS fanOutSymbolName,
@@ -275,15 +285,6 @@ RETURN consumer.repo AS fanOutRepo, consumer.symbolUid AS fanOutUid,
        consumer.type AS contractType
 ORDER BY l.confidence DESC`;
 
-const DOWNSTREAM_QUERY_BASE = `
-MATCH (consumer:Contract)-[l:ContractLink]->(provider:Contract)
-WHERE consumer.repo = $sourceRepo
-  AND (consumer.symbolUid IN $localUids
-       OR (NOT consumer.symbolUid IN $localUids AND (consumer.filePath + '::' + consumer.symbolName) IN $localRefs))
-  AND l.confidence >= $minConfidence`;
-
-const DOWNSTREAM_QUERY_SUBGROUP = ` AND (provider.repo = $subgroup OR provider.repo STARTS WITH $subgroup + '/')`;
-
 const DOWNSTREAM_QUERY_RETURN = `
 RETURN provider.repo AS fanOutRepo, provider.symbolUid AS fanOutUid,
        provider.filePath AS fanOutFilePath, provider.symbolName AS fanOutSymbolName,
@@ -293,6 +294,45 @@ RETURN provider.repo AS fanOutRepo, provider.symbolUid AS fanOutUid,
        l.matchType AS matchType, l.confidence AS confidence, l.contractId AS contractId,
        consumer.type AS contractType
 ORDER BY l.confidence DESC`;
+
+function buildBridgeQuery(
+  direction: 'upstream' | 'downstream',
+  hasUids: boolean,
+  hasRefs: boolean,
+  subgroup?: string,
+): string | null {
+  const isUpstream = direction === 'upstream';
+  const sourceAlias = isUpstream ? 'provider' : 'consumer';
+  const fanOutAlias = isUpstream ? 'consumer' : 'provider';
+  const localMatchers: string[] = [];
+
+  if (hasUids) {
+    localMatchers.push(`${sourceAlias}.symbolUid IN $localUids`);
+  }
+  if (hasRefs) {
+    localMatchers.push(
+      `(${sourceAlias}.filePath + '::' + ${sourceAlias}.symbolName) IN $localRefs`,
+    );
+  }
+  if (localMatchers.length === 0) {
+    return null;
+  }
+
+  const whereClauses = [
+    `${sourceAlias}.repo = $sourceRepo`,
+    `(${localMatchers.join(' OR ')})`,
+    'l.confidence >= $minConfidence',
+  ];
+  const normalizedSubgroup = subgroup?.trim().replace(/\/+$/, '');
+  if (normalizedSubgroup) {
+    whereClauses.push(
+      `(${fanOutAlias}.repo = $subgroup OR ${fanOutAlias}.repo STARTS WITH $subgroup + '/')`,
+    );
+  }
+
+  const returnClause = isUpstream ? UPSTREAM_QUERY_RETURN : DOWNSTREAM_QUERY_RETURN;
+  return `MATCH (consumer:Contract)-[l:ContractLink]->(provider:Contract)\nWHERE ${whereClauses.join('\n  AND ')}${returnClause}`;
+}
 
 interface CrossImpactRow {
   fanOutRepo: string;
@@ -317,12 +357,12 @@ export async function runGroupImpact(opts: GroupImpactOptions): Promise<GroupImp
   const wallDeadline = tStart + timeout;
   const phase1Timeout = computePhase1Timeout(timeout);
 
-  const localResult = await Promise.race([
-    opts.localImpactFn(opts.target, opts.direction).then((v) => ({ ok: true as const, v })),
-    new Promise<{ ok: false }>((resolve) =>
-      setTimeout(() => resolve({ ok: false }), phase1Timeout),
-    ),
-  ]);
+  const localResult = await runPhase1WithTimeout(
+    phase1Timeout,
+    opts.localImpactFn,
+    opts.target,
+    opts.direction,
+  );
 
   let truncated = !localResult.ok;
   const local = localResult.ok
@@ -346,27 +386,29 @@ export async function runGroupImpact(opts: GroupImpactOptions): Promise<GroupImp
 
   /* Phase 2 — Cypher bridge query */
   const normalizedSubgroup = opts.subgroup?.trim().replace(/\/+$/, '') || null;
-
-  const isUpstream = opts.direction === 'upstream';
-  const queryBase = isUpstream ? UPSTREAM_QUERY_BASE : DOWNSTREAM_QUERY_BASE;
-  const querySubgroup = isUpstream ? UPSTREAM_QUERY_SUBGROUP : DOWNSTREAM_QUERY_SUBGROUP;
-  const queryReturn = isUpstream ? UPSTREAM_QUERY_RETURN : DOWNSTREAM_QUERY_RETURN;
-
-  const cypher = normalizedSubgroup
-    ? queryBase + querySubgroup + queryReturn
-    : queryBase + queryReturn;
-
+  const localUids = [...uids];
+  const localRefs = [...phase1Refs];
+  const cypher = buildBridgeQuery(
+    opts.direction,
+    localUids.length > 0,
+    localRefs.length > 0,
+    normalizedSubgroup ?? undefined,
+  );
   const queryParams: Record<string, unknown> = {
     sourceRepo: opts.repoPath,
-    localUids: [...uids],
-    localRefs: [...phase1Refs],
     minConfidence,
   };
+  if (localUids.length > 0) {
+    queryParams.localUids = localUids;
+  }
+  if (localRefs.length > 0) {
+    queryParams.localRefs = localRefs;
+  }
   if (normalizedSubgroup) {
     queryParams.subgroup = normalizedSubgroup;
   }
 
-  const rows = await opts.bridgeQuery<CrossImpactRow>(cypher, queryParams);
+  const rows = cypher ? await opts.bridgeQuery<CrossImpactRow>(cypher, queryParams) : [];
 
   let maxCrossConf = 0;
   const distinctRepos = new Set<string>();

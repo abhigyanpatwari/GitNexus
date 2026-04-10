@@ -15,7 +15,11 @@ import {
   detectServiceBoundaries,
   assignService,
 } from '../../../src/core/group/service-boundary-detector.js';
-import { runExactMatch } from '../../../src/core/group/matching.js';
+import {
+  buildProviderIndex,
+  runExactMatch,
+  runWildcardMatch,
+} from '../../../src/core/group/matching.js';
 import type { RepoHandle, StoredContract } from '../../../src/core/group/types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -116,5 +120,52 @@ describe('Monorepo sync integration', () => {
 
     // Summary: we should have at least 2 cross-links
     expect(matched.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('matches wildcard gRPC consumers to method providers with degraded confidence', async () => {
+    const handle = makeHandle();
+    const boundaries = await detectServiceBoundaries(MONOREPO_DIR);
+    const grpcContracts = await new GrpcExtractor().extract(null, MONOREPO_DIR, handle);
+    const allContracts: StoredContract[] = grpcContracts.map((contract) => ({
+      ...contract,
+      repo: REPO_GROUP_PATH,
+      service: assignService(contract.symbolRef.filePath, boundaries),
+    }));
+
+    const providerIndex = buildProviderIndex(allContracts);
+    const { unmatched } = runExactMatch(allContracts, providerIndex);
+    const { matched } = runWildcardMatch(unmatched, providerIndex);
+
+    const methodProvider = allContracts.find(
+      (contract) =>
+        contract.role === 'provider' &&
+        contract.contractId === 'grpc::auth.AuthService/Login' &&
+        contract.symbolRef.filePath.includes('services/auth/'),
+    );
+
+    expect(methodProvider).toBeDefined();
+
+    const wildcardLink = matched.find(
+      (link) =>
+        link.matchType === 'wildcard' &&
+        link.type === 'grpc' &&
+        link.contractId.endsWith('/*') &&
+        link.to.symbolRef.filePath.includes('services/auth/') &&
+        link.to.symbolRef.name === methodProvider?.symbolRef.name,
+    );
+
+    expect(wildcardLink).toBeDefined();
+    const wildcardConsumer = allContracts.find(
+      (contract) =>
+        contract.role === 'consumer' &&
+        contract.contractId === wildcardLink?.contractId &&
+        contract.symbolRef.filePath === wildcardLink?.from.symbolRef.filePath,
+    );
+
+    expect(wildcardConsumer).toBeDefined();
+    expect(wildcardLink?.confidence).toBe(
+      Math.min(wildcardConsumer?.confidence ?? 1, methodProvider?.confidence ?? 1),
+    );
+    expect(wildcardLink?.confidence).toBeLessThan(methodProvider?.confidence ?? 1);
   });
 });

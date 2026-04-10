@@ -5,6 +5,7 @@ import lbug from '@ladybugdb/core';
 import type { LbugValue } from '@ladybugdb/core';
 import type { BridgeHandle, BridgeMeta, StoredContract, CrossLink, RepoSnapshot } from './types.js';
 import { BRIDGE_SCHEMA_QUERIES, BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
+import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
 
 export function contractNodeId(
   repo: string,
@@ -120,6 +121,8 @@ export interface WriteBridgeInput {
 
 export async function writeBridge(groupDir: string, input: WriteBridgeInput): Promise<void> {
   await fsp.mkdir(groupDir, { recursive: true });
+  const contracts = dedupeContracts(input.contracts);
+  const crossLinks = dedupeCrossLinks(input.crossLinks);
 
   const finalPath = path.join(groupDir, 'bridge.lbug');
   const tmpPath = path.join(groupDir, 'bridge.lbug.tmp');
@@ -137,7 +140,7 @@ export async function writeBridge(groupDir: string, input: WriteBridgeInput): Pr
   await ensureBridgeSchema(handle);
 
   // Insert contracts
-  for (const c of input.contracts) {
+  for (const c of contracts) {
     const id = contractNodeId(c.repo, c.contractId, c.role, c.symbolRef.filePath);
     await queryBridge(
       handle,
@@ -216,10 +219,19 @@ export async function writeBridge(groupDir: string, input: WriteBridgeInput): Pr
       { repo, role, filePath, symbolName },
     );
     if (refRows.length > 0) return refRows[0].id;
+
+    const fileRows = await queryBridge<{ id: string }>(
+      handle,
+      `MATCH (c:Contract) WHERE c.repo = $repo AND c.role = $role
+       AND c.filePath = $filePath
+       RETURN c.id AS id LIMIT 2`,
+      { repo, role, filePath },
+    );
+    if (fileRows.length === 1) return fileRows[0].id;
     return null;
   };
 
-  for (const link of input.crossLinks) {
+  for (const link of crossLinks) {
     const fromId = await findContractNode(
       link.from.repo,
       'consumer',

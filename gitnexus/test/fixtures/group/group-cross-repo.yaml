@@ -1,0 +1,29 @@
+version: 1
+name: cross-repo-fixture
+description: "Cross-repo fixture backed by split monorepo services"
+
+repos:
+  platform/auth: test-monorepo/services/auth
+  platform/orders: test-monorepo/services/orders
+  platform/gateway: test-monorepo/services/gateway
+
+links:
+  - from: platform/orders
+    to: platform/auth
+    type: grpc
+    contract: auth.AuthService/Login
+    role: consumer
+
+packages: {}
+
+detect:
+  http: true
+  grpc: true
+  topics: false
+  shared_libs: false
+  embedding_fallback: false
+
+matching:
+  bm25_threshold: 0.7
+  embedding_threshold: 0.65
+  max_candidates_per_step: 3

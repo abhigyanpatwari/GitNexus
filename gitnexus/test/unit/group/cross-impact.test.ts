@@ -294,6 +294,55 @@ describe('runGroupImpact (Cypher-based)', () => {
     expect(result.outOfScope).toHaveLength(0);
   });
 
+  it('test_runGroupImpact_refs_only_bridge_query_omits_empty_uid_clause', async () => {
+    const bridgeQuery = makeBridgeQuery([
+      {
+        fanOutRepo: 'app/backend',
+        fanOutUid: '',
+        fanOutFilePath: 'src/ctrl.ts',
+        fanOutSymbolName: 'UserController.list',
+        matchedLocalUid: '',
+        matchedLocalFilePath: 'src/api.ts',
+        matchedLocalSymbolName: 'fetchUsers',
+        matchType: 'exact',
+        confidence: 1,
+        contractId: 'http::GET::/api/users',
+        contractType: 'http',
+      },
+    ]);
+    const crossImpactFn = vi.fn().mockResolvedValue({
+      byDepth: {},
+      affected_processes: [],
+    });
+
+    const result = await runGroupImpact({
+      groupName: 'test',
+      target: 'fetchUsers',
+      repoPath: 'app/frontend',
+      direction: 'downstream',
+      bridgeQuery,
+      localImpactFn: async () => ({
+        target: { id: '', name: 'fetchUsers', filePath: 'src/api.ts' },
+        direction: 'downstream',
+        impactedCount: 1,
+        risk: 'LOW',
+        summary: { direct: 1, processes_affected: 0, modules_affected: 0 },
+        affected_processes: [],
+        affected_modules: [],
+        byDepth: {},
+      }),
+      crossImpactFn,
+    });
+
+    expect(bridgeQuery).toHaveBeenCalledOnce();
+    const [cypher, params] = bridgeQuery.mock.calls[0];
+    expect(cypher).toContain("(consumer.filePath + '::' + consumer.symbolName) IN $localRefs");
+    expect(cypher).not.toContain('consumer.symbolUid IN $localUids');
+    expect(params.localRefs).toEqual(['src/api.ts::fetchUsers']);
+    expect(params.localUids).toBeUndefined();
+    expect(result.summary.cross_repo_hits).toBe(1);
+  });
+
   it('test_runGroupImpact_downstream_fans_out_to_provider', async () => {
     const bridgeQuery = makeBridgeQuery([
       {

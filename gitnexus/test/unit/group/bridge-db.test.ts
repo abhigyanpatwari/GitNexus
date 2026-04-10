@@ -230,6 +230,78 @@ describe('writeBridge + read', () => {
     await closeBridgeDb(handle!);
   });
 
+  it('test_writeBridge_duplicate_contracts_and_links_are_deduped', async () => {
+    const provider = makeContract({
+      repo: 'backend',
+      role: 'provider',
+      symbolUid: '',
+      symbolName: 'auth.AuthService/Login',
+      symbolRef: { filePath: 'src/auth.proto', name: 'Login' },
+      contractId: 'grpc::auth.AuthService/Login',
+      type: 'grpc',
+      meta: { source: 'manifest' },
+    });
+    const concreteProvider = makeContract({
+      ...provider,
+      symbolUid: 'uid-auth-login',
+      symbolName: 'Login',
+      confidence: 0.85,
+      meta: { source: 'analyze' },
+    });
+    const consumer = makeContract({
+      repo: 'frontend',
+      role: 'consumer',
+      symbolUid: '',
+      symbolName: 'auth.AuthService/Login',
+      symbolRef: { filePath: 'src/client.ts', name: 'AuthServiceClient' },
+      contractId: 'grpc::auth.AuthService/Login',
+      type: 'grpc',
+      meta: { source: 'manifest' },
+    });
+    const link: CrossLink = {
+      from: {
+        repo: 'frontend',
+        symbolUid: '',
+        symbolRef: { filePath: 'src/client.ts', name: 'AuthServiceClient' },
+      },
+      to: {
+        repo: 'backend',
+        symbolUid: '',
+        symbolRef: { filePath: 'src/auth.proto', name: 'Login' },
+      },
+      type: 'grpc',
+      contractId: 'grpc::auth.AuthService/Login',
+      matchType: 'manifest',
+      confidence: 1,
+    };
+
+    await writeBridge(tmpDir, {
+      contracts: [provider, concreteProvider, consumer],
+      crossLinks: [link, { ...link }],
+      repoSnapshots: {},
+      missingRepos: [],
+    });
+
+    const handle = await openBridgeDbReadOnly(tmpDir);
+    const contracts = await queryBridge<{ repo: string; symbolUid: string; symbolName: string }>(
+      handle!,
+      'MATCH (c:Contract) RETURN c.repo AS repo, c.symbolUid AS symbolUid, c.symbolName AS symbolName ORDER BY c.repo',
+    );
+    const links = await queryBridge<{ fromRepo: string; toRepo: string }>(
+      handle!,
+      'MATCH (a:Contract)-[l:ContractLink]->(b:Contract) RETURN l.fromRepo AS fromRepo, l.toRepo AS toRepo',
+    );
+
+    expect(contracts).toHaveLength(2);
+    expect(contracts[0]).toEqual({
+      repo: 'backend',
+      symbolUid: 'uid-auth-login',
+      symbolName: 'Login',
+    });
+    expect(links).toHaveLength(1);
+    await closeBridgeDb(handle!);
+  });
+
   it('test_openBridgeDbReadOnly_returns_null_for_missing', async () => {
     const handle = await openBridgeDbReadOnly(path.join(tmpDir, 'nonexistent'));
     expect(handle).toBeNull();

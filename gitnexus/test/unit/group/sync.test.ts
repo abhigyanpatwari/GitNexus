@@ -114,6 +114,28 @@ describe('syncGroup', () => {
     expect(result.crossLinks[0].to.service).toBe('services/auth');
   });
 
+  it('deduplicates duplicate contracts and links before returning', async () => {
+    const config = makeConfig({ 'app/backend': 'backend-repo', 'app/frontend': 'frontend-repo' });
+
+    const duplicateProvider = makeContract('http::GET::/api/users', 'provider', 'app/backend');
+    const duplicateConsumer = makeContract('http::GET::/api/users', 'consumer', 'app/frontend');
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => [
+        duplicateProvider,
+        { ...duplicateProvider, confidence: 0.9, meta: { source: 'manifest' } },
+        duplicateConsumer,
+        { ...duplicateConsumer, confidence: 0.75, meta: { source: 'manifest' } },
+      ],
+      skipWrite: true,
+    });
+
+    expect(result.contracts).toHaveLength(2);
+    expect(result.crossLinks).toHaveLength(1);
+    expect(result.contracts.find((contract) => contract.role === 'provider')?.confidence).toBe(0.9);
+    expect(result.contracts.find((contract) => contract.role === 'consumer')?.confidence).toBe(0.8);
+  });
+
   function makeContract(id: string, role: 'provider' | 'consumer', repo: string): StoredContract {
     return {
       contractId: id,

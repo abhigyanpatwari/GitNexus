@@ -12,6 +12,7 @@ import { buildProviderIndex, runExactMatch, runWildcardMatch } from './matching.
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
 import { writeBridge } from './bridge-db.js';
+import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
 
 export interface SyncOptions {
   extractorOverride?:
@@ -162,11 +163,24 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     }
   }
 
+  autoContracts = dedupeContracts(autoContracts);
+  manifestResult = {
+    contracts: dedupeContracts(manifestResult.contracts),
+    crossLinks: dedupeCrossLinks(manifestResult.crossLinks),
+  };
+
   const providerIndex = buildProviderIndex(autoContracts);
   const { matched: exactLinks, unmatched } = runExactMatch(autoContracts, providerIndex);
   const { matched: wildcardLinks, remaining } = runWildcardMatch(unmatched, providerIndex);
-  const crossLinks: CrossLink[] = [...manifestResult.crossLinks, ...exactLinks, ...wildcardLinks];
-  const allContracts: StoredContract[] = [...manifestResult.contracts, ...autoContracts];
+  const crossLinks: CrossLink[] = dedupeCrossLinks([
+    ...manifestResult.crossLinks,
+    ...exactLinks,
+    ...wildcardLinks,
+  ]);
+  const allContracts: StoredContract[] = dedupeContracts([
+    ...manifestResult.contracts,
+    ...autoContracts,
+  ]);
 
   if (opts?.groupDir && !opts.skipWrite) {
     await writeBridge(opts.groupDir, {
