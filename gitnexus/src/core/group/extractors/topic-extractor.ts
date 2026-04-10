@@ -6,6 +6,9 @@ import type { ExtractedContract, RepoHandle } from '../types.js';
 
 type Broker = 'kafka' | 'rabbitmq' | 'nats';
 
+const KAFKAJS_CONSUMER_RUN_RE = /consumer\.run\s*\(\s*\{\s*eachMessage:/;
+const KAFKAJS_SUBSCRIBE_RE = /consumer\.subscribe\s*\(\s*\{\s*topic:\s*['"]([^'"]+)['"]/g;
+
 function readSafe(repoPath: string, rel: string): string | null {
   const abs = path.resolve(repoPath, rel);
   const base = path.resolve(repoPath);
@@ -116,6 +119,42 @@ const KAFKA_PATTERNS: PatternDef[] = [
     topicGroup: 1,
     symbolName: 'producer.send',
   },
+  // Go: sarama.NewSyncProducer(...); producer.SendMessage(&sarama.ProducerMessage{Topic: "xxx"})
+  {
+    regex: /sarama\.NewSyncProducer[\s\S]{0,300}?Topic:\s*"([^"]+)"/g,
+    role: 'provider',
+    broker: 'kafka',
+    confidence: 0.75,
+    topicGroup: 1,
+    symbolName: 'sarama.ProducerMessage',
+  },
+  // Go: sarama.NewAsyncProducer(...); producer.Input() <- &sarama.ProducerMessage{Topic: "xxx"}
+  {
+    regex: /sarama\.NewAsyncProducer[\s\S]{0,300}?Topic:\s*"([^"]+)"/g,
+    role: 'provider',
+    broker: 'kafka',
+    confidence: 0.75,
+    topicGroup: 1,
+    symbolName: 'sarama.ProducerMessage',
+  },
+  // Go: kafka.Writer{Topic: "xxx"} or kafka.NewWriter(...Topic: "xxx")
+  {
+    regex: /kafka\.(?:NewWriter|Writer)\b[\s\S]{0,200}?Topic:\s*"([^"]+)"/g,
+    role: 'provider',
+    broker: 'kafka',
+    confidence: 0.75,
+    topicGroup: 1,
+    symbolName: 'kafka.Writer',
+  },
+  // Go: kafka.NewReader(...Topic: "xxx") or kafka.Reader{Topic: "xxx"}
+  {
+    regex: /kafka\.(?:NewReader|Reader)\b[\s\S]{0,200}?Topic:\s*"([^"]+)"/g,
+    role: 'consumer',
+    broker: 'kafka',
+    confidence: 0.75,
+    topicGroup: 1,
+    symbolName: 'kafka.Reader',
+  },
 ];
 
 // --- RabbitMQ patterns ---
@@ -205,6 +244,42 @@ const NATS_PATTERNS: PatternDef[] = [
     topicGroup: 1,
     symbolName: 'nc.Publish',
   },
+  // Go/Node JetStream: js.Subscribe("xxx"
+  {
+    regex: /js\.(?:S|s)ubscribe\s*\(\s*"([^"]+)"/g,
+    role: 'consumer',
+    broker: 'nats',
+    confidence: 0.8,
+    topicGroup: 1,
+    symbolName: 'js.Subscribe',
+  },
+  // Go/Node JetStream: js.Publish("xxx"
+  {
+    regex: /js\.(?:P|p)ublish\s*\(\s*"([^"]+)"/g,
+    role: 'provider',
+    broker: 'nats',
+    confidence: 0.8,
+    topicGroup: 1,
+    symbolName: 'js.Publish',
+  },
+  // Python: await nc.subscribe("xxx")
+  {
+    regex: /await\s+nc\.subscribe\s*\(\s*['"]([^'"]+)['"]/g,
+    role: 'consumer',
+    broker: 'nats',
+    confidence: 0.75,
+    topicGroup: 1,
+    symbolName: 'nc.subscribe',
+  },
+  // Python: await nc.publish("xxx")
+  {
+    regex: /await\s+nc\.publish\s*\(\s*['"]([^'"]+)['"]/g,
+    role: 'provider',
+    broker: 'nats',
+    confidence: 0.75,
+    topicGroup: 1,
+    symbolName: 'nc.publish',
+  },
 ];
 
 const ALL_PATTERNS: PatternDef[] = [...KAFKA_PATTERNS, ...RABBITMQ_PATTERNS, ...NATS_PATTERNS];
@@ -229,6 +304,7 @@ export class TopicExtractor implements ContractExtractor {
 
     const out: ExtractedContract[] = [];
     for (const rel of files) {
+      if (rel.endsWith('_test.go')) continue;
       const content = readSafe(repoPath, rel);
       if (!content) continue;
       out.push(...this.scanFile(content, rel));
@@ -257,6 +333,16 @@ export class TopicExtractor implements ContractExtractor {
             pattern.broker,
           ),
         );
+      }
+    }
+
+    if (KAFKAJS_CONSUMER_RUN_RE.test(content)) {
+      const subscribeRe = new RegExp(KAFKAJS_SUBSCRIBE_RE.source, KAFKAJS_SUBSCRIBE_RE.flags);
+      let subscribeMatch: RegExpExecArray | null;
+      while ((subscribeMatch = subscribeRe.exec(content)) !== null) {
+        const topicName = subscribeMatch[1];
+        if (!topicName) continue;
+        out.push(makeContract(topicName, 'consumer', filePath, 'consumer.run', 0.75, 'kafka'));
       }
     }
 
