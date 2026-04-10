@@ -195,6 +195,8 @@ export const createResolutionContext = (): ResolutionContext => {
     // Tier 3 candidates: TypeAlias is not a call target, Const/Variable
     // are resolved via import or same-file tiers. If a future language
     // needs them at Tier 3, add a dedicated index.
+    // Macro (C/C++) and Delegate (C#) ARE included in callableIndex
+    // since call-processor.ts treats them as callable targets.
     //
     // Note: lookupFuzzy is still called directly in call-processor.ts
     // (D2 module-alias widen path at ~line 1506/1588). Those callers
@@ -241,6 +243,9 @@ export const createResolutionContext = (): ResolutionContext => {
     cacheFile = null;
     // Reuse the Map instance — just clear entries to reduce GC pressure at scale.
     cache?.clear();
+    // Invalidate the Tier 2b inverted index so it picks up symbols/packages
+    // added by later chunks. Rebuilds lazily on next Tier 2b hit.
+    packageDirIndex = null;
   };
 
   const getStats = () => ({
@@ -255,6 +260,7 @@ export const createResolutionContext = (): ResolutionContext => {
     packageMap.clear();
     namedImportMap.clear();
     moduleAliasMap.clear();
+    packageDirIndex = null; // invalidate — will rebuild on next Tier 2b hit
     clearCache();
     cacheHits = 0;
     cacheMisses = 0;

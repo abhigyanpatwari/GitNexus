@@ -209,7 +209,9 @@ export const createSymbolTable = (): SymbolTable => {
 
   let fuzzyCallableCallCount = 0;
 
-  const CALLABLE_TYPES = new Set(['Function', 'Method', 'Constructor']);
+  // Must match CALLABLE_SYMBOL_TYPES in call-processor.ts — Macro (C/C++)
+  // and Delegate (C#) are callable targets that Tier 3 must surface.
+  const CALLABLE_TYPES = new Set(['Function', 'Method', 'Constructor', 'Macro', 'Delegate']);
 
   const add = (
     filePath: string,
