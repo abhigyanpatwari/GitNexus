@@ -276,12 +276,11 @@ export class BindingAccumulator {
    * **after** `finalize()`, subsequent `appendFile` calls throw the existing
    * "finalized" error.
    *
-   * Lifecycle note: the pipeline disposes the accumulator after the
-   * ExportedTypeMap enrichment loop consumes its file-scope entries, so
-   * the heap is released before Phase 14 (`runCrossFileBindingPropagation`)
-   * and `runGraphAnalysisPhases` begin their long-running work. When Phase 9
-   * wires a consumer into that stage, the dispose call should move later in
-   * the pipeline or be removed entirely.
+   * Lifecycle note: the pipeline disposes the accumulator after both Phase 9
+   * consumers (`processCallsFromExtracted`, `processAssignmentsFromExtracted`)
+   * and the ExportedTypeMap enrichment loop have completed, so the heap is
+   * released before Phase 14 (`runCrossFileBindingPropagation`) and
+   * `runGraphAnalysisPhases` begin their long-running work.
    */
   dispose(): void {
     this._allByFile.clear();

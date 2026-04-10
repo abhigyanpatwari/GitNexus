@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   processCalls,
   processCallsFromExtracted,
+  processAssignmentsFromExtracted,
   seedCrossFileReceiverTypes,
   extractConsumerAccessedKeys,
   processNextjsFetchRoutes,
@@ -16,6 +17,7 @@ import {
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { BindingAccumulator } from '../../src/core/ingestion/binding-accumulator.js';
 import type {
+  ExtractedAssignment,
   ExtractedCall,
   ExtractedFetchCall,
   ExtractedHeritage,
@@ -2490,5 +2492,61 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
     );
     expect(authSave).toBeDefined();
     expect(userSave).toBeUndefined();
+  });
+});
+
+// ---- processAssignmentsFromExtracted: Phase 9 accumulator fallback ----
+
+describe('processAssignmentsFromExtracted', () => {
+  let graph: ReturnType<typeof createKnowledgeGraph>;
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    graph = createKnowledgeGraph();
+    ctx = createResolutionContext();
+  });
+
+  it('Phase 9: accumulator fallback resolves receiver type for ACCESSES write edge', () => {
+    // getUser is in the SymbolTable WITHOUT a returnType. The accumulator
+    // carries getUser → User from the source file. The constructor binding
+    // binds x = getUser(). The assignment x.address = value should produce
+    // an ACCESSES write edge to User.address via the accumulator fallback.
+    ctx.symbols.add('src/api.ts', 'getUser', 'Function:src/api.ts:getUser', 'Function');
+    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.symbols.add('src/models.ts', 'address', 'Property:src/models.ts:address', 'Property', {
+      ownerId: 'Class:src/models.ts:User',
+    });
+    ctx.importMap.set('src/consumer.ts', new Set(['src/api.ts', 'src/models.ts']));
+    ctx.namedImportMap.set(
+      'src/consumer.ts',
+      new Map([['getUser', { sourcePath: 'src/api.ts', exportedName: 'getUser' }]]),
+    );
+
+    const acc = new BindingAccumulator();
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'User' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        bindings: [{ scope: 'main@0', varName: 'x', calleeName: 'getUser' }],
+      },
+    ];
+
+    const assignments: ExtractedAssignment[] = [
+      {
+        filePath: 'src/consumer.ts',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverText: 'x',
+        propertyName: 'address',
+      },
+    ];
+
+    processAssignmentsFromExtracted(graph, assignments, ctx, constructorBindings, acc);
+
+    const accesses = graph.relationships.filter(
+      (r) => r.type === 'ACCESSES' && r.reason === 'write',
+    );
+    expect(accesses).toHaveLength(1);
+    expect(accesses[0].targetId).toBe('Property:src/models.ts:address');
   });
 });
