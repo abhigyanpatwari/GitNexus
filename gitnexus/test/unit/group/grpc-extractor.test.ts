@@ -16,9 +16,8 @@ describe('GrpcExtractor', () => {
   let tmpDir: string;
   let extractor: GrpcExtractor;
 
-  beforeEach(() => {
-    tmpDir = path.join(os.tmpdir(), `gitnexus-grpc-${Date.now()}`);
-    fs.mkdirSync(tmpDir, { recursive: true });
+  beforeEach(async () => {
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'gitnexus-grpc-'));
     extractor = new GrpcExtractor();
   });
 
