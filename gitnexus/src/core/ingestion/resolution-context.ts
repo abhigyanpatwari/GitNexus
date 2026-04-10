@@ -206,8 +206,8 @@ export const createResolutionContext = (): ResolutionContext => {
     const implDefs = symbols.lookupImplByName(name);
     const callableDefs = symbols.lookupFuzzyCallable(name);
 
+    if (classDefs.length === 0 && implDefs.length === 0 && callableDefs.length === 0) return null;
     const globalDefs = [...classDefs, ...implDefs, ...callableDefs];
-    if (globalDefs.length === 0) return null;
     return { candidates: globalDefs, tier: 'global' };
   };
 
@@ -243,9 +243,13 @@ export const createResolutionContext = (): ResolutionContext => {
     cacheFile = null;
     // Reuse the Map instance — just clear entries to reduce GC pressure at scale.
     cache?.clear();
-    // Invalidate the Tier 2b inverted index so it picks up symbols/packages
-    // added by later chunks. Rebuilds lazily on next Tier 2b hit.
-    packageDirIndex = null;
+    // Note: packageDirIndex is NOT invalidated here. It is built lazily on
+    // first Tier 2b hit and remains valid across file boundaries because
+    // packageMap and the symbol file set are append-only during the calls
+    // phase (all parsing/import processing completes before resolution).
+    // Invalidating per-file would destroy the amortization benefit — the
+    // O(files × dirs) rebuild would run per-file instead of once.
+    // Full invalidation happens in clear() (pipeline reset).
   };
 
   const getStats = () => ({

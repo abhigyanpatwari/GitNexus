@@ -1078,6 +1078,56 @@ describe('SM-16: Tier 3 — TypeAlias, Const, Variable are NOT returned', () => 
     expect(funcResult).not.toBeNull();
     expect(funcResult!.tier).toBe('global');
   });
+
+  it('Macro (C/C++) is reachable at Tier 3 via callableIndex', () => {
+    ctx.symbols.add('src/macros.h', 'ASSERT', 'Macro:src/macros.h:ASSERT', 'Macro' as any);
+    const result = ctx.resolve('ASSERT', 'src/main.c');
+    expect(result).not.toBeNull();
+    expect(result!.tier).toBe('global');
+    expect(result!.candidates[0].type).toBe('Macro');
+  });
+
+  it('Delegate (C#) is reachable at Tier 3 via callableIndex', () => {
+    ctx.symbols.add(
+      'src/Events.cs',
+      'OnClick',
+      'Delegate:src/Events.cs:OnClick',
+      'Delegate' as any,
+    );
+    const result = ctx.resolve('OnClick', 'src/App.cs');
+    expect(result).not.toBeNull();
+    expect(result!.tier).toBe('global');
+    expect(result!.candidates[0].type).toBe('Delegate');
+  });
+});
+
+// ── packageDirIndex invalidation regression test ──
+
+describe('SM-16: Tier 2b — packageDirIndex picks up symbols added after clear()', () => {
+  it('resolves newly added symbol after clear() resets the index', () => {
+    const ctx = createResolutionContext();
+    // Initial setup: one symbol in package dir
+    ctx.symbols.add('pkg/models/user.go', 'User', 'Struct:pkg/models/user.go:User', 'Struct');
+    ctx.packageMap.set('cmd/main.go', new Set(['/pkg/models/']));
+
+    // Prime the packageDirIndex via a Tier 2b resolution
+    const first = ctx.resolve('User', 'cmd/main.go');
+    expect(first!.tier).toBe('import-scoped');
+
+    // Full reset (simulates pipeline re-run)
+    ctx.clear();
+
+    // Re-add symbols with a NEW file in the package dir
+    ctx.symbols.add('pkg/models/user.go', 'User', 'Struct:pkg/models/user.go:User', 'Struct');
+    ctx.symbols.add('pkg/models/order.go', 'Order', 'Struct:pkg/models/order.go:Order', 'Struct');
+    ctx.packageMap.set('cmd/main.go', new Set(['/pkg/models/']));
+
+    // The new symbol must be visible — packageDirIndex was invalidated by clear()
+    const second = ctx.resolve('Order', 'cmd/main.go');
+    expect(second).not.toBeNull();
+    expect(second!.tier).toBe('import-scoped');
+    expect(second!.candidates[0].filePath).toBe('pkg/models/order.go');
+  });
 });
 
 // ── F7: Tier 2b language fixtures — Rust, Kotlin, PHP ──
