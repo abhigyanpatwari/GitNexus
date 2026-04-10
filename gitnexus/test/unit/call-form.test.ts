@@ -452,13 +452,13 @@ describe('ownerId on SymbolDefinition', () => {
     expect(def!.ownerId).toBeUndefined();
   });
 
-  it('propagates ownerId through lookupFuzzy', () => {
+  it('propagates ownerId through lookupCallableByName', () => {
     const st = createSymbolTable();
     st.add('src/foo.ts', 'save', 'Method:src/foo.ts:save', 'Method', {
       ownerId: 'Class:src/foo.ts:User',
     });
 
-    const defs = st.lookupFuzzy('save');
+    const defs = st.lookupCallableByName('save');
     expect(defs).toHaveLength(1);
     expect(defs[0].ownerId).toBe('Class:src/foo.ts:User');
   });

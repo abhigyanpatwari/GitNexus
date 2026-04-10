@@ -417,16 +417,6 @@ describe('lookupExactFull', () => {
     expect(result).toBeUndefined();
   });
 
-  it('shares same object reference between fileIndex and globalIndex', () => {
-    const symbolTable = createSymbolTable();
-    symbolTable.add('src/x.ts', 'Bar', 'Class:src/x.ts:Bar', 'Class');
-
-    const fromExact = symbolTable.lookupExactFull('src/x.ts', 'Bar');
-    const fromFuzzy = symbolTable.lookupFuzzy('Bar')[0];
-
-    expect(fromExact).toBe(fromFuzzy);
-  });
-
   it('preserves optional callable metadata on stored definitions', () => {
     const symbolTable = createSymbolTable();
     symbolTable.add('src/math.ts', 'sum', 'Function:src/math.ts:sum', 'Function', {
@@ -434,11 +424,10 @@ describe('lookupExactFull', () => {
     });
 
     const fromExact = symbolTable.lookupExactFull('src/math.ts', 'sum');
-    const fromFuzzy = symbolTable.lookupFuzzy('sum')[0];
+    const fromCallable = symbolTable.lookupCallableByName('sum')[0];
 
     expect(fromExact?.parameterCount).toBe(2);
-    expect(fromFuzzy.parameterCount).toBe(2);
-    expect(fromExact).toBe(fromFuzzy);
+    expect(fromCallable.parameterCount).toBe(2);
   });
 });
 
@@ -626,32 +615,6 @@ describe('per-file cache', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// SM-16: resolveUncached no longer calls lookupFuzzy
-// ---------------------------------------------------------------------------
-
-// Note: fuzzyCallCount tracks ALL lookupFuzzy calls on the SymbolTable, including
-// the D2 module-alias widen path in call-processor.ts which still calls lookupFuzzy
-// directly. This test only exercises resolveUncached (via ctx.resolve), so the stat
-// is 0 here. In a full pipeline integration test, fuzzyCallCount would be non-zero
-// due to D2 callers.
-describe('SM-16: resolveUncached does not call lookupFuzzy', () => {
-  it('lookupFuzzy is never called during resolve — fuzzyCallCount stays at 0', () => {
-    const ctx = createResolutionContext();
-    ctx.symbols.add('src/user.ts', 'User', 'Class:src/user.ts:User', 'Class');
-    ctx.symbols.add('src/service.ts', 'UserService', 'Class:src/service.ts:UserService', 'Class');
-    ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
-    ctx.packageMap.set('cmd/main.go', new Set(['/internal/']));
-
-    // Exercise all tiers
-    ctx.resolve('User', 'src/user.ts'); // Tier 1 same-file
-    ctx.resolve('User', 'src/app.ts'); // Tier 2a import-scoped
-    ctx.resolve('UserService', 'src/other.ts'); // Tier 3 global
-
-    expect(ctx.getStats().fuzzyCallCount).toBe(0);
-  });
-});
-
 // Tier 2a uses importMap (file-level imports). Go resolves cross-package symbols
 // via packageMap (Tier 2b) instead, so no Go Tier 2a test is needed. Kotlin and
 // PHP support file-level imports but the importMap path is language-agnostic —
@@ -769,7 +732,7 @@ describe('SM-16: Tier 2b — iterate getFiles() + isFileInPackageDir', () => {
     ctx = createResolutionContext();
   });
 
-  it('Go: resolves symbol in package dir via file iteration (no lookupFuzzy)', () => {
+  it('Go: resolves symbol in package dir via file iteration', () => {
     ctx.symbols.add(
       'internal/auth/handler.go',
       'Authenticate',
@@ -826,7 +789,7 @@ describe('SM-16: Tier 2b — iterate getFiles() + isFileInPackageDir', () => {
   });
 });
 
-describe('SM-16: Tier 3 global — lookupClassByName + lookupImplByName + lookupFuzzyCallable', () => {
+describe('SM-16: Tier 3 global — lookupClassByName + lookupImplByName + lookupCallableByName', () => {
   let ctx: ResolutionContext;
 
   beforeEach(() => {
@@ -1088,7 +1051,7 @@ describe('SM-16: Tier 3 — TypeAlias, Const, Variable are NOT returned', () => 
     expect(funcResult!.tier).toBe('global');
   });
 
-  it('Macro (C/C++) is reachable at Tier 3 via callableIndex', () => {
+  it('Macro (C/C++) is reachable at Tier 3 via callable index', () => {
     ctx.symbols.add('src/macros.h', 'ASSERT', 'Macro:src/macros.h:ASSERT', 'Macro' as any);
     const result = ctx.resolve('ASSERT', 'src/main.c');
     expect(result).not.toBeNull();
@@ -1096,7 +1059,7 @@ describe('SM-16: Tier 3 — TypeAlias, Const, Variable are NOT returned', () => 
     expect(result!.candidates[0].type).toBe('Macro');
   });
 
-  it('Delegate (C#) is reachable at Tier 3 via callableIndex', () => {
+  it('Delegate (C#) is reachable at Tier 3 via callable index', () => {
     ctx.symbols.add(
       'src/Events.cs',
       'OnClick',

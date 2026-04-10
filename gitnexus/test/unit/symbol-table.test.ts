@@ -11,7 +11,6 @@ describe('SymbolTable', () => {
   describe('add', () => {
     it('registers a symbol in the table', () => {
       table.add('src/index.ts', 'main', 'func:main', 'Function');
-      expect(table.getStats().globalSymbolCount).toBe(1);
       expect(table.getStats().fileCount).toBe(1);
     });
 
@@ -19,15 +18,12 @@ describe('SymbolTable', () => {
       table.add('src/index.ts', 'main', 'func:main', 'Function');
       table.add('src/index.ts', 'helper', 'func:helper', 'Function');
       expect(table.getStats().fileCount).toBe(1);
-      expect(table.getStats().globalSymbolCount).toBe(2);
     });
 
     it('handles same name in different files', () => {
       table.add('src/a.ts', 'init', 'func:a:init', 'Function');
       table.add('src/b.ts', 'init', 'func:b:init', 'Function');
       expect(table.getStats().fileCount).toBe(2);
-      // Global index groups by name, so 'init' has one entry with two definitions
-      expect(table.getStats().globalSymbolCount).toBe(1);
     });
 
     it('allows duplicate adds for same file and name (overloads preserved)', () => {
@@ -37,8 +33,6 @@ describe('SymbolTable', () => {
       expect(table.lookupExact('src/a.ts', 'foo')).toBe('func:foo:1');
       // lookupExactAll returns all overloads
       expect(table.lookupExactAll('src/a.ts', 'foo')).toHaveLength(2);
-      // Global index appends
-      expect(table.lookupFuzzy('foo')).toHaveLength(2);
     });
   });
 
@@ -63,36 +57,10 @@ describe('SymbolTable', () => {
     });
   });
 
-  describe('lookupFuzzy', () => {
-    it('finds all definitions of a symbol across files', () => {
-      table.add('src/a.ts', 'render', 'func:a:render', 'Function');
-      table.add('src/b.ts', 'render', 'func:b:render', 'Method');
-      const results = table.lookupFuzzy('render');
-      expect(results).toHaveLength(2);
-      expect(results[0]).toEqual({
-        nodeId: 'func:a:render',
-        filePath: 'src/a.ts',
-        type: 'Function',
-      });
-      expect(results[1]).toEqual({ nodeId: 'func:b:render', filePath: 'src/b.ts', type: 'Method' });
-    });
-
-    it('returns empty array for unknown symbol', () => {
-      expect(table.lookupFuzzy('nonexistent')).toEqual([]);
-    });
-
-    it('returns empty array for empty table', () => {
-      expect(table.lookupFuzzy('anything')).toEqual([]);
-    });
-  });
-
   describe('getStats', () => {
     it('returns zero counts for empty table', () => {
       expect(table.getStats()).toEqual({
         fileCount: 0,
-        globalSymbolCount: 0,
-        fuzzyCallCount: 0,
-        fuzzyCallableCallCount: 0,
       });
     });
 
@@ -101,14 +69,6 @@ describe('SymbolTable', () => {
       table.add('src/a.ts', 'bar', 'func:bar', 'Function');
       table.add('src/b.ts', 'baz', 'func:baz', 'Function');
       expect(table.getStats().fileCount).toBe(2);
-    });
-
-    it('tracks unique global symbol names', () => {
-      table.add('src/a.ts', 'foo', 'func:a:foo', 'Function');
-      table.add('src/b.ts', 'foo', 'func:b:foo', 'Function');
-      table.add('src/a.ts', 'bar', 'func:a:bar', 'Function');
-      // 'foo' and 'bar' are 2 unique global names
-      expect(table.getStats().globalSymbolCount).toBe(2);
     });
   });
 
@@ -120,13 +80,13 @@ describe('SymbolTable', () => {
       expect(def!.returnType).toBe('User');
     });
 
-    it('returnType is available via lookupFuzzy', () => {
+    it('returnType is available via lookupExactFull', () => {
       table.add('src/utils.ts', 'getUser', 'func:getUser', 'Function', {
         returnType: 'Promise<User>',
       });
-      const results = table.lookupFuzzy('getUser');
-      expect(results).toHaveLength(1);
-      expect(results[0].returnType).toBe('Promise<User>');
+      const result = table.lookupExactFull('src/utils.ts', 'getUser');
+      expect(result).toBeDefined();
+      expect(result!.returnType).toBe('Promise<User>');
     });
 
     it('omits returnType when not provided', () => {
@@ -169,28 +129,28 @@ describe('SymbolTable', () => {
     });
   });
 
-  describe('Property exclusion from globalIndex', () => {
-    it('Property with ownerId is NOT added to globalIndex', () => {
+  describe('Property exclusion from callable index', () => {
+    it('Property with ownerId is NOT in callable index', () => {
       table.add('src/models.ts', 'name', 'prop:name', 'Property', {
         declaredType: 'string',
         ownerId: 'class:User',
       });
-      // Should not appear in fuzzy lookup
-      expect(table.lookupFuzzy('name')).toEqual([]);
+      // Should not appear in callable lookup
+      expect(table.lookupCallableByName('name')).toEqual([]);
       // But should still be in fileIndex
       expect(table.lookupExact('src/models.ts', 'name')).toBe('prop:name');
     });
 
-    it('Property without ownerId IS added to globalIndex', () => {
+    it('Property without ownerId is NOT in callable index', () => {
       table.add('src/models.ts', 'name', 'prop:name', 'Property');
-      expect(table.lookupFuzzy('name')).toHaveLength(1);
+      expect(table.lookupCallableByName('name')).toEqual([]);
     });
 
-    it('Property without declaredType is still added to fieldByOwner index only (not globalIndex)', () => {
+    it('Property without declaredType is still added to fieldByOwner index only', () => {
       table.add('src/models.ts', 'name', 'prop:name', 'Property', { ownerId: 'class:User' });
       // No declaredType → still indexed in fieldByOwner (for write-access tracking
-      // in dynamically-typed languages like Ruby/JS), but excluded from globalIndex
-      expect(table.lookupFuzzy('name')).toEqual([]);
+      // in dynamically-typed languages like Ruby/JS), but excluded from callable index
+      expect(table.lookupCallableByName('name')).toEqual([]);
       expect(table.lookupFieldByOwner('class:User', 'name')).toEqual({
         nodeId: 'prop:name',
         filePath: 'src/models.ts',
@@ -199,40 +159,38 @@ describe('SymbolTable', () => {
       });
     });
 
-    it('non-Property types are always added to globalIndex', () => {
+    it('non-Property callable types are in callable index', () => {
       table.add('src/models.ts', 'save', 'method:save', 'Method', { ownerId: 'class:User' });
-      expect(table.lookupFuzzy('save')).toHaveLength(1);
+      expect(table.lookupCallableByName('save')).toHaveLength(1);
     });
   });
 
-  describe('conditional callableIndex invalidation', () => {
-    it('adding a Function invalidates callableIndex', () => {
+  describe('conditional callable index behaviour', () => {
+    it('adding a Function makes it available in callable index', () => {
       table.add('src/a.ts', 'foo', 'func:foo', 'Function', { returnType: 'void' });
-      // First call builds the index
-      expect(table.lookupFuzzyCallable('foo')).toHaveLength(1);
-      // Add another callable — should invalidate and rebuild
+      expect(table.lookupCallableByName('foo')).toHaveLength(1);
+      // Add another callable
       table.add('src/a.ts', 'bar', 'func:bar', 'Method');
-      expect(table.lookupFuzzyCallable('bar')).toHaveLength(1);
+      expect(table.lookupCallableByName('bar')).toHaveLength(1);
     });
 
-    it('adding a Property does NOT invalidate callableIndex', () => {
+    it('adding a Property does NOT add it to callable index', () => {
       table.add('src/a.ts', 'foo', 'func:foo', 'Function');
-      // Build callable index
-      expect(table.lookupFuzzyCallable('foo')).toHaveLength(1);
-      // Add a Property — callable index should still be valid (foo still found)
+      expect(table.lookupCallableByName('foo')).toHaveLength(1);
+      // Add a Property — callable index should still only contain foo
       table.add('src/models.ts', 'name', 'prop:name', 'Property', {
         declaredType: 'string',
         ownerId: 'class:User',
       });
-      expect(table.lookupFuzzyCallable('foo')).toHaveLength(1);
+      expect(table.lookupCallableByName('foo')).toHaveLength(1);
     });
 
-    it('adding a Class does NOT invalidate callableIndex', () => {
+    it('adding a Class does NOT add it to callable index', () => {
       table.add('src/a.ts', 'foo', 'func:foo', 'Function');
-      expect(table.lookupFuzzyCallable('foo')).toHaveLength(1);
+      expect(table.lookupCallableByName('foo')).toHaveLength(1);
       table.add('src/models.ts', 'User', 'class:User', 'Class');
-      // Class is not callable, should not trigger rebuild
-      expect(table.lookupFuzzyCallable('foo')).toHaveLength(1);
+      // Class is not callable, should not appear
+      expect(table.lookupCallableByName('foo')).toHaveLength(1);
     });
   });
 
@@ -355,8 +313,8 @@ describe('SymbolTable', () => {
     it('does NOT index Method without ownerId', () => {
       table.add('src/utils.ts', 'helper', 'method:helper', 'Method');
       expect(table.lookupMethodByOwner('', 'helper')).toBeUndefined();
-      // But it should still be in lookupFuzzy
-      expect(table.lookupFuzzy('helper')).toHaveLength(1);
+      // But it should still be in lookupCallableByName
+      expect(table.lookupCallableByName('helper')).toHaveLength(1);
     });
 
     it('returns first match for overloads with same returnType (unambiguous)', () => {
@@ -400,8 +358,8 @@ describe('SymbolTable', () => {
         parameterCount: 0,
         ownerId: 'class:User',
       });
-      // But it should be in lookupFuzzyCallable
-      expect(table.lookupFuzzyCallable('User')).toHaveLength(1);
+      // But it should be in lookupCallableByName
+      expect(table.lookupCallableByName('User')).toHaveLength(1);
     });
 
     it('returns undefined for overloads with different returnTypes (ambiguous)', () => {
@@ -418,14 +376,12 @@ describe('SymbolTable', () => {
       expect(table.lookupMethodByOwner('class:Converter', 'convert')).toBeUndefined();
     });
 
-    it('Method with ownerId is still available via lookupFuzzy and lookupFuzzyCallable', () => {
+    it('Method with ownerId is still available via lookupCallableByName', () => {
       table.add('src/models.ts', 'save', 'method:save', 'Method', {
         returnType: 'void',
         ownerId: 'class:User',
       });
-      // Methods stay in globalIndex (unlike Properties)
-      expect(table.lookupFuzzy('save')).toHaveLength(1);
-      expect(table.lookupFuzzyCallable('save')).toHaveLength(1);
+      expect(table.lookupCallableByName('save')).toHaveLength(1);
     });
 
     it('after clear(), lookupMethodByOwner returns undefined', () => {
@@ -439,37 +395,37 @@ describe('SymbolTable', () => {
     });
   });
 
-  describe('lookupFuzzyCallable', () => {
+  describe('lookupCallableByName', () => {
     it('returns only callable types (Function, Method, Constructor)', () => {
       table.add('src/a.ts', 'foo', 'func:foo', 'Function');
       table.add('src/a.ts', 'bar', 'method:bar', 'Method');
       table.add('src/a.ts', 'Baz', 'ctor:Baz', 'Constructor');
       table.add('src/a.ts', 'User', 'class:User', 'Class');
       table.add('src/a.ts', 'IUser', 'iface:IUser', 'Interface');
-      expect(table.lookupFuzzyCallable('foo')).toHaveLength(1);
-      expect(table.lookupFuzzyCallable('bar')).toHaveLength(1);
-      expect(table.lookupFuzzyCallable('Baz')).toHaveLength(1);
-      expect(table.lookupFuzzyCallable('User')).toEqual([]);
-      expect(table.lookupFuzzyCallable('IUser')).toEqual([]);
+      expect(table.lookupCallableByName('foo')).toHaveLength(1);
+      expect(table.lookupCallableByName('bar')).toHaveLength(1);
+      expect(table.lookupCallableByName('Baz')).toHaveLength(1);
+      expect(table.lookupCallableByName('User')).toEqual([]);
+      expect(table.lookupCallableByName('IUser')).toEqual([]);
     });
 
     it('returns empty array for unknown name', () => {
       table.add('src/a.ts', 'foo', 'func:foo', 'Function');
-      expect(table.lookupFuzzyCallable('unknown')).toEqual([]);
+      expect(table.lookupCallableByName('unknown')).toEqual([]);
     });
 
-    it('rebuilds index after adding new callable', () => {
+    it('includes newly added callable', () => {
       table.add('src/a.ts', 'foo', 'func:foo', 'Function');
-      expect(table.lookupFuzzyCallable('foo')).toHaveLength(1);
-      expect(table.lookupFuzzyCallable('bar')).toEqual([]);
+      expect(table.lookupCallableByName('foo')).toHaveLength(1);
+      expect(table.lookupCallableByName('bar')).toEqual([]);
       table.add('src/a.ts', 'bar', 'func:bar', 'Function');
-      expect(table.lookupFuzzyCallable('bar')).toHaveLength(1);
+      expect(table.lookupCallableByName('bar')).toHaveLength(1);
     });
 
     it('filters non-callable types from mixed name entries', () => {
       table.add('src/a.ts', 'save', 'func:save', 'Function');
       table.add('src/b.ts', 'save', 'class:save', 'Class');
-      const callables = table.lookupFuzzyCallable('save');
+      const callables = table.lookupCallableByName('save');
       expect(callables).toHaveLength(1);
       expect(callables[0].type).toBe('Function');
     });
@@ -491,15 +447,11 @@ describe('SymbolTable', () => {
       table.clear();
       expect(table.getStats()).toEqual({
         fileCount: 0,
-        globalSymbolCount: 0,
-        fuzzyCallCount: 0,
-        fuzzyCallableCallCount: 0,
       });
       expect(table.lookupExact('src/a.ts', 'foo')).toBeUndefined();
-      expect(table.lookupFuzzy('foo')).toEqual([]);
       expect(table.lookupFieldByOwner('class:User', 'address')).toBeUndefined();
       expect(table.lookupMethodByOwner('class:User', 'save')).toBeUndefined();
-      expect(table.lookupFuzzyCallable('foo')).toEqual([]);
+      expect(table.lookupCallableByName('foo')).toEqual([]);
       expect(table.lookupClassByName('User')).toEqual([]);
     });
 
@@ -509,23 +461,20 @@ describe('SymbolTable', () => {
       table.add('src/b.ts', 'bar', 'func:bar', 'Function');
       expect(table.getStats()).toEqual({
         fileCount: 1,
-        globalSymbolCount: 1,
-        fuzzyCallCount: 0,
-        fuzzyCallableCallCount: 0,
       });
     });
 
-    it('resets callableIndex so first lookup after clear rebuilds from scratch', () => {
+    it('resets callable index so first lookup after clear rebuilds from scratch', () => {
       table.add('src/a.ts', 'foo', 'func:foo', 'Function');
-      // Populate the lazy callable index
-      expect(table.lookupFuzzyCallable('foo')).toHaveLength(1);
+      // Verify callable is found
+      expect(table.lookupCallableByName('foo')).toHaveLength(1);
       table.clear();
       // After clear the callable index must be gone — empty table returns nothing
-      expect(table.lookupFuzzyCallable('foo')).toEqual([]);
-      // Re-adding and looking up rebuilds successfully
+      expect(table.lookupCallableByName('foo')).toEqual([]);
+      // Re-adding and looking up works correctly
       table.add('src/a.ts', 'foo', 'func:foo2', 'Function');
-      expect(table.lookupFuzzyCallable('foo')).toHaveLength(1);
-      expect(table.lookupFuzzyCallable('foo')[0].nodeId).toBe('func:foo2');
+      expect(table.lookupCallableByName('foo')).toHaveLength(1);
+      expect(table.lookupCallableByName('foo')[0].nodeId).toBe('func:foo2');
     });
   });
 
@@ -540,7 +489,7 @@ describe('SymbolTable', () => {
       expect(def!.ownerId).toBeUndefined();
     });
 
-    it('stores only ownerId on a Method (non-Property) — still added to globalIndex', () => {
+    it('stores only ownerId on a Method (non-Property) — still in callable index', () => {
       table.add('src/models.ts', 'save', 'method:save', 'Method', { ownerId: 'class:Repo' });
       const def = table.lookupExactFull('src/models.ts', 'save');
       expect(def).toBeDefined();
@@ -548,12 +497,12 @@ describe('SymbolTable', () => {
       expect(def!.parameterCount).toBeUndefined();
       expect(def!.returnType).toBeUndefined();
       expect(def!.declaredType).toBeUndefined();
-      // Non-Property with ownerId must still appear in globalIndex
-      expect(table.lookupFuzzy('save')).toHaveLength(1);
+      // Non-Property with ownerId must still appear in callable index
+      expect(table.lookupCallableByName('save')).toHaveLength(1);
     });
 
-    it('stores declaredType alone (no ownerId) — symbol goes to globalIndex', () => {
-      // A Variable/Property without an owner should still be globally visible
+    it('stores declaredType alone (no ownerId) — symbol in file index', () => {
+      // A Variable/Property without an owner should still be accessible via file index
       table.add('src/config.ts', 'DEFAULT_TIMEOUT', 'var:DEFAULT_TIMEOUT', 'Variable', {
         declaredType: 'number',
       });
@@ -561,9 +510,6 @@ describe('SymbolTable', () => {
       expect(def).toBeDefined();
       expect(def!.declaredType).toBe('number');
       expect(def!.ownerId).toBeUndefined();
-      // No ownerId → not a Property exclusion path → must be in globalIndex
-      expect(table.lookupFuzzy('DEFAULT_TIMEOUT')).toHaveLength(1);
-      expect(table.lookupFuzzy('DEFAULT_TIMEOUT')[0].declaredType).toBe('number');
     });
 
     it('stores all four optional metadata fields simultaneously on a Method', () => {
@@ -600,46 +546,40 @@ describe('SymbolTable', () => {
     });
   });
 
-  describe('lookupFuzzyCallable — lazy index behaviour', () => {
+  describe('lookupCallableByName — eager index behavior', () => {
     it('returns empty array when table has no callables', () => {
       table.add('src/models.ts', 'User', 'class:User', 'Class');
       table.add('src/models.ts', 'IUser', 'iface:IUser', 'Interface');
-      expect(table.lookupFuzzyCallable('User')).toEqual([]);
-      expect(table.lookupFuzzyCallable('IUser')).toEqual([]);
+      expect(table.lookupCallableByName('User')).toEqual([]);
+      expect(table.lookupCallableByName('IUser')).toEqual([]);
     });
 
-    it('uses cached index on second call without adding new symbols', () => {
+    it('returns consistent result on repeated calls', () => {
       table.add('src/a.ts', 'fetch', 'func:fetch', 'Function', { returnType: 'Response' });
-      // First call — builds the lazy index
-      const first = table.lookupFuzzyCallable('fetch');
+      const first = table.lookupCallableByName('fetch');
       expect(first).toHaveLength(1);
-      // Second call — must return equivalent result from cache
-      const second = table.lookupFuzzyCallable('fetch');
+      const second = table.lookupCallableByName('fetch');
       expect(second).toHaveLength(1);
       expect(second[0].nodeId).toBe('func:fetch');
-      // Both calls return the same array reference (same cache entry)
-      expect(first).toBe(second);
     });
 
-    it('invalidated cache is rebuilt correctly after adding a Method', () => {
+    it('includes newly added Method', () => {
       table.add('src/a.ts', 'alpha', 'func:alpha', 'Function');
-      // Warm the cache
-      expect(table.lookupFuzzyCallable('alpha')).toHaveLength(1);
-      expect(table.lookupFuzzyCallable('beta')).toEqual([]);
-      // Add a Method — must invalidate cache
+      expect(table.lookupCallableByName('alpha')).toHaveLength(1);
+      expect(table.lookupCallableByName('beta')).toEqual([]);
+      // Add a Method
       table.add('src/a.ts', 'beta', 'method:beta', 'Method');
-      // Rebuilt cache must now include beta
-      const result = table.lookupFuzzyCallable('beta');
+      const result = table.lookupCallableByName('beta');
       expect(result).toHaveLength(1);
       expect(result[0].type).toBe('Method');
     });
 
-    it('invalidated cache is rebuilt correctly after adding a Constructor', () => {
+    it('includes newly added Constructor', () => {
       table.add('src/a.ts', 'existing', 'func:existing', 'Function');
-      expect(table.lookupFuzzyCallable('existing')).toHaveLength(1);
+      expect(table.lookupCallableByName('existing')).toHaveLength(1);
       table.add('src/models.ts', 'MyClass', 'ctor:MyClass', 'Constructor');
-      expect(table.lookupFuzzyCallable('MyClass')).toHaveLength(1);
-      expect(table.lookupFuzzyCallable('MyClass')[0].type).toBe('Constructor');
+      expect(table.lookupCallableByName('MyClass')).toHaveLength(1);
+      expect(table.lookupCallableByName('MyClass')[0].type).toBe('Constructor');
     });
   });
 
@@ -859,10 +799,9 @@ describe('SymbolTable', () => {
       expect(results[0].ownerId).toBe('module:models');
     });
 
-    it('class-like symbols are still available via lookupFuzzy', () => {
+    it('class-like symbols are available via lookupClassByName', () => {
       table.add('src/models.ts', 'User', 'class:User', 'Class');
-      // classByName is an additional index, not a replacement for globalIndex
-      expect(table.lookupFuzzy('User')).toHaveLength(1);
+      // classByName is the dedicated index for class-like lookups
       expect(table.lookupClassByName('User')).toHaveLength(1);
     });
 
