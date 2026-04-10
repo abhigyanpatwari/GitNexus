@@ -11,17 +11,12 @@ import type { NamedImportMap } from './import-processor.js';
  * Returns the definitions found at the end of the chain, or null if the
  * chain breaks (missing binding, circular reference, or depth exceeded).
  * Max depth 5 to prevent infinite loops.
- *
- * @param allDefs Pre-computed `symbolTable.lookupFuzzy(name)` result — must be the
- *               complete unfiltered result. Passing a file-filtered subset will cause
- *               silent misses at depth=0 for non-aliased bindings.
  */
 export function walkBindingChain(
   name: string,
   currentFilePath: string,
   symbolTable: SymbolTable,
   namedImportMap: NamedImportMap,
-  allDefs: SymbolDefinition[],
 ): SymbolDefinition[] | null {
   let lookupFile = currentFilePath;
   let lookupName = name;
@@ -39,10 +34,7 @@ export function walkBindingChain(
     visited.add(key);
 
     const targetName = binding.exportedName;
-    const resolvedDefs =
-      targetName !== lookupName || depth > 0
-        ? symbolTable.lookupExactAll(binding.sourcePath, targetName)
-        : allDefs.filter((def) => def.filePath === binding.sourcePath);
+    const resolvedDefs = symbolTable.lookupExactAll(binding.sourcePath, targetName);
 
     if (resolvedDefs.length > 0) return resolvedDefs;
 

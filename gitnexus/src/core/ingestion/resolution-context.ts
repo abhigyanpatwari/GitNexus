@@ -6,11 +6,19 @@
  * call-processor.ts.
  *
  * Resolution tiers (highest confidence first):
- * 1. Same file (lookupExactFull — authoritative)
+ * 1. Same file (lookupExactAll — authoritative)
  * 2a-named. Named binding chain (walkBindingChain via NamedImportMap)
- * 2a. Import-scoped (lookupFuzzy filtered by ImportMap)
- * 2b. Package-scoped (lookupFuzzy filtered by PackageMap)
- * 3. Global (all candidates — consumers must check candidate count)
+ * 2a. Import-scoped (iterate importedFiles with lookupExactAll per file)
+ * 2b. Package-scoped (iterate indexed files matching package dir with lookupExactAll)
+ * 3. Global (lookupClassByName + lookupFuzzyCallable — consumers must check count)
+ *
+ * SM-16: resolveUncached no longer calls lookupFuzzy. Each tier queries the
+ * minimum necessary scope directly:
+ * - Tier 2a iterates the caller's import set (O(imports) × O(1) lookupExactAll).
+ * - Tier 2b iterates all indexed files filtered by package dir
+ *   (O(files) × O(1) lookupExactAll — avoids a global name scan).
+ * - Tier 3 combines lookupClassByName + lookupFuzzyCallable (two O(1) index
+ *   lookups vs one O(1) lookupFuzzy, with a narrower result set).
  */
 
 import type { SymbolTable, SymbolDefinition } from './symbol-table.js';
@@ -100,45 +108,69 @@ export const createResolutionContext = (): ResolutionContext => {
       return { candidates: localDefs, tier: 'same-file' };
     }
 
-    // Get all global definitions for subsequent tiers
-    const allDefs = symbols.lookupFuzzy(name);
-
-    // Tier 2a-named: Check named bindings BEFORE empty-allDefs early return
-    // because aliased imports mean lookupFuzzy('U') returns empty but we
-    // can resolve via the exported name.
-    const chainResult = walkBindingChain(name, fromFile, symbols, namedImportMap, allDefs);
+    // Tier 2a-named: Named binding chain (aliased / re-exported imports)
+    // Checked before import-scoped so that `import { User as U }` resolves
+    // correctly even when lookupExactAll on the alias name returns nothing.
+    const chainResult = walkBindingChain(name, fromFile, symbols, namedImportMap);
     if (chainResult && chainResult.length > 0) {
       return { candidates: chainResult, tier: 'import-scoped' };
     }
 
-    if (allDefs.length === 0) return null;
-
-    // Tier 2a: Import-scoped — definition in a file imported by fromFile
+    // Tier 2a: Import-scoped — iterate the caller's imported files directly.
+    // O(importedFiles) × O(1) lookupExactAll — no global name scan needed.
     const importedFiles = importMap.get(fromFile);
     if (importedFiles) {
-      const importedDefs = allDefs.filter((def) => importedFiles.has(def.filePath));
+      const importedDefs: SymbolDefinition[] = [];
+      for (const file of importedFiles) {
+        importedDefs.push(...symbols.lookupExactAll(file, name));
+      }
       if (importedDefs.length > 0) {
         return { candidates: importedDefs, tier: 'import-scoped' };
       }
     }
 
-    // Tier 2b: Package-scoped — definition in a package dir imported by fromFile
+    // Tier 2b: Package-scoped — iterate all indexed files, keeping only those
+    // that live inside one of the caller's imported package directories.
+    // O(totalIndexedFiles) × O(1) lookupExactAll — avoids a global name scan
+    // at the cost of a linear file-path scan (acceptable: called only after
+    // Tier 2a misses, and most repos have far fewer files than named defs).
     const importedPackages = packageMap.get(fromFile);
     if (importedPackages) {
-      const packageDefs = allDefs.filter((def) => {
+      const packageDefs: SymbolDefinition[] = [];
+      for (const file of symbols.getFiles()) {
         for (const dirSuffix of importedPackages) {
-          if (isFileInPackageDir(def.filePath, dirSuffix)) return true;
+          if (isFileInPackageDir(file, dirSuffix)) {
+            packageDefs.push(...symbols.lookupExactAll(file, name));
+            break; // a file can only be in one package dir per caller
+          }
         }
-        return false;
-      });
+      }
       if (packageDefs.length > 0) {
         return { candidates: packageDefs, tier: 'import-scoped' };
       }
     }
 
-    // Tier 3: Global — pass all candidates through.
-    // Consumers must check candidate count and refuse ambiguous matches.
-    return { candidates: allDefs, tier: 'global' };
+    // Tier 3: Global — three targeted O(1) index lookups replace the single
+    // lookupFuzzy global scan. Class-like symbols (Class, Struct, Interface,
+    // Enum, Record, Trait) are covered by lookupClassByName; Rust impl blocks
+    // by lookupImplByName (separate to avoid polluting heritage resolution);
+    // callables (Function, Method, Constructor) by lookupFuzzyCallable.
+    // The three indexes cover disjoint symbol types so no dedup is needed.
+    // Consumers must check candidates.length and refuse ambiguous matches.
+    const classDefs = symbols.lookupClassByName(name);
+    const implDefs = symbols.lookupImplByName(name);
+    const callableDefs = symbols.lookupFuzzyCallable(name);
+    // Build combined list without allocation when only one group has results.
+    const globalDefs: SymbolDefinition[] =
+      implDefs.length === 0 && callableDefs.length === 0
+        ? classDefs
+        : classDefs.length === 0 && implDefs.length === 0
+          ? callableDefs
+          : classDefs.length === 0 && callableDefs.length === 0
+            ? implDefs
+            : [...classDefs, ...implDefs, ...callableDefs];
+    if (globalDefs.length === 0) return null;
+    return { candidates: globalDefs, tier: 'global' };
   };
 
   const resolve = (name: string, fromFile: string): TieredCandidates | null => {

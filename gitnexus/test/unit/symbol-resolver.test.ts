@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   createResolutionContext,
   type ResolutionContext,
@@ -623,5 +623,410 @@ describe('per-file cache', () => {
 
     // Foo is not in src/b.ts, so same-file fails. Falls to global with 1 candidate.
     expect(r!.tier).toBe('global');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SM-16: resolveUncached no longer calls lookupFuzzy
+// ---------------------------------------------------------------------------
+
+describe('SM-16: resolveUncached does not call lookupFuzzy', () => {
+  it('lookupFuzzy is never called during resolve — fuzzyCallCount stays at 0', () => {
+    const ctx = createResolutionContext();
+    ctx.symbols.add('src/user.ts', 'User', 'Class:src/user.ts:User', 'Class');
+    ctx.symbols.add('src/service.ts', 'UserService', 'Class:src/service.ts:UserService', 'Class');
+    ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
+    ctx.packageMap.set('cmd/main.go', new Set(['/internal/']));
+
+    // Exercise all tiers
+    ctx.resolve('User', 'src/user.ts'); // Tier 1 same-file
+    ctx.resolve('User', 'src/app.ts'); // Tier 2a import-scoped
+    ctx.resolve('UserService', 'src/other.ts'); // Tier 3 global
+
+    expect(ctx.getStats().fuzzyCallCount).toBe(0);
+  });
+});
+
+describe('SM-16: Tier 2a — iterate importedFiles with lookupExactAll', () => {
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    ctx = createResolutionContext();
+  });
+
+  it('collects definitions from all imported files', () => {
+    ctx.symbols.add('src/a.ts', 'Widget', 'Class:src/a.ts:Widget', 'Class');
+    ctx.symbols.add('src/b.ts', 'Widget', 'Class:src/b.ts:Widget', 'Class');
+    ctx.importMap.set('src/app.ts', new Set(['src/a.ts', 'src/b.ts']));
+
+    const result = ctx.resolve('Widget', 'src/app.ts');
+
+    expect(result).not.toBeNull();
+    expect(result!.tier).toBe('import-scoped');
+    expect(result!.candidates.length).toBe(2);
+    expect(result!.candidates.map((c) => c.filePath).sort()).toEqual(['src/a.ts', 'src/b.ts']);
+  });
+
+  it('skips files with no matching symbol — no false positives', () => {
+    ctx.symbols.add('src/a.ts', 'Widget', 'Class:src/a.ts:Widget', 'Class');
+    ctx.symbols.add('src/b.ts', 'Button', 'Class:src/b.ts:Button', 'Class');
+    ctx.importMap.set('src/app.ts', new Set(['src/a.ts', 'src/b.ts']));
+
+    const result = ctx.resolve('Widget', 'src/app.ts');
+
+    expect(result!.candidates.length).toBe(1);
+    expect(result!.candidates[0].filePath).toBe('src/a.ts');
+  });
+
+  it('returns all overloads from a single imported file', () => {
+    // Same-name method overloads in one file
+    ctx.symbols.add('src/math.ts', 'add', 'fn:math:add:0', 'Function', { parameterCount: 1 });
+    ctx.symbols.add('src/math.ts', 'add', 'fn:math:add:2', 'Function', { parameterCount: 2 });
+    ctx.importMap.set('src/app.ts', new Set(['src/math.ts']));
+
+    const result = ctx.resolve('add', 'src/app.ts');
+
+    expect(result!.tier).toBe('import-scoped');
+    expect(result!.candidates.length).toBe(2);
+  });
+
+  it('Java: resolves class from import via lookupExactAll per file', () => {
+    ctx.symbols.add(
+      'com/example/models/User.java',
+      'User',
+      'Class:com/example/models/User.java:User',
+      'Class',
+    );
+    ctx.importMap.set('com/example/services/UserService.java', new Set(['com/example/models/User.java']));
+
+    const result = ctx.resolve('User', 'com/example/services/UserService.java');
+
+    expect(result!.tier).toBe('import-scoped');
+    expect(result!.candidates[0].filePath).toBe('com/example/models/User.java');
+  });
+
+  it('Python: resolves function from imported module file', () => {
+    ctx.symbols.add('models.py', 'User', 'Class:models.py:User', 'Class');
+    ctx.importMap.set('app.py', new Set(['models.py']));
+
+    const result = ctx.resolve('User', 'app.py');
+
+    expect(result!.tier).toBe('import-scoped');
+    expect(result!.candidates[0].filePath).toBe('models.py');
+  });
+
+  it('C#: resolves interface from imported file', () => {
+    ctx.symbols.add(
+      'src/Services/IService.cs',
+      'IService',
+      'Interface:src/Services/IService.cs:IService',
+      'Interface',
+    );
+    ctx.importMap.set('src/Controllers/HomeController.cs', new Set(['src/Services/IService.cs']));
+
+    const result = ctx.resolve('IService', 'src/Controllers/HomeController.cs');
+
+    expect(result!.tier).toBe('import-scoped');
+    expect(result!.candidates[0].type).toBe('Interface');
+  });
+
+  it('TypeScript: resolves re-exported class via named binding chain', () => {
+    // index.ts re-exports User from models.ts
+    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.namedImportMap.set(
+      'src/index.ts',
+      new Map([['User', { sourcePath: 'src/models.ts', exportedName: 'User' }]]),
+    );
+    ctx.namedImportMap.set(
+      'src/app.ts',
+      new Map([['User', { sourcePath: 'src/index.ts', exportedName: 'User' }]]),
+    );
+
+    const result = ctx.resolve('User', 'src/app.ts');
+
+    expect(result).not.toBeNull();
+    expect(result!.tier).toBe('import-scoped');
+    expect(result!.candidates[0].filePath).toBe('src/models.ts');
+  });
+});
+
+describe('SM-16: Tier 2b — iterate getFiles() + isFileInPackageDir', () => {
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    ctx = createResolutionContext();
+  });
+
+  it('Go: resolves symbol in package dir via file iteration (no lookupFuzzy)', () => {
+    ctx.symbols.add(
+      'internal/auth/handler.go',
+      'Authenticate',
+      'Function:internal/auth/handler.go:Authenticate',
+      'Function',
+    );
+    ctx.symbols.add(
+      'internal/db/repo.go',
+      'Authenticate',
+      'Function:internal/db/repo.go:Authenticate',
+      'Function',
+    );
+    ctx.packageMap.set('cmd/main.go', new Set(['/internal/auth/']));
+
+    const result = ctx.resolve('Authenticate', 'cmd/main.go');
+
+    expect(result!.tier).toBe('import-scoped');
+    expect(result!.candidates.length).toBe(1);
+    expect(result!.candidates[0].filePath).toBe('internal/auth/handler.go');
+  });
+
+  it('C#: resolves class from namespace directory', () => {
+    ctx.symbols.add('MyApp/Models/User.cs', 'User', 'Class:MyApp/Models/User.cs:User', 'Class');
+    ctx.symbols.add(
+      'MyApp/Other/User.cs',
+      'User',
+      'Class:MyApp/Other/User.cs:User',
+      'Class',
+    );
+    ctx.packageMap.set('MyApp/Controllers/UserController.cs', new Set(['/MyApp/Models/']));
+
+    const result = ctx.resolve('User', 'MyApp/Controllers/UserController.cs');
+
+    expect(result!.tier).toBe('import-scoped');
+    expect(result!.candidates.length).toBe(1);
+    expect(result!.candidates[0].filePath).toBe('MyApp/Models/User.cs');
+  });
+
+  it('Tier 2a (ImportMap) still takes precedence over Tier 2b (PackageMap)', () => {
+    ctx.symbols.add(
+      'internal/auth/handler.go',
+      'Validate',
+      'Function:internal/auth/handler.go:Validate',
+      'Function',
+    );
+    ctx.symbols.add(
+      'internal/db/validator.go',
+      'Validate',
+      'Function:internal/db/validator.go:Validate',
+      'Function',
+    );
+    ctx.importMap.set('cmd/main.go', new Set(['internal/db/validator.go']));
+    ctx.packageMap.set('cmd/main.go', new Set(['/internal/auth/']));
+
+    const result = ctx.resolve('Validate', 'cmd/main.go');
+
+    expect(result!.tier).toBe('import-scoped');
+    expect(result!.candidates[0].filePath).toBe('internal/db/validator.go');
+  });
+});
+
+describe('SM-16: Tier 3 global — lookupClassByName + lookupImplByName + lookupFuzzyCallable', () => {
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    ctx = createResolutionContext();
+  });
+
+  it('returns class-like symbol (Class) at global tier', () => {
+    ctx.symbols.add('src/user.ts', 'User', 'Class:src/user.ts:User', 'Class');
+
+    const result = ctx.resolve('User', 'src/app.ts');
+
+    expect(result!.tier).toBe('global');
+    expect(result!.candidates[0].type).toBe('Class');
+  });
+
+  it('returns callable symbol (Function) at global tier', () => {
+    ctx.symbols.add('src/utils.ts', 'parseDate', 'Function:src/utils.ts:parseDate', 'Function');
+
+    const result = ctx.resolve('parseDate', 'src/app.ts');
+
+    expect(result!.tier).toBe('global');
+    expect(result!.candidates[0].type).toBe('Function');
+  });
+
+  it('returns both Class and Function with the same name at global tier', () => {
+    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.symbols.add('src/factories.ts', 'User', 'Function:src/factories.ts:User', 'Function');
+
+    const result = ctx.resolve('User', 'src/app.ts');
+
+    expect(result!.tier).toBe('global');
+    expect(result!.candidates.length).toBe(2);
+    const types = result!.candidates.map((c) => c.type).sort();
+    expect(types).toEqual(['Class', 'Function']);
+  });
+
+  it('Rust: returns Impl node at global tier (needed for method resolution)', () => {
+    ctx.symbols.add('src/user.rs', 'User', 'Struct:src/user.rs:User', 'Struct');
+    ctx.symbols.add('src/user.rs', 'User', 'Impl:src/user.rs:User', 'Impl');
+
+    const result = ctx.resolve('User', 'src/main.rs');
+
+    expect(result!.tier).toBe('global');
+    const types = result!.candidates.map((c) => c.type).sort();
+    expect(types).toContain('Struct');
+    expect(types).toContain('Impl');
+  });
+
+  it('Rust: Impl is separate from Class-like types — does not affect heritage (lookupClassByName)', () => {
+    const table = createSymbolTable();
+    table.add('src/user.rs', 'User', 'Struct:src/user.rs:User', 'Struct');
+    table.add('src/user.rs', 'User', 'Impl:src/user.rs:User', 'Impl');
+
+    // lookupClassByName excludes Impl (preserves heritage resolution correctness)
+    const classDefs = table.lookupClassByName('User');
+    expect(classDefs.map((d) => d.type)).toEqual(['Struct']);
+
+    // lookupImplByName returns only Impl nodes
+    const implDefs = table.lookupImplByName('User');
+    expect(implDefs.map((d) => d.type)).toEqual(['Impl']);
+  });
+
+  it('ambiguous global returns all candidates (consumers decide)', () => {
+    ctx.symbols.add('src/a.ts', 'Config', 'Class:src/a.ts:Config', 'Class');
+    ctx.symbols.add('src/b.ts', 'Config', 'Class:src/b.ts:Config', 'Class');
+
+    const result = ctx.resolve('Config', 'src/other.ts');
+
+    expect(result!.tier).toBe('global');
+    expect(result!.candidates.length).toBe(2);
+  });
+
+  it('returns null when no symbol exists at any tier', () => {
+    const result = ctx.resolve('NonExistent', 'src/app.ts');
+    expect(result).toBeNull();
+  });
+
+  it('TypeScript: resolves Enum at global tier', () => {
+    ctx.symbols.add('src/status.ts', 'Status', 'Enum:src/status.ts:Status', 'Enum');
+
+    const result = ctx.resolve('Status', 'src/app.ts');
+
+    expect(result!.tier).toBe('global');
+    expect(result!.candidates[0].type).toBe('Enum');
+  });
+
+  it('Kotlin: resolves data class (Record) at global tier', () => {
+    ctx.symbols.add('src/User.kt', 'User', 'Record:src/User.kt:User', 'Record');
+
+    const result = ctx.resolve('User', 'src/Main.kt');
+
+    expect(result!.tier).toBe('global');
+    expect(result!.candidates[0].type).toBe('Record');
+  });
+
+  it('PHP: resolves Trait at global tier', () => {
+    ctx.symbols.add('src/Loggable.php', 'Loggable', 'Trait:src/Loggable.php:Loggable', 'Trait');
+
+    const result = ctx.resolve('Loggable', 'src/App.php');
+
+    expect(result!.tier).toBe('global');
+    expect(result!.candidates[0].type).toBe('Trait');
+  });
+
+  it('Java: resolves Interface at global tier', () => {
+    ctx.symbols.add(
+      'com/example/IService.java',
+      'IService',
+      'Interface:com/example/IService.java:IService',
+      'Interface',
+    );
+
+    const result = ctx.resolve('IService', 'com/example/ServiceImpl.java');
+
+    expect(result!.tier).toBe('global');
+    expect(result!.candidates[0].type).toBe('Interface');
+  });
+
+  it('Go: resolves Struct at global tier', () => {
+    ctx.symbols.add(
+      'internal/model/user.go',
+      'User',
+      'Struct:internal/model/user.go:User',
+      'Struct',
+    );
+
+    const result = ctx.resolve('User', 'cmd/main.go');
+
+    expect(result!.tier).toBe('global');
+    expect(result!.candidates[0].type).toBe('Struct');
+  });
+});
+
+describe('SM-16: SymbolTable.getFiles()', () => {
+  it('returns all indexed file paths', () => {
+    const table = createSymbolTable();
+    table.add('src/a.ts', 'Foo', 'Class:a:Foo', 'Class');
+    table.add('src/b.ts', 'Bar', 'Class:b:Bar', 'Class');
+    table.add('src/c.ts', 'Baz', 'Function:c:Baz', 'Function');
+
+    const files = [...table.getFiles()];
+    expect(files.sort()).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+  });
+
+  it('returns empty iterator for empty symbol table', () => {
+    const table = createSymbolTable();
+    const files = [...table.getFiles()];
+    expect(files).toHaveLength(0);
+  });
+
+  it('does not duplicate files with multiple symbols', () => {
+    const table = createSymbolTable();
+    table.add('src/a.ts', 'Foo', 'Class:a:Foo', 'Class');
+    table.add('src/a.ts', 'Bar', 'Class:a:Bar', 'Class');
+
+    const files = [...table.getFiles()];
+    expect(files).toHaveLength(1);
+    expect(files[0]).toBe('src/a.ts');
+  });
+});
+
+describe('SM-16: walkBindingChain — no allDefs parameter', () => {
+  it('resolves non-aliased import via lookupExactAll at depth=0', () => {
+    const ctx = createResolutionContext();
+    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.namedImportMap.set(
+      'src/app.ts',
+      new Map([['User', { sourcePath: 'src/models.ts', exportedName: 'User' }]]),
+    );
+
+    const result = ctx.resolve('User', 'src/app.ts');
+
+    expect(result!.tier).toBe('import-scoped');
+    expect(result!.candidates[0].filePath).toBe('src/models.ts');
+  });
+
+  it('resolves aliased import (U → User) via chain walk', () => {
+    const ctx = createResolutionContext();
+    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.namedImportMap.set(
+      'src/app.ts',
+      new Map([['U', { sourcePath: 'src/models.ts', exportedName: 'User' }]]),
+    );
+
+    const result = ctx.resolve('U', 'src/app.ts');
+
+    expect(result!.tier).toBe('import-scoped');
+    expect(result!.candidates[0].nodeId).toBe('Class:src/models.ts:User');
+  });
+
+  it('follows re-export chain A → B → C', () => {
+    const ctx = createResolutionContext();
+    ctx.symbols.add('src/models.ts', 'Widget', 'Class:src/models.ts:Widget', 'Class');
+    // B re-exports Widget from C
+    ctx.namedImportMap.set(
+      'src/index.ts',
+      new Map([['Widget', { sourcePath: 'src/models.ts', exportedName: 'Widget' }]]),
+    );
+    // A imports Widget from B
+    ctx.namedImportMap.set(
+      'src/app.ts',
+      new Map([['Widget', { sourcePath: 'src/index.ts', exportedName: 'Widget' }]]),
+    );
+
+    const result = ctx.resolve('Widget', 'src/app.ts');
+
+    expect(result!.tier).toBe('import-scoped');
+    expect(result!.candidates[0].filePath).toBe('src/models.ts');
   });
 });
