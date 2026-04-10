@@ -1011,29 +1011,19 @@ describe('SM-16: Tier 3 — TypeAlias, Const, Variable are NOT returned', () => 
   });
 
   it('TypeAlias is not reachable at Tier 3', () => {
-    ctx.symbols.add(
-      'src/types.ts',
-      'Handler',
-      'TypeAlias:src/types.ts:Handler',
-      'TypeAlias' as any,
-    );
+    ctx.symbols.add('src/types.ts', 'Handler', 'TypeAlias:src/types.ts:Handler', 'TypeAlias');
     const result = ctx.resolve('Handler', 'src/app.ts');
     expect(result).toBeNull();
   });
 
   it('Const is not reachable at Tier 3', () => {
-    ctx.symbols.add(
-      'src/config.ts',
-      'MAX_RETRIES',
-      'Const:src/config.ts:MAX_RETRIES',
-      'Const' as any,
-    );
+    ctx.symbols.add('src/config.ts', 'MAX_RETRIES', 'Const:src/config.ts:MAX_RETRIES', 'Const');
     const result = ctx.resolve('MAX_RETRIES', 'src/app.ts');
     expect(result).toBeNull();
   });
 
   it('Variable is not reachable at Tier 3', () => {
-    ctx.symbols.add('src/state.ts', 'counter', 'Variable:src/state.ts:counter', 'Variable' as any);
+    ctx.symbols.add('src/state.ts', 'counter', 'Variable:src/state.ts:counter', 'Variable');
     const result = ctx.resolve('counter', 'src/app.ts');
     expect(result).toBeNull();
   });
@@ -1052,7 +1042,7 @@ describe('SM-16: Tier 3 — TypeAlias, Const, Variable are NOT returned', () => 
   });
 
   it('Macro (C/C++) is reachable at Tier 3 via callable index', () => {
-    ctx.symbols.add('src/macros.h', 'ASSERT', 'Macro:src/macros.h:ASSERT', 'Macro' as any);
+    ctx.symbols.add('src/macros.h', 'ASSERT', 'Macro:src/macros.h:ASSERT', 'Macro');
     const result = ctx.resolve('ASSERT', 'src/main.c');
     expect(result).not.toBeNull();
     expect(result!.tier).toBe('global');
@@ -1060,12 +1050,7 @@ describe('SM-16: Tier 3 — TypeAlias, Const, Variable are NOT returned', () => 
   });
 
   it('Delegate (C#) is reachable at Tier 3 via callable index', () => {
-    ctx.symbols.add(
-      'src/Events.cs',
-      'OnClick',
-      'Delegate:src/Events.cs:OnClick',
-      'Delegate' as any,
-    );
+    ctx.symbols.add('src/Events.cs', 'OnClick', 'Delegate:src/Events.cs:OnClick', 'Delegate');
     const result = ctx.resolve('OnClick', 'src/App.cs');
     expect(result).not.toBeNull();
     expect(result!.tier).toBe('global');

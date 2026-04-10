@@ -194,13 +194,13 @@ describe('SymbolTable', () => {
     });
 
     it('Macro (C/C++) is indexed in callable index', () => {
-      table.add('src/macros.h', 'ASSERT', 'macro:ASSERT', 'Macro' as any);
+      table.add('src/macros.h', 'ASSERT', 'macro:ASSERT', 'Macro');
       expect(table.lookupCallableByName('ASSERT')).toHaveLength(1);
       expect(table.lookupCallableByName('ASSERT')[0].type).toBe('Macro');
     });
 
     it('Delegate (C#) is indexed in callable index', () => {
-      table.add('src/Events.cs', 'OnClick', 'delegate:OnClick', 'Delegate' as any);
+      table.add('src/Events.cs', 'OnClick', 'delegate:OnClick', 'Delegate');
       expect(table.lookupCallableByName('OnClick')).toHaveLength(1);
       expect(table.lookupCallableByName('OnClick')[0].type).toBe('Delegate');
     });
