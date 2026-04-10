@@ -630,6 +630,11 @@ describe('per-file cache', () => {
 // SM-16: resolveUncached no longer calls lookupFuzzy
 // ---------------------------------------------------------------------------
 
+// Note: fuzzyCallCount tracks ALL lookupFuzzy calls on the SymbolTable, including
+// the D2 module-alias widen path in call-processor.ts which still calls lookupFuzzy
+// directly. This test only exercises resolveUncached (via ctx.resolve), so the stat
+// is 0 here. In a full pipeline integration test, fuzzyCallCount would be non-zero
+// due to D2 callers.
 describe('SM-16: resolveUncached does not call lookupFuzzy', () => {
   it('lookupFuzzy is never called during resolve — fuzzyCallCount stays at 0', () => {
     const ctx = createResolutionContext();
@@ -647,6 +652,10 @@ describe('SM-16: resolveUncached does not call lookupFuzzy', () => {
   });
 });
 
+// Tier 2a uses importMap (file-level imports). Go resolves cross-package symbols
+// via packageMap (Tier 2b) instead, so no Go Tier 2a test is needed. Kotlin and
+// PHP support file-level imports but the importMap path is language-agnostic —
+// the existing TS/Java/Python/C# fixtures prove correctness at the infra level.
 describe('SM-16: Tier 2a — iterate importedFiles with lookupExactAll', () => {
   let ctx: ResolutionContext;
 

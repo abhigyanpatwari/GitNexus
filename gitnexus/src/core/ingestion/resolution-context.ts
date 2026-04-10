@@ -23,7 +23,7 @@
 
 import type { SymbolTable, SymbolDefinition } from './symbol-table.js';
 import { createSymbolTable } from './symbol-table.js';
-import type { NamedImportBinding } from './import-processor.js';
+import type { NamedImportMap } from './import-processor.js';
 import { isFileInPackageDir } from './import-processor.js';
 import { walkBindingChain } from './named-binding-processor.js';
 
@@ -46,7 +46,6 @@ export const TIER_CONFIDENCE: Record<ResolutionTier, number> = {
 // --- Map types ---
 export type ImportMap = Map<string, Set<string>>;
 export type PackageMap = Map<string, Set<string>>;
-export type NamedImportMap = Map<string, Map<string, NamedImportBinding>>;
 /** Maps callerFile → (moduleAlias → sourceFilePath) for Python namespace imports.
  *  e.g. `import models` in app.py → moduleAliasMap.get('app.py')?.get('models') === 'models.py' */
 export type ModuleAliasMap = Map<string, Map<string, string>>;
@@ -94,8 +93,10 @@ export const createResolutionContext = (): ResolutionContext => {
   const moduleAliasMap: ModuleAliasMap = new Map();
 
   // Inverted index: packageDirSuffix → Set<filePath>.
-  // Built lazily on first Tier 2b hit by scanning symbols.getFiles() once.
-  // Avoids O(allFiles × packages) on every Tier 2b resolution.
+  // Built lazily on first Tier 2b hit — one-time cost of O(totalFiles ×
+  // allUniqueDirSuffixes) isFileInPackageDir calls across the entire
+  // packageMap, amortized over the pipeline run. Subsequent Tier 2b
+  // resolutions are O(callerPackages × filesInPackage × O(1)).
   let packageDirIndex: Map<string, Set<string>> | null = null;
 
   // Per-file cache state
