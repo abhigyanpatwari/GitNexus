@@ -79,17 +79,11 @@ export interface SymbolTable {
   lookupExactAll: (filePath: string, name: string) => SymbolDefinition[];
 
   /**
-   * Low Confidence: Look for a symbol anywhere in the project
-   * Used when imports are missing or for framework magic
+   * Look up callable symbols (Function, Method, Constructor, Macro, Delegate) by name.
+   * O(1) via dedicated eagerly-populated index keyed by symbol name.
+   * Used by Tier 3 resolution and ReturnTypeLookup to resolve callee → return type.
    */
-  lookupFuzzy: (name: string) => SymbolDefinition[];
-
-  /**
-   * Low Confidence: Look for callable symbols (Function/Method/Constructor) by name.
-   * Faster than `lookupFuzzy` + filter — backed by a lazy callable-only index.
-   * Used by ReturnTypeLookup to resolve callee → return type.
-   */
-  lookupFuzzyCallable: (name: string) => SymbolDefinition[];
+  lookupCallableByName: (name: string) => SymbolDefinition[];
 
   /**
    * Look up a field/property by its owning class nodeId and field name.
@@ -128,7 +122,7 @@ export interface SymbolTable {
    * Look up class-like definitions (Class, Struct, Interface, Enum, Record) by name.
    * O(1) via dedicated eagerly-populated index keyed by symbol name.
    * Returns all matching definitions across files (e.g. partial classes).
-   * Used by Phase 1 semantic-model tasks to replace filtered lookupFuzzy calls.
+   * Used by Phase 1 semantic-model tasks to replace filtered global lookups.
    */
   lookupClassByName: (name: string) => SymbolDefinition[];
 
@@ -161,9 +155,6 @@ export interface SymbolTable {
    */
   getStats: () => {
     fileCount: number;
-    globalSymbolCount: number;
-    fuzzyCallCount: number;
-    fuzzyCallableCallCount: number;
   };
 
   /**
@@ -178,36 +169,29 @@ export const createSymbolTable = (): SymbolTable => {
   // Array allows overloaded methods (same name, different signatures) to coexist.
   const fileIndex = new Map<string, Map<string, SymbolDefinition[]>>();
 
-  // 2. Global Reverse Index (The "Backup")
-  // Structure: SymbolName -> [List of Definitions]
-  const globalIndex = new Map<string, SymbolDefinition[]>();
-
-  // 3. Eagerly-populated Callable Index — maintained on add().
+  // 2. Eagerly-populated Callable Index — maintained on add().
   // Structure: SymbolName -> [Callable Definitions]
-  // Only Function, Method, Constructor symbols are indexed.
-  const callableIndex = new Map<string, SymbolDefinition[]>();
+  // Only Function, Method, Constructor, Macro, Delegate symbols are indexed.
+  const callableByName = new Map<string, SymbolDefinition[]>();
 
-  // 4. Eagerly-populated Field/Property Index — keyed by "ownerNodeId\0fieldName".
+  // 3. Eagerly-populated Field/Property Index — keyed by "ownerNodeId\0fieldName".
   // Only Property symbols with ownerId and declaredType are indexed.
   const fieldByOwner = new Map<string, SymbolDefinition>();
 
-  // 5. Eagerly-populated Method Index — keyed by "ownerNodeId\0methodName".
+  // 4. Eagerly-populated Method Index — keyed by "ownerNodeId\0methodName".
   // Method symbols with ownerId are indexed. Supports overloads (array values).
   const methodByOwner = new Map<string, SymbolDefinition[]>();
 
-  // 6. Eagerly-populated Class-type Index — keyed by symbol name.
+  // 5. Eagerly-populated Class-type Index — keyed by symbol name.
   // Only Class, Struct, Interface, Enum, Record symbols are indexed.
   const classByName = new Map<string, SymbolDefinition[]>();
   const classByQualifiedName = new Map<string, SymbolDefinition[]>();
 
-  // 7. Eagerly-populated Impl Index — keyed by symbol name.
+  // 6. Eagerly-populated Impl Index — keyed by symbol name.
   // Rust impl blocks (type 'Impl') are stored here to keep them out of
   // classByName (which drives heritage resolution) while still being
   // reachable from Tier 3 resolution for method lookup.
   const implByName = new Map<string, SymbolDefinition[]>();
-  let fuzzyCallCount = 0;
-
-  let fuzzyCallableCallCount = 0;
 
   // Must match CALLABLE_SYMBOL_TYPES in call-processor.ts — Macro (C/C++)
   // and Delegate (C#) are callable targets that Tier 3 must surface.
@@ -261,31 +245,25 @@ export const createSymbolTable = (): SymbolTable => {
       fileMap.get(name)!.push(def);
     }
 
-    // B. Properties go to fieldByOwner index only — skip globalIndex to prevent
+    // B. Properties go to fieldByOwner index only — skip other indexes to prevent
     // namespace pollution for common names like 'id', 'name', 'type'.
     // Index ALL properties (even without declaredType) so write-access tracking
     // can resolve field ownership for dynamically-typed languages (Ruby, JS).
     if (type === 'Property' && metadata?.ownerId) {
       fieldByOwner.set(`${metadata.ownerId}\0${name}`, def);
-      // Still add to fileIndex above (for lookupExact), but skip globalIndex
+      // Still add to fileIndex above (for lookupExact), but skip other indexes
       return;
     }
 
-    // C. Add to Global Index (same object reference)
-    if (!globalIndex.has(name)) {
-      globalIndex.set(name, []);
-    }
-    globalIndex.get(name)!.push(def);
-
-    // C2. Methods, constructors, and ownerId-bound Functions go to
-    // methodByOwner index (in addition to globalIndex).
+    // C. Methods, constructors, and ownerId-bound Functions go to
+    // methodByOwner index.
     //
     // Some language extractors emit class methods as `Function` with an
     // `ownerId` — notably Python (`def method(self):` inside a class body),
     // Rust trait methods, and Kotlin object/companion methods. Treating
     // `Function` with ownerId the same as `Method` here makes D0
     // (`resolveMemberCall`) work uniformly across all supported languages
-    // instead of silently falling through to D1-D4 fuzzy widening.
+    // instead of silently falling through to D1-D4 widening.
     if ((type === 'Method' || type === 'Constructor' || type === 'Function') && metadata?.ownerId) {
       const key = `${metadata.ownerId}\0${name}`;
       const existing = methodByOwner.get(key);
@@ -296,7 +274,7 @@ export const createSymbolTable = (): SymbolTable => {
       }
     }
 
-    // C3. Class-like types go to classByName index (in addition to globalIndex).
+    // C2. Class-like types go to classByName index.
     if (CLASS_TYPES.has(type)) {
       const existing = classByName.get(name);
       if (existing) {
@@ -314,7 +292,7 @@ export const createSymbolTable = (): SymbolTable => {
       }
     }
 
-    // C4. Rust Impl blocks go to implByName (separate from classByName to avoid
+    // C3. Rust Impl blocks go to implByName (separate from classByName to avoid
     // polluting heritage resolution with Impl nodes as parent candidates).
     if (type === 'Impl') {
       const existing = implByName.get(name);
@@ -327,11 +305,11 @@ export const createSymbolTable = (): SymbolTable => {
 
     // D. Eagerly maintain callable index (like classByName, implByName).
     if (CALLABLE_TYPES.has(type)) {
-      const existing = callableIndex.get(name);
+      const existing = callableByName.get(name);
       if (existing) {
         existing.push(def);
       } else {
-        callableIndex.set(name, [def]);
+        callableByName.set(name, [def]);
       }
     }
   };
@@ -350,14 +328,8 @@ export const createSymbolTable = (): SymbolTable => {
     return fileIndex.get(filePath)?.get(name) ?? [];
   };
 
-  const lookupFuzzy = (name: string): SymbolDefinition[] => {
-    fuzzyCallCount++;
-    return globalIndex.get(name) || [];
-  };
-
-  const lookupFuzzyCallable = (name: string): SymbolDefinition[] => {
-    fuzzyCallableCallCount++;
-    return callableIndex.get(name) ?? [];
+  const lookupCallableByName = (name: string): SymbolDefinition[] => {
+    return callableByName.get(name) ?? [];
   };
 
   const lookupFieldByOwner = (
@@ -428,22 +400,16 @@ export const createSymbolTable = (): SymbolTable => {
 
   const getStats = () => ({
     fileCount: fileIndex.size,
-    globalSymbolCount: globalIndex.size,
-    fuzzyCallableCallCount: fuzzyCallableCallCount,
-    fuzzyCallCount: fuzzyCallCount,
   });
 
   const clear = () => {
     fileIndex.clear();
-    globalIndex.clear();
-    callableIndex.clear();
+    callableByName.clear();
     fieldByOwner.clear();
     methodByOwner.clear();
     classByName.clear();
     classByQualifiedName.clear();
     implByName.clear();
-    fuzzyCallCount = 0;
-    fuzzyCallableCallCount = 0;
   };
 
   return {
@@ -451,8 +417,7 @@ export const createSymbolTable = (): SymbolTable => {
     lookupExact,
     lookupExactFull,
     lookupExactAll,
-    lookupFuzzy,
-    lookupFuzzyCallable,
+    lookupCallableByName,
     lookupFieldByOwner,
     lookupMethodByOwner,
     lookupClassByName,

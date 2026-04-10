@@ -1476,7 +1476,7 @@ const dedupSwiftExtensionCandidates = (
  *
  * If filtering still leaves multiple candidates, refuse to emit a CALLS edge.
  */
-/** Per-file cache for the widen path's lookupFuzzy calls. Cleared between files. */
+/** Per-file cache for the widen path's lookupCallableByName calls. Cleared between files. */
 type WidenCache = Map<string, readonly SymbolDefinition[]>;
 
 /** @internal Exported for unit tests of D0 skip conditions (SM-11). Do not use outside tests. */
@@ -1577,7 +1577,7 @@ const resolveCallTarget = (
   // the caller defines a function with the same name as the callee (Issue #417).
   //
   // Tracks `aliasNarrowed` so the D2 widening step below does NOT undo the alias filtering
-  // by calling lookupFuzzy again (which would re-introduce homonym candidates from other files).
+  // by calling lookupCallableByName again (which would re-introduce homonym candidates from other files).
   let aliasNarrowed = false;
   if (call.callForm === 'member' && call.receiverName) {
     const aliasMap = ctx.moduleAliasMap?.get(currentFile);
@@ -1591,12 +1591,12 @@ const resolveCallTarget = (
         } else {
           // Same-file tier returned a local match, but the alias points elsewhere.
           // Widen to global candidates and filter to the aliased module's file.
-          // Use per-file widenCache to avoid repeated lookupFuzzy for the same
+          // Use per-file widenCache to avoid repeated lookupCallableByName for the same
           // calledName+moduleFile from multiple call sites in the same file.
           const cacheKey = `${call.calledName}\0${moduleFile}`;
           let fuzzyDefs = widenCache?.get(cacheKey);
           if (!fuzzyDefs) {
-            fuzzyDefs = ctx.symbols.lookupFuzzy(call.calledName);
+            fuzzyDefs = ctx.symbols.lookupCallableByName(call.calledName);
             widenCache?.set(cacheKey, fuzzyDefs);
           }
           const widened = filterCallableCandidates(fuzzyDefs, call.argCount, call.callForm).filter(
@@ -1668,17 +1668,17 @@ const resolveCallTarget = (
       const typeFiles = new Set(typeResolved.candidates.map((d) => d.filePath));
 
       // D2. Widen candidates: same-file tier may miss the parent's method when
-      //     it lives in another file. Query the symbol table directly for all
+      //     it lives in another file. Query the callable index directly for all
       //     global methods with this name, then apply arity/kind filtering.
       //
       //     When the candidate set was already narrowed by module-alias
-      //     disambiguation, do NOT widen back to the full fuzzy pool — that
+      //     disambiguation, do NOT widen back to the full callable pool — that
       //     would undo the alias narrowing and reintroduce homonym candidates
       //     from other files.
       const methodPool =
         filteredCandidates.length <= 1 && !aliasNarrowed
           ? filterCallableCandidates(
-              ctx.symbols.lookupFuzzy(call.calledName),
+              ctx.symbols.lookupCallableByName(call.calledName),
               call.argCount,
               call.callForm,
             )
@@ -1715,7 +1715,7 @@ const resolveCallTarget = (
       // through to the permissive single-candidate tail return.
       //
       // Addresses Codex review finding R3 (PR #744): member calls where
-      // fuzzy fallback picked a globally-matching symbol that has no
+      // widening picked a globally-matching symbol that has no
       // relationship to the receiver's class hierarchy were silently
       // producing false-positive edges. Example: Rust `c.trait_only()` where
       // `trait_only` is captured as a Function node with no ownerId — it
@@ -1920,12 +1920,12 @@ const resolveFieldOwnership = (
  *
  * After deduplication:
  *
- *   - 0 unique matches → `undefined` (owner-scoped path has no answer; D1-D4 fuzzy
- *     fallback in `resolveCallTarget` may still find something via lookupFuzzy)
+ *   - 0 unique matches → `undefined` (owner-scoped path has no answer; D1-D4
+ *     fallback in `resolveCallTarget` may still find something via callable index)
  *   - 1 unique match   → return it
  *   - ≥2 unique matches → `undefined` (genuine homonym ambiguity; don't silently pick one)
  *
- * This absorbs what was previously D4's job inside `resolveCallTarget` — "filter fuzzy
+ * This absorbs what was previously D4's job inside `resolveCallTarget` — "filter
  * candidates to those whose ownerId is in the receiver type's nodeId set" — into the
  * owner-scoped path, aligning with the plan's target:
  *
@@ -1933,8 +1933,7 @@ const resolveFieldOwnership = (
  *
  * The returned `tier` reflects how the owner TYPE was resolved (not the method name).
  * Threaded out here so callers don't need a second `ctx.resolve(ownerType, ...)` call —
- * this decouples callers from `ctx.resolve`'s per-file caching contract, which SM-16
- * will restructure when it replaces the `lookupFuzzy` data source.
+ * this decouples callers from `ctx.resolve`'s per-file caching contract.
  */
 const resolveMethodByOwner = (
   receiverTypeName: string,
@@ -2064,17 +2063,12 @@ export const resolveMemberCall = (
  * {@link resolveCallTarget} delegates here for `callForm === 'free'` before
  * processing constructor and member calls.
  *
- * **Design note (SM-13):** This path still falls through to Tier 3 (global)
- * via `ctx.resolve()`. Fuzzy global resolution remains until Phase 5 replaces
- * `lookupFuzzy` with a scoped data source.
- *
  * **Asymmetry vs `resolveCallTarget`:** `resolveFreeCall` intentionally does
- * NOT take a `widenCache` parameter and does NOT run a D2 fuzzy-widening
+ * NOT take a `widenCache` parameter and does NOT run a D2 widening
  * pass. Member calls (`resolveCallTarget`'s main body) widen via
- * `lookupFuzzy` to reach parent-class methods defined in different files;
+ * `lookupCallableByName` to reach parent-class methods defined in different files;
  * free calls have no receiver type and rely exclusively on the tiered pool
- * from `ctx.resolve()`. Phase 5 will revisit whether free calls need a
- * scoped widening pass once `lookupFuzzy` is retired.
+ * from `ctx.resolve()`.
  *
  * @param calledName  - The called function name (e.g. 'doStuff')
  * @param filePath    - File path of the call site

@@ -10,15 +10,14 @@
  * 2a-named. Named binding chain (walkBindingChain via NamedImportMap)
  * 2a. Import-scoped (iterate importedFiles with lookupExactAll per file)
  * 2b. Package-scoped (iterate indexed files matching package dir with lookupExactAll)
- * 3. Global (lookupClassByName + lookupImplByName + lookupFuzzyCallable — consumers must check count)
+ * 3. Global (lookupClassByName + lookupImplByName + lookupCallableByName — consumers must check count)
  *
- * SM-16: resolveUncached no longer calls lookupFuzzy. Each tier queries the
- * minimum necessary scope directly:
+ * Each tier queries the minimum necessary scope directly:
  * - Tier 2a iterates the caller's import set (O(imports) × O(1) lookupExactAll).
  * - Tier 2b iterates all indexed files filtered by package dir
  *   (O(files) × O(1) lookupExactAll — avoids a global name scan).
- * - Tier 3 combines lookupClassByName + lookupImplByName + lookupFuzzyCallable
- *   (three O(1) index lookups vs one O(1) lookupFuzzy, with a narrower result set).
+ * - Tier 3 combines lookupClassByName + lookupImplByName + lookupCallableByName
+ *   (three O(1) index lookups with a narrow, type-specific result set).
  */
 
 import type { SymbolTable, SymbolDefinition } from './symbol-table.js';
@@ -76,9 +75,6 @@ export interface ResolutionContext {
   // --- Operational ---
   getStats(): {
     fileCount: number;
-    globalSymbolCount: number;
-    fuzzyCallCount: number;
-    fuzzyCallableCallCount: number;
     cacheHits: number;
     cacheMisses: number;
   };
@@ -182,30 +178,24 @@ export const createResolutionContext = (): ResolutionContext => {
       }
     }
 
-    // Tier 3: Global — three targeted O(1) index lookups replace the single
-    // lookupFuzzy global scan. Class-like symbols (Class, Struct, Interface,
-    // Enum, Record, Trait) are covered by lookupClassByName; Rust impl blocks
-    // by lookupImplByName (separate to avoid polluting heritage resolution);
-    // callables (Function, Method, Constructor) by lookupFuzzyCallable.
+    // Tier 3: Global — targeted O(1) index lookups for each symbol category.
+    // Class-like symbols (Class, Struct, Interface, Enum, Record, Trait) are
+    // covered by lookupClassByName; Rust impl blocks by lookupImplByName
+    // (separate to avoid polluting heritage resolution); callables (Function,
+    // Method, Constructor, Macro, Delegate) by lookupCallableByName.
     // The three indexes cover disjoint symbol types so no dedup is needed.
     // Consumers must check candidates.length and refuse ambiguous matches.
     //
     // Known exclusion: TypeAlias, Const, and Variable are NOT reachable at
-    // Tier 3 — they don't belong to any of the three indexes. The old
-    // lookupFuzzy returned them, but in practice they were never useful as
-    // Tier 3 candidates: TypeAlias is not a call target, Const/Variable
-    // are resolved via import or same-file tiers. If a future language
-    // needs them at Tier 3, add a dedicated index.
-    // Macro (C/C++) and Delegate (C#) ARE included in callableIndex
+    // Tier 3 — they don't belong to any of the three indexes. In practice
+    // they were never useful as Tier 3 candidates: TypeAlias is not a call
+    // target, Const/Variable are resolved via import or same-file tiers.
+    // If a future language needs them at Tier 3, add a dedicated index.
+    // Macro (C/C++) and Delegate (C#) ARE included in the callable index
     // since call-processor.ts treats them as callable targets.
-    //
-    // Note: lookupFuzzy is still called directly in call-processor.ts
-    // (D2 module-alias widen path at ~line 1506/1588). Those callers
-    // bypass resolveUncached entirely and are tracked for separate removal
-    // in the roadmap. fuzzyCallCount only reflects resolveUncached usage.
     const classDefs = symbols.lookupClassByName(name);
     const implDefs = symbols.lookupImplByName(name);
-    const callableDefs = symbols.lookupFuzzyCallable(name);
+    const callableDefs = symbols.lookupCallableByName(name);
 
     if (classDefs.length === 0 && implDefs.length === 0 && callableDefs.length === 0) return null;
     const globalDefs = [...classDefs, ...implDefs, ...callableDefs];

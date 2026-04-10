@@ -1106,9 +1106,6 @@ async function runChunkedParseAndResolve(
     console.log(
       `🔍 Resolution cache: ${rcStats.cacheHits} hits, ${rcStats.cacheMisses} misses (${hitRate}% hit rate)`,
     );
-    console.log(
-      `🔍 Fuzzy Lookups: ${rcStats.fuzzyCallCount} total, ${rcStats.fuzzyCallableCallCount} callable`,
-    );
   }
 
   // ── Finalize the accumulator before the read phase begins. All worker-path

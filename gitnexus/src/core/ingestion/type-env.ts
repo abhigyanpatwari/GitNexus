@@ -861,7 +861,7 @@ export const buildTypeEnv = (
       // SymbolTable is authoritative when it has an unambiguous match
       if (symbolTable) {
         if (provider.isBuiltInName(callee)) return undefined;
-        const callables = symbolTable.lookupFuzzyCallable(callee);
+        const callables = symbolTable.lookupCallableByName(callee);
         if (callables.length === 1) {
           const rawReturn = callables[0].returnType;
           if (rawReturn) return extractReturnTypeName(rawReturn);
@@ -875,7 +875,7 @@ export const buildTypeEnv = (
     lookupRawReturnType(callee: string): string | undefined {
       if (symbolTable) {
         if (provider.isBuiltInName(callee)) return undefined;
-        const callables = symbolTable.lookupFuzzyCallable(callee);
+        const callables = symbolTable.lookupCallableByName(callee);
         if (callables.length === 1) return callables[0].returnType;
         // Ambiguous (2+) → return undefined (conservative, no cross-file fallback)
         if (callables.length > 1) return undefined;

@@ -2218,7 +2218,7 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
     //   D0: lookupMethodByOwner(classId, 'doWork') → undefined
     //       heritageMap.getAncestors(classId) → []
     //       lookupMethodByOwnerWithMRO returns undefined → D0 miss
-    //   D1-D4: receiver type resolves to Obj; D2 widens via lookupFuzzy;
+    //   D1-D4: receiver type resolves to Obj; D2 widens via lookupCallableByName;
     //          D3 file-filter picks the only candidate in Obj's file.
     // Guarantees D0 miss does not swallow the call — D1-D4 still runs.
     const classFile = 'src/models/Obj.java';
