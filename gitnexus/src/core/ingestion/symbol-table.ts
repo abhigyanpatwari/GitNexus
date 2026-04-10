@@ -182,10 +182,10 @@ export const createSymbolTable = (): SymbolTable => {
   // Structure: SymbolName -> [List of Definitions]
   const globalIndex = new Map<string, SymbolDefinition[]>();
 
-  // 3. Lazy Callable Index — populated on first lookupFuzzyCallable call.
+  // 3. Eagerly-populated Callable Index — maintained on add().
   // Structure: SymbolName -> [Callable Definitions]
   // Only Function, Method, Constructor symbols are indexed.
-  let callableIndex: Map<string, SymbolDefinition[]> | null = null;
+  const callableIndex = new Map<string, SymbolDefinition[]>();
 
   // 4. Eagerly-populated Field/Property Index — keyed by "ownerNodeId\0fieldName".
   // Only Property symbols with ownerId and declaredType are indexed.
@@ -323,9 +323,14 @@ export const createSymbolTable = (): SymbolTable => {
       }
     }
 
-    // D. Invalidate the lazy callable index only when adding callable types
+    // D. Eagerly maintain callable index (like classByName, implByName).
     if (CALLABLE_TYPES.has(type)) {
-      callableIndex = null;
+      const existing = callableIndex.get(name);
+      if (existing) {
+        existing.push(def);
+      } else {
+        callableIndex.set(name, [def]);
+      }
     }
   };
 
@@ -350,14 +355,6 @@ export const createSymbolTable = (): SymbolTable => {
 
   const lookupFuzzyCallable = (name: string): SymbolDefinition[] => {
     fuzzyCallableCallCount++;
-    if (!callableIndex) {
-      // Build the callable index lazily on first use
-      callableIndex = new Map();
-      for (const [symName, defs] of globalIndex) {
-        const callables = defs.filter((d) => CALLABLE_TYPES.has(d.type));
-        if (callables.length > 0) callableIndex.set(symName, callables);
-      }
-    }
     return callableIndex.get(name) ?? [];
   };
 
@@ -421,6 +418,10 @@ export const createSymbolTable = (): SymbolTable => {
     return implByName.get(name) ?? [];
   };
 
+  /** Returns a live iterator over all indexed file paths (fileIndex.keys()).
+   *  The iterator is invalidated if add() changes fileIndex.size during
+   *  iteration (ES2015 Map spec). Safe in the current pipeline because all
+   *  symbols are added before resolution begins. */
   const getFiles = (): IterableIterator<string> => fileIndex.keys();
 
   const getStats = () => ({
@@ -433,7 +434,7 @@ export const createSymbolTable = (): SymbolTable => {
   const clear = () => {
     fileIndex.clear();
     globalIndex.clear();
-    callableIndex = null;
+    callableIndex.clear();
     fieldByOwner.clear();
     methodByOwner.clear();
     classByName.clear();

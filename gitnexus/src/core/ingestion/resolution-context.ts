@@ -93,6 +93,11 @@ export const createResolutionContext = (): ResolutionContext => {
   const namedImportMap: NamedImportMap = new Map();
   const moduleAliasMap: ModuleAliasMap = new Map();
 
+  // Inverted index: packageDirSuffix → Set<filePath>.
+  // Built lazily on first Tier 2b hit by scanning symbols.getFiles() once.
+  // Avoids O(allFiles × packages) on every Tier 2b resolution.
+  let packageDirIndex: Map<string, Set<string>> | null = null;
+
   // Per-file cache state
   let cacheFile: string | null = null;
   let cache: Map<string, TieredCandidates | null> | null = null;
@@ -129,19 +134,45 @@ export const createResolutionContext = (): ResolutionContext => {
       }
     }
 
-    // Tier 2b: Package-scoped — iterate all indexed files, keeping only those
-    // that live inside one of the caller's imported package directories.
-    // O(totalIndexedFiles) × O(1) lookupExactAll — avoids a global name scan
-    // at the cost of a linear file-path scan (acceptable: called only after
-    // Tier 2a misses, and most repos have far fewer files than named defs).
+    // Tier 2b: Package-scoped — look up files in the caller's imported package
+    // directories via an inverted index (packageDirSuffix → Set<filePath>),
+    // then do O(1) lookupExactAll per file. The inverted index is built lazily
+    // on first Tier 2b hit by scanning symbols.getFiles() once, making
+    // subsequent Tier 2b resolutions O(packages × filesInPackage) instead of
+    // O(allFiles × packages).
     const importedPackages = packageMap.get(fromFile);
     if (importedPackages) {
+      // Lazily build the inverted index on first use. For each indexed file,
+      // test it against isFileInPackageDir for all known dirSuffixes collected
+      // from packageMap. This scans all files once (instead of per-resolution)
+      // and produces a dirSuffix → Set<filePath> map.
+      if (!packageDirIndex) {
+        // Collect all unique dir suffixes across the entire packageMap
+        const allDirSuffixes = new Set<string>();
+        for (const dirs of packageMap.values()) {
+          for (const d of dirs) allDirSuffixes.add(d);
+        }
+        packageDirIndex = new Map();
+        for (const file of symbols.getFiles()) {
+          for (const dirSuffix of allDirSuffixes) {
+            if (isFileInPackageDir(file, dirSuffix)) {
+              let files = packageDirIndex.get(dirSuffix);
+              if (!files) {
+                files = new Set();
+                packageDirIndex.set(dirSuffix, files);
+              }
+              files.add(file);
+            }
+          }
+        }
+      }
+
       const packageDefs: SymbolDefinition[] = [];
-      for (const file of symbols.getFiles()) {
-        for (const dirSuffix of importedPackages) {
-          if (isFileInPackageDir(file, dirSuffix)) {
+      for (const dirSuffix of importedPackages) {
+        const filesInDir = packageDirIndex.get(dirSuffix);
+        if (filesInDir) {
+          for (const file of filesInDir) {
             packageDefs.push(...symbols.lookupExactAll(file, name));
-            break; // a file can only be in one package dir per caller
           }
         }
       }
@@ -157,25 +188,23 @@ export const createResolutionContext = (): ResolutionContext => {
     // callables (Function, Method, Constructor) by lookupFuzzyCallable.
     // The three indexes cover disjoint symbol types so no dedup is needed.
     // Consumers must check candidates.length and refuse ambiguous matches.
+    //
+    // Known exclusion: TypeAlias, Const, and Variable are NOT reachable at
+    // Tier 3 — they don't belong to any of the three indexes. The old
+    // lookupFuzzy returned them, but in practice they were never useful as
+    // Tier 3 candidates: TypeAlias is not a call target, Const/Variable
+    // are resolved via import or same-file tiers. If a future language
+    // needs them at Tier 3, add a dedicated index.
+    //
+    // Note: lookupFuzzy is still called directly in call-processor.ts
+    // (D2 module-alias widen path at ~line 1506/1588). Those callers
+    // bypass resolveUncached entirely and are tracked for separate removal
+    // in the roadmap. fuzzyCallCount only reflects resolveUncached usage.
     const classDefs = symbols.lookupClassByName(name);
     const implDefs = symbols.lookupImplByName(name);
     const callableDefs = symbols.lookupFuzzyCallable(name);
 
-    // Avoid allocation when only one group has results (the common case).
-    let globalDefs: SymbolDefinition[];
-    const hasClass = classDefs.length > 0;
-    const hasImpl = implDefs.length > 0;
-    const hasCallable = callableDefs.length > 0;
-    if (hasClass && !hasImpl && !hasCallable) {
-      globalDefs = classDefs;
-    } else if (!hasClass && !hasImpl && hasCallable) {
-      globalDefs = callableDefs;
-    } else if (!hasClass && hasImpl && !hasCallable) {
-      globalDefs = implDefs;
-    } else {
-      globalDefs = [...classDefs, ...implDefs, ...callableDefs];
-    }
-
+    const globalDefs = [...classDefs, ...implDefs, ...callableDefs];
     if (globalDefs.length === 0) return null;
     return { candidates: globalDefs, tier: 'global' };
   };

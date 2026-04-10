@@ -697,7 +697,10 @@ describe('SM-16: Tier 2a — iterate importedFiles with lookupExactAll', () => {
       'Class:com/example/models/User.java:User',
       'Class',
     );
-    ctx.importMap.set('com/example/services/UserService.java', new Set(['com/example/models/User.java']));
+    ctx.importMap.set(
+      'com/example/services/UserService.java',
+      new Set(['com/example/models/User.java']),
+    );
 
     const result = ctx.resolve('User', 'com/example/services/UserService.java');
 
@@ -781,12 +784,7 @@ describe('SM-16: Tier 2b — iterate getFiles() + isFileInPackageDir', () => {
 
   it('C#: resolves class from namespace directory', () => {
     ctx.symbols.add('MyApp/Models/User.cs', 'User', 'Class:MyApp/Models/User.cs:User', 'Class');
-    ctx.symbols.add(
-      'MyApp/Other/User.cs',
-      'User',
-      'Class:MyApp/Other/User.cs:User',
-      'Class',
-    );
+    ctx.symbols.add('MyApp/Other/User.cs', 'User', 'Class:MyApp/Other/User.cs:User', 'Class');
     ctx.packageMap.set('MyApp/Controllers/UserController.cs', new Set(['/MyApp/Models/']));
 
     const result = ctx.resolve('User', 'MyApp/Controllers/UserController.cs');
@@ -1028,5 +1026,100 @@ describe('SM-16: walkBindingChain — no allDefs parameter', () => {
 
     expect(result!.tier).toBe('import-scoped');
     expect(result!.candidates[0].filePath).toBe('src/models.ts');
+  });
+});
+
+// ── F1: Tier 3 TypeAlias/Const/Variable exclusion (documented intentional gap) ──
+
+describe('SM-16: Tier 3 — TypeAlias, Const, Variable are NOT returned', () => {
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    ctx = createResolutionContext();
+  });
+
+  it('TypeAlias is not reachable at Tier 3', () => {
+    ctx.symbols.add(
+      'src/types.ts',
+      'Handler',
+      'TypeAlias:src/types.ts:Handler',
+      'TypeAlias' as any,
+    );
+    const result = ctx.resolve('Handler', 'src/app.ts');
+    expect(result).toBeNull();
+  });
+
+  it('Const is not reachable at Tier 3', () => {
+    ctx.symbols.add(
+      'src/config.ts',
+      'MAX_RETRIES',
+      'Const:src/config.ts:MAX_RETRIES',
+      'Const' as any,
+    );
+    const result = ctx.resolve('MAX_RETRIES', 'src/app.ts');
+    expect(result).toBeNull();
+  });
+
+  it('Variable is not reachable at Tier 3', () => {
+    ctx.symbols.add('src/state.ts', 'counter', 'Variable:src/state.ts:counter', 'Variable' as any);
+    const result = ctx.resolve('counter', 'src/app.ts');
+    expect(result).toBeNull();
+  });
+
+  it('Class-like and callable ARE reachable at Tier 3 (control)', () => {
+    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.symbols.add('src/utils.ts', 'getUser', 'Function:src/utils.ts:getUser', 'Function');
+
+    const classResult = ctx.resolve('User', 'src/app.ts');
+    expect(classResult).not.toBeNull();
+    expect(classResult!.tier).toBe('global');
+
+    const funcResult = ctx.resolve('getUser', 'src/app.ts');
+    expect(funcResult).not.toBeNull();
+    expect(funcResult!.tier).toBe('global');
+  });
+});
+
+// ── F7: Tier 2b language fixtures — Rust, Kotlin, PHP ──
+
+describe('SM-16: Tier 2b — Rust package-scoped resolution', () => {
+  it('resolves struct in package dir via Tier 2b', () => {
+    const ctx = createResolutionContext();
+    ctx.symbols.add('src/models/user.rs', 'User', 'Struct:src/models/user.rs:User', 'Struct');
+    ctx.symbols.add('src/other/user.rs', 'User', 'Struct:src/other/user.rs:User', 'Struct');
+    ctx.packageMap.set('src/main.rs', new Set(['/src/models/']));
+
+    const result = ctx.resolve('User', 'src/main.rs');
+    expect(result!.tier).toBe('import-scoped');
+    expect(result!.candidates.length).toBe(1);
+    expect(result!.candidates[0].filePath).toBe('src/models/user.rs');
+  });
+});
+
+describe('SM-16: Tier 2b — Kotlin package-scoped resolution', () => {
+  it('resolves class in package dir via Tier 2b', () => {
+    const ctx = createResolutionContext();
+    ctx.symbols.add('com/app/models/User.kt', 'User', 'Class:com/app/models/User.kt:User', 'Class');
+    ctx.symbols.add('com/app/other/User.kt', 'User', 'Class:com/app/other/User.kt:User', 'Class');
+    ctx.packageMap.set('com/app/Main.kt', new Set(['/com/app/models/']));
+
+    const result = ctx.resolve('User', 'com/app/Main.kt');
+    expect(result!.tier).toBe('import-scoped');
+    expect(result!.candidates.length).toBe(1);
+    expect(result!.candidates[0].filePath).toBe('com/app/models/User.kt');
+  });
+});
+
+describe('SM-16: Tier 2b — PHP namespace directory resolution', () => {
+  it('resolves class in namespace dir via Tier 2b', () => {
+    const ctx = createResolutionContext();
+    ctx.symbols.add('app/Models/User.php', 'User', 'Class:app/Models/User.php:User', 'Class');
+    ctx.symbols.add('app/Other/User.php', 'User', 'Class:app/Other/User.php:User', 'Class');
+    ctx.packageMap.set('app/Controllers/UserController.php', new Set(['/app/Models/']));
+
+    const result = ctx.resolve('User', 'app/Controllers/UserController.php');
+    expect(result!.tier).toBe('import-scoped');
+    expect(result!.candidates.length).toBe(1);
+    expect(result!.candidates[0].filePath).toBe('app/Models/User.php');
   });
 });
