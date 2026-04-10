@@ -50,8 +50,9 @@ export const AnalyzeOnboarding = ({ onComplete }: AnalyzeOnboardingProps) => {
             Analyze your first repository
           </h2>
           <p className="mx-auto mt-1.5 max-w-xs text-sm leading-relaxed text-text-secondary">
-            Paste a GitHub URL and GitNexus will clone it, parse the code, and build a live
-            knowledge graph — right in your browser.
+            Paste a GitHub URL or an absolute local folder path from the machine running
+            GitNexus. GitHub repos are cloned locally by the server, and local folders are
+            analyzed in place.
           </p>
         </div>
       </div>
@@ -63,7 +64,8 @@ export const AnalyzeOnboarding = ({ onComplete }: AnalyzeOnboardingProps) => {
 
       {/* Footer hint */}
       <p className="mt-5 text-center text-[11px] leading-relaxed text-text-muted">
-        Public repos only &middot; Cloned locally by the server &middot; No data leaves your machine
+        GitHub URLs: public repos only, cloned locally by the server &middot; Local folders:
+        analyzed in place from the server path &middot; No data leaves your machine
       </p>
     </div>
   );

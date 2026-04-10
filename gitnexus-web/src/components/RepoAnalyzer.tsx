@@ -3,7 +3,7 @@
  *
  * Two input modes:
  *   - "github"  → GitHub URL (https://github.com/owner/repo)
- *   - "local"   → Select a local folder via the browser's native directory picker
+ *   - "local"   → Paste an absolute folder path from the machine running GitNexus
  */
 
 import { useState, useRef, useEffect, useId } from 'react';
@@ -23,6 +23,7 @@ import {
   type JobProgress,
 } from '../services/backend-client';
 import { AnalyzeProgress } from './AnalyzeProgress';
+import { isValidLocalAnalyzePath } from '../lib/local-analyze-input';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -135,7 +136,6 @@ export interface RepoAnalyzerProps {
 
 export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProps) => {
   const inputId = useId();
-  const folderInputRef = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<InputMode>('github');
   const [githubUrl, setGithubUrl] = useState('');
   const [localPath, setLocalPath] = useState('');
@@ -166,24 +166,20 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     setValidationError(null);
   };
 
-  // Use the browser's native directory picker (webkitdirectory doesn't give paths,
-  // so we use a text input + a "Browse" button that opens a standard file input
-  // to let users pick files from the folder — the path is typed manually since
-  // browsers don't expose absolute paths for security reasons).
-  // For local paths, the user types or pastes the absolute path.
-
   const canSubmit =
     mode === 'github'
       ? isValidGithubUrl(githubUrl) && (phase === 'input' || phase === 'error')
-      : localPath.trim().length > 1 && (phase === 'input' || phase === 'error');
+      : isValidLocalAnalyzePath(localPath) && (phase === 'input' || phase === 'error');
 
   const handleAnalyze = async () => {
     if (mode === 'github' && !isValidGithubUrl(githubUrl)) {
       setValidationError('Please enter a valid GitHub repository URL.');
       return;
     }
-    if (mode === 'local' && localPath.trim().length < 2) {
-      setValidationError('Please enter a folder path.');
+    if (mode === 'local' && !isValidLocalAnalyzePath(localPath)) {
+      setValidationError(
+        'Enter an absolute folder path from the machine running the GitNexus server.',
+      );
       return;
     }
 
@@ -304,13 +300,13 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             htmlFor={`${inputId}-local`}
             className="block text-xs font-medium tracking-wider text-text-secondary uppercase"
           >
-            Local Folder Path
+            Absolute Local Folder Path
           </label>
           <div
             className={`flex items-center gap-3 rounded-xl border bg-void px-4 py-3.5 transition-all duration-200 ${
               validationError && phase === 'error'
                 ? 'border-red-500/50'
-                : localPath.trim().length > 1
+                : isValidLocalAnalyzePath(localPath)
                   ? 'border-accent/50 shadow-[0_0_0_3px_rgba(124,58,237,0.08)]'
                   : 'border-border-default focus-within:border-accent/40'
             } `}
@@ -336,39 +332,16 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
               spellCheck={false}
               className="flex-1 border-none bg-transparent font-mono text-sm text-text-primary outline-none placeholder:text-text-muted disabled:opacity-50"
             />
-            {localPath.trim().length > 1 && (
+            {isValidLocalAnalyzePath(localPath) && (
               <Check className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
             )}
           </div>
-          {/* Native folder picker + Browse button — below the input */}
-          <input
-            ref={folderInputRef}
-            type="file"
-            // @ts-expect-error -- webkitdirectory is non-standard but widely supported
-            webkitdirectory=""
-            className="hidden"
-            onChange={(e) => {
-              const files = e.target.files;
-              if (files && files.length > 0) {
-                const rel = files[0].webkitRelativePath;
-                const folderName = rel.split('/')[0];
-                if (folderName) {
-                  setLocalPath(folderName);
-                  setValidationError(null);
-                }
-              }
-              e.target.value = '';
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => folderInputRef.current?.click()}
-            disabled={isLoading}
-            className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-border-subtle bg-elevated px-3 py-2 text-xs font-medium text-text-secondary transition-all duration-150 hover:bg-hover hover:text-text-primary disabled:opacity-50"
-          >
-            <FolderOpen className="h-3.5 w-3.5" />
-            Browse for folder
-          </button>
+          <div className="rounded-xl border border-border-subtle bg-elevated/70 px-3 py-2.5 text-xs leading-relaxed text-text-secondary">
+            GitNexus analyzes local folders directly on the machine running the server. Paste the
+            absolute path here, like {isWindows ? 'C:\\Users\\you\\project' : '/home/you/project'}.
+            Browsers cannot provide a server-usable folder path, so this flow does not use a
+            native folder picker.
+          </div>
         </div>
       )}
 

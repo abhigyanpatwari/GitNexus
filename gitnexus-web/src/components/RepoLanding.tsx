@@ -140,8 +140,8 @@ export const RepoLanding = ({ repos, onSelectRepo, onAnalyzeComplete }: RepoLand
 
       {/* Footer hint */}
       <p className="mt-5 text-center text-[11px] leading-relaxed text-text-muted">
-        Public &amp; private repos &middot; Cloned locally by the server &middot; No data leaves
-        your machine
+        GitHub URLs are cloned locally by the server &middot; Local folders are analyzed in
+        place from the server path &middot; No data leaves your machine
       </p>
     </div>
   );
