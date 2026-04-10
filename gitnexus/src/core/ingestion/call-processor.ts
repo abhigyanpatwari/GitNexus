@@ -105,7 +105,13 @@ const MAX_EXPORTS_PER_FILE = 500;
 const MAX_TYPE_NAME_LENGTH = 256;
 
 /** Build a map of imported callee names → return types for cross-file call-result binding.
- *  Consulted ONLY when SymbolTable has no unambiguous local match (local-first principle). */
+ *  Consulted ONLY when SymbolTable has no unambiguous local match (local-first principle).
+ *
+ *  Overlapping mechanism (1 of 3): this is the SymbolTable-backed path.
+ *  See also:
+ *    2. collectExportedBindings (~line 168) / enrichExportedTypeMap — TypeEnv + graph isExported
+ *    3. Phase 9 fallback in verifyConstructorBindings (~line 563) — namedImportMap + BindingAccumulator
+ *  A future cleanup should merge these into a single resolution pass. */
 export function buildImportedReturnTypes(
   filePath: string,
   namedImportMap: ReadonlyMap<
@@ -163,8 +169,13 @@ export function buildImportedRawReturnTypes(
  *  quality enrichment"). Both sites populate the same map with subtly
  *  different export-check semantics — this site uses SymbolTable +
  *  graph lookup, the worker loop uses three-candidate-ID graph lookup.
- *  They must stay in sync until Phase 9 unifies them. If you edit one,
- *  check the other. */
+ *  They must stay in sync until unified. If you edit one, check the other.
+ *
+ *  Overlapping mechanism (2 of 3): this is the TypeEnv + graph isExported path.
+ *  See also:
+ *    1. buildImportedReturnTypes (~line 109) — namedImportMap + SymbolTable
+ *    3. Phase 9 fallback in verifyConstructorBindings (~line 563) — namedImportMap + BindingAccumulator
+ *  A future cleanup should merge these into a single resolution pass. */
 function collectExportedBindings(
   typeEnv: { fileScope(): ReadonlyMap<string, string> },
   filePath: string,
@@ -512,6 +523,7 @@ const verifyConstructorBindings = (
   filePath: string,
   ctx: ResolutionContext,
   graph?: KnowledgeGraph,
+  bindingAccumulator?: BindingAccumulator,
 ): Map<string, string> => {
   const verified = new Map<string, string>();
 
@@ -548,11 +560,59 @@ const verifyConstructorBindings = (
         }
       }
 
+      let typeName: string | undefined;
       if (callableDefs && callableDefs.length === 1 && callableDefs[0].returnType) {
-        const typeName = extractReturnTypeName(callableDefs[0].returnType);
-        if (typeName) {
-          verified.set(receiverKey(scope, varName), typeName);
+        typeName = extractReturnTypeName(callableDefs[0].returnType);
+      }
+
+      // Phase 9: BindingAccumulator fallback for cross-file return types.
+      // Used when the SymbolTable has no return type for a cross-file callee
+      // (e.g., a return type that TypeEnv resolved via fixpoint in the source
+      // file but was not stored as a SymbolTable returnType annotation).
+      // namedImportMap tells us which source file exported the callee so we
+      // can look up its file-scope binding via the O(1) fileScopeGet method.
+      //
+      // Tier gating: only fall back to the accumulator when resolution is
+      // unambiguously import-scoped or global. When tiered.tier is 'same-file',
+      // the local definition is authoritative even without a return type
+      // annotation — using the accumulator here would let an imported callee
+      // with the same name shadow the local one, producing false CALLS edges.
+      // When multiple callable candidates exist, the accumulator would pick
+      // arbitrarily — skip to avoid fabricated edges.
+      //
+      // Quality note: worker-path accumulator entries are Tier 0/1 only
+      // (annotation-declared + same-file constructor inference) — see the
+      // BindingAccumulator class JSDoc. For large repos where the worker
+      // path dominates, Phase 9 binding accuracy is structurally lower
+      // than for sequential-path repos where Tier 2 cross-file propagation
+      // is available.
+      //
+      // Overlapping mechanism note: this is one of three cross-file
+      // return-type resolution paths in the codebase:
+      //   1. buildImportedReturnTypes (~line 109) — namedImportMap +
+      //      SymbolTable.lookupExactFull (structure-processor captured)
+      //   2. collectExportedBindings (~line 168) / enrichExportedTypeMap
+      //      — TypeEnv + graph isExported flag
+      //   3. This fallback — namedImportMap + BindingAccumulator
+      // A future cleanup should merge these into a single resolution pass.
+      const shouldFallback =
+        tiered?.tier !== 'same-file' && (!callableDefs || callableDefs.length <= 1);
+      if (!typeName && bindingAccumulator && shouldFallback) {
+        const namedImports = ctx.namedImportMap.get(filePath);
+        const importBinding = namedImports?.get(calleeName);
+        if (importBinding) {
+          const rawType = bindingAccumulator.fileScopeGet(
+            importBinding.sourcePath,
+            importBinding.exportedName,
+          );
+          if (rawType) {
+            typeName = extractReturnTypeName(rawType);
+          }
         }
+      }
+
+      if (typeName) {
+        verified.set(receiverKey(scope, varName), typeName);
       }
     }
   }
@@ -640,10 +700,29 @@ export const processCalls = async (
   const logSkipped = isVerboseIngestionEnabled();
   const skippedByLang = logSkipped ? new Map<string, number>() : null;
 
+  // ── Prepare-then-resolve: single preparation loop, deferred resolution ──
+  // All files are prepared (parse → query → heritage → TypeEnv) in one loop,
+  // then resolved (verifyConstructorBindings → call edges) in a second loop.
+  // This ensures:
+  //   1. When bindingAccumulator is present, ALL files flush their TypeEnv
+  //      bindings before ANY verifyConstructorBindings reads — fixing the
+  //      consumer-before-provider ordering bug on the sequential path.
+  //   2. globalParentMap is fully populated before resolution, improving
+  //      cross-file isSubclassOf accuracy regardless of file order.
+  // For the sequential path (<15 files), buffering per-file state is negligible.
+  interface PreparedFile {
+    file: { path: string; content: string };
+    language: SupportedLanguages;
+    provider: ReturnType<typeof getProvider>;
+    tree: ReturnType<typeof parser.parse>;
+    matches: ReturnType<Parser.Query['matches']>;
+    parentMap: ReadonlyMap<string, readonly string[]>;
+    typeEnv: ReturnType<typeof buildTypeEnv>;
+  }
+  const prepared: PreparedFile[] = [];
+
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
-    enclosingFnExtractCache.clear();
-    onProgress?.(i + 1, files.length);
     if (i % 20 === 0) await yieldToEventLoop();
 
     const language = getLanguageFromFilename(file.path);
@@ -673,18 +752,17 @@ export const processCalls = async (
       astCache.set(file.path, tree);
     }
 
-    let query;
     let matches;
     try {
-      const language = parser.getLanguage();
-      query = new Parser.Query(language, queryStr);
+      const lang = parser.getLanguage();
+      const query = new Parser.Query(lang, queryStr);
       matches = query.matches(tree.rootNode);
     } catch (queryError) {
       console.warn(`Query error for ${file.path}:`, queryError);
       continue;
     }
 
-    // Pre-pass: extract heritage from query matches to build parentMap for buildTypeEnv.
+    // Extract heritage from query matches to build parentMap for buildTypeEnv.
     // Heritage-processor runs in PARALLEL, so graph edges don't exist when buildTypeEnv runs.
     const fileParentMap = new Map<string, string[]>();
     for (const match of matches) {
@@ -707,7 +785,6 @@ export const processCalls = async (
     }
     const parentMap: ReadonlyMap<string, readonly string[]> = fileParentMap;
     // Merge per-file heritage into globalParentMap for cross-file isSubclassOf lookups.
-    // Uses a parallel Set (globalParentSeen) for O(1) deduplication instead of O(n) includes().
     for (const [cls, parents] of fileParentMap) {
       let global = globalParentMap.get(cls);
       let seen = globalParentSeen.get(cls);
@@ -743,19 +820,35 @@ export const processCalls = async (
       const fileExports = collectExportedBindings(typeEnv, file.path, ctx.symbols, graph);
       if (fileExports) exportedTypeMap.set(file.path, fileExports);
     }
-    // Flush file-scope bindings into the accumulator. `flush()` is narrowed
-    // to iterate only FILE_SCOPE entries (type-env.ts) — function-scope
-    // bindings are dropped at the flush boundary until a Phase 9 consumer
-    // lands. See type-env.ts::flush() JSDoc for the dual-site reversion
-    // checklist (this sequential path + the worker path in parse-worker.ts).
     if (bindingAccumulator) {
       typeEnv.flush(file.path, bindingAccumulator);
     }
+
+    prepared.push({ file, language, provider, tree, matches, parentMap, typeEnv });
+  }
+
+  // ── Resolution loop: verify constructor bindings and resolve calls ──
+  // The accumulator (if present) is now fully populated from the preparation
+  // loop above, so verifyConstructorBindings sees all provider bindings
+  // regardless of file processing order.
+  for (let i = 0; i < prepared.length; i++) {
+    const { file, language, provider, tree, matches, parentMap, typeEnv } = prepared[i];
+
+    enclosingFnExtractCache.clear();
+    onProgress?.(i + 1, files.length);
+    if (i % 20 === 0) await yieldToEventLoop();
+
     const callRouter = provider.callRouter;
 
     const verifiedReceivers =
       typeEnv.constructorBindings.length > 0
-        ? verifyConstructorBindings(typeEnv.constructorBindings, file.path, ctx)
+        ? verifyConstructorBindings(
+            typeEnv.constructorBindings,
+            file.path,
+            ctx,
+            undefined, // graph not available on the sequential path here
+            bindingAccumulator, // Phase 9 fallback — same as worker path (R3 parity)
+          )
         : new Map<string, string>();
     const receiverIndex = buildReceiverTypeIndex(verifiedReceivers);
 
@@ -2474,6 +2567,12 @@ const walkMixedChain = (
 /**
  * Fast path: resolve pre-extracted call sites from workers.
  * No AST parsing — workers already extracted calledName + sourceId.
+ *
+ * @param bindingAccumulator  Phase 9: optional accumulator carrying file-scope
+ *   TypeEnv bindings from all worker-processed files. When the SymbolTable has
+ *   no return type for a cross-file callee, `verifyConstructorBindings` falls
+ *   back to the accumulator via `namedImportMap` to bind the variable to the
+ *   callee's resolved type (e.g. `var x = getUser()` → `x: User`).
  */
 export const processCallsFromExtracted = async (
   graph: KnowledgeGraph,
@@ -2482,6 +2581,7 @@ export const processCallsFromExtracted = async (
   onProgress?: (current: number, total: number) => void,
   constructorBindings?: FileConstructorBindings[],
   heritageMap?: HeritageMap,
+  bindingAccumulator?: BindingAccumulator,
 ) => {
   // Scope-aware receiver types: keyed by filePath → "funcName\0varName" → typeName.
   // The scope dimension prevents collisions when two functions in the same file
@@ -2489,7 +2589,13 @@ export const processCallsFromExtracted = async (
   const fileReceiverTypes = new Map<string, ReceiverTypeIndex>();
   if (constructorBindings) {
     for (const { filePath, bindings } of constructorBindings) {
-      const verified = verifyConstructorBindings(bindings, filePath, ctx, graph);
+      const verified = verifyConstructorBindings(
+        bindings,
+        filePath,
+        ctx,
+        graph,
+        bindingAccumulator,
+      );
       if (verified.size > 0) {
         fileReceiverTypes.set(filePath, buildReceiverTypeIndex(verified));
       }
@@ -2687,12 +2793,19 @@ export const processAssignmentsFromExtracted = (
   assignments: ExtractedAssignment[],
   ctx: ResolutionContext,
   constructorBindings?: FileConstructorBindings[],
+  bindingAccumulator?: BindingAccumulator,
 ): void => {
   // Build per-file receiver type indexes from verified constructor bindings
   const fileReceiverTypes = new Map<string, ReceiverTypeIndex>();
   if (constructorBindings) {
     for (const { filePath, bindings } of constructorBindings) {
-      const verified = verifyConstructorBindings(bindings, filePath, ctx, graph);
+      const verified = verifyConstructorBindings(
+        bindings,
+        filePath,
+        ctx,
+        graph,
+        bindingAccumulator,
+      );
       if (verified.size > 0) {
         fileReceiverTypes.set(filePath, buildReceiverTypeIndex(verified));
       }

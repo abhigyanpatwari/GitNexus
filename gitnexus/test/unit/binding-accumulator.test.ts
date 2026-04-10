@@ -511,6 +511,54 @@ describe('BindingAccumulator', () => {
   // state. Idempotent and orthogonal to finalize().
   // -------------------------------------------------------------------------
 
+  describe('fileScopeGet (O(1) point lookup)', () => {
+    it('returns the typeName for a known file-scope binding', () => {
+      const acc = new BindingAccumulator();
+      acc.appendFile('src/api.ts', [
+        { scope: '', varName: 'getUser', typeName: 'User' },
+        { scope: '', varName: 'getPost', typeName: 'Post' },
+      ]);
+      expect(acc.fileScopeGet('src/api.ts', 'getUser')).toBe('User');
+      expect(acc.fileScopeGet('src/api.ts', 'getPost')).toBe('Post');
+    });
+
+    it('returns undefined for an unknown file', () => {
+      const acc = new BindingAccumulator();
+      expect(acc.fileScopeGet('nonexistent.ts', 'x')).toBeUndefined();
+    });
+
+    it('returns undefined for an unknown name in a known file', () => {
+      const acc = new BindingAccumulator();
+      acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'User' }]);
+      expect(acc.fileScopeGet('src/api.ts', 'missing')).toBeUndefined();
+    });
+
+    it('ignores function-scope entries', () => {
+      const acc = new BindingAccumulator();
+      acc.appendFile('src/service.ts', [
+        { scope: 'handler@10', varName: 'localDb', typeName: 'Database' },
+        { scope: '', varName: 'config', typeName: 'Config' },
+      ]);
+      // Only file-scope entries are indexed by fileScopeGet.
+      expect(acc.fileScopeGet('src/service.ts', 'config')).toBe('Config');
+      expect(acc.fileScopeGet('src/service.ts', 'localDb')).toBeUndefined();
+    });
+
+    it('returns undefined after dispose', () => {
+      const acc = new BindingAccumulator();
+      acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'User' }]);
+      acc.dispose();
+      expect(acc.fileScopeGet('src/api.ts', 'getUser')).toBeUndefined();
+    });
+
+    it('last-write-wins for duplicate varNames in the same file', () => {
+      const acc = new BindingAccumulator();
+      acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'OldType' }]);
+      acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'NewType' }]);
+      expect(acc.fileScopeGet('src/api.ts', 'getUser')).toBe('NewType');
+    });
+  });
+
   describe('dispose', () => {
     it('empties all read methods after dispose', () => {
       const acc = new BindingAccumulator();

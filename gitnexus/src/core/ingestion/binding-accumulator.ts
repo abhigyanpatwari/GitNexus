@@ -139,18 +139,24 @@ const ENTRY_OVERHEAD = 64; // bytes per entry (object overhead + property refs)
 const MAP_ENTRY_OVERHEAD = 80; // bytes per file entry in the map
 
 export class BindingAccumulator {
-  // Storage is split into two parallel maps so fileScopeEntries() is
-  // O(n_file_scope) instead of O(n_total).
+  // Storage is split into two parallel maps so file-scope reads are fast.
   // - _allByFile holds every BindingEntry (used by getFile, memory estimate).
-  // - _fileScopeByFile caches the flat [varName, typeName] view of the
-  //   `scope === ''` subset, populated at insert time so reads are O(1) map
-  //   lookup + O(n_file_scope) array return. Both maps carry the same key
-  //   set modulo the `scope === ''` precondition: _allByFile has a key as
-  //   soon as any entry is appended; _fileScopeByFile only has a key once a
-  //   file-scope entry arrives. Code that iterates via files() uses
-  //   _allByFile so files with only function-scope entries remain visible.
+  // - _fileScopeByFile is a nested Map<filePath, Map<varName, typeName>> for
+  //   O(1) point-lookup via fileScopeGet(). For iteration-based consumers
+  //   (enrichExportedTypeMap), fileScopeEntries() iterates the inner Map.
+  //   Both maps carry the same key set modulo the `scope === ''` precondition:
+  //   _allByFile has a key as soon as any entry is appended; _fileScopeByFile
+  //   only has a key once a file-scope entry arrives. Code that iterates via
+  //   files() uses _allByFile so files with only function-scope entries
+  //   remain visible.
+  //
+  //   Note: Map.set semantics mean a duplicate varName for the same file
+  //   overwrites the previous value (last-write-wins). This is the correct
+  //   behavior — duplicate top-level bindings in the same file shouldn't
+  //   happen in well-formed source, and if they do the last declaration
+  //   is typically the one the compiler sees.
   private readonly _allByFile = new Map<string, BindingEntry[]>();
-  private readonly _fileScopeByFile = new Map<string, [string, string][]>();
+  private readonly _fileScopeByFile = new Map<string, Map<string, string>>();
   private _totalBindings = 0;
   private _finalized = false;
   private _disposed = false;
@@ -202,15 +208,16 @@ export class BindingAccumulator {
     } else {
       this._allByFile.set(filePath, entries.slice());
     }
-    // File-scope fast-path store. Populated lazily on first file-scope entry.
-    let existingFileScope = this._fileScopeByFile.get(filePath);
+    // File-scope fast-path store (nested Map for O(1) point-lookup via fileScopeGet).
+    // Populated lazily on first file-scope entry per file.
+    let fileScopeMap = this._fileScopeByFile.get(filePath);
     for (const e of entries) {
       if (e.scope === '') {
-        if (existingFileScope === undefined) {
-          existingFileScope = [];
-          this._fileScopeByFile.set(filePath, existingFileScope);
+        if (fileScopeMap === undefined) {
+          fileScopeMap = new Map();
+          this._fileScopeByFile.set(filePath, fileScopeMap);
         }
-        existingFileScope.push([e.varName, e.typeName]);
+        fileScopeMap.set(e.varName, e.typeName);
       }
     }
     this._totalBindings += entries.length;
@@ -225,7 +232,7 @@ export class BindingAccumulator {
     // indicate a bug in `appendFile()` where one map was updated but
     // not the other.
     if (process.env.NODE_ENV !== 'production' && !this._finalized) {
-      for (const [filePath, fileScopeTuples] of this._fileScopeByFile) {
+      for (const [filePath, fileScopeMap] of this._fileScopeByFile) {
         const allEntries = this._allByFile.get(filePath);
         if (allEntries === undefined) {
           throw new Error(
@@ -233,12 +240,16 @@ export class BindingAccumulator {
               `but no _allByFile entry`,
           );
         }
-        const projectedCount = allEntries.filter((e) => e.scope === '').length;
-        if (projectedCount !== fileScopeTuples.length) {
+        // Count unique file-scope varNames in _allByFile (to match Map dedup
+        // semantics in _fileScopeByFile where Map.set deduplicates same-name).
+        const projectedNames = new Set(
+          allEntries.filter((e) => e.scope === '').map((e) => e.varName),
+        );
+        if (projectedNames.size !== fileScopeMap.size) {
           throw new Error(
             `[BindingAccumulator] storage split drift: file ${filePath} has ` +
-              `${fileScopeTuples.length} file-scope tuples but ${projectedCount} file-scope ` +
-              `entries in _allByFile`,
+              `${fileScopeMap.size} file-scope names in Map but ${projectedNames.size} unique ` +
+              `file-scope varNames in _allByFile`,
           );
         }
       }
@@ -265,12 +276,11 @@ export class BindingAccumulator {
    * **after** `finalize()`, subsequent `appendFile` calls throw the existing
    * "finalized" error.
    *
-   * Lifecycle note: the pipeline disposes the accumulator after the
-   * ExportedTypeMap enrichment loop consumes its file-scope entries, so
-   * the heap is released before Phase 14 (`runCrossFileBindingPropagation`)
-   * and `runGraphAnalysisPhases` begin their long-running work. When Phase 9
-   * wires a consumer into that stage, the dispose call should move later in
-   * the pipeline or be removed entirely.
+   * Lifecycle note: the pipeline disposes the accumulator after both Phase 9
+   * consumers (`processCallsFromExtracted`, `processAssignmentsFromExtracted`)
+   * and the ExportedTypeMap enrichment loop have completed, so the heap is
+   * released before Phase 14 (`runCrossFileBindingPropagation`) and
+   * `runGraphAnalysisPhases` begin their long-running work.
    */
   dispose(): void {
     this._allByFile.clear();
@@ -286,21 +296,30 @@ export class BindingAccumulator {
 
   /**
    * Get only scope='' (file-level) entries as [varName, typeName] tuples.
-   * Backward-compatible with the old workerTypeEnvBindings pattern.
+   * For iteration-based consumers (e.g., `enrichExportedTypeMap`).
    * Returns an empty array for an unknown file.
    *
-   * O(1) map lookup + O(n_file_scope) defensive-copy construction — does
-   * NOT walk function-scope entries. See the `_fileScopeByFile` field
-   * comment for the storage split rationale.
+   * O(1) map lookup + O(n_file_scope) tuple reconstruction from the inner
+   * Map. Does NOT walk function-scope entries.
    *
-   * The return value is a shallow copy; mutating it does not affect
-   * subsequent reads or internal state. This encapsulation guard prevents
-   * a Phase 9 consumer from accidentally corrupting the accumulator via
-   * `acc.fileScopeEntries(p).push(...)` or similar.
+   * For point-lookup consumers (e.g., Phase 9 fallback), prefer
+   * `fileScopeGet(filePath, name)` — O(1) with no allocation.
    */
   fileScopeEntries(filePath: string): readonly (readonly [string, string])[] {
-    const cached = this._fileScopeByFile.get(filePath);
-    return cached ? cached.slice() : [];
+    const map = this._fileScopeByFile.get(filePath);
+    return map ? [...map.entries()] : [];
+  }
+
+  /**
+   * O(1) point-lookup for a single file-scope binding by (filePath, name).
+   * Returns the typeName if found, `undefined` otherwise.
+   *
+   * This is the preferred lookup path for Phase 9 consumers that resolve
+   * a single callee's return type — avoids the O(n_file_scope) iteration
+   * and defensive-copy allocation of `fileScopeEntries()`.
+   */
+  fileScopeGet(filePath: string, name: string): string | undefined {
+    return this._fileScopeByFile.get(filePath)?.get(name);
   }
 
   /** Iterate over all file paths in insertion order. */

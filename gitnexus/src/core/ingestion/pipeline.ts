@@ -1000,6 +1000,19 @@ async function runChunkedParseAndResolve(
         },
         deferredConstructorBindings.length > 0 ? deferredConstructorBindings : undefined,
         fullWorkerHeritageMap,
+        // Phase 9: pass the accumulator so processCallsFromExtracted can fall back
+        // to file-scope TypeEnv bindings when the SymbolTable lacks a return type
+        // for a cross-file callee (e.g. var x = getUser() → x: User).
+        //
+        // Lifecycle ordering: the accumulator is populated but NOT yet finalized
+        // at this seam. finalize() is called later (after the sequential-path
+        // processCalls which also appends via typeEnv.flush()). Moving finalize()
+        // before this call would break sequential-path repos. Pre-finalize reads
+        // are safe because finalize() is a write-lock-only operation with no side
+        // effects on stored data. All worker-path appendFile calls complete in the
+        // chunk loop above, so every worker-contributed binding is available via
+        // fileScopeGet().
+        bindingAccumulator,
       );
     }
 
@@ -1009,6 +1022,7 @@ async function runChunkedParseAndResolve(
         deferredAssignments,
         ctx,
         deferredConstructorBindings.length > 0 ? deferredConstructorBindings : undefined,
+        bindingAccumulator, // Phase 9 fallback parity with processCallsFromExtracted (R3)
       );
     }
   } finally {
@@ -1759,14 +1773,15 @@ export const runPipelineFromRepo = async (
       }
     }
 
-    // Release the accumulator's heap footprint now. The ExportedTypeMap
-    // enrichment loop above is the only current consumer, and the dev
-    // telemetry log just captured peak state. Phase 14 and
-    // runGraphAnalysisPhases do not read the accumulator today — keeping
-    // it alive through those long-running phases pins heap for no reason.
-    // When Phase 9 wires a consumer into runCrossFileBindingPropagation,
-    // move this dispose() call to after that consumer completes or delete
-    // it entirely if the consumer takes lifecycle ownership.
+    // Release the accumulator's heap footprint now. Both consumers of the
+    // accumulator have completed:
+    //   1. ExportedTypeMap enrichment loop (enrichExportedTypeMap, above).
+    //   2. Phase 9: processCallsFromExtracted in runChunkedParseAndResolve,
+    //      which uses the accumulator as a BindingAccumulator fallback for
+    //      cross-file return types when the SymbolTable has no returnType.
+    // Phase 14 (runCrossFileBindingPropagation) and runGraphAnalysisPhases
+    // do not read the accumulator — keeping it alive through those long-
+    // running phases pins heap for no reason.
     bindingAccumulator.dispose();
     // Happy-path dispose completed — clear the cleanup ref so the catch
     // handler doesn't attempt a second (harmless but noisy) dispose if a
