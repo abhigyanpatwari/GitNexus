@@ -330,63 +330,71 @@ async def create_user(user: UserCreate):
     it('skips Feign client interfaces (no @Controller)', async () => {
       const dir = path.join(tmpDir, 'feign-skip');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-      fs.writeFileSync(path.join(dir, 'src/UserClient.java'),
-`
+      fs.writeFileSync(
+        path.join(dir, 'src/UserClient.java'),
+        `
 package com.example;
 @FeignClient(name = "user-service")
 public interface UserClient {
     @GetMapping("/users")
     List<User> getUsers();
 }
-`);
+`,
+      );
       const contracts = await extractor.extract(null, dir, makeRepo(dir));
-      expect(contracts.filter(c => c.role === 'provider')).toHaveLength(0);
+      expect(contracts.filter((c) => c.role === 'provider')).toHaveLength(0);
     });
 
     it('does NOT skip when @RestController is present', async () => {
       const dir = path.join(tmpDir, 'ctrl-iface');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-      fs.writeFileSync(path.join(dir, 'src/UserController.java'),
-`
+      fs.writeFileSync(
+        path.join(dir, 'src/UserController.java'),
+        `
 @RestController
 @RequestMapping("/api")
 public class UserController {
     @GetMapping("/users")
     public List<User> list() { return null; }
 }
-`);
+`,
+      );
       const contracts = await extractor.extract(null, dir, makeRepo(dir));
-      expect(contracts.filter(c => c.role === 'provider').length).toBeGreaterThanOrEqual(1);
+      expect(contracts.filter((c) => c.role === 'provider').length).toBeGreaterThanOrEqual(1);
     });
 
     it('does NOT false-positive on interface in comments', async () => {
       const dir = path.join(tmpDir, 'iface-comment');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-      fs.writeFileSync(path.join(dir, 'src/Api.java'),
-`
+      fs.writeFileSync(
+        path.join(dir, 'src/Api.java'),
+        `
 // implements the interface UserApi
 public class Api {
     @GetMapping("/health")
     public String health() { return "ok"; }
 }
-`);
+`,
+      );
       const contracts = await extractor.extract(null, dir, makeRepo(dir));
-      expect(contracts.filter(c => c.role === 'provider').length).toBeGreaterThanOrEqual(1);
+      expect(contracts.filter((c) => c.role === 'provider').length).toBeGreaterThanOrEqual(1);
     });
 
     it('does NOT false-positive on interface in a string', async () => {
       const dir = path.join(tmpDir, 'iface-str');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-      fs.writeFileSync(path.join(dir, 'src/Svc.java'),
-`
+      fs.writeFileSync(
+        path.join(dir, 'src/Svc.java'),
+        `
 public class Svc {
     String desc = "implements interface Foo";
     @GetMapping("/status")
     public String status() { return desc; }
 }
-`);
+`,
+      );
       const contracts = await extractor.extract(null, dir, makeRepo(dir));
-      expect(contracts.filter(c => c.role === 'provider').length).toBeGreaterThanOrEqual(1);
+      expect(contracts.filter((c) => c.role === 'provider').length).toBeGreaterThanOrEqual(1);
     });
   });
 

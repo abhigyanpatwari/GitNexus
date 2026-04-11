@@ -262,7 +262,10 @@ export class HttpRouteExtractor implements ContractExtractor {
     // consumers (Feign, JAX-RS proxies), not provider endpoints.
     // Anchored to line start (with optional access modifier) so we do not
     // match "interface" inside comments or string literals.
-    if (/^\s*(?:public\s+)?interface\s+\w+/m.test(content) && !/@(?:Rest)?Controller\b/.test(content)) {
+    if (
+      /^\s*(?:public\s+)?interface\s+\w+/m.test(content) &&
+      !/@(?:Rest)?Controller\b/.test(content)
+    ) {
       return out;
     }
 
