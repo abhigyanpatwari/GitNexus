@@ -4,7 +4,7 @@ import Parser from 'tree-sitter';
 import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
-import type { SymbolTableReader, SymbolTableWriter } from './symbol-table.js';
+import type { SymbolTableReader, SymbolTableWriter } from './model/symbol-table.js';
 // SymbolTableReader is used for the FieldExtractorContext stub; the
 // parsing functions themselves need Writer because they call .add().
 import { ASTCache } from './ast-cache.js';

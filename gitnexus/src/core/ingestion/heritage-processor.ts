@@ -26,8 +26,8 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from './languages/index.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type { ExtractedHeritage } from './workers/parse-worker.js';
-import type { ResolutionContext } from './resolution-context.js';
-import { TIER_CONFIDENCE } from './resolution-context.js';
+import type { ResolutionContext } from './model/resolution-context.js';
+import { TIER_CONFIDENCE } from './model/resolution-context.js';
 
 /**
  * Determine whether a heritage.extends capture is actually an IMPLEMENTS relationship.

@@ -7,13 +7,13 @@ import {
   extractConsumerAccessedKeys,
   processNextjsFetchRoutes,
 } from '../../src/core/ingestion/call-processor.js';
-import { buildHeritageMap } from '../../src/core/ingestion/heritage-map.js';
+import { buildHeritageMap } from '../../src/core/ingestion/model/heritage-map.js';
 import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
 import { extractReturnTypeName } from '../../src/core/ingestion/type-extractors/shared.js';
 import {
   createResolutionContext,
   type ResolutionContext,
-} from '../../src/core/ingestion/resolution-context.js';
+} from '../../src/core/ingestion/model/resolution-context.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { BindingAccumulator } from '../../src/core/ingestion/binding-accumulator.js';
 import type {

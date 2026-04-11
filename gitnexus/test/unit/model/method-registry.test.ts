@@ -20,7 +20,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { createMethodRegistry } from '../../../src/core/ingestion/model/method-registry.js';
-import type { SymbolDefinition } from '../../../src/core/ingestion/symbol-table.js';
+import type { SymbolDefinition } from '../../../src/core/ingestion/model/symbol-table.js';
 
 const makeMethod = (overrides: Partial<SymbolDefinition> = {}): SymbolDefinition => ({
   nodeId: 'method:test',

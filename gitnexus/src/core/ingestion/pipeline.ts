@@ -27,7 +27,7 @@ import {
   type ExportedTypeMap,
   buildExportedTypeMapFromGraph,
 } from './call-processor.js';
-import { buildHeritageMap } from './heritage-map.js';
+import { buildHeritageMap } from './model/heritage-map.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from './route-extractors/nextjs.js';
 import { expoFileToRouteURL } from './route-extractors/expo.js';
 import { phpFileToRouteURL } from './route-extractors/php.js';
@@ -61,7 +61,7 @@ import {
 import { computeMRO } from './mro-processor.js';
 import { processCommunities } from './community-processor.js';
 import { processProcesses } from './process-processor.js';
-import { createResolutionContext } from './resolution-context.js';
+import { createResolutionContext } from './model/resolution-context.js';
 import { createASTCache } from './ast-cache.js';
 import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
 import { PipelineResult } from '../../types/pipeline.js';

@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   createResolutionContext,
   type ResolutionContext,
-} from '../../src/core/ingestion/resolution-context.js';
-import { createSymbolTable } from '../../src/core/ingestion/symbol-table.js';
+} from '../../src/core/ingestion/model/resolution-context.js';
+import { createSymbolTable } from '../../src/core/ingestion/model/symbol-table.js';
 import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
 import { isFileInPackageDir } from '../../src/core/ingestion/import-processor.js';
 

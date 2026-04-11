@@ -50,8 +50,8 @@
  */
 
 import type { NodeLabel } from 'gitnexus-shared';
-import type { SymbolDefinition, ClassLikeLabel } from '../symbol-table.js';
-import { CLASS_TYPES_TUPLE } from '../symbol-table.js';
+import type { SymbolDefinition, ClassLikeLabel } from './symbol-table.js';
+import { CLASS_TYPES_TUPLE } from './symbol-table.js';
 import type { MutableTypeRegistry } from './type-registry.js';
 import type { MutableMethodRegistry } from './method-registry.js';
 import type { MutableFieldRegistry } from './field-registry.js';

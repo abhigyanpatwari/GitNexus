@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { buildImportResolutionContext } from '../../src/core/ingestion/import-processor.js';
 import type { ImportResolutionContext } from '../../src/core/ingestion/import-resolvers/types.js';
-import { createResolutionContext } from '../../src/core/ingestion/resolution-context.js';
+import { createResolutionContext } from '../../src/core/ingestion/model/resolution-context.js';
 
 describe('ResolutionContext.importMap', () => {
   it('creates an empty Map', () => {

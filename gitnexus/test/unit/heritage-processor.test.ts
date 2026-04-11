@@ -4,7 +4,7 @@ import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import {
   createResolutionContext,
   type ResolutionContext,
-} from '../../src/core/ingestion/resolution-context.js';
+} from '../../src/core/ingestion/model/resolution-context.js';
 import type { ExtractedHeritage } from '../../src/core/ingestion/workers/parse-worker.js';
 
 describe('processHeritageFromExtracted', () => {

@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { buildHeritageMap } from '../../src/core/ingestion/heritage-map.js';
+import { buildHeritageMap } from '../../src/core/ingestion/model/heritage-map.js';
 import {
   createResolutionContext,
   type ResolutionContext,
-} from '../../src/core/ingestion/resolution-context.js';
+} from '../../src/core/ingestion/model/resolution-context.js';
 import type { ExtractedHeritage } from '../../src/core/ingestion/workers/parse-worker.js';
 
 describe('buildHeritageMap', () => {

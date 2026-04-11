@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { type SymbolTableReader } from '../../src/core/ingestion/symbol-table.js';
+import { type SymbolTableReader } from '../../src/core/ingestion/model/symbol-table.js';
 import {
   createSemanticModel,
   type MutableSemanticModel,
@@ -1161,12 +1161,12 @@ describe('SymbolTable', () => {
 // lookupMethodByOwnerWithMRO — MRO-aware method resolution via HeritageMap
 // ---------------------------------------------------------------------------
 
-import { buildHeritageMap } from '../../src/core/ingestion/heritage-map.js';
+import { buildHeritageMap } from '../../src/core/ingestion/model/heritage-map.js';
 import { lookupMethodByOwnerWithMRO } from '../../src/core/ingestion/model/index.js';
 import {
   createResolutionContext,
   type ResolutionContext,
-} from '../../src/core/ingestion/resolution-context.js';
+} from '../../src/core/ingestion/model/resolution-context.js';
 import type { ExtractedHeritage } from '../../src/core/ingestion/workers/parse-worker.js';
 
 describe('lookupMethodByOwnerWithMRO', () => {

@@ -14,7 +14,7 @@ import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
 import { processImports } from '../../src/core/ingestion/import-processor.js';
 import { processCalls } from '../../src/core/ingestion/call-processor.js';
 import { processHeritage } from '../../src/core/ingestion/heritage-processor.js';
-import { createResolutionContext } from '../../src/core/ingestion/resolution-context.js';
+import { createResolutionContext } from '../../src/core/ingestion/model/resolution-context.js';
 import * as parserLoader from '../../src/core/tree-sitter/parser-loader.js';
 
 describe('sequential native parser availability', () => {

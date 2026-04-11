@@ -21,11 +21,11 @@
  */
 
 import type { SymbolDefinition } from './symbol-table.js';
-import type { SemanticModel } from './model/semantic-model.js';
-import { createSemanticModel } from './model/semantic-model.js';
-import type { NamedImportMap } from './import-processor.js';
-import { isFileInPackageDir } from './import-processor.js';
-import { walkBindingChain } from './named-binding-processor.js';
+import type { SemanticModel } from './semantic-model.js';
+import { createSemanticModel } from './semantic-model.js';
+import type { NamedImportMap } from '../import-processor.js';
+import { isFileInPackageDir } from '../import-processor.js';
+import { walkBindingChain } from '../named-binding-processor.js';
 
 /** Resolution tier for tracking, logging, and test assertions. */
 export type ResolutionTier = 'same-file' | 'import-scoped' | 'global';

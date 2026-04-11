@@ -4,7 +4,7 @@ import {
   extractReceiverName,
 } from '../../src/core/ingestion/utils/call-analysis.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
-import { createSymbolTable } from '../../src/core/ingestion/symbol-table.js';
+import { createSymbolTable } from '../../src/core/ingestion/model/symbol-table.js';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';

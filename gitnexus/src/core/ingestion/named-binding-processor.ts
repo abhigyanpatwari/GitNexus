@@ -1,4 +1,4 @@
-import type { SymbolTableReader, SymbolDefinition } from './symbol-table.js';
+import type { SymbolTableReader, SymbolDefinition } from './model/symbol-table.js';
 import type { NamedImportMap } from './import-processor.js';
 
 /**

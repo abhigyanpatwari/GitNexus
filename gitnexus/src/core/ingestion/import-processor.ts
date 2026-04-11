@@ -12,7 +12,7 @@ import type { ExtractedImport } from './workers/parse-worker.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import { loadImportConfigs } from './language-config.js';
 import { buildSuffixIndex } from './import-resolvers/utils.js';
-import type { ResolutionContext, ModuleAliasMap } from './resolution-context.js';
+import type { ResolutionContext, ModuleAliasMap } from './model/resolution-context.js';
 import type {
   ImportResult,
   ResolveCtx,

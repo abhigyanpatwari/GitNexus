@@ -9,9 +9,9 @@
  * between the model layer and the resolution layer.
  */
 
-import type { SymbolDefinition } from '../symbol-table.js';
+import type { SymbolDefinition } from './symbol-table.js';
 import type { SemanticModel } from './semantic-model.js';
-import type { HeritageMap } from '../heritage-map.js';
+import type { HeritageMap } from './heritage-map.js';
 import { c3Linearize } from '../mro-processor.js';
 import type { MroStrategy } from 'gitnexus-shared';
 

@@ -8,7 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { createFieldRegistry } from '../../../src/core/ingestion/model/field-registry.js';
-import type { SymbolDefinition } from '../../../src/core/ingestion/symbol-table.js';
+import type { SymbolDefinition } from '../../../src/core/ingestion/model/symbol-table.js';
 
 const makeDef = (overrides: Partial<SymbolDefinition> = {}): SymbolDefinition => ({
   nodeId: 'prop:test',

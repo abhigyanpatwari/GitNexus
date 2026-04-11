@@ -53,8 +53,8 @@ import type { FieldRegistry, MutableFieldRegistry } from './field-registry.js';
 import { createTypeRegistry } from './type-registry.js';
 import { createMethodRegistry } from './method-registry.js';
 import { createFieldRegistry } from './field-registry.js';
-import type { SymbolTableWriter, SymbolDefinition, AddMetadata } from '../symbol-table.js';
-import { createSymbolTable } from '../symbol-table.js';
+import type { SymbolTableWriter, SymbolDefinition, AddMetadata } from './symbol-table.js';
+import { createSymbolTable } from './symbol-table.js';
 import { createRegistrationTable } from './registration-table.js';
 
 // ---------------------------------------------------------------------------

@@ -1,11 +1,11 @@
 import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
-import type { SymbolDefinition, SymbolTableReader } from './symbol-table.js';
-import { CLASS_TYPES, CALL_TARGET_TYPES } from './symbol-table.js';
+import type { SymbolDefinition, SymbolTableReader } from './model/symbol-table.js';
+import { CLASS_TYPES, CALL_TARGET_TYPES } from './model/symbol-table.js';
 import Parser from 'tree-sitter';
-import type { ResolutionContext } from './resolution-context.js';
-import { TIER_CONFIDENCE, type ResolutionTier } from './resolution-context.js';
-import type { TieredCandidates } from './resolution-context.js';
+import type { ResolutionContext } from './model/resolution-context.js';
+import { TIER_CONFIDENCE, type ResolutionTier } from './model/resolution-context.js';
+import type { TieredCandidates } from './model/resolution-context.js';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
@@ -32,7 +32,7 @@ import {
 } from './utils/call-analysis.js';
 import { buildTypeEnv, isSubclassOf } from './type-env.js';
 import type { ConstructorBinding, TypeEnvironment } from './type-env.js';
-import type { HeritageMap } from './heritage-map.js';
+import type { HeritageMap } from './model/heritage-map.js';
 import type { BindingAccumulator } from './binding-accumulator.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type {

@@ -6,7 +6,7 @@
  * Also includes a separate index for Rust Impl blocks.
  */
 
-import type { SymbolDefinition } from '../symbol-table.js';
+import type { SymbolDefinition } from './symbol-table.js';
 
 // ---------------------------------------------------------------------------
 // Public read-only interface

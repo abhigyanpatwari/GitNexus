@@ -13,10 +13,10 @@
  *    classes implementing a given interface)
  */
 
-import type { ExtractedHeritage } from './workers/parse-worker.js';
+import type { ExtractedHeritage } from '../workers/parse-worker.js';
 import type { ResolutionContext } from './resolution-context.js';
 import { getLanguageFromFilename } from 'gitnexus-shared';
-import { resolveExtendsType } from './heritage-processor.js';
+import { resolveExtendsType } from '../heritage-processor.js';
 
 // ---------------------------------------------------------------------------
 // Public types

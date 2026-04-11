@@ -27,7 +27,7 @@ export {
   type SymbolTableReader,
   type SymbolTableWriter,
   createSymbolTable,
-} from '../symbol-table.js';
+} from './symbol-table.js';
 
 // Type registry (classes, structs, interfaces, enums, records, impls)
 export {
