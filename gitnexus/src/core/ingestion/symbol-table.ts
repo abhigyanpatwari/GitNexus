@@ -1,5 +1,6 @@
 import type { NodeLabel } from 'gitnexus-shared';
 import { createSemanticModel } from './model/semantic-model.js';
+import type { SemanticModel } from './model/semantic-model.js';
 
 export const CLASS_TYPES = new Set([
   'Class',
@@ -105,13 +106,6 @@ export interface SymbolTable {
   lookupFieldByOwner: (ownerNodeId: string, fieldName: string) => SymbolDefinition | undefined;
 
   /**
-   * Look up a method by its owning class nodeId and method name.
-   * O(1) via dedicated eagerly-populated index keyed by `ownerNodeId\0methodName`.
-   * For overloaded methods (same owner + name): returns the first match when all
-   * overloads share the same returnType, undefined when return types differ (ambiguous).
-   * Used by walkMixedChain for deterministic cross-class chain resolution.
-   */
-  /**
    * Lookup a method by owner class + name, optionally filtered by arity.
    *
    * When `argCount` is provided, overloads whose parameter count doesn't
@@ -168,6 +162,19 @@ export interface SymbolTable {
   getStats: () => {
     fileCount: number;
   };
+
+  /**
+   * Read-only view of the aggregated semantic registries (types, methods,
+   * fields). Exposed so consumers in `core/ingestion/` can query the model
+   * directly via `table.model.types.*`, `table.model.methods.*`, and
+   * `table.model.fields.*` rather than routing through the delegate
+   * wrappers on this interface.
+   *
+   * The read-only `SemanticModel` variant (not `MutableSemanticModel`)
+   * prevents external callers from reaching registration APIs — those
+   * remain SymbolTable's responsibility via {@link add}.
+   */
+  readonly model: SemanticModel;
 
   /**
    * Cleanup memory
@@ -362,6 +369,7 @@ export const createSymbolTable = (): SymbolTable => {
     lookupImplByName,
     getFiles,
     getStats,
+    model,
     clear,
   };
 };

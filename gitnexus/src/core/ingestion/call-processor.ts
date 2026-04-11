@@ -1092,8 +1092,8 @@ export const processCalls = async (
           if (
             isSubclassOf(ctorType, receiverTypeName, parentMap) ||
             isSubclassOf(ctorType, receiverTypeName, globalParentMap) ||
-            (ctx.symbols.lookupClassByName(ctorType).length > 0 &&
-              ctx.symbols.lookupClassByName(receiverTypeName).length > 0)
+            (ctx.symbols.model.types.lookupClassByName(ctorType).length > 0 &&
+              ctx.symbols.model.types.lookupClassByName(receiverTypeName).length > 0)
           ) {
             receiverTypeName = ctorType;
           }
@@ -1950,7 +1950,7 @@ const resolveFieldOwnership = (
   const classDef = typeResolved.candidates.find((d) => CLASS_LIKE_TYPES.has(d.type));
   if (!classDef) return undefined;
 
-  return ctx.symbols.lookupFieldByOwner(classDef.nodeId, fieldName) ?? undefined;
+  return ctx.symbols.model.fields.lookupFieldByOwner(classDef.nodeId, fieldName) ?? undefined;
 };
 
 /**
@@ -2013,11 +2013,11 @@ const resolveMethodByOwner = (
           candidate.nodeId,
           methodName,
           heritageMap,
-          ctx.symbols,
+          ctx.symbols.model,
           language,
           argCount,
         )
-      : ctx.symbols.lookupMethodByOwner(candidate.nodeId, methodName, argCount);
+      : ctx.symbols.model.methods.lookupMethodByOwner(candidate.nodeId, methodName, argCount);
     if (!def) continue;
     if (!firstDef) {
       firstDef = def;
@@ -2264,7 +2264,7 @@ export const resolveStaticCall = (
   //    is supplied, the caller has already paid for the tiered lookup, so this
   //    pre-check still prevents the class-candidate filter + lookupMethodByOwner
   //    loop from running on obviously non-class targets.
-  const allClasses = ctx.symbols.lookupClassByName(className);
+  const allClasses = ctx.symbols.model.types.lookupClassByName(className);
   if (allClasses.length === 0) return null;
 
   // 2. Scope via ctx.resolve for import-tier information. Reuse the caller's
@@ -2295,7 +2295,11 @@ export const resolveStaticCall = (
   let firstDef: SymbolDefinition | undefined;
   let ambiguous = false;
   for (const candidate of classCandidates) {
-    const def = ctx.symbols.lookupMethodByOwner(candidate.nodeId, className, argCount);
+    const def = ctx.symbols.model.methods.lookupMethodByOwner(
+      candidate.nodeId,
+      className,
+      argCount,
+    );
     if (!def || def.type !== 'Constructor') continue;
     if (!firstDef) {
       firstDef = def;

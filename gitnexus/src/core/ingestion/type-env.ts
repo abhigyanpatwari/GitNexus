@@ -484,7 +484,8 @@ const lookupClassDefsByName = (
   symbolTable: SymbolTable,
   name: string,
   allowedTypes: ReadonlySet<string> = CLASS_LIKE_TYPES,
-): ClassDefRef[] => symbolTable.lookupClassByName(name).filter((d) => allowedTypes.has(d.type));
+): ClassDefRef[] =>
+  symbolTable.model.types.lookupClassByName(name).filter((d) => allowedTypes.has(d.type));
 
 /** Memoize class definition lookups during fixpoint iteration.
  *  SymbolTable is immutable during type resolution, so results never change.
@@ -626,11 +627,11 @@ const resolveFieldType = (
   const classDefs = lookup(receiverType);
   if (classDefs.length !== 1) return undefined;
   // Direct lookup first
-  const fieldDef = symbolTable.lookupFieldByOwner(classDefs[0].nodeId, field);
+  const fieldDef = symbolTable.model.fields.lookupFieldByOwner(classDefs[0].nodeId, field);
   if (fieldDef?.declaredType) return extractReturnTypeName(fieldDef.declaredType);
   // MRO parent chain walking on miss
   const inherited = walkParentChain(receiverType, parentMap, lookup, (nodeId) => {
-    const f = symbolTable.lookupFieldByOwner(nodeId, field);
+    const f = symbolTable.model.fields.lookupFieldByOwner(nodeId, field);
     return f?.declaredType ? extractReturnTypeName(f.declaredType) : undefined;
   });
   return inherited;
@@ -663,7 +664,7 @@ const resolveMethodReturnType = (
   // Direct lookup first
   const directMethodLookups = classDefs.map((d) => ({
     classDef: d,
-    methodDef: symbolTable.lookupMethodByOwner(d.nodeId, method),
+    methodDef: symbolTable.model.methods.lookupMethodByOwner(d.nodeId, method),
   }));
   const hasAmbiguousDirectLookup = directMethodLookups.some(({ classDef, methodDef }) => {
     if (methodDef) return false;
@@ -681,7 +682,7 @@ const resolveMethodReturnType = (
   // MRO parent chain walking on miss
   if (methods.length === 0) {
     const inherited = walkParentChain(receiverType, parentMap, lookup, (nodeId) => {
-      const parentMethod = symbolTable.lookupMethodByOwner(nodeId, method);
+      const parentMethod = symbolTable.model.methods.lookupMethodByOwner(nodeId, method);
       if (!parentMethod?.returnType) return undefined;
       return extractReturnTypeName(parentMethod.returnType);
     });

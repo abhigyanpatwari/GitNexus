@@ -78,24 +78,49 @@ function flatSize(typeEnv: TypeEnvironment): number {
   return count;
 }
 
-const createMockSymbolTable = (overrides: Partial<SymbolTable> = {}): SymbolTable => ({
-  add: () => {},
-  lookupExact: () => undefined,
-  lookupExactFull: () => undefined,
-  lookupExactAll: () => [],
-  lookupCallableByName: () => [],
-  lookupFieldByOwner: () => undefined,
-  lookupMethodByOwner: () => undefined,
-  lookupClassByName: () => [],
-  lookupClassByQualifiedName: () => [],
-  lookupImplByName: () => [],
-  getFiles: () => [][Symbol.iterator](),
-  getStats: () => ({
-    fileCount: 0,
-  }),
-  clear: () => {},
-  ...overrides,
-});
+const createMockSymbolTable = (overrides: Partial<SymbolTable> = {}): SymbolTable => {
+  const base = {
+    add: () => {},
+    lookupExact: () => undefined,
+    lookupExactFull: () => undefined,
+    lookupExactAll: () => [],
+    lookupCallableByName: () => [],
+    lookupFieldByOwner: () => undefined,
+    lookupMethodByOwner: () => undefined,
+    lookupClassByName: () => [],
+    lookupClassByQualifiedName: () => [],
+    lookupImplByName: () => [],
+    getFiles: () => [][Symbol.iterator](),
+    getStats: () => ({
+      fileCount: 0,
+    }),
+    clear: () => {},
+    ...overrides,
+  } as unknown as SymbolTable;
+  // SM-20 wire-up: production code now queries the model directly
+  // (symbolTable.model.types/methods/fields). Provide a model proxy that
+  // forwards to the (possibly overridden) top-level lookup stubs so existing
+  // tests that override `lookupClassByName` / `lookupMethodByOwner` /
+  // `lookupFieldByOwner` keep working without stubbing the model shape.
+  return {
+    ...base,
+    model: {
+      types: {
+        lookupClassByName: (name: string) => base.lookupClassByName(name),
+        lookupClassByQualifiedName: (name: string) => base.lookupClassByQualifiedName(name),
+        lookupImplByName: (name: string) => base.lookupImplByName(name),
+      },
+      methods: {
+        lookupMethodByOwner: (ownerNodeId: string, methodName: string, argCount?: number) =>
+          base.lookupMethodByOwner(ownerNodeId, methodName, argCount),
+      },
+      fields: {
+        lookupFieldByOwner: (ownerNodeId: string, fieldName: string) =>
+          base.lookupFieldByOwner(ownerNodeId, fieldName),
+      },
+    },
+  } as unknown as SymbolTable;
+};
 
 const createClassDef = (
   name: string,
@@ -1191,7 +1216,9 @@ class RepoService {
   });
 
   describe('destructured call results', () => {
-    // Minimal mock SymbolTable for call-result return type lookup
+    // Minimal mock SymbolTable for call-result return type lookup.
+    // Includes SM-20 model shim so resolveFieldType's class-def cache
+    // (which reads through symbolTable.model.types.lookupClassByName) works.
     const makeSymbolTable = (callables: Array<{ name: string; returnType?: string }>) => ({
       lookupCallableByName: (name: string) =>
         callables
@@ -1208,6 +1235,19 @@ class RepoService {
       add: () => {},
       getStats: () => ({ fileCount: 0 }),
       clear: () => {},
+      model: {
+        types: {
+          lookupClassByName: () => [],
+          lookupClassByQualifiedName: () => [],
+          lookupImplByName: () => [],
+        },
+        methods: {
+          lookupMethodByOwner: () => undefined,
+        },
+        fields: {
+          lookupFieldByOwner: () => undefined,
+        },
+      },
     });
 
     it('emits callResult + fieldAccess items for const { x } = fn()', () => {

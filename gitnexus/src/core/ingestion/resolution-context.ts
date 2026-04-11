@@ -206,8 +206,8 @@ export const createResolutionContext = (): ResolutionContext => {
     // If a future language needs them at Tier 3, add a dedicated index.
     // Macro (C/C++) and Delegate (C#) ARE included in the callable index
     // since call-processor.ts treats them as callable targets.
-    const classDefs = symbols.lookupClassByName(name);
-    const implDefs = symbols.lookupImplByName(name);
+    const classDefs = symbols.model.types.lookupClassByName(name);
+    const implDefs = symbols.model.types.lookupImplByName(name);
     const callableDefs = symbols.lookupCallableByName(name);
 
     if (classDefs.length === 0 && implDefs.length === 0 && callableDefs.length === 0) {

@@ -878,6 +878,123 @@ describe('SymbolTable', () => {
       expect(table.lookupClassByQualifiedName('Services.User')).toEqual([]);
     });
   });
+
+  describe('model property (SM-20 wire-up)', () => {
+    it('exposes types, methods, and fields registries', () => {
+      expect(table.model).toBeDefined();
+      expect(table.model.types).toBeDefined();
+      expect(table.model.methods).toBeDefined();
+      expect(table.model.fields).toBeDefined();
+    });
+
+    it('parity: lookupClassByName matches model.types.lookupClassByName', () => {
+      table.add('src/user.ts', 'User', 'class:User', 'Class', {
+        qualifiedName: 'app.User',
+      });
+      const viaWrapper = table.lookupClassByName('User');
+      const viaModel = table.model.types.lookupClassByName('User');
+      expect(viaWrapper).toHaveLength(1);
+      expect(viaModel).toHaveLength(1);
+      expect(viaModel[0]!.nodeId).toBe(viaWrapper[0]!.nodeId);
+    });
+
+    it('parity: lookupClassByQualifiedName matches model.types.lookupClassByQualifiedName', () => {
+      table.add('src/user.ts', 'User', 'class:User', 'Class', {
+        qualifiedName: 'app.models.User',
+      });
+      const viaWrapper = table.lookupClassByQualifiedName('app.models.User');
+      const viaModel = table.model.types.lookupClassByQualifiedName('app.models.User');
+      expect(viaModel).toEqual(viaWrapper);
+    });
+
+    it('parity: lookupMethodByOwner matches model.methods.lookupMethodByOwner', () => {
+      table.add('src/user.ts', 'User', 'class:User', 'Class');
+      table.add('src/user.ts', 'save', 'mtd:User.save', 'Method', {
+        ownerId: 'class:User',
+        parameterCount: 0,
+      });
+      const viaWrapper = table.lookupMethodByOwner('class:User', 'save');
+      const viaModel = table.model.methods.lookupMethodByOwner('class:User', 'save');
+      expect(viaModel).toBeDefined();
+      expect(viaModel!.nodeId).toBe(viaWrapper!.nodeId);
+    });
+
+    it('parity: lookupFieldByOwner matches model.fields.lookupFieldByOwner', () => {
+      table.add('src/user.ts', 'User', 'class:User', 'Class');
+      table.add('src/user.ts', 'name', 'prop:User.name', 'Property', {
+        ownerId: 'class:User',
+        declaredType: 'string',
+      });
+      const viaWrapper = table.lookupFieldByOwner('class:User', 'name');
+      const viaModel = table.model.fields.lookupFieldByOwner('class:User', 'name');
+      expect(viaModel).toBeDefined();
+      expect(viaModel!.nodeId).toBe(viaWrapper!.nodeId);
+    });
+
+    it('parity: lookupImplByName matches model.types.lookupImplByName', () => {
+      table.add('src/user.rs', 'User', 'impl:User', 'Impl');
+      const viaWrapper = table.lookupImplByName('User');
+      const viaModel = table.model.types.lookupImplByName('User');
+      expect(viaModel).toEqual(viaWrapper);
+    });
+
+    it('arity filtering works through model.methods', () => {
+      table.add('src/user.ts', 'User', 'class:User', 'Class');
+      table.add('src/user.ts', 'greet', 'mtd:greet:0', 'Method', {
+        ownerId: 'class:User',
+        parameterCount: 0,
+      });
+      table.add('src/user.ts', 'greet', 'mtd:greet:1', 'Method', {
+        ownerId: 'class:User',
+        parameterCount: 1,
+      });
+      // argCount disambiguates arity-differing overloads identically via
+      // wrapper and direct model access.
+      expect(table.model.methods.lookupMethodByOwner('class:User', 'greet', 0)?.nodeId).toBe(
+        'mtd:greet:0',
+      );
+      expect(table.model.methods.lookupMethodByOwner('class:User', 'greet', 1)?.nodeId).toBe(
+        'mtd:greet:1',
+      );
+    });
+
+    it('clear() cascades to model registries', () => {
+      table.add('src/user.ts', 'User', 'class:User', 'Class');
+      expect(table.model.types.lookupClassByName('User')).toHaveLength(1);
+      table.clear();
+      expect(table.model.types.lookupClassByName('User')).toEqual([]);
+    });
+
+    // Feeding audit — edge cases for add() → model registration branches.
+    // The happy-path parity tests above cover Class, Method, Property, Impl.
+    // These two cases exercise the non-obvious routing paths.
+
+    it('feeds Function-with-ownerId into model.methods (Python-style class method)', () => {
+      // Python extractors emit class methods as `Function` with ownerId set.
+      // The add() branch for Method/Constructor/Function-with-ownerId must
+      // route these into the method registry so owner-scoped resolution works
+      // uniformly across all supported languages.
+      table.add('src/user.py', 'User', 'class:User', 'Class');
+      table.add('src/user.py', 'save', 'fn:User.save', 'Function', {
+        ownerId: 'class:User',
+      });
+      expect(table.model.methods.lookupMethodByOwner('class:User', 'save')?.nodeId).toBe(
+        'fn:User.save',
+      );
+    });
+
+    it('silently skips Property without ownerId (no model.fields registration)', () => {
+      // Properties must have an ownerId to be reachable via lookupFieldByOwner.
+      // A Property registered without ownerId is still stored in the file
+      // index (for lookupExact) but never reaches the fields registry —
+      // documenting the intentional behavior.
+      table.add('src/user.ts', 'name', 'prop:orphan.name', 'Property', {
+        declaredType: 'string',
+      });
+      expect(table.lookupExact('src/user.ts', 'name')).toBe('prop:orphan.name');
+      expect(table.model.fields.lookupFieldByOwner('class:User', 'name')).toBeUndefined();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -917,7 +1034,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Child',
       'parentMethod',
       map,
-      ctx.symbols,
+      ctx.symbols.model,
       SupportedLanguages.Java,
     );
     expect(result).toBeDefined();
@@ -946,7 +1063,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Child',
       'save',
       map,
-      ctx.symbols,
+      ctx.symbols.model,
       SupportedLanguages.Java,
     );
     expect(result).toBeDefined();
@@ -972,7 +1089,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:C',
       'greet',
       map,
-      ctx.symbols,
+      ctx.symbols.model,
       SupportedLanguages.Java,
     );
     expect(result).toBeDefined();
@@ -1007,7 +1124,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:D',
       'foo',
       map,
-      ctx.symbols,
+      ctx.symbols.model,
       SupportedLanguages.TypeScript,
     );
     expect(result).toBeDefined();
@@ -1041,7 +1158,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:D',
       'foo',
       map,
-      ctx.symbols,
+      ctx.symbols.model,
       SupportedLanguages.Python,
     );
     expect(result).toBeDefined();
@@ -1066,7 +1183,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Child',
       'process',
       map,
-      ctx.symbols,
+      ctx.symbols.model,
       SupportedLanguages.Rust,
     );
     // Rust requires qualified syntax — no auto-resolution
@@ -1086,7 +1203,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Child',
       'nonExistent',
       map,
-      ctx.symbols,
+      ctx.symbols.model,
       SupportedLanguages.Java,
     );
     expect(result).toBeUndefined();
@@ -1111,7 +1228,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:C',
       'render',
       map,
-      ctx.symbols,
+      ctx.symbols.model,
       SupportedLanguages.CPlusPlus,
     );
     expect(result).toBeDefined();
@@ -1142,7 +1259,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Child',
       'save',
       map,
-      ctx.symbols,
+      ctx.symbols.model,
       SupportedLanguages.Java,
     );
     expect(result).toBeDefined();
@@ -1179,7 +1296,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:C',
       'handle',
       map,
-      ctx.symbols,
+      ctx.symbols.model,
       SupportedLanguages.Java,
     );
     expect(result).toBeDefined();
@@ -1216,7 +1333,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Child',
       'handle',
       map,
-      ctx.symbols,
+      ctx.symbols.model,
       SupportedLanguages.Java,
     );
     expect(result).toBeDefined();
@@ -1240,7 +1357,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Child',
       'handle',
       map,
-      ctx.symbols,
+      ctx.symbols.model,
       SupportedLanguages.Kotlin,
     );
     expect(result).toBeDefined();
@@ -1264,7 +1381,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Child',
       'Execute',
       map,
-      ctx.symbols,
+      ctx.symbols.model,
       SupportedLanguages.CSharp,
     );
     expect(result).toBeDefined();
@@ -1290,7 +1407,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Dog',
       'speak',
       map,
-      ctx.symbols,
+      ctx.symbols.model,
       SupportedLanguages.JavaScript,
     );
     expect(result).toBeDefined();
@@ -1331,7 +1448,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:D',
       'render',
       map,
-      ctx.symbols,
+      ctx.symbols.model,
       SupportedLanguages.CPlusPlus,
     );
     expect(result).toBeDefined();
@@ -1353,7 +1470,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:User',
       'getName',
       map,
-      ctx.symbols,
+      ctx.symbols.model,
       SupportedLanguages.Java,
     );
     expect(result).toBeDefined();

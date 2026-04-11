@@ -9,7 +9,8 @@
  * between the model layer and the resolution layer.
  */
 
-import type { SymbolDefinition, SymbolTable } from '../symbol-table.js';
+import type { SymbolDefinition } from '../symbol-table.js';
+import type { SemanticModel } from './semantic-model.js';
 import type { HeritageMap } from '../heritage-map.js';
 import { getProvider } from '../languages/index.js';
 import { c3Linearize } from '../mro-processor.js';
@@ -57,6 +58,10 @@ const getCachedC3Linearization = (
  * Build a parentMap from HeritageMap for use with c3Linearize.
  * Traverses the parent chain starting from startNodeId, collecting all
  * parent→children relationships into a Map<string, string[]>.
+ *
+ * Uses a head-pointer BFS (queue[head++]) instead of Array.shift() to avoid
+ * O(n) per-dequeue re-indexing. For wide/shallow hierarchies common in
+ * large Java/C# codebases this keeps the walk linear in ancestor count.
  */
 const buildParentMapFromHeritage = (
   startNodeId: string,
@@ -64,10 +69,11 @@ const buildParentMapFromHeritage = (
 ): Map<string, string[]> => {
   const parentMap = new Map<string, string[]>();
   const visited = new Set<string>();
-  const queue = [startNodeId];
+  const queue: string[] = [startNodeId];
+  let head = 0;
 
-  while (queue.length > 0) {
-    const nodeId = queue.shift()!;
+  while (head < queue.length) {
+    const nodeId = queue[head++]!;
     if (visited.has(nodeId)) continue;
     visited.add(nodeId);
     const parents = heritageMap.getParents(nodeId);
@@ -103,22 +109,28 @@ const buildParentMapFromHeritage = (
  *
  * Delegates to mro-processor.ts c3Linearize for C3 strategy.
  *
- * @internal Exported only to enable unit testing in isolation. The proper
- * entry point for callers outside this module is {@link resolveMethodByOwner},
- * which handles receiver-type resolution before delegating here.
+ * Depends only on {@link SemanticModel} + {@link HeritageMap} + the language
+ * provider's MRO strategy — NO dependency on SymbolTable or
+ * resolution-context, which keeps the `model/` module free of circular
+ * imports.
+ *
+ * @internal This is the low-level MRO walker. Exported so call-processor's
+ * higher-level resolvers (and unit tests) can invoke it directly. Callers
+ * outside `core/ingestion/` should use the higher-level resolvers in
+ * call-processor.ts instead of depending on this function.
  */
 export const lookupMethodByOwnerWithMRO = (
   ownerNodeId: string,
   methodName: string,
   heritageMap: HeritageMap,
-  symbols: SymbolTable,
+  model: SemanticModel,
   language: SupportedLanguages,
   argCount?: number,
 ): SymbolDefinition | undefined => {
   // Direct lookup first (child override — no walk needed).
   // argCount is threaded through so arity-differing overloads on the direct
   // owner can be disambiguated before the MRO walk starts.
-  const direct = symbols.lookupMethodByOwner(ownerNodeId, methodName, argCount);
+  const direct = model.methods.lookupMethodByOwner(ownerNodeId, methodName, argCount);
   if (direct) return direct;
 
   const strategy = getProvider(language).mroStrategy;
@@ -148,7 +160,7 @@ export const lookupMethodByOwnerWithMRO = (
   // Walk ancestors in MRO order — first match wins.
   // argCount narrows overloaded ancestors the same way as the direct lookup.
   for (const ancestorId of ancestors) {
-    const method = symbols.lookupMethodByOwner(ancestorId, methodName, argCount);
+    const method = model.methods.lookupMethodByOwner(ancestorId, methodName, argCount);
     if (method) return method;
   }
 

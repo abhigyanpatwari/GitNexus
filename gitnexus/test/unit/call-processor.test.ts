@@ -1317,7 +1317,11 @@ describe('processCalls — Phase P class lookup fallback', () => {
     ctx.symbols.add(dogFile, 'fetchBall', fetchBallId, 'Method', { ownerId: dogId });
     ctx.importMap.set(appFile, new Set([contractFile, dogFile]));
 
-    const classLookupSpy = vi.spyOn(ctx.symbols, 'lookupClassByName');
+    // SM-20 wire-up: resolveMemberCall's constructor-override branch queries
+    // the model directly (ctx.symbols.model.types.lookupClassByName), not the
+    // legacy SymbolTable wrapper. Spy on the model method to preserve the
+    // test's intent: verify which class names are looked up during override.
+    const classLookupSpy = vi.spyOn(ctx.symbols.model.types, 'lookupClassByName');
 
     await processCalls(
       graph,
@@ -1367,7 +1371,11 @@ class App {
     });
     ctx.importMap.set(appFile, new Set([contractFile, dogFile, otherDogFile]));
 
-    const classLookupSpy = vi.spyOn(ctx.symbols, 'lookupClassByName');
+    // SM-20 wire-up: resolveMemberCall's constructor-override branch queries
+    // the model directly (ctx.symbols.model.types.lookupClassByName), not the
+    // legacy SymbolTable wrapper. Spy on the model method to preserve the
+    // test's intent: verify which class names are looked up during override.
+    const classLookupSpy = vi.spyOn(ctx.symbols.model.types, 'lookupClassByName');
 
     await processCalls(
       graph,
