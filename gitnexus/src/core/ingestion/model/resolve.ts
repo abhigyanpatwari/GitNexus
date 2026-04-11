@@ -128,8 +128,8 @@ export function c3Linearize(
   return result;
 }
 
-// `gatherAncestors` is only used internally here for now, but exported
-// so mro-processor.ts can reuse the same BFS traversal.
+// `gatherAncestors` is exported so mro-processor.ts can reuse the same
+// BFS traversal for graph-level MRO emission.
 export { gatherAncestors };
 
 // ---------------------------------------------------------------------------
@@ -223,7 +223,8 @@ const buildParentMapFromHeritage = (
  *                        is handled by computeMRO at graph level
  * - `qualified-syntax`: No auto-resolution (Rust) — returns undefined
  *
- * Delegates to mro-processor.ts c3Linearize for C3 strategy.
+ * Uses the `c3Linearize` defined in this file (also consumed by
+ * mro-processor.ts for graph-level MRO emission) for the `c3` strategy.
  *
  * Depends only on {@link SemanticModel} + {@link HeritageMap} + an
  * {@link MroStrategy} literal — NO dependency on SymbolTable, the language
@@ -257,7 +258,7 @@ export const lookupMethodByOwnerWithMRO = (
   // readonly to accept the cached (frozen) c3 linearization without copying.
   let ancestors: readonly string[];
   if (strategy === 'c3') {
-    // Delegate to mro-processor.ts C3 linearization (memoized per HeritageMap
+    // C3 linearization (memoized per HeritageMap
     // so repeated calls for the same owner within an ingestion run reuse the
     // linearization instead of rebuilding the parent map and re-running C3).
     // c3Linearize returns ancestors only (excludes the owner itself),

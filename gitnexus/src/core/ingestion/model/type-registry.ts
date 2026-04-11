@@ -16,22 +16,25 @@ export interface TypeRegistry {
   /**
    * Look up class-like definitions (Class, Struct, Interface, Enum, Record, Trait)
    * by simple name. Returns all matching definitions across files
-   * (e.g. partial classes).
+   * (e.g. partial classes). Returned array is a view into the live
+   * internal index — do not mutate.
    */
-  lookupClassByName(name: string): SymbolDefinition[];
+  lookupClassByName(name: string): readonly SymbolDefinition[];
 
   /**
    * Look up class-like definitions by canonical qualified name.
    * Qualified names are normalized to dot-separated scope segments across languages,
    * e.g. `App.Models.User`, `com.example.User`, or `Admin.User`.
+   * Returned array is a view into the live index — do not mutate.
    */
-  lookupClassByQualifiedName(qualifiedName: string): SymbolDefinition[];
+  lookupClassByQualifiedName(qualifiedName: string): readonly SymbolDefinition[];
 
   /**
    * Look up Impl nodes by name. Used by Tier 3 resolution to include Rust
    * impl blocks alongside class-like candidates.
+   * Returned array is a view into the live index — do not mutate.
    */
-  lookupImplByName(name: string): SymbolDefinition[];
+  lookupImplByName(name: string): readonly SymbolDefinition[];
 }
 
 // ---------------------------------------------------------------------------

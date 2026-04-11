@@ -19,7 +19,7 @@
  */
 
 import type { SymbolDefinition, SymbolTableReader } from './symbol-table.js';
-import type { SemanticModel } from './semantic-model.js';
+import type { MutableSemanticModel } from './semantic-model.js';
 import { createSemanticModel } from './semantic-model.js';
 
 // ---------------------------------------------------------------------------
@@ -77,16 +77,24 @@ function walkBindingChain(
   currentFilePath: string,
   symbolTable: SymbolTableReader,
   namedImportMap: NamedImportMap,
-): SymbolDefinition[] | null {
+): readonly SymbolDefinition[] | null {
+  // Fast exit: most files have no named imports at all. Skip the Set
+  // allocation + loop entry on the common empty-binding path so resolve()
+  // stays allocation-free for the typical call site.
+  const firstBindings = namedImportMap.get(currentFilePath);
+  if (!firstBindings) return null;
+  const firstBinding = firstBindings.get(name);
+  if (!firstBinding) return null;
+
   let lookupFile = currentFilePath;
   let lookupName = name;
   const visited = new Set<string>();
 
   for (let depth = 0; depth < 5; depth++) {
-    const bindings = namedImportMap.get(lookupFile);
+    const bindings = depth === 0 ? firstBindings : namedImportMap.get(lookupFile);
     if (!bindings) return null;
 
-    const binding = bindings.get(lookupName);
+    const binding = depth === 0 ? firstBinding : bindings.get(lookupName);
     if (!binding) return null;
 
     const key = `${binding.sourcePath}:${binding.exportedName}`;
@@ -140,8 +148,12 @@ export interface ResolutionContext {
 
   // --- Data access (for pipeline wiring, not resolution) ---
   /** Semantic model — the top-level container for types, methods, fields,
-   *  and the nested file/callable SymbolTable. */
-  readonly model: SemanticModel;
+   *  and the nested file/callable SymbolTable. Typed as
+   *  {@link MutableSemanticModel} because `ResolutionContext` is the
+   *  lifecycle owner — the pipeline registers symbols through it during
+   *  the fan-out phase. Resolvers that only query should annotate their
+   *  own fields as {@link SemanticModel} to drop write access. */
+  readonly model: MutableSemanticModel;
   /** Raw maps — used by import-processor to populate import data. */
   readonly importMap: ImportMap;
   readonly packageMap: PackageMap;

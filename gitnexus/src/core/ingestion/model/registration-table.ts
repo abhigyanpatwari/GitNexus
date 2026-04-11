@@ -50,8 +50,8 @@
  */
 
 import type { NodeLabel } from 'gitnexus-shared';
-import type { SymbolDefinition, ClassLikeLabel } from './symbol-table.js';
-import { CLASS_TYPES_TUPLE } from './symbol-table.js';
+import type { SymbolDefinition, ClassLikeLabel, FreeCallableLabel } from './symbol-table.js';
+import { CLASS_TYPES_TUPLE, FREE_CALLABLE_TYPES } from './symbol-table.js';
 import type { MutableTypeRegistry } from './type-registry.js';
 import type { MutableMethodRegistry } from './method-registry.js';
 import type { MutableFieldRegistry } from './field-registry.js';
@@ -61,28 +61,24 @@ import type { MutableFieldRegistry } from './field-registry.js';
 // ---------------------------------------------------------------------------
 
 /**
- * A registration hook is a pure side-effectful function closed over a
- * specific registry. The hook receives the symbol's simple name and its
- * pre-built definition; it does not receive raw metadata.
+ * Registration hook — a pure side-effectful function closed over a
+ * specific registry. Performs the specialized registry write into the
+ * appropriate owner-scoped registry for one NodeLabel.
  *
  * Closure capture is the isolation mechanism: `propertyHook` literally
  * cannot call `types.registerClass` because its closure does not hold
  * a reference to `types`. This is the runtime half of the principle of
  * least authority — the compile-time half is enforced by TypeScript.
- */
-/**
- * Registration hook — a pure side-effectful function closed over a
- * specific registry. Performs the specialized registry write into the
- * appropriate owner-scoped registry for one NodeLabel. The
- * callable-index gate lives inside `SymbolTable.add()` via the
- * `FREE_CALLABLE_TYPES` allowlist — the dispatch table does not participate
- * in that decision.
+ *
+ * The callable-index gate lives inside `SymbolTable.add()` via the
+ * `FREE_CALLABLE_TYPES` allowlist — the dispatch table does not
+ * participate in that decision.
  */
 export type RegistrationHook = (name: string, def: SymbolDefinition) => void;
 
 /**
  * Dependencies required to build the dispatch table. Matches the shape
- * that `createSemanticModel()` already passes into `createSymbolTable()`.
+ * that `createSemanticModel()` passes into `createRegistrationTable()`.
  */
 export interface RegistrationTableDeps {
   readonly types: MutableTypeRegistry;
@@ -187,14 +183,17 @@ const LABEL_BEHAVIOR = {
   Route: 'inert',
   Tool: 'inert',
 } as const satisfies Record<NodeLabel, LabelBehavior> &
-  // Cross-invariant with SymbolTable's CLASS_TYPES: every class-like label
-  // (the labels that participate in qualifiedName fallback in
-  // `SymbolTable.add()`) MUST be classified as 'dispatch' here. Narrowing
-  // the intersection to `Record<ClassLikeLabel, 'dispatch'>` makes a drift
-  // impossible — adding a label to `CLASS_TYPES_TUPLE` without classifying
-  // it as 'dispatch' fails this `satisfies` check with a type error naming
-  // the drifted label.
-  Record<ClassLikeLabel, 'dispatch'>;
+  // Cross-invariant 1 — every class-like label (participates in
+  // qualifiedName fallback in `SymbolTable.add()`) MUST be classified as
+  // 'dispatch'. Adding a label to `CLASS_TYPES_TUPLE` without classifying
+  // it as 'dispatch' fails with a type error naming the drifted label.
+  Record<ClassLikeLabel, 'dispatch'> &
+  // Cross-invariant 2 — every free-callable label (gate in
+  // `SymbolTable.add()` via `FREE_CALLABLE_TYPES`) MUST be classified as
+  // 'callable-only'. Adding a label to `FREE_CALLABLE_TUPLE` without
+  // classifying it as 'callable-only' fails with a type error naming the
+  // drifted label.
+  Record<FreeCallableLabel, 'callable-only'>;
 
 // ---------------------------------------------------------------------------
 // Derived runtime collections — all keyed off LABEL_BEHAVIOR
@@ -217,12 +216,13 @@ const labelsWithBehavior = (behavior: LabelBehavior): NodeLabel[] =>
 
 /**
  * NodeLabel values that are free callables — appear in `callableByName`
- * but have no owner-scoped specialized registry. Used by the
- * callable-index gate in `SymbolTable.add()`.
+ * but have no owner-scoped specialized registry. Alias of
+ * {@link FREE_CALLABLE_TYPES} exported here for taxonomy-test use. The
+ * compile-time cross-invariant on `LABEL_BEHAVIOR` above guarantees the
+ * alias and the LABEL_BEHAVIOR `callable-only` classification cannot
+ * drift.
  */
-export const CALLABLE_ONLY_LABELS: ReadonlySet<NodeLabel> = new Set(
-  labelsWithBehavior('callable-only'),
-);
+export const CALLABLE_ONLY_LABELS: ReadonlySet<NodeLabel> = FREE_CALLABLE_TYPES;
 
 /**
  * NodeLabel values that touch only the file index — no specialized

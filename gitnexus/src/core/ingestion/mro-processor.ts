@@ -94,10 +94,9 @@ function buildAdjacency(graph: KnowledgeGraph) {
   return { parentMap, methodMap, parentEdgeType };
 }
 
-// `gatherAncestors` and `c3Linearize` now live in `./model/resolve.ts`.
-// `c3Linearize` is re-exported at the top of this file; `gatherAncestors`
-// is imported for internal use by `computeMRO` and the method-override
-// edge emitter.
+// `gatherAncestors` and `c3Linearize` live in `./model/resolve.ts` and
+// are imported at the top of this file for internal use by `computeMRO`
+// and the method-override edge emitter.
 
 // ---------------------------------------------------------------------------
 // Language-specific resolution

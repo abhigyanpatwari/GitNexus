@@ -53,7 +53,12 @@ import type { FieldRegistry, MutableFieldRegistry } from './field-registry.js';
 import { createTypeRegistry } from './type-registry.js';
 import { createMethodRegistry } from './method-registry.js';
 import { createFieldRegistry } from './field-registry.js';
-import type { SymbolTableWriter, SymbolDefinition, AddMetadata } from './symbol-table.js';
+import type {
+  SymbolTableReader,
+  SymbolTableWriter,
+  SymbolDefinition,
+  AddMetadata,
+} from './symbol-table.js';
 import { createSymbolTable } from './symbol-table.js';
 import { createRegistrationTable } from './registration-table.js';
 
@@ -62,37 +67,41 @@ import { createRegistrationTable } from './registration-table.js';
 // ---------------------------------------------------------------------------
 
 /**
- * Aggregated view of the semantic registries plus the nested
+ * Aggregated read-only view of the semantic registries plus the nested
  * file/callable SymbolTable.
  *
- * `symbols` is typed as {@link SymbolTableWriter} — consumers can
- * register symbols and query them, but cannot reach `clear()`. External
- * callers physically cannot leave the leaf indexes empty while the
- * owner-scoped registries stay populated, because `clear()` is not on
- * this type's surface.
+ * `symbols` is typed as {@link SymbolTableReader} — consumers can query
+ * symbols but cannot register new ones or trigger a leaf-index reset.
+ * Callers that need to register symbols or reset state must hold a
+ * {@link MutableSemanticModel} reference instead, which widens
+ * `symbols` back to {@link SymbolTableWriter} and adds `clear()` /
+ * `resetFileIndex()` on the model itself.
  *
- * Full-model resets go through {@link MutableSemanticModel.clear};
- * partial leaf-index resets go through
- * {@link MutableSemanticModel.resetFileIndex}. Consumers that only need
- * queries should type their fields as {@link SymbolTableReader} for
- * principle-of-least-authority clarity.
+ * This segregation is the runtime half of the principle of least
+ * authority: a resolver that receives `SemanticModel` physically cannot
+ * mutate the index, so it cannot desync the leaf from the owner-scoped
+ * registries even accidentally.
  */
 export interface SemanticModel {
   readonly types: TypeRegistry;
   readonly methods: MethodRegistry;
   readonly fields: FieldRegistry;
-  readonly symbols: SymbolTableWriter;
+  readonly symbols: SymbolTableReader;
 }
 
 // ---------------------------------------------------------------------------
 // Mutable interface
 // ---------------------------------------------------------------------------
 
-/** Mutable variant — exposes the MutableX registries and a top-level clear. */
+/** Mutable variant — exposes the MutableX registries, a Writer-typed
+ *  `symbols` facade, and top-level reset methods. This is the interface
+ *  held by the lifecycle owner (pipeline, resolution-context); resolvers
+ *  that only query should hold the narrower {@link SemanticModel}. */
 export interface MutableSemanticModel extends SemanticModel {
   readonly types: MutableTypeRegistry;
   readonly methods: MutableMethodRegistry;
   readonly fields: MutableFieldRegistry;
+  readonly symbols: SymbolTableWriter;
   /** Clear all registries AND the nested SymbolTable. */
   clear(): void;
   /**

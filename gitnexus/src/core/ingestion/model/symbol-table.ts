@@ -67,25 +67,34 @@ export type ClassLikeLabel = (typeof CLASS_TYPES_TUPLE)[number];
 
 export const CLASS_TYPES: ReadonlySet<NodeLabel> = new Set(CLASS_TYPES_TUPLE);
 
-/** Free-callable symbol types indexed in `callableByName` for Tier 3
- *  resolution and the D2 widen path in call-processor.ts. Single source of
- *  truth — do not duplicate this set elsewhere.
+/** Free-callable labels — single source of truth for "callables that have
+ *  NO owner scope". Methods and constructors are owner-scoped and live in
+ *  `MethodRegistry` — Tier 3 reaches them via
+ *  `model.methods.lookupMethodByName`. See `resolution-context.ts` Tier 3
+ *  for how both indexes are consulted together.
  *
- *  Scope: "callables that have NO owner scope". Methods and constructors
- *  are owner-scoped and live in `MethodRegistry` — Tier 3 reaches them
- *  via `model.methods.lookupMethodByName`. See `resolution-context.ts`
- *  Tier 3 for how both indexes are consulted together.
+ *  Exported as a `readonly` tuple so that `typeof FREE_CALLABLE_TUPLE[number]`
+ *  yields a precise literal union (`FreeCallableLabel`). `registration-table.ts`
+ *  imports this type and uses `Record<FreeCallableLabel, 'callable-only'>` in
+ *  a `satisfies` intersection to enforce at COMPILE TIME that every label
+ *  listed here is also classified as `callable-only` in `LABEL_BEHAVIOR`.
+ *  Adding a label to this tuple without updating `LABEL_BEHAVIOR` fails
+ *  TypeScript.
  *
  *  Partial-state caveat: Python/Rust/Kotlin class methods are emitted by
  *  the worker as `Function` + `ownerId` (not `Method`), so they still land
- *  here. Collapsing those three languages onto the `Method` label is
- *  pending a `def.type` preservation decision.
+ *  here via the `Function` entry. Collapsing those three languages onto the
+ *  `Method` label is pending a `def.type` preservation decision.
  */
-export const FREE_CALLABLE_TYPES: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+export const FREE_CALLABLE_TUPLE = [
   'Function',
   'Macro', // C/C++
   'Delegate', // C#
-]);
+] as const satisfies readonly NodeLabel[];
+
+export type FreeCallableLabel = (typeof FREE_CALLABLE_TUPLE)[number];
+
+export const FREE_CALLABLE_TYPES: ReadonlySet<NodeLabel> = new Set(FREE_CALLABLE_TUPLE);
 
 /** Symbol types that can be the TARGET of a call in the resolver's kind
  *  filter — superset of {@link FREE_CALLABLE_TYPES} that also admits
@@ -174,14 +183,17 @@ export interface SymbolTableReader {
   /**
    * High Confidence: Look for ALL symbols with this name in a specific file.
    * Returns all definitions, including overloaded methods with the same name.
+   * The returned array is a view into the live internal index — callers
+   * MUST NOT mutate it. Use `readonly` to enforce this at the type level.
    */
-  lookupExactAll: (filePath: string, name: string) => SymbolDefinition[];
+  lookupExactAll: (filePath: string, name: string) => readonly SymbolDefinition[];
 
   /**
-   * Look up callable symbols (Function, Method, Constructor, Macro, Delegate) by name.
+   * Look up callable symbols (Function, Macro, Delegate) by name.
    * O(1) via dedicated eagerly-populated index keyed by symbol name.
+   * Returned array is a view into the live index — do not mutate.
    */
-  lookupCallableByName: (name: string) => SymbolDefinition[];
+  lookupCallableByName: (name: string) => readonly SymbolDefinition[];
 
   /**
    * Iterate all indexed file paths.
