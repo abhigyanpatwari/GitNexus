@@ -149,6 +149,8 @@ function closeOne(repoId: string): void {
         // or remove from cache.  Keep the entry so future initLbug() calls
         // for the same dbPath reuse it instead of hitting a file lock.
         shared.refCount = 0;
+        shared.ftsLoaded = false;
+        shared.vectorLoaded = false;
       } else {
         shared.db.close().catch(() => {});
         dbCache.delete(entry.dbPath);

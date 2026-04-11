@@ -105,6 +105,7 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
         db = null;
         currentDbPath = null;
         ftsLoaded = false;
+        vectorExtensionLoaded = false;
       });
       // Sleep outside the lock — no need to block others while waiting
       await new Promise((resolve) => setTimeout(resolve, DB_LOCK_RETRY_DELAY_MS * attempt));
@@ -812,6 +813,7 @@ export const closeLbug = async (): Promise<void> => {
   }
   currentDbPath = null;
   ftsLoaded = false;
+  vectorExtensionLoaded = false;
 };
 
 export const isLbugReady = (): boolean => conn !== null && db !== null;
