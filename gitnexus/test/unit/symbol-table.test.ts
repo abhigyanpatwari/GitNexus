@@ -1757,11 +1757,14 @@ describe('resolveCallTarget thin dispatcher (SM-19)', () => {
     // Python-style: `import auth; auth.User.save()` where BOTH auth.py and
     // other.py define a `User` class with a `save` method.
     //
-    // Codex SM-19 adversarial review Finding 1: the thin dispatcher must
-    // consult module-alias narrowing for typed member calls BEFORE falling
-    // through to owner/file-scoped resolvers. With both homonym files
-    // imported, owner-scoped resolution sees genuine ambiguity and the only
-    // remaining disambiguation signal is the alias on `call.receiverName`.
+    // When both homonym files are imported, owner-scoped resolution sees
+    // genuine ambiguity (both `User` classes own a `save` method) and the
+    // only remaining disambiguation signal is the module alias on
+    // `call.receiverName`. The dispatcher consults alias narrowing as a
+    // guarded fallback after owner/file-scoped resolvers return null; the
+    // type-file verification guard requires the alias target file to be
+    // among the receiver type's defining files before alias narrowing is
+    // considered a valid signal.
     ctx.symbols.add('src/auth.py', 'User', 'class:auth:User', 'Class');
     ctx.symbols.add('src/auth.py', 'save', 'method:auth:User:save', 'Method', {
       returnType: 'None',

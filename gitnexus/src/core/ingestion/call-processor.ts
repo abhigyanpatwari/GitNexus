@@ -1466,6 +1466,31 @@ const tryOverloadDisambiguation = (
 };
 
 /**
+ * Apply overload-hint or arg-type disambiguation to a pre-filtered candidate
+ * pool. Returns the unique survivor, or null when neither signal is present,
+ * neither can disambiguate, or the pool remains ambiguous.
+ *
+ * Precedence rule: `overloadHints` wins over `preComputedArgTypes` when both
+ * are supplied. The AST-based disambiguator has access to live type inference
+ * hooks, whereas `preComputedArgTypes` is a worker-path pre-computation that
+ * may be coarser-grained.
+ *
+ * Single source of truth for the narrowing-signal precedence used by member
+ * and constructor resolution paths. Add a new narrowing signal here once, not
+ * at each call site.
+ */
+const disambiguateByOverloadOrArgTypes = (
+  pool: SymbolDefinition[],
+  overloadHints: OverloadHints | undefined,
+  preComputedArgTypes: (string | undefined)[] | undefined,
+): SymbolDefinition | null => {
+  if (!overloadHints && !preComputedArgTypes) return null;
+  if (overloadHints) return tryOverloadDisambiguation(pool, overloadHints);
+  if (preComputedArgTypes) return matchCandidatesByArgTypes(pool, preComputedArgTypes);
+  return null;
+};
+
+/**
  * Collapse Swift-extension duplicate Class/Struct candidates to the primary
  * definition, preferring the shortest file path.
  *
@@ -1611,11 +1636,11 @@ const resolveMemberCallByFile = (
   // Overload disambiguation on the narrowed pool
   if (fileFiltered.length > 1 || ownerFiltered.length > 1) {
     const overloadPool = ownerFiltered.length > 1 ? ownerFiltered : fileFiltered;
-    const disambiguated = overloadHints
-      ? tryOverloadDisambiguation(overloadPool, overloadHints)
-      : preComputedArgTypes
-        ? matchCandidatesByArgTypes(overloadPool, preComputedArgTypes)
-        : null;
+    const disambiguated = disambiguateByOverloadOrArgTypes(
+      overloadPool,
+      overloadHints,
+      preComputedArgTypes,
+    );
     if (disambiguated) return toResolveResult(disambiguated, typeResolved.tier);
   }
 
@@ -1687,43 +1712,19 @@ const resolveCallTarget = (
     );
   }
   if (call.callForm === 'constructor') {
-    const staticResult = resolveStaticCall(
-      call.calledName,
-      currentFile,
-      ctx,
-      call.argCount,
-      tiered,
+    return (
+      resolveStaticCall(
+        call.calledName,
+        currentFile,
+        ctx,
+        call.argCount,
+        tiered,
+        overloadHints,
+        preComputedArgTypes,
+      ) ?? singleCandidate(tiered, call.argCount, 'constructor')
     );
-    if (staticResult) return staticResult;
-
-    // Codex SM-19 Finding 2: When `resolveStaticCall` bails on ambiguous or
-    // ownerless Constructor pools, give overload/arg-type disambiguation a
-    // chance before null-routing. Only engages when the caller supplied a
-    // narrowing signal — preserves SM-10 R3 for genuinely ambiguous cases.
-    if (overloadHints || preComputedArgTypes) {
-      const ctorPool = filterCallableCandidates(tiered.candidates, call.argCount, 'constructor');
-      if (ctorPool.length > 1) {
-        const disambiguated = overloadHints
-          ? tryOverloadDisambiguation(ctorPool, overloadHints)
-          : preComputedArgTypes
-            ? matchCandidatesByArgTypes(ctorPool, preComputedArgTypes)
-            : null;
-        if (disambiguated) return toResolveResult(disambiguated, tiered.tier);
-      }
-    }
-    return singleCandidate(tiered, call.argCount, 'constructor');
   }
   if (call.receiverTypeName) {
-    // Codex SM-19 Finding 1: Consult module-alias narrowing BEFORE the
-    // owner-scoped / file-scoped resolvers. When the caller imports two
-    // homonym receiver types from different files, import-scoped tiering
-    // does not narrow (both files are in scope) and the owner/file fallback
-    // sees genuine ambiguity. An active module alias on `call.receiverName`
-    // is the only remaining disambiguation signal; without this call the
-    // dispatcher null-routes silently and drops a valid CALLS edge.
-    const aliasResult = resolveModuleAliasedCall(call, currentFile, ctx, widenCache, tiered);
-    if (aliasResult) return aliasResult;
-
     // Skip the owner-scoped MRO path when the tiered pool has genuine
     // overload ambiguity that needs D1-D4+E handling, not D0.
     const skipMember =
@@ -1753,26 +1754,48 @@ const resolveCallTarget = (
       );
     if (memberResult) return memberResult;
 
-    // singleCandidate tail fallback — but only when the receiver type
-    // did NOT resolve to any indexed type. This reproduces the old
-    // resolveCallTarget's D1-D4 null-route guard (SM-10 R3): when the
-    // type IS in the index but file/owner filtering produced zero
-    // matches, that's a genuine miss and we must null-route rather than
-    // fall through to an unscoped singleCandidate that ignores the
-    // receiver's class hierarchy.
+    // Module-alias narrowing runs as a FALLBACK, after owner/file-scoped
+    // resolvers have returned null. This ordering is load-bearing: placing
+    // alias narrowing first would short-circuit unique owner-scoped answers
+    // when a local variable coincidentally matches an alias name, leaking
+    // unrelated homonyms from the aliased file onto the wrong receiver type.
     //
-    // When the type is NOT in the index (e.g. PHP 'mixed', dynamic
-    // types, unresolvable aliases), the scoped resolvers had nothing to
-    // work with and singleCandidate is the correct last resort — it
-    // picks the globally-unique candidate if one exists.
-    //
-    // ctx.resolve is cached per (name, file) pair, so this call is free.
+    // The type-file verification guard is load-bearing for SM-10 R3: an
+    // alias is only a VALID narrowing signal when the alias target file is
+    // among the receiver type's defining files. If the alias points at a
+    // file that does not hold `receiverTypeName`, any candidate we would
+    // pick from there would belong to an unrelated class — a cross-type
+    // false positive. ctx.resolve is cached per (name, file), so resolving
+    // the receiver type a second time here is free.
     const typeResolves = ctx.resolve(call.receiverTypeName, currentFile);
+    const aliasMap = ctx.moduleAliasMap?.get(currentFile);
+    const aliasTargetFile =
+      call.receiverName && aliasMap ? aliasMap.get(call.receiverName) : undefined;
+    if (
+      aliasTargetFile &&
+      typeResolves &&
+      typeResolves.candidates.some((c) => c.filePath === aliasTargetFile)
+    ) {
+      const aliasResult = resolveModuleAliasedCall(call, currentFile, ctx, widenCache, tiered);
+      if (aliasResult) return aliasResult;
+    }
+
+    // SM-10 R3 null-route: when the receiver type resolves to indexed types
+    // but no scoped resolver (nor the guarded alias fallback) produced a
+    // match, that's a genuine miss — refuse to emit a CALLS edge rather
+    // than guess via an unscoped singleCandidate that ignores the class
+    // hierarchy. When the type is NOT in the index (PHP `mixed`, dynamic
+    // types, unresolvable aliases), the scoped resolvers had nothing to
+    // work with and singleCandidate is the correct last resort.
     if (typeResolves && typeResolves.candidates.length > 0) {
       return null; // null-route: type resolved, no candidate matched
     }
     return singleCandidate(tiered, call.argCount, call.callForm);
   }
+  // Member call with no inferred receiver type — e.g. Python `mod.fn()`
+  // where `mod` is a module alias. Module-alias narrowing is the primary
+  // disambiguation signal here. Also consulted from the typed-member
+  // branch above as a guarded fallback after owner/file-scoped resolvers.
   return (
     resolveModuleAliasedCall(call, currentFile, ctx, widenCache, tiered) ??
     singleCandidate(tiered, call.argCount, call.callForm)
@@ -1789,9 +1812,6 @@ const resolveCallTarget = (
 // collisions between overloaded methods with the same name in different
 // classes (e.g. User.save@100 and Repo.save@200 are distinct keys).
 // Lookup uses a secondary funcName-only index built in lookupReceiverType.
-
-/** Extract the function name from a scope key ("funcName@startIndex" → "funcName"). */
-const extractFuncNameFromScope = (scope: string): string => scope.slice(0, scope.indexOf('@'));
 
 /** Extract the bare function name from a sourceId.
  *  Handles both unqualified ("Function:filepath:funcName" → "funcName")
@@ -2236,6 +2256,8 @@ export const resolveStaticCall = (
   ctx: ResolutionContext,
   argCount?: number,
   tieredOverride?: TieredCandidates,
+  overloadHints?: OverloadHints,
+  preComputedArgTypes?: (string | undefined)[],
 ): ResolveResult | null => {
   // 1. Pre-check: does a class with this name exist at all? (O(1))
   //    This guards against the expensive `ctx.resolve` walk when the name
@@ -2297,10 +2319,30 @@ export const resolveStaticCall = (
   //    with two distinct Constructor nodes across multiple class candidates):
   //    the same Constructor nodes are indexed under the class name in the
   //    tiered pool, so `.some(Constructor)` is true here and we defer to
-  //    `filterCallableCandidates` downstream rather than guess which overload
-  //    to pick. Do not remove this check without also handling the ambiguous
-  //    step-3 path explicitly.
+  //    step 4.5 (overload/arg-type disambiguation) or the caller's fallback.
+  //    Do not remove this check without also handling the ambiguous step-3
+  //    path explicitly.
   if (typeResolved.candidates.some((c) => c.type === 'Constructor')) {
+    // 4.5. Overload / arg-type disambiguation for ambiguous or ownerless
+    //      Constructor pools. When the caller supplied a narrowing signal
+    //      (AST-based overload hints from the sequential path, or pre-
+    //      computed arg types from the worker path), give disambiguation a
+    //      chance before null-routing. Symmetric with resolveMemberCallByFile's
+    //      disambiguation pass — both resolvers now share the same signal
+    //      precedence via disambiguateByOverloadOrArgTypes. Only fires when
+    //      at least one narrowing signal is present; preserves SM-10 R3 for
+    //      genuinely ambiguous cases with no disambiguating input.
+    if (overloadHints || preComputedArgTypes) {
+      const ctorPool = filterCallableCandidates(typeResolved.candidates, argCount, 'constructor');
+      if (ctorPool.length > 1) {
+        const disambiguated = disambiguateByOverloadOrArgTypes(
+          ctorPool,
+          overloadHints,
+          preComputedArgTypes,
+        );
+        if (disambiguated) return toResolveResult(disambiguated, typeResolved.tier);
+      }
+    }
     return null;
   }
 

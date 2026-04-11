@@ -2495,11 +2495,12 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
   });
 
   it('module-alias guard (real homonym): both files imported, alias narrows typed member call to aliased file', async () => {
-    // Codex SM-19 adversarial review Finding 1: When BOTH homonym files are
-    // imported by the caller, import-scoped tiering no longer narrows the
-    // tiered pool — the dispatcher sees two `save` candidates. Module-alias
-    // narrowing is the only remaining disambiguation signal. The typed-member
-    // branch must consult the alias map or null-route silently.
+    // When both homonym files are imported by the caller, import-scoped
+    // tiering no longer narrows the tiered pool — the dispatcher sees two
+    // `save` candidates. Module-alias narrowing is the only remaining
+    // disambiguation signal. The typed-member branch must consult the alias
+    // map (as a guarded fallback after owner/file-scoped resolvers fail) or
+    // null-route silently.
     const authModFile = 'src/auth_mod.py';
     const userModFile = 'src/user_mod.py';
     const appFile = 'src/app.py';
@@ -2548,14 +2549,189 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
     expect(rels[0].targetId).toBe(authSaveId);
   });
 
+  it('owner-scoped wins over alias narrowing: unique owner-scoped answer beats coincidental alias on unrelated file', async () => {
+    // Receiver type `User` has exactly one definition, in models.py. Module
+    // alias `auth → auth.py` exists (because the caller also imports auth.py
+    // for its own reasons), and auth.py contains an unrelated `Widget` class
+    // with a homonym `save` method. The caller has `receiverName='auth'`
+    // (e.g., a local variable coincidentally named `auth`),
+    // `receiverTypeName='User'`. Owner-scoped resolution must win — alias
+    // narrowing must not short-circuit a unique correct answer with an
+    // unrelated homonym from the aliased file.
+    const modelsFile = 'src/models.py';
+    const authFile = 'src/auth.py';
+    const appFile = 'src/app.py';
+    const modelsUserId = 'class:src/models.py:User';
+    const authWidgetId = 'class:src/auth.py:Widget';
+    const modelsSaveId = 'method:src/models.py:User:save';
+    const authSaveId = 'method:src/auth.py:Widget:save';
+
+    ctx.symbols.add(modelsFile, 'User', modelsUserId, 'Class');
+    ctx.symbols.add(authFile, 'Widget', authWidgetId, 'Class');
+    ctx.symbols.add(modelsFile, 'save', modelsSaveId, 'Method', {
+      ownerId: modelsUserId,
+      returnType: 'None',
+    });
+    ctx.symbols.add(authFile, 'save', authSaveId, 'Method', {
+      ownerId: authWidgetId,
+      returnType: 'None',
+    });
+    ctx.importMap.set(appFile, new Set([modelsFile, authFile]));
+    ctx.moduleAliasMap.set(appFile, new Map([['auth', authFile]]));
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: appFile,
+        calledName: 'save',
+        sourceId: 'Function:src/app.py:run',
+        argCount: 1,
+        callForm: 'member',
+        receiverName: 'auth',
+        receiverTypeName: 'User',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx);
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    // Owner-scoped runs first and uniquely resolves User.save to models.py.
+    // Alias narrowing never fires because the scoped resolver already won.
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe(modelsSaveId);
+  });
+
+  it('alias narrowing rejects unrelated target type: null-route when alias file does not hold receiver type', async () => {
+    // Receiver type `User` lives only in models.py, but has no `save` method
+    // defined. Alias `auth → auth.py`, and auth.py contains an unrelated
+    // `Widget.save`. Owner-scoped and file-scoped resolvers return null (no
+    // save on User). Without the type-file verification guard, alias
+    // narrowing would pick auth.py's `Widget.save` — a cross-type false
+    // positive. With the guard, auth.py is not in the receiver type's
+    // defining-files set (which is {models.py}), so alias narrowing bails
+    // and SM-10 R3 null-routes.
+    const modelsFile = 'src/models.py';
+    const authFile = 'src/auth.py';
+    const appFile = 'src/app.py';
+    const modelsUserId = 'class:src/models.py:User';
+    const authWidgetId = 'class:src/auth.py:Widget';
+    const authSaveId = 'method:src/auth.py:Widget:save';
+
+    ctx.symbols.add(modelsFile, 'User', modelsUserId, 'Class');
+    ctx.symbols.add(authFile, 'Widget', authWidgetId, 'Class');
+    // NO save on User — deliberately absent to force null-route.
+    ctx.symbols.add(authFile, 'save', authSaveId, 'Method', {
+      ownerId: authWidgetId,
+      returnType: 'None',
+    });
+    ctx.importMap.set(appFile, new Set([modelsFile, authFile]));
+    ctx.moduleAliasMap.set(appFile, new Map([['auth', authFile]]));
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: appFile,
+        calledName: 'save',
+        sourceId: 'Function:src/app.py:run',
+        argCount: 1,
+        callForm: 'member',
+        receiverName: 'auth',
+        receiverTypeName: 'User',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx);
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    // Null-route: no CALLS edge. The type-file guard prevented the alias
+    // from leaking auth.py's Widget.save onto a User-typed receiver.
+    expect(rels).toHaveLength(0);
+  });
+
+  it('alias fallthrough: receiverName not in alias map falls through to owner-scoped resolver', async () => {
+    // Receiver variable `user` does NOT match any alias entry (alias only
+    // covers `auth`). Owner-scoped resolution must run to completion and
+    // pick models.py's User.save — the alias helper's early-bail must not
+    // interfere with unrelated typed member calls. This exercises the 99%
+    // hot path where alias narrowing is irrelevant.
+    const modelsFile = 'src/models.py';
+    const authFile = 'src/auth.py';
+    const appFile = 'src/app.py';
+    const modelsUserId = 'class:src/models.py:User';
+    const modelsSaveId = 'method:src/models.py:User:save';
+
+    ctx.symbols.add(modelsFile, 'User', modelsUserId, 'Class');
+    ctx.symbols.add(modelsFile, 'save', modelsSaveId, 'Method', {
+      ownerId: modelsUserId,
+      returnType: 'None',
+    });
+    ctx.importMap.set(appFile, new Set([modelsFile, authFile]));
+    ctx.moduleAliasMap.set(appFile, new Map([['auth', authFile]]));
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: appFile,
+        calledName: 'save',
+        sourceId: 'Function:src/app.py:run',
+        argCount: 0,
+        callForm: 'member',
+        receiverName: 'user', // NOT 'auth' — no alias match
+        receiverTypeName: 'User',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx);
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe(modelsSaveId);
+  });
+
+  it('alias fallthrough: alias target file has no matching method falls through to owner-scoped', async () => {
+    // Alias `auth → empty.py` where empty.py exists in the import map but
+    // has no `save` method at all. Owner-scoped finds models.py's User.save
+    // uniquely. Even if the type-file guard let alias narrowing fire (it
+    // won't, because empty.py isn't in the receiver type's files), the
+    // helper would return null and resolution must still succeed.
+    const modelsFile = 'src/models.py';
+    const emptyFile = 'src/empty.py';
+    const appFile = 'src/app.py';
+    const modelsUserId = 'class:src/models.py:User';
+    const modelsSaveId = 'method:src/models.py:User:save';
+
+    ctx.symbols.add(modelsFile, 'User', modelsUserId, 'Class');
+    ctx.symbols.add(modelsFile, 'save', modelsSaveId, 'Method', {
+      ownerId: modelsUserId,
+      returnType: 'None',
+    });
+    // empty.py: no symbols at all.
+    ctx.importMap.set(appFile, new Set([modelsFile, emptyFile]));
+    ctx.moduleAliasMap.set(appFile, new Map([['auth', emptyFile]]));
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: appFile,
+        calledName: 'save',
+        sourceId: 'Function:src/app.py:run',
+        argCount: 0,
+        callForm: 'member',
+        receiverName: 'auth',
+        receiverTypeName: 'User',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx);
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe(modelsSaveId);
+  });
+
   it('constructor overload disambiguation: same-arity ownerless constructors picked via preComputedArgTypes', async () => {
-    // Codex SM-19 adversarial review Finding 2: When two homonym constructors
-    // across different files have the same arity but different parameter types,
-    // `resolveStaticCall` correctly bails (step 3 ambiguity → step 4 bail because
-    // the tiered pool contains Constructor nodes). Before this fix the dispatcher
-    // then fell through to `singleCandidate` which also bailed because two
-    // constructors survive arity filtering. With overload disambiguation after
-    // `resolveStaticCall`, `preComputedArgTypes` picks the string overload.
+    // When two homonym constructors across different files have the same
+    // arity but different parameter types, `resolveStaticCall` correctly
+    // bails (step 3 ambiguity → step 4 bail because the tiered pool contains
+    // Constructor nodes). Step 4.5 then runs overload/arg-type disambiguation
+    // on the constructor-filtered pool, picking the string overload when the
+    // caller supplies matching `argTypes` / `preComputedArgTypes`.
     const userFile = 'src/models/User.ts';
     const repoFile = 'src/models/Repo.ts';
     const appFile = 'src/app.ts';
