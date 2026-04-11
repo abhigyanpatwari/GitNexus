@@ -398,10 +398,13 @@ export async function initLbugWithDb(
   }
 
   // Load FTS extension if not already loaded on this Database
-  try {
-    await available[0].query('LOAD EXTENSION fts');
-  } catch {
-    // Extension may already be loaded or not installed
+  if (!shared.ftsLoaded) {
+    try {
+      await available[0].query('LOAD EXTENSION fts');
+      shared.ftsLoaded = true;
+    } catch {
+      // Extension may already be loaded or not installed
+    }
   }
 
   // Load VECTOR extension for semantic search support
