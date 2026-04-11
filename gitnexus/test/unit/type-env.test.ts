@@ -2,7 +2,13 @@ import { describe, it, expect, vi } from 'vitest';
 import { buildTypeEnv, type TypeEnvironment } from '../../src/core/ingestion/type-env.js';
 import { BindingAccumulator } from '../../src/core/ingestion/binding-accumulator.js';
 import { type SymbolDefinition, type SymbolTable } from '../../src/core/ingestion/symbol-table.js';
-import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
+import {
+  createSemanticModel,
+  type SemanticModel,
+} from '../../src/core/ingestion/model/semantic-model.js';
+import type { TypeRegistry } from '../../src/core/ingestion/model/type-registry.js';
+import type { MethodRegistry } from '../../src/core/ingestion/model/method-registry.js';
+import type { FieldRegistry } from '../../src/core/ingestion/model/field-registry.js';
 import {
   stripNullable,
   extractSimpleTypeName,
@@ -84,10 +90,27 @@ function flatSize(typeEnv: TypeEnvironment): number {
  * a nested `symbols` file-index. Keeps the existing test overrides
  * working without forcing every call site to learn the new structure.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const createMockSymbolTable = (overrides: any = {}): any => {
-  const base = {
-    add: () => {},
+interface LegacyMockOverrides {
+  add?: SymbolTable['add'];
+  lookupExact?: SymbolTable['lookupExact'];
+  lookupExactFull?: SymbolTable['lookupExactFull'];
+  lookupExactAll?: SymbolTable['lookupExactAll'];
+  lookupCallableByName?: SymbolTable['lookupCallableByName'];
+  lookupFieldByOwner?: FieldRegistry['lookupFieldByOwner'];
+  lookupMethodByOwner?: MethodRegistry['lookupMethodByOwner'];
+  lookupClassByName?: TypeRegistry['lookupClassByName'];
+  lookupClassByQualifiedName?: TypeRegistry['lookupClassByQualifiedName'];
+  lookupImplByName?: TypeRegistry['lookupImplByName'];
+  getFiles?: SymbolTable['getFiles'];
+  getStats?: SymbolTable['getStats'];
+  clear?: SymbolTable['clear'];
+}
+
+const createMockSymbolTable = (overrides: LegacyMockOverrides = {}): SemanticModel => {
+  const base: Required<LegacyMockOverrides> = {
+    add: () => {
+      throw new Error('mock SymbolTable.add is not implemented');
+    },
     lookupExact: () => undefined,
     lookupExactFull: () => undefined,
     lookupExactAll: () => [],
@@ -100,35 +123,34 @@ const createMockSymbolTable = (overrides: any = {}): any => {
     getFiles: () => [][Symbol.iterator](),
     getStats: () => ({
       fileCount: 0,
+      callableCount: 0,
+      totalSymbolCount: 0,
     }),
     clear: () => {},
     ...overrides,
   };
-  return {
-    types: {
-      lookupClassByName: (name: string) => base.lookupClassByName(name),
-      lookupClassByQualifiedName: (name: string) => base.lookupClassByQualifiedName(name),
-      lookupImplByName: (name: string) => base.lookupImplByName(name),
-    },
-    methods: {
-      lookupMethodByOwner: (ownerNodeId: string, methodName: string, argCount?: number) =>
-        base.lookupMethodByOwner(ownerNodeId, methodName, argCount),
-    },
-    fields: {
-      lookupFieldByOwner: (ownerNodeId: string, fieldName: string) =>
-        base.lookupFieldByOwner(ownerNodeId, fieldName),
-    },
-    symbols: {
-      add: base.add,
-      lookupExact: base.lookupExact,
-      lookupExactFull: base.lookupExactFull,
-      lookupExactAll: (filePath: string, name: string) => base.lookupExactAll(filePath, name),
-      lookupCallableByName: (name: string) => base.lookupCallableByName(name),
-      getFiles: base.getFiles,
-      getStats: base.getStats,
-      clear: base.clear,
-    },
+  const symbols: SymbolTable = {
+    add: base.add,
+    lookupExact: base.lookupExact,
+    lookupExactFull: base.lookupExactFull,
+    lookupExactAll: base.lookupExactAll,
+    lookupCallableByName: base.lookupCallableByName,
+    getFiles: base.getFiles,
+    getStats: base.getStats,
+    clear: base.clear,
   };
+  const types: TypeRegistry = {
+    lookupClassByName: base.lookupClassByName,
+    lookupClassByQualifiedName: base.lookupClassByQualifiedName,
+    lookupImplByName: base.lookupImplByName,
+  };
+  const methods: MethodRegistry = {
+    lookupMethodByOwner: base.lookupMethodByOwner,
+  };
+  const fields: FieldRegistry = {
+    lookupFieldByOwner: base.lookupFieldByOwner,
+  };
+  return { types, methods, fields, symbols };
 };
 
 const createClassDef = (
@@ -1262,7 +1284,7 @@ class RepoService {
     it('emits callResult + fieldAccess items for const { x } = fn()', () => {
       const symbolTable = makeSymbolTable([{ name: 'getUser', returnType: 'User' }]);
       const tree = parse('const { name } = getUser();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable as any });
+      const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable });
       // callResult resolves __destr_getUser_N → User
       // fieldAccess resolves name via User's properties (no Property nodes in mock → undefined)
       // But the callResult itself IS emitted — verify constructorBindings is still empty
@@ -1275,14 +1297,14 @@ class RepoService {
         'async function f() { const { data } = await fetchData(); }',
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable as any });
+      const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable });
       expect(typeEnv.constructorBindings).toEqual([]);
     });
 
     it('gracefully handles no return type (composable without annotation)', () => {
       const symbolTable = makeSymbolTable([{ name: 'useUserRole' }]); // no returnType
       const tree = parse('const { isMaker } = useUserRole();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable as any });
+      const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable });
       // No return type → callResult unresolved → fieldAccess unresolved
       expect(flatGet(typeEnv, 'isMaker')).toBeUndefined();
     });
@@ -2099,7 +2121,7 @@ class RepoService {
           lookupClassByName: (name: string) =>
             name === 'User' ? [{ nodeId: 'n1', filePath: 'models.kt', type: 'Class' }] : [],
         });
-        const typeEnv = buildTypeEnv(tree, 'kotlin', { model: mockSymbolTable as any });
+        const typeEnv = buildTypeEnv(tree, 'kotlin', { model: mockSymbolTable });
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -2113,7 +2135,7 @@ class RepoService {
           Kotlin,
         );
         const mockSymbolTable = createMockSymbolTable({});
-        const typeEnv = buildTypeEnv(tree, 'kotlin', { model: mockSymbolTable as any });
+        const typeEnv = buildTypeEnv(tree, 'kotlin', { model: mockSymbolTable });
         expect(flatGet(typeEnv, 'result')).toBeUndefined();
       });
 
@@ -5798,7 +5820,7 @@ function process() {
       const symbolTable = makeSymbolTable([{ name: 'getConfig', returnType: 'Config' }]);
       const tree = parse('const c = getConfig();', TypeScript.typescript);
       const typeEnv = buildTypeEnv(tree, 'typescript', {
-        model: symbolTable as any,
+        model: symbolTable,
         importedReturnTypes: new Map([['getConfig', 'WrongType']]),
       });
       // SymbolTable result (Config) wins over cross-file fallback (WrongType)
@@ -5810,7 +5832,7 @@ function process() {
       const symbolTable = makeSymbolTable([]);
       const tree = parse('const c = getConfig();', TypeScript.typescript);
       const typeEnv = buildTypeEnv(tree, 'typescript', {
-        model: symbolTable as any,
+        model: symbolTable,
         importedReturnTypes: new Map([['getConfig', 'Config']]),
       });
       // Cross-file fallback provides Config
@@ -5825,7 +5847,7 @@ function process() {
       ]);
       const tree = parse('const r = process();', TypeScript.typescript);
       const typeEnv = buildTypeEnv(tree, 'typescript', {
-        model: symbolTable as any,
+        model: symbolTable,
         importedReturnTypes: new Map([['process', 'User']]),
       });
       // Ambiguous → conservative → no binding produced
@@ -5845,7 +5867,7 @@ function process() {
       const symbolTable = makeSymbolTable([{ name: 'getUser', returnType: 'User' }]);
       const tree = parse('const u = getUser();', TypeScript.typescript);
       const typeEnv = buildTypeEnv(tree, 'typescript', {
-        model: symbolTable as any,
+        model: symbolTable,
         importedReturnTypes: new Map([['getUser', 'CrossFileUser']]),
       });
       // SymbolTable result (User) wins
