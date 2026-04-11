@@ -213,11 +213,9 @@ export interface SymbolTableReader {
 /**
  * Writer view — reads + symbol registration. Does NOT include `clear()`.
  *
- * `SemanticModel.symbols` is typed as this interface, so external
- * consumers (workers, processors, pipelines) can register symbols and
- * query them but cannot trigger a leaf-index reset. Full-model resets
- * flow through `model.clear()`; partial leaf-index resets flow through
- * `model.resetFileIndex()`.
+ * `MutableSemanticModel.symbols` is typed as this interface, so the
+ * lifecycle owner can register symbols and query them. Full-model
+ * resets flow through `model.clear()`.
  *
  * The cascading `clear()` capability lives exclusively on the internal
  * factory return type ({@link createSymbolTable}) — a private handle
@@ -315,7 +313,17 @@ export const createSymbolTable = (): InternalSymbolTable => {
     //    Note: Property is NOT in FREE_CALLABLE_TYPES, so it never lands here.
     //    This is the single source of truth for callable-index membership;
     //    the higher-layer dispatch table only decides owner-scoped routing.
-    if (FREE_CALLABLE_TYPES.has(type)) {
+    //
+    //    Fallback: `Method` or `Constructor` without an `ownerId` is an
+    //    extractor contract violation (AST-degraded parse, or a buggy
+    //    language extractor). The owner-scoped dispatch hook silently
+    //    skips such defs because it has no owner to key them under, so
+    //    without this fallback they would be invisible at Tier 3 global
+    //    resolution. Route them through `callableByName` so they remain
+    //    reachable by name — matching pre-dispatch-table behavior.
+    const isOrphanedOwnerScoped =
+      (type === 'Method' || type === 'Constructor') && metadata?.ownerId === undefined;
+    if (FREE_CALLABLE_TYPES.has(type) || isOrphanedOwnerScoped) {
       const existing = callableByName.get(name);
       if (existing) {
         existing.push(def);

@@ -322,6 +322,25 @@ export const createResolutionContext = (): ResolutionContext => {
       return null;
     }
 
+    // Fast path: if no `Function + ownerId` class method was ever
+    // registered into the method registry (the only source of
+    // cross-index duplication), the callable and method indexes are
+    // guaranteed disjoint and we can concat without dedup.
+    if (!model.methods.hasFunctionMethods) {
+      const globalDefs: SymbolDefinition[] = [
+        ...classDefs,
+        ...implDefs,
+        ...callableDefs,
+        ...methodDefs,
+      ];
+      tierGlobal++;
+      return { candidates: globalDefs, tier: 'global' };
+    }
+
+    // Slow path: dedup by nodeId because the same SymbolDefinition
+    // reference can land in both `callableDefs` (via the Function
+    // callable-index gate) and `methodDefs` (via the dispatch-key
+    // normalization routing Function+ownerId into MethodRegistry).
     const globalDefs: SymbolDefinition[] = [...classDefs, ...implDefs];
     const seen = new Set<string>();
     for (const def of callableDefs) {

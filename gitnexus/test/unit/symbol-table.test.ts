@@ -220,6 +220,43 @@ describe('SymbolTable', () => {
       expect(table.lookupCallableByName('OnClick')).toHaveLength(1);
       expect(table.lookupCallableByName('OnClick')[0].type).toBe('Delegate');
     });
+
+    it('Method WITHOUT ownerId falls back to the callable index', () => {
+      // Orphaned Method (extractor contract violation / degraded AST).
+      // The dispatch hook silently skips it because it has no owner to
+      // key under; the callable-index fallback keeps it reachable at
+      // Tier 3 global resolution.
+      table.add('src/a.ts', 'orphan', 'method:orphan', 'Method');
+      expect(table.lookupCallableByName('orphan')).toHaveLength(1);
+      expect(table.lookupCallableByName('orphan')[0].type).toBe('Method');
+    });
+
+    it('Constructor WITHOUT ownerId falls back to the callable index', () => {
+      table.add('src/a.ts', 'Orphan', 'ctor:Orphan', 'Constructor');
+      expect(table.lookupCallableByName('Orphan')).toHaveLength(1);
+      expect(table.lookupCallableByName('Orphan')[0].type).toBe('Constructor');
+    });
+
+    it('Method WITH ownerId does NOT land in the callable index (goes to MethodRegistry instead)', () => {
+      table.add('src/user.ts', 'greet', 'method:User.greet', 'Method', {
+        ownerId: 'class:User',
+      });
+      expect(table.lookupCallableByName('greet')).toHaveLength(0);
+    });
+
+    it('Constructor WITH ownerId does NOT land in the callable index', () => {
+      table.add('src/user.ts', 'User', 'ctor:User', 'Constructor', {
+        ownerId: 'class:User',
+      });
+      expect(table.lookupCallableByName('User')).toHaveLength(0);
+    });
+
+    it('Property WITHOUT ownerId still does NOT fall back to the callable index', () => {
+      // Property fallback would pollute common names like `id` / `name` /
+      // `type` — kept disjoint from the Method/Constructor fallback.
+      table.add('src/a.ts', 'orphanField', 'prop:orphan', 'Property');
+      expect(table.lookupCallableByName('orphanField')).toHaveLength(0);
+    });
   });
 
   describe('lookupFieldByOwner', () => {
@@ -342,14 +379,16 @@ describe('SymbolTable', () => {
       expect(model.methods.lookupMethodByOwner('class:User', 'save')).toBeUndefined();
     });
 
-    it('post-A4: Method without ownerId is not reachable via registries', () => {
+    it('Method without ownerId is not in MethodRegistry but falls back to callable index', () => {
       // methodHook silently skips Method-without-ownerId (methods.register
-      // requires an owner). Post-Unit 4, Method is no longer in
-      // FREE_CALLABLE_TYPES either, so the symbol lands only in the file index.
+      // requires an owner). The orphan-owner-scoped fallback in
+      // `SymbolTable.add()` routes such defs through `callableByName` so
+      // Tier 3 global resolution can still find them.
       table.add('src/utils.ts', 'helper', 'method:helper', 'Method');
       expect(model.methods.lookupMethodByOwner('', 'helper')).toBeUndefined();
       expect(model.methods.lookupMethodByName('helper')).toHaveLength(0);
-      expect(table.lookupCallableByName('helper')).toHaveLength(0);
+      expect(table.lookupCallableByName('helper')).toHaveLength(1);
+      expect(table.lookupCallableByName('helper')[0].type).toBe('Method');
       expect(table.lookupExact('src/utils.ts', 'helper')).toBe('method:helper');
     });
 
@@ -1125,7 +1164,7 @@ describe('SymbolTable', () => {
       expect(model.symbols.lookupCallableByName('CONFIG')).toHaveLength(0);
     });
 
-    it('registering a Method-without-ownerId silently skips methods.register and is not in callableByName', () => {
+    it('Method-without-ownerId skips methods.register and falls back to the callable index', () => {
       const model = createSemanticModel();
       const methodsSpy = vi.spyOn(model.methods, 'register');
 
@@ -1133,13 +1172,16 @@ describe('SymbolTable', () => {
 
       // File index still populated.
       expect(model.symbols.lookupExact('src/orphan.ts', 'orphan')).toBe('mtd:orphan');
-      // Method registry NOT populated (no ownerId to key under).
+      // Method registry NOT populated (no ownerId to key under) — the
+      // dispatch hook silently skips.
       expect(methodsSpy).not.toHaveBeenCalled();
-      // Post-A4 Unit 4: Method is no longer in FREE_CALLABLE_TYPES, so the
-      // orphan does not leak into callableByName either. It lives only
-      // in the file index.
-      expect(model.symbols.lookupCallableByName('orphan')).toHaveLength(0);
       expect(model.methods.lookupMethodByName('orphan')).toHaveLength(0);
+      // Callable-index fallback: an orphaned Method/Constructor is an
+      // extractor contract violation (AST-degraded parse), but we keep
+      // it reachable at Tier 3 global resolution by routing it through
+      // `callableByName`. Matches pre-dispatch-table behavior.
+      expect(model.symbols.lookupCallableByName('orphan')).toHaveLength(1);
+      expect(model.symbols.lookupCallableByName('orphan')[0].type).toBe('Method');
     });
 
     it('exhaustiveness guard does not fire for the current NodeLabel taxonomy', () => {

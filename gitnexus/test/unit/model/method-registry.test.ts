@@ -340,3 +340,42 @@ describe('MethodRegistry — lookupMethodByName', () => {
     expect(reg.lookupMethodByName('missing')).toEqual([]);
   });
 });
+
+describe('hasFunctionMethods flag', () => {
+  it('is false for a fresh registry', () => {
+    const reg = createMethodRegistry();
+    expect(reg.hasFunctionMethods).toBe(false);
+  });
+
+  it('stays false after registering only strict-Method defs', () => {
+    const reg = createMethodRegistry();
+    reg.register('class:User', 'save', makeMethod({ nodeId: 'method:User.save', type: 'Method' }));
+    reg.register(
+      'class:User',
+      'load',
+      makeMethod({ nodeId: 'method:User.load', type: 'Constructor' }),
+    );
+    expect(reg.hasFunctionMethods).toBe(false);
+  });
+
+  it('flips to true when a Function-typed def (Python/Rust/Kotlin class method) is registered', () => {
+    const reg = createMethodRegistry();
+    reg.register('class:User', 'greet', makeMethod({ nodeId: 'fn:User.greet', type: 'Function' }));
+    expect(reg.hasFunctionMethods).toBe(true);
+  });
+
+  it('stays true after further strict-Method registrations', () => {
+    const reg = createMethodRegistry();
+    reg.register('class:User', 'greet', makeMethod({ nodeId: 'fn:User.greet', type: 'Function' }));
+    reg.register('class:Dog', 'bark', makeMethod({ nodeId: 'method:Dog.bark', type: 'Method' }));
+    expect(reg.hasFunctionMethods).toBe(true);
+  });
+
+  it('resets to false after clear()', () => {
+    const reg = createMethodRegistry();
+    reg.register('class:User', 'greet', makeMethod({ nodeId: 'fn:User.greet', type: 'Function' }));
+    expect(reg.hasFunctionMethods).toBe(true);
+    reg.clear();
+    expect(reg.hasFunctionMethods).toBe(false);
+  });
+});

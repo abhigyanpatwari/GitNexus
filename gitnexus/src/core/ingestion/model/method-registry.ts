@@ -48,6 +48,22 @@ export interface MethodRegistry {
    * allocation reachable from two indexes.
    */
   lookupMethodByName(name: string): readonly SymbolDefinition[];
+
+  /**
+   * True iff at least one registered def has `type === 'Function'` — i.e.,
+   * a Python/Rust/Kotlin class method emitted by the worker as
+   * `Function + ownerId` rather than as a strict `Method` label. Such defs
+   * are double-indexed: they land in `SymbolTable.callableByName` (via the
+   * Function callable-index gate) AND in this registry (via the
+   * dispatch-key normalization in `wrappedAdd`). Tier 3 resolution must
+   * then dedup the two indexes by nodeId.
+   *
+   * When this flag is false, the callable and method indexes are
+   * guaranteed disjoint and Tier 3 can skip the dedup pass entirely.
+   * The flag is monotonic (false→true once, never back) for the lifetime
+   * of the MethodRegistry.
+   */
+  readonly hasFunctionMethods: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +88,9 @@ export const createMethodRegistry = (): MutableMethodRegistry => {
   // Populated in lockstep by `register()` and emptied by `clear()`.
   const methodsByName = new Map<string, SymbolDefinition[]>();
   const EMPTY: readonly SymbolDefinition[] = Object.freeze([]);
+  // Set once when a Function+ownerId def lands here, powers the Tier 3
+  // dedup fast-path. Monotonic: never unset except on `clear()`.
+  let hasFunctionMethodsFlag = false;
 
   const lookupMethodByOwner = (
     ownerNodeId: string,
@@ -132,12 +151,29 @@ export const createMethodRegistry = (): MutableMethodRegistry => {
     } else {
       methodsByName.set(methodName, [def]);
     }
+    // A `Function`-typed def reaching MethodRegistry means the worker
+    // emitted a Python/Rust/Kotlin class method as `Function + ownerId`.
+    // It was already written into `SymbolTable.callableByName` by the
+    // upstream Function callable-index gate, so the two indexes are no
+    // longer disjoint for this registry's lifetime — Tier 3 must dedup.
+    if (!hasFunctionMethodsFlag && def.type === 'Function') {
+      hasFunctionMethodsFlag = true;
+    }
   };
 
   const clear = (): void => {
     methodByOwner.clear();
     methodsByName.clear();
+    hasFunctionMethodsFlag = false;
   };
 
-  return { lookupMethodByOwner, lookupMethodByName, register, clear };
+  return {
+    lookupMethodByOwner,
+    lookupMethodByName,
+    register,
+    clear,
+    get hasFunctionMethods() {
+      return hasFunctionMethodsFlag;
+    },
+  };
 };

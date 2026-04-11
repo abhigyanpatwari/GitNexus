@@ -51,7 +51,7 @@
 
 import type { NodeLabel } from 'gitnexus-shared';
 import type { SymbolDefinition, ClassLikeLabel, FreeCallableLabel } from './symbol-table.js';
-import { CLASS_TYPES_TUPLE, FREE_CALLABLE_TYPES } from './symbol-table.js';
+import { FREE_CALLABLE_TYPES } from './symbol-table.js';
 import type { MutableTypeRegistry } from './type-registry.js';
 import type { MutableMethodRegistry } from './method-registry.js';
 import type { MutableFieldRegistry } from './field-registry.js';
@@ -237,6 +237,19 @@ export const INERT_LABELS: ReadonlySet<NodeLabel> = new Set(labelsWithBehavior('
  */
 export const DISPATCH_LABELS: ReadonlySet<NodeLabel> = new Set(labelsWithBehavior('dispatch'));
 
+/**
+ * Type-level extraction of every label classified as `'dispatch'` in
+ * {@link LABEL_BEHAVIOR}. Used by {@link createRegistrationTable} as the
+ * key set of its internal object literal, so the `satisfies
+ * Record<DispatchLabel, RegistrationHook>` check fails at build time if
+ * a dispatch-classified label is missing a hook, or a hook is wired to
+ * a non-dispatch label. This closes the last compile-time gap between
+ * `LABEL_BEHAVIOR` and the dispatch table.
+ */
+type DispatchLabel = {
+  [K in NodeLabel]: (typeof LABEL_BEHAVIOR)[K] extends 'dispatch' ? K : never;
+}[NodeLabel];
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -285,27 +298,36 @@ export const createRegistrationTable = (
     types.registerImpl(name, def);
   };
 
-  const table = new Map<NodeLabel, RegistrationHook>();
+  // Single source of truth for the label → hook mapping. The
+  // `satisfies Record<DispatchLabel, RegistrationHook>` intersection
+  // fails at build time if (a) any label classified as 'dispatch' in
+  // `LABEL_BEHAVIOR` is missing here, or (b) any key here is not
+  // classified as 'dispatch'. This is the compile-time twin of the
+  // runtime taxonomy — no drift possible.
+  const dispatchByLabel = {
+    // class-like — six labels share the single `classHook` closure,
+    // kept in lockstep with `CLASS_TYPES_TUPLE` via the
+    // `Record<ClassLikeLabel, 'dispatch'>` cross-invariant on
+    // `LABEL_BEHAVIOR`.
+    Class: classHook,
+    Struct: classHook,
+    Interface: classHook,
+    Enum: classHook,
+    Record: classHook,
+    Trait: classHook,
+    // method-like — routed via dispatch-key normalization in
+    // `wrappedAdd` so Function+ownerId also reaches `methodHook`.
+    Method: methodHook,
+    Constructor: methodHook,
+    // property — callable-index exclusion is enforced by
+    // `SymbolTable.add()` (Property is not in `FREE_CALLABLE_TYPES`).
+    Property: propertyHook,
+    // impl-block — Rust `impl` blocks. Separate from classHook because
+    // heritage resolution must not treat Impls as class candidates.
+    Impl: implHook,
+  } as const satisfies Record<DispatchLabel, RegistrationHook>;
 
-  // class-like entries — iterate `CLASS_TYPES_TUPLE` (imported from
-  // symbol-table.ts, the single source of truth for class-like labels).
-  // Adding a new class-like label to that tuple automatically wires it
-  // to `classHook` here; the `Record<ClassLikeLabel, 'dispatch'>`
-  // intersection on `LABEL_BEHAVIOR` above forces the new label to also
-  // be classified as dispatch.
-  for (const label of CLASS_TYPES_TUPLE) {
-    table.set(label, classHook);
-  }
-
-  // method-like
-  table.set('Method', methodHook);
-  table.set('Constructor', methodHook);
-
-  // property — callable-index exclusion is enforced by SymbolTable.add()
-  table.set('Property', propertyHook);
-
-  // impl-block
-  table.set('Impl', implHook);
-
-  return table;
+  return new Map<NodeLabel, RegistrationHook>(
+    Object.entries(dispatchByLabel) as [NodeLabel, RegistrationHook][],
+  );
 };

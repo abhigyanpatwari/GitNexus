@@ -71,11 +71,11 @@ import { createRegistrationTable } from './registration-table.js';
  * file/callable SymbolTable.
  *
  * `symbols` is typed as {@link SymbolTableReader} — consumers can query
- * symbols but cannot register new ones or trigger a leaf-index reset.
- * Callers that need to register symbols or reset state must hold a
+ * symbols but cannot register new ones or trigger a reset. Callers that
+ * need to register symbols or reset state must hold a
  * {@link MutableSemanticModel} reference instead, which widens
- * `symbols` back to {@link SymbolTableWriter} and adds `clear()` /
- * `resetFileIndex()` on the model itself.
+ * `symbols` back to {@link SymbolTableWriter} and adds `clear()` on the
+ * model itself.
  *
  * This segregation is the runtime half of the principle of least
  * authority: a resolver that receives `SemanticModel` physically cannot
@@ -94,7 +94,7 @@ export interface SemanticModel {
 // ---------------------------------------------------------------------------
 
 /** Mutable variant — exposes the MutableX registries, a Writer-typed
- *  `symbols` facade, and top-level reset methods. This is the interface
+ *  `symbols` facade, and a full-cascade reset. This is the interface
  *  held by the lifecycle owner (pipeline, resolution-context); resolvers
  *  that only query should hold the narrower {@link SemanticModel}. */
 export interface MutableSemanticModel extends SemanticModel {
@@ -104,17 +104,6 @@ export interface MutableSemanticModel extends SemanticModel {
   readonly symbols: SymbolTableWriter;
   /** Clear all registries AND the nested SymbolTable. */
   clear(): void;
-  /**
-   * Partial reset: empty the file and callable leaf indexes only,
-   * leaving the owner-scoped registries (types, methods, fields)
-   * populated. Used for rare partial-reingestion flows where the
-   * caller wants to drop per-file state without losing the class/
-   * method/field knowledge that was already accumulated.
-   *
-   * Use {@link clear} for a full cascade reset. If you're not sure
-   * which to call, you almost certainly want {@link clear}.
-   */
-  resetFileIndex(): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,18 +183,11 @@ export const createSemanticModel = (): MutableSemanticModel => {
     getStats: rawSymbols.getStats,
   };
 
-  // Partial-reset entry point. Only touches the leaf indexes — the
-  // three owner-scoped registries are preserved intentionally.
-  const resetFileIndex = (): void => {
-    rawSymbols.clear();
-  };
-
   return {
     types,
     methods,
     fields,
     symbols,
     clear: cascadeClear,
-    resetFileIndex,
   };
 };
