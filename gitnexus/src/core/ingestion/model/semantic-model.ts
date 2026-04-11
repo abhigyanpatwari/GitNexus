@@ -146,20 +146,32 @@ const ALL_NODE_LABELS: readonly NodeLabel[] = [
 /**
  * Dev-time check: each NodeLabel must appear in exactly one of the three
  * allowlists (DISPATCH_LABELS / CALLABLE_ONLY_LABELS / INERT_LABELS).
- * Runs once per createSemanticModel() call; zero hot-path cost.
+ * Runs once per createSemanticModel() call in non-production; zero
+ * hot-path cost.
+ *
+ * Throws on drift (instead of warning) so that a missing allowlist entry
+ * fails CI loudly rather than hiding in console output. The
+ * `process.env.NODE_ENV !== 'production'` guard at the call site keeps
+ * real users from ever seeing the throw — a label drift in production
+ * still silently no-ops the routing, and any resulting graph gaps will
+ * surface via the registration-table taxonomy test in CI.
  */
 const runExhaustivenessGuard = (): void => {
+  const drifted: string[] = [];
   for (const label of ALL_NODE_LABELS) {
     const inDispatch = DISPATCH_LABELS.has(label);
     const inCallableOnly = CALLABLE_ONLY_LABELS.has(label);
     const inInert = INERT_LABELS.has(label);
     const count = Number(inDispatch) + Number(inCallableOnly) + Number(inInert);
     if (count !== 1) {
-      console.warn(
-        `[SemanticModel] NodeLabel '${label}' appears in ${count} allowlists (expected 1). ` +
-          `Check registration-table.ts DISPATCH_LABELS / CALLABLE_ONLY_LABELS / INERT_LABELS.`,
-      );
+      drifted.push(`'${label}' (in ${count} allowlists, expected 1)`);
     }
+  }
+  if (drifted.length > 0) {
+    throw new Error(
+      `[SemanticModel] NodeLabel taxonomy drift detected: ${drifted.join(', ')}. ` +
+        `Check registration-table.ts DISPATCH_LABELS / CALLABLE_ONLY_LABELS / INERT_LABELS.`,
+    );
   }
 };
 
@@ -220,6 +232,18 @@ export const createSemanticModel = (): MutableSemanticModel => {
     return def;
   };
 
+  // Cascade clear: single source of truth for "reset the entire model".
+  // Wired into both `model.clear()` AND `model.symbols.clear()` so that a
+  // caller holding only a SymbolTable reference can't leave the
+  // owner-scoped registries populated while the file/callable indexes go
+  // empty (the phantom-resolution failure mode).
+  const cascadeClear = (): void => {
+    types.clear();
+    methods.clear();
+    fields.clear();
+    rawSymbols.clear();
+  };
+
   const symbols: SymbolTable = {
     add: wrappedAdd,
     lookupExact: rawSymbols.lookupExact,
@@ -228,7 +252,7 @@ export const createSemanticModel = (): MutableSemanticModel => {
     lookupCallableByName: rawSymbols.lookupCallableByName,
     getFiles: rawSymbols.getFiles,
     getStats: rawSymbols.getStats,
-    clear: rawSymbols.clear,
+    clear: cascadeClear,
   };
 
   return {
@@ -236,13 +260,6 @@ export const createSemanticModel = (): MutableSemanticModel => {
     methods,
     fields,
     symbols,
-    clear() {
-      // Cascade: clear owner-scoped registries first, then the nested
-      // SymbolTable (order is arbitrary — they're independent).
-      types.clear();
-      methods.clear();
-      fields.clear();
-      rawSymbols.clear();
-    },
+    clear: cascadeClear,
   };
 };
