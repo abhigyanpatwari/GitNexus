@@ -1299,7 +1299,7 @@ export const processCalls = async (
   return collectedHeritage;
 };
 
-// CALLABLE_TYPES imported from symbol-table.ts — single source of truth.
+// FREE_CALLABLE_TYPES imported from symbol-table.ts — single source of truth.
 
 const CONSTRUCTOR_TARGET_TYPES = new Set(['Constructor', 'Class', 'Struct', 'Record']);
 
@@ -1323,7 +1323,7 @@ const filterCallableCandidates = (
         types.length > 0 ? types : candidates.filter((c) => CALL_TARGET_TYPES.has(c.type));
     }
   } else {
-    // CALL_TARGET_TYPES (not CALLABLE_TYPES) — the post-A4 filter must
+    // CALL_TARGET_TYPES (not FREE_CALLABLE_TYPES) — the post-A4 filter must
     // also admit Method and Constructor candidates, which are now unioned
     // into the pool from `model.methods.lookupMethodByName` rather than
     // `symbols.lookupCallableByName`.

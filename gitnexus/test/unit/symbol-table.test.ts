@@ -173,7 +173,7 @@ describe('SymbolTable', () => {
     });
 
     it('post-A4: Method with ownerId lands in methodsByName, not callableByName', () => {
-      // Plan 006 Unit 4 shrank CALLABLE_TYPES to free callables only.
+      // Plan 006 Unit 4 shrank FREE_CALLABLE_TYPES to free callables only.
       // Method registrations now flow through the method registry.
       table.add('src/models.ts', 'save', 'method:save', 'Method', { ownerId: 'class:User' });
       expect(table.lookupCallableByName('save')).toHaveLength(0);
@@ -345,7 +345,7 @@ describe('SymbolTable', () => {
     it('post-A4: Method without ownerId is not reachable via registries', () => {
       // methodHook silently skips Method-without-ownerId (methods.register
       // requires an owner). Post-Unit 4, Method is no longer in
-      // CALLABLE_TYPES either, so the symbol lands only in the file index.
+      // FREE_CALLABLE_TYPES either, so the symbol lands only in the file index.
       table.add('src/utils.ts', 'helper', 'method:helper', 'Method');
       expect(model.methods.lookupMethodByOwner('', 'helper')).toBeUndefined();
       expect(model.methods.lookupMethodByName('helper')).toHaveLength(0);
@@ -437,7 +437,7 @@ describe('SymbolTable', () => {
 
   describe('lookupCallableByName', () => {
     it('post-A4: returns only free callables (Function/Macro/Delegate)', () => {
-      // Post-Unit 4, CALLABLE_TYPES = {Function, Macro, Delegate}.
+      // Post-Unit 4, FREE_CALLABLE_TYPES = {Function, Macro, Delegate}.
       // Method and Constructor flow through the method registry instead.
       table.add('src/a.ts', 'foo', 'func:foo', 'Function');
       table.add('src/a.ts', 'bar', 'method:bar', 'Method', { ownerId: 'class:X' });
@@ -1070,7 +1070,7 @@ describe('SymbolTable', () => {
 
       expect(model.fields.lookupFieldByOwner('class:User', 'name')?.nodeId).toBe('prop:User.name');
       // Property must NOT leak into callableByName — Property is not in
-      // CALLABLE_TYPES, so SymbolTable.add() never appends it.
+      // FREE_CALLABLE_TYPES, so SymbolTable.add() never appends it.
       expect(model.symbols.lookupCallableByName('name')).toHaveLength(0);
     });
 
@@ -1093,7 +1093,7 @@ describe('SymbolTable', () => {
 
       // Owner-scoped method lookup resolves it (Python-style class method).
       expect(model.methods.lookupMethodByOwner('class:User', 'save')?.nodeId).toBe('fn:User.save');
-      // Function is in CALLABLE_TYPES, so it also appears in callableByName.
+      // Function is in FREE_CALLABLE_TYPES, so it also appears in callableByName.
       expect(model.symbols.lookupCallableByName('save')).toHaveLength(1);
     });
 
@@ -1114,7 +1114,7 @@ describe('SymbolTable', () => {
       const fieldsSpy = vi.spyOn(model.fields, 'register');
 
       // `Variable` is in INERT_LABELS — no specialized registry, no
-      // callable index (it's not in CALLABLE_TYPES).
+      // callable index (it's not in FREE_CALLABLE_TYPES).
       model.symbols.add('src/main.ts', 'CONFIG', 'var:CONFIG', 'Variable');
 
       expect(model.symbols.lookupExact('src/main.ts', 'CONFIG')).toBe('var:CONFIG');
@@ -1135,7 +1135,7 @@ describe('SymbolTable', () => {
       expect(model.symbols.lookupExact('src/orphan.ts', 'orphan')).toBe('mtd:orphan');
       // Method registry NOT populated (no ownerId to key under).
       expect(methodsSpy).not.toHaveBeenCalled();
-      // Post-A4 Unit 4: Method is no longer in CALLABLE_TYPES, so the
+      // Post-A4 Unit 4: Method is no longer in FREE_CALLABLE_TYPES, so the
       // orphan does not leak into callableByName either. It lives only
       // in the file index.
       expect(model.symbols.lookupCallableByName('orphan')).toHaveLength(0);

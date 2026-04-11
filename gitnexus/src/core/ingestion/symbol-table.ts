@@ -83,17 +83,17 @@ export const CLASS_TYPES: ReadonlySet<NodeLabel> = new Set(CLASS_TYPES_TUPLE);
  *  tracked as Unit 5 and is blocked pending a `def.type` preservation
  *  decision — see plan 006.
  */
-export const CALLABLE_TYPES: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+export const FREE_CALLABLE_TYPES: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   'Function',
   'Macro', // C/C++
   'Delegate', // C#
 ]);
 
 /** Symbol types that can be the TARGET of a call in the resolver's kind
- *  filter — superset of {@link CALLABLE_TYPES} that also admits
+ *  filter — superset of {@link FREE_CALLABLE_TYPES} that also admits
  *  owner-scoped methods and constructors pulled in from `MethodRegistry`.
  *
- *  Why the split: `CALLABLE_TYPES` now has a narrow meaning (free
+ *  Why the split: `FREE_CALLABLE_TYPES` now has a narrow meaning (free
  *  callables indexed in `callableByName`), but call resolution still
  *  needs to accept Method and Constructor candidates once they have been
  *  unioned in from `model.methods.lookupMethodByName`. The resolver uses
@@ -101,7 +101,7 @@ export const CALLABLE_TYPES: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
  *  `filterCallableCandidates` / `countCallableCandidates`.
  */
 export const CALL_TARGET_TYPES: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
-  ...CALLABLE_TYPES,
+  ...FREE_CALLABLE_TYPES,
   'Method',
   'Constructor',
 ]);
@@ -256,11 +256,11 @@ export const createSymbolTable = (): SymbolTable => {
       fileMap.get(name)!.push(def);
     }
 
-    // B. Callable Index — gated by CALLABLE_TYPES.
-    //    Note: Property is NOT in CALLABLE_TYPES, so it never lands here.
+    // B. Callable Index — gated by FREE_CALLABLE_TYPES.
+    //    Note: Property is NOT in FREE_CALLABLE_TYPES, so it never lands here.
     //    This is the single source of truth for callable-index membership;
     //    the higher-layer dispatch table only decides owner-scoped routing.
-    if (CALLABLE_TYPES.has(type)) {
+    if (FREE_CALLABLE_TYPES.has(type)) {
       const existing = callableByName.get(name);
       if (existing) {
         existing.push(def);

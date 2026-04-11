@@ -453,7 +453,7 @@ describe('ownerId on SymbolDefinition', () => {
   });
 
   it('propagates ownerId through a free Function registration', () => {
-    // Post-A4 Unit 4, Method is no longer in CALLABLE_TYPES so this test
+    // Post-A4 Unit 4, Method is no longer in FREE_CALLABLE_TYPES so this test
     // exercises ownerId propagation through the free-callable index using
     // a Function label. Method-with-ownerId propagation is covered via
     // methodsByName in method-registry.test.ts.

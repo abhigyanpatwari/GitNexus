@@ -201,7 +201,7 @@ export const createResolutionContext = (): ResolutionContext => {
     // (Function, Macro, Delegate) by lookupCallableByName; owner-scoped
     // methods and constructors by `model.methods.lookupMethodByName`.
     //
-    // Post-A4 Unit 4: CALLABLE_TYPES no longer includes Method/Constructor,
+    // Post-A4 Unit 4: FREE_CALLABLE_TYPES no longer includes Method/Constructor,
     // so strictly-labeled methods are disjoint between the two indexes.
     //
     // Partial-state caveat (Unit 5 blocked): Python/Rust/Kotlin class

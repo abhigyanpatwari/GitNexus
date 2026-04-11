@@ -890,7 +890,7 @@ describe('SM-16: Tier 3 global — lookupClassByName + lookupImplByName + lookup
 
   it('A4 intermediate: Method reachable via both callable and method indexes dedups to one Tier 3 candidate', () => {
     // A method with an owner lands in callableByName (because Method is
-    // still in CALLABLE_TYPES during the Unit 3 intermediate state) AND in
+    // still in FREE_CALLABLE_TYPES during the Unit 3 intermediate state) AND in
     // methodsByName (because A4 Unit 2 dual-indexes every method
     // registration). Tier 3 must dedup by nodeId so consumers see each
     // method exactly once.

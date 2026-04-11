@@ -98,7 +98,7 @@ import type { MutableFieldRegistry } from './field-registry.js';
  * specific registry. Performs the specialized registry write into the
  * appropriate owner-scoped registry for one NodeLabel. The
  * callable-index gate lives inside `SymbolTable.add()` via the
- * `CALLABLE_TYPES` allowlist — the dispatch table does not participate
+ * `FREE_CALLABLE_TYPES` allowlist — the dispatch table does not participate
  * in that decision.
  */
 export type RegistrationHook = (name: string, def: SymbolDefinition) => void;
@@ -128,7 +128,7 @@ export interface RegistrationTableDeps {
  *                       Impl → types.registerImpl)
  *   - `callable-only` — no specialized registry; symbol appears in
  *                      `callableByName` via `SymbolTable.add()`'s
- *                      CALLABLE_TYPES gate (Function/Macro/Delegate)
+ *                      FREE_CALLABLE_TYPES gate (Function/Macro/Delegate)
  *   - `inert`        — no registry, no callable index; file-index only
  *                      (metadata / structural nodes like Project, Module,
  *                      Import, Decorator, etc.)
@@ -292,7 +292,7 @@ export const createRegistrationTable = (
   };
 
   // Hook 3: property — Property. Silently skipped without ownerId.
-  // Property is not in `CALLABLE_TYPES`, so `SymbolTable.add()` already
+  // Property is not in `FREE_CALLABLE_TYPES`, so `SymbolTable.add()` already
   // excludes it from `callableByName`; common property names like
   // `id` / `name` / `type` never pollute the callable index.
   const propertyHook: RegistrationHook = (name, def) => {
