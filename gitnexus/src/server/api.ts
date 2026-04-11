@@ -1013,7 +1013,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       let hasInnerQuantifier = false;
       for (let i = 0; i < pattern.length; i++) {
         const ch = pattern[i];
-        if (ch === '\\') { i++; continue; } // skip escaped chars
+        if (ch === '\\') {
+          i++;
+          continue;
+        } // skip escaped chars
         if (ch === '(') {
           depth++;
           hasInnerQuantifier = false;
@@ -1057,7 +1060,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       // ReDoS protection: reject patterns with nested quantifiers
       if (!isSafeRegex(pattern)) {
-        res.status(400).json({ error: 'Pattern rejected: potential catastrophic backtracking detected' });
+        res
+          .status(400)
+          .json({ error: 'Pattern rejected: potential catastrophic backtracking detected' });
         return;
       }
 

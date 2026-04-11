@@ -114,6 +114,20 @@ describe('impact: batching and grouping', () => {
           },
         ];
       }
+      // BFS depth traversal (now uses executeParameterized after security hardening)
+      if (query.includes('r.type IN')) {
+        const res: any[] = [];
+        for (let i = 0; i < 250; i++) {
+          res.push({
+            id: `node-${i}`,
+            name: `n${i}`,
+            filePath: `file-${i}.js`,
+            relType: 'CALLS',
+            confidence: null,
+          });
+        }
+        return res;
+      }
       // Default target resolution
       return [{ id: 'sym1', name: 'Target', filePath: 'f' }];
     });
@@ -148,50 +162,45 @@ describe('impact: batching and grouping', () => {
 
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
-      if (!query.includes('STEP_IN_PROCESS'))
-        return [{ id: 'symA', name: 'TargetA', filePath: 'f' }];
-      // For STEP_IN_PROCESS in this test, return grouping rows
-      return [
-        {
-          entryPointId: 'ep-1',
-          epName: 'EP1',
-          epType: 'Function',
-          epFilePath: '/p/1',
-          hits: 2,
-          minStep: 1,
-        },
-        {
-          entryPointId: 'ep-2',
-          epName: 'EP2',
-          epType: 'Function',
-          epFilePath: '/p/2',
-          hits: 2,
-          minStep: 2,
-        },
-        {
-          entryPointId: 'ep-1',
-          epName: 'EP1',
-          epType: 'Function',
-          epFilePath: '/p/1',
-          hits: 1,
-          minStep: 3,
-        },
-        {
-          entryPointId: 'ep-3',
-          epName: 'EP3',
-          epType: 'Function',
-          epFilePath: '/p/3',
-          hits: 1,
-          minStep: 1,
-        },
-      ];
-    });
-
-    // Prepare impacted nodes: smaller set for clarity (6 nodes -> chunk size default 100 so single chunk)
-    executeQueryMock.mockImplementation(async (...args: any[]) => {
-      const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
-      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
-        // return 6 nodes
+      if (query.includes('STEP_IN_PROCESS')) {
+        // For STEP_IN_PROCESS in this test, return grouping rows
+        return [
+          {
+            entryPointId: 'ep-1',
+            epName: 'EP1',
+            epType: 'Function',
+            epFilePath: '/p/1',
+            hits: 2,
+            minStep: 1,
+          },
+          {
+            entryPointId: 'ep-2',
+            epName: 'EP2',
+            epType: 'Function',
+            epFilePath: '/p/2',
+            hits: 2,
+            minStep: 2,
+          },
+          {
+            entryPointId: 'ep-1',
+            epName: 'EP1',
+            epType: 'Function',
+            epFilePath: '/p/1',
+            hits: 1,
+            minStep: 3,
+          },
+          {
+            entryPointId: 'ep-3',
+            epName: 'EP3',
+            epType: 'Function',
+            epFilePath: '/p/3',
+            hits: 1,
+            minStep: 1,
+          },
+        ];
+      }
+      // BFS depth traversal (now uses executeParameterized after security hardening)
+      if (query.includes('r.type IN')) {
         const res: any[] = [];
         for (let i = 0; i < 6; i++)
           res.push({
@@ -203,8 +212,8 @@ describe('impact: batching and grouping', () => {
           });
         return res;
       }
-
-      return [];
+      // Default target resolution
+      return [{ id: 'symA', name: 'TargetA', filePath: 'f' }];
     });
 
     const params = { target: 'TargetA', direction: 'downstream', maxDepth: 1 } as any;
@@ -240,24 +249,6 @@ describe('impact: batching and grouping', () => {
     (backend as any).repos.set(repoHandle.id, repoHandle);
     (backend as any).ensureInitialized = vi.fn().mockResolvedValue(undefined);
 
-    // Depth traversal returns 500 impacted nodes
-    executeQueryMock.mockImplementation(async (...args: any[]) => {
-      const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
-      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
-        const res: any[] = [];
-        for (let i = 0; i < 500; i++)
-          res.push({
-            id: `node-${i}`,
-            name: `n${i}`,
-            filePath: `file-${i}.js`,
-            relType: 'CALLS',
-            confidence: null,
-          });
-        return res;
-      }
-      return [];
-    });
-
     const chunkSizes: number[] = [];
 
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
@@ -276,6 +267,20 @@ describe('impact: batching and grouping', () => {
             minStep: 1,
           },
         ];
+      }
+
+      // BFS depth traversal (now uses executeParameterized after security hardening)
+      if (query.includes('r.type IN')) {
+        const res: any[] = [];
+        for (let i = 0; i < 500; i++)
+          res.push({
+            id: `node-${i}`,
+            name: `n${i}`,
+            filePath: `file-${i}.js`,
+            relType: 'CALLS',
+            confidence: null,
+          });
+        return res;
       }
 
       if (query.includes('COUNT(DISTINCT s.id)')) {
