@@ -852,7 +852,9 @@ export class LocalBackend {
 
       if (embResults.length === 0) return [];
 
-      const results: any[] = [];
+      // Group embedding results by node label to batch lookups (eliminates N+1)
+      const distanceMap = new Map<string, number>();
+      const labelGroups = new Map<string, string[]>();
 
       for (const embRow of embResults) {
         const nodeId = embRow.nodeId ?? embRow[0];
@@ -861,29 +863,49 @@ export class LocalBackend {
         const labelEndIdx = nodeId.indexOf(':');
         const label = labelEndIdx > 0 ? nodeId.substring(0, labelEndIdx) : 'Unknown';
 
-        // Validate label against known node types to prevent Cypher injection
         if (!VALID_NODE_LABELS.has(label)) continue;
 
-        try {
-          const nodeQuery =
-            label === 'File'
-              ? `MATCH (n:File {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath`
-              : `MATCH (n:\`${label}\` {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
+        distanceMap.set(nodeId, distance);
+        const group = labelGroups.get(label) ?? [];
+        group.push(nodeId);
+        labelGroups.set(label, group);
+      }
 
-          const nodeRows = await executeParameterized(repo.id, nodeQuery, { nodeId });
-          if (nodeRows.length > 0) {
-            const nodeRow = nodeRows[0];
-            results.push({
-              nodeId,
-              name: nodeRow.name ?? nodeRow[0] ?? '',
-              type: label,
-              filePath: nodeRow.filePath ?? nodeRow[1] ?? '',
-              distance,
-              startLine: label !== 'File' ? (nodeRow.startLine ?? nodeRow[2]) : undefined,
-              endLine: label !== 'File' ? (nodeRow.endLine ?? nodeRow[3]) : undefined,
-            });
+      // Batch-fetch node details: one query per label instead of one per result
+      const nodeMap = new Map<string, any>();
+
+      for (const [label, nodeIds] of labelGroups) {
+        try {
+          const batchQuery =
+            label === 'File'
+              ? `MATCH (n:File) WHERE n.id IN $nodeIds RETURN n.id AS id, n.name AS name, n.filePath AS filePath`
+              : `MATCH (n:\`${label}\`) WHERE n.id IN $nodeIds RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
+
+          const rows = await executeParameterized(repo.id, batchQuery, { nodeIds });
+          for (const row of rows) {
+            const id = row.id ?? row[0];
+            nodeMap.set(id, { ...row, label });
           }
         } catch {}
+      }
+
+      // Join embedding distances with node details in-memory
+      const results: any[] = [];
+
+      for (const [nodeId, distance] of distanceMap) {
+        const node = nodeMap.get(nodeId);
+        if (!node) continue;
+
+        const label = node.label;
+        results.push({
+          nodeId,
+          name: node.name ?? node[1] ?? '',
+          type: label,
+          filePath: node.filePath ?? node[2] ?? '',
+          distance,
+          startLine: label !== 'File' ? (node.startLine ?? node[3]) : undefined,
+          endLine: label !== 'File' ? (node.endLine ?? node[4]) : undefined,
+        });
       }
 
       return results;
@@ -2044,7 +2066,8 @@ export class LocalBackend {
     },
   ): Promise<any> {
     const { maxDepth, relationTypes, includeTests, minConfidence } = opts;
-    const safeMinConfidence = typeof minConfidence === 'number' && isFinite(minConfidence) ? minConfidence : 0;
+    const safeMinConfidence =
+      typeof minConfidence === 'number' && isFinite(minConfidence) ? minConfidence : 0;
 
     const symId = sym.id || sym[0];
 
