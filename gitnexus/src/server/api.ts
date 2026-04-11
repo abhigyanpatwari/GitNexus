@@ -1000,6 +1000,40 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     }
   });
 
+  /**
+   * Detect regex patterns likely to cause catastrophic backtracking (ReDoS).
+   * Rejects patterns with nested quantifiers like (a+)+, (.*)*b, ([a-z]+)* etc.
+   */
+  function isSafeRegex(pattern: string): boolean {
+    // Nested quantifier detection: a quantifier (+, *, {n}) applied to a group
+    // that itself contains a quantifier
+    try {
+      // Quick structural check for nested quantifiers
+      let depth = 0;
+      let hasInnerQuantifier = false;
+      for (let i = 0; i < pattern.length; i++) {
+        const ch = pattern[i];
+        if (ch === '\\') { i++; continue; } // skip escaped chars
+        if (ch === '(') {
+          depth++;
+          hasInnerQuantifier = false;
+        } else if (ch === ')') {
+          depth--;
+          // Check if this closing paren is followed by a quantifier
+          const next = pattern[i + 1];
+          if (hasInnerQuantifier && (next === '+' || next === '*' || next === '{')) {
+            return false;
+          }
+        } else if (depth > 0 && (ch === '+' || ch === '*')) {
+          hasInnerQuantifier = true;
+        }
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // Grep — regex search across file contents in the indexed repo
   // Uses filesystem-based search for memory efficiency (never loads all files into memory)
   app.get('/api/grep', async (req, res) => {
@@ -1018,6 +1052,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       // ReDoS protection: reject overly long or dangerous patterns
       if (pattern.length > 200) {
         res.status(400).json({ error: 'Pattern too long (max 200 characters)' });
+        return;
+      }
+
+      // ReDoS protection: reject patterns with nested quantifiers
+      if (!isSafeRegex(pattern)) {
+        res.status(400).json({ error: 'Pattern rejected: potential catastrophic backtracking detected' });
         return;
       }
 
