@@ -54,7 +54,7 @@ export {
 // qualified-syntax). Pure function that depends only on the model + HeritageMap.
 // `MroStrategy` itself lives in `gitnexus-shared`; re-exported here for
 // consumers that reach model behavior through the barrel.
-export { lookupMethodByOwnerWithMRO, type MroStrategy } from './resolve.js';
+export { lookupMethodByOwnerWithMRO } from './resolve.js';
 
 // SM-22: behavior-grouped dispatch table for SymbolTable.add() routing.
 // See registration-table.ts module JSDoc for the behavior group taxonomy

@@ -15,8 +15,6 @@ import type { HeritageMap } from '../heritage-map.js';
 import { c3Linearize } from '../mro-processor.js';
 import type { MroStrategy } from 'gitnexus-shared';
 
-export type { MroStrategy };
-
 // ---------------------------------------------------------------------------
 // C3 linearization cache (per HeritageMap, auto-drained via WeakMap)
 // ---------------------------------------------------------------------------

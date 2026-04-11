@@ -11,8 +11,6 @@
 
 import type { SupportedLanguages, MroStrategy } from 'gitnexus-shared';
 import type { LanguageTypeConfig } from './type-extractors/types.js';
-
-export type { MroStrategy };
 import type { CallRouter } from './call-routing.js';
 import type { ClassExtractor } from './class-types.js';
 import type { ExportChecker } from './export-detection.js';
