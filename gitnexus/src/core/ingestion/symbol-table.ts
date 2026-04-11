@@ -1,4 +1,5 @@
 import type { NodeLabel } from 'gitnexus-shared';
+import { createSemanticModel } from './model/semantic-model.js';
 
 export const CLASS_TYPES = new Set([
   'Class',
@@ -175,6 +176,11 @@ export interface SymbolTable {
 }
 
 export const createSymbolTable = (): SymbolTable => {
+  // SemanticModel — aggregated registries for class-like types, methods,
+  // and fields. SymbolTable delegates all registry operations to this model
+  // (SM-20). The three registries were previously inlined as Maps here.
+  const model = createSemanticModel();
+
   // 1. File-Specific Index — stores full SymbolDefinition(s) for O(1) lookup.
   // Structure: FilePath -> (SymbolName -> SymbolDefinition[])
   // Array allows overloaded methods (same name, different signatures) to coexist.
@@ -184,25 +190,6 @@ export const createSymbolTable = (): SymbolTable => {
   // Structure: SymbolName -> [Callable Definitions]
   // Only Function, Method, Constructor, Macro, Delegate symbols are indexed.
   const callableByName = new Map<string, SymbolDefinition[]>();
-
-  // 3. Eagerly-populated Field/Property Index — keyed by "ownerNodeId\0fieldName".
-  // Only Property symbols with ownerId and declaredType are indexed.
-  const fieldByOwner = new Map<string, SymbolDefinition>();
-
-  // 4. Eagerly-populated Method Index — keyed by "ownerNodeId\0methodName".
-  // Method symbols with ownerId are indexed. Supports overloads (array values).
-  const methodByOwner = new Map<string, SymbolDefinition[]>();
-
-  // 5. Eagerly-populated Class-type Index — keyed by symbol name.
-  // Only Class, Struct, Interface, Enum, Record symbols are indexed.
-  const classByName = new Map<string, SymbolDefinition[]>();
-  const classByQualifiedName = new Map<string, SymbolDefinition[]>();
-
-  // 6. Eagerly-populated Impl Index — keyed by symbol name.
-  // Rust impl blocks (type 'Impl') are stored here to keep them out of
-  // classByName (which drives heritage resolution) while still being
-  // reachable from Tier 3 resolution for method lookup.
-  const implByName = new Map<string, SymbolDefinition[]>();
 
   // Use the module-level CALLABLE_TYPES constant (exported for call-processor.ts).
 
@@ -259,13 +246,13 @@ export const createSymbolTable = (): SymbolTable => {
     // Index ALL properties (even without declaredType) so write-access tracking
     // can resolve field ownership for dynamically-typed languages (Ruby, JS).
     if (type === 'Property' && metadata?.ownerId) {
-      fieldByOwner.set(`${metadata.ownerId}\0${name}`, def);
+      model.fields.register(metadata.ownerId, name, def);
       // Still add to fileIndex above (for lookupExact), but skip other indexes
       return;
     }
 
     // C. Methods, constructors, and ownerId-bound Functions go to
-    // methodByOwner index.
+    // methodByOwner index (delegated to SemanticModel.methods).
     //
     // Some language extractors emit class methods as `Function` with an
     // `ownerId` — notably Python (`def method(self):` inside a class body),
@@ -274,42 +261,20 @@ export const createSymbolTable = (): SymbolTable => {
     // (`resolveMemberCall`) work uniformly across all supported languages
     // instead of silently falling through to D1-D4 widening.
     if ((type === 'Method' || type === 'Constructor' || type === 'Function') && metadata?.ownerId) {
-      const key = `${metadata.ownerId}\0${name}`;
-      const existing = methodByOwner.get(key);
-      if (existing) {
-        existing.push(def);
-      } else {
-        methodByOwner.set(key, [def]);
-      }
+      model.methods.register(metadata.ownerId, name, def);
     }
 
-    // C2. Class-like types go to classByName index.
+    // C2. Class-like types go to classByName index (delegated to SemanticModel.types).
     if (CLASS_TYPES.has(type)) {
-      const existing = classByName.get(name);
-      if (existing) {
-        existing.push(def);
-      } else {
-        classByName.set(name, [def]);
-      }
-
       const qualifiedKey = qualifiedName ?? name;
-      const qualifiedMatches = classByQualifiedName.get(qualifiedKey);
-      if (qualifiedMatches) {
-        qualifiedMatches.push(def);
-      } else {
-        classByQualifiedName.set(qualifiedKey, [def]);
-      }
+      model.types.registerClass(name, qualifiedKey, def);
     }
 
-    // C3. Rust Impl blocks go to implByName (separate from classByName to avoid
-    // polluting heritage resolution with Impl nodes as parent candidates).
+    // C3. Rust Impl blocks go to implByName (delegated to SemanticModel.types,
+    // separate from classByName to avoid polluting heritage resolution with
+    // Impl nodes as parent candidates).
     if (type === 'Impl') {
-      const existing = implByName.get(name);
-      if (existing) {
-        existing.push(def);
-      } else {
-        implByName.set(name, [def]);
-      }
+      model.types.registerImpl(name, def);
     }
 
     // D. Eagerly maintain callable index (like classByName, implByName).
@@ -345,7 +310,7 @@ export const createSymbolTable = (): SymbolTable => {
     ownerNodeId: string,
     fieldName: string,
   ): SymbolDefinition | undefined => {
-    return fieldByOwner.get(`${ownerNodeId}\0${fieldName}`);
+    return model.fields.lookupFieldByOwner(ownerNodeId, fieldName);
   };
 
   const lookupMethodByOwner = (
@@ -353,52 +318,19 @@ export const createSymbolTable = (): SymbolTable => {
     methodName: string,
     argCount?: number,
   ): SymbolDefinition | undefined => {
-    const defs = methodByOwner.get(`${ownerNodeId}\0${methodName}`);
-    if (!defs || defs.length === 0) return undefined;
-
-    // Arity narrowing: when an argCount is provided and there are multiple
-    // overloads, keep only those whose parameterCount can accommodate the
-    // call. This resolves arity-differing overloads (e.g. C++ `greet()` vs
-    // `greet(string)`) that share the same `ownerId + methodName` key.
-    //
-    // Candidates with `parameterCount === undefined` (extractor didn't
-    // populate the count — typically variadic or unknown) are retained
-    // conservatively so that legitimate variadic matches still resolve.
-    let pool = defs;
-    if (argCount !== undefined && defs.length > 1) {
-      const arityMatched = defs.filter((d) => {
-        if (d.parameterCount === undefined) return true;
-        const min = d.requiredParameterCount ?? d.parameterCount;
-        return argCount >= min && argCount <= d.parameterCount;
-      });
-      // Only adopt the arity-narrowed pool when it found matches; if arity
-      // rules out every candidate, fall back to the unfiltered set so the
-      // caller's fuzzy path still has something to work with.
-      if (arityMatched.length > 0) pool = arityMatched;
-    }
-
-    if (pool.length === 1) return pool[0];
-    // Multiple overloads after arity narrowing: return first if all share
-    // the same defined returnType (safe for chain resolution), undefined if
-    // return types differ (truly ambiguous — can't determine which overload).
-    const firstReturnType = pool[0].returnType;
-    if (firstReturnType === undefined) return undefined;
-    for (let i = 1; i < pool.length; i++) {
-      if (pool[i].returnType !== firstReturnType) return undefined;
-    }
-    return pool[0];
+    return model.methods.lookupMethodByOwner(ownerNodeId, methodName, argCount);
   };
 
   const lookupClassByName = (name: string): SymbolDefinition[] => {
-    return classByName.get(name) ?? [];
+    return model.types.lookupClassByName(name);
   };
 
   const lookupClassByQualifiedName = (qualifiedName: string): SymbolDefinition[] => {
-    return classByQualifiedName.get(qualifiedName) ?? [];
+    return model.types.lookupClassByQualifiedName(qualifiedName);
   };
 
   const lookupImplByName = (name: string): SymbolDefinition[] => {
-    return implByName.get(name) ?? [];
+    return model.types.lookupImplByName(name);
   };
 
   /** Returns a live iterator over all indexed file paths (fileIndex.keys()).
@@ -414,11 +346,7 @@ export const createSymbolTable = (): SymbolTable => {
   const clear = () => {
     fileIndex.clear();
     callableByName.clear();
-    fieldByOwner.clear();
-    methodByOwner.clear();
-    classByName.clear();
-    classByQualifiedName.clear();
-    implByName.clear();
+    model.clear();
   };
 
   return {
