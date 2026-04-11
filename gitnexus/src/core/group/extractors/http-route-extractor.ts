@@ -257,6 +257,13 @@ export class HttpRouteExtractor implements ContractExtractor {
 
   private scanSpringProviders(content: string, filePath: string): ExtractedContract[] {
     const out: ExtractedContract[] = [];
+
+    // Skip Feign/client interfaces — annotated methods in interfaces are
+    // consumers (Feign, JAX-RS proxies), not provider endpoints
+    if (/\binterface\s+\w+/.test(content) && !/@(?:Rest)?Controller\b/.test(content)) {
+      return out;
+    }
+
     let classPrefix = '';
     const classRm = content.match(/@RequestMapping\s*\(\s*"([^"]+)"/);
     if (classRm) classPrefix = classRm[1].replace(/\/+$/, '');

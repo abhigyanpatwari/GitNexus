@@ -2013,6 +2013,22 @@ const processFileGroup = (
         ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
         : null;
 
+      // Suppress Spring framework hint for methods inside interfaces
+      // (Feign clients, JAX-RS proxies are consumers, not providers)
+      if (frameworkHint && definitionNode) {
+        let classCheck = definitionNode.parent;
+        while (classCheck) {
+          if (classCheck.type === 'interface_declaration') {
+            frameworkHint = null;
+            break;
+          }
+          if (classCheck.type === 'class_declaration' || classCheck.type === 'program') {
+            break;
+          }
+          classCheck = classCheck.parent;
+        }
+      }
+
       // Decorators appear on lines immediately before their definition; allow up to
       // MAX_DECORATOR_SCAN_LINES gap for blank lines / multi-line decorator stacks.
       const MAX_DECORATOR_SCAN_LINES = 5;
