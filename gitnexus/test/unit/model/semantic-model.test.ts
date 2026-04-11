@@ -119,6 +119,54 @@ describe('model.clear() cascade', () => {
     expect(model.fields.lookupFieldByOwner('class:User', 'name')).toBeUndefined();
     expect(model.methods.lookupMethodByOwner('class:User', 'greet')).toBeUndefined();
     expect(model.symbols.lookupCallableByName('User')).toHaveLength(0);
-    expect(model.symbols.getFiles()).not.toContain('src/user.ts');
+    expect(Array.from(model.symbols.getFiles())).not.toContain('src/user.ts');
+  });
+});
+
+describe('model.resetFileIndex() — partial reset (A2 / Unit 8)', () => {
+  it('clears the file and callable indexes but preserves owner-scoped registries', () => {
+    const model = createSemanticModel();
+    model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    model.symbols.add('src/user.ts', 'greet', 'method:User.greet', 'Method', {
+      ownerId: 'class:User',
+    });
+    model.symbols.add('src/user.ts', 'name', 'prop:User.name', 'Property', {
+      ownerId: 'class:User',
+    });
+    model.symbols.add('src/utils.ts', 'format', 'fn:format', 'Function');
+
+    model.resetFileIndex();
+
+    // Leaf indexes (file + callable) are empty.
+    expect(Array.from(model.symbols.getFiles())).toEqual([]);
+    expect(model.symbols.lookupCallableByName('format')).toHaveLength(0);
+    expect(model.symbols.lookupExact('src/utils.ts', 'format')).toBeUndefined();
+
+    // Owner-scoped registries survive: types, methods, fields.
+    expect(model.types.lookupClassByName('User')).toHaveLength(1);
+    expect(model.methods.lookupMethodByOwner('class:User', 'greet')).toBeDefined();
+    expect(model.fields.lookupFieldByOwner('class:User', 'name')).toBeDefined();
+  });
+
+  it('allows re-adding after reset without losing pre-existing registry state', () => {
+    const model = createSemanticModel();
+    model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+
+    model.resetFileIndex();
+
+    // Type registry still has User; re-adding the leaf works.
+    expect(model.types.lookupClassByName('User')).toHaveLength(1);
+    model.symbols.add('src/other.ts', 'format', 'fn:format', 'Function');
+    expect(model.symbols.lookupCallableByName('format')).toHaveLength(1);
+  });
+
+  it('is idempotent when called twice in a row', () => {
+    const model = createSemanticModel();
+    model.symbols.add('src/utils.ts', 'format', 'fn:format', 'Function');
+
+    model.resetFileIndex();
+    model.resetFileIndex();
+
+    expect(model.symbols.lookupCallableByName('format')).toHaveLength(0);
   });
 });

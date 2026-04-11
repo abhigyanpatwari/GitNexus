@@ -95,6 +95,20 @@ export interface MutableSemanticModel extends SemanticModel {
   readonly fields: MutableFieldRegistry;
   /** Clear all registries AND the nested SymbolTable. */
   clear(): void;
+  /**
+   * Partial reset: empty the file and callable leaf indexes only,
+   * leaving the owner-scoped registries (types, methods, fields)
+   * populated. Used for rare partial-reingestion flows where the
+   * caller wants to drop per-file state without losing the class/
+   * method/field knowledge that was already accumulated.
+   *
+   * Use {@link clear} for a full cascade reset. If you're not sure
+   * which to call, you almost certainly want {@link clear}.
+   *
+   * Added as the named replacement for the LSP-violating
+   * `symbols.clear()` path that A2 (plan 006 Unit 7) removed.
+   */
+  resetFileIndex(): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,11 +188,20 @@ export const createSemanticModel = (): MutableSemanticModel => {
     getStats: rawSymbols.getStats,
   };
 
+  // Partial-reset entry point (A2 / plan 006 Unit 8). Replaces the
+  // rare legacy use case that was previously reachable via the
+  // now-gone `symbols.clear()` path. Only touches the leaf indexes —
+  // the three owner-scoped registries are preserved intentionally.
+  const resetFileIndex = (): void => {
+    rawSymbols.clear();
+  };
+
   return {
     types,
     methods,
     fields,
     symbols,
     clear: cascadeClear,
+    resetFileIndex,
   };
 };
