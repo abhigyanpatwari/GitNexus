@@ -55,12 +55,7 @@ import { createMethodRegistry } from './method-registry.js';
 import { createFieldRegistry } from './field-registry.js';
 import type { SymbolTable, SymbolDefinition, AddMetadata } from '../symbol-table.js';
 import { createSymbolTable } from '../symbol-table.js';
-import {
-  createRegistrationTable,
-  CALLABLE_ONLY_LABELS,
-  INERT_LABELS,
-  DISPATCH_LABELS,
-} from './registration-table.js';
+import { createRegistrationTable } from './registration-table.js';
 
 // ---------------------------------------------------------------------------
 // Public read-only interface
@@ -95,89 +90,14 @@ export interface MutableSemanticModel extends SemanticModel {
 }
 
 // ---------------------------------------------------------------------------
-// Exhaustiveness guard
-// ---------------------------------------------------------------------------
-
-/**
- * Hardcoded mirror of the NodeLabel union in gitnexus-shared. Kept here
- * because the runtime JS has no introspection of the TypeScript union.
- * The shared tripwire test in `registration-table.test.ts` asserts that
- * this list matches the union exactly.
- */
-export const ALL_NODE_LABELS: readonly NodeLabel[] = [
-  'Project',
-  'Package',
-  'Module',
-  'Folder',
-  'File',
-  'Class',
-  'Function',
-  'Method',
-  'Variable',
-  'Interface',
-  'Enum',
-  'Decorator',
-  'Import',
-  'Type',
-  'CodeElement',
-  'Community',
-  'Process',
-  'Struct',
-  'Macro',
-  'Typedef',
-  'Union',
-  'Namespace',
-  'Trait',
-  'Impl',
-  'TypeAlias',
-  'Const',
-  'Static',
-  'Property',
-  'Record',
-  'Delegate',
-  'Annotation',
-  'Constructor',
-  'Template',
-  'Section',
-  'Route',
-  'Tool',
-];
-
-/**
- * Dev-time check: each NodeLabel must appear in exactly one of the three
- * allowlists (DISPATCH_LABELS / CALLABLE_ONLY_LABELS / INERT_LABELS).
- * Runs once per createSemanticModel() call in non-production; zero
- * hot-path cost.
- *
- * Throws on drift (instead of warning) so that a missing allowlist entry
- * fails CI loudly rather than hiding in console output. The
- * `process.env.NODE_ENV !== 'production'` guard at the call site keeps
- * real users from ever seeing the throw — a label drift in production
- * still silently no-ops the routing, and any resulting graph gaps will
- * surface via the registration-table taxonomy test in CI.
- */
-const runExhaustivenessGuard = (): void => {
-  const drifted: string[] = [];
-  for (const label of ALL_NODE_LABELS) {
-    const inDispatch = DISPATCH_LABELS.has(label);
-    const inCallableOnly = CALLABLE_ONLY_LABELS.has(label);
-    const inInert = INERT_LABELS.has(label);
-    const count = Number(inDispatch) + Number(inCallableOnly) + Number(inInert);
-    if (count !== 1) {
-      drifted.push(`'${label}' (in ${count} allowlists, expected 1)`);
-    }
-  }
-  if (drifted.length > 0) {
-    throw new Error(
-      `[SemanticModel] NodeLabel taxonomy drift detected: ${drifted.join(', ')}. ` +
-        `Check registration-table.ts DISPATCH_LABELS / CALLABLE_ONLY_LABELS / INERT_LABELS.`,
-    );
-  }
-};
-
-// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
+//
+// NodeLabel taxonomy drift detection lives in `registration-table.ts` as a
+// pure compile-time check — the `LABEL_BEHAVIOR` map is
+// `Record<NodeLabel, LabelBehavior>` with `as const satisfies`, which proves
+// coverage, uniqueness, and no-extra-keys at build time. No runtime guard
+// is needed because drift is structurally impossible in the source.
 
 export const createSemanticModel = (): MutableSemanticModel => {
   // 1. Create the pure, registry-unaware SymbolTable leaf.
@@ -191,14 +111,8 @@ export const createSemanticModel = (): MutableSemanticModel => {
   // 3. Build the dispatch table, closed over THIS instance's registries.
   const dispatchTable = createRegistrationTable({ types, methods, fields });
 
-  // 4. Dev-time exhaustiveness guard. Only in non-production builds.
-  if (process.env.NODE_ENV !== 'production') {
-    runExhaustivenessGuard();
-  }
-
-  // 5. Wrap rawSymbols so `add()` fans out into the registries via the
-  //    dispatch table. Everything else (lookupExact, lookupCallableByName,
-  //    getFiles, getStats, clear) passes through unchanged.
+  // 4. Wrap rawSymbols so `add()` fans out into the registries via the
+  //    dispatch table. See module JSDoc for the three-step contract.
   const wrappedAdd = (
     filePath: string,
     name: string,
@@ -206,24 +120,14 @@ export const createSemanticModel = (): MutableSemanticModel => {
     type: NodeLabel,
     metadata?: AddMetadata,
   ): SymbolDefinition => {
-    // Step 1: write to the pure SymbolTable. It builds the def and
-    // indexes it into fileIndex + callableByName. The built def is
-    // returned so we can hand the exact same object to the dispatch
-    // hook — zero duplicate allocations.
     const def = rawSymbols.add(filePath, name, nodeId, type, metadata);
 
-    // Step 2: pre-dispatch normalization. Function-with-ownerId (Python
-    // `def` inside a class body, Rust trait method, Kotlin companion
-    // method) routes as Method. Keeps the dispatch table single-purpose.
+    // Function-with-ownerId (Python `def` in a class body, Rust trait
+    // method, Kotlin companion method) routes as Method. Keeps the
+    // dispatch table single-purpose.
     const dispatchKey: NodeLabel =
       type === 'Function' && metadata?.ownerId !== undefined ? 'Method' : type;
 
-    // Step 3: dispatch — O(1) Map.get + hook invocation. The hook is a
-    // closure captured over exactly the registry it writes (principle of
-    // least authority — see registration-table.ts for details).
-    // The callable-index gate stays inside `rawSymbols.add()` via
-    // `CALLABLE_TYPES.has(type)`; the dispatch table only decides
-    // owner-scoped routing.
     const hook = dispatchTable.get(dispatchKey);
     if (hook) {
       hook(name, def);

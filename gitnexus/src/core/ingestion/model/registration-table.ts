@@ -113,102 +113,143 @@ export interface RegistrationTableDeps {
 }
 
 // ---------------------------------------------------------------------------
-// Known-kind allowlists (used by the exhaustiveness guard)
+// Single source of truth: NodeLabel → behavior category
 // ---------------------------------------------------------------------------
 
 /**
- * NodeLabel values that are free callables — they have NO owner-scoped
- * specialized registry but DO appear in `callableByName`. The dispatch
- * table has no entry for these; `add()`'s callable-index append step
- * handles them via the existing `CALLABLE_TYPES` set.
+ * Behavior category for a NodeLabel during ingestion. Determines which
+ * registry (if any) receives the symbol write during `SymbolTable.add()`:
+ *
+ *   - `dispatch`     — owner-scoped registry write via the dispatch table
+ *                      (Class/Struct/Interface/Enum/Record/Trait → types.registerClass,
+ *                       Method/Constructor → methods.register,
+ *                       Property → fields.register,
+ *                       Impl → types.registerImpl)
+ *   - `callable-only` — no specialized registry; symbol appears in
+ *                      `callableByName` via `SymbolTable.add()`'s
+ *                      CALLABLE_TYPES gate (Function/Macro/Delegate)
+ *   - `inert`        — no registry, no callable index; file-index only
+ *                      (metadata / structural nodes like Project, Module,
+ *                      Import, Decorator, etc.)
  *
  * `Function` has a twist: `Function`-with-`ownerId` (Python `def` in a
- * class body, Rust trait method, Kotlin companion method) is
- * pre-normalized to `Method` before the table lookup, so only free
- * functions actually flow through the callable-only path.
+ * class body, Rust trait method, Kotlin companion method) is pre-normalized
+ * to `Method` in `createSemanticModel`'s `wrappedAdd` before dispatch lookup,
+ * so only free functions actually flow through the callable-only path.
  */
-const CALLABLE_ONLY_LABELS_TUPLE = ['Function', 'Macro', 'Delegate'] as const;
-export const CALLABLE_ONLY_LABELS: ReadonlySet<NodeLabel> = new Set(CALLABLE_ONLY_LABELS_TUPLE);
+export type LabelBehavior = 'dispatch' | 'callable-only' | 'inert';
+
+/**
+ * **Single source of truth** for NodeLabel classification. Every NodeLabel
+ * has exactly one behavior category — enforced at compile time by the
+ * `as const satisfies Record<NodeLabel, LabelBehavior>` combo:
+ *
+ *   - **Completeness** — `Record<NodeLabel, LabelBehavior>` requires every
+ *     NodeLabel to be a key. Missing a label fails to compile with
+ *     "Property 'X' is missing in type ..." naming the drifted label.
+ *   - **No extras** — `satisfies` performs excess-property checking on
+ *     object literals, so a non-NodeLabel string key fails to compile.
+ *   - **No duplicates** — object keys are unique by construction. A label
+ *     cannot be classified into two categories by accident.
+ *   - **Valid values** — `LabelBehavior` is a narrow union, so a typo in
+ *     the category name fails to compile.
+ *
+ * Adding a new NodeLabel to `gitnexus-shared`: TypeScript will flag this
+ * file as incomplete. Add the new label with its behavior category and
+ * the three `*_LABELS` Sets + `ALL_NODE_LABELS` array below are derived
+ * automatically — no separate list to update, no runtime drift detection
+ * needed.
+ *
+ * NOTE: `Type` and `CodeElement` are inert wrappers for language features
+ * that don't yet have a dedicated registry (typedefs, synthesized dynamic
+ * calls). If future work needs owner-scoped lookup for them, change their
+ * category to `'dispatch'` and add a hook in `createRegistrationTable`.
+ * Do not special-case them inside `SymbolTable.add()`.
+ */
+const LABEL_BEHAVIOR = {
+  // dispatch — owner-scoped registry writes
+  Class: 'dispatch',
+  Struct: 'dispatch',
+  Interface: 'dispatch',
+  Enum: 'dispatch',
+  Record: 'dispatch',
+  Trait: 'dispatch',
+  Method: 'dispatch',
+  Constructor: 'dispatch',
+  Property: 'dispatch',
+  Impl: 'dispatch',
+
+  // callable-only — file index + callableByName, no owner scope
+  Function: 'callable-only',
+  Macro: 'callable-only',
+  Delegate: 'callable-only',
+
+  // inert — file index only
+  Project: 'inert',
+  Package: 'inert',
+  Module: 'inert',
+  Folder: 'inert',
+  File: 'inert',
+  Variable: 'inert',
+  Decorator: 'inert',
+  Import: 'inert',
+  Type: 'inert',
+  CodeElement: 'inert',
+  Community: 'inert',
+  Process: 'inert',
+  Typedef: 'inert',
+  Union: 'inert',
+  Namespace: 'inert',
+  TypeAlias: 'inert',
+  Const: 'inert',
+  Static: 'inert',
+  Annotation: 'inert',
+  Template: 'inert',
+  Section: 'inert',
+  Route: 'inert',
+  Tool: 'inert',
+} as const satisfies Record<NodeLabel, LabelBehavior>;
+
+// ---------------------------------------------------------------------------
+// Derived runtime collections — all keyed off LABEL_BEHAVIOR
+// ---------------------------------------------------------------------------
+
+/**
+ * All known NodeLabels, derived from the keys of `LABEL_BEHAVIOR`. The
+ * `satisfies Record<NodeLabel, LabelBehavior>` bijection above proves
+ * that `Object.keys(LABEL_BEHAVIOR)` is exactly the NodeLabel set —
+ * the cast to `NodeLabel[]` is sound, not a type-system bypass.
+ *
+ * Consumers (e.g., the semantic-model barrel re-export for tests) can
+ * rely on this list being complete by construction. No runtime drift
+ * check is needed or possible — the type system is the proof.
+ */
+export const ALL_NODE_LABELS: readonly NodeLabel[] = Object.keys(LABEL_BEHAVIOR) as NodeLabel[];
+
+const labelsWithBehavior = (behavior: LabelBehavior): NodeLabel[] =>
+  ALL_NODE_LABELS.filter((label) => LABEL_BEHAVIOR[label] === behavior);
+
+/**
+ * NodeLabel values that are free callables — appear in `callableByName`
+ * but have no owner-scoped specialized registry. Used by the
+ * callable-index gate in `SymbolTable.add()`.
+ */
+export const CALLABLE_ONLY_LABELS: ReadonlySet<NodeLabel> = new Set(
+  labelsWithBehavior('callable-only'),
+);
 
 /**
  * NodeLabel values that touch only the file index — no specialized
- * registry, no callable index. These are metadata or structural nodes
- * that resolution never looks up by owner, class name, or callable name.
- *
- * NOTE: `Type` and `CodeElement` are wrappers for language features that
- * don't have a dedicated registry yet (typedefs, synthesized dynamic
- * calls). If future work needs owner-scoped lookup for them, promote
- * them into a behavior group — do not special-case them inside `add()`.
+ * registry, no callable index.
  */
-const INERT_LABELS_TUPLE = [
-  'Project',
-  'Package',
-  'Module',
-  'Folder',
-  'File',
-  'Variable',
-  'Decorator',
-  'Import',
-  'Type',
-  'CodeElement',
-  'Community',
-  'Process',
-  'Typedef',
-  'Union',
-  'Namespace',
-  'TypeAlias',
-  'Const',
-  'Static',
-  'Annotation',
-  'Template',
-  'Section',
-  'Route',
-  'Tool',
-] as const;
-export const INERT_LABELS: ReadonlySet<NodeLabel> = new Set(INERT_LABELS_TUPLE);
+export const INERT_LABELS: ReadonlySet<NodeLabel> = new Set(labelsWithBehavior('inert'));
 
 /**
- * NodeLabel values that have a dispatch table entry. Drift between this
- * set and the Map returned by `createRegistrationTable` is caught at
- * test time by the runtime exhaustiveness guard in `semantic-model.ts`;
- * drift between the three tuple allowlists and the `NodeLabel` union
- * itself is caught at COMPILE time by the `_ExhaustiveLabelCheck` type
- * assertion below.
+ * NodeLabel values that have a dispatch table entry. `createRegistrationTable`
+ * below must provide a hook for exactly this set — the test file's behavior-
+ * group tests and the integration tests pin the hook↔label correspondence.
  */
-const DISPATCH_LABELS_TUPLE = [
-  'Class',
-  'Struct',
-  'Interface',
-  'Enum',
-  'Record',
-  'Trait',
-  'Method',
-  'Constructor',
-  'Property',
-  'Impl',
-] as const;
-export const DISPATCH_LABELS: ReadonlySet<NodeLabel> = new Set(DISPATCH_LABELS_TUPLE);
-
-/**
- * Compile-time exhaustiveness check: every `NodeLabel` must appear in
- * exactly one of the three allowlist tuples. If a new label is added
- * to `gitnexus-shared` without being classified here, `_UncoveredLabel`
- * resolves to the drifted label instead of `never`, and TypeScript
- * rejects the `_exhaustiveCheck` assignment below with a type error
- * naming the missing label.
- *
- * Belt-and-suspenders with the runtime guard in `semantic-model.ts`:
- * this check catches drift at build time; the runtime guard catches
- * drift at test time if this type-level check is ever bypassed (e.g.
- * by a `// @ts-ignore` comment).
- */
-type _ClassifiedLabel =
-  | (typeof DISPATCH_LABELS_TUPLE)[number]
-  | (typeof CALLABLE_ONLY_LABELS_TUPLE)[number]
-  | (typeof INERT_LABELS_TUPLE)[number];
-type _UncoveredLabel = Exclude<NodeLabel, _ClassifiedLabel>;
-
-const _exhaustiveCheck: [_UncoveredLabel] extends [never] ? true : _UncoveredLabel = true as never;
+export const DISPATCH_LABELS: ReadonlySet<NodeLabel> = new Set(labelsWithBehavior('dispatch'));
 
 // ---------------------------------------------------------------------------
 // Factory

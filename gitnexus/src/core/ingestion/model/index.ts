@@ -18,7 +18,6 @@ export {
   type SemanticModel,
   type MutableSemanticModel,
   createSemanticModel,
-  ALL_NODE_LABELS,
 } from './semantic-model.js';
 
 // SymbolTable lives at the parent of `model/` but is now exclusively
@@ -58,4 +57,10 @@ export { lookupMethodByOwnerWithMRO } from './resolve.js';
 // are deliberately NOT re-exported here — they are factory internals of
 // SemanticModel and should only be imported directly from registration-table.js
 // by semantic-model.ts and the registration-table.test.ts file.
-export { CALLABLE_ONLY_LABELS, INERT_LABELS, DISPATCH_LABELS } from './registration-table.js';
+export {
+  CALLABLE_ONLY_LABELS,
+  INERT_LABELS,
+  DISPATCH_LABELS,
+  ALL_NODE_LABELS,
+  type LabelBehavior,
+} from './registration-table.js';
