@@ -1,12 +1,9 @@
 /**
- * Deterministic Resolution Functions (SM-20)
+ * Deterministic Resolution Functions
  *
  * Pure functions that resolve methods across the inheritance hierarchy
  * using only the SemanticModel registries and HeritageMap — NO dependency
  * on resolution-context.ts (circular dependency risk).
- *
- * Extracted from call-processor.ts to establish a clean module boundary
- * between the model layer and the resolution layer.
  */
 
 import type { SymbolDefinition } from './symbol-table.js';
@@ -15,11 +12,11 @@ import type { HeritageMap } from './heritage-map.js';
 import type { MroStrategy } from 'gitnexus-shared';
 
 // ---------------------------------------------------------------------------
-// MRO primitives (moved from mro-processor.ts in the model-leaf DAG cleanup).
+// MRO primitives.
 //
 // `c3Linearize` and its BFS helper `gatherAncestors` live here so the model
-// layer stays a pure leaf — mro-processor.ts (graph-level MRO emission) now
-// imports `c3Linearize` back from this file.
+// layer stays a pure leaf — mro-processor.ts (graph-level MRO emission)
+// imports `c3Linearize` from this file.
 // ---------------------------------------------------------------------------
 
 /**
@@ -131,8 +128,8 @@ export function c3Linearize(
   return result;
 }
 
-// `gatherAncestors` is only used internally here for now, but exported so
-// mro-processor.ts can import it back (it previously owned this helper).
+// `gatherAncestors` is only used internally here for now, but exported
+// so mro-processor.ts can reuse the same BFS traversal.
 export { gatherAncestors };
 
 // ---------------------------------------------------------------------------

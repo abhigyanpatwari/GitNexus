@@ -1,5 +1,5 @@
 /**
- * Registration Dispatch Table (SM-22)
+ * Registration Dispatch Table
  *
  * Behavior-grouped O(1) dispatch table for routing `SymbolTable.add()`
  * registrations into the semantic registries. Replaces the cascading
@@ -260,8 +260,8 @@ export const createRegistrationTable = (
   };
 
   // Hook 2: method-like — Method, Constructor. Silently skipped if the
-  // caller did not provide an ownerId (matches the pre-refactor gate in
-  // `add()` — Property without ownerId is treated the same way).
+  // caller did not provide an ownerId (Property without ownerId is
+  // treated the same way).
   const methodHook: RegistrationHook = (name, def) => {
     if (def.ownerId) {
       methods.register(def.ownerId, name, def);

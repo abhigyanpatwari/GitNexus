@@ -7,7 +7,7 @@
  * resolves type names to nodeIds via `lookupClassByName`, NOT graph-edge
  * queries.
  *
- * Combines two previously separate concerns:
+ * Combines two concerns:
  * 1. **Parent/ancestor lookup** (MRO-aware method resolution)
  * 2. **Implementor lookup** (interface dispatch — which files contain
  *    classes implementing a given interface)
@@ -18,9 +18,8 @@ import { getLanguageFromFilename, type SupportedLanguages } from 'gitnexus-share
 
 // ---------------------------------------------------------------------------
 // ExtractedHeritage — the shape produced by the parse worker / heritage
-// extractor. Moved here from `workers/parse-worker.ts` in the model-leaf DAG
-// cleanup so `model/` has no upward imports. `workers/parse-worker.ts` and
-// downstream consumers import this type back from the model module.
+// extractor. Defined here so `model/` has no upward imports; consumers
+// import this type from the model module.
 // ---------------------------------------------------------------------------
 
 export interface ExtractedHeritage {
@@ -105,9 +104,9 @@ export interface HeritageMap {
 const EMPTY_SET: ReadonlySet<string> = new Set();
 
 /** Default strategy used when `buildHeritageMap` is called without an
- *  explicit `getHeritageStrategy` callback — behaves like the pre-SM-20
- *  `resolveExtendsType` fallback for a language whose provider sets no
- *  interface-name pattern and no non-default `heritageDefaultEdge`. */
+ *  explicit `getHeritageStrategy` callback — the fallback for a language
+ *  whose provider sets no interface-name pattern and no non-default
+ *  `heritageDefaultEdge`. */
 const DEFAULT_HERITAGE_STRATEGY: HeritageResolutionStrategy = { defaultEdge: 'EXTENDS' };
 
 // ---------------------------------------------------------------------------
@@ -124,8 +123,7 @@ const DEFAULT_HERITAGE_STRATEGY: HeritageResolutionStrategy = { defaultEdge: 'EX
  * than a wrong edge.
  *
  * Also builds the implementor index (interface name → implementing file
- * paths) that was previously maintained by `buildImplementorMap` in
- * call-processor.ts.
+ * paths) used by interface-dispatch in call resolution.
  */
 export const buildHeritageMap = (
   heritage: readonly ExtractedHeritage[],
@@ -169,9 +167,7 @@ export const buildHeritageMap = (
     //
     // Known limitation: `getImplementorFiles` is keyed by interface **name**
     // (string), so two interfaces with the same unqualified name in different
-    // packages (e.g. `pkgA.IRepository` vs `pkgB.IRepository`) collide. This
-    // matches the behavior of the prior standalone `ImplementorMap` and is
-    // not a regression introduced by this consolidation.
+    // packages (e.g. `pkgA.IRepository` vs `pkgB.IRepository`) collide.
     let isImpl = false;
     if (h.kind === 'implements') {
       isImpl = true;

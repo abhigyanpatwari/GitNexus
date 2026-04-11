@@ -1,5 +1,5 @@
 /**
- * Semantic Model (SM-23 DAG rearchitecture)
+ * Semantic Model
  *
  * Top-level orchestrator for all resolution-time data. Owns:
  *
@@ -66,16 +66,16 @@ import { createRegistrationTable } from './registration-table.js';
  * file/callable SymbolTable.
  *
  * `symbols` is typed as {@link SymbolTableWriter} — consumers can
- * register symbols and query them, but cannot reach `clear()`. The A2
- * LSP fix (plan 006 Unit 7) lives here: external callers physically
- * cannot leave the leaf indexes empty while the owner-scoped registries
- * stay populated, because `clear()` is not on this type's surface.
+ * register symbols and query them, but cannot reach `clear()`. External
+ * callers physically cannot leave the leaf indexes empty while the
+ * owner-scoped registries stay populated, because `clear()` is not on
+ * this type's surface.
  *
  * Full-model resets go through {@link MutableSemanticModel.clear};
  * partial leaf-index resets go through
- * {@link MutableSemanticModel.resetFileIndex} (Unit 8). Consumers that
- * only need queries should type their fields as
- * {@link SymbolTableReader} for principle-of-least-authority clarity.
+ * {@link MutableSemanticModel.resetFileIndex}. Consumers that only need
+ * queries should type their fields as {@link SymbolTableReader} for
+ * principle-of-least-authority clarity.
  */
 export interface SemanticModel {
   readonly types: TypeRegistry;
@@ -104,9 +104,6 @@ export interface MutableSemanticModel extends SemanticModel {
    *
    * Use {@link clear} for a full cascade reset. If you're not sure
    * which to call, you almost certainly want {@link clear}.
-   *
-   * Added as the named replacement for the LSP-violating
-   * `symbols.clear()` path that A2 (plan 006 Unit 7) removed.
    */
   resetFileIndex(): void;
 }
@@ -175,9 +172,9 @@ export const createSemanticModel = (): MutableSemanticModel => {
 
   // Writer-typed facade: exposes reads + add, but NO `clear` field.
   // Callers holding a `SemanticModel.symbols` reference cannot desync
-  // the leaf indexes from the owner-scoped registries (A2 LSP fix,
-  // plan 006 Unit 7). Consumers that only query should widen their
-  // annotation to SymbolTableReader for least-authority clarity.
+  // the leaf indexes from the owner-scoped registries. Consumers that
+  // only query should widen their annotation to SymbolTableReader for
+  // least-authority clarity.
   const symbols: SymbolTableWriter = {
     add: wrappedAdd,
     lookupExact: rawSymbols.lookupExact,
@@ -188,10 +185,8 @@ export const createSemanticModel = (): MutableSemanticModel => {
     getStats: rawSymbols.getStats,
   };
 
-  // Partial-reset entry point (A2 / plan 006 Unit 8). Replaces the
-  // rare legacy use case that was previously reachable via the
-  // now-gone `symbols.clear()` path. Only touches the leaf indexes —
-  // the three owner-scoped registries are preserved intentionally.
+  // Partial-reset entry point. Only touches the leaf indexes — the
+  // three owner-scoped registries are preserved intentionally.
   const resetFileIndex = (): void => {
     rawSymbols.clear();
   };

@@ -1,9 +1,7 @@
 /**
  * Resolution Context
  *
- * Single implementation of tiered name resolution. Replaces the duplicated
- * tier-selection logic previously split between symbol-resolver.ts and
- * call-processor.ts.
+ * Single implementation of tiered name resolution.
  *
  * Resolution tiers (highest confidence first):
  * 1. Same file (lookupExactAll — authoritative)
@@ -25,9 +23,8 @@ import type { SemanticModel } from './semantic-model.js';
 import { createSemanticModel } from './semantic-model.js';
 
 // ---------------------------------------------------------------------------
-// Named-import types (moved from import-processor.ts in the model-leaf DAG
-// cleanup). These describe how a file imports specific names from a source
-// file, and are consumed by the Tier 2a-named binding-chain walker below.
+// Named-import types — describe how a file imports specific names from a
+// source file. Consumed by the Tier 2a-named binding-chain walker below.
 // ---------------------------------------------------------------------------
 
 /**
@@ -143,7 +140,7 @@ export interface ResolutionContext {
 
   // --- Data access (for pipeline wiring, not resolution) ---
   /** Semantic model — the top-level container for types, methods, fields,
-   *  and the nested file/callable SymbolTable (SM-21 inversion). */
+   *  and the nested file/callable SymbolTable. */
   readonly model: SemanticModel;
   /** Raw maps — used by import-processor to populate import data. */
   readonly importMap: ImportMap;
@@ -283,23 +280,21 @@ export const createResolutionContext = (): ResolutionContext => {
     // (Function, Macro, Delegate) by lookupCallableByName; owner-scoped
     // methods and constructors by `model.methods.lookupMethodByName`.
     //
-    // Post-A4 Unit 4: FREE_CALLABLE_TYPES no longer includes Method/Constructor,
-    // so strictly-labeled methods are disjoint between the two indexes.
+    // FREE_CALLABLE_TYPES excludes Method/Constructor, so strictly-labeled
+    // methods are disjoint between the two indexes.
     //
-    // Partial-state caveat (Unit 5 blocked): Python/Rust/Kotlin class
-    // methods are emitted as Function + ownerId — `rawSymbols.add` routes
-    // them through both the Function callable index AND, via the dispatch
-    // key normalization in `wrappedAdd`, the method registry. The same
-    // `SymbolDefinition` reference lands in both `callableDefs` and
-    // `methodDefs`, so the Set-based dedup below is still required. Unit 5
-    // finishes the normalization and this dedup can be removed then.
+    // Partial-state caveat: Python/Rust/Kotlin class methods are emitted
+    // as Function + ownerId — `rawSymbols.add` routes them through both
+    // the Function callable index AND, via the dispatch-key normalization
+    // in `wrappedAdd`, the method registry. The same `SymbolDefinition`
+    // reference lands in both `callableDefs` and `methodDefs`, so the
+    // Set-based dedup below is required.
     //
     // Known exclusion: TypeAlias, Const, and Variable are NOT reachable at
-    // Tier 3 — they don't belong to any of the indexes. In practice they
-    // were never useful as Tier 3 candidates: TypeAlias is not a call
-    // target, Const/Variable are resolved via import or same-file tiers.
-    // Macro (C/C++) and Delegate (C#) stay in the callable index since
-    // call-processor.ts treats them as callable targets.
+    // Tier 3 — they don't belong to any of the indexes. TypeAlias is not
+    // a call target; Const/Variable are resolved via import or same-file
+    // tiers. Macro (C/C++) and Delegate (C#) stay in the callable index
+    // since call-processor.ts treats them as callable targets.
     const classDefs = model.types.lookupClassByName(name);
     const implDefs = model.types.lookupImplByName(name);
     const callableDefs = symbols.lookupCallableByName(name);

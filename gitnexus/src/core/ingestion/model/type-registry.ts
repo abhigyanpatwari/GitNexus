@@ -1,7 +1,7 @@
 /**
  * Type Registry
  *
- * Class/struct/interface index extracted from SymbolTable (SM-20).
+ * Class/struct/interface index extracted from SymbolTable.
  * Eagerly-populated indexes keyed by symbol name and qualified name.
  * Also includes a separate index for Rust Impl blocks.
  */

@@ -1,7 +1,7 @@
 /**
  * Field Registry
  *
- * Owner-scoped field/property index extracted from SymbolTable (SM-20).
+ * Owner-scoped field/property index extracted from SymbolTable.
  * Stores Property symbols keyed by `ownerNodeId\0fieldName` for O(1) lookup.
  */
 

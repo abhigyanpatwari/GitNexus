@@ -1,28 +1,27 @@
 /**
- * Semantic Model — public module surface (SM-20).
+ * Semantic Model — public module surface.
  *
  * Barrel re-export for the `model/` module. Consumers outside `model/`
  * should import from this file rather than reaching into individual
- * registry files, so future refactors have a single import site to
- * redirect.
+ * registry files.
  *
- * The model is owner-scoped type/method/field knowledge extracted from
- * `SymbolTable` in SM-20. File-indexed and name-keyed callable lookups
- * stay in `SymbolTable` by design.
+ * The model is owner-scoped type/method/field knowledge layered above
+ * `SymbolTable`. File-indexed and name-keyed callable lookups stay in
+ * `SymbolTable` by design.
  */
 
-// Unified semantic model (factory + interfaces). Post-SM-21 inversion,
-// SemanticModel is the top-level container and owns the file/callable
-// SymbolTable as a nested `symbols` field.
+// Unified semantic model (factory + interfaces). SemanticModel is the
+// top-level container and owns the file/callable SymbolTable as a
+// nested `symbols` field.
 export {
   type SemanticModel,
   type MutableSemanticModel,
   createSemanticModel,
 } from './semantic-model.js';
 
-// SymbolTable lives at the parent of `model/` but is now exclusively
-// owned by SemanticModel. Re-exported here for the rare caller that
-// needs the file/callable interface in isolation (e.g. tests).
+// SymbolTable is exclusively owned by SemanticModel. Re-exported here
+// for the rare caller that needs the file/callable interface in
+// isolation (e.g. tests).
 export {
   type SymbolTableReader,
   type SymbolTableWriter,
@@ -56,27 +55,24 @@ export {
 // consumers that reach model behavior through the barrel.
 export { lookupMethodByOwnerWithMRO } from './resolve.js';
 
-// Named-import types and package-dir helper (formerly in import-processor.ts).
-// They were pulled into resolution-context.ts as part of the model-leaf DAG
-// cleanup; re-exported here so barrel consumers don't need to reach into a
-// specific model file.
+// Named-import types and package-dir helper. Re-exported so barrel
+// consumers don't need to reach into a specific model file.
 export {
   type NamedImportBinding,
   type NamedImportMap,
   isFileInPackageDir,
 } from './resolution-context.js';
 
-// Heritage types — also pulled into the model module so workers/parse-worker
-// and heritage-processor can import them from a pure leaf. `buildHeritageMap`
-// + `resolveExtendsType` are already exported from `heritage-map.ts` and are
-// not re-surfaced here to keep the barrel narrow.
+// Heritage types. `buildHeritageMap` + `resolveExtendsType` are exported
+// directly from `heritage-map.ts` and are not re-surfaced here to keep
+// the barrel narrow.
 export {
   type ExtractedHeritage,
   type HeritageResolutionStrategy,
   type HeritageStrategyLookup,
 } from './heritage-map.js';
 
-// SM-22: behavior-grouped dispatch table for SymbolTable.add() routing.
+// Behavior-grouped dispatch table for SymbolTable.add() routing.
 // See registration-table.ts module JSDoc for the behavior group taxonomy
 // and "how to add a new NodeLabel" checklist.
 // NOTE: createRegistrationTable, RegistrationHook, and RegistrationTableDeps

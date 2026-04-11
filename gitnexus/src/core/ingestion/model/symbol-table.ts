@@ -1,5 +1,5 @@
 /**
- * Symbol Table — file-indexed + callable-name symbol storage (SM-23 DAG refactor).
+ * Symbol Table — file-indexed + callable-name symbol storage.
  *
  * This module is a PURE LEAF in the ingestion DAG. It owns two orthogonal
  * O(1) indexes:
@@ -71,17 +71,15 @@ export const CLASS_TYPES: ReadonlySet<NodeLabel> = new Set(CLASS_TYPES_TUPLE);
  *  resolution and the D2 widen path in call-processor.ts. Single source of
  *  truth — do not duplicate this set elsewhere.
  *
- *  POST-A4 SCOPE (plan 006, Unit 4): this set is "callables that have NO
- *  owner scope". Methods and constructors are owner-scoped and live in
- *  `MethodRegistry` — Tier 3 reaches them via
- *  `model.methods.lookupMethodByName`. See `resolution-context.ts` Tier 3
- *  for how both indexes are consulted together.
+ *  Scope: "callables that have NO owner scope". Methods and constructors
+ *  are owner-scoped and live in `MethodRegistry` — Tier 3 reaches them
+ *  via `model.methods.lookupMethodByName`. See `resolution-context.ts`
+ *  Tier 3 for how both indexes are consulted together.
  *
  *  Partial-state caveat: Python/Rust/Kotlin class methods are emitted by
  *  the worker as `Function` + `ownerId` (not `Method`), so they still land
- *  here. Fully collapsing those three languages onto the `Method` label is
- *  tracked as Unit 5 and is blocked pending a `def.type` preservation
- *  decision — see plan 006.
+ *  here. Collapsing those three languages onto the `Method` label is
+ *  pending a `def.type` preservation decision.
  */
 export const FREE_CALLABLE_TYPES: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   'Function',
@@ -157,9 +155,8 @@ export interface AddMetadata {
  * internal factory return type and is reachable only inside
  * `SemanticModel` via `rawSymbols`.
  *
- * This is the A2 LSP fix (plan 006 Unit 7): segregating the observer
- * contract from the mutation contract so that callers holding only a
- * Reader can never desync the model.
+ * Segregating the observer contract from the mutation contract means
+ * callers holding only a Reader can never desync the model.
  */
 export interface SymbolTableReader {
   /**
@@ -208,7 +205,7 @@ export interface SymbolTableReader {
  * consumers (workers, processors, pipelines) can register symbols and
  * query them but cannot trigger a leaf-index reset. Full-model resets
  * flow through `model.clear()`; partial leaf-index resets flow through
- * `model.resetFileIndex()` (Unit 8).
+ * `model.resetFileIndex()`.
  *
  * The cascading `clear()` capability lives exclusively on the internal
  * factory return type ({@link createSymbolTable}) — a private handle

@@ -1,7 +1,7 @@
 /**
  * Method Registry
  *
- * Owner-scoped method index extracted from SymbolTable (SM-20).
+ * Owner-scoped method index extracted from SymbolTable.
  * Stores Method/Constructor/Function-with-ownerId symbols keyed by
  * `ownerNodeId\0methodName` for O(1) lookup. Supports overloads
  * (array values) and arity-based filtering.
@@ -38,10 +38,10 @@ export interface MethodRegistry {
    * with the given unqualified name, in registration order, accumulated
    * across owners and overloads.
    *
-   * Required by Tier 3 global resolution: after A4 (plan 006), Method and
-   * Constructor no longer land in `SymbolTable.callableByName`, so Tier 3
-   * reaches them through this flat index instead. Returns `[]` on miss —
-   * never `undefined` — so callers can concatenate without null checks.
+   * Required by Tier 3 global resolution: Method and Constructor do not
+   * land in `SymbolTable.callableByName`, so Tier 3 reaches them through
+   * this flat index instead. Returns `[]` on miss — never `undefined` —
+   * so callers can concatenate without null checks.
    *
    * Reference identity: each returned def is the same object reference
    * stored under `lookupMethodByOwner`, so a method symbol occupies one
