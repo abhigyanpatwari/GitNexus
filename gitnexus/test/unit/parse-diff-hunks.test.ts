@@ -59,21 +59,14 @@ describe('parseDiffHunks', () => {
 
   it('handles single-line hunks without count', () => {
     // When count is omitted from @@ header, it defaults to 1
-    const diff = [
-      '+++ b/src/single.ts',
-      '@@ -5,0 +6 @@ context',
-      '+one line',
-    ].join('\n');
+    const diff = ['+++ b/src/single.ts', '@@ -5,0 +6 @@ context', '+one line'].join('\n');
     const result = parseDiffHunks(diff);
     expect(result).toHaveLength(1);
     expect(result[0].hunks).toEqual([{ startLine: 6, endLine: 6 }]);
   });
 
   it('skips pure-deletion hunks (count=0)', () => {
-    const diff = [
-      '+++ b/src/del.ts',
-      '@@ -10,3 +10,0 @@ context',
-    ].join('\n');
+    const diff = ['+++ b/src/del.ts', '@@ -10,3 +10,0 @@ context'].join('\n');
     const result = parseDiffHunks(diff);
     expect(result).toHaveLength(1);
     expect(result[0].hunks).toHaveLength(0);
