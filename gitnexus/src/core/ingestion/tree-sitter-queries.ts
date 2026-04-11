@@ -623,6 +623,14 @@ export const CSHARP_QUERIES = `
 (class_declaration name: (identifier) @heritage.class
   (base_list (generic_name (identifier) @heritage.extends))) @heritage
 
+; Interface inheritance: interface IFoo : IBar / interface IFoo : IBar, IBaz
+; Without these patterns, interface-to-interface relationships are never
+; captured, so transitive "class X implements IBar" chains are broken.
+(interface_declaration name: (identifier) @heritage.class
+  (base_list (identifier) @heritage.extends)) @heritage
+(interface_declaration name: (identifier) @heritage.class
+  (base_list (generic_name (identifier) @heritage.extends))) @heritage
+
 ; Write access: obj.field = value
 (assignment_expression
   left: (member_access_expression
