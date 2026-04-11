@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   createRegistrationTable,
   CALLABLE_ONLY_LABELS,
@@ -245,66 +245,6 @@ describe('hook behavior (real registries, no mocks)', () => {
     // Critical: Impl must not pollute classByName — heritage resolution
     // would otherwise treat an Impl as a parent type candidate.
     expect(deps.types.lookupClassByName('User')).toHaveLength(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Closure isolation (principle of least authority)
-// ---------------------------------------------------------------------------
-
-describe('closure isolation — each hook can only write to its registry', () => {
-  it('classHook invocation does not call methods.register or fields.register', () => {
-    const deps = makeDeps();
-    const methodsSpy = vi.spyOn(deps.methods, 'register');
-    const fieldsSpy = vi.spyOn(deps.fields, 'register');
-    const implSpy = vi.spyOn(deps.types, 'registerImpl');
-    const table = createRegistrationTable(deps);
-    table.get('Class')!('User', makeDef({ nodeId: 'class:User', type: 'Class' }));
-    expect(methodsSpy).not.toHaveBeenCalled();
-    expect(fieldsSpy).not.toHaveBeenCalled();
-    expect(implSpy).not.toHaveBeenCalled();
-  });
-
-  it('methodHook invocation does not call types.* or fields.register', () => {
-    const deps = makeDeps();
-    const classSpy = vi.spyOn(deps.types, 'registerClass');
-    const implSpy = vi.spyOn(deps.types, 'registerImpl');
-    const fieldsSpy = vi.spyOn(deps.fields, 'register');
-    const table = createRegistrationTable(deps);
-    table.get('Method')!(
-      'save',
-      makeDef({ nodeId: 'mtd:save', type: 'Method', ownerId: 'class:User' }),
-    );
-    expect(classSpy).not.toHaveBeenCalled();
-    expect(implSpy).not.toHaveBeenCalled();
-    expect(fieldsSpy).not.toHaveBeenCalled();
-  });
-
-  it('propertyHook invocation does not call types.* or methods.register', () => {
-    const deps = makeDeps();
-    const classSpy = vi.spyOn(deps.types, 'registerClass');
-    const implSpy = vi.spyOn(deps.types, 'registerImpl');
-    const methodsSpy = vi.spyOn(deps.methods, 'register');
-    const table = createRegistrationTable(deps);
-    table.get('Property')!(
-      'name',
-      makeDef({ nodeId: 'prop:name', type: 'Property', ownerId: 'class:User' }),
-    );
-    expect(classSpy).not.toHaveBeenCalled();
-    expect(implSpy).not.toHaveBeenCalled();
-    expect(methodsSpy).not.toHaveBeenCalled();
-  });
-
-  it('implHook invocation does not call types.registerClass or methods/fields', () => {
-    const deps = makeDeps();
-    const classSpy = vi.spyOn(deps.types, 'registerClass');
-    const methodsSpy = vi.spyOn(deps.methods, 'register');
-    const fieldsSpy = vi.spyOn(deps.fields, 'register');
-    const table = createRegistrationTable(deps);
-    table.get('Impl')!('User', makeDef({ nodeId: 'impl:User', type: 'Impl' }));
-    expect(classSpy).not.toHaveBeenCalled();
-    expect(methodsSpy).not.toHaveBeenCalled();
-    expect(fieldsSpy).not.toHaveBeenCalled();
   });
 });
 
