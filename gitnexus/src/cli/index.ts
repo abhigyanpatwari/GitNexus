@@ -26,6 +26,7 @@ program
   .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
   .option('--skills', 'Generate repo-specific skill files from detected communities')
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
+  .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option('--skip-git', 'Index a folder without requiring a .git directory')
   .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')
   .addHelpText(

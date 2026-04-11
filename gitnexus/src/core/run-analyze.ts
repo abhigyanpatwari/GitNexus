@@ -48,6 +48,8 @@ export interface AnalyzeOptions {
   skipGit?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
+  /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
+  noStats?: boolean;
 }
 
 export interface AnalyzeResult {
@@ -327,7 +329,7 @@ export async function runFullAnalysis(
           processes: pipelineResult.processResult?.stats.totalProcesses,
         },
         undefined,
-        { skipAgentsMd: options.skipAgentsMd },
+        { skipAgentsMd: options.skipAgentsMd, noStats: options.noStats },
       );
     } catch {
       // Best-effort — don't fail the entire analysis for context file issues
