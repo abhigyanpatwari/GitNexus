@@ -2373,8 +2373,8 @@ export const resolveStaticCall = (
 
 // ---------------------------------------------------------------------------
 // MRO-aware method resolution via HeritageMap (SM-9)
-// Moved to model/resolve.ts (SM-20) — re-exported below for backward
-// compatibility with existing importers.
+// Moved to model/resolve.ts (SM-20). Imported for internal use and
+// re-exported for backward compatibility with existing importers.
 // ---------------------------------------------------------------------------
 
 import { lookupMethodByOwnerWithMRO } from './model/resolve.js';
