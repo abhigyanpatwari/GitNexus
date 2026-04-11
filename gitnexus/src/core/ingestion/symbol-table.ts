@@ -36,17 +36,36 @@
 
 import type { NodeLabel } from 'gitnexus-shared';
 
-export const CLASS_TYPES = new Set([
+/**
+ * Class-like NodeLabels — used for qualifiedName fallback inside
+ * `SymbolTable.add()` and (via import into `model/registration-table.ts`)
+ * as the single source of truth for which labels route to classHook
+ * in the dispatch table.
+ *
+ * Exported as a `readonly` tuple so that `typeof CLASS_TYPES_TUPLE[number]`
+ * yields a precise literal union (`ClassLikeLabel`). The model layer
+ * imports this tuple and uses `Record<ClassLikeLabel, 'dispatch'>` in a
+ * `satisfies` intersection to enforce at COMPILE TIME that every label
+ * listed here is also classified as dispatch in `LABEL_BEHAVIOR`. Adding
+ * a new class-like label to this tuple without updating `LABEL_BEHAVIOR`
+ * fails TypeScript.
+ *
+ * Traits are class-like for heritage resolution: PHP `use Trait;`, Rust
+ * `impl Trait for Struct`, and Scala traits all contribute methods to the
+ * hierarchy of their using/implementing type.
+ */
+export const CLASS_TYPES_TUPLE = [
   'Class',
   'Struct',
   'Interface',
   'Enum',
   'Record',
-  // Traits are class-like for heritage resolution: PHP `use Trait;`, Rust
-  // `impl Trait for Struct`, and Scala traits all contribute methods to the
-  // hierarchy of their using/implementing type.
   'Trait',
-]);
+] as const satisfies readonly NodeLabel[];
+
+export type ClassLikeLabel = (typeof CLASS_TYPES_TUPLE)[number];
+
+export const CLASS_TYPES: ReadonlySet<NodeLabel> = new Set(CLASS_TYPES_TUPLE);
 
 /** Callable symbol types indexed in callableByName for Tier 3 resolution
  *  and D2 widen in call-processor.ts. Single source of truth — do not

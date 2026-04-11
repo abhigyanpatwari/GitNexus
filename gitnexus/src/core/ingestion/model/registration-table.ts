@@ -73,7 +73,8 @@
  */
 
 import type { NodeLabel } from 'gitnexus-shared';
-import type { SymbolDefinition } from '../symbol-table.js';
+import type { SymbolDefinition, ClassLikeLabel } from '../symbol-table.js';
+import { CLASS_TYPES_TUPLE } from '../symbol-table.js';
 import type { MutableTypeRegistry } from './type-registry.js';
 import type { MutableMethodRegistry } from './method-registry.js';
 import type { MutableFieldRegistry } from './field-registry.js';
@@ -208,7 +209,15 @@ const LABEL_BEHAVIOR = {
   Section: 'inert',
   Route: 'inert',
   Tool: 'inert',
-} as const satisfies Record<NodeLabel, LabelBehavior>;
+} as const satisfies Record<NodeLabel, LabelBehavior> &
+  // Cross-invariant with SymbolTable's CLASS_TYPES: every class-like label
+  // (the labels that participate in qualifiedName fallback in
+  // `SymbolTable.add()`) MUST be classified as 'dispatch' here. Narrowing
+  // the intersection to `Record<ClassLikeLabel, 'dispatch'>` makes a drift
+  // impossible — adding a label to `CLASS_TYPES_TUPLE` without classifying
+  // it as 'dispatch' fails this `satisfies` check with a type error naming
+  // the drifted label.
+  Record<ClassLikeLabel, 'dispatch'>;
 
 // ---------------------------------------------------------------------------
 // Derived runtime collections — all keyed off LABEL_BEHAVIOR
@@ -299,20 +308,27 @@ export const createRegistrationTable = (
     types.registerImpl(name, def);
   };
 
-  return new Map<NodeLabel, RegistrationHook>([
-    // class-like
-    ['Class', classHook],
-    ['Struct', classHook],
-    ['Interface', classHook],
-    ['Enum', classHook],
-    ['Record', classHook],
-    ['Trait', classHook],
-    // method-like
-    ['Method', methodHook],
-    ['Constructor', methodHook],
-    // property — callable-index exclusion is enforced by SymbolTable.add()
-    ['Property', propertyHook],
-    // impl-block
-    ['Impl', implHook],
-  ]);
+  const table = new Map<NodeLabel, RegistrationHook>();
+
+  // class-like entries — iterate `CLASS_TYPES_TUPLE` (imported from
+  // symbol-table.ts, the single source of truth for class-like labels).
+  // Adding a new class-like label to that tuple automatically wires it
+  // to `classHook` here; the `Record<ClassLikeLabel, 'dispatch'>`
+  // intersection on `LABEL_BEHAVIOR` above forces the new label to also
+  // be classified as dispatch.
+  for (const label of CLASS_TYPES_TUPLE) {
+    table.set(label, classHook);
+  }
+
+  // method-like
+  table.set('Method', methodHook);
+  table.set('Constructor', methodHook);
+
+  // property — callable-index exclusion is enforced by SymbolTable.add()
+  table.set('Property', propertyHook);
+
+  // impl-block
+  table.set('Impl', implHook);
+
+  return table;
 };
