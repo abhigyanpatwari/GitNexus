@@ -1143,7 +1143,6 @@ import {
   createResolutionContext,
   type ResolutionContext,
 } from '../../src/core/ingestion/resolution-context.js';
-import { SupportedLanguages } from 'gitnexus-shared';
 import type { ExtractedHeritage } from '../../src/core/ingestion/workers/parse-worker.js';
 
 describe('lookupMethodByOwnerWithMRO', () => {
@@ -1177,7 +1176,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'parentMethod',
       map,
       ctx.model,
-      SupportedLanguages.Java,
+      'implements-split',
     );
     expect(result).toBeDefined();
     expect(result!.nodeId).toBe('method:Parent:parentMethod');
@@ -1206,7 +1205,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'save',
       map,
       ctx.model,
-      SupportedLanguages.Java,
+      'implements-split',
     );
     expect(result).toBeDefined();
     expect(result!.nodeId).toBe('method:Child:save');
@@ -1232,7 +1231,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'greet',
       map,
       ctx.model,
-      SupportedLanguages.Java,
+      'implements-split',
     );
     expect(result).toBeDefined();
     expect(result!.nodeId).toBe('method:A:greet');
@@ -1262,13 +1261,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
     const map = buildHeritageMap(heritage, ctx);
 
     // TypeScript uses 'first-wins' — B is first parent, so B.foo wins
-    const result = lookupMethodByOwnerWithMRO(
-      'class:D',
-      'foo',
-      map,
-      ctx.model,
-      SupportedLanguages.TypeScript,
-    );
+    const result = lookupMethodByOwnerWithMRO('class:D', 'foo', map, ctx.model, 'first-wins');
     expect(result).toBeDefined();
     expect(result!.nodeId).toBe('method:B:foo');
   });
@@ -1296,13 +1289,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
     const map = buildHeritageMap(heritage, ctx);
 
     // Python uses 'c3' — C3 linearization for D(B,C): [B, C, A]
-    const result = lookupMethodByOwnerWithMRO(
-      'class:D',
-      'foo',
-      map,
-      ctx.model,
-      SupportedLanguages.Python,
-    );
+    const result = lookupMethodByOwnerWithMRO('class:D', 'foo', map, ctx.model, 'c3');
     expect(result).toBeDefined();
     // C3 linearization resolves to B before C in this hierarchy
     expect(result!.nodeId).toBe('method:B:foo');
@@ -1326,7 +1313,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'process',
       map,
       ctx.model,
-      SupportedLanguages.Rust,
+      'qualified-syntax',
     );
     // Rust requires qualified syntax — no auto-resolution
     expect(result).toBeUndefined();
@@ -1346,7 +1333,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'nonExistent',
       map,
       ctx.model,
-      SupportedLanguages.Java,
+      'implements-split',
     );
     expect(result).toBeUndefined();
   });
@@ -1366,13 +1353,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
     ];
     const map = buildHeritageMap(heritage, ctx);
 
-    const result = lookupMethodByOwnerWithMRO(
-      'class:C',
-      'render',
-      map,
-      ctx.model,
-      SupportedLanguages.CPlusPlus,
-    );
+    const result = lookupMethodByOwnerWithMRO('class:C', 'render', map, ctx.model, 'leftmost-base');
     expect(result).toBeDefined();
     expect(result!.nodeId).toBe('method:A:render');
   });
@@ -1402,7 +1383,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'save',
       map,
       ctx.model,
-      SupportedLanguages.Java,
+      'implements-split',
     );
     expect(result).toBeDefined();
     expect(result!.nodeId).toBe('method:Base:save');
@@ -1439,7 +1420,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'handle',
       map,
       ctx.model,
-      SupportedLanguages.Java,
+      'implements-split',
     );
     expect(result).toBeDefined();
     // BFS first-wins — I1 was declared first, so it wins.
@@ -1476,7 +1457,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'handle',
       map,
       ctx.model,
-      SupportedLanguages.Java,
+      'implements-split',
     );
     expect(result).toBeDefined();
     expect(result!.nodeId).toBe('method:Base:handle');
@@ -1500,7 +1481,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'handle',
       map,
       ctx.model,
-      SupportedLanguages.Kotlin,
+      'implements-split',
     );
     expect(result).toBeDefined();
     expect(result!.nodeId).toBe('method:Base:handle');
@@ -1524,7 +1505,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'Execute',
       map,
       ctx.model,
-      SupportedLanguages.CSharp,
+      'implements-split',
     );
     expect(result).toBeDefined();
     expect(result!.nodeId).toBe('method:Base:Execute');
@@ -1545,13 +1526,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
     ];
     const map = buildHeritageMap(heritage, ctx);
 
-    const result = lookupMethodByOwnerWithMRO(
-      'class:Dog',
-      'speak',
-      map,
-      ctx.model,
-      SupportedLanguages.JavaScript,
-    );
+    const result = lookupMethodByOwnerWithMRO('class:Dog', 'speak', map, ctx.model, 'first-wins');
     expect(result).toBeDefined();
     expect(result!.nodeId).toBe('method:Animal:speak');
   });
@@ -1586,13 +1561,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
     ];
     const map = buildHeritageMap(heritage, ctx);
 
-    const result = lookupMethodByOwnerWithMRO(
-      'class:D',
-      'render',
-      map,
-      ctx.model,
-      SupportedLanguages.CPlusPlus,
-    );
+    const result = lookupMethodByOwnerWithMRO('class:D', 'render', map, ctx.model, 'leftmost-base');
     expect(result).toBeDefined();
     // BFS via HeritageMap visits B before C (insertion order), so leftmost
     // branch wins — matches C++ leftmost-base semantics for non-virtual base.
@@ -1613,7 +1582,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'getName',
       map,
       ctx.model,
-      SupportedLanguages.Java,
+      'implements-split',
     );
     expect(result).toBeDefined();
     expect(result!.nodeId).toBe('method:User:getName');

@@ -1987,10 +1987,12 @@ const resolveMethodByOwner = (
   const typeResolved = ctx.resolve(receiverTypeName, filePath);
   if (!typeResolved) return undefined;
 
-  // MRO walking needs a language hint; compute once and reuse for every candidate.
-  // Unknown extension → fall back to plain direct lookup (D1-D4 still runs on miss).
+  // MRO walking needs a language hint so we can derive the per-language
+  // strategy; compute it once and reuse for every candidate. Unknown
+  // extension → fall back to plain direct lookup (D1-D4 still runs on miss).
   const language = heritageMap ? getLanguageFromFilename(filePath) : null;
-  const canWalkMRO = heritageMap != null && language != null;
+  const mroStrategy = language != null ? getProvider(language).mroStrategy : null;
+  const canWalkMRO = heritageMap != null && mroStrategy != null;
 
   // Iterate all class-like candidates tracking the first unambiguous hit.
   // Zero-allocation fast path: the common case is exactly one class candidate,
@@ -2015,7 +2017,7 @@ const resolveMethodByOwner = (
           methodName,
           heritageMap,
           ctx.model,
-          language,
+          mroStrategy,
           argCount,
         )
       : ctx.model.methods.lookupMethodByOwner(candidate.nodeId, methodName, argCount);

@@ -12,9 +12,10 @@
 import type { SymbolDefinition } from '../symbol-table.js';
 import type { SemanticModel } from './semantic-model.js';
 import type { HeritageMap } from '../heritage-map.js';
-import { getProvider } from '../languages/index.js';
 import { c3Linearize } from '../mro-processor.js';
-import type { SupportedLanguages } from 'gitnexus-shared';
+import type { MroStrategy } from 'gitnexus-shared';
+
+export type { MroStrategy };
 
 // ---------------------------------------------------------------------------
 // C3 linearization cache (per HeritageMap, auto-drained via WeakMap)
@@ -109,10 +110,11 @@ const buildParentMapFromHeritage = (
  *
  * Delegates to mro-processor.ts c3Linearize for C3 strategy.
  *
- * Depends only on {@link SemanticModel} + {@link HeritageMap} + the language
- * provider's MRO strategy — NO dependency on SymbolTable or
- * resolution-context, which keeps the `model/` module free of circular
- * imports.
+ * Depends only on {@link SemanticModel} + {@link HeritageMap} + an
+ * {@link MroStrategy} literal — NO dependency on SymbolTable, the language
+ * registry, or resolution-context, which keeps the `model/` module free of
+ * cross-layer imports. Callers derive the strategy from their language
+ * provider before invoking this function.
  *
  * @internal This is the low-level MRO walker. Exported so call-processor's
  * higher-level resolvers (and unit tests) can invoke it directly. Callers
@@ -124,7 +126,7 @@ export const lookupMethodByOwnerWithMRO = (
   methodName: string,
   heritageMap: HeritageMap,
   model: SemanticModel,
-  language: SupportedLanguages,
+  strategy: MroStrategy,
   argCount?: number,
 ): SymbolDefinition | undefined => {
   // Direct lookup first (child override — no walk needed).
@@ -132,8 +134,6 @@ export const lookupMethodByOwnerWithMRO = (
   // owner can be disambiguated before the MRO walk starts.
   const direct = model.methods.lookupMethodByOwner(ownerNodeId, methodName, argCount);
   if (direct) return direct;
-
-  const strategy = getProvider(language).mroStrategy;
 
   // Rust: requires qualified syntax (<Type as Trait>::method), no auto-resolution
   if (strategy === 'qualified-syntax') return undefined;
