@@ -44,6 +44,7 @@ interface SharedDB {
   db: lbug.Database;
   refCount: number;
   ftsLoaded: boolean;
+  vectorLoaded: boolean;
   /** When true, closeOne skips db.close() — the Database is owned externally. */
   external?: boolean;
 }
@@ -276,7 +277,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           true, // readOnly
         );
         restoreStdout();
-        shared = { db, refCount: 0, ftsLoaded: false };
+        shared = { db, refCount: 0, ftsLoaded: false, vectorLoaded: false };
         dbCache.set(dbPath, shared);
         break;
       } catch (err: any) {
@@ -325,6 +326,17 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     }
   }
 
+  // Load VECTOR extension once per shared Database for semantic search support.
+  if (!shared.vectorLoaded) {
+    try {
+      await available[0].query('INSTALL VECTOR');
+      await available[0].query('LOAD EXTENSION VECTOR');
+      shared.vectorLoaded = true;
+    } catch {
+      // VECTOR extension may not be available
+    }
+  }
+
   // Register pool entry only after all connections are pre-warmed and FTS is
   // loaded.  Concurrent executeQuery calls see either "not initialized"
   // (and throw cleanly) or a fully ready pool — never a half-built one.
@@ -368,7 +380,7 @@ export async function initLbugWithDb(
   // closeOne() respects the external flag and skips db.close().
   let shared = dbCache.get(dbPath);
   if (!shared) {
-    shared = { db: existingDb, refCount: 0, ftsLoaded: false, external: true };
+    shared = { db: existingDb, refCount: 0, ftsLoaded: false, vectorLoaded: false, external: true };
     dbCache.set(dbPath, shared);
   }
   shared.refCount++;
@@ -388,6 +400,14 @@ export async function initLbugWithDb(
     await available[0].query('LOAD EXTENSION fts');
   } catch {
     // Extension may already be loaded or not installed
+  }
+
+  // Load VECTOR extension for semantic search support
+  try {
+    await available[0].query('INSTALL VECTOR');
+    await available[0].query('LOAD EXTENSION VECTOR');
+  } catch {
+    // VECTOR extension may not be available
   }
 
   pool.set(repoId, {
