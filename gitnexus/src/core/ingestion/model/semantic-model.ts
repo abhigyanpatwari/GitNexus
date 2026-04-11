@@ -224,9 +224,9 @@ export const createSemanticModel = (): MutableSemanticModel => {
     // The callable-index gate stays inside `rawSymbols.add()` via
     // `CALLABLE_TYPES.has(type)`; the dispatch table only decides
     // owner-scoped routing.
-    const routing = dispatchTable.get(dispatchKey);
-    if (routing) {
-      routing.hook(name, def);
+    const hook = dispatchTable.get(dispatchKey);
+    if (hook) {
+      hook(name, def);
     }
 
     return def;

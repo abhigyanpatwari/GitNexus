@@ -92,18 +92,15 @@ import type { MutableFieldRegistry } from './field-registry.js';
  * a reference to `types`. This is the runtime half of the principle of
  * least authority — the compile-time half is enforced by TypeScript.
  */
-export type RegistrationHook = (name: string, def: SymbolDefinition) => void;
-
 /**
- * Routing decision for one NodeLabel. `hook` performs the specialized
- * registry write into the appropriate owner-scoped registry. The
+ * Registration hook — a pure side-effectful function closed over a
+ * specific registry. Performs the specialized registry write into the
+ * appropriate owner-scoped registry for one NodeLabel. The
  * callable-index gate lives inside `SymbolTable.add()` via the
  * `CALLABLE_TYPES` allowlist — the dispatch table does not participate
  * in that decision.
  */
-export interface RoutingDecision {
-  readonly hook: RegistrationHook;
-}
+export type RegistrationHook = (name: string, def: SymbolDefinition) => void;
 
 /**
  * Dependencies required to build the dispatch table. Matches the shape
@@ -225,7 +222,7 @@ const _exhaustiveCheck: [_UncoveredLabel] extends [never] ? true : _UncoveredLab
  */
 export const createRegistrationTable = (
   deps: RegistrationTableDeps,
-): Map<NodeLabel, RoutingDecision> => {
+): Map<NodeLabel, RegistrationHook> => {
   const { types, methods, fields } = deps;
 
   // Hook 1: class-like — Class, Struct, Interface, Enum, Record, Trait.
@@ -261,20 +258,20 @@ export const createRegistrationTable = (
     types.registerImpl(name, def);
   };
 
-  return new Map<NodeLabel, RoutingDecision>([
+  return new Map<NodeLabel, RegistrationHook>([
     // class-like
-    ['Class', { hook: classHook }],
-    ['Struct', { hook: classHook }],
-    ['Interface', { hook: classHook }],
-    ['Enum', { hook: classHook }],
-    ['Record', { hook: classHook }],
-    ['Trait', { hook: classHook }],
+    ['Class', classHook],
+    ['Struct', classHook],
+    ['Interface', classHook],
+    ['Enum', classHook],
+    ['Record', classHook],
+    ['Trait', classHook],
     // method-like
-    ['Method', { hook: methodHook }],
-    ['Constructor', { hook: methodHook }],
+    ['Method', methodHook],
+    ['Constructor', methodHook],
     // property — callable-index exclusion is enforced by SymbolTable.add()
-    ['Property', { hook: propertyHook }],
+    ['Property', propertyHook],
     // impl-block
-    ['Impl', { hook: implHook }],
+    ['Impl', implHook],
   ]);
 };

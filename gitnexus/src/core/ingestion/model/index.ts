@@ -54,12 +54,8 @@ export { lookupMethodByOwnerWithMRO } from './resolve.js';
 // SM-22: behavior-grouped dispatch table for SymbolTable.add() routing.
 // See registration-table.ts module JSDoc for the behavior group taxonomy
 // and "how to add a new NodeLabel" checklist.
-export {
-  type RegistrationHook,
-  type RoutingDecision,
-  type RegistrationTableDeps,
-  createRegistrationTable,
-  CALLABLE_ONLY_LABELS,
-  INERT_LABELS,
-  DISPATCH_LABELS,
-} from './registration-table.js';
+// NOTE: createRegistrationTable, RegistrationHook, and RegistrationTableDeps
+// are deliberately NOT re-exported here — they are factory internals of
+// SemanticModel and should only be imported directly from registration-table.js
+// by semantic-model.ts and the registration-table.test.ts file.
+export { CALLABLE_ONLY_LABELS, INERT_LABELS, DISPATCH_LABELS } from './registration-table.js';

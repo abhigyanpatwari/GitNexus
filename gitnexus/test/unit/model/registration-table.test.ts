@@ -41,10 +41,10 @@ describe('createRegistrationTable', () => {
     }
   });
 
-  it('every DISPATCH_LABELS entry has a hook', () => {
+  it('every DISPATCH_LABELS entry maps to a hook function', () => {
     const table = createRegistrationTable(makeDeps());
-    for (const [, decision] of table) {
-      expect(typeof decision.hook).toBe('function');
+    for (const [, hook] of table) {
+      expect(typeof hook).toBe('function');
     }
   });
 });
@@ -124,7 +124,7 @@ describe('class-like behavior group — all 6 labels route to types.registerClas
         type: label,
         qualifiedName: `app.User`,
       });
-      table.get(label)!.hook('User', def);
+      table.get(label)!('User', def);
       expect(deps.types.lookupClassByName('User')).toHaveLength(1);
     });
   }
@@ -140,7 +140,7 @@ describe('method-like behavior group — Method and Constructor route to methods
         type: label,
         ownerId: 'class:User',
       });
-      table.get(label)!.hook('save', def);
+      table.get(label)!('save', def);
       expect(deps.methods.lookupMethodByOwner('class:User', 'save')?.nodeId).toBe(
         `${label.toLowerCase()}:save`,
       );
@@ -157,7 +157,7 @@ describe('behavior group isolation', () => {
       type: 'Class',
       ownerId: 'unrelated',
     });
-    table.get('Class')!.hook('User', def);
+    table.get('Class')!('User', def);
     // No method or field registered — class hook is isolated to types.
     expect(deps.methods.lookupMethodByOwner('unrelated', 'User')).toBeUndefined();
     expect(deps.fields.lookupFieldByOwner('unrelated', 'User')).toBeUndefined();
@@ -167,7 +167,7 @@ describe('behavior group isolation', () => {
     const deps = makeDeps();
     const table = createRegistrationTable(deps);
     const def = makeDef({ nodeId: 'impl:User', type: 'Impl' });
-    table.get('Impl')!.hook('User', def);
+    table.get('Impl')!('User', def);
     expect(deps.types.lookupImplByName('User')).toHaveLength(1);
     expect(deps.types.lookupClassByName('User')).toHaveLength(0);
   });
@@ -182,7 +182,7 @@ describe('hook behavior (real registries, no mocks)', () => {
     const deps = makeDeps();
     const table = createRegistrationTable(deps);
     const def = makeDef({ nodeId: 'class:User', type: 'Class', qualifiedName: 'app.User' });
-    table.get('Class')!.hook('User', def);
+    table.get('Class')!('User', def);
     expect(deps.types.lookupClassByName('User')).toHaveLength(1);
     expect(deps.types.lookupClassByQualifiedName('app.User')).toHaveLength(1);
   });
@@ -191,7 +191,7 @@ describe('hook behavior (real registries, no mocks)', () => {
     const deps = makeDeps();
     const table = createRegistrationTable(deps);
     const def = makeDef({ nodeId: 'class:User', type: 'Class' });
-    table.get('Class')!.hook('User', def);
+    table.get('Class')!('User', def);
     expect(deps.types.lookupClassByQualifiedName('User')).toHaveLength(1);
   });
 
@@ -203,7 +203,7 @@ describe('hook behavior (real registries, no mocks)', () => {
       type: 'Method',
       ownerId: 'class:User',
     });
-    table.get('Method')!.hook('save', def);
+    table.get('Method')!('save', def);
     expect(deps.methods.lookupMethodByOwner('class:User', 'save')?.nodeId).toBe('mtd:save');
   });
 
@@ -211,7 +211,7 @@ describe('hook behavior (real registries, no mocks)', () => {
     const deps = makeDeps();
     const table = createRegistrationTable(deps);
     const def = makeDef({ nodeId: 'mtd:free', type: 'Method' });
-    table.get('Method')!.hook('free', def);
+    table.get('Method')!('free', def);
     expect(deps.methods.lookupMethodByOwner('', 'free')).toBeUndefined();
   });
 
@@ -224,7 +224,7 @@ describe('hook behavior (real registries, no mocks)', () => {
       ownerId: 'class:User',
       declaredType: 'string',
     });
-    table.get('Property')!.hook('name', def);
+    table.get('Property')!('name', def);
     expect(deps.fields.lookupFieldByOwner('class:User', 'name')?.nodeId).toBe('prop:name');
   });
 
@@ -232,7 +232,7 @@ describe('hook behavior (real registries, no mocks)', () => {
     const deps = makeDeps();
     const table = createRegistrationTable(deps);
     const def = makeDef({ nodeId: 'prop:orphan', type: 'Property' });
-    table.get('Property')!.hook('orphan', def);
+    table.get('Property')!('orphan', def);
     expect(deps.fields.lookupFieldByOwner('', 'orphan')).toBeUndefined();
   });
 
@@ -240,7 +240,7 @@ describe('hook behavior (real registries, no mocks)', () => {
     const deps = makeDeps();
     const table = createRegistrationTable(deps);
     const def = makeDef({ nodeId: 'impl:User', type: 'Impl' });
-    table.get('Impl')!.hook('User', def);
+    table.get('Impl')!('User', def);
     expect(deps.types.lookupImplByName('User')).toHaveLength(1);
     // Critical: Impl must not pollute classByName — heritage resolution
     // would otherwise treat an Impl as a parent type candidate.
@@ -259,7 +259,7 @@ describe('closure isolation — each hook can only write to its registry', () =>
     const fieldsSpy = vi.spyOn(deps.fields, 'register');
     const implSpy = vi.spyOn(deps.types, 'registerImpl');
     const table = createRegistrationTable(deps);
-    table.get('Class')!.hook('User', makeDef({ nodeId: 'class:User', type: 'Class' }));
+    table.get('Class')!('User', makeDef({ nodeId: 'class:User', type: 'Class' }));
     expect(methodsSpy).not.toHaveBeenCalled();
     expect(fieldsSpy).not.toHaveBeenCalled();
     expect(implSpy).not.toHaveBeenCalled();
@@ -271,9 +271,10 @@ describe('closure isolation — each hook can only write to its registry', () =>
     const implSpy = vi.spyOn(deps.types, 'registerImpl');
     const fieldsSpy = vi.spyOn(deps.fields, 'register');
     const table = createRegistrationTable(deps);
-    table
-      .get('Method')!
-      .hook('save', makeDef({ nodeId: 'mtd:save', type: 'Method', ownerId: 'class:User' }));
+    table.get('Method')!(
+      'save',
+      makeDef({ nodeId: 'mtd:save', type: 'Method', ownerId: 'class:User' }),
+    );
     expect(classSpy).not.toHaveBeenCalled();
     expect(implSpy).not.toHaveBeenCalled();
     expect(fieldsSpy).not.toHaveBeenCalled();
@@ -285,9 +286,10 @@ describe('closure isolation — each hook can only write to its registry', () =>
     const implSpy = vi.spyOn(deps.types, 'registerImpl');
     const methodsSpy = vi.spyOn(deps.methods, 'register');
     const table = createRegistrationTable(deps);
-    table
-      .get('Property')!
-      .hook('name', makeDef({ nodeId: 'prop:name', type: 'Property', ownerId: 'class:User' }));
+    table.get('Property')!(
+      'name',
+      makeDef({ nodeId: 'prop:name', type: 'Property', ownerId: 'class:User' }),
+    );
     expect(classSpy).not.toHaveBeenCalled();
     expect(implSpy).not.toHaveBeenCalled();
     expect(methodsSpy).not.toHaveBeenCalled();
@@ -299,7 +301,7 @@ describe('closure isolation — each hook can only write to its registry', () =>
     const methodsSpy = vi.spyOn(deps.methods, 'register');
     const fieldsSpy = vi.spyOn(deps.fields, 'register');
     const table = createRegistrationTable(deps);
-    table.get('Impl')!.hook('User', makeDef({ nodeId: 'impl:User', type: 'Impl' }));
+    table.get('Impl')!('User', makeDef({ nodeId: 'impl:User', type: 'Impl' }));
     expect(classSpy).not.toHaveBeenCalled();
     expect(methodsSpy).not.toHaveBeenCalled();
     expect(fieldsSpy).not.toHaveBeenCalled();
@@ -317,8 +319,8 @@ describe('factory-per-instance isolation', () => {
     const tableA = createRegistrationTable(depsA);
     const tableB = createRegistrationTable(depsB);
 
-    tableA.get('Class')!.hook('UserA', makeDef({ nodeId: 'class:UserA', type: 'Class' }));
-    tableB.get('Class')!.hook('UserB', makeDef({ nodeId: 'class:UserB', type: 'Class' }));
+    tableA.get('Class')!('UserA', makeDef({ nodeId: 'class:UserA', type: 'Class' }));
+    tableB.get('Class')!('UserB', makeDef({ nodeId: 'class:UserB', type: 'Class' }));
 
     expect(depsA.types.lookupClassByName('UserA')).toHaveLength(1);
     expect(depsA.types.lookupClassByName('UserB')).toHaveLength(0);
