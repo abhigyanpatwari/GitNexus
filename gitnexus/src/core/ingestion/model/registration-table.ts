@@ -130,11 +130,8 @@ export interface RegistrationTableDeps {
  * pre-normalized to `Method` before the table lookup, so only free
  * functions actually flow through the callable-only path.
  */
-export const CALLABLE_ONLY_LABELS: ReadonlySet<NodeLabel> = new Set([
-  'Function',
-  'Macro',
-  'Delegate',
-]);
+const CALLABLE_ONLY_LABELS_TUPLE = ['Function', 'Macro', 'Delegate'] as const;
+export const CALLABLE_ONLY_LABELS: ReadonlySet<NodeLabel> = new Set(CALLABLE_ONLY_LABELS_TUPLE);
 
 /**
  * NodeLabel values that touch only the file index — no specialized
@@ -146,7 +143,7 @@ export const CALLABLE_ONLY_LABELS: ReadonlySet<NodeLabel> = new Set([
  * calls). If future work needs owner-scoped lookup for them, promote
  * them into a behavior group — do not special-case them inside `add()`.
  */
-export const INERT_LABELS: ReadonlySet<NodeLabel> = new Set([
+const INERT_LABELS_TUPLE = [
   'Project',
   'Package',
   'Module',
@@ -170,16 +167,18 @@ export const INERT_LABELS: ReadonlySet<NodeLabel> = new Set([
   'Section',
   'Route',
   'Tool',
-]);
+] as const;
+export const INERT_LABELS: ReadonlySet<NodeLabel> = new Set(INERT_LABELS_TUPLE);
 
 /**
- * NodeLabel values that have a dispatch table entry. Exported for the
- * exhaustiveness guard in `symbol-table.ts`, which verifies that every
- * `NodeLabel` appears in exactly one of DISPATCH_LABELS /
- * CALLABLE_ONLY_LABELS / INERT_LABELS. Drift here is a warning, not a
- * crash — production ingestion continues but the gap is surfaced.
+ * NodeLabel values that have a dispatch table entry. Drift between this
+ * set and the Map returned by `createRegistrationTable` is caught at
+ * test time by the runtime exhaustiveness guard in `semantic-model.ts`;
+ * drift between the three tuple allowlists and the `NodeLabel` union
+ * itself is caught at COMPILE time by the `_ExhaustiveLabelCheck` type
+ * assertion below.
  */
-export const DISPATCH_LABELS: ReadonlySet<NodeLabel> = new Set([
+const DISPATCH_LABELS_TUPLE = [
   'Class',
   'Struct',
   'Interface',
@@ -190,7 +189,29 @@ export const DISPATCH_LABELS: ReadonlySet<NodeLabel> = new Set([
   'Constructor',
   'Property',
   'Impl',
-]);
+] as const;
+export const DISPATCH_LABELS: ReadonlySet<NodeLabel> = new Set(DISPATCH_LABELS_TUPLE);
+
+/**
+ * Compile-time exhaustiveness check: every `NodeLabel` must appear in
+ * exactly one of the three allowlist tuples. If a new label is added
+ * to `gitnexus-shared` without being classified here, `_UncoveredLabel`
+ * resolves to the drifted label instead of `never`, and TypeScript
+ * rejects the `_exhaustiveCheck` assignment below with a type error
+ * naming the missing label.
+ *
+ * Belt-and-suspenders with the runtime guard in `semantic-model.ts`:
+ * this check catches drift at build time; the runtime guard catches
+ * drift at test time if this type-level check is ever bypassed (e.g.
+ * by a `// @ts-ignore` comment).
+ */
+type _ClassifiedLabel =
+  | (typeof DISPATCH_LABELS_TUPLE)[number]
+  | (typeof CALLABLE_ONLY_LABELS_TUPLE)[number]
+  | (typeof INERT_LABELS_TUPLE)[number];
+type _UncoveredLabel = Exclude<NodeLabel, _ClassifiedLabel>;
+
+const _exhaustiveCheck: [_UncoveredLabel] extends [never] ? true : _UncoveredLabel = true as never;
 
 // ---------------------------------------------------------------------------
 // Factory
