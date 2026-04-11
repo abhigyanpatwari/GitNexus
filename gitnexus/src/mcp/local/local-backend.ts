@@ -2044,8 +2044,7 @@ export class LocalBackend {
     },
   ): Promise<any> {
     const { maxDepth, relationTypes, includeTests, minConfidence } = opts;
-    const relTypeFilter = relationTypes.map((t) => `'${t}'`).join(', ');
-    const confidenceFilter = minConfidence > 0 ? ` AND r.confidence >= ${minConfidence}` : '';
+    const safeMinConfidence = typeof minConfidence === 'number' && isFinite(minConfidence) ? minConfidence : 0;
 
     const symId = sym.id || sym[0];
 
@@ -2110,14 +2109,17 @@ export class LocalBackend {
       const nextFrontier: string[] = [];
 
       // Batch frontier nodes into a single Cypher query per depth level
-      const idList = frontier.map((id) => `'${id.replace(/'/g, "''")}'`).join(', ');
       const query =
         direction === 'upstream'
-          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
-          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
+          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $ids AND r.type IN $relTypes${safeMinConfidence > 0 ? ' AND r.confidence >= $minConf' : ''} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
+          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $ids AND r.type IN $relTypes${safeMinConfidence > 0 ? ' AND r.confidence >= $minConf' : ''} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
 
       try {
-        const related = await executeQuery(repo.id, query);
+        const related = await executeParameterized(repo.id, query, {
+          ids: frontier,
+          relTypes: relationTypes,
+          minConf: safeMinConfidence,
+        });
 
         for (const rel of related) {
           const relId = rel.id || rel[1];
