@@ -104,7 +104,7 @@ export interface MutableSemanticModel extends SemanticModel {
  * The shared tripwire test in `registration-table.test.ts` asserts that
  * this list matches the union exactly.
  */
-const ALL_NODE_LABELS: readonly NodeLabel[] = [
+export const ALL_NODE_LABELS: readonly NodeLabel[] = [
   'Project',
   'Package',
   'Module',

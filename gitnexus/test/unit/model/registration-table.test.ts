@@ -1,5 +1,4 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { NodeLabel } from 'gitnexus-shared';
 import {
   createRegistrationTable,
   CALLABLE_ONLY_LABELS,
@@ -9,6 +8,7 @@ import {
 import { createTypeRegistry } from '../../../src/core/ingestion/model/type-registry.js';
 import { createMethodRegistry } from '../../../src/core/ingestion/model/method-registry.js';
 import { createFieldRegistry } from '../../../src/core/ingestion/model/field-registry.js';
+import { ALL_NODE_LABELS } from '../../../src/core/ingestion/model/index.js';
 import type { SymbolDefinition } from '../../../src/core/ingestion/symbol-table.js';
 
 // ---------------------------------------------------------------------------
@@ -54,48 +54,11 @@ describe('createRegistrationTable', () => {
 // ---------------------------------------------------------------------------
 
 describe('NodeLabel taxonomy coverage', () => {
-  // Hardcoded mirror of the NodeLabel union in gitnexus-shared/src/graph/types.ts.
-  // Keeping it here as a static list is deliberate: if the shared union
-  // changes, this test fails loudly, and the fix is to update BOTH the
-  // shared type AND the registration-table allowlists in the same commit.
-  const ALL_NODE_LABELS: readonly NodeLabel[] = [
-    'Project',
-    'Package',
-    'Module',
-    'Folder',
-    'File',
-    'Class',
-    'Function',
-    'Method',
-    'Variable',
-    'Interface',
-    'Enum',
-    'Decorator',
-    'Import',
-    'Type',
-    'CodeElement',
-    'Community',
-    'Process',
-    'Struct',
-    'Macro',
-    'Typedef',
-    'Union',
-    'Namespace',
-    'Trait',
-    'Impl',
-    'TypeAlias',
-    'Const',
-    'Static',
-    'Property',
-    'Record',
-    'Delegate',
-    'Annotation',
-    'Constructor',
-    'Template',
-    'Section',
-    'Route',
-    'Tool',
-  ];
+  // ALL_NODE_LABELS is imported from model/index.ts (re-exported from
+  // semantic-model.ts) so that the production list and the test list
+  // cannot drift. If the shared NodeLabel union gains a new member, add
+  // it to the single list in semantic-model.ts AND to one of the
+  // registration-table allowlists in the same commit.
 
   it('every NodeLabel appears in exactly one of DISPATCH / CALLABLE_ONLY / INERT', () => {
     for (const label of ALL_NODE_LABELS) {

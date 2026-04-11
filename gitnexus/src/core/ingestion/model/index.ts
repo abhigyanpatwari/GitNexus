@@ -18,6 +18,7 @@ export {
   type SemanticModel,
   type MutableSemanticModel,
   createSemanticModel,
+  ALL_NODE_LABELS,
 } from './semantic-model.js';
 
 // SymbolTable lives at the parent of `model/` but is now exclusively
