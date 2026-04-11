@@ -49,6 +49,7 @@ import { extractReturnTypeName, stripNullable } from './type-extractors/shared.j
 import type { LiteralTypeInferrer } from './type-extractors/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import { extractParsedCallSite } from './call-sites/extract-language-call-site.js';
+import { lookupMethodByOwnerWithMRO } from './model/resolve.js';
 
 /** Per-file resolved type bindings for exported symbols.
  *  Populated during call processing, consumed by Phase 14 re-resolution pass. */
@@ -2370,15 +2371,6 @@ export const resolveStaticCall = (
 
   return null;
 };
-
-// ---------------------------------------------------------------------------
-// MRO-aware method resolution via HeritageMap (SM-9)
-// Moved to model/resolve.ts (SM-20). Imported for internal use and
-// re-exported for backward compatibility with existing importers.
-// ---------------------------------------------------------------------------
-
-import { lookupMethodByOwnerWithMRO } from './model/resolve.js';
-export { lookupMethodByOwnerWithMRO } from './model/resolve.js';
 
 /**
  * Create a deduplicated ACCESSES edge emitter for a single source node.

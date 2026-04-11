@@ -1125,7 +1125,7 @@ describe('SymbolTable', () => {
 // ---------------------------------------------------------------------------
 
 import { buildHeritageMap } from '../../src/core/ingestion/heritage-map.js';
-import { lookupMethodByOwnerWithMRO } from '../../src/core/ingestion/call-processor.js';
+import { lookupMethodByOwnerWithMRO } from '../../src/core/ingestion/model/index.js';
 import {
   createResolutionContext,
   type ResolutionContext,
