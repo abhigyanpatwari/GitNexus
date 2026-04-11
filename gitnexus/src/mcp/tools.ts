@@ -18,6 +18,11 @@ export interface ToolDefinition {
         default?: any;
         items?: { type: string };
         enum?: string[];
+        // Numeric bounds (JSON Schema draft 7). Clients that honor these
+        // reject out-of-range values before the request hits the server.
+        // The server still validates server-side — these are belt-and-suspenders.
+        minimum?: number;
+        maximum?: number;
       }
     >;
     required: string[];
@@ -443,21 +448,40 @@ WHEN TO USE: When a symbol may affect other repos in the same group. Multi-hop c
           description: 'upstream or downstream',
           enum: ['upstream', 'downstream'],
         },
+        // Numeric bounds mirror the server-side validation in
+        // GroupService.groupImpact(). Keep them in sync: clients that
+        // honor the JSON Schema get a client-side rejection before the
+        // request round-trips, and clients that don't still hit the
+        // server-side guard.
         crossDepth: {
-          type: 'number',
+          type: 'integer',
+          minimum: 0,
+          maximum: 10,
           description:
             'Cross-boundary hops (MVP: capped at 1; values above 1 are ignored with a warning)',
         },
-        maxDepth: { type: 'number', description: 'Max graph depth within each repo (default 3)' },
+        maxDepth: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 10,
+          description: 'Max graph depth within each repo (default 3)',
+        },
         minConfidence: {
           type: 'number',
+          minimum: 0,
+          maximum: 1,
           description: 'Minimum cross-link confidence (default 0.5)',
         },
         subgroup: {
           type: 'string',
           description: 'Only fan out into repos under this group path prefix',
         },
-        timeout: { type: 'number', description: 'Wall-clock budget in ms (default 30000)' },
+        timeout: {
+          type: 'integer',
+          minimum: 100,
+          maximum: 300000,
+          description: 'Wall-clock budget in ms (default 30000)',
+        },
       },
       required: ['name', 'target', 'repo'],
     },

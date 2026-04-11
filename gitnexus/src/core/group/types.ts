@@ -96,6 +96,8 @@ export interface RepoHandle {
   storagePath: string;
 }
 
+export type TruncationReason = 'phase1_timeout' | 'wall_deadline';
+
 export interface GroupImpactResult {
   local: unknown;
   group: string;
@@ -103,6 +105,23 @@ export interface GroupImpactResult {
   outOfScope: OutOfScopeLink[];
   truncated: boolean;
   truncatedRepos: string[];
+  /**
+   * Why the result is partial. Absent when `truncated` is false.
+   * - `phase1_timeout` — local impact walk hit the Phase-1 timeout; Phase-2
+   *   continued with empty local seed, so cross-repo fanout is almost certainly
+   *   empty. Local stub fields (`impactedCount: 0`, `risk: 'LOW'`, `byDepth: {}`)
+   *   are placeholders, NOT real zero-impact results.
+   * - `wall_deadline` — Phase-2 ran out of wall-clock time while iterating
+   *   cross-link candidates; some results may be present but more could exist.
+   */
+  truncationReason?: TruncationReason;
+  /**
+   * Populated when the caller requested a crossDepth greater than the
+   * MVP-supported max (currently 1). The traversal still runs at the
+   * supported depth, but the warning is echoed back so the caller (CLI,
+   * MCP, test) can surface it to the user.
+   */
+  crossDepthWarning?: string;
   summary: {
     direct: number;
     processes_affected: number;

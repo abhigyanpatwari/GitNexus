@@ -546,6 +546,96 @@ describe('GroupService', () => {
       const result = (await svc.groupImpact({})) as { error: string };
       expect(result.error).toContain('name, target, and repo are required');
     });
+
+    it('test_groupImpact_rejects_unknown_direction', async () => {
+      const svc = new GroupService(makePort());
+      const result = (await svc.groupImpact({
+        name: 'x',
+        target: 'x',
+        repo: 'x',
+        direction: 'upstreem', // typo
+      })) as { error: string };
+      expect(result.error).toMatch(/direction must be/);
+    });
+
+    it('test_groupImpact_rejects_out_of_range_maxDepth', async () => {
+      const svc = new GroupService(makePort());
+      for (const bad of [-1, 0, 11, 1000, 1.5, Number.NaN]) {
+        const result = (await svc.groupImpact({
+          name: 'x',
+          target: 'x',
+          repo: 'x',
+          maxDepth: bad,
+        })) as { error?: string };
+        expect(result.error).toMatch(/maxDepth must be/);
+      }
+    });
+
+    it('test_groupImpact_rejects_out_of_range_minConfidence', async () => {
+      const svc = new GroupService(makePort());
+      for (const bad of [-0.1, 1.1, -5, 10]) {
+        const result = (await svc.groupImpact({
+          name: 'x',
+          target: 'x',
+          repo: 'x',
+          minConfidence: bad,
+        })) as { error?: string };
+        expect(result.error).toMatch(/minConfidence must be/);
+      }
+    });
+
+    it('test_groupImpact_rejects_out_of_range_timeout', async () => {
+      const svc = new GroupService(makePort());
+      for (const bad of [0, 99, 300001, 1e9]) {
+        const result = (await svc.groupImpact({
+          name: 'x',
+          target: 'x',
+          repo: 'x',
+          timeout: bad,
+        })) as { error?: string };
+        expect(result.error).toMatch(/timeout must be/);
+      }
+    });
+
+    it('test_groupImpact_rejects_out_of_range_crossDepth', async () => {
+      const svc = new GroupService(makePort());
+      for (const bad of [-1, 11, 1.5, Number.NaN]) {
+        const result = (await svc.groupImpact({
+          name: 'x',
+          target: 'x',
+          repo: 'x',
+          crossDepth: bad,
+        })) as { error?: string };
+        expect(result.error).toMatch(/crossDepth must be/);
+      }
+    });
+
+    it('test_groupImpact_wraps_localImpactFn_exception_from_missing_repo', async () => {
+      // If the configured repoGroupPath is not in the group's config, the
+      // resolveGroupRepo helper throws. That exception must NOT bubble past
+      // runPhase1WithTimeout — it should be caught inside safeLocalImpact
+      // and surfaced as a local.error field on the result.
+      const { groupDir, cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        await writeContractRegistryJson(
+          groupDir,
+          makeRegistry([makeContract('http::GET::/api/x', 'provider', 'app/backend')]),
+        );
+        const svc = new GroupService(makePort());
+        const result = (await svc.groupImpact({
+          name: 'test-group',
+          target: 'whatever',
+          repo: 'not/in/config',
+        })) as { local?: { error?: string } };
+        // Should not throw; instead local.error is populated.
+        expect(result).toBeDefined();
+        expect(result.local?.error).toMatch(/local impact failed/);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
   });
 
   describe('groupStatus', () => {

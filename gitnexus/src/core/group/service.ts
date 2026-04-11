@@ -163,7 +163,24 @@ export class GroupService {
         meta: string;
       }>(handle, cypher, queryParams as Record<string, import('@ladybugdb/core').LbugValue>);
 
-      // Reconstruct StoredContract shape for CLI compatibility
+      // Reconstruct StoredContract shape for CLI compatibility.
+      // meta is stored in the bridge as a JSON-stringified blob (see
+      // writeBridge()). A single corrupted or non-JSON meta row must not
+      // take down the whole groupContracts() call — degrade to an empty
+      // object for that row and keep going. The error is swallowed
+      // intentionally here because there is no per-row logger yet; the
+      // metaParseFailures counter is returned so callers can surface it.
+      let metaParseFailures = 0;
+      const safeParseMeta = (raw: unknown): Record<string, unknown> => {
+        if (raw == null) return {};
+        if (typeof raw !== 'string') return raw as Record<string, unknown>;
+        try {
+          return JSON.parse(raw) as Record<string, unknown>;
+        } catch {
+          metaParseFailures++;
+          return {};
+        }
+      };
       let contracts = rawContracts.map((r) => ({
         contractId: r.contractId,
         type: r.type,
@@ -174,7 +191,7 @@ export class GroupService {
         symbolRef: { filePath: r.filePath, name: r.symbolName },
         symbolName: r.symbolName,
         confidence: r.confidence,
-        meta: typeof r.meta === 'string' ? JSON.parse(r.meta) : r.meta,
+        meta: safeParseMeta(r.meta),
       }));
 
       // Query cross-links
@@ -210,7 +227,11 @@ export class GroupService {
         contracts = contracts.filter((c) => !matchedIds.has(`${c.repo}::${c.contractId}`));
       }
 
-      return { contracts, crossLinks };
+      return {
+        contracts,
+        crossLinks,
+        ...(metaParseFailures > 0 ? { metaParseFailures } : {}),
+      };
     } finally {
       await closeBridgeDb(handle);
     }
@@ -224,17 +245,84 @@ export class GroupService {
       return { error: 'name, target, and repo are required' };
     }
 
-    const direction = (params.direction as string) === 'downstream' ? 'downstream' : 'upstream';
-    const maxDepth =
-      typeof params.maxDepth === 'number' && Number.isFinite(params.maxDepth) ? params.maxDepth : 3;
-    const minConfidence =
-      typeof params.minConfidence === 'number' && Number.isFinite(params.minConfidence)
-        ? params.minConfidence
-        : 0.5;
-    const timeout =
-      typeof params.timeout === 'number' && Number.isFinite(params.timeout)
-        ? params.timeout
-        : 30000;
+    // Strict validation for numeric/enum params — MCP is a public interface
+    // and the worker may be invoked by untrusted LLMs. Bounds are chosen
+    // conservatively to prevent DoS (unbounded impact walks, long timeouts)
+    // while still allowing reasonable traversal.
+    if (
+      params.direction !== undefined &&
+      params.direction !== 'upstream' &&
+      params.direction !== 'downstream'
+    ) {
+      return {
+        error: `direction must be 'upstream' or 'downstream', got ${JSON.stringify(params.direction)}`,
+      };
+    }
+    const direction: 'upstream' | 'downstream' =
+      params.direction === 'downstream' ? 'downstream' : 'upstream';
+
+    const maxDepthRaw = params.maxDepth;
+    if (maxDepthRaw !== undefined) {
+      if (
+        typeof maxDepthRaw !== 'number' ||
+        !Number.isFinite(maxDepthRaw) ||
+        !Number.isInteger(maxDepthRaw) ||
+        maxDepthRaw < 1 ||
+        maxDepthRaw > 10
+      ) {
+        return {
+          error: `maxDepth must be an integer in [1, 10], got ${JSON.stringify(maxDepthRaw)}`,
+        };
+      }
+    }
+    const maxDepth = typeof maxDepthRaw === 'number' ? maxDepthRaw : 3;
+
+    const minConfidenceRaw = params.minConfidence;
+    if (minConfidenceRaw !== undefined) {
+      if (
+        typeof minConfidenceRaw !== 'number' ||
+        !Number.isFinite(minConfidenceRaw) ||
+        minConfidenceRaw < 0 ||
+        minConfidenceRaw > 1
+      ) {
+        return {
+          error: `minConfidence must be a number in [0, 1], got ${JSON.stringify(minConfidenceRaw)}`,
+        };
+      }
+    }
+    const minConfidence = typeof minConfidenceRaw === 'number' ? minConfidenceRaw : 0.5;
+
+    const timeoutRaw = params.timeout;
+    if (timeoutRaw !== undefined) {
+      if (
+        typeof timeoutRaw !== 'number' ||
+        !Number.isFinite(timeoutRaw) ||
+        timeoutRaw < 100 ||
+        timeoutRaw > 300000
+      ) {
+        return {
+          error: `timeout must be a number in [100, 300000] ms, got ${JSON.stringify(timeoutRaw)}`,
+        };
+      }
+    }
+    const timeout = typeof timeoutRaw === 'number' ? timeoutRaw : 30000;
+
+    const crossDepthRaw = params.crossDepth;
+    if (crossDepthRaw !== undefined) {
+      if (
+        typeof crossDepthRaw !== 'number' ||
+        !Number.isFinite(crossDepthRaw) ||
+        !Number.isInteger(crossDepthRaw) ||
+        crossDepthRaw < 0 ||
+        crossDepthRaw > 10
+      ) {
+        return {
+          error: `crossDepth must be an integer in [0, 10], got ${JSON.stringify(crossDepthRaw)}`,
+        };
+      }
+    }
+    const requestedCrossDepth = typeof crossDepthRaw === 'number' ? crossDepthRaw : 1;
+
     const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
 
@@ -244,12 +332,9 @@ export class GroupService {
     if (fallback.type === 'none') {
       return { error: `No contract data for group "${name}". Run group_sync first.` };
     }
-
-    const requestedCrossDepth =
-      typeof params.crossDepth === 'number' && Number.isFinite(params.crossDepth)
-        ? params.crossDepth
-        : 1;
-    const crossDepth = Math.min(requestedCrossDepth, 1);
+    // NOTE: crossDepth is clamped to 1 by runGroupImpact itself
+    // (MAX_SUPPORTED_CROSS_DEPTH); we only surface a warning here.
+    const crossDepth = Math.max(0, Math.min(requestedCrossDepth, 1));
     const crossDepthWarning =
       requestedCrossDepth > 1
         ? `Multi-hop cross-boundary traversal is not yet implemented. Using --cross-depth 1 (requested: ${requestedCrossDepth}).`
@@ -257,6 +342,11 @@ export class GroupService {
 
     const defaultRelTypes = ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
 
+    // impactOpts.minConfidence is intentionally 0: it's applied to the
+    // intra-repo impact walk where edges (CALLS/IMPORTS/EXTENDS/IMPLEMENTS)
+    // don't carry a meaningful confidence score. The user-facing
+    // `minConfidence` param filters CROSS-REPO contract links in
+    // runGroupImpact/runGroupImpactLegacy (see minConfidence passed below).
     const impactOpts = {
       maxDepth,
       relationTypes: defaultRelTypes,
@@ -270,6 +360,34 @@ export class GroupService {
       return this.port.resolveRepo(registryName);
     };
 
+    // Wrap localImpactFn callbacks so any exception (e.g. resolveGroupRepo
+    // throwing on a missing repo) becomes a null/error result instead of
+    // bubbling past runPhase1WithTimeout (which only catches timeouts, not
+    // rejections). Without this wrap, an unhandled rejection from the
+    // callback would crash the MCP tool handler.
+    const safeLocalImpact = async (t: string, d: string): Promise<unknown> => {
+      try {
+        const repoObj = await resolveGroupRepo(repoGroupPath);
+        return await this.port.impact(repoObj, {
+          target: t,
+          direction: d as 'upstream' | 'downstream',
+          ...impactOpts,
+        });
+      } catch (err) {
+        return {
+          error: `local impact failed: ${err instanceof Error ? err.message : String(err)}`,
+          target: { id: '', name: t, filePath: '' },
+          direction: d,
+          impactedCount: 0,
+          risk: 'LOW',
+          summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+          affected_processes: [],
+          affected_modules: [],
+          byDepth: {},
+        };
+      }
+    };
+
     if (fallback.type === 'json') {
       // Legacy JSON path
       const result = await runGroupImpactLegacy({
@@ -278,14 +396,7 @@ export class GroupService {
         repoPath: repoGroupPath,
         direction,
         registry: fallback.registry,
-        localImpactFn: async (t: string, d: string) => {
-          const repoObj = await resolveGroupRepo(repoGroupPath);
-          return this.port.impact(repoObj, {
-            target: t,
-            direction: d as 'upstream' | 'downstream',
-            ...impactOpts,
-          });
-        },
+        localImpactFn: safeLocalImpact,
         crossImpactFn: async (targetGroupPath: string, uid: string, d: string) => {
           const registryName = config.repos[targetGroupPath];
           if (!registryName) return null;
@@ -304,7 +415,7 @@ export class GroupService {
       });
 
       if (crossDepthWarning) {
-        (result as unknown as Record<string, unknown>).crossDepthWarning = crossDepthWarning;
+        result.crossDepthWarning = crossDepthWarning;
       }
       return result;
     }
@@ -319,14 +430,7 @@ export class GroupService {
         direction,
         bridgeQuery: (cypher, p) =>
           queryBridge(handle, cypher, p as Record<string, import('@ladybugdb/core').LbugValue>),
-        localImpactFn: async (t: string, d: string) => {
-          const repoObj = await resolveGroupRepo(repoGroupPath);
-          return this.port.impact(repoObj, {
-            target: t,
-            direction: d as 'upstream' | 'downstream',
-            ...impactOpts,
-          });
-        },
+        localImpactFn: safeLocalImpact,
         crossImpactFn: async (
           targetGroupPath: string,
           uid: string,
@@ -368,7 +472,7 @@ export class GroupService {
       });
 
       if (crossDepthWarning) {
-        (result as unknown as Record<string, unknown>).crossDepthWarning = crossDepthWarning;
+        result.crossDepthWarning = crossDepthWarning;
       }
       return result;
     } finally {

@@ -225,6 +225,49 @@ describe('syncGroup', () => {
     }
   });
 
+  it('reports initLbug failures via extractorFailures and marks repo missing', async () => {
+    const config = makeConfig({
+      'app/backend': 'backend-repo',
+      'app/frontend': 'frontend-repo',
+    });
+
+    const { vi } = await import('vitest');
+    const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
+    const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockImplementation(async (id: string) => {
+      if (id === 'app-backend') throw new Error('lbug corruption: CRC mismatch');
+    });
+    const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockResolvedValue(undefined);
+
+    try {
+      const result = await syncGroup(config, {
+        resolveRepoHandle: async (_name, groupPath) => ({
+          id: groupPath.replace(/\//g, '-'),
+          path: groupPath,
+          repoPath: '/tmp/' + groupPath,
+          storagePath: '/tmp/' + groupPath + '/.gitnexus',
+        }),
+        skipWrite: true,
+      }).catch(() => undefined);
+
+      expect(result).toBeDefined();
+      // app/backend should be missing (initLbug threw) AND reported in
+      // extractorFailures so the user can see the real reason.
+      expect(result!.missingRepos).toContain('app/backend');
+      expect(result!.extractorFailures).toBeDefined();
+      const failure = result!.extractorFailures!.find((f) => f.repo === 'app/backend');
+      expect(failure).toBeDefined();
+      expect(failure!.message).toMatch(/CRC mismatch/);
+      // initLbug failure should be labeled 'init', not 'boundaries'
+      // (which is reserved for detectServiceBoundaries failures).
+      expect(failure!.extractor).toBe('init');
+      // app/frontend init succeeded — it must NOT be in missingRepos.
+      expect(result!.missingRepos).not.toContain('app/frontend');
+    } finally {
+      initSpy.mockRestore();
+      closeSpy.mockRestore();
+    }
+  });
+
   it('writes bridge.lbug to groupDir when skipWrite is false', async () => {
     const tmpDir = path.join(os.tmpdir(), `gitnexus-sync-write-${Date.now()}`);
     fs.mkdirSync(tmpDir, { recursive: true });

@@ -211,6 +211,66 @@ service IncompleteService {
       // The old regex would find partial match; the new parser should skip it
       expect(providers).toHaveLength(0);
     });
+
+    it('test_extract_proto_ignores_braces_inside_string_literals', async () => {
+      // Regression for a known parser limitation: braces inside string
+      // literals used to be counted as real service-body braces, which
+      // would terminate the service early and drop methods after the
+      // offending string.
+      writeFile(
+        'api/strings.proto',
+        `syntax = "proto3";
+package strings;
+
+service TrickyService {
+  rpc First (Req) returns (Res) {
+    option (google.api.http).additional_bindings = {
+      post: "/v1/first";
+    };
+  }
+  // Previously the "{" inside this literal would close the service body.
+  option deprecated_reason = "use NewService { instead";
+  rpc Second (Req) returns (Res);
+  rpc Third (Req) returns (Res);
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const protoProviders = contracts.filter(
+        (c) => c.role === 'provider' && c.symbolRef.filePath === 'api/strings.proto',
+      );
+      // All three methods must be extracted even though a string literal
+      // contains an unbalanced "{".
+      expect(protoProviders.map((c) => c.symbolName).sort()).toEqual([
+        'TrickyService.First',
+        'TrickyService.Second',
+        'TrickyService.Third',
+      ]);
+    });
+
+    it('test_extract_proto_ignores_braces_inside_comments', async () => {
+      writeFile(
+        'api/commented.proto',
+        `syntax = "proto3";
+package commented;
+
+service Svc {
+  // TODO: move { or } from this comment — parser used to count them
+  /* A block comment with { unbalanced braces } */
+  rpc Alpha (Req) returns (Res);
+  // }} end of the method block (in comment)
+  rpc Beta (Req) returns (Res);
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const protoProviders = contracts.filter(
+        (c) => c.role === 'provider' && c.symbolRef.filePath === 'api/commented.proto',
+      );
+      expect(protoProviders.map((c) => c.symbolName).sort()).toEqual(['Svc.Alpha', 'Svc.Beta']);
+    });
   });
 
   describe('Go server detection', () => {

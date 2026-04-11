@@ -498,10 +498,13 @@ export class HttpRouteExtractor implements ContractExtractor {
     }
 
     const normalized = normalizeHttpPath(pathOnly || '/');
-    const segments = normalized.split('/').filter(Boolean).map((segment) => {
-      if (/^\d+$/.test(segment)) return '{param}';
-      return segment;
-    });
+    const segments = normalized
+      .split('/')
+      .filter(Boolean)
+      .map((segment) => {
+        if (/^\d+$/.test(segment)) return '{param}';
+        return segment;
+      });
     return `/${segments.join('/')}`.replace(/\/+$/, '') || '/';
   }
 
@@ -522,13 +525,16 @@ export class HttpRouteExtractor implements ContractExtractor {
     const methodRe = /requests\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi;
     let m: RegExpExecArray | null;
     while ((m = methodRe.exec(content)) !== null) {
-      out.push(this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7));
+      out.push(
+        this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7),
+      );
     }
 
-    const genericRe =
-      /requests\.request\s*\(\s*['"](\w+)['"]\s*,\s*['"]([^'"]+)['"]/gi;
+    const genericRe = /requests\.request\s*\(\s*['"](\w+)['"]\s*,\s*['"]([^'"]+)['"]/gi;
     while ((m = genericRe.exec(content)) !== null) {
-      out.push(this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7));
+      out.push(
+        this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7),
+      );
     }
 
     return out;
@@ -554,14 +560,21 @@ export class HttpRouteExtractor implements ContractExtractor {
       /webClient\.method\s*\(\s*HttpMethod\.(GET|POST|PUT|DELETE|PATCH)\s*,\s*['"]([^'"]+)['"]/gi;
     let m: RegExpExecArray | null;
     while ((m = webClientMethodRe.exec(content)) !== null) {
-      out.push(this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7));
+      out.push(
+        this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7),
+      );
     }
 
     const okHttpRe =
       /new\s+Request\.Builder\s*\(\)\s*\.url\s*\(\s*['"]([^'"]+)['"]\s*\)(?:\s*\.\s*method\s*\(\s*['"](\w+)['"])?/gim;
     while ((m = okHttpRe.exec(content)) !== null) {
       out.push(
-        this.makeConsumer(filePath, (m[2] || 'GET').toUpperCase(), this.normalizeConsumerPath(m[1]), 0.7),
+        this.makeConsumer(
+          filePath,
+          (m[2] || 'GET').toUpperCase(),
+          this.normalizeConsumerPath(m[1]),
+          0.7,
+        ),
       );
     }
 
@@ -577,15 +590,18 @@ export class HttpRouteExtractor implements ContractExtractor {
       out.push(this.makeConsumer(filePath, method, this.normalizeConsumerPath(m[2]), 0.7));
     }
 
-    const newRequestRe =
-      /\bhttp\.NewRequest\s*\(\s*['"](\w+)['"]\s*,\s*['"]([^'"]+)['"]/gi;
+    const newRequestRe = /\bhttp\.NewRequest\s*\(\s*['"](\w+)['"]\s*,\s*['"]([^'"]+)['"]/gi;
     while ((m = newRequestRe.exec(content)) !== null) {
-      out.push(this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7));
+      out.push(
+        this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7),
+      );
     }
 
     const restyRe = /\b\w+\.R\(\)\.(Get|Post|Put|Delete|Patch)\s*\(\s*['"]([^'"]+)['"]/gi;
     while ((m = restyRe.exec(content)) !== null) {
-      out.push(this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7));
+      out.push(
+        this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7),
+      );
     }
 
     return out;

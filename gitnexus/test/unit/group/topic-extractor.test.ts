@@ -353,6 +353,34 @@ producer.Input() <- &sarama.ProducerMessage{Topic: "inventory.update"}`,
       expect(producers[0].meta.broker).toBe('kafka');
     });
 
+    it('test_extract_sarama_producer_in_loop_captures_all_topics', async () => {
+      // Regression: a for loop that constructs multiple ProducerMessage
+      // literals inside a single NewSyncProducer scope. The previous
+      // regex anchored on NewSyncProducer and captured only the first
+      // Topic within 300 chars, silently dropping the rest.
+      writeFile(
+        'internal/multi-publisher.go',
+        `package publisher
+
+func publishAll(producer sarama.SyncProducer, items []Item) error {
+  _, _ = sarama.NewSyncProducer(brokers, cfg)
+  for _, item := range items {
+    msg1 := &sarama.ProducerMessage{Topic: "order.created"}
+    msg2 := &sarama.ProducerMessage{Topic: "order.shipped"}
+    _ = msg1
+    _ = msg2
+  }
+  return nil
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const producers = contracts.filter((c) => c.role === 'provider');
+      const topics = producers.map((c) => c.contractId).sort();
+      // Both topics must appear (exact set match to catch any duplicates).
+      expect(topics).toEqual(['topic::order.created', 'topic::order.shipped']);
+    });
+
     it('test_extract_kafka_go_writer_returns_provider', async () => {
       writeFile(
         'internal/writer.go',

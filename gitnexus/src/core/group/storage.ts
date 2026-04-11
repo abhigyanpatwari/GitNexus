@@ -8,7 +8,7 @@ import type {
   BridgeMeta,
   LegacyContractRegistry,
 } from './types.js';
-import { openBridgeDbReadOnly, readBridgeMeta } from './bridge-db.js';
+import { closeBridgeDb, openBridgeDbReadOnly, readBridgeMeta } from './bridge-db.js';
 
 export function getDefaultGitnexusDir(): string {
   return process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus');
@@ -114,8 +114,18 @@ export async function openBridgeOrFallback(
 > {
   const handle = await openBridgeDbReadOnly(groupDir);
   if (handle) {
-    const meta = await readBridgeMeta(groupDir);
-    return { type: 'bridge', handle, meta };
+    // readBridgeMeta has its own try/catch and returns a default when
+    // meta.json is missing, but defensively guard against any other
+    // failure so we never leak an opened bridge handle.
+    try {
+      const meta = await readBridgeMeta(groupDir);
+      return { type: 'bridge', handle, meta };
+    } catch (err) {
+      await closeBridgeDb(handle).catch(() => {
+        /* ignore: cleanup path, best effort */
+      });
+      throw err;
+    }
   }
   // JSON fallback
   const registry = await readContractRegistryJson(groupDir);

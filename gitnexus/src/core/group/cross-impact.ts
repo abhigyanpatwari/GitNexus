@@ -4,6 +4,7 @@ import type {
   GroupImpactResult,
   CrossRepoImpact,
   OutOfScopeLink,
+  TruncationReason,
 } from './types.js';
 
 export interface LegacyGroupImpactOptions {
@@ -141,12 +142,17 @@ async function runPhase1WithTimeout(
   }
 }
 
+// Multi-hop cross-boundary traversal is not implemented yet; both entry points
+// enforce the 1-hop limit. When multi-hop lands, remove this clamp here AND in
+// GroupService.groupImpact (which surfaces crossDepthWarning to the caller).
+const MAX_SUPPORTED_CROSS_DEPTH = 1;
+
 export async function runGroupImpactLegacy(
   opts: LegacyGroupImpactOptions,
 ): Promise<GroupImpactResult> {
   const timeout = opts.timeout ?? 30000;
   const minConfidence = opts.minConfidence ?? 0.5;
-  const crossDepth = Math.min(1, opts.crossDepth ?? 1);
+  const crossDepth = Math.min(MAX_SUPPORTED_CROSS_DEPTH, opts.crossDepth ?? 1);
 
   const tStart = Date.now();
   const wallDeadline = tStart + timeout;
@@ -160,6 +166,9 @@ export async function runGroupImpactLegacy(
   );
 
   let truncated = !localResult.ok;
+  let truncationReason: TruncationReason | undefined = localResult.ok
+    ? undefined
+    : 'phase1_timeout';
   const local = localResult.ok
     ? (localResult.v as Record<string, unknown>)
     : ({
@@ -171,6 +180,9 @@ export async function runGroupImpactLegacy(
         affected_processes: [],
         affected_modules: [],
         byDepth: {},
+        // Marks the local block as a placeholder produced by the Phase-1 timeout path.
+        // Consumers should treat zero counts as "unknown" rather than "verified empty".
+        phase1TimedOut: true,
       } as Record<string, unknown>);
 
   const uids = collectPhase1Uids(local);
@@ -178,6 +190,9 @@ export async function runGroupImpactLegacy(
   const cross: CrossRepoImpact[] = [];
   const outOfScope: OutOfScopeLink[] = [];
   const truncatedRepos: string[] = [];
+  if (!localResult.ok) {
+    truncatedRepos.push(opts.repoPath);
+  }
 
   const links = [...opts.registry.crossLinks]
     .filter((l) => l.confidence >= minConfidence)
@@ -200,6 +215,7 @@ export async function runGroupImpactLegacy(
   for (const link of applicable) {
     if (Date.now() > wallDeadline) {
       truncated = true;
+      truncationReason ??= 'wall_deadline';
       break;
     }
 
@@ -240,6 +256,7 @@ export async function runGroupImpactLegacy(
 
     if (Date.now() > wallDeadline) {
       truncated = true;
+      truncationReason ??= 'wall_deadline';
       truncatedRepos.push(fanOutRepo);
       break;
     }
@@ -261,6 +278,7 @@ export async function runGroupImpactLegacy(
     outOfScope,
     truncated,
     truncatedRepos,
+    ...(truncationReason ? { truncationReason } : {}),
     summary: {
       direct: summaryLocal.direct ?? 0,
       processes_affected: summaryLocal.processes_affected ?? 0,
@@ -351,7 +369,7 @@ interface CrossImpactRow {
 export async function runGroupImpact(opts: GroupImpactOptions): Promise<GroupImpactResult> {
   const timeout = opts.timeout ?? 30000;
   const minConfidence = opts.minConfidence ?? 0.5;
-  const crossDepth = Math.min(1, opts.crossDepth ?? 1);
+  const crossDepth = Math.min(MAX_SUPPORTED_CROSS_DEPTH, opts.crossDepth ?? 1);
 
   const tStart = Date.now();
   const wallDeadline = tStart + timeout;
@@ -365,6 +383,9 @@ export async function runGroupImpact(opts: GroupImpactOptions): Promise<GroupImp
   );
 
   let truncated = !localResult.ok;
+  let truncationReason: TruncationReason | undefined = localResult.ok
+    ? undefined
+    : 'phase1_timeout';
   const local = localResult.ok
     ? (localResult.v as Record<string, unknown>)
     : ({
@@ -376,6 +397,9 @@ export async function runGroupImpact(opts: GroupImpactOptions): Promise<GroupImp
         affected_processes: [],
         affected_modules: [],
         byDepth: {},
+        // Marks the local block as a placeholder produced by the Phase-1 timeout path.
+        // Consumers should treat zero counts as "unknown" rather than "verified empty".
+        phase1TimedOut: true,
       } as Record<string, unknown>);
 
   const uids = collectPhase1Uids(local);
@@ -383,6 +407,9 @@ export async function runGroupImpact(opts: GroupImpactOptions): Promise<GroupImp
   const cross: CrossRepoImpact[] = [];
   const outOfScope: OutOfScopeLink[] = [];
   const truncatedRepos: string[] = [];
+  if (!localResult.ok) {
+    truncatedRepos.push(opts.repoPath);
+  }
 
   /* Phase 2 — Cypher bridge query */
   const normalizedSubgroup = opts.subgroup?.trim().replace(/\/+$/, '') || null;
@@ -427,6 +454,7 @@ export async function runGroupImpact(opts: GroupImpactOptions): Promise<GroupImp
 
     if (Date.now() > wallDeadline) {
       truncated = true;
+      truncationReason ??= 'wall_deadline';
       break;
     }
     if (crossDepth < 1) break;
@@ -456,6 +484,7 @@ export async function runGroupImpact(opts: GroupImpactOptions): Promise<GroupImp
 
     if (Date.now() > wallDeadline) {
       truncated = true;
+      truncationReason ??= 'wall_deadline';
       truncatedRepos.push(row.fanOutRepo);
       break;
     }
@@ -477,6 +506,7 @@ export async function runGroupImpact(opts: GroupImpactOptions): Promise<GroupImp
     outOfScope,
     truncated,
     truncatedRepos,
+    ...(truncationReason ? { truncationReason } : {}),
     summary: {
       direct: summaryLocal.direct ?? 0,
       processes_affected: summaryLocal.processes_affected ?? 0,

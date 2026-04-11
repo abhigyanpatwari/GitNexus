@@ -76,13 +76,14 @@ export async function closeBridgeDb(handle: BridgeHandle): Promise<void> {
 
 const RETRY_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
 
-async function retryRename(src: string, dst: string, attempts = 3): Promise<void> {
+export async function retryRename(src: string, dst: string, attempts = 3): Promise<void> {
   for (let i = 1; i <= attempts; i++) {
     try {
       await fsp.rename(src, dst);
       return;
-    } catch (err: any) {
-      if (!RETRY_CODES.has(err.code) || i === attempts) throw err;
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (!code || !RETRY_CODES.has(code) || i === attempts) throw err;
       await new Promise((r) => setTimeout(r, 100 * Math.pow(2, i - 1)));
     }
   }
@@ -96,7 +97,11 @@ export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promi
   const target = path.join(groupDir, 'meta.json');
   const tmp = `${target}.tmp.${Date.now()}`;
   await fsp.writeFile(tmp, JSON.stringify(meta, null, 2), 'utf-8');
-  await fsp.rename(tmp, target);
+  // Use retryRename for consistency with writeBridge's atomic swap — on
+  // Windows a concurrent reader can cause EBUSY/EPERM even on a tiny
+  // meta.json, and we don't want meta write to be less robust than the
+  // bridge.lbug swap it accompanies.
+  await retryRename(tmp, target);
 }
 
 export async function readBridgeMeta(groupDir: string): Promise<BridgeMeta> {
@@ -119,7 +124,42 @@ export interface WriteBridgeInput {
   missingRepos: string[];
 }
 
-export async function writeBridge(groupDir: string, input: WriteBridgeInput): Promise<void> {
+/**
+ * Non-fatal issues encountered during writeBridge. Callers can log these to
+ * surface partial-success state without aborting the whole sync.
+ * `sampleErrors` is capped at MAX_SAMPLE_ERRORS per category to bound memory.
+ */
+export interface WriteBridgeReport {
+  contractsInserted: number;
+  contractsFailed: number;
+  snapshotsInserted: number;
+  snapshotsFailed: number;
+  linksInserted: number;
+  linksFailed: number;
+  /** Cross-links skipped because their from/to contract nodes weren't found. */
+  linksDroppedMissingNode: number;
+  sampleErrors: Array<{
+    kind: 'contract' | 'snapshot' | 'link';
+    id: string;
+    message: string;
+  }>;
+}
+
+const MAX_SAMPLE_ERRORS = 10;
+
+function errMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  try {
+    return String(err);
+  } catch {
+    return 'unknown error';
+  }
+}
+
+export async function writeBridge(
+  groupDir: string,
+  input: WriteBridgeInput,
+): Promise<WriteBridgeReport> {
   await fsp.mkdir(groupDir, { recursive: true });
   const contracts = dedupeContracts(input.contracts);
   const crossLinks = dedupeCrossLinks(input.crossLinks);
@@ -128,6 +168,23 @@ export async function writeBridge(groupDir: string, input: WriteBridgeInput): Pr
   const tmpPath = path.join(groupDir, 'bridge.lbug.tmp');
   const bakPath = path.join(groupDir, 'bridge.lbug.bak');
 
+  const report: WriteBridgeReport = {
+    contractsInserted: 0,
+    contractsFailed: 0,
+    snapshotsInserted: 0,
+    snapshotsFailed: 0,
+    linksInserted: 0,
+    linksFailed: 0,
+    linksDroppedMissingNode: 0,
+    sampleErrors: [],
+  };
+
+  const recordError = (kind: 'contract' | 'snapshot' | 'link', id: string, err: unknown) => {
+    if (report.sampleErrors.length < MAX_SAMPLE_ERRORS) {
+      report.sampleErrors.push({ kind, id, message: errMessage(err) });
+    }
+  };
+
   // Clean up any leftover tmp
   try {
     await fsp.rm(tmpPath, { recursive: true, force: true });
@@ -135,16 +192,29 @@ export async function writeBridge(groupDir: string, input: WriteBridgeInput): Pr
     /* ignore */
   }
 
-  // 1. Create temp DB, insert all data
+  // 1. Create temp DB, insert all data.
+  //
+  // Everything after `openBridgeDb` must run inside a try/finally so that
+  // if ANY step before the explicit `closeBridgeDb` throws — schema
+  // creation, a contract insert loop that rethrows, a snapshot write, the
+  // cross-link loop, or anything else — the handle is still released. A
+  // leaked handle holds the native LadybugDB file lock on tmpPath, which
+  // (a) leaks a FD and (b) prevents the next writeBridge call from
+  // reusing the same tmp slot.
   const handle = await openBridgeDb(tmpPath);
-  await ensureBridgeSchema(handle);
+  let handleClosed = false;
+  try {
+    await ensureBridgeSchema(handle);
 
-  // Insert contracts
-  for (const c of contracts) {
-    const id = contractNodeId(c.repo, c.contractId, c.role, c.symbolRef.filePath);
-    await queryBridge(
-      handle,
-      `CREATE (n:Contract {
+    // Insert contracts — tolerate individual failures (e.g., a corrupt meta
+    // that can't be serialized). The whole sync must not fail because one
+    // contract is broken.
+    for (const c of contracts) {
+      const id = contractNodeId(c.repo, c.contractId, c.role, c.symbolRef.filePath);
+      try {
+        await queryBridge(
+          handle,
+          `CREATE (n:Contract {
       id: $id,
       contractId: $contractId,
       type: $type,
@@ -157,99 +227,115 @@ export async function writeBridge(groupDir: string, input: WriteBridgeInput): Pr
       confidence: $confidence,
       meta: $meta
     })`,
-      {
-        id,
-        contractId: c.contractId,
-        type: c.type,
-        role: c.role,
-        repo: c.repo,
-        service: c.service ?? '',
-        symbolUid: c.symbolUid,
-        filePath: c.symbolRef.filePath,
-        symbolName: c.symbolName,
-        confidence: c.confidence,
-        meta: JSON.stringify(c.meta),
-      },
-    );
-  }
+          {
+            id,
+            contractId: c.contractId,
+            type: c.type,
+            role: c.role,
+            repo: c.repo,
+            service: c.service ?? '',
+            symbolUid: c.symbolUid,
+            filePath: c.symbolRef.filePath,
+            symbolName: c.symbolName,
+            confidence: c.confidence,
+            meta: JSON.stringify(c.meta),
+          },
+        );
+        report.contractsInserted++;
+      } catch (err) {
+        report.contractsFailed++;
+        recordError('contract', id, err);
+      }
+    }
 
-  // Insert repo snapshots
-  for (const [repoId, snap] of Object.entries(input.repoSnapshots)) {
-    await queryBridge(
-      handle,
-      `CREATE (s:RepoSnapshot {
+    // Insert repo snapshots
+    for (const [repoId, snap] of Object.entries(input.repoSnapshots)) {
+      try {
+        await queryBridge(
+          handle,
+          `CREATE (s:RepoSnapshot {
       id: $id,
       indexedAt: $indexedAt,
       lastCommit: $lastCommit
     })`,
-      {
-        id: repoId,
-        indexedAt: snap.indexedAt,
-        lastCommit: snap.lastCommit,
-      },
-    );
-  }
-
-  // Insert cross-links (tolerating missing nodes).
-  // Use repo-scoped matching: find FROM node by (repo, role=consumer) and TO by (repo, role=provider)
-  // with symbolRef matching, because link.contractId is the consumer's ID which may differ
-  // from the provider's contractId (e.g. wildcard consumer vs method-level provider).
-  const findContractNode = async (
-    repo: string,
-    role: 'consumer' | 'provider',
-    symbolUid: string,
-    filePath: string,
-    symbolName: string,
-  ): Promise<string | null> => {
-    if (symbolUid) {
-      const uidRows = await queryBridge<{ id: string }>(
-        handle,
-        `MATCH (c:Contract) WHERE c.repo = $repo AND c.role = $role
-         AND c.symbolUid = $symbolUid RETURN c.id AS id LIMIT 1`,
-        { repo, role, symbolUid },
-      );
-      if (uidRows.length > 0) return uidRows[0].id;
+          {
+            id: repoId,
+            indexedAt: snap.indexedAt,
+            lastCommit: snap.lastCommit,
+          },
+        );
+        report.snapshotsInserted++;
+      } catch (err) {
+        report.snapshotsFailed++;
+        recordError('snapshot', repoId, err);
+      }
     }
 
-    const refRows = await queryBridge<{ id: string }>(
-      handle,
-      `MATCH (c:Contract) WHERE c.repo = $repo AND c.role = $role
+    // Insert cross-links (tolerating missing nodes).
+    // Use repo-scoped matching: find FROM node by (repo, role=consumer) and TO by (repo, role=provider)
+    // with symbolRef matching, because link.contractId is the consumer's ID which may differ
+    // from the provider's contractId (e.g. wildcard consumer vs method-level provider).
+    const findContractNode = async (
+      repo: string,
+      role: 'consumer' | 'provider',
+      symbolUid: string,
+      filePath: string,
+      symbolName: string,
+    ): Promise<string | null> => {
+      if (symbolUid) {
+        const uidRows = await queryBridge<{ id: string }>(
+          handle,
+          `MATCH (c:Contract) WHERE c.repo = $repo AND c.role = $role
+         AND c.symbolUid = $symbolUid RETURN c.id AS id LIMIT 1`,
+          { repo, role, symbolUid },
+        );
+        if (uidRows.length > 0) return uidRows[0].id;
+      }
+
+      const refRows = await queryBridge<{ id: string }>(
+        handle,
+        `MATCH (c:Contract) WHERE c.repo = $repo AND c.role = $role
        AND c.filePath = $filePath AND c.symbolName = $symbolName
        RETURN c.id AS id LIMIT 1`,
-      { repo, role, filePath, symbolName },
-    );
-    if (refRows.length > 0) return refRows[0].id;
+        { repo, role, filePath, symbolName },
+      );
+      if (refRows.length > 0) return refRows[0].id;
 
-    const fileRows = await queryBridge<{ id: string }>(
-      handle,
-      `MATCH (c:Contract) WHERE c.repo = $repo AND c.role = $role
+      const fileRows = await queryBridge<{ id: string }>(
+        handle,
+        `MATCH (c:Contract) WHERE c.repo = $repo AND c.role = $role
        AND c.filePath = $filePath
        RETURN c.id AS id LIMIT 2`,
-      { repo, role, filePath },
-    );
-    if (fileRows.length === 1) return fileRows[0].id;
-    return null;
-  };
+        { repo, role, filePath },
+      );
+      if (fileRows.length === 1) return fileRows[0].id;
+      return null;
+    };
 
-  for (const link of crossLinks) {
-    const fromId = await findContractNode(
-      link.from.repo,
-      'consumer',
-      link.from.symbolUid,
-      link.from.symbolRef.filePath,
-      link.from.symbolRef.name,
-    );
-    const toId = await findContractNode(
-      link.to.repo,
-      'provider',
-      link.to.symbolUid,
-      link.to.symbolRef.filePath,
-      link.to.symbolRef.name,
-    );
-    if (!fromId || !toId) continue;
-    await queryBridge(
-      handle,
-      `
+    for (const link of crossLinks) {
+      const linkId = `${link.from.repo}::${link.contractId}->${link.to.repo}::${link.contractId}`;
+      try {
+        const fromId = await findContractNode(
+          link.from.repo,
+          'consumer',
+          link.from.symbolUid,
+          link.from.symbolRef.filePath,
+          link.from.symbolRef.name,
+        );
+        const toId = await findContractNode(
+          link.to.repo,
+          'provider',
+          link.to.symbolUid,
+          link.to.symbolRef.filePath,
+          link.to.symbolRef.name,
+        );
+        if (!fromId || !toId) {
+          report.linksDroppedMissingNode++;
+          continue;
+        }
+        await queryBridge(
+          handle,
+          `
       MATCH (a:Contract), (b:Contract)
       WHERE a.id = $fromId AND b.id = $toId
       CREATE (a)-[:ContractLink {
@@ -260,20 +346,35 @@ export async function writeBridge(groupDir: string, input: WriteBridgeInput): Pr
         toRepo: $toRepo
       }]->(b)
     `,
-      {
-        fromId,
-        toId,
-        matchType: link.matchType,
-        confidence: link.confidence,
-        contractId: link.contractId,
-        fromRepo: link.from.repo,
-        toRepo: link.to.repo,
-      },
-    );
-  }
+          {
+            fromId,
+            toId,
+            matchType: link.matchType,
+            confidence: link.confidence,
+            contractId: link.contractId,
+            fromRepo: link.from.repo,
+            toRepo: link.to.repo,
+          },
+        );
+        report.linksInserted++;
+      } catch (err) {
+        report.linksFailed++;
+        recordError('link', linkId, err);
+      }
+    }
 
-  // 2. Close temp DB
-  await closeBridgeDb(handle);
+    // 2. Close temp DB (happy path). The finally block also calls
+    //    closeBridgeDb if we threw above; `handleClosed` prevents a
+    //    double-close on the native handle.
+    await closeBridgeDb(handle);
+    handleClosed = true;
+  } finally {
+    if (!handleClosed) {
+      await closeBridgeDb(handle).catch(() => {
+        /* ignore: cleanup path, best effort */
+      });
+    }
+  }
 
   // 3. Atomic swap: old→.bak, tmp→final, rm .bak
   try {
@@ -295,6 +396,8 @@ export async function writeBridge(groupDir: string, input: WriteBridgeInput): Pr
     generatedAt: new Date().toISOString(),
     missingRepos: input.missingRepos,
   });
+
+  return report;
 }
 
 /* ------------------------------------------------------------------ */
@@ -321,11 +424,30 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
     return null; // incompatible schema version — fallback to JSON or re-sync
   }
 
+  // Open the native handle. If Connection construction throws AFTER
+  // Database was successfully allocated, we'd leak the native Database
+  // object. Wrap each step separately and tear down the partial handle.
+  let db: lbug.Database | undefined;
+  let conn: lbug.Connection | undefined;
   try {
-    const db = new lbug.Database(dbPath, 0, false, true); // readOnly
-    const conn = new lbug.Connection(db);
+    db = new lbug.Database(dbPath, 0, false, true); // readOnly
+    conn = new lbug.Connection(db);
     return { _db: db, _conn: conn, groupDir } as BridgeHandle;
   } catch {
+    if (conn) {
+      try {
+        await conn.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (db) {
+      try {
+        await db.close();
+      } catch {
+        /* ignore */
+      }
+    }
     return null;
   }
 }

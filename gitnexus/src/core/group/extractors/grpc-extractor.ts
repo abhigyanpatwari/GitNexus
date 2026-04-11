@@ -25,20 +25,110 @@ function serviceOnlyContractId(serviceName: string): string {
   return `grpc::${serviceName}/*`;
 }
 
+/**
+ * Replace all .proto comments and string literals with spaces, preserving the
+ * original length and character offsets of the input. This lets downstream
+ * regex / brace-depth parsers run on a "sanitized" copy without having to
+ * understand proto syntax, while any RegExp.exec/index-based lookups that
+ * were already positional against `content` continue to work against the
+ * original string.
+ *
+ * Supported comment forms: `// line comment`, `/* block comment * /`.
+ * Supported strings: double-quoted ("…") and single-quoted ('…') with `\`
+ * escape handling. Raw/unterminated strings are not supported — we stop
+ * on a line break for line-style comments and on EOF for unterminated
+ * strings/blocks, which matches how most real proto files parse.
+ */
+function stripProtoCommentsAndStrings(content: string): string {
+  const out = new Array<string>(content.length);
+  let i = 0;
+  while (i < content.length) {
+    const ch = content[i];
+    const next = content[i + 1];
+
+    // Line comment: // ... \n
+    if (ch === '/' && next === '/') {
+      out[i] = ' ';
+      out[i + 1] = ' ';
+      i += 2;
+      while (i < content.length && content[i] !== '\n') {
+        out[i] = content[i] === '\r' ? '\r' : ' ';
+        i++;
+      }
+      continue;
+    }
+
+    // Block comment: /* ... */
+    if (ch === '/' && next === '*') {
+      out[i] = ' ';
+      out[i + 1] = ' ';
+      i += 2;
+      while (i < content.length) {
+        if (content[i] === '*' && content[i + 1] === '/') {
+          out[i] = ' ';
+          out[i + 1] = ' ';
+          i += 2;
+          break;
+        }
+        // Preserve newlines so line numbers stay stable for downstream code.
+        out[i] = content[i] === '\n' || content[i] === '\r' ? content[i] : ' ';
+        i++;
+      }
+      continue;
+    }
+
+    // String literal: "..." or '...'
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      out[i] = ' '; // replace opening quote
+      i++;
+      while (i < content.length) {
+        const c = content[i];
+        if (c === '\\' && i + 1 < content.length) {
+          // Skip escaped pair (e.g. \" \n \\)
+          out[i] = ' ';
+          out[i + 1] = ' ';
+          i += 2;
+          continue;
+        }
+        if (c === quote) {
+          out[i] = ' ';
+          i++;
+          break;
+        }
+        // Preserve newlines; proto technically disallows unescaped newlines
+        // inside strings, but real files occasionally have them.
+        out[i] = c === '\n' || c === '\r' ? c : ' ';
+        i++;
+      }
+      continue;
+    }
+
+    out[i] = ch;
+    i++;
+  }
+  return out.join('');
+}
+
 function extractServiceBlocks(content: string): Array<{ name: string; body: string }> {
   const results: Array<{ name: string; body: string }> = [];
-  // v1: brace-depth only — braces inside comments or string literals are not filtered (see spec Fix 2)
+  // Sanitize comments and string literals so braces inside them don't
+  // throw off the depth counter. The sanitized copy has the same length
+  // and offsets as the original, so we use it ONLY to scan for service
+  // headers and braces; the service body we return is sliced from the
+  // ORIGINAL content to preserve exact source text for downstream use.
+  const sanitized = stripProtoCommentsAndStrings(content);
   const headerRe = /service\s+(\w+)\s*\{/g;
   let headerMatch: RegExpExecArray | null;
 
-  while ((headerMatch = headerRe.exec(content)) !== null) {
+  while ((headerMatch = headerRe.exec(sanitized)) !== null) {
     const serviceName = headerMatch[1];
     const bodyStart = headerMatch.index + headerMatch[0].length;
     let depth = 1;
     let pos = bodyStart;
 
-    while (pos < content.length && depth > 0) {
-      const ch = content[pos];
+    while (pos < sanitized.length && depth > 0) {
+      const ch = sanitized[pos];
       if (ch === '{') depth++;
       else if (ch === '}') depth--;
       pos++;

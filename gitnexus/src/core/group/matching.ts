@@ -33,6 +33,22 @@ export function normalizeContractId(id: string): string {
       return id;
     }
     case 'grpc': {
+      // Canonical form: `grpc::<lowercased-package-or-service>[/<method>]`.
+      //
+      // The package/service segment is lowercased because gRPC package
+      // names are effectively case-insensitive across language bindings
+      // (`auth.AuthService`, `auth.authservice`, `AUTH.AUTHSERVICE` all
+      // describe the same wire protocol service). The RPC method segment
+      // is preserved as-is because the HTTP/2 path used on the wire is
+      // case-sensitive per the gRPC spec (`/Service/MethodName`), and
+      // method names in generated clients match the proto source exactly.
+      //
+      // A package-only id (no slash) and a package/method id are treated
+      // as DISTINCT canonical forms: `grpc::userservice` does not match
+      // `grpc::userservice/Login`. That's by design — callers that want
+      // service-level manifest matching against method-level providers
+      // should use the gRPC wildcard form `grpc::UserService/*` which is
+      // handled by runWildcardMatch below.
       const slashIdx = rest.indexOf('/');
       if (slashIdx > 0) {
         const pkg = rest.substring(0, slashIdx).toLowerCase();
@@ -40,12 +56,12 @@ export function normalizeContractId(id: string): string {
         return `grpc::${pkg}${method}`;
       }
       if (slashIdx === 0) {
-        // Malformed "package/method" with leading slash — do not lowercase the whole string
-        // (method segment is case-sensitive per spec).
+        // Malformed "/method" with leading slash — keep as-is so two
+        // equally malformed ids can still match each other.
         return `grpc::${rest}`;
       }
-      // No slash: spec is ambiguous (package-only vs full service.method). MVP: lowercase
-      // the whole token; differs from pkg/method split above where RPC method keeps case.
+      // No slash: package/service only. Lowercase to match the package
+      // segment produced by the pkg/method branch above.
       return `grpc::${rest.toLowerCase()}`;
     }
     case 'topic':

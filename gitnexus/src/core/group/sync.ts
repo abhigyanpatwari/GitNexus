@@ -27,12 +27,49 @@ export interface SyncOptions {
   skipEmbeddings?: boolean;
 }
 
+/**
+ * Per-repo failure kind captured during syncGroup. A non-empty array on
+ * the result means at least one repo had something fail mid-pipeline; the
+ * repo was NOT marked missing (we kept whatever the other steps produced),
+ * but the user should see these to debug incomplete coverage.
+ *
+ * Label meanings:
+ *  - `init`         — opening the per-repo LadybugDB pool failed; repo
+ *                     gets added to missingRepos and the other steps are
+ *                     skipped for that repo.
+ *  - `boundaries`   — detectServiceBoundaries() threw; contracts are
+ *                     still extracted but without service attribution.
+ *  - `http|grpc|topic` — the named extractor threw; the other extractors
+ *                     in the same repo still run.
+ *  - `manifest`     — ManifestExtractor.extractFromManifest() threw.
+ *  - `bridge_write` — a non-fatal error inside writeBridge (individual
+ *                     contracts/links/snapshots that failed to insert).
+ *                     The bridge is still written; `message` includes a
+ *                     summary of the partial-failure counts.
+ */
+export type ExtractorKind =
+  | 'init'
+  | 'boundaries'
+  | 'http'
+  | 'grpc'
+  | 'topic'
+  | 'manifest'
+  | 'bridge_write';
+
+export interface ExtractorFailure {
+  repo: string;
+  extractor: ExtractorKind;
+  message: string;
+}
+
 export interface SyncResult {
   contracts: StoredContract[];
   crossLinks: CrossLink[];
   unmatched: StoredContract[];
   missingRepos: string[];
   repoSnapshots: Record<string, RepoSnapshot>;
+  /** Populated when individual extractors threw. See ExtractorFailure. */
+  extractorFailures?: ExtractorFailure[];
 }
 
 export function stableRepoPoolId(entry: RegistryEntry, allEntries: RegistryEntry[]): string {
@@ -61,9 +98,19 @@ function defaultResolveHandle(allEntries: RegistryEntry[]) {
   };
 }
 
+function errMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  try {
+    return String(err);
+  } catch {
+    return 'unknown error';
+  }
+}
+
 export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promise<SyncResult> {
   const missingRepos: string[] = [];
   const repoSnapshots: Record<string, RepoSnapshot> = {};
+  const extractorFailures: ExtractorFailure[] = [];
   let autoContracts: StoredContract[] = [];
   let dbExecutors: Map<string, CypherExecutor> | undefined;
   let manifestResult: Awaited<ReturnType<ManifestExtractor['extractFromManifest']>>;
@@ -91,18 +138,45 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
 
         const poolId = handle.id;
         const lbugPath = path.join(handle.storagePath, 'lbug');
+
+        // Step 1: open the per-repo LadybugDB pool. Failure here means the
+        // repo itself is broken/unindexed — mark missing and skip entirely.
         try {
           await initLbug(poolId, lbugPath);
           openPoolIds.push(poolId);
+        } catch (err) {
+          missingRepos.push(groupPath);
+          extractorFailures.push({
+            repo: groupPath,
+            extractor: 'init',
+            message: errMessage(err),
+          });
+          continue;
+        }
 
-          const executor: CypherExecutor = (query, params) =>
-            executeParameterized(poolId, query, params ?? {});
+        const executor: CypherExecutor = (query, params) =>
+          executeParameterized(poolId, query, params ?? {});
 
-          dbExecutors.set(groupPath, executor);
+        dbExecutors.set(groupPath, executor);
 
-          const boundaries = await detectServiceBoundaries(handle.repoPath);
+        // Step 2: service boundary detection. Degrade gracefully to empty
+        // boundaries on failure — contracts will still be extracted, just
+        // without service attribution.
+        let boundaries: Awaited<ReturnType<typeof detectServiceBoundaries>> = [];
+        try {
+          boundaries = await detectServiceBoundaries(handle.repoPath);
+        } catch (err) {
+          extractorFailures.push({
+            repo: groupPath,
+            extractor: 'boundaries',
+            message: errMessage(err),
+          });
+        }
 
-          if (config.detect.http) {
+        // Step 3: run each extractor in isolation. One failure must not
+        // cascade to the others in the same repo.
+        if (config.detect.http) {
+          try {
             const extracted = await httpEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
               autoContracts.push({
@@ -111,9 +185,17 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
                 service: assignService(c.symbolRef.filePath, boundaries),
               });
             }
+          } catch (err) {
+            extractorFailures.push({
+              repo: groupPath,
+              extractor: 'http',
+              message: errMessage(err),
+            });
           }
+        }
 
-          if (config.detect.grpc) {
+        if (config.detect.grpc) {
+          try {
             const extracted = await grpcEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
               autoContracts.push({
@@ -122,9 +204,17 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
                 service: assignService(c.symbolRef.filePath, boundaries),
               });
             }
+          } catch (err) {
+            extractorFailures.push({
+              repo: groupPath,
+              extractor: 'grpc',
+              message: errMessage(err),
+            });
           }
+        }
 
-          if (config.detect.topics) {
+        if (config.detect.topics) {
+          try {
             const extracted = await topicEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
               autoContracts.push({
@@ -133,29 +223,46 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
                 service: assignService(c.symbolRef.filePath, boundaries),
               });
             }
+          } catch (err) {
+            extractorFailures.push({
+              repo: groupPath,
+              extractor: 'topic',
+              message: errMessage(err),
+            });
           }
+        }
 
-          const metaPath = path.join(handle.storagePath, 'meta.json');
-          try {
-            const raw = await fs.readFile(metaPath, 'utf-8');
-            const m = JSON.parse(raw) as { indexedAt?: string; lastCommit?: string };
-            repoSnapshots[groupPath] = {
-              indexedAt: m.indexedAt || '',
-              lastCommit: m.lastCommit || '',
-            };
-          } catch {
-            const e = entries.find((en) => en.name === regName);
-            repoSnapshots[groupPath] = {
-              indexedAt: e?.indexedAt || '',
-              lastCommit: e?.lastCommit || '',
-            };
-          }
+        // Step 4: read repo snapshot meta. Pre-existing fallback is fine.
+        const metaPath = path.join(handle.storagePath, 'meta.json');
+        try {
+          const raw = await fs.readFile(metaPath, 'utf-8');
+          const m = JSON.parse(raw) as { indexedAt?: string; lastCommit?: string };
+          repoSnapshots[groupPath] = {
+            indexedAt: m.indexedAt || '',
+            lastCommit: m.lastCommit || '',
+          };
         } catch {
-          missingRepos.push(groupPath);
+          const e = entries.find((en) => en.name === regName);
+          repoSnapshots[groupPath] = {
+            indexedAt: e?.indexedAt || '',
+            lastCommit: e?.lastCommit || '',
+          };
         }
       }
 
-      manifestResult = await new ManifestExtractor().extractFromManifest(config.links, dbExecutors);
+      try {
+        manifestResult = await new ManifestExtractor().extractFromManifest(
+          config.links,
+          dbExecutors,
+        );
+      } catch (err) {
+        extractorFailures.push({
+          repo: '*',
+          extractor: 'manifest',
+          message: errMessage(err),
+        });
+        manifestResult = { contracts: [], crossLinks: [] };
+      }
     } finally {
       for (const id of [...new Set(openPoolIds)]) {
         await closeLbug(id).catch(() => {});
@@ -183,12 +290,29 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   ]);
 
   if (opts?.groupDir && !opts.skipWrite) {
-    await writeBridge(opts.groupDir, {
+    const writeReport = await writeBridge(opts.groupDir, {
       contracts: allContracts,
       crossLinks,
       repoSnapshots,
       missingRepos,
     });
+    // Surface per-item write failures as sync-level extractorFailures so the
+    // user sees them alongside extractor errors. Repo='*' because the error
+    // is at the bridge layer, not tied to a single source repo.
+    if (
+      writeReport.contractsFailed > 0 ||
+      writeReport.linksFailed > 0 ||
+      writeReport.snapshotsFailed > 0
+    ) {
+      const summary =
+        `bridge write: ${writeReport.contractsFailed} contracts, ` +
+        `${writeReport.snapshotsFailed} snapshots, ` +
+        `${writeReport.linksFailed} links failed to insert` +
+        (writeReport.sampleErrors.length > 0
+          ? `; first error: ${writeReport.sampleErrors[0].kind}[${writeReport.sampleErrors[0].id}]: ${writeReport.sampleErrors[0].message}`
+          : '');
+      extractorFailures.push({ repo: '*', extractor: 'bridge_write', message: summary });
+    }
   }
 
   return {
@@ -197,5 +321,6 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     unmatched: remaining,
     missingRepos,
     repoSnapshots,
+    ...(extractorFailures.length > 0 ? { extractorFailures } : {}),
   };
 }

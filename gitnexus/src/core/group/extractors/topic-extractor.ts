@@ -119,25 +119,37 @@ const KAFKA_PATTERNS: PatternDef[] = [
     topicGroup: 1,
     symbolName: 'producer.send',
   },
-  // Go: sarama.NewSyncProducer(...); producer.SendMessage(&sarama.ProducerMessage{Topic: "xxx"})
+  // Go: sarama.ProducerMessage{Topic: "xxx"} struct literal (emitted by
+  // both NewSyncProducer and NewAsyncProducer client code paths).
+  //
+  // Previous pattern was `sarama.NewSyncProducer[\s\S]{0,300}?Topic:...`
+  // which anchored to the producer constructor and used a 300-char
+  // lookahead. In a loop like
+  //     producer := sarama.NewSyncProducer(...)
+  //     for _, item := range items {
+  //       msg1 := &sarama.ProducerMessage{Topic: "order.created"}
+  //       msg2 := &sarama.ProducerMessage{Topic: "order.shipped"}
+  //     }
+  // the regex captured only "order.created" (first Topic after the
+  // constructor) and silently missed "order.shipped". Matching on the
+  // struct literal directly fixes both the false negative in loops and
+  // the spurious cross-message capture when multiple unrelated messages
+  // sit within 300 chars of the constructor.
   {
-    regex: /sarama\.NewSyncProducer[\s\S]{0,300}?Topic:\s*"([^"]+)"/g,
+    regex: /sarama\.ProducerMessage\s*\{[\s\S]{0,200}?Topic:\s*"([^"]+)"/g,
     role: 'provider',
     broker: 'kafka',
     confidence: 0.75,
     topicGroup: 1,
     symbolName: 'sarama.ProducerMessage',
   },
-  // Go: sarama.NewAsyncProducer(...); producer.Input() <- &sarama.ProducerMessage{Topic: "xxx"}
-  {
-    regex: /sarama\.NewAsyncProducer[\s\S]{0,300}?Topic:\s*"([^"]+)"/g,
-    role: 'provider',
-    broker: 'kafka',
-    confidence: 0.75,
-    topicGroup: 1,
-    symbolName: 'sarama.ProducerMessage',
-  },
-  // Go: kafka.Writer{Topic: "xxx"} or kafka.NewWriter(...Topic: "xxx")
+  // Go: kafka-go writer construction. kafka-go does NOT wrap messages in
+  // a struct with a Topic field (the writer owns the topic), so we match
+  // the Writer itself. A 200-char window bridges the gap between
+  // `kafka.NewWriter(...)` / `kafka.Writer{` and the Topic field inside
+  // the config literal — kafka-go writer configs are small and rarely
+  // contain more than one Topic field, so the risk of cross-message
+  // capture is low here.
   {
     regex: /kafka\.(?:NewWriter|Writer)\b[\s\S]{0,200}?Topic:\s*"([^"]+)"/g,
     role: 'provider',
@@ -146,7 +158,7 @@ const KAFKA_PATTERNS: PatternDef[] = [
     topicGroup: 1,
     symbolName: 'kafka.Writer',
   },
-  // Go: kafka.NewReader(...Topic: "xxx") or kafka.Reader{Topic: "xxx"}
+  // Go: kafka-go reader construction, mirrors Writer above.
   {
     regex: /kafka\.(?:NewReader|Reader)\b[\s\S]{0,200}?Topic:\s*"([^"]+)"/g,
     role: 'consumer',

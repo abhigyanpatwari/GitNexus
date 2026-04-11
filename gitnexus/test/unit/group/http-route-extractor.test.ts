@@ -335,9 +335,7 @@ class ApiClient {
       const contracts = await extractor.extract(null, dir, makeRepo(dir));
       const consumers = contracts.filter((c) => c.role === 'consumer');
 
-      expect(
-        consumers.find((c) => c.contractId === 'http::GET::/api/users/{param}'),
-      ).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/users/{param}')).toBeDefined();
       expect(
         consumers.find((c) => c.contractId === 'http::PATCH::/api/users/{param}'),
       ).toBeDefined();

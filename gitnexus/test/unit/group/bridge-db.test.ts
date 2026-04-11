@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -8,6 +8,7 @@ import {
   queryBridge,
   closeBridgeDb,
   contractNodeId,
+  retryRename,
   writeBridge,
   openBridgeDbReadOnly,
   readBridgeMeta,
@@ -138,6 +139,56 @@ describe('writeBridge + read', () => {
     });
     const exists = await bridgeExists(tmpDir);
     expect(exists).toBe(true);
+  });
+
+  it('test_writeBridge_returns_report_with_insert_counts', async () => {
+    const report = await writeBridge(tmpDir, {
+      contracts: [makeContract(), makeContract({ repo: 'frontend', role: 'consumer' })],
+      crossLinks: [],
+      repoSnapshots: { backend: { indexedAt: '2026-01-01', lastCommit: 'abc' } },
+      missingRepos: [],
+    });
+    expect(report.contractsInserted).toBe(2);
+    expect(report.contractsFailed).toBe(0);
+    expect(report.snapshotsInserted).toBe(1);
+    expect(report.snapshotsFailed).toBe(0);
+    expect(report.linksInserted).toBe(0);
+    expect(report.linksFailed).toBe(0);
+    expect(report.linksDroppedMissingNode).toBe(0);
+    expect(report.sampleErrors).toHaveLength(0);
+  });
+
+  it('test_writeBridge_counts_dropped_links_with_missing_nodes', async () => {
+    // Provider + cross-link that references a non-existent consumer node →
+    // findContractNode returns null for `from`, link gets dropped.
+    const provider = makeContract({ role: 'provider' });
+    const report = await writeBridge(tmpDir, {
+      contracts: [provider],
+      crossLinks: [
+        {
+          from: {
+            repo: 'ghost',
+            symbolUid: '',
+            symbolRef: { filePath: 'nowhere.ts', name: 'ghostFn' },
+          },
+          to: {
+            repo: provider.repo,
+            symbolUid: provider.symbolUid,
+            symbolRef: provider.symbolRef,
+          },
+          type: 'http',
+          contractId: provider.contractId,
+          matchType: 'exact',
+          confidence: 1.0,
+        },
+      ],
+      repoSnapshots: {},
+      missingRepos: [],
+    });
+    expect(report.linksInserted).toBe(0);
+    expect(report.linksDroppedMissingNode).toBe(1);
+    expect(report.linksFailed).toBe(0);
+    expect(report.contractsInserted).toBe(1);
   });
 
   it('test_writeBridge_contracts_queryable', async () => {
@@ -339,5 +390,79 @@ describe('writeBridge + read', () => {
     expect(meta.version).toBe(0);
     expect(meta.generatedAt).toBe('');
     expect(meta.missingRepos).toEqual([]);
+  });
+});
+
+describe('retryRename', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('retries on EBUSY and eventually succeeds', async () => {
+    // Spy on fs.promises.rename and make the first two attempts fail with
+    // EBUSY, then succeed on the third. Verifies that Windows-style
+    // transient rename failures don't immediately bubble up.
+    const attempts: Array<[string, string]> = [];
+    let calls = 0;
+    const spy = vi.spyOn(fsp, 'rename').mockImplementation(async (src, dst) => {
+      attempts.push([String(src), String(dst)]);
+      calls++;
+      if (calls < 3) {
+        const err = new Error('resource busy or locked') as NodeJS.ErrnoException;
+        err.code = 'EBUSY';
+        throw err;
+      }
+      // Third attempt: pretend the rename worked.
+      return undefined;
+    });
+
+    await retryRename('/src/a', '/dst/b', 3);
+
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(attempts.every(([s, d]) => s === '/src/a' && d === '/dst/b')).toBe(true);
+  });
+
+  it('rethrows non-retryable errors immediately', async () => {
+    // A non-retryable code (e.g. ENOENT) should NOT be swallowed into a
+    // retry loop — that would mask real bugs and waste time.
+    let calls = 0;
+    vi.spyOn(fsp, 'rename').mockImplementation(async () => {
+      calls++;
+      const err = new Error('no such file') as NodeJS.ErrnoException;
+      err.code = 'ENOENT';
+      throw err;
+    });
+
+    await expect(retryRename('/src/a', '/dst/b', 5)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(calls).toBe(1);
+  });
+
+  it('gives up after the configured number of attempts', async () => {
+    let calls = 0;
+    vi.spyOn(fsp, 'rename').mockImplementation(async () => {
+      calls++;
+      const err = new Error('locked') as NodeJS.ErrnoException;
+      err.code = 'EPERM';
+      throw err;
+    });
+
+    await expect(retryRename('/src/a', '/dst/b', 3)).rejects.toMatchObject({ code: 'EPERM' });
+    expect(calls).toBe(3);
+  });
+
+  it('retries on EACCES as well', async () => {
+    let calls = 0;
+    vi.spyOn(fsp, 'rename').mockImplementation(async () => {
+      calls++;
+      if (calls < 2) {
+        const err = new Error('permission denied') as NodeJS.ErrnoException;
+        err.code = 'EACCES';
+        throw err;
+      }
+      return undefined;
+    });
+
+    await retryRename('/src/a', '/dst/b', 3);
+    expect(calls).toBe(2);
   });
 });
