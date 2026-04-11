@@ -1088,9 +1088,20 @@ export const buildTypeEnv = (
     }
   };
 
-  const walk = (node: SyntaxNode, currentScope: string): void => {
+  // Iterative traversal with explicit stack to prevent V8 call stack overflow
+  // on deeply nested ASTs (fixes #776, #772, #752, #706)
+  interface WalkFrame {
+    node: SyntaxNode;
+    scope: string;
+  }
+
+  const walkStack: WalkFrame[] = [{ node: tree.rootNode, scope: FILE_SCOPE }];
+
+  while (walkStack.length > 0) {
+    const { node, scope: currentScope } = walkStack.pop()!;
+
     // Fast skip: subtrees that can never contain type-relevant nodes (leaf-like literals).
-    if (SKIP_SUBTREE_TYPES.has(node.type)) return;
+    if (SKIP_SUBTREE_TYPES.has(node.type)) continue;
 
     // Collect class/struct names as we encounter them (used by extractInitializer
     // to distinguish constructor calls from function calls, e.g. C++ `User()` vs `getUser()`)
@@ -1205,14 +1216,12 @@ export const buildTypeEnv = (
       }
     }
 
-    // Recurse into children
-    for (let i = 0; i < node.childCount; i++) {
+    // Push children in reverse order so leftmost child is processed first (pre-order DFS)
+    for (let i = node.childCount - 1; i >= 0; i--) {
       const child = node.child(i);
-      if (child) walk(child, scope);
+      if (child) walkStack.push({ node: child, scope });
     }
-  };
-
-  walk(tree.rootNode, FILE_SCOPE);
+  }
 
   // Phase 14: Seed cross-file bindings from upstream files AFTER walk
   // (local declarations from walk() take precedence — first-writer-wins)

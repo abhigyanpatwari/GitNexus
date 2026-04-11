@@ -413,10 +413,15 @@ export const CALL_ARGUMENT_LIST_TYPES = new Set(['arguments', 'argument_list', '
 
 /** Walk an AST node depth-first, returning the first descendant with the given type. */
 export function findDescendant(node: SyntaxNode, type: string): SyntaxNode | null {
-  if (node.type === type) return node;
-  for (const child of node.children ?? []) {
-    const found = findDescendant(child, type);
-    if (found) return found;
+  // Iterative DFS to avoid stack overflow on deeply nested ASTs
+  const stack: SyntaxNode[] = [node];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (current.type === type) return current;
+    for (let i = current.childCount - 1; i >= 0; i--) {
+      const child = current.child(i);
+      if (child) stack.push(child);
+    }
   }
   return null;
 }
