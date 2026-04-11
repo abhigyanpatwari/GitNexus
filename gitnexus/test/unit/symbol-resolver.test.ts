@@ -888,6 +888,23 @@ describe('SM-16: Tier 3 global — lookupClassByName + lookupImplByName + lookup
     expect(result!.candidates.length).toBe(2);
   });
 
+  it('A4 intermediate: Method reachable via both callable and method indexes dedups to one Tier 3 candidate', () => {
+    // A method with an owner lands in callableByName (because Method is
+    // still in CALLABLE_TYPES during the Unit 3 intermediate state) AND in
+    // methodsByName (because A4 Unit 2 dual-indexes every method
+    // registration). Tier 3 must dedup by nodeId so consumers see each
+    // method exactly once.
+    ctx.model.symbols.add('src/user.ts', 'save', 'Method:src/user.ts:User.save', 'Method', {
+      ownerId: 'Class:src/user.ts:User',
+    });
+
+    const result = ctx.resolve('save', 'src/app.ts');
+
+    expect(result!.tier).toBe('global');
+    const nodeIds = result!.candidates.map((c) => c.nodeId);
+    expect(nodeIds).toEqual(['Method:src/user.ts:User.save']);
+  });
+
   it('returns null when no symbol exists at any tier', () => {
     const result = ctx.resolve('NonExistent', 'src/app.ts');
     expect(result).toBeNull();

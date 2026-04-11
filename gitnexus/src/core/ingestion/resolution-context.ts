@@ -197,27 +197,54 @@ export const createResolutionContext = (): ResolutionContext => {
     // Tier 3: Global — targeted O(1) index lookups for each symbol category.
     // Class-like symbols (Class, Struct, Interface, Enum, Record, Trait) are
     // covered by lookupClassByName; Rust impl blocks by lookupImplByName
-    // (separate to avoid polluting heritage resolution); callables (Function,
-    // Method, Constructor, Macro, Delegate) by lookupCallableByName.
-    // The three indexes cover disjoint symbol types so no dedup is needed.
-    // Consumers must check candidates.length and refuse ambiguous matches.
+    // (separate to avoid polluting heritage resolution); free callables
+    // (Function, Macro, Delegate) by lookupCallableByName; owner-scoped
+    // methods and constructors by `model.methods.lookupMethodByName`.
+    //
+    // Temporary dedup (plan 006, A4 Unit 3): Method/Constructor are still in
+    // CALLABLE_TYPES at this intermediate step, so `callableDefs` and
+    // `methodDefs` OVERLAP on those symbols. The Set-based dedup below
+    // collapses the duplicates by nodeId. Unit 4 shrinks CALLABLE_TYPES to
+    // free callables only and this dedup is removed.
     //
     // Known exclusion: TypeAlias, Const, and Variable are NOT reachable at
-    // Tier 3 — they don't belong to any of the three indexes. In practice
-    // they were never useful as Tier 3 candidates: TypeAlias is not a call
+    // Tier 3 — they don't belong to any of the indexes. In practice they
+    // were never useful as Tier 3 candidates: TypeAlias is not a call
     // target, Const/Variable are resolved via import or same-file tiers.
     // If a future language needs them at Tier 3, add a dedicated index.
-    // Macro (C/C++) and Delegate (C#) ARE included in the callable index
-    // since call-processor.ts treats them as callable targets.
+    // Macro (C/C++) and Delegate (C#) stay in the callable index since
+    // call-processor.ts treats them as callable targets.
     const classDefs = model.types.lookupClassByName(name);
     const implDefs = model.types.lookupImplByName(name);
     const callableDefs = symbols.lookupCallableByName(name);
+    const methodDefs = model.methods.lookupMethodByName(name);
 
-    if (classDefs.length === 0 && implDefs.length === 0 && callableDefs.length === 0) {
+    if (
+      classDefs.length === 0 &&
+      implDefs.length === 0 &&
+      callableDefs.length === 0 &&
+      methodDefs.length === 0
+    ) {
       tierMiss++;
       return null;
     }
-    const globalDefs = [...classDefs, ...implDefs, ...callableDefs];
+
+    // Dedup by nodeId — classDefs and implDefs are disjoint from the
+    // callable/method pair, but callableDefs ∩ methodDefs can be non-empty
+    // during the A4 intermediate state.
+    const globalDefs: SymbolDefinition[] = [...classDefs, ...implDefs];
+    const seen = new Set<string>();
+    for (const def of callableDefs) {
+      if (seen.has(def.nodeId)) continue;
+      seen.add(def.nodeId);
+      globalDefs.push(def);
+    }
+    for (const def of methodDefs) {
+      if (seen.has(def.nodeId)) continue;
+      seen.add(def.nodeId);
+      globalDefs.push(def);
+    }
+
     tierGlobal++;
     return { candidates: globalDefs, tier: 'global' };
   };

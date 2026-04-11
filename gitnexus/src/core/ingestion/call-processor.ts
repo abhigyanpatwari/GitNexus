@@ -1573,11 +1573,28 @@ const resolveModuleAliasedCall = (
     );
   }
   if (filtered.length === 0) {
-    // Widen to global callable index scoped to the aliased module file.
+    // Widen to global callable+method indexes scoped to the aliased module
+    // file. A4 Unit 3 (plan 006): combine callable-by-name with
+    // method-by-name and dedup by nodeId — Method/Constructor still overlap
+    // during the intermediate state and Unit 4 drops the dedup.
     const cacheKey = `${call.calledName}\0${moduleFile}`;
     let defs = widenCache?.get(cacheKey);
     if (!defs) {
-      defs = ctx.model.symbols.lookupCallableByName(call.calledName);
+      const rawCallable = ctx.model.symbols.lookupCallableByName(call.calledName);
+      const rawMethods = ctx.model.methods.lookupMethodByName(call.calledName);
+      const combined: SymbolDefinition[] = [];
+      const seenWiden = new Set<string>();
+      for (const d of rawCallable) {
+        if (seenWiden.has(d.nodeId)) continue;
+        seenWiden.add(d.nodeId);
+        combined.push(d);
+      }
+      for (const d of rawMethods) {
+        if (seenWiden.has(d.nodeId)) continue;
+        seenWiden.add(d.nodeId);
+        combined.push(d);
+      }
+      defs = combined;
       widenCache?.set(cacheKey, defs);
     }
     filtered = filterCallableCandidates(defs, call.argCount, call.callForm).filter(
@@ -1618,11 +1635,26 @@ const resolveMemberCallByFile = (
   const typeNodeIds = new Set(typeResolved.candidates.map((d) => d.nodeId));
   const typeFiles = new Set(typeResolved.candidates.map((d) => d.filePath));
 
-  const methodPool = filterCallableCandidates(
-    ctx.model.symbols.lookupCallableByName(calledName),
-    argCount,
-    callForm,
-  );
+  // A4 Unit 3 (plan 006): combine callable-by-name + method-by-name so that
+  // class-method registrations land in the pool here too. During the A4
+  // intermediate state, Method/Constructor are still in CALLABLE_TYPES so
+  // the two pools OVERLAP — dedup by nodeId. Unit 4 shrinks CALLABLE_TYPES
+  // and this dedup is removed.
+  const rawCallablePool = ctx.model.symbols.lookupCallableByName(calledName);
+  const rawMethodPool = ctx.model.methods.lookupMethodByName(calledName);
+  const combinedPool: SymbolDefinition[] = [];
+  const combinedSeen = new Set<string>();
+  for (const def of rawCallablePool) {
+    if (combinedSeen.has(def.nodeId)) continue;
+    combinedSeen.add(def.nodeId);
+    combinedPool.push(def);
+  }
+  for (const def of rawMethodPool) {
+    if (combinedSeen.has(def.nodeId)) continue;
+    combinedSeen.add(def.nodeId);
+    combinedPool.push(def);
+  }
+  const methodPool = filterCallableCandidates(combinedPool, argCount, callForm);
   const fileFiltered = methodPool.filter((c) => typeFiles.has(c.filePath));
   if (fileFiltered.length === 1) {
     return toResolveResult(fileFiltered[0], typeResolved.tier);
