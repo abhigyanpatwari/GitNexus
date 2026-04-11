@@ -408,11 +408,14 @@ export async function initLbugWithDb(
   }
 
   // Load VECTOR extension for semantic search support
-  try {
-    await available[0].query('INSTALL VECTOR');
-    await available[0].query('LOAD EXTENSION VECTOR');
-  } catch {
-    // VECTOR extension may not be available
+  if (!shared.vectorLoaded) {
+    try {
+      await available[0].query('INSTALL VECTOR');
+      await available[0].query('LOAD EXTENSION VECTOR');
+      shared.vectorLoaded = true;
+    } catch {
+      // VECTOR extension may not be available
+    }
   }
 
   pool.set(repoId, {
