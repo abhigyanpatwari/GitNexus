@@ -1576,10 +1576,10 @@ export class LocalBackend {
         .map((_, i) => `(n.startLine <= $hunkEnd${i} AND n.endLine >= $hunkStart${i})`)
         .join(' OR ');
 
-      const params: Record<string, any> = { filePath: fileDiff.filePath };
+      const queryParams: Record<string, any> = { filePath: fileDiff.filePath };
       fileDiff.hunks.forEach((hunk, i) => {
-        params[`hunkStart${i}`] = hunk.startLine;
-        params[`hunkEnd${i}`] = hunk.endLine;
+        queryParams[`hunkStart${i}`] = hunk.startLine;
+        queryParams[`hunkEnd${i}`] = hunk.endLine;
       });
 
       const symbolQuery = `
@@ -1591,7 +1591,7 @@ export class LocalBackend {
       `;
 
       try {
-        const rows = await executeParameterized(repo.id, symbolQuery, params);
+        const rows = await executeParameterized(repo.id, symbolQuery, queryParams);
         for (const sym of rows) {
           changedSymbols.push({
             id: sym.id || sym[0],
@@ -1606,32 +1606,37 @@ export class LocalBackend {
       }
     }
 
-    // Find affected processes
+    // Find affected processes -- single batched query instead of N+1
     const affectedProcesses = new Map<string, any>();
-    for (const sym of changedSymbols) {
+    if (changedSymbols.length > 0) {
+      const symIds = changedSymbols.map((s) => s.id);
+      const symNameById = new Map(changedSymbols.map((s) => [s.id, s.name]));
       try {
         const procs = await executeParameterized(
           repo.id,
           `
-          MATCH (n {id: $nodeId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-          RETURN p.id AS pid, p.heuristicLabel AS label, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
+          MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+          WHERE n.id IN $ids
+          RETURN n.id AS nodeId, p.id AS pid, p.heuristicLabel AS label,
+                 p.processType AS processType, p.stepCount AS stepCount, r.step AS step
         `,
-          { nodeId: sym.id },
+          { ids: symIds },
         );
         for (const proc of procs) {
-          const pid = proc.pid || proc[0];
+          const nodeId = proc.nodeId || proc[0];
+          const pid = proc.pid || proc[1];
           if (!affectedProcesses.has(pid)) {
             affectedProcesses.set(pid, {
               id: pid,
-              name: proc.label || proc[1],
-              process_type: proc.processType || proc[2],
-              step_count: proc.stepCount || proc[3],
+              name: proc.label || proc[2],
+              process_type: proc.processType || proc[3],
+              step_count: proc.stepCount || proc[4],
               changed_steps: [],
             });
           }
           affectedProcesses.get(pid)!.changed_steps.push({
-            symbol: sym.name,
-            step: proc.step || proc[4],
+            symbol: symNameById.get(nodeId) ?? nodeId,
+            step: proc.step || proc[5],
           });
         }
       } catch (e) {
