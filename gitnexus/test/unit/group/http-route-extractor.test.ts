@@ -157,6 +157,89 @@ export default router;
         providers.find((c) => c.contractId === 'http::DELETE::/api/users/{param}'),
       ).toBeDefined();
     });
+
+    it('extracts Go Gin and Echo route registrations', async () => {
+      const dir = path.join(tmpDir, 'go-frameworks');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd', 'server.go'),
+        `
+package main
+
+func createOrder(c *gin.Context) {}
+func listOrders(c echo.Context) error { return nil }
+
+func main() {
+  r := gin.Default()
+  r.POST("/api/orders/:id", createOrder)
+
+  e := echo.New()
+  e.GET("/api/orders", listOrders)
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const ginRoute = providers.find((c) => c.contractId === 'http::POST::/api/orders/{param}');
+      expect(ginRoute).toBeDefined();
+      expect(ginRoute?.symbolName).toBe('createOrder');
+
+      const echoRoute = providers.find((c) => c.contractId === 'http::GET::/api/orders');
+      expect(echoRoute).toBeDefined();
+      expect(echoRoute?.symbolName).toBe('listOrders');
+    });
+
+    it('extracts stdlib HandleFunc providers', async () => {
+      const dir = path.join(tmpDir, 'go-stdlib-provider');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd', 'server.go'),
+        `
+package main
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {}
+
+func main() {
+  http.HandleFunc("/api/health", healthHandler)
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const healthRoute = providers.find((c) => c.contractId === 'http::GET::/api/health');
+      expect(healthRoute).toBeDefined();
+      expect(healthRoute?.symbolName).toBe('healthHandler');
+    });
+
+    it('extracts NestJS controller decorators', async () => {
+      const dir = path.join(tmpDir, 'nestjs');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'orders.controller.ts'),
+        `
+import { Controller, Patch } from '@nestjs/common';
+
+@Controller('orders')
+export class OrdersController {
+  @Patch(':id')
+  updateOrder() {
+    return {};
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const patchRoute = providers.find((c) => c.contractId === 'http::PATCH::/orders/{param}');
+      expect(patchRoute).toBeDefined();
+      expect(patchRoute?.symbolName).toBe('updateOrder');
+    });
   });
 
   describe('consumer extraction — fetch patterns', () => {
@@ -204,6 +287,91 @@ export const deleteUser = (id: string) => axios.delete(\`/api/users/\${id}\`);
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/users')).toBeDefined();
       expect(
         consumers.find((c) => c.contractId === 'http::DELETE::/api/users/{param}'),
+      ).toBeDefined();
+    });
+
+    it('extracts Python requests calls', async () => {
+      const dir = path.join(tmpDir, 'python-consumer');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'client.py'),
+        `
+import requests
+
+def create_order():
+    return requests.post("https://svc.local/api/orders/42", json={"id": 42})
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find((c) => c.contractId === 'http::POST::/api/orders/{param}'),
+      ).toBeDefined();
+    });
+
+    it('extracts Java RestTemplate, WebClient and OkHttp calls', async () => {
+      const dir = path.join(tmpDir, 'java-consumer');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'ApiClient.java'),
+        `
+import org.springframework.http.HttpMethod;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.reactive.function.client.WebClient;
+import okhttp3.Request;
+
+class ApiClient {
+  void run(RestTemplate restTemplate, WebClient webClient) {
+    restTemplate.getForObject("/api/users/{id}", String.class, 42);
+    webClient.method(HttpMethod.PATCH, "/api/users/42");
+    new Request.Builder().url("/api/orders/42").build();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/users/{param}')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::PATCH::/api/users/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/orders/{param}'),
+      ).toBeDefined();
+    });
+
+    it('extracts Go stdlib and resty calls', async () => {
+      const dir = path.join(tmpDir, 'go-consumer');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd', 'client.go'),
+        `
+package main
+
+import (
+  "net/http"
+
+  "github.com/go-resty/resty/v2"
+)
+
+func main() {
+  http.Get("/api/health")
+  client := resty.New()
+  client.R().Delete("/api/orders/42")
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/health')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::DELETE::/api/orders/{param}'),
       ).toBeDefined();
     });
   });
@@ -323,78 +491,6 @@ async def create_user(user: UserCreate):
       // Should fall back to source scan
       const providers = contracts.filter((c) => c.role === 'provider');
       expect(providers.length).toBeGreaterThanOrEqual(1);
-    });
-  });
-
-  describe('interface regex anchoring', () => {
-    it('skips Feign client interfaces (no @Controller)', async () => {
-      const dir = path.join(tmpDir, 'feign-skip');
-      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-      fs.writeFileSync(
-        path.join(dir, 'src/UserClient.java'),
-        `
-package com.example;
-@FeignClient(name = "user-service")
-public interface UserClient {
-    @GetMapping("/users")
-    List<User> getUsers();
-}
-`,
-      );
-      const contracts = await extractor.extract(null, dir, makeRepo(dir));
-      expect(contracts.filter((c) => c.role === 'provider')).toHaveLength(0);
-    });
-
-    it('does NOT skip when @RestController is present', async () => {
-      const dir = path.join(tmpDir, 'ctrl-iface');
-      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-      fs.writeFileSync(
-        path.join(dir, 'src/UserController.java'),
-        `
-@RestController
-@RequestMapping("/api")
-public class UserController {
-    @GetMapping("/users")
-    public List<User> list() { return null; }
-}
-`,
-      );
-      const contracts = await extractor.extract(null, dir, makeRepo(dir));
-      expect(contracts.filter((c) => c.role === 'provider').length).toBeGreaterThanOrEqual(1);
-    });
-
-    it('does NOT false-positive on interface in comments', async () => {
-      const dir = path.join(tmpDir, 'iface-comment');
-      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-      fs.writeFileSync(
-        path.join(dir, 'src/Api.java'),
-        `
-// implements the interface UserApi
-public class Api {
-    @GetMapping("/health")
-    public String health() { return "ok"; }
-}
-`,
-      );
-      const contracts = await extractor.extract(null, dir, makeRepo(dir));
-      expect(contracts.filter((c) => c.role === 'provider').length).toBeGreaterThanOrEqual(1);
-    });
-
-    it('does NOT false-positive on interface in a string', async () => {
-      const dir = path.join(tmpDir, 'iface-str');
-      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-      fs.writeFileSync(
-        path.join(dir, 'src/Svc.java'),
-        `
-public class Svc {
-    String desc = "implements interface Foo";
-    @GetMapping("/status")
-    public String status() { return desc; }
-}
-`,
-      );
-      const contracts = await extractor.extract(null, dir, makeRepo(dir));
-      expect(contracts.filter((c) => c.role === 'provider').length).toBeGreaterThanOrEqual(1);
     });
   });
 

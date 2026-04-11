@@ -75,8 +75,7 @@ public void handleUserCreated(ConsumerRecord<String, String> record) {
     it('test_extract_kafkajs_subscribe_returns_consumer', async () => {
       writeFile(
         'src/consumer.ts',
-        `await consumer.subscribe({ topic: 'order.placed', fromBeginning: true });
-await consumer.run({ eachMessage: async ({ message }) => {} });`,
+        `await consumer.subscribe({ topic: 'order.placed', fromBeginning: true });`,
       );
 
       const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
@@ -98,6 +97,23 @@ await consumer.run({ eachMessage: async ({ message }) => {} });`,
 
       expect(producers).toHaveLength(1);
       expect(producers[0].contractId).toBe('topic::order.placed');
+    });
+  });
+
+  describe('KafkaJS consumer run', () => {
+    it('test_extract_kafkajs_consumer_run_eachmessage_returns_consumer', async () => {
+      writeFile(
+        'src/consumer.ts',
+        `await consumer.subscribe({ topic: 'user.logged-in' });
+await consumer.run({ eachMessage: async () => {} });`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(1);
+      expect(consumers[0].contractId).toBe('topic::user.logged-in');
+      expect(consumers[0].meta.broker).toBe('kafka');
     });
   });
 
@@ -171,6 +187,62 @@ public void processOrder(OrderMessage msg) {}`,
 
       expect(producers).toHaveLength(1);
       expect(producers[0].contractId).toBe('topic::job-queue');
+    });
+  });
+
+  describe('JetStream', () => {
+    it('test_extract_jetstream_publish_returns_provider', async () => {
+      writeFile('src/stream.go', `js.Publish("orders.created", payload)`);
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const producers = contracts.filter((c) => c.role === 'provider');
+
+      expect(producers).toHaveLength(1);
+      expect(producers[0].contractId).toBe('topic::orders.created');
+      expect(producers[0].meta.broker).toBe('nats');
+    });
+
+    it('test_extract_jetstream_subscribe_returns_consumer', async () => {
+      writeFile('src/stream.go', `js.Subscribe("orders.created", handler)`);
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(1);
+      expect(consumers[0].contractId).toBe('topic::orders.created');
+      expect(consumers[0].meta.broker).toBe('nats');
+    });
+  });
+
+  describe('Python NATS', () => {
+    it('test_extract_python_nats_subscribe_returns_consumer', async () => {
+      writeFile(
+        'src/subscriber.py',
+        `nc = await nats.connect()
+await nc.subscribe("orders.created", cb=handler)`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(1);
+      expect(consumers[0].contractId).toBe('topic::orders.created');
+      expect(consumers[0].meta.broker).toBe('nats');
+    });
+
+    it('test_extract_python_nats_publish_returns_provider', async () => {
+      writeFile(
+        'src/publisher.py',
+        `nc = await nats.connect()
+await nc.publish("orders.created", payload)`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const producers = contracts.filter((c) => c.role === 'provider');
+
+      expect(producers).toHaveLength(1);
+      expect(producers[0].contractId).toBe('topic::orders.created');
+      expect(producers[0].meta.broker).toBe('nats');
     });
   });
 
@@ -248,6 +320,96 @@ partConsumer, _ := consumer.ConsumePartition("inventory.update", 0, sarama.Offse
       expect(consumers[0].contractId).toBe('topic::inventory.update');
       expect(consumers[0].meta.broker).toBe('kafka');
     });
+
+    it('test_extract_sarama_sync_producer_returns_provider', async () => {
+      writeFile(
+        'internal/publisher.go',
+        `package publisher
+producer, _ := sarama.NewSyncProducer(brokers, cfg)
+producer.SendMessage(&sarama.ProducerMessage{Topic: "inventory.update"})`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const producers = contracts.filter((c) => c.role === 'provider');
+
+      expect(producers).toHaveLength(1);
+      expect(producers[0].contractId).toBe('topic::inventory.update');
+      expect(producers[0].meta.broker).toBe('kafka');
+    });
+
+    it('test_extract_sarama_async_producer_returns_provider', async () => {
+      writeFile(
+        'internal/publisher.go',
+        `package publisher
+producer, _ := sarama.NewAsyncProducer(brokers, cfg)
+producer.Input() <- &sarama.ProducerMessage{Topic: "inventory.update"}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const producers = contracts.filter((c) => c.role === 'provider');
+
+      expect(producers).toHaveLength(1);
+      expect(producers[0].contractId).toBe('topic::inventory.update');
+      expect(producers[0].meta.broker).toBe('kafka');
+    });
+
+    it('test_extract_sarama_producer_in_loop_captures_all_topics', async () => {
+      // Regression: a for loop that constructs multiple ProducerMessage
+      // literals inside a single NewSyncProducer scope. The previous
+      // regex anchored on NewSyncProducer and captured only the first
+      // Topic within 300 chars, silently dropping the rest.
+      writeFile(
+        'internal/multi-publisher.go',
+        `package publisher
+
+func publishAll(producer sarama.SyncProducer, items []Item) error {
+  _, _ = sarama.NewSyncProducer(brokers, cfg)
+  for _, item := range items {
+    msg1 := &sarama.ProducerMessage{Topic: "order.created"}
+    msg2 := &sarama.ProducerMessage{Topic: "order.shipped"}
+    _ = msg1
+    _ = msg2
+  }
+  return nil
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const producers = contracts.filter((c) => c.role === 'provider');
+      const topics = producers.map((c) => c.contractId).sort();
+      // Both topics must appear (exact set match to catch any duplicates).
+      expect(topics).toEqual(['topic::order.created', 'topic::order.shipped']);
+    });
+
+    it('test_extract_kafka_go_writer_returns_provider', async () => {
+      writeFile(
+        'internal/writer.go',
+        `package publisher
+writer := &kafka.Writer{Topic: "inventory.update"}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const producers = contracts.filter((c) => c.role === 'provider');
+
+      expect(producers).toHaveLength(1);
+      expect(producers[0].contractId).toBe('topic::inventory.update');
+      expect(producers[0].meta.broker).toBe('kafka');
+    });
+
+    it('test_extract_kafka_go_reader_returns_consumer', async () => {
+      writeFile(
+        'internal/reader.go',
+        `package consumer
+reader := kafka.NewReader(kafka.ReaderConfig{Topic: "inventory.update"})`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(1);
+      expect(consumers[0].contractId).toBe('topic::inventory.update');
+      expect(consumers[0].meta.broker).toBe('kafka');
+    });
   });
 
   describe('Kafka — Python', () => {
@@ -308,6 +470,17 @@ await consumer.subscribe({ topic: 'order.placed' });`,
       const consumers = contracts.filter((c) => c.role === 'consumer');
       expect(producers).toHaveLength(2);
       expect(consumers).toHaveLength(1);
+    });
+
+    it('test_extract_ignores_go_test_files', async () => {
+      writeFile(
+        'src/orders_test.go',
+        `consumer.ConsumePartition("fake-topic", 0, sarama.OffsetNewest)`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+
+      expect(contracts).toEqual([]);
     });
   });
 });

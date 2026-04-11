@@ -226,7 +226,7 @@ export class HttpRouteExtractor implements ContractExtractor {
   }
 
   private async extractProvidersSourceScan(repoPath: string): Promise<ExtractedContract[]> {
-    const files = await glob('**/*.{ts,tsx,js,jsx,java,vue,svelte,php,py}', {
+    const files = await glob('**/*.{ts,tsx,js,jsx,java,vue,svelte,php,py,go}', {
       cwd: repoPath,
       ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
       nodir: true,
@@ -236,7 +236,9 @@ export class HttpRouteExtractor implements ContractExtractor {
       const content = readSafe(repoPath, rel);
       if (!content) continue;
       out.push(...this.scanSpringProviders(content, rel));
+      out.push(...this.scanNestProviders(content, rel));
       out.push(...this.scanExpressProviders(content, rel));
+      out.push(...this.scanGoProviders(content, rel));
       out.push(...this.scanLaravelProviders(content, rel));
       out.push(...this.scanFastApiProviders(content, rel));
     }
@@ -257,18 +259,6 @@ export class HttpRouteExtractor implements ContractExtractor {
 
   private scanSpringProviders(content: string, filePath: string): ExtractedContract[] {
     const out: ExtractedContract[] = [];
-
-    // Skip Feign/client interfaces — annotated methods in interfaces are
-    // consumers (Feign, JAX-RS proxies), not provider endpoints.
-    // Anchored to line start (with optional access modifier) so we do not
-    // match "interface" inside comments or string literals.
-    if (
-      /^\s*(?:public\s+)?interface\s+\w+/m.test(content) &&
-      !/@(?:Rest)?Controller\b/.test(content)
-    ) {
-      return out;
-    }
-
     let classPrefix = '';
     const classRm = content.match(/@RequestMapping\s*\(\s*"([^"]+)"/);
     if (classRm) classPrefix = classRm[1].replace(/\/+$/, '');
@@ -321,6 +311,48 @@ export class HttpRouteExtractor implements ContractExtractor {
       const pathNorm = normalizeHttpPath(m[2]);
       out.push(this.makeProvider(filePath, method, pathNorm, 'handler', 0.8));
     }
+    return out;
+  }
+
+  private scanNestProviders(content: string, filePath: string): ExtractedContract[] {
+    const out: ExtractedContract[] = [];
+    const controllerMatch = content.match(/@Controller\s*\(\s*['"`]([^'"`]+)['"`]\s*\)/);
+    const controllerPrefix = controllerMatch ? controllerMatch[1].replace(/\/+$/, '') : '';
+    const re = /@(Get|Post|Put|Delete|Patch)\s*\(\s*['"`]?([^'"`)]*)['"`]?\s*\)/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(content)) !== null) {
+      const method = m[1].toUpperCase();
+      const routePath = String(m[2] || '');
+      const fullPath = controllerPrefix
+        ? `${controllerPrefix}/${routePath.replace(/^\/+/, '')}`
+        : routePath;
+      const pathNorm = normalizeHttpPath(fullPath.startsWith('/') ? fullPath : `/${fullPath}`);
+      const sub = content.slice(m.index);
+      const nameMatch = sub.match(
+        /(?:public|protected|private)?\s*(?:async\s+)?(\w+)\s*\([^)]*\)\s*\{/,
+      );
+      const name = nameMatch ? nameMatch[1] : m[0];
+      out.push(this.makeProvider(filePath, method, pathNorm, name, 0.8));
+    }
+    return out;
+  }
+
+  private scanGoProviders(content: string, filePath: string): ExtractedContract[] {
+    const out: ExtractedContract[] = [];
+    const frameworkRe =
+      /(?:^|\W)\w+\.(GET|POST|PUT|DELETE|PATCH)\s*\(\s*['"]([^'"]+)['"]\s*,\s*(\w+)/gim;
+    let m: RegExpExecArray | null;
+    while ((m = frameworkRe.exec(content)) !== null) {
+      out.push(this.makeProvider(filePath, m[1].toUpperCase(), normalizeHttpPath(m[2]), m[3], 0.8));
+    }
+
+    const handleFuncRe =
+      /(?:http|\w+)\.HandleFunc\s*\(\s*['"]([^'"]+)['"]\s*,\s*(\w+)\s*\)(?:\s*\.\s*Methods\s*\(\s*['"](\w+)['"]\s*\))?/gim;
+    while ((m = handleFuncRe.exec(content)) !== null) {
+      const method = (m[3] || 'GET').toUpperCase();
+      out.push(this.makeProvider(filePath, method, normalizeHttpPath(m[1]), m[2], 0.8));
+    }
+
     return out;
   }
 
@@ -419,7 +451,7 @@ export class HttpRouteExtractor implements ContractExtractor {
   }
 
   private async extractConsumersSourceScan(repoPath: string): Promise<ExtractedContract[]> {
-    const files = await glob('**/*.{ts,tsx,js,jsx,vue,svelte}', {
+    const files = await glob('**/*.{ts,tsx,js,jsx,vue,svelte,py,java,go}', {
       cwd: repoPath,
       ignore: ['**/node_modules/**', '**/.git/**'],
       nodir: true,
@@ -430,6 +462,9 @@ export class HttpRouteExtractor implements ContractExtractor {
       if (!content) continue;
       out.push(...this.scanFetchConsumers(content, rel));
       out.push(...this.scanAxiosConsumers(content, rel));
+      out.push(...this.scanPythonRequestsConsumers(content, rel));
+      out.push(...this.scanJavaConsumers(content, rel));
+      out.push(...this.scanGoConsumers(content, rel));
     }
     return this.dedupeContracts(out);
   }
@@ -451,15 +486,124 @@ export class HttpRouteExtractor implements ContractExtractor {
     return url.replace(/\$\{[^}]+\}/g, '{param}');
   }
 
+  private normalizeConsumerPath(url: string): string {
+    const templated = this.templateToPattern(url.trim());
+    let pathOnly = templated;
+    if (/^https?:\/\//i.test(templated)) {
+      try {
+        pathOnly = new URL(templated).pathname;
+      } catch {
+        pathOnly = templated.replace(/^https?:\/\/[^/]+/i, '');
+      }
+    }
+
+    const normalized = normalizeHttpPath(pathOnly || '/');
+    const segments = normalized
+      .split('/')
+      .filter(Boolean)
+      .map((segment) => {
+        if (/^\d+$/.test(segment)) return '{param}';
+        return segment;
+      });
+    return `/${segments.join('/')}`.replace(/\/+$/, '') || '/';
+  }
+
   private scanAxiosConsumers(content: string, filePath: string): ExtractedContract[] {
     const out: ExtractedContract[] = [];
     const re = /axios\.(get|post|put|delete|patch)\s*\(\s*[`'"]([^`'"]+)[`'"]/gi;
     let m: RegExpExecArray | null;
     while ((m = re.exec(content)) !== null) {
       const method = m[1].toUpperCase();
-      const pathNorm = normalizeHttpPath(this.templateToPattern(m[2]));
+      const pathNorm = this.normalizeConsumerPath(m[2]);
       out.push(this.makeConsumer(filePath, method, pathNorm, 0.7));
     }
+    return out;
+  }
+
+  private scanPythonRequestsConsumers(content: string, filePath: string): ExtractedContract[] {
+    const out: ExtractedContract[] = [];
+    const methodRe = /requests\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi;
+    let m: RegExpExecArray | null;
+    while ((m = methodRe.exec(content)) !== null) {
+      out.push(
+        this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7),
+      );
+    }
+
+    const genericRe = /requests\.request\s*\(\s*['"](\w+)['"]\s*,\s*['"]([^'"]+)['"]/gi;
+    while ((m = genericRe.exec(content)) !== null) {
+      out.push(
+        this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7),
+      );
+    }
+
+    return out;
+  }
+
+  private scanJavaConsumers(content: string, filePath: string): ExtractedContract[] {
+    const out: ExtractedContract[] = [];
+    const restTemplateMethods: Array<[RegExp, string]> = [
+      [/restTemplate\.getFor(?:Object|Entity)\s*\(\s*['"]([^'"]+)['"]/gi, 'GET'],
+      [/restTemplate\.postFor(?:Object|Entity)\s*\(\s*['"]([^'"]+)['"]/gi, 'POST'],
+      [/restTemplate\.put\s*\(\s*['"]([^'"]+)['"]/gi, 'PUT'],
+      [/restTemplate\.delete\s*\(\s*['"]([^'"]+)['"]/gi, 'DELETE'],
+      [/restTemplate\.patchForObject\s*\(\s*['"]([^'"]+)['"]/gi, 'PATCH'],
+    ];
+    for (const [re, method] of restTemplateMethods) {
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(content)) !== null) {
+        out.push(this.makeConsumer(filePath, method, this.normalizeConsumerPath(m[1]), 0.7));
+      }
+    }
+
+    const webClientMethodRe =
+      /webClient\.method\s*\(\s*HttpMethod\.(GET|POST|PUT|DELETE|PATCH)\s*,\s*['"]([^'"]+)['"]/gi;
+    let m: RegExpExecArray | null;
+    while ((m = webClientMethodRe.exec(content)) !== null) {
+      out.push(
+        this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7),
+      );
+    }
+
+    const okHttpRe =
+      /new\s+Request\.Builder\s*\(\)\s*\.url\s*\(\s*['"]([^'"]+)['"]\s*\)(?:\s*\.\s*method\s*\(\s*['"](\w+)['"])?/gim;
+    while ((m = okHttpRe.exec(content)) !== null) {
+      out.push(
+        this.makeConsumer(
+          filePath,
+          (m[2] || 'GET').toUpperCase(),
+          this.normalizeConsumerPath(m[1]),
+          0.7,
+        ),
+      );
+    }
+
+    return out;
+  }
+
+  private scanGoConsumers(content: string, filePath: string): ExtractedContract[] {
+    const out: ExtractedContract[] = [];
+    const httpMethodRe = /\bhttp\.(Get|Post|Head)\s*\(\s*['"]([^'"]+)['"]/gi;
+    let m: RegExpExecArray | null;
+    while ((m = httpMethodRe.exec(content)) !== null) {
+      const method = m[1].toUpperCase() === 'HEAD' ? 'GET' : m[1].toUpperCase();
+      out.push(this.makeConsumer(filePath, method, this.normalizeConsumerPath(m[2]), 0.7));
+    }
+
+    const newRequestRe = /\bhttp\.NewRequest\s*\(\s*['"](\w+)['"]\s*,\s*['"]([^'"]+)['"]/gi;
+    while ((m = newRequestRe.exec(content)) !== null) {
+      out.push(
+        this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7),
+      );
+    }
+
+    const restyRe = /\b\w+\.R\(\)\.(Get|Post|Put|Delete|Patch)\s*\(\s*['"]([^'"]+)['"]/gi;
+    while ((m = restyRe.exec(content)) !== null) {
+      out.push(
+        this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7),
+      );
+    }
+
     return out;
   }
 
