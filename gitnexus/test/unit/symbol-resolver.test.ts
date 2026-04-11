@@ -391,6 +391,14 @@ describe('heritage false-positive guard', () => {
   });
 });
 
+// These two describe blocks (`lookupExactFull` and `SM-16: SymbolTable.getFiles()`)
+// intentionally use `createSymbolTable()` directly instead of going through
+// `createSemanticModel()`. The behaviors under test belong to the pure DAG
+// leaf — file/callable indexes, getFiles iterator — and do not involve the
+// owner-scoped registries. Testing them on the bare leaf keeps the unit
+// isolated. Do not migrate these blocks to createSemanticModel() "for
+// consistency" — that would add unused registry setup and weaken the
+// isolation property.
 describe('lookupExactFull', () => {
   it('returns full SymbolDefinition for same-file lookup via O(1) direct storage', () => {
     const symbolTable = createSymbolTable();

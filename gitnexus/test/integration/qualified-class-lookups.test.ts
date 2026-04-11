@@ -8,6 +8,10 @@ describe('qualified class lookups', () => {
   it('derives canonical dot-separated names from namespaces, packages, and modules', async () => {
     const graph = createKnowledgeGraph();
     const model = createSemanticModel();
+    // model.symbols is the SymbolTable leaf that processParsing writes into.
+    // Fan-out writes still reach model.types / model.methods / model.fields
+    // via SemanticModel's wrappedAdd — this alias is purely for convenience
+    // at call sites that want the SymbolTable-shaped interface.
     const symbolTable = model.symbols;
     const astCache = createASTCache();
 
@@ -62,6 +66,10 @@ describe('qualified class lookups', () => {
   it('falls back to the simple name for top-level class-like symbols', async () => {
     const graph = createKnowledgeGraph();
     const model = createSemanticModel();
+    // model.symbols is the SymbolTable leaf that processParsing writes into.
+    // Fan-out writes still reach model.types / model.methods / model.fields
+    // via SemanticModel's wrappedAdd — this alias is purely for convenience
+    // at call sites that want the SymbolTable-shaped interface.
     const symbolTable = model.symbols;
     const astCache = createASTCache();
 

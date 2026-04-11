@@ -105,28 +105,71 @@ describe('NodeLabel taxonomy coverage', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Shared hook references (class-like group collapses to one closure)
+// Behavior group coverage — every label in a behavior group routes to the
+// group's registry write, regardless of how hooks are implemented (shared
+// closure, per-label closure, etc.). These tests survive an internal
+// refactor to per-label closures for tracing/metrics — unlike
+// reference-equality assertions on the hook functions themselves.
 // ---------------------------------------------------------------------------
 
-describe('hook sharing across class-like entries', () => {
-  it('all 6 class-like labels share reference equality on their hook', () => {
-    const table = createRegistrationTable(makeDeps());
-    const classHook = table.get('Class')!.hook;
-    for (const label of ['Struct', 'Interface', 'Enum', 'Record', 'Trait'] as const) {
-      expect(table.get(label)!.hook).toBe(classHook);
-    }
+describe('class-like behavior group — all 6 labels route to types.registerClass', () => {
+  const CLASS_LIKE_LABELS = ['Class', 'Struct', 'Interface', 'Enum', 'Record', 'Trait'] as const;
+
+  for (const label of CLASS_LIKE_LABELS) {
+    it(`${label} writes to types.registerClass`, () => {
+      const deps = makeDeps();
+      const table = createRegistrationTable(deps);
+      const def = makeDef({
+        nodeId: `${label.toLowerCase()}:User`,
+        type: label,
+        qualifiedName: `app.User`,
+      });
+      table.get(label)!.hook('User', def);
+      expect(deps.types.lookupClassByName('User')).toHaveLength(1);
+    });
+  }
+});
+
+describe('method-like behavior group — Method and Constructor route to methods.register', () => {
+  for (const label of ['Method', 'Constructor'] as const) {
+    it(`${label} writes to methods.register when ownerId is set`, () => {
+      const deps = makeDeps();
+      const table = createRegistrationTable(deps);
+      const def = makeDef({
+        nodeId: `${label.toLowerCase()}:save`,
+        type: label,
+        ownerId: 'class:User',
+      });
+      table.get(label)!.hook('save', def);
+      expect(deps.methods.lookupMethodByOwner('class:User', 'save')?.nodeId).toBe(
+        `${label.toLowerCase()}:save`,
+      );
+    });
+  }
+});
+
+describe('behavior group isolation', () => {
+  it('class-like hooks never touch methods or fields', () => {
+    const deps = makeDeps();
+    const table = createRegistrationTable(deps);
+    const def = makeDef({
+      nodeId: 'class:User',
+      type: 'Class',
+      ownerId: 'unrelated',
+    });
+    table.get('Class')!.hook('User', def);
+    // No method or field registered — class hook is isolated to types.
+    expect(deps.methods.lookupMethodByOwner('unrelated', 'User')).toBeUndefined();
+    expect(deps.fields.lookupFieldByOwner('unrelated', 'User')).toBeUndefined();
   });
 
-  it('Method and Constructor share reference equality on their hook', () => {
-    const table = createRegistrationTable(makeDeps());
-    expect(table.get('Method')!.hook).toBe(table.get('Constructor')!.hook);
-  });
-
-  it('class-like hook differs from method-like and property hooks', () => {
-    const table = createRegistrationTable(makeDeps());
-    expect(table.get('Class')!.hook).not.toBe(table.get('Method')!.hook);
-    expect(table.get('Class')!.hook).not.toBe(table.get('Property')!.hook);
-    expect(table.get('Class')!.hook).not.toBe(table.get('Impl')!.hook);
+  it('Impl hooks write to types.registerImpl, never to types.registerClass', () => {
+    const deps = makeDeps();
+    const table = createRegistrationTable(deps);
+    const def = makeDef({ nodeId: 'impl:User', type: 'Impl' });
+    table.get('Impl')!.hook('User', def);
+    expect(deps.types.lookupImplByName('User')).toHaveLength(1);
+    expect(deps.types.lookupClassByName('User')).toHaveLength(0);
   });
 });
 
