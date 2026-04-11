@@ -108,17 +108,42 @@ export const createMethodRegistry = (): MutableMethodRegistry => {
     // Candidates with `parameterCount === undefined` (extractor didn't
     // populate the count — typically variadic or unknown) are retained
     // conservatively so that legitimate variadic matches still resolve.
-    let pool = defs;
+    //
+    // Streaming loop avoids allocating a filtered array on the common
+    // "arity selects 0 or 1 match" path. We scan once, count arity
+    // matches, and only materialize a narrowed array if at least one
+    // match was found and at least one non-match exists. If arity rules
+    // out every candidate, fall back to the unfiltered set so the
+    // caller's fuzzy path still has something to work with.
+    let pool: readonly SymbolDefinition[] = defs;
     if (argCount !== undefined && defs.length > 1) {
-      const arityMatched = defs.filter((d) => {
-        if (d.parameterCount === undefined) return true;
+      let matchedCount = 0;
+      let rejectedCount = 0;
+      for (const d of defs) {
+        if (d.parameterCount === undefined) {
+          matchedCount++;
+          continue;
+        }
         const min = d.requiredParameterCount ?? d.parameterCount;
-        return argCount >= min && argCount <= d.parameterCount;
-      });
-      // Only adopt the arity-narrowed pool when it found matches; if arity
-      // rules out every candidate, fall back to the unfiltered set so the
-      // caller's fuzzy path still has something to work with.
-      if (arityMatched.length > 0) pool = arityMatched;
+        if (argCount >= min && argCount <= d.parameterCount) matchedCount++;
+        else rejectedCount++;
+      }
+      // Only narrow when the filter actually discriminates: at least one
+      // match AND at least one rejection. Pure-match and pure-reject
+      // paths both keep the unfiltered pool (the latter because fallback
+      // semantics demand it).
+      if (matchedCount > 0 && rejectedCount > 0) {
+        const arityMatched: SymbolDefinition[] = [];
+        for (const d of defs) {
+          if (d.parameterCount === undefined) {
+            arityMatched.push(d);
+            continue;
+          }
+          const min = d.requiredParameterCount ?? d.parameterCount;
+          if (argCount >= min && argCount <= d.parameterCount) arityMatched.push(d);
+        }
+        pool = arityMatched;
+      }
     }
 
     if (pool.length === 1) return pool[0];

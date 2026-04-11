@@ -59,6 +59,18 @@ export function isFileInPackageDir(filePath: string, dirSuffix: string): boolean
   return !afterDir.includes('/');
 }
 
+/** Maximum re-export hops walkBindingChain will follow before giving up.
+ *  A hard cap is needed to defend against pathological cycles that slip
+ *  past the `visited` Set (e.g. a binding chain whose key is equal by
+ *  string value but visits distinct modules). Five hops covers the
+ *  common TypeScript monorepo pattern (component → pkg/index →
+ *  packages/index → root/index → types/index). Chains longer than this
+ *  fall through to Tier 2a-import / Tier 2b / Tier 3 resolution, which
+ *  is a silent false-negative that the caller may or may not recover
+ *  from. If a real repo hits this limit, raise it — there is no
+ *  correctness reason to keep it at exactly 5. */
+const MAX_BINDING_CHAIN_DEPTH = 5;
+
 /**
  * Walk a named-binding re-export chain through NamedImportMap.
  *
@@ -67,10 +79,9 @@ export function isFileInPackageDir(filePath: string, dirSuffix: string): boolean
  * This function follows the chain: A → B → C until a definition is found.
  *
  * Returns the definitions found at the end of the chain, or null if the
- * chain breaks (missing binding, circular reference, or depth exceeded).
- * Max depth 5 to prevent infinite loops.
- *
- * Internal to resolution-context — not exported from the model barrel.
+ * chain breaks (missing binding, circular reference, or
+ * {@link MAX_BINDING_CHAIN_DEPTH} exceeded). Internal to
+ * resolution-context — not exported from the model barrel.
  */
 function walkBindingChain(
   name: string,
@@ -90,7 +101,7 @@ function walkBindingChain(
   let lookupName = name;
   const visited = new Set<string>();
 
-  for (let depth = 0; depth < 5; depth++) {
+  for (let depth = 0; depth < MAX_BINDING_CHAIN_DEPTH; depth++) {
     const bindings = depth === 0 ? firstBindings : namedImportMap.get(lookupFile);
     if (!bindings) return null;
 
@@ -341,18 +352,21 @@ export const createResolutionContext = (): ResolutionContext => {
     // reference can land in both `callableDefs` (via the Function
     // callable-index gate) and `methodDefs` (via the dispatch-key
     // normalization routing Function+ownerId into MethodRegistry).
-    const globalDefs: SymbolDefinition[] = [...classDefs, ...implDefs];
+    // Dedup covers all four index reads so any nodeId overlap (even
+    // theoretical ones between classDefs/implDefs) is caught.
+    const globalDefs: SymbolDefinition[] = [];
     const seen = new Set<string>();
-    for (const def of callableDefs) {
-      if (seen.has(def.nodeId)) continue;
-      seen.add(def.nodeId);
-      globalDefs.push(def);
-    }
-    for (const def of methodDefs) {
-      if (seen.has(def.nodeId)) continue;
-      seen.add(def.nodeId);
-      globalDefs.push(def);
-    }
+    const pushUnique = (pool: readonly SymbolDefinition[]): void => {
+      for (const def of pool) {
+        if (seen.has(def.nodeId)) continue;
+        seen.add(def.nodeId);
+        globalDefs.push(def);
+      }
+    };
+    pushUnique(classDefs);
+    pushUnique(implDefs);
+    pushUnique(callableDefs);
+    pushUnique(methodDefs);
 
     tierGlobal++;
     return { candidates: globalDefs, tier: 'global' };

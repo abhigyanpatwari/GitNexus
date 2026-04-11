@@ -252,13 +252,19 @@ function seqFindEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
   return null;
 }
 
-/** Minimal no-op SymbolTable stub for FieldExtractorContext (sequential path has a real
- *  SymbolTable, but it's incomplete at this stage — use the stub for safety). */
-const NOOP_SYMBOL_TABLE_SEQ = {
-  lookupExactAll: () => [],
+/** Minimal no-op SymbolTable stub for FieldExtractorContext (sequential
+ *  path has a real SymbolTable, but it's incomplete at this stage — use
+ *  the stub for safety). Implements the full {@link SymbolTableReader}
+ *  surface so future extractor additions don't silently fall off an
+ *  `as unknown as` cast. */
+const NOOP_SYMBOL_TABLE_SEQ: SymbolTableReader = {
   lookupExact: () => undefined,
   lookupExactFull: () => undefined,
-} as unknown as SymbolTableReader;
+  lookupExactAll: () => [],
+  lookupCallableByName: () => [],
+  getFiles: () => [][Symbol.iterator](),
+  getStats: () => ({ fileCount: 0 }),
+};
 
 function seqGetFieldInfo(
   classNode: SyntaxNode,

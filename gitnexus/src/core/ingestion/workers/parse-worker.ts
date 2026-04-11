@@ -455,14 +455,20 @@ function findClassNodeByQualifiedName(node: SyntaxNode): SyntaxNode | null {
 
 /**
  * Minimal no-op SymbolTable stub for FieldExtractorContext in the worker.
- * Field extraction only uses symbolTable.lookupExactAll for optional type resolution —
- * returning [] causes the extractor to use the raw type string, which is fine for us.
+ * Field extraction only uses symbolTable.lookupExactAll for optional type
+ * resolution — returning [] causes the extractor to use the raw type
+ * string, which is fine for us. Every other method is a no-op so the
+ * stub remains safe if a future FieldExtractor consults it through the
+ * full {@link SymbolTableReader} surface.
  */
-const NOOP_SYMBOL_TABLE = {
-  lookupExactAll: () => [],
+const NOOP_SYMBOL_TABLE: SymbolTableReader = {
   lookupExact: () => undefined,
   lookupExactFull: () => undefined,
-} as unknown as SymbolTableReader;
+  lookupExactAll: () => [],
+  lookupCallableByName: () => [],
+  getFiles: () => [][Symbol.iterator](),
+  getStats: () => ({ fileCount: 0 }),
+};
 
 /**
  * Get (or extract and cache) field info for a class node.

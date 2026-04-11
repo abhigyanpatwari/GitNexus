@@ -1361,6 +1361,31 @@ describe('lookupMethodByOwnerWithMRO', () => {
     expect(result!.nodeId).toBe('method:B:foo');
   });
 
+  it('c3 (Python): cyclic hierarchy falls back to BFS ancestor order', () => {
+    // Build a legitimately cyclic heritage: A extends B, B extends A.
+    // c3Linearize returns null for this case (inconsistent linearization).
+    // The MRO walker must then fall back to heritageMap.getAncestors()
+    // (BFS order) instead of silently returning undefined.
+    ctx.model.symbols.add('src/a.py', 'A', 'class:A', 'Class');
+    ctx.model.symbols.add('src/b.py', 'B', 'class:B', 'Class');
+    ctx.model.symbols.add('src/b.py', 'foo', 'method:B:foo', 'Method', {
+      returnType: 'void',
+      ownerId: 'class:B',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/a.py', className: 'A', parentName: 'B', kind: 'extends' },
+      { filePath: 'src/b.py', className: 'B', parentName: 'A', kind: 'extends' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    // Even with a cyclic hierarchy, BFS via heritageMap.getAncestors()
+    // walks A → B and finds `foo` on B. The method lookup must succeed.
+    const result = lookupMethodByOwnerWithMRO('class:A', 'foo', map, ctx.model, 'c3');
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:B:foo');
+  });
+
   it('qualified-syntax (Rust): returns undefined for inherited methods', () => {
     ctx.model.symbols.add('src/parent.rs', 'Parent', 'class:Parent', 'Class');
     ctx.model.symbols.add('src/child.rs', 'Child', 'class:Child', 'Class');

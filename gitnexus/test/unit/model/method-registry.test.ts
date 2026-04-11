@@ -20,14 +20,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { createMethodRegistry } from '../../../src/core/ingestion/model/method-registry.js';
-import type { SymbolDefinition } from '../../../src/core/ingestion/model/symbol-table.js';
-
-const makeMethod = (overrides: Partial<SymbolDefinition> = {}): SymbolDefinition => ({
-  nodeId: 'method:test',
-  filePath: 'src/test.ts',
-  type: 'Method',
-  ...overrides,
-});
+import { makeMethod } from './helpers.js';
 
 describe('MethodRegistry — basic lookup', () => {
   it('returns undefined when the registry is empty', () => {

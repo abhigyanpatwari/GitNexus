@@ -11,13 +11,10 @@
 import { describe, it, expect } from 'vitest';
 import { createTypeRegistry } from '../../../src/core/ingestion/model/type-registry.js';
 import type { SymbolDefinition } from '../../../src/core/ingestion/model/symbol-table.js';
+import { makeDef as makeBaseDef } from './helpers.js';
 
-const makeDef = (overrides: Partial<SymbolDefinition> = {}): SymbolDefinition => ({
-  nodeId: 'class:test',
-  filePath: 'src/test.ts',
-  type: 'Class',
-  ...overrides,
-});
+const makeDef = (overrides: Partial<SymbolDefinition> = {}): SymbolDefinition =>
+  makeBaseDef({ nodeId: 'class:test', type: 'Class', ...overrides });
 
 describe('TypeRegistry — classByName lookup', () => {
   it('returns an empty array when the class is not registered', () => {

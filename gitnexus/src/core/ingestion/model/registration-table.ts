@@ -9,7 +9,7 @@
  * ## Ownership diagram
  *
  *     SemanticModel
- *       ├── types   (TypeRegistry)    ← classHook / implHook write here
+ *       ├── types   (TypeRegistry)    ← classLikeHook / implHook write here
  *       ├── methods (MethodRegistry)  ← methodHook writes here
  *       ├── fields  (FieldRegistry)   ← propertyHook writes here
  *       └── symbols (SymbolTable)     ← owns fileIndex + callableByName,
@@ -19,7 +19,7 @@
  *
  * | Group         | NodeLabel values                                  | Hook         | Skip callable? |
  * |---------------|---------------------------------------------------|--------------|----------------|
- * | class-like    | Class, Struct, Interface, Enum, Record, Trait     | classHook    | no             |
+ * | class-like    | Class, Struct, Interface, Enum, Record, Trait     | classLikeHook    | no             |
  * | method-like   | Method, Constructor                               | methodHook   | no             |
  * | property      | Property                                          | propertyHook | YES            |
  * | impl-block    | Impl                                              | implHook     | no             |
@@ -267,7 +267,7 @@ export const createRegistrationTable = (
 
   // Hook 1: class-like — Class, Struct, Interface, Enum, Record, Trait.
   // Shared reference — six table entries point at this one closure.
-  const classHook: RegistrationHook = (name, def) => {
+  const classLikeHook: RegistrationHook = (name, def) => {
     const qualifiedKey = def.qualifiedName ?? name;
     types.registerClass(name, qualifiedKey, def);
   };
@@ -291,7 +291,7 @@ export const createRegistrationTable = (
     }
   };
 
-  // Hook 4: impl-block — Rust `impl` blocks. Kept separate from classHook
+  // Hook 4: impl-block — Rust `impl` blocks. Kept separate from classLikeHook
   // because heritage resolution must not treat Impls as class candidates
   // (an Impl is not a parent type, it's an ancillary dispatch table).
   const implHook: RegistrationHook = (name, def) => {
@@ -305,16 +305,16 @@ export const createRegistrationTable = (
   // classified as 'dispatch'. This is the compile-time twin of the
   // runtime taxonomy — no drift possible.
   const dispatchByLabel = {
-    // class-like — six labels share the single `classHook` closure,
+    // class-like — six labels share the single `classLikeHook` closure,
     // kept in lockstep with `CLASS_TYPES_TUPLE` via the
     // `Record<ClassLikeLabel, 'dispatch'>` cross-invariant on
     // `LABEL_BEHAVIOR`.
-    Class: classHook,
-    Struct: classHook,
-    Interface: classHook,
-    Enum: classHook,
-    Record: classHook,
-    Trait: classHook,
+    Class: classLikeHook,
+    Struct: classLikeHook,
+    Interface: classLikeHook,
+    Enum: classLikeHook,
+    Record: classLikeHook,
+    Trait: classLikeHook,
     // method-like — routed via dispatch-key normalization in
     // `wrappedAdd` so Function+ownerId also reaches `methodHook`.
     Method: methodHook,
@@ -322,7 +322,7 @@ export const createRegistrationTable = (
     // property — callable-index exclusion is enforced by
     // `SymbolTable.add()` (Property is not in `FREE_CALLABLE_TYPES`).
     Property: propertyHook,
-    // impl-block — Rust `impl` blocks. Separate from classHook because
+    // impl-block — Rust `impl` blocks. Separate from classLikeHook because
     // heritage resolution must not treat Impls as class candidates.
     Impl: implHook,
   } as const satisfies Record<DispatchLabel, RegistrationHook>;

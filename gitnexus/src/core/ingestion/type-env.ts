@@ -856,16 +856,18 @@ export const buildTypeEnv = (
   // Post-A4 Unit 4: callableByName no longer holds Method/Constructor, so
   // for-loop binding inference must also consult methodsByName to find
   // return types on class methods (e.g. `user.getItems()` iteration).
-  const getCallableUnionCount = (callee: string): number => {
+  // Take `model` as an explicit argument so the non-null precondition
+  // is visible at the type level. Callers must enter these via an
+  // `if (model)` guard on their side and pass the narrowed reference.
+  const getCallableUnionCount = (m: SemanticModel, callee: string): number => {
     return (
-      model!.symbols.lookupCallableByName(callee).length +
-      model!.methods.lookupMethodByName(callee).length
+      m.symbols.lookupCallableByName(callee).length + m.methods.lookupMethodByName(callee).length
     );
   };
-  const getFirstCallable = (callee: string) => {
-    const free = model!.symbols.lookupCallableByName(callee);
+  const getFirstCallable = (m: SemanticModel, callee: string) => {
+    const free = m.symbols.lookupCallableByName(callee);
     if (free.length > 0) return free[0];
-    const methods = model!.methods.lookupMethodByName(callee);
+    const methods = m.methods.lookupMethodByName(callee);
     return methods.length > 0 ? methods[0] : undefined;
   };
 
@@ -874,9 +876,9 @@ export const buildTypeEnv = (
       // SymbolTable is authoritative when it has an unambiguous match
       if (model) {
         if (provider.isBuiltInName(callee)) return undefined;
-        const count = getCallableUnionCount(callee);
+        const count = getCallableUnionCount(model, callee);
         if (count === 1) {
-          const rawReturn = getFirstCallable(callee)?.returnType;
+          const rawReturn = getFirstCallable(model, callee)?.returnType;
           if (rawReturn) return extractReturnTypeName(rawReturn);
         }
         // Ambiguous (2+) → return undefined (conservative, no cross-file fallback)
@@ -888,8 +890,8 @@ export const buildTypeEnv = (
     lookupRawReturnType(callee: string): string | undefined {
       if (model) {
         if (provider.isBuiltInName(callee)) return undefined;
-        const count = getCallableUnionCount(callee);
-        if (count === 1) return getFirstCallable(callee)?.returnType;
+        const count = getCallableUnionCount(model, callee);
+        if (count === 1) return getFirstCallable(model, callee)?.returnType;
         // Ambiguous (2+) → return undefined (conservative, no cross-file fallback)
         if (count > 1) return undefined;
       }

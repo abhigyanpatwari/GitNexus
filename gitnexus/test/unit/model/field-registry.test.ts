@@ -9,13 +9,10 @@
 import { describe, it, expect } from 'vitest';
 import { createFieldRegistry } from '../../../src/core/ingestion/model/field-registry.js';
 import type { SymbolDefinition } from '../../../src/core/ingestion/model/symbol-table.js';
+import { makeDef as makeBaseDef } from './helpers.js';
 
-const makeDef = (overrides: Partial<SymbolDefinition> = {}): SymbolDefinition => ({
-  nodeId: 'prop:test',
-  filePath: 'src/test.ts',
-  type: 'Property',
-  ...overrides,
-});
+const makeDef = (overrides: Partial<SymbolDefinition> = {}): SymbolDefinition =>
+  makeBaseDef({ nodeId: 'prop:test', type: 'Property', ...overrides });
 
 describe('FieldRegistry', () => {
   it('lookupFieldByOwner returns undefined when the registry is empty', () => {

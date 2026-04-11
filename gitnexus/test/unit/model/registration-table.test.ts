@@ -10,6 +10,7 @@ import { createMethodRegistry } from '../../../src/core/ingestion/model/method-r
 import { createFieldRegistry } from '../../../src/core/ingestion/model/field-registry.js';
 import { ALL_NODE_LABELS } from '../../../src/core/ingestion/model/index.js';
 import type { SymbolDefinition } from '../../../src/core/ingestion/model/symbol-table.js';
+import { makeDef as makeBaseDef } from './helpers.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -21,12 +22,8 @@ const makeDeps = () => ({
   fields: createFieldRegistry(),
 });
 
-const makeDef = (overrides: Partial<SymbolDefinition> = {}): SymbolDefinition => ({
-  nodeId: 'node:test',
-  filePath: 'src/test.ts',
-  type: 'Class',
-  ...overrides,
-});
+const makeDef = (overrides: Partial<SymbolDefinition> = {}): SymbolDefinition =>
+  makeBaseDef({ nodeId: 'node:test', type: 'Class', ...overrides });
 
 // ---------------------------------------------------------------------------
 // Basic factory + table shape
@@ -178,7 +175,7 @@ describe('behavior group isolation', () => {
 // ---------------------------------------------------------------------------
 
 describe('hook behavior (real registries, no mocks)', () => {
-  it('classHook writes to types.registerClass', () => {
+  it('classLikeHook writes to types.registerClass', () => {
     const deps = makeDeps();
     const table = createRegistrationTable(deps);
     const def = makeDef({ nodeId: 'class:User', type: 'Class', qualifiedName: 'app.User' });
@@ -187,7 +184,7 @@ describe('hook behavior (real registries, no mocks)', () => {
     expect(deps.types.lookupClassByQualifiedName('app.User')).toHaveLength(1);
   });
 
-  it('classHook falls back to the simple name when qualifiedName is absent', () => {
+  it('classLikeHook falls back to the simple name when qualifiedName is absent', () => {
     const deps = makeDeps();
     const table = createRegistrationTable(deps);
     const def = makeDef({ nodeId: 'class:User', type: 'Class' });
