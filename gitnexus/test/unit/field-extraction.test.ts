@@ -8,7 +8,7 @@ import { cppConfig } from '../../src/core/ingestion/field-extractors/configs/c-c
 import { rubyConfig } from '../../src/core/ingestion/field-extractors/configs/ruby.js';
 import type { FieldExtractorContext } from '../../src/core/ingestion/field-types.js';
 import type { TypeEnvironment } from '../../src/core/ingestion/type-env.js';
-import { createSymbolTable } from '../../src/core/ingestion/symbol-table.js';
+import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';
@@ -26,7 +26,13 @@ const parse = (code: string) => {
   return parser.parse(code);
 };
 
-// Mock context for tests
+// Mock context for tests. symbolTable comes from createSemanticModel().symbols
+// (the facade) rather than createSymbolTable() (the raw leaf) — this mirrors
+// production, where FieldExtractorContext always receives the SemanticModel-
+// wrapped facade so any .add() write dispatches through the owner-scoped
+// registries. No current field extractor calls symbolTable.add(), but
+// matching the production shape prevents silent drift if a future extractor
+// starts registering dynamically-discovered properties.
 const createMockContext = (): FieldExtractorContext => ({
   typeEnv: {
     lookup: () => undefined,
@@ -35,7 +41,7 @@ const createMockContext = (): FieldExtractorContext => ({
     allScopes: () => new Map(),
     constructorTypeMap: new Map(),
   } as TypeEnvironment,
-  symbolTable: createSymbolTable(),
+  symbolTable: createSemanticModel().symbols,
   filePath: 'test.ts',
   language: SupportedLanguages.TypeScript,
 });
