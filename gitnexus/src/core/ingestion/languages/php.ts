@@ -172,8 +172,9 @@ function extractEloquentRelationDescription(methodNode: SyntaxNode): string | nu
         const nameNode = children.find((c: SyntaxNode) => c.type === 'name');
         if (objectNode && nameNode && ELOQUENT_RELATIONS.has(nameNode.text)) return node;
       }
-      for (const child of node.children ?? []) {
-        stack.push(child);
+      const children = node.children ?? [];
+      for (let i = children.length - 1; i >= 0; i--) {
+        stack.push(children[i]);
       }
     }
     return null;
