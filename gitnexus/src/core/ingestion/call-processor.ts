@@ -2212,8 +2212,8 @@ export const resolveFreeCall = (
  * Resolve a constructor or static call using class-scoped lookup (no fuzzy lookup).
  * Used for `new User()` / `User()` calls where the calledName targets a class.
  *
- * Uses {@link SymbolTable.lookupClassByName} for O(1) class lookup and
- * {@link SymbolTable.lookupMethodByOwner} for constructor resolution.
+ * Uses {@link TypeRegistry.lookupClassByName} for O(1) class lookup and
+ * {@link MethodRegistry.lookupMethodByOwner} for constructor resolution.
  * {@link resolveCallTarget} delegates here for constructor and free-form calls
  * that target a class.
  *
