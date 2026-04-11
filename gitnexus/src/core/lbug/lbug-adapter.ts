@@ -909,19 +909,26 @@ export const loadFTSExtension = async (): Promise<void> => {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
   try {
-    await conn.query('INSTALL fts');
+    // Try loading locally first (no network required)
     await conn.query('LOAD EXTENSION fts');
     ftsLoaded = true;
-  } catch (err: any) {
-    const msg = err?.message || '';
-    if (
-      msg.includes('already loaded') ||
-      msg.includes('already installed') ||
-      msg.includes('already exists')
-    ) {
+  } catch {
+    // Fall back to install + load (requires network)
+    try {
+      await conn.query('INSTALL fts');
+      await conn.query('LOAD EXTENSION fts');
       ftsLoaded = true;
-    } else {
-      console.error('GitNexus: FTS extension load failed:', msg);
+    } catch (err: any) {
+      const msg = err?.message || '';
+      if (
+        msg.includes('already loaded') ||
+        msg.includes('already installed') ||
+        msg.includes('already exists')
+      ) {
+        ftsLoaded = true;
+      } else {
+        console.error('GitNexus: FTS extension load failed:', msg);
+      }
     }
   }
 };
