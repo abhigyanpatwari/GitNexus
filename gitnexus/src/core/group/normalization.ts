@@ -15,6 +15,25 @@ function endpointKey(endpoint: CrossLinkEndpoint): string {
   ].join('\0');
 }
 
+/**
+ * Score a contract by how much information it carries, so `dedupeContracts`
+ * can prefer the "richer" record when two contracts collide on the same
+ * `(repo, contractId, role, filePath)` key.
+ *
+ * Weights express a priority ordering, not calibrated probabilities:
+ *   +3 — `symbolUid` resolved (tier 1 of the downstream lookup — highest
+ *        signal because it's the strongest anchor for cross-impact traversal
+ *        and the only one that's robust to renames)
+ *   +2 — any of `filePath`, `symbolRef.name`, or `symbolName` that's more
+ *        specific than the contractId itself (tier 2 signal — resolves
+ *        uniquely in most cases and survives across syncs)
+ *   +1 — `service` tag (monorepo attribution — useful but not sufficient
+ *        on its own) or non-manifest origin (auto-extracted contracts are
+ *        preferred over manifest-declared synthetic ones because the former
+ *        are grounded in real source code)
+ *
+ * The absolute numbers don't matter, only their relative ordering.
+ */
 function contractRichness(contract: StoredContract): number {
   let score = 0;
   if (contract.symbolUid) score += 3;

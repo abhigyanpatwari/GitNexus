@@ -13,8 +13,12 @@ import {
   openBridgeDbReadOnly,
   readBridgeMeta,
   bridgeExists,
+  createContractLookupIndex,
+  indexContract,
+  findContractNode,
 } from '../../../src/core/group/bridge-db.js';
-import type { StoredContract, CrossLink } from '../../../src/core/group/types.js';
+import type { CrossLink } from '../../../src/core/group/types.js';
+import { makeContract } from './fixtures.js';
 
 describe('bridge-db core', () => {
   let tmpDir: string;
@@ -115,19 +119,6 @@ describe('writeBridge + read', () => {
 
   afterEach(async () => {
     await fsp.rm(tmpDir, { recursive: true, force: true });
-  });
-
-  const makeContract = (overrides: Partial<StoredContract> = {}): StoredContract => ({
-    contractId: 'http::GET::/api/users',
-    type: 'http',
-    role: 'provider',
-    symbolUid: 'uid-1',
-    symbolRef: { filePath: 'src/routes.ts', name: 'getUsers' },
-    symbolName: 'getUsers',
-    confidence: 0.85,
-    meta: {},
-    repo: 'backend',
-    ...overrides,
   });
 
   it('test_writeBridge_creates_bridge_lbug_file', async () => {
@@ -464,5 +455,121 @@ describe('retryRename', () => {
 
     await retryRename('/src/a', '/dst/b', 3);
     expect(calls).toBe(2);
+  });
+});
+
+describe('findContractNode', () => {
+  // Pure-function tests for the lookup index + three-tier resolver that
+  // were previously an inner closure of `writeBridge` and therefore
+  // untestable in isolation. Every test here builds its own index and
+  // never touches the DB.
+
+  it('returns null on empty index', () => {
+    const index = createContractLookupIndex();
+    expect(findContractNode(index, 'backend', 'provider', 'uid-1', 'src/a.ts', 'foo')).toBeNull();
+  });
+
+  it('tier 1: returns contract matched by symbolUid', () => {
+    const index = createContractLookupIndex();
+    const c = makeContract({ symbolUid: 'uid-42', repo: 'backend', role: 'provider' });
+    indexContract(index, c, 'node-A');
+    expect(findContractNode(index, 'backend', 'provider', 'uid-42', 'anywhere.ts', 'anyName')).toBe(
+      'node-A',
+    );
+  });
+
+  it('tier 1 is repo-scoped: same uid in a different repo does not match', () => {
+    const index = createContractLookupIndex();
+    const c = makeContract({ symbolUid: 'uid-42', repo: 'backend' });
+    indexContract(index, c, 'node-A');
+    expect(
+      findContractNode(index, 'frontend', 'provider', 'uid-42', 'src/routes.ts', 'getUsers'),
+    ).toBeNull();
+  });
+
+  it('tier 1 is role-scoped: provider uid match does not resolve consumer query', () => {
+    const index = createContractLookupIndex();
+    const c = makeContract({ symbolUid: 'uid-42', role: 'provider', repo: 'backend' });
+    indexContract(index, c, 'node-A');
+    expect(
+      findContractNode(index, 'backend', 'consumer', 'uid-42', 'src/routes.ts', 'getUsers'),
+    ).toBeNull();
+  });
+
+  it('tier 2: falls through to filePath + symbolName when symbolUid is empty', () => {
+    const index = createContractLookupIndex();
+    const c = makeContract({
+      symbolUid: '',
+      symbolRef: { filePath: 'src/ctrl.ts', name: 'handler' },
+      symbolName: 'handler',
+    });
+    indexContract(index, c, 'node-B');
+    expect(findContractNode(index, 'backend', 'provider', '', 'src/ctrl.ts', 'handler')).toBe(
+      'node-B',
+    );
+  });
+
+  it('tier 2: falls through when the given symbolUid does not match anything', () => {
+    const index = createContractLookupIndex();
+    const c = makeContract({
+      symbolUid: 'uid-real',
+      symbolRef: { filePath: 'src/ctrl.ts', name: 'handler' },
+    });
+    indexContract(index, c, 'node-B');
+    // Wrong uid; but filePath+name still resolves.
+    expect(
+      findContractNode(index, 'backend', 'provider', 'uid-wrong', 'src/ctrl.ts', 'handler'),
+    ).toBe('node-B');
+  });
+
+  it('tier 3: resolves by filePath alone when exactly one contract lives there', () => {
+    const index = createContractLookupIndex();
+    const c = makeContract({
+      symbolUid: '',
+      symbolRef: { filePath: 'src/solo.ts', name: 'actualName' },
+    });
+    indexContract(index, c, 'node-C');
+    // filePath+name miss (name is wrong), but tier 3 picks the sole entry.
+    expect(findContractNode(index, 'backend', 'provider', '', 'src/solo.ts', 'wrongName')).toBe(
+      'node-C',
+    );
+  });
+
+  it('tier 3: does NOT resolve when multiple contracts live in the same file', () => {
+    const index = createContractLookupIndex();
+    const a = makeContract({
+      symbolUid: '',
+      symbolRef: { filePath: 'src/multi.ts', name: 'handlerA' },
+    });
+    const b = makeContract({
+      symbolUid: '',
+      symbolRef: { filePath: 'src/multi.ts', name: 'handlerB' },
+      contractId: 'http::GET::/api/b',
+    });
+    indexContract(index, a, 'node-MA');
+    indexContract(index, b, 'node-MB');
+    // Wrong symbolName → no tier 2 match. Two contracts in the same file
+    // → tier 3 must refuse to guess.
+    expect(
+      findContractNode(index, 'backend', 'provider', '', 'src/multi.ts', 'unknown'),
+    ).toBeNull();
+  });
+
+  it('prefers tier 1 over tier 2 when both could resolve', () => {
+    const index = createContractLookupIndex();
+    const tier1Contract = makeContract({
+      symbolUid: 'uid-1',
+      symbolRef: { filePath: 'src/a.ts', name: 'first' },
+    });
+    const tier2Contract = makeContract({
+      symbolUid: '',
+      symbolRef: { filePath: 'src/a.ts', name: 'first' },
+      contractId: 'http::POST::/api/x',
+    });
+    indexContract(index, tier1Contract, 'tier1-id');
+    indexContract(index, tier2Contract, 'tier2-id');
+    expect(findContractNode(index, 'backend', 'provider', 'uid-1', 'src/a.ts', 'first')).toBe(
+      'tier1-id',
+    );
   });
 });

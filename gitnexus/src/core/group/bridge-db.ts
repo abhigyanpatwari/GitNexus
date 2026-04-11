@@ -16,6 +16,114 @@ export function contractNodeId(
   return createHash('sha256').update(`${repo}\0${contractId}\0${role}\0${filePath}`).digest('hex');
 }
 
+/* ------------------------------------------------------------------ */
+/*  ContractLookupIndex — in-memory lookup for findContractNode       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * In-memory index of contract node IDs keyed three ways, mirroring the
+ * three-tier fallback lookup in {@link findContractNode}. Built once per
+ * `writeBridge` call after all contracts are successfully inserted, then
+ * consulted for every cross-link — which eliminates the former N+1 query
+ * pattern (up to `6 × cross-links` DB round-trips) and turns cross-link
+ * resolution into constant-time per link.
+ *
+ * Keys are deliberately flat strings (not tuples) so `Map<string, ...>`
+ * works; the separator `\0` can't occur in any legal repo path / file
+ * path / symbol identifier, which makes the encoding injection-safe.
+ */
+export interface ContractLookupIndex {
+  /** tier 1: `repo + role + symbolUid` → contract node id */
+  byUid: Map<string, string>;
+  /** tier 2: `repo + role + filePath + symbolName` → contract node id */
+  byRef: Map<string, string>;
+  /** tier 3: `repo + role + filePath` → list of contract node ids in that file */
+  byFile: Map<string, string[]>;
+}
+
+export function createContractLookupIndex(): ContractLookupIndex {
+  return {
+    byUid: new Map(),
+    byRef: new Map(),
+    byFile: new Map(),
+  };
+}
+
+function uidKey(repo: string, role: string, symbolUid: string): string {
+  return `${repo}\0${role}\0${symbolUid}`;
+}
+
+function refKey(repo: string, role: string, filePath: string, symbolName: string): string {
+  return `${repo}\0${role}\0${filePath}\0${symbolName}`;
+}
+
+function fileKey(repo: string, role: string, filePath: string): string {
+  return `${repo}\0${role}\0${filePath}`;
+}
+
+/**
+ * Add a successfully-inserted contract to the lookup index. Must be called
+ * AFTER the DB insert succeeds (not before) so failed inserts don't poison
+ * the index and cause cross-links to point at non-existent rows.
+ */
+export function indexContract(
+  index: ContractLookupIndex,
+  contract: StoredContract,
+  nodeId: string,
+): void {
+  if (contract.symbolUid) {
+    index.byUid.set(uidKey(contract.repo, contract.role, contract.symbolUid), nodeId);
+  }
+  index.byRef.set(
+    refKey(contract.repo, contract.role, contract.symbolRef.filePath, contract.symbolRef.name),
+    nodeId,
+  );
+  const fk = fileKey(contract.repo, contract.role, contract.symbolRef.filePath);
+  const existing = index.byFile.get(fk);
+  if (existing) {
+    existing.push(nodeId);
+  } else {
+    index.byFile.set(fk, [nodeId]);
+  }
+}
+
+/**
+ * Resolve a cross-link endpoint (consumer or provider reference) to an
+ * already-inserted contract node id. Returns `null` if no match — the
+ * caller is expected to count that as a dropped link in `WriteBridgeReport`.
+ *
+ * The resolution order matches the pre-cache DB-query behavior:
+ *   1. exact `symbolUid` match in the same `(repo, role)` scope
+ *   2. exact `(filePath, symbolName)` match
+ *   3. if exactly one contract lives in the file → that one (fallback for
+ *      legacy graph-assisted extractors that couldn't resolve a symbol name)
+ *
+ * This is a pure function — no I/O, no DB — so it's trivial to unit-test
+ * in isolation (which was the reviewer's main clean-code concern on the
+ * original 35-line inner closure in `writeBridge`).
+ */
+export function findContractNode(
+  index: ContractLookupIndex,
+  repo: string,
+  role: 'consumer' | 'provider',
+  symbolUid: string,
+  filePath: string,
+  symbolName: string,
+): string | null {
+  if (symbolUid) {
+    const uidHit = index.byUid.get(uidKey(repo, role, symbolUid));
+    if (uidHit !== undefined) return uidHit;
+  }
+
+  const refHit = index.byRef.get(refKey(repo, role, filePath, symbolName));
+  if (refHit !== undefined) return refHit;
+
+  const fileCandidates = index.byFile.get(fileKey(repo, role, filePath));
+  if (fileCandidates && fileCandidates.length === 1) return fileCandidates[0];
+
+  return null;
+}
+
 export async function openBridgeDb(dbPath: string): Promise<BridgeHandle> {
   const parentDir = path.dirname(dbPath);
   await fsp.mkdir(parentDir, { recursive: true });
@@ -24,14 +132,24 @@ export async function openBridgeDb(dbPath: string): Promise<BridgeHandle> {
   return { _db: db, _conn: conn, groupDir: parentDir } as BridgeHandle;
 }
 
+/**
+ * LadybugDB returns an error whose message contains this substring when a
+ * CREATE NODE TABLE or CREATE REL TABLE statement hits an already-existing
+ * table. LadybugDB DDL doesn't support IF NOT EXISTS, and its JS driver
+ * doesn't expose typed error codes, so we match on the message substring —
+ * the same pattern used by `core/lbug/lbug-adapter.ts`. If a future
+ * LadybugDB release changes the wording, update this constant.
+ */
+const LBUG_ALREADY_EXISTS_MSG = 'already exists';
+
 export async function ensureBridgeSchema(handle: BridgeHandle): Promise<void> {
   const conn = handle._conn as lbug.Connection;
   for (const q of BRIDGE_SCHEMA_QUERIES) {
     try {
       await conn.query(q);
-    } catch (err: any) {
-      const msg = err?.message ?? '';
-      if (!msg.includes('already exists')) throw err;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes(LBUG_ALREADY_EXISTS_MSG)) throw err;
     }
   }
 }
@@ -49,12 +167,31 @@ export async function queryBridge<T>(
       throw new Error(`Bridge query prepare failed: ${errMsg}`);
     }
     const queryResult = await conn.execute(stmt, params);
-    const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+    const result = unwrapQueryResult(queryResult);
     return (await result.getAll()) as T[];
   }
   const queryResult = await conn.query(cypher);
-  const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+  const result = unwrapQueryResult(queryResult);
   return (await result.getAll()) as T[];
+}
+
+/**
+ * LadybugDB's `conn.query` / `conn.execute` can return either a single
+ * `QueryResult` (for a single statement) or an array of them (when a
+ * multi-statement script is dispatched). We always pass a single statement,
+ * so the array form is a wrapper we unwrap here — but an empty top-level
+ * array would cause `.getAll()` on `undefined` and crash with a confusing
+ * stack. Throwing an explicit error makes a driver-contract regression
+ * visible immediately instead of masking it.
+ */
+function unwrapQueryResult(queryResult: lbug.QueryResult | lbug.QueryResult[]): lbug.QueryResult {
+  if (Array.isArray(queryResult)) {
+    if (queryResult.length === 0) {
+      throw new Error('Bridge query returned an empty QueryResult array');
+    }
+    return queryResult[0];
+  }
+  return queryResult;
 }
 
 export async function closeBridgeDb(handle: BridgeHandle): Promise<void> {
@@ -206,6 +343,13 @@ export async function writeBridge(
   try {
     await ensureBridgeSchema(handle);
 
+    // Build the lookup index incrementally as contracts are inserted, so
+    // failed inserts are never in the index (and therefore never resolved
+    // by the cross-link loop below). This replaces a previous N+1 query
+    // pattern where each link made up to 6 DB round-trips to find its
+    // endpoints — see ContractLookupIndex.
+    const lookupIndex = createContractLookupIndex();
+
     // Insert contracts — tolerate individual failures (e.g., a corrupt meta
     // that can't be serialized). The whole sync must not fail because one
     // contract is broken.
@@ -242,6 +386,9 @@ export async function writeBridge(
           },
         );
         report.contractsInserted++;
+        // Only index on successful insert — the cross-link loop must never
+        // resolve to a row that isn't actually in the DB.
+        indexContract(lookupIndex, c, id);
       } catch (err) {
         report.contractsFailed++;
         recordError('contract', id, err);
@@ -272,57 +419,30 @@ export async function writeBridge(
     }
 
     // Insert cross-links (tolerating missing nodes).
-    // Use repo-scoped matching: find FROM node by (repo, role=consumer) and TO by (repo, role=provider)
-    // with symbolRef matching, because link.contractId is the consumer's ID which may differ
-    // from the provider's contractId (e.g. wildcard consumer vs method-level provider).
-    const findContractNode = async (
-      repo: string,
-      role: 'consumer' | 'provider',
-      symbolUid: string,
-      filePath: string,
-      symbolName: string,
-    ): Promise<string | null> => {
-      if (symbolUid) {
-        const uidRows = await queryBridge<{ id: string }>(
-          handle,
-          `MATCH (c:Contract) WHERE c.repo = $repo AND c.role = $role
-         AND c.symbolUid = $symbolUid RETURN c.id AS id LIMIT 1`,
-          { repo, role, symbolUid },
-        );
-        if (uidRows.length > 0) return uidRows[0].id;
-      }
-
-      const refRows = await queryBridge<{ id: string }>(
-        handle,
-        `MATCH (c:Contract) WHERE c.repo = $repo AND c.role = $role
-       AND c.filePath = $filePath AND c.symbolName = $symbolName
-       RETURN c.id AS id LIMIT 1`,
-        { repo, role, filePath, symbolName },
-      );
-      if (refRows.length > 0) return refRows[0].id;
-
-      const fileRows = await queryBridge<{ id: string }>(
-        handle,
-        `MATCH (c:Contract) WHERE c.repo = $repo AND c.role = $role
-       AND c.filePath = $filePath
-       RETURN c.id AS id LIMIT 2`,
-        { repo, role, filePath },
-      );
-      if (fileRows.length === 1) return fileRows[0].id;
-      return null;
-    };
-
+    //
+    // `findContractNode` consults the in-memory lookup index built above,
+    // not the DB — that's an O(1) pure-function lookup per endpoint instead
+    // of the previous 2-3 DB queries. For M cross-links, the previous code
+    // issued up to 6M round-trips; this version issues zero.
+    //
+    // `link.contractId` may differ between the consumer and provider sides
+    // (e.g. wildcard consumer `grpc::Service/*` → method-level provider
+    // `grpc::Service/Method`) — that's why we resolve each endpoint
+    // independently via its own `(repo, role, symbolUid, filePath, symbolName)`
+    // tuple rather than matching on contractId.
     for (const link of crossLinks) {
       const linkId = `${link.from.repo}::${link.contractId}->${link.to.repo}::${link.contractId}`;
       try {
-        const fromId = await findContractNode(
+        const fromId = findContractNode(
+          lookupIndex,
           link.from.repo,
           'consumer',
           link.from.symbolUid,
           link.from.symbolRef.filePath,
           link.from.symbolRef.name,
         );
-        const toId = await findContractNode(
+        const toId = findContractNode(
+          lookupIndex,
           link.to.repo,
           'provider',
           link.to.symbolUid,
@@ -409,11 +529,15 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
   try {
     await fsp.access(dbPath);
   } catch {
-    // Check for .bak recovery
+    // Check for .bak recovery. Use `retryRename` (not `fsp.rename`) for the
+    // exact same reason the rest of this file does: the scenario that
+    // triggers bak recovery is an interrupted writer, which on Windows may
+    // still be holding an open handle on `.bak` for a few milliseconds when
+    // a reader races in. EBUSY/EPERM retries recover that case silently.
     const bakPath = path.join(groupDir, 'bridge.lbug.bak');
     try {
       await fsp.access(bakPath);
-      await fsp.rename(bakPath, dbPath);
+      await retryRename(bakPath, dbPath);
     } catch {
       return null;
     }

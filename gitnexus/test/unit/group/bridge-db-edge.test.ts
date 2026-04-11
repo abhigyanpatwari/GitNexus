@@ -8,20 +8,8 @@ import {
   queryBridge,
   closeBridgeDb,
 } from '../../../src/core/group/bridge-db.js';
-import type { StoredContract, CrossLink } from '../../../src/core/group/types.js';
-
-const makeContract = (overrides: Partial<StoredContract> = {}): StoredContract => ({
-  contractId: 'http::GET::/api/users',
-  type: 'http',
-  role: 'provider',
-  symbolUid: 'uid-1',
-  symbolRef: { filePath: 'src/routes.ts', name: 'getUsers' },
-  symbolName: 'getUsers',
-  confidence: 0.85,
-  meta: {},
-  repo: 'backend',
-  ...overrides,
-});
+import type { CrossLink } from '../../../src/core/group/types.js';
+import { makeContract } from './fixtures.js';
 
 describe('bridge-db edge cases', () => {
   let tmpDir: string;
