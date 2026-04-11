@@ -1088,7 +1088,11 @@ export const buildTypeEnv = (
     }
   };
 
-  const walk = (node: SyntaxNode, currentScope: string): void => {
+  const stack: Array<{ node: SyntaxNode; scope: string }> = [
+    { node: tree.rootNode, scope: FILE_SCOPE },
+  ];
+
+  const processNode = (node: SyntaxNode, currentScope: string): void => {
     // Fast skip: subtrees that can never contain type-relevant nodes (leaf-like literals).
     if (SKIP_SUBTREE_TYPES.has(node.type)) return;
 
@@ -1212,14 +1216,11 @@ export const buildTypeEnv = (
     }
   };
 
-  // Iterative walk using explicit stack instead of recursion
+  // Iterative traversal using explicit stack instead of recursion
   // to avoid "Maximum call stack size exceeded" on large files (2000+ lines)
-  const stack: Array<{ node: SyntaxNode; scope: string }> = [
-    { node: tree.rootNode, scope: FILE_SCOPE },
-  ];
   while (stack.length > 0) {
     const { node, scope } = stack.pop()!;
-    walk(node, scope);
+    processNode(node, scope);
   }
 
   // Phase 14: Seed cross-file bindings from upstream files AFTER walk
