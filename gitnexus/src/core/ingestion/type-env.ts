@@ -853,18 +853,34 @@ export const buildTypeEnv = (
   // Build ReturnTypeLookup: SymbolTable is authoritative when it has an unambiguous match.
   // Cross-file importedReturnTypes are consulted ONLY when SymbolTable has 0 matches.
   // Ambiguous (2+) → undefined, no cross-file fallback (conservative, local-first principle).
+  // Post-A4 Unit 4: callableByName no longer holds Method/Constructor, so
+  // for-loop binding inference must also consult methodsByName to find
+  // return types on class methods (e.g. `user.getItems()` iteration).
+  const getCallableUnionCount = (callee: string): number => {
+    return (
+      model!.symbols.lookupCallableByName(callee).length +
+      model!.methods.lookupMethodByName(callee).length
+    );
+  };
+  const getFirstCallable = (callee: string) => {
+    const free = model!.symbols.lookupCallableByName(callee);
+    if (free.length > 0) return free[0];
+    const methods = model!.methods.lookupMethodByName(callee);
+    return methods.length > 0 ? methods[0] : undefined;
+  };
+
   const returnTypeLookup: ReturnTypeLookup = {
     lookupReturnType(callee: string): string | undefined {
       // SymbolTable is authoritative when it has an unambiguous match
       if (model) {
         if (provider.isBuiltInName(callee)) return undefined;
-        const callables = model.symbols.lookupCallableByName(callee);
-        if (callables.length === 1) {
-          const rawReturn = callables[0].returnType;
+        const count = getCallableUnionCount(callee);
+        if (count === 1) {
+          const rawReturn = getFirstCallable(callee)?.returnType;
           if (rawReturn) return extractReturnTypeName(rawReturn);
         }
         // Ambiguous (2+) → return undefined (conservative, no cross-file fallback)
-        if (callables.length > 1) return undefined;
+        if (count > 1) return undefined;
       }
       // No match (0 results or no symbolTable) → fall back to cross-file
       return options?.importedReturnTypes?.get(callee);
@@ -872,10 +888,10 @@ export const buildTypeEnv = (
     lookupRawReturnType(callee: string): string | undefined {
       if (model) {
         if (provider.isBuiltInName(callee)) return undefined;
-        const callables = model.symbols.lookupCallableByName(callee);
-        if (callables.length === 1) return callables[0].returnType;
+        const count = getCallableUnionCount(callee);
+        if (count === 1) return getFirstCallable(callee)?.returnType;
         // Ambiguous (2+) → return undefined (conservative, no cross-file fallback)
-        if (callables.length > 1) return undefined;
+        if (count > 1) return undefined;
       }
       // Cross-file fallback uses importedRawReturnTypes (raw declared types, e.g., 'User[]')
       // NOT importedReturnTypes (which contains processed/simple types via extractReturnTypeName)

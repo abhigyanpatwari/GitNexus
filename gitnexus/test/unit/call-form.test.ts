@@ -452,9 +452,13 @@ describe('ownerId on SymbolDefinition', () => {
     expect(def!.ownerId).toBeUndefined();
   });
 
-  it('propagates ownerId through lookupCallableByName', () => {
+  it('propagates ownerId through a free Function registration', () => {
+    // Post-A4 Unit 4, Method is no longer in CALLABLE_TYPES so this test
+    // exercises ownerId propagation through the free-callable index using
+    // a Function label. Method-with-ownerId propagation is covered via
+    // methodsByName in method-registry.test.ts.
     const st = createSymbolTable();
-    st.add('src/foo.ts', 'save', 'Method:src/foo.ts:save', 'Method', {
+    st.add('src/foo.ts', 'save', 'Function:src/foo.ts:save', 'Function', {
       ownerId: 'Class:src/foo.ts:User',
     });
 

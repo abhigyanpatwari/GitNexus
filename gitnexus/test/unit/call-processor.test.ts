@@ -2299,15 +2299,14 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
   });
 
   it('D0 miss: heritageMap provided but method not in MRO chain falls through to D1-D4', async () => {
-    // Setup: Class Obj has a method `doWork` that is findable via tiered
-    // resolution (import-scoped lookup), but intentionally NOT registered in
-    // methodByOwner (no `ownerId` property). heritageMap is provided but has
-    // no ancestry entry for class:Obj. Expected flow:
-    //   D0: lookupMethodByOwner(classId, 'doWork') → undefined
-    //       heritageMap.getAncestors(classId) → []
-    //       lookupMethodByOwnerWithMRO returns undefined → D0 miss
-    //   D1-D4: receiver type resolves to Obj; D2 widens via lookupCallableByName;
-    //          D3 file-filter picks the only candidate in Obj's file.
+    // Setup: Class Obj exists in the same file as a `doWork` Method. The
+    // Method is registered under a DIFFERENT ownerId (`class:OtherOwner`)
+    // so lookupMethodByOwner('class:Obj', 'doWork') misses on the direct
+    // lookup. heritageMap is empty for class:Obj, so MRO walk yields no
+    // parents. Expected flow:
+    //   D0: lookupMethodByOwner + MRO walk both miss → D0 fallthrough
+    //   D1-D4: receiver type resolves to Obj; D3 file-filter picks the
+    //          `doWork` candidate via its co-located file path.
     // Guarantees D0 miss does not swallow the call — D1-D4 still runs.
     const classFile = 'src/models/Obj.java';
     const appFile = 'src/services/App.java';
@@ -2315,10 +2314,13 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
     const doWorkId = 'method:models/Obj.java:doWork';
 
     ctx.model.symbols.add(classFile, 'Obj', classId, 'Class');
-    // Intentionally omit ownerId so methodByOwner has no entry — forces D0 miss.
+    // Post-A4: Method+ownerId routes through methodsByName. Using a
+    // different ownerId than the receiver type forces the direct
+    // lookupMethodByOwner miss that the test exercises.
     ctx.model.symbols.add(classFile, 'doWork', doWorkId, 'Method', {
       returnType: 'void',
       parameterCount: 0,
+      ownerId: 'class:models/Obj.java:OtherOwner',
     });
     ctx.importMap.set(appFile, new Set([classFile]));
 

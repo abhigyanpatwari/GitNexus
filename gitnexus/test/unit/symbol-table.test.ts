@@ -172,9 +172,12 @@ describe('SymbolTable', () => {
       });
     });
 
-    it('non-Property callable types are in callable index', () => {
+    it('post-A4: Method with ownerId lands in methodsByName, not callableByName', () => {
+      // Plan 006 Unit 4 shrank CALLABLE_TYPES to free callables only.
+      // Method registrations now flow through the method registry.
       table.add('src/models.ts', 'save', 'method:save', 'Method', { ownerId: 'class:User' });
-      expect(table.lookupCallableByName('save')).toHaveLength(1);
+      expect(table.lookupCallableByName('save')).toHaveLength(0);
+      expect(model.methods.lookupMethodByName('save')).toHaveLength(1);
     });
   });
 
@@ -182,9 +185,9 @@ describe('SymbolTable', () => {
     it('adding a Function makes it available in callable index', () => {
       table.add('src/a.ts', 'foo', 'func:foo', 'Function', { returnType: 'void' });
       expect(table.lookupCallableByName('foo')).toHaveLength(1);
-      // Add another callable
-      table.add('src/a.ts', 'bar', 'func:bar', 'Method');
-      expect(table.lookupCallableByName('bar')).toHaveLength(1);
+      // Free Macro is a callable (C/C++ preprocessor macro).
+      table.add('src/macros.h', 'BAR', 'macro:BAR', 'Macro');
+      expect(table.lookupCallableByName('BAR')).toHaveLength(1);
     });
 
     it('adding a Property does NOT add it to callable index', () => {
@@ -339,11 +342,15 @@ describe('SymbolTable', () => {
       expect(model.methods.lookupMethodByOwner('class:User', 'save')).toBeUndefined();
     });
 
-    it('does NOT index Method without ownerId', () => {
+    it('post-A4: Method without ownerId is not reachable via registries', () => {
+      // methodHook silently skips Method-without-ownerId (methods.register
+      // requires an owner). Post-Unit 4, Method is no longer in
+      // CALLABLE_TYPES either, so the symbol lands only in the file index.
       table.add('src/utils.ts', 'helper', 'method:helper', 'Method');
       expect(model.methods.lookupMethodByOwner('', 'helper')).toBeUndefined();
-      // But it should still be in lookupCallableByName
-      expect(table.lookupCallableByName('helper')).toHaveLength(1);
+      expect(model.methods.lookupMethodByName('helper')).toHaveLength(0);
+      expect(table.lookupCallableByName('helper')).toHaveLength(0);
+      expect(table.lookupExact('src/utils.ts', 'helper')).toBe('method:helper');
     });
 
     it('returns first match for overloads with same returnType (unambiguous)', () => {
@@ -387,8 +394,10 @@ describe('SymbolTable', () => {
         parameterCount: 0,
         ownerId: 'class:User',
       });
-      // But it should be in lookupCallableByName
-      expect(table.lookupCallableByName('User')).toHaveLength(1);
+      // Post-A4 Unit 4: Constructor no longer lands in callableByName.
+      // It is reachable via methodsByName instead.
+      expect(table.lookupCallableByName('User')).toHaveLength(0);
+      expect(model.methods.lookupMethodByName('User')).toHaveLength(1);
     });
 
     it('returns undefined for overloads with different returnTypes (ambiguous)', () => {
@@ -405,12 +414,14 @@ describe('SymbolTable', () => {
       expect(model.methods.lookupMethodByOwner('class:Converter', 'convert')).toBeUndefined();
     });
 
-    it('Method with ownerId is still available via lookupCallableByName', () => {
+    it('post-A4: Method with ownerId is reachable via methodsByName, not callableByName', () => {
       table.add('src/models.ts', 'save', 'method:save', 'Method', {
         returnType: 'void',
         ownerId: 'class:User',
       });
-      expect(table.lookupCallableByName('save')).toHaveLength(1);
+      expect(table.lookupCallableByName('save')).toHaveLength(0);
+      expect(model.methods.lookupMethodByName('save')).toHaveLength(1);
+      expect(model.methods.lookupMethodByOwner('class:User', 'save')).toBeDefined();
     });
 
     it('after clear(), lookupMethodByOwner returns undefined', () => {
@@ -425,15 +436,19 @@ describe('SymbolTable', () => {
   });
 
   describe('lookupCallableByName', () => {
-    it('returns only callable types (Function, Method, Constructor)', () => {
+    it('post-A4: returns only free callables (Function/Macro/Delegate)', () => {
+      // Post-Unit 4, CALLABLE_TYPES = {Function, Macro, Delegate}.
+      // Method and Constructor flow through the method registry instead.
       table.add('src/a.ts', 'foo', 'func:foo', 'Function');
-      table.add('src/a.ts', 'bar', 'method:bar', 'Method');
-      table.add('src/a.ts', 'Baz', 'ctor:Baz', 'Constructor');
+      table.add('src/a.ts', 'bar', 'method:bar', 'Method', { ownerId: 'class:X' });
+      table.add('src/a.ts', 'Baz', 'ctor:Baz', 'Constructor', { ownerId: 'class:Baz' });
       table.add('src/a.ts', 'User', 'class:User', 'Class');
       table.add('src/a.ts', 'IUser', 'iface:IUser', 'Interface');
       expect(table.lookupCallableByName('foo')).toHaveLength(1);
-      expect(table.lookupCallableByName('bar')).toHaveLength(1);
-      expect(table.lookupCallableByName('Baz')).toHaveLength(1);
+      expect(table.lookupCallableByName('bar')).toEqual([]);
+      expect(table.lookupCallableByName('Baz')).toEqual([]);
+      expect(model.methods.lookupMethodByName('bar')).toHaveLength(1);
+      expect(model.methods.lookupMethodByName('Baz')).toHaveLength(1);
       expect(table.lookupCallableByName('User')).toEqual([]);
       expect(table.lookupCallableByName('IUser')).toEqual([]);
     });
@@ -518,7 +533,7 @@ describe('SymbolTable', () => {
       expect(def!.ownerId).toBeUndefined();
     });
 
-    it('stores only ownerId on a Method (non-Property) — still in callable index', () => {
+    it('stores only ownerId on a Method — reachable via methodsByName (post-A4)', () => {
       table.add('src/models.ts', 'save', 'method:save', 'Method', { ownerId: 'class:Repo' });
       const def = table.lookupExactFull('src/models.ts', 'save');
       expect(def).toBeDefined();
@@ -526,8 +541,10 @@ describe('SymbolTable', () => {
       expect(def!.parameterCount).toBeUndefined();
       expect(def!.returnType).toBeUndefined();
       expect(def!.declaredType).toBeUndefined();
-      // Non-Property with ownerId must still appear in callable index
-      expect(table.lookupCallableByName('save')).toHaveLength(1);
+      // Post-A4 Unit 4: owner-scoped Method lives in methodsByName,
+      // not callableByName.
+      expect(table.lookupCallableByName('save')).toHaveLength(0);
+      expect(model.methods.lookupMethodByName('save')).toHaveLength(1);
     });
 
     it('stores declaredType alone (no ownerId) — symbol in file index', () => {
@@ -592,23 +609,27 @@ describe('SymbolTable', () => {
       expect(second[0].nodeId).toBe('func:fetch');
     });
 
-    it('includes newly added Method', () => {
+    it('post-A4: newly added Method is reachable via methodsByName, not callableByName', () => {
       table.add('src/a.ts', 'alpha', 'func:alpha', 'Function');
       expect(table.lookupCallableByName('alpha')).toHaveLength(1);
       expect(table.lookupCallableByName('beta')).toEqual([]);
-      // Add a Method
-      table.add('src/a.ts', 'beta', 'method:beta', 'Method');
-      const result = table.lookupCallableByName('beta');
-      expect(result).toHaveLength(1);
-      expect(result[0].type).toBe('Method');
+      table.add('src/a.ts', 'beta', 'method:beta', 'Method', { ownerId: 'class:X' });
+      expect(table.lookupCallableByName('beta')).toHaveLength(0);
+      const byName = model.methods.lookupMethodByName('beta');
+      expect(byName).toHaveLength(1);
+      expect(byName[0].type).toBe('Method');
     });
 
-    it('includes newly added Constructor', () => {
+    it('post-A4: newly added Constructor is reachable via methodsByName, not callableByName', () => {
       table.add('src/a.ts', 'existing', 'func:existing', 'Function');
       expect(table.lookupCallableByName('existing')).toHaveLength(1);
-      table.add('src/models.ts', 'MyClass', 'ctor:MyClass', 'Constructor');
-      expect(table.lookupCallableByName('MyClass')).toHaveLength(1);
-      expect(table.lookupCallableByName('MyClass')[0].type).toBe('Constructor');
+      table.add('src/models.ts', 'MyClass', 'ctor:MyClass', 'Constructor', {
+        ownerId: 'class:MyClass',
+      });
+      expect(table.lookupCallableByName('MyClass')).toHaveLength(0);
+      const byName = model.methods.lookupMethodByName('MyClass');
+      expect(byName).toHaveLength(1);
+      expect(byName[0].type).toBe('Constructor');
     });
   });
 
@@ -1104,7 +1125,7 @@ describe('SymbolTable', () => {
       expect(model.symbols.lookupCallableByName('CONFIG')).toHaveLength(0);
     });
 
-    it('registering a Method-without-ownerId silently skips methods.register but still files it', () => {
+    it('registering a Method-without-ownerId silently skips methods.register and is not in callableByName', () => {
       const model = createSemanticModel();
       const methodsSpy = vi.spyOn(model.methods, 'register');
 
@@ -1114,8 +1135,11 @@ describe('SymbolTable', () => {
       expect(model.symbols.lookupExact('src/orphan.ts', 'orphan')).toBe('mtd:orphan');
       // Method registry NOT populated (no ownerId to key under).
       expect(methodsSpy).not.toHaveBeenCalled();
-      // Method IS in CALLABLE_TYPES — still reaches callableByName.
-      expect(model.symbols.lookupCallableByName('orphan')).toHaveLength(1);
+      // Post-A4 Unit 4: Method is no longer in CALLABLE_TYPES, so the
+      // orphan does not leak into callableByName either. It lives only
+      // in the file index.
+      expect(model.symbols.lookupCallableByName('orphan')).toHaveLength(0);
+      expect(model.methods.lookupMethodByName('orphan')).toHaveLength(0);
     });
 
     it('exhaustiveness guard does not fire for the current NodeLabel taxonomy', () => {

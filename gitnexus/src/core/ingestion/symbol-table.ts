@@ -67,15 +67,43 @@ export type ClassLikeLabel = (typeof CLASS_TYPES_TUPLE)[number];
 
 export const CLASS_TYPES: ReadonlySet<NodeLabel> = new Set(CLASS_TYPES_TUPLE);
 
-/** Callable symbol types indexed in callableByName for Tier 3 resolution
- *  and D2 widen in call-processor.ts. Single source of truth — do not
- *  duplicate this set elsewhere. */
-export const CALLABLE_TYPES = new Set([
+/** Free-callable symbol types indexed in `callableByName` for Tier 3
+ *  resolution and the D2 widen path in call-processor.ts. Single source of
+ *  truth — do not duplicate this set elsewhere.
+ *
+ *  POST-A4 SCOPE (plan 006, Unit 4): this set is "callables that have NO
+ *  owner scope". Methods and constructors are owner-scoped and live in
+ *  `MethodRegistry` — Tier 3 reaches them via
+ *  `model.methods.lookupMethodByName`. See `resolution-context.ts` Tier 3
+ *  for how both indexes are consulted together.
+ *
+ *  Partial-state caveat: Python/Rust/Kotlin class methods are emitted by
+ *  the worker as `Function` + `ownerId` (not `Method`), so they still land
+ *  here. Fully collapsing those three languages onto the `Method` label is
+ *  tracked as Unit 5 and is blocked pending a `def.type` preservation
+ *  decision — see plan 006.
+ */
+export const CALLABLE_TYPES: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   'Function',
-  'Method',
-  'Constructor',
   'Macro', // C/C++
   'Delegate', // C#
+]);
+
+/** Symbol types that can be the TARGET of a call in the resolver's kind
+ *  filter — superset of {@link CALLABLE_TYPES} that also admits
+ *  owner-scoped methods and constructors pulled in from `MethodRegistry`.
+ *
+ *  Why the split: `CALLABLE_TYPES` now has a narrow meaning (free
+ *  callables indexed in `callableByName`), but call resolution still
+ *  needs to accept Method and Constructor candidates once they have been
+ *  unioned in from `model.methods.lookupMethodByName`. The resolver uses
+ *  this constant for kind filtering in
+ *  `filterCallableCandidates` / `countCallableCandidates`.
+ */
+export const CALL_TARGET_TYPES: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+  ...CALLABLE_TYPES,
+  'Method',
+  'Constructor',
 ]);
 
 export interface SymbolDefinition {

@@ -98,6 +98,7 @@ interface LegacyMockOverrides {
   lookupCallableByName?: SymbolTable['lookupCallableByName'];
   lookupFieldByOwner?: FieldRegistry['lookupFieldByOwner'];
   lookupMethodByOwner?: MethodRegistry['lookupMethodByOwner'];
+  lookupMethodByName?: MethodRegistry['lookupMethodByName'];
   lookupClassByName?: TypeRegistry['lookupClassByName'];
   lookupClassByQualifiedName?: TypeRegistry['lookupClassByQualifiedName'];
   lookupImplByName?: TypeRegistry['lookupImplByName'];
@@ -117,6 +118,7 @@ const createMockSymbolTable = (overrides: LegacyMockOverrides = {}): SemanticMod
     lookupCallableByName: () => [],
     lookupFieldByOwner: () => undefined,
     lookupMethodByOwner: () => undefined,
+    lookupMethodByName: () => [],
     lookupClassByName: () => [],
     lookupClassByQualifiedName: () => [],
     lookupImplByName: () => [],
@@ -146,6 +148,7 @@ const createMockSymbolTable = (overrides: LegacyMockOverrides = {}): SemanticMod
   };
   const methods: MethodRegistry = {
     lookupMethodByOwner: base.lookupMethodByOwner,
+    lookupMethodByName: base.lookupMethodByName,
   };
   const fields: FieldRegistry = {
     lookupFieldByOwner: base.lookupFieldByOwner,
@@ -1257,6 +1260,7 @@ class RepoService {
       },
       methods: {
         lookupMethodByOwner: () => undefined,
+        lookupMethodByName: () => [],
       },
       fields: {
         lookupFieldByOwner: () => undefined,

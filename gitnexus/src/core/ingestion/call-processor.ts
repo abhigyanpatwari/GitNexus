@@ -1,7 +1,7 @@
 import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
 import type { SymbolDefinition, SymbolTable } from './symbol-table.js';
-import { CLASS_TYPES, CALLABLE_TYPES } from './symbol-table.js';
+import { CLASS_TYPES, CALL_TARGET_TYPES } from './symbol-table.js';
 import Parser from 'tree-sitter';
 import type { ResolutionContext } from './resolution-context.js';
 import { TIER_CONFIDENCE, type ResolutionTier } from './resolution-context.js';
@@ -1320,10 +1320,14 @@ const filterCallableCandidates = (
     } else {
       const types = candidates.filter((c) => CONSTRUCTOR_TARGET_TYPES.has(c.type));
       kindFiltered =
-        types.length > 0 ? types : candidates.filter((c) => CALLABLE_TYPES.has(c.type));
+        types.length > 0 ? types : candidates.filter((c) => CALL_TARGET_TYPES.has(c.type));
     }
   } else {
-    kindFiltered = candidates.filter((c) => CALLABLE_TYPES.has(c.type));
+    // CALL_TARGET_TYPES (not CALLABLE_TYPES) — the post-A4 filter must
+    // also admit Method and Constructor candidates, which are now unioned
+    // into the pool from `model.methods.lookupMethodByName` rather than
+    // `symbols.lookupCallableByName`.
+    kindFiltered = candidates.filter((c) => CALL_TARGET_TYPES.has(c.type));
   }
 
   if (kindFiltered.length === 0) return [];
@@ -1360,7 +1364,7 @@ const countCallableCandidates = (
     const typeOk =
       callForm === 'constructor'
         ? CONSTRUCTOR_TARGET_TYPES.has(c.type)
-        : CALLABLE_TYPES.has(c.type);
+        : CALL_TARGET_TYPES.has(c.type);
     if (!typeOk) continue;
     // Arity filter
     if (
@@ -1574,27 +1578,26 @@ const resolveModuleAliasedCall = (
   }
   if (filtered.length === 0) {
     // Widen to global callable+method indexes scoped to the aliased module
-    // file. A4 Unit 3 (plan 006): combine callable-by-name with
-    // method-by-name and dedup by nodeId — Method/Constructor still overlap
-    // during the intermediate state and Unit 4 drops the dedup.
+    // file. Function+ownerId (Python/Rust/Kotlin) is still routed to both
+    // indexes until Unit 5 unblocks, so dedup by nodeId.
     const cacheKey = `${call.calledName}\0${moduleFile}`;
     let defs = widenCache?.get(cacheKey);
     if (!defs) {
       const rawCallable = ctx.model.symbols.lookupCallableByName(call.calledName);
       const rawMethods = ctx.model.methods.lookupMethodByName(call.calledName);
-      const combined: SymbolDefinition[] = [];
-      const seenWiden = new Set<string>();
+      const widenCombined: SymbolDefinition[] = [];
+      const widenSeen = new Set<string>();
       for (const d of rawCallable) {
-        if (seenWiden.has(d.nodeId)) continue;
-        seenWiden.add(d.nodeId);
-        combined.push(d);
+        if (widenSeen.has(d.nodeId)) continue;
+        widenSeen.add(d.nodeId);
+        widenCombined.push(d);
       }
       for (const d of rawMethods) {
-        if (seenWiden.has(d.nodeId)) continue;
-        seenWiden.add(d.nodeId);
-        combined.push(d);
+        if (widenSeen.has(d.nodeId)) continue;
+        widenSeen.add(d.nodeId);
+        widenCombined.push(d);
       }
-      defs = combined;
+      defs = widenCombined;
       widenCache?.set(cacheKey, defs);
     }
     filtered = filterCallableCandidates(defs, call.argCount, call.callForm).filter(
@@ -1635,11 +1638,11 @@ const resolveMemberCallByFile = (
   const typeNodeIds = new Set(typeResolved.candidates.map((d) => d.nodeId));
   const typeFiles = new Set(typeResolved.candidates.map((d) => d.filePath));
 
-  // A4 Unit 3 (plan 006): combine callable-by-name + method-by-name so that
-  // class-method registrations land in the pool here too. During the A4
-  // intermediate state, Method/Constructor are still in CALLABLE_TYPES so
-  // the two pools OVERLAP — dedup by nodeId. Unit 4 shrinks CALLABLE_TYPES
-  // and this dedup is removed.
+  // A4 (plan 006, Unit 4): consult both indexes. Strictly-labeled
+  // Method/Constructor are disjoint, but Function+ownerId (Python/Rust/
+  // Kotlin) is routed into BOTH indexes by `wrappedAdd` until Unit 5
+  // unblocks — dedup by nodeId so overload disambiguation doesn't see
+  // phantom duplicates.
   const rawCallablePool = ctx.model.symbols.lookupCallableByName(calledName);
   const rawMethodPool = ctx.model.methods.lookupMethodByName(calledName);
   const combinedPool: SymbolDefinition[] = [];

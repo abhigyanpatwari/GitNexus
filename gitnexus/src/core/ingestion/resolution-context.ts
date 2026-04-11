@@ -201,17 +201,21 @@ export const createResolutionContext = (): ResolutionContext => {
     // (Function, Macro, Delegate) by lookupCallableByName; owner-scoped
     // methods and constructors by `model.methods.lookupMethodByName`.
     //
-    // Temporary dedup (plan 006, A4 Unit 3): Method/Constructor are still in
-    // CALLABLE_TYPES at this intermediate step, so `callableDefs` and
-    // `methodDefs` OVERLAP on those symbols. The Set-based dedup below
-    // collapses the duplicates by nodeId. Unit 4 shrinks CALLABLE_TYPES to
-    // free callables only and this dedup is removed.
+    // Post-A4 Unit 4: CALLABLE_TYPES no longer includes Method/Constructor,
+    // so strictly-labeled methods are disjoint between the two indexes.
+    //
+    // Partial-state caveat (Unit 5 blocked): Python/Rust/Kotlin class
+    // methods are emitted as Function + ownerId — `rawSymbols.add` routes
+    // them through both the Function callable index AND, via the dispatch
+    // key normalization in `wrappedAdd`, the method registry. The same
+    // `SymbolDefinition` reference lands in both `callableDefs` and
+    // `methodDefs`, so the Set-based dedup below is still required. Unit 5
+    // finishes the normalization and this dedup can be removed then.
     //
     // Known exclusion: TypeAlias, Const, and Variable are NOT reachable at
     // Tier 3 — they don't belong to any of the indexes. In practice they
     // were never useful as Tier 3 candidates: TypeAlias is not a call
     // target, Const/Variable are resolved via import or same-file tiers.
-    // If a future language needs them at Tier 3, add a dedicated index.
     // Macro (C/C++) and Delegate (C#) stay in the callable index since
     // call-processor.ts treats them as callable targets.
     const classDefs = model.types.lookupClassByName(name);
@@ -229,9 +233,6 @@ export const createResolutionContext = (): ResolutionContext => {
       return null;
     }
 
-    // Dedup by nodeId — classDefs and implDefs are disjoint from the
-    // callable/method pair, but callableDefs ∩ methodDefs can be non-empty
-    // during the A4 intermediate state.
     const globalDefs: SymbolDefinition[] = [...classDefs, ...implDefs];
     const seen = new Set<string>();
     for (const def of callableDefs) {
