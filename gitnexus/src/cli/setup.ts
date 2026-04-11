@@ -265,7 +265,7 @@ async function setupOpenCode(result: SetupResult): Promise<void> {
     return;
   }
 
-  const configPath = path.join(opencodeDir, 'config.json');
+  const configPath = path.join(opencodeDir, 'opencode.json');
   try {
     const existing = await readJsonFile(configPath);
     const config = existing || {};
