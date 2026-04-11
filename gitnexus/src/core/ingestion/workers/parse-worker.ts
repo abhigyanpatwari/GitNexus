@@ -853,6 +853,11 @@ const HTTP_CLIENT_RECEIVERS = new Set([
   'apiclient',
   'client',
   'httpclient',
+  'api',
+  '$http',
+  'session',
+  'httpservice',
+  'conn',
 ]);
 
 // Decorator names that indicate HTTP route handlers (NestJS, Flask, FastAPI, Spring)
@@ -1588,7 +1593,17 @@ const processFileGroup = (
           // as Express route registrations.
           const callNode = captureMap['express_route'];
           const funcNode = callNode.childForFieldName?.('function') ?? callNode.children?.[0];
-          const receiverNode = funcNode?.childForFieldName?.('object') ?? funcNode?.children?.[0];
+          // Walk through nested member_expressions to get the innermost receiver name
+          let receiverNode = funcNode?.childForFieldName?.('object') ?? funcNode?.children?.[0];
+          while (receiverNode?.type === 'member_expression') {
+            // Get the property (rightmost part) of the member expression
+            const propNode = receiverNode.childForFieldName?.('property');
+            if (propNode) {
+              receiverNode = propNode;
+            } else {
+              break;
+            }
+          }
           const receiverText = receiverNode?.text?.toLowerCase() ?? '';
 
           if (HTTP_CLIENT_RECEIVERS.has(receiverText)) {
