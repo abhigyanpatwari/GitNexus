@@ -5,7 +5,7 @@ import {
 } from '../../src/core/ingestion/model/resolution-context.js';
 import { createSymbolTable } from '../../src/core/ingestion/model/symbol-table.js';
 import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
-import { isFileInPackageDir } from '../../src/core/ingestion/import-processor.js';
+import { isFileInPackageDir } from '../../src/core/ingestion/model/resolution-context.js';
 
 /** Helper: resolve to single best definition (refuses ambiguous global) */
 const resolveOne = (ctx: ResolutionContext, name: string, fromFile: string) => {

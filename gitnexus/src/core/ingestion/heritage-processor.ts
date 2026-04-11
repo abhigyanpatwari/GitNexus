@@ -19,47 +19,34 @@ import { ASTCache } from './ast-cache.js';
 import Parser from 'tree-sitter';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { generateId } from '../../lib/utils.js';
-import { getLanguageFromFilename } from 'gitnexus-shared';
+import { getLanguageFromFilename, type SupportedLanguages } from 'gitnexus-shared';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
-import { SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from './languages/index.js';
 import { getTreeSitterBufferSize } from './constants.js';
-import type { ExtractedHeritage } from './workers/parse-worker.js';
+import type {
+  ExtractedHeritage,
+  HeritageResolutionStrategy,
+  HeritageStrategyLookup,
+} from './model/heritage-map.js';
+import { resolveExtendsType } from './model/heritage-map.js';
 import type { ResolutionContext } from './model/resolution-context.js';
 import { TIER_CONFIDENCE } from './model/resolution-context.js';
 
 /**
- * Determine whether a heritage.extends capture is actually an IMPLEMENTS relationship.
- * Uses the symbol table first (authoritative — Tier 1); falls back to provider-defined
- * heuristics for external symbols not present in the graph:
- *   - interfaceNamePattern: matched against parent name (e.g., /^I[A-Z]/ for C#/Java)
- *   - heritageDefaultEdge: 'IMPLEMENTS' causes all unresolved parents to map to IMPLEMENTS
- *   - All others: default EXTENDS
+ * Derive the heritage-resolution strategy for a language from its
+ * `LanguageProvider`. This is the production wiring that `buildHeritageMap`
+ * and the standalone `resolveExtendsType` call site use — the model layer
+ * itself stays unaware of the provider registry.
  */
-/** Exported for implementor-map construction (C#/Java: `extends` rows in base_list may be interfaces). */
-export const resolveExtendsType = (
-  parentName: string,
-  currentFilePath: string,
-  ctx: ResolutionContext,
-  language: SupportedLanguages,
-): { type: 'EXTENDS' | 'IMPLEMENTS'; idPrefix: string } => {
-  const resolved = ctx.resolve(parentName, currentFilePath);
-  if (resolved && resolved.candidates.length > 0) {
-    const isInterface = resolved.candidates[0].type === 'Interface';
-    return isInterface
-      ? { type: 'IMPLEMENTS', idPrefix: 'Interface' }
-      : { type: 'EXTENDS', idPrefix: 'Class' };
-  }
-  // Unresolved symbol — fall back to provider-defined heuristics
-  const provider = getProvider(language);
-  if (provider.interfaceNamePattern?.test(parentName)) {
-    return { type: 'IMPLEMENTS', idPrefix: 'Interface' };
-  }
-  if (provider.heritageDefaultEdge === 'IMPLEMENTS') {
-    return { type: 'IMPLEMENTS', idPrefix: 'Interface' };
-  }
-  return { type: 'EXTENDS', idPrefix: 'Class' };
+export const getHeritageStrategyForLanguage: HeritageStrategyLookup = (
+  lang: SupportedLanguages,
+): HeritageResolutionStrategy => {
+  const provider = getProvider(lang);
+  return {
+    interfaceNamePattern: provider.interfaceNamePattern,
+    defaultEdge: provider.heritageDefaultEdge ?? 'EXTENDS',
+  };
 };
 
 /**
@@ -180,7 +167,7 @@ export const processHeritage = async (
           parentClassName,
           file.path,
           ctx,
-          language,
+          getHeritageStrategyForLanguage(language),
         );
 
         const child = resolveHeritageId(
@@ -296,7 +283,7 @@ export const processHeritageFromExtracted = async (
         h.parentName,
         h.filePath,
         ctx,
-        fileLanguage,
+        getHeritageStrategyForLanguage(fileLanguage),
       );
 
       const child = resolveHeritageId(

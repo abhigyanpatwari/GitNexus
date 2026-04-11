@@ -13,10 +13,73 @@
  *    classes implementing a given interface)
  */
 
-import type { ExtractedHeritage } from '../workers/parse-worker.js';
 import type { ResolutionContext } from './resolution-context.js';
-import { getLanguageFromFilename } from 'gitnexus-shared';
-import { resolveExtendsType } from '../heritage-processor.js';
+import { getLanguageFromFilename, type SupportedLanguages } from 'gitnexus-shared';
+
+// ---------------------------------------------------------------------------
+// ExtractedHeritage — the shape produced by the parse worker / heritage
+// extractor. Moved here from `workers/parse-worker.ts` in the model-leaf DAG
+// cleanup so `model/` has no upward imports. `workers/parse-worker.ts` and
+// downstream consumers import this type back from the model module.
+// ---------------------------------------------------------------------------
+
+export interface ExtractedHeritage {
+  filePath: string;
+  className: string;
+  parentName: string;
+  /** 'extends' | 'implements' | 'trait-impl' | 'include' | 'extend' | 'prepend' */
+  kind: string;
+}
+
+// ---------------------------------------------------------------------------
+// Heritage resolution strategy (the per-language knobs that drive
+// `resolveExtendsType` below). Pulled out as an explicit strategy object so
+// the model layer depends on a plain data shape rather than on the language
+// provider registry.
+// ---------------------------------------------------------------------------
+
+export interface HeritageResolutionStrategy {
+  /** If set and the parent name matches, force IMPLEMENTS even when the
+   *  symbol is unresolved (e.g. `/^I[A-Z]/` for C# / Java). */
+  readonly interfaceNamePattern?: RegExp;
+  /** Fallback edge for unresolved parents when the name pattern doesn't
+   *  match (Swift uses 'IMPLEMENTS' for protocol conformance). */
+  readonly defaultEdge: 'EXTENDS' | 'IMPLEMENTS';
+}
+
+/** Callback used by `buildHeritageMap` to look up the resolution strategy
+ *  for a given language. Injected by callers so the model module doesn't
+ *  depend on `../languages/index.js`. */
+export type HeritageStrategyLookup = (lang: SupportedLanguages) => HeritageResolutionStrategy;
+
+/**
+ * Determine whether a heritage.extends capture is actually an IMPLEMENTS
+ * relationship. Consults the symbol table first (authoritative — Tier 1 /
+ * Tier 2 resolution); falls back to the injected {@link HeritageResolutionStrategy}
+ * heuristics for external symbols not present in the graph.
+ */
+export const resolveExtendsType = (
+  parentName: string,
+  currentFilePath: string,
+  ctx: ResolutionContext,
+  strategy: HeritageResolutionStrategy,
+): { type: 'EXTENDS' | 'IMPLEMENTS'; idPrefix: string } => {
+  const resolved = ctx.resolve(parentName, currentFilePath);
+  if (resolved && resolved.candidates.length > 0) {
+    const isInterface = resolved.candidates[0].type === 'Interface';
+    return isInterface
+      ? { type: 'IMPLEMENTS', idPrefix: 'Interface' }
+      : { type: 'EXTENDS', idPrefix: 'Class' };
+  }
+  // Unresolved symbol — fall back to strategy heuristics.
+  if (strategy.interfaceNamePattern?.test(parentName)) {
+    return { type: 'IMPLEMENTS', idPrefix: 'Interface' };
+  }
+  if (strategy.defaultEdge === 'IMPLEMENTS') {
+    return { type: 'IMPLEMENTS', idPrefix: 'Interface' };
+  }
+  return { type: 'EXTENDS', idPrefix: 'Class' };
+};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -41,6 +104,12 @@ export interface HeritageMap {
 /** Shared empty set returned when no implementors are found. */
 const EMPTY_SET: ReadonlySet<string> = new Set();
 
+/** Default strategy used when `buildHeritageMap` is called without an
+ *  explicit `getHeritageStrategy` callback — behaves like the pre-SM-20
+ *  `resolveExtendsType` fallback for a language whose provider sets no
+ *  interface-name pattern and no non-default `heritageDefaultEdge`. */
+const DEFAULT_HERITAGE_STRATEGY: HeritageResolutionStrategy = { defaultEdge: 'EXTENDS' };
+
 // ---------------------------------------------------------------------------
 // Builder
 // ---------------------------------------------------------------------------
@@ -61,6 +130,7 @@ const EMPTY_SET: ReadonlySet<string> = new Set();
 export const buildHeritageMap = (
   heritage: readonly ExtractedHeritage[],
   ctx: ResolutionContext,
+  getHeritageStrategy?: HeritageStrategyLookup,
 ): HeritageMap => {
   // childNodeId → Set<parentNodeId>  (Set to deduplicate cross-chunk duplicates)
   const directParents = new Map<string, Set<string>>();
@@ -108,7 +178,8 @@ export const buildHeritageMap = (
     } else if (h.kind === 'extends') {
       const lang = getLanguageFromFilename(h.filePath);
       if (lang) {
-        const { type } = resolveExtendsType(h.parentName, h.filePath, ctx, lang);
+        const strategy = getHeritageStrategy?.(lang) ?? DEFAULT_HERITAGE_STRATEGY;
+        const { type } = resolveExtendsType(h.parentName, h.filePath, ctx, strategy);
         isImpl = type === 'IMPLEMENTS';
       }
     }

@@ -20,12 +20,94 @@
  *   (three O(1) index lookups with a narrow, type-specific result set).
  */
 
-import type { SymbolDefinition } from './symbol-table.js';
+import type { SymbolDefinition, SymbolTableReader } from './symbol-table.js';
 import type { SemanticModel } from './semantic-model.js';
 import { createSemanticModel } from './semantic-model.js';
-import type { NamedImportMap } from '../import-processor.js';
-import { isFileInPackageDir } from '../import-processor.js';
-import { walkBindingChain } from '../named-binding-processor.js';
+
+// ---------------------------------------------------------------------------
+// Named-import types (moved from import-processor.ts in the model-leaf DAG
+// cleanup). These describe how a file imports specific names from a source
+// file, and are consumed by the Tier 2a-named binding-chain walker below.
+// ---------------------------------------------------------------------------
+
+/**
+ * A single named binding in a source file (e.g. `import { User as U }`).
+ * Stores both the resolved source path and the original exported name so
+ * that aliased imports can resolve U → User in the source file.
+ */
+export interface NamedImportBinding {
+  sourcePath: string;
+  exportedName: string;
+}
+
+/**
+ * Map<ImportingFilePath, Map<LocalName, NamedImportBinding>>.
+ *
+ * Tracks which specific names a file imports from which sources (TS / Python
+ * / Rust / Java-static / ...). Used to tighten Tier 2a resolution:
+ * `import { User } from './models'` means only `User` (not `Repo`) is
+ * visible from models.ts via this import.
+ */
+export type NamedImportMap = Map<string, Map<string, NamedImportBinding>>;
+
+/**
+ * Check if a file path is directly inside a package directory identified by
+ * its suffix. Used by Tier 2b package-scoped resolution (Go / C#).
+ */
+export function isFileInPackageDir(filePath: string, dirSuffix: string): boolean {
+  // Prepend '/' so paths like "internal/auth/service.go" match suffix "/internal/auth/"
+  const normalized = '/' + filePath.replace(/\\/g, '/');
+  if (!normalized.includes(dirSuffix)) return false;
+  const afterDir = normalized.substring(normalized.indexOf(dirSuffix) + dirSuffix.length);
+  return !afterDir.includes('/');
+}
+
+/**
+ * Walk a named-binding re-export chain through NamedImportMap.
+ *
+ * When file A imports { User } from B, and B re-exports { User } from C,
+ * the NamedImportMap for A points to B, but B has no User definition.
+ * This function follows the chain: A → B → C until a definition is found.
+ *
+ * Returns the definitions found at the end of the chain, or null if the
+ * chain breaks (missing binding, circular reference, or depth exceeded).
+ * Max depth 5 to prevent infinite loops.
+ *
+ * Internal to resolution-context — not exported from the model barrel.
+ */
+function walkBindingChain(
+  name: string,
+  currentFilePath: string,
+  symbolTable: SymbolTableReader,
+  namedImportMap: NamedImportMap,
+): SymbolDefinition[] | null {
+  let lookupFile = currentFilePath;
+  let lookupName = name;
+  const visited = new Set<string>();
+
+  for (let depth = 0; depth < 5; depth++) {
+    const bindings = namedImportMap.get(lookupFile);
+    if (!bindings) return null;
+
+    const binding = bindings.get(lookupName);
+    if (!binding) return null;
+
+    const key = `${binding.sourcePath}:${binding.exportedName}`;
+    if (visited.has(key)) return null; // circular
+    visited.add(key);
+
+    const targetName = binding.exportedName;
+    const resolvedDefs = symbolTable.lookupExactAll(binding.sourcePath, targetName);
+
+    if (resolvedDefs.length > 0) return resolvedDefs;
+
+    // No definition in source file → follow re-export chain
+    lookupFile = binding.sourcePath;
+    lookupName = targetName;
+  }
+
+  return null;
+}
 
 /** Resolution tier for tracking, logging, and test assertions. */
 export type ResolutionTier = 'same-file' | 'import-scoped' | 'global';

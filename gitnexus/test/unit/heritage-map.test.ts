@@ -4,7 +4,8 @@ import {
   createResolutionContext,
   type ResolutionContext,
 } from '../../src/core/ingestion/model/resolution-context.js';
-import type { ExtractedHeritage } from '../../src/core/ingestion/workers/parse-worker.js';
+import type { ExtractedHeritage } from '../../src/core/ingestion/model/heritage-map.js';
+import { getHeritageStrategyForLanguage } from '../../src/core/ingestion/heritage-processor.js';
 
 describe('buildHeritageMap', () => {
   let ctx: ResolutionContext;
@@ -341,7 +342,7 @@ describe('buildHeritageMap', () => {
           kind: 'extends',
         },
       ];
-      const map = buildHeritageMap(heritage, ctx);
+      const map = buildHeritageMap(heritage, ctx, getHeritageStrategyForLanguage);
       expect(map.getImplementorFiles('IDisposable')).toEqual(new Set(['src/Service.cs']));
     });
 
@@ -358,7 +359,7 @@ describe('buildHeritageMap', () => {
           kind: 'extends',
         },
       ];
-      const map = buildHeritageMap(heritage, ctx);
+      const map = buildHeritageMap(heritage, ctx, getHeritageStrategyForLanguage);
       expect(map.getImplementorFiles('SomeProtocol')).toEqual(new Set(['src/MyView.swift']));
     });
 

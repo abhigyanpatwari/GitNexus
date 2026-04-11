@@ -12,8 +12,128 @@
 import type { SymbolDefinition } from './symbol-table.js';
 import type { SemanticModel } from './semantic-model.js';
 import type { HeritageMap } from './heritage-map.js';
-import { c3Linearize } from '../mro-processor.js';
 import type { MroStrategy } from 'gitnexus-shared';
+
+// ---------------------------------------------------------------------------
+// MRO primitives (moved from mro-processor.ts in the model-leaf DAG cleanup).
+//
+// `c3Linearize` and its BFS helper `gatherAncestors` live here so the model
+// layer stays a pure leaf — mro-processor.ts (graph-level MRO emission) now
+// imports `c3Linearize` back from this file.
+// ---------------------------------------------------------------------------
+
+/**
+ * Gather all ancestor IDs in BFS / topological order.
+ * Returns the linearized list of ancestor IDs (excluding the class itself).
+ */
+function gatherAncestors(classId: string, parentMap: Map<string, string[]>): string[] {
+  const visited = new Set<string>();
+  const order: string[] = [];
+  const queue: string[] = [...(parentMap.get(classId) ?? [])];
+
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    order.push(id);
+    const grandparents = parentMap.get(id);
+    if (grandparents) {
+      for (const gp of grandparents) {
+        if (!visited.has(gp)) queue.push(gp);
+      }
+    }
+  }
+
+  return order;
+}
+
+/**
+ * Compute C3 linearization for a class given a parentMap.
+ * Returns an array of ancestor IDs in C3 order (excluding the class itself),
+ * or null if linearization fails (inconsistent or cyclic hierarchy).
+ *
+ * Used internally by `lookupMethodByOwnerWithMRO` for the Python MRO
+ * strategy and re-exported for mro-processor.ts (graph-level MRO emission).
+ */
+export function c3Linearize(
+  classId: string,
+  parentMap: Map<string, string[]>,
+  cache: Map<string, string[] | null>,
+  inProgress?: Set<string>,
+): string[] | null {
+  if (cache.has(classId)) return cache.get(classId)!;
+
+  // Cycle detection: if we're already computing this class, the hierarchy is cyclic
+  const visiting = inProgress ?? new Set<string>();
+  if (visiting.has(classId)) {
+    cache.set(classId, null);
+    return null;
+  }
+  visiting.add(classId);
+
+  const directParents = parentMap.get(classId);
+  if (!directParents || directParents.length === 0) {
+    visiting.delete(classId);
+    cache.set(classId, []);
+    return [];
+  }
+
+  // Compute linearization for each parent first
+  const parentLinearizations: string[][] = [];
+  for (const pid of directParents) {
+    const pLin = c3Linearize(pid, parentMap, cache, visiting);
+    if (pLin === null) {
+      visiting.delete(classId);
+      cache.set(classId, null);
+      return null;
+    }
+    parentLinearizations.push([pid, ...pLin]);
+  }
+
+  // Add the direct parents list as the final sequence
+  const sequences = [...parentLinearizations, [...directParents]];
+  const result: string[] = [];
+
+  while (sequences.some((s) => s.length > 0)) {
+    // Find a good head: one that doesn't appear in the tail of any other sequence
+    let head: string | null = null;
+    for (const seq of sequences) {
+      if (seq.length === 0) continue;
+      const candidate = seq[0];
+      const inTail = sequences.some(
+        (other) => other.length > 1 && other.indexOf(candidate, 1) !== -1,
+      );
+      if (!inTail) {
+        head = candidate;
+        break;
+      }
+    }
+
+    if (head === null) {
+      // Inconsistent hierarchy
+      visiting.delete(classId);
+      cache.set(classId, null);
+      return null;
+    }
+
+    result.push(head);
+
+    // Remove the chosen head from all sequences
+    for (const seq of sequences) {
+      if (seq.length > 0 && seq[0] === head) {
+        seq.shift();
+      }
+    }
+  }
+
+  visiting.delete(classId);
+  cache.set(classId, result);
+  return result;
+}
+
+// `gatherAncestors` is only used internally here for now, but exported so
+// mro-processor.ts can import it back (it previously owned this helper).
+export { gatherAncestors };
 
 // ---------------------------------------------------------------------------
 // C3 linearization cache (per HeritageMap, auto-drained via WeakMap)

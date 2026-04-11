@@ -20,9 +20,9 @@ import type {
   ExtractedAssignment,
   ExtractedCall,
   ExtractedFetchCall,
-  ExtractedHeritage,
   FileConstructorBindings,
 } from '../../src/core/ingestion/workers/parse-worker.js';
+import type { ExtractedHeritage } from '../../src/core/ingestion/model/heritage-map.js';
 
 describe('processCallsFromExtracted', () => {
   let graph: ReturnType<typeof createKnowledgeGraph>;

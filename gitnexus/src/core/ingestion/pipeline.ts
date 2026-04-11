@@ -47,16 +47,17 @@ import type {
   ExtractedCall,
   ExtractedDecoratorRoute,
   ExtractedFetchCall,
-  ExtractedHeritage,
   ExtractedORMQuery,
   ExtractedRoute,
   ExtractedToolDef,
   FileConstructorBindings,
 } from './workers/parse-worker.js';
+import type { ExtractedHeritage } from './model/heritage-map.js';
 import {
   processHeritage,
   processHeritageFromExtracted,
   extractExtractedHeritageFromFiles,
+  getHeritageStrategyForLanguage,
 } from './heritage-processor.js';
 import { computeMRO } from './mro-processor.js';
 import { processCommunities } from './community-processor.js';
@@ -982,7 +983,9 @@ async function runChunkedParseAndResolve(
 
     // Build unified HeritageMap (parent lookup + implementor index) after all chunks.
     const fullWorkerHeritageMap =
-      deferredWorkerHeritage.length > 0 ? buildHeritageMap(deferredWorkerHeritage, ctx) : undefined;
+      deferredWorkerHeritage.length > 0
+        ? buildHeritageMap(deferredWorkerHeritage, ctx, getHeritageStrategyForLanguage)
+        : undefined;
 
     if (deferredWorkerCalls.length > 0) {
       await processCallsFromExtracted(
@@ -1062,7 +1065,9 @@ async function runChunkedParseAndResolve(
   }
   // Build unified HeritageMap from all sequential heritage (parent lookup + implementor index).
   const sequentialHeritageMap =
-    allSequentialHeritage.length > 0 ? buildHeritageMap(allSequentialHeritage, ctx) : undefined;
+    allSequentialHeritage.length > 0
+      ? buildHeritageMap(allSequentialHeritage, ctx, getHeritageStrategyForLanguage)
+      : undefined;
 
   // Pass 2: Process calls, heritage edges, fetch calls, and ORM queries per chunk.
   // Reuse the file contents cached in Pass 1 instead of re-reading from disk.

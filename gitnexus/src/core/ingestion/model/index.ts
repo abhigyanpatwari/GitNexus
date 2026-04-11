@@ -56,6 +56,26 @@ export {
 // consumers that reach model behavior through the barrel.
 export { lookupMethodByOwnerWithMRO } from './resolve.js';
 
+// Named-import types and package-dir helper (formerly in import-processor.ts).
+// They were pulled into resolution-context.ts as part of the model-leaf DAG
+// cleanup; re-exported here so barrel consumers don't need to reach into a
+// specific model file.
+export {
+  type NamedImportBinding,
+  type NamedImportMap,
+  isFileInPackageDir,
+} from './resolution-context.js';
+
+// Heritage types — also pulled into the model module so workers/parse-worker
+// and heritage-processor can import them from a pure leaf. `buildHeritageMap`
+// + `resolveExtendsType` are already exported from `heritage-map.ts` and are
+// not re-surfaced here to keep the barrel narrow.
+export {
+  type ExtractedHeritage,
+  type HeritageResolutionStrategy,
+  type HeritageStrategyLookup,
+} from './heritage-map.js';
+
 // SM-22: behavior-grouped dispatch table for SymbolTable.add() routing.
 // See registration-table.ts module JSDoc for the behavior group taxonomy
 // and "how to add a new NodeLabel" checklist.

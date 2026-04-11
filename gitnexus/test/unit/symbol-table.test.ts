@@ -1167,7 +1167,7 @@ import {
   createResolutionContext,
   type ResolutionContext,
 } from '../../src/core/ingestion/model/resolution-context.js';
-import type { ExtractedHeritage } from '../../src/core/ingestion/workers/parse-worker.js';
+import type { ExtractedHeritage } from '../../src/core/ingestion/model/heritage-map.js';
 
 describe('lookupMethodByOwnerWithMRO', () => {
   let ctx: ResolutionContext;

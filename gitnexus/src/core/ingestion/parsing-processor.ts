@@ -38,7 +38,6 @@ import type {
   ExtractedImport,
   ExtractedCall,
   ExtractedAssignment,
-  ExtractedHeritage,
   ExtractedRoute,
   ExtractedFetchCall,
   ExtractedDecoratorRoute,
@@ -47,6 +46,7 @@ import type {
   FileScopeBindings,
   ExtractedORMQuery,
 } from './workers/parse-worker.js';
+import type { ExtractedHeritage } from './model/heritage-map.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;

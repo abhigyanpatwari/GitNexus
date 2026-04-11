@@ -38,11 +38,11 @@ import { getTreeSitterBufferSize } from './constants.js';
 import type {
   ExtractedCall,
   ExtractedAssignment,
-  ExtractedHeritage,
   ExtractedRoute,
   ExtractedFetchCall,
   FileConstructorBindings,
 } from './workers/parse-worker.js';
+import type { ExtractedHeritage } from './model/heritage-map.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
 import { extractTemplateComponents } from './vue-sfc-extractor.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';

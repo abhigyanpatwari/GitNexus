@@ -16,6 +16,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from '../languages/index.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from '../constants.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
+import type { ExtractedHeritage } from '../model/heritage-map.js';
 
 /** Language grammar type accepted by Parser.setLanguage(). */
 type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
@@ -181,13 +182,8 @@ export interface ExtractedAssignment {
   receiverTypeName?: string;
 }
 
-export interface ExtractedHeritage {
-  filePath: string;
-  className: string;
-  parentName: string;
-  /** 'extends' | 'implements' | 'trait-impl' | 'include' | 'extend' | 'prepend' */
-  kind: string;
-}
+// `ExtractedHeritage` now lives in `../model/heritage-map.ts` and is
+// re-exported at the top of this file.
 
 export interface ExtractedRoute {
   filePath: string;
