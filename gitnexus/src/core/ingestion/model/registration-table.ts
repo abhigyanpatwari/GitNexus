@@ -47,29 +47,6 @@
  *
  * The runtime exhaustiveness guard in `symbol-table.ts` will warn if a
  * `NodeLabel` is missing from all three sets.
- *
- * ## Design provenance
- *
- * The behavior-grouped dispatch-table pattern is drawn from three industrial
- * precedents, confirmed via deep research in the SM-22 plan:
- *
- * - **rust-analyzer `PerNs<T>` + `push_res_with_import`** — one router,
- *   typed data, no per-kind strategies. The "dispatch by lookup dimension,
- *   not by symbol kind" insight comes from here.
- *   https://github.com/rust-lang/rust-analyzer/blob/master/crates/hir-def/src/item_scope.rs
- *
- * - **TypeScript compiler `declareSymbol(includes, excludes)`** — single
- *   function, bitwise fan-out, composable conflict detection. The "skip
- *   callable index as data, not control flow" flag is the same principle.
- *   https://github.com/basarat/typescript-book/blob/master/docs/compiler/binder-symbolflags.md
- *
- * - **Fowler — Replace Conditional with Polymorphism** — applicable
- *   precisely because `add()` governs more than 2–3 distinct behaviors
- *   per kind (Kerievsky's rule). Both research agents flagged that
- *   Strategy-per-kind *without* behavior grouping is the
- *   "registry-of-handlers disguised switch" antipattern; grouping by
- *   behavior (5 hooks) instead of by kind (30 labels) avoids it.
- *   https://refactoring.com/catalog/replaceConditionalWithPolymorphism.html
  */
 
 import type { NodeLabel } from 'gitnexus-shared';
