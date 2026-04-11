@@ -43,8 +43,8 @@ try {
   if (content.includes('"actions"')) {
     // Strip Python-style comments (#) and trailing commas before JSON parsing
     const cleaned = content
-      .replace(/#[^\n]*/g, '')           // Remove # comments
-      .replace(/,(\s*[\]}])/g, '$1');    // Remove trailing commas before ] or }
+      .replace(/#[^\n]*/g, '') // Remove # comments
+      .replace(/,(\s*[\]}])/g, '$1'); // Remove trailing commas before ] or }
     const gyp = JSON.parse(cleaned);
 
     if (gyp.targets && gyp.targets[0] && gyp.targets[0].actions) {
@@ -72,5 +72,7 @@ try {
   }
 } catch (err) {
   console.warn('[tree-sitter-swift] Could not build native binding:', err.message);
-  console.warn('[tree-sitter-swift] You may need to manually run: cd node_modules/tree-sitter-swift && npx node-gyp rebuild');
+  console.warn(
+    '[tree-sitter-swift] You may need to manually run: cd node_modules/tree-sitter-swift && npx node-gyp rebuild',
+  );
 }
