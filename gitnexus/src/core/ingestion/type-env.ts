@@ -1101,7 +1101,11 @@ export const buildTypeEnv = (
     }
   };
 
-  const walk = (node: SyntaxNode, currentScope: string): void => {
+  const stack: Array<{ node: SyntaxNode; scope: string }> = [
+    { node: tree.rootNode, scope: FILE_SCOPE },
+  ];
+
+  const processNode = (node: SyntaxNode, currentScope: string): void => {
     // Fast skip: subtrees that can never contain type-relevant nodes (leaf-like literals).
     if (SKIP_SUBTREE_TYPES.has(node.type)) return;
 
@@ -1218,14 +1222,19 @@ export const buildTypeEnv = (
       }
     }
 
-    // Recurse into children
-    for (let i = 0; i < node.childCount; i++) {
+    // Push children onto stack (reverse order so first child is processed first)
+    for (let i = node.childCount - 1; i >= 0; i--) {
       const child = node.child(i);
-      if (child) walk(child, scope);
+      if (child) stack.push({ node: child, scope });
     }
   };
 
-  walk(tree.rootNode, FILE_SCOPE);
+  // Iterative traversal using explicit stack instead of recursion
+  // to avoid "Maximum call stack size exceeded" on large files (2000+ lines)
+  while (stack.length > 0) {
+    const { node, scope } = stack.pop()!;
+    processNode(node, scope);
+  }
 
   // Phase 14: Seed cross-file bindings from upstream files AFTER walk
   // (local declarations from walk() take precedence — first-writer-wins)

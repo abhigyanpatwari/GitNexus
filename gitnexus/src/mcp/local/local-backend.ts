@@ -21,6 +21,7 @@ export { isWriteQuery };
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
+import { parseDiffHunks, type FileDiff } from '../../storage/git.js';
 import {
   listRegisteredRepos,
   cleanupOldKuzuFiles,
@@ -1528,33 +1529,31 @@ export class LocalBackend {
     let diffArgs: string[];
     switch (scope) {
       case 'staged':
-        diffArgs = ['diff', '--staged', '--name-only'];
+        diffArgs = ['diff', '--staged', '-U0'];
         break;
       case 'all':
-        diffArgs = ['diff', 'HEAD', '--name-only'];
+        diffArgs = ['diff', 'HEAD', '-U0'];
         break;
       case 'compare':
         if (!params.base_ref) return { error: 'base_ref is required for "compare" scope' };
-        diffArgs = ['diff', params.base_ref, '--name-only'];
+        diffArgs = ['diff', params.base_ref, '-U0'];
         break;
       case 'unstaged':
       default:
-        diffArgs = ['diff', '--name-only'];
+        diffArgs = ['diff', '-U0'];
         break;
     }
 
-    let changedFiles: string[];
+    let diffOutput: string;
     try {
-      const output = execFileSync('git', diffArgs, { cwd: repo.repoPath, encoding: 'utf-8' });
-      changedFiles = output
-        .trim()
-        .split('\n')
-        .filter((f) => f.length > 0);
+      diffOutput = execFileSync('git', diffArgs, { cwd: repo.repoPath, encoding: 'utf-8' });
     } catch (err: any) {
       return { error: `Git diff failed: ${err.message}` };
     }
 
-    if (changedFiles.length === 0) {
+    const fileDiffs: FileDiff[] = parseDiffHunks(diffOutput);
+
+    if (fileDiffs.length === 0) {
       return {
         summary: {
           changed_count: 0,
@@ -1567,27 +1566,39 @@ export class LocalBackend {
       };
     }
 
-    // Map changed files to indexed symbols
+    // Map diff hunks to indexed symbols via range overlap
     const changedSymbols: any[] = [];
-    for (const file of changedFiles) {
-      const normalizedFile = file.replace(/\\/g, '/');
+    for (const fileDiff of fileDiffs) {
+      if (fileDiff.hunks.length === 0) continue;
+
+      // Build range overlap conditions for all hunks in this file
+      const overlapConditions = fileDiff.hunks
+        .map((_, i) => `(n.startLine <= $hunkEnd${i} AND n.endLine >= $hunkStart${i})`)
+        .join(' OR ');
+
+      const queryParams: Record<string, any> = { filePath: fileDiff.filePath };
+      fileDiff.hunks.forEach((hunk, i) => {
+        queryParams[`hunkStart${i}`] = hunk.startLine;
+        queryParams[`hunkEnd${i}`] = hunk.endLine;
+      });
+
+      const symbolQuery = `
+        MATCH (n) WHERE n.filePath ENDS WITH $filePath
+          AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
+          AND (${overlapConditions})
+        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
+               n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+      `;
+
       try {
-        const symbols = await executeParameterized(
-          repo.id,
-          `
-          MATCH (n) WHERE n.filePath CONTAINS $filePath
-          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
-          LIMIT 20
-        `,
-          { filePath: normalizedFile },
-        );
-        for (const sym of symbols) {
+        const rows = await executeParameterized(repo.id, symbolQuery, queryParams);
+        for (const sym of rows) {
           changedSymbols.push({
             id: sym.id || sym[0],
             name: sym.name || sym[1],
             type: sym.type || sym[2],
             filePath: sym.filePath || sym[3],
-            change_type: 'Modified',
+            change_type: 'touched',
           });
         }
       } catch (e) {
@@ -1595,32 +1606,37 @@ export class LocalBackend {
       }
     }
 
-    // Find affected processes
+    // Find affected processes -- single batched query instead of N+1
     const affectedProcesses = new Map<string, any>();
-    for (const sym of changedSymbols) {
+    if (changedSymbols.length > 0) {
+      const symIds = changedSymbols.map((s) => s.id);
+      const symNameById = new Map(changedSymbols.map((s) => [s.id, s.name]));
       try {
         const procs = await executeParameterized(
           repo.id,
           `
-          MATCH (n {id: $nodeId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-          RETURN p.id AS pid, p.heuristicLabel AS label, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
+          MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+          WHERE n.id IN $ids
+          RETURN n.id AS nodeId, p.id AS pid, p.heuristicLabel AS label,
+                 p.processType AS processType, p.stepCount AS stepCount, r.step AS step
         `,
-          { nodeId: sym.id },
+          { ids: symIds },
         );
         for (const proc of procs) {
-          const pid = proc.pid || proc[0];
+          const nodeId = proc.nodeId || proc[0];
+          const pid = proc.pid || proc[1];
           if (!affectedProcesses.has(pid)) {
             affectedProcesses.set(pid, {
               id: pid,
-              name: proc.label || proc[1],
-              process_type: proc.processType || proc[2],
-              step_count: proc.stepCount || proc[3],
+              name: proc.label || proc[2],
+              process_type: proc.processType || proc[3],
+              step_count: proc.stepCount || proc[4],
               changed_steps: [],
             });
           }
           affectedProcesses.get(pid)!.changed_steps.push({
-            symbol: sym.name,
-            step: proc.step || proc[4],
+            symbol: symNameById.get(nodeId) ?? nodeId,
+            step: proc.step || proc[5],
           });
         }
       } catch (e) {
@@ -1642,7 +1658,7 @@ export class LocalBackend {
       summary: {
         changed_count: changedSymbols.length,
         affected_count: processCount,
-        changed_files: changedFiles.length,
+        changed_files: fileDiffs.length,
         risk_level: risk,
       },
       changed_symbols: changedSymbols,

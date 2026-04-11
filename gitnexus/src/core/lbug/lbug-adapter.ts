@@ -17,6 +17,7 @@ let db: lbug.Database | null = null;
 let conn: lbug.Connection | null = null;
 let currentDbPath: string | null = null;
 let ftsLoaded = false;
+let vectorExtensionLoaded = false;
 
 /** Expose the current Database for pool adapter reuse in tests. */
 export const getDatabase = (): lbug.Database | null => db;
@@ -104,6 +105,7 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
         db = null;
         currentDbPath = null;
         ftsLoaded = false;
+        vectorExtensionLoaded = false;
       });
       // Sleep outside the lock — no need to block others while waiting
       await new Promise((resolve) => setTimeout(resolve, DB_LOCK_RETRY_DELAY_MS * attempt));
@@ -135,6 +137,7 @@ const doInitLbug = async (dbPath: string) => {
     db = null;
     currentDbPath = null;
     ftsLoaded = false;
+    vectorExtensionLoaded = false;
   }
 
   // LadybugDB stores the database as a single file (not a directory).
@@ -181,6 +184,9 @@ const doInitLbug = async (dbPath: string) => {
       }
     }
   }
+
+  // Load VECTOR extension for semantic search support
+  await loadVectorExtension();
 
   currentDbPath = dbPath;
   return { db, conn };
@@ -807,6 +813,7 @@ export const closeLbug = async (): Promise<void> => {
   }
   currentDbPath = null;
   ftsLoaded = false;
+  vectorExtensionLoaded = false;
 };
 
 export const isLbugReady = (): boolean => conn !== null && db !== null;
@@ -932,7 +939,32 @@ export const loadFTSExtension = async (): Promise<void> => {
     }
   }
 };
-
+/**
+ * Load the VECTOR extension (required before using QUERY_VECTOR_INDEX).
+ * Safe to call multiple times -- tracks loaded state via module-level vectorExtensionLoaded.
+ */
+export const loadVectorExtension = async (): Promise<void> => {
+  if (vectorExtensionLoaded) return;
+  if (!conn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  try {
+    await conn.query('INSTALL VECTOR');
+    await conn.query('LOAD EXTENSION VECTOR');
+    vectorExtensionLoaded = true;
+  } catch (err: any) {
+    const msg = err?.message || '';
+    if (
+      msg.includes('already loaded') ||
+      msg.includes('already installed') ||
+      msg.includes('already exists')
+    ) {
+      vectorExtensionLoaded = true;
+    } else {
+      console.error('GitNexus: VECTOR extension load failed:', msg);
+    }
+  }
+};
 /**
  * Create a full-text search index on a table
  * @param tableName - The node table name (e.g., 'File', 'CodeSymbol')

@@ -46,6 +46,7 @@
     "test:integration": "vitest run test/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "postinstall": "node scripts/patch-tree-sitter-swift.cjs",
     "prepare": "node scripts/build.js",
     "prepack": "node scripts/build.js"
   },

@@ -160,18 +160,22 @@ function extractPhpPropertyDescription(propName: string, propDeclNode: SyntaxNod
  * Returns description like "hasMany(Post)" or null.
  */
 function extractEloquentRelationDescription(methodNode: SyntaxNode): string | null {
-  function findRelationCall(node: SyntaxNode): SyntaxNode | null {
-    if (node.type === 'member_call_expression') {
+  function findRelationCall(root: SyntaxNode): SyntaxNode | null {
+    const stack: SyntaxNode[] = [root];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      if (node.type === 'member_call_expression') {
+        const children = node.children ?? [];
+        const objectNode = children.find(
+          (c: SyntaxNode) => c.type === 'variable_name' && c.text === '$this',
+        );
+        const nameNode = children.find((c: SyntaxNode) => c.type === 'name');
+        if (objectNode && nameNode && ELOQUENT_RELATIONS.has(nameNode.text)) return node;
+      }
       const children = node.children ?? [];
-      const objectNode = children.find(
-        (c: SyntaxNode) => c.type === 'variable_name' && c.text === '$this',
-      );
-      const nameNode = children.find((c: SyntaxNode) => c.type === 'name');
-      if (objectNode && nameNode && ELOQUENT_RELATIONS.has(nameNode.text)) return node;
-    }
-    for (const child of node.children ?? []) {
-      const found = findRelationCall(child);
-      if (found) return found;
+      for (let i = children.length - 1; i >= 0; i--) {
+        stack.push(children[i]);
+      }
     }
     return null;
   }

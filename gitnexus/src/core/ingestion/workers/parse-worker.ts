@@ -849,6 +849,11 @@ const HTTP_CLIENT_RECEIVERS = new Set([
   'apiclient',
   'client',
   'httpclient',
+  'api',
+  '$http',
+  'session',
+  'httpservice',
+  'conn',
 ]);
 
 // Decorator names that indicate HTTP route handlers (NestJS, Flask, FastAPI, Spring)
@@ -1584,7 +1589,35 @@ const processFileGroup = (
           // as Express route registrations.
           const callNode = captureMap['express_route'];
           const funcNode = callNode.childForFieldName?.('function') ?? callNode.children?.[0];
-          const receiverNode = funcNode?.childForFieldName?.('object') ?? funcNode?.children?.[0];
+          // Walk through nested member_expressions and call_expressions to
+          // reach the innermost receiver identifier.  Handles chains like:
+          //   this.httpService.get('/path')   -> member chain    -> 'httpservice'
+          //   getClient().get('/path')         -> call_expression -> 'getclient'
+          //   axios.get('/path')               -> bare identifier -> 'axios'
+          let receiverNode = funcNode?.childForFieldName?.('object') ?? funcNode?.children?.[0];
+          while (
+            receiverNode?.type === 'member_expression' ||
+            receiverNode?.type === 'call_expression'
+          ) {
+            if (receiverNode.type === 'member_expression') {
+              // Drill into the property (rightmost part) of the member expression
+              const propNode = receiverNode.childForFieldName?.('property');
+              if (propNode) {
+                receiverNode = propNode;
+              } else {
+                break;
+              }
+            } else {
+              // call_expression: unwrap to the function being called
+              const innerFunc =
+                receiverNode.childForFieldName?.('function') ?? receiverNode.children?.[0];
+              if (innerFunc && innerFunc !== receiverNode) {
+                receiverNode = innerFunc;
+              } else {
+                break;
+              }
+            }
+          }
           const receiverText = receiverNode?.text?.toLowerCase() ?? '';
 
           if (HTTP_CLIENT_RECEIVERS.has(receiverText)) {
@@ -1993,6 +2026,22 @@ const processFileGroup = (
       let frameworkHint = definitionNode
         ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
         : null;
+
+      // Suppress Spring framework hint for methods inside interfaces
+      // (Feign clients, JAX-RS proxies are consumers, not providers)
+      if (frameworkHint && definitionNode) {
+        let classCheck = definitionNode.parent;
+        while (classCheck) {
+          if (classCheck.type === 'interface_declaration') {
+            frameworkHint = null;
+            break;
+          }
+          if (classCheck.type === 'class_declaration' || classCheck.type === 'program') {
+            break;
+          }
+          classCheck = classCheck.parent;
+        }
+      }
 
       // Decorators appear on lines immediately before their definition; allow up to
       // MAX_DECORATOR_SCAN_LINES gap for blank lines / multi-line decorator stacks.
