@@ -15,7 +15,7 @@ import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from '../languages/index.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from '../constants.js';
-import type { SymbolTable } from '../symbol-table.js';
+import type { SymbolTableReader } from '../symbol-table.js';
 
 /** Language grammar type accepted by Parser.setLanguage(). */
 type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
@@ -466,7 +466,7 @@ const NOOP_SYMBOL_TABLE = {
   lookupExactAll: () => [],
   lookupExact: () => undefined,
   lookupExactFull: () => undefined,
-} as unknown as SymbolTable;
+} as unknown as SymbolTableReader;
 
 /**
  * Get (or extract and cache) field info for a class node.

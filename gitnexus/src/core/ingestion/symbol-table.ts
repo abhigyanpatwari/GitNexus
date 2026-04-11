@@ -143,22 +143,25 @@ export interface AddMetadata {
   qualifiedName?: string;
 }
 
-export interface SymbolTable {
-  /**
-   * Register a symbol in the file and (if callable) name-keyed indexes.
-   *
-   * Returns the constructed {@link SymbolDefinition} so higher-layer
-   * wrappers (e.g. `createSemanticModel`) can reuse it without rebuilding
-   * the def. This keeps the fan-out in one allocation.
-   */
-  add: (
-    filePath: string,
-    name: string,
-    nodeId: string,
-    type: NodeLabel,
-    metadata?: AddMetadata,
-  ) => SymbolDefinition;
-
+/**
+ * Pure read-only view over the file and callable indexes. Does NOT
+ * include `add()` or `clear()`.
+ *
+ * Used by consumers that only query symbols (resolvers, type-env, field
+ * extractors). The interface is strictly observational — holding a
+ * `SymbolTableReader` cannot mutate the table in any way.
+ *
+ * For consumers that also need to register symbols, use
+ * {@link SymbolTableWriter}, which extends this interface with `add()`.
+ * Neither interface exposes `clear()` — that capability lives on the
+ * internal factory return type and is reachable only inside
+ * `SemanticModel` via `rawSymbols`.
+ *
+ * This is the A2 LSP fix (plan 006 Unit 7): segregating the observer
+ * contract from the mutation contract so that callers holding only a
+ * Reader can never desync the model.
+ */
+export interface SymbolTableReader {
   /**
    * High Confidence: Look for a symbol specifically inside a file.
    * Returns the Node ID if found.
@@ -196,7 +199,50 @@ export interface SymbolTable {
   getStats: () => {
     fileCount: number;
   };
+}
 
+/**
+ * Writer view — reads + symbol registration. Does NOT include `clear()`.
+ *
+ * `SemanticModel.symbols` is typed as this interface, so external
+ * consumers (workers, processors, pipelines) can register symbols and
+ * query them but cannot trigger a leaf-index reset. Full-model resets
+ * flow through `model.clear()`; partial leaf-index resets flow through
+ * `model.resetFileIndex()` (Unit 8).
+ *
+ * The cascading `clear()` capability lives exclusively on the internal
+ * factory return type ({@link createSymbolTable}) — a private handle
+ * held only by `SemanticModel` via `rawSymbols`.
+ */
+export interface SymbolTableWriter extends SymbolTableReader {
+  /**
+   * Register a symbol in the file and (if callable) name-keyed indexes.
+   *
+   * Returns the constructed {@link SymbolDefinition} so higher-layer
+   * wrappers (e.g. `createSemanticModel`) can reuse it without rebuilding
+   * the def. This keeps the fan-out in one allocation.
+   */
+  add: (
+    filePath: string,
+    name: string,
+    nodeId: string,
+    type: NodeLabel,
+    metadata?: AddMetadata,
+  ) => SymbolDefinition;
+}
+
+/**
+ * Internal return type for {@link createSymbolTable} — extends the
+ * writer with `clear()`. This capability is intentionally NOT exported
+ * as a named interface; consumers should hold a `SymbolTableReader` or
+ * `SymbolTableWriter` instead.
+ *
+ * `SemanticModel`'s constructor is the only caller of `createSymbolTable`,
+ * and it retains the returned handle as the private `rawSymbols`
+ * reference so `cascadeClear` can reach `clear()`. Every other consumer
+ * receives the narrower `SymbolTableWriter` facade on `model.symbols`.
+ */
+interface InternalSymbolTable extends SymbolTableWriter {
   /**
    * Cleanup memory. Clears only the file and callable indexes owned here —
    * owner-scoped registries are cleared by their respective owners via
@@ -205,7 +251,7 @@ export interface SymbolTable {
   clear: () => void;
 }
 
-export const createSymbolTable = (): SymbolTable => {
+export const createSymbolTable = (): InternalSymbolTable => {
   // 1. File-Specific Index — stores full SymbolDefinition(s) for O(1) lookup.
   // Structure: FilePath -> (SymbolName -> SymbolDefinition[])
   // Array allows overloaded methods (same name, different signatures) to coexist.

@@ -53,7 +53,7 @@ import type { FieldRegistry, MutableFieldRegistry } from './field-registry.js';
 import { createTypeRegistry } from './type-registry.js';
 import { createMethodRegistry } from './method-registry.js';
 import { createFieldRegistry } from './field-registry.js';
-import type { SymbolTable, SymbolDefinition, AddMetadata } from '../symbol-table.js';
+import type { SymbolTableWriter, SymbolDefinition, AddMetadata } from '../symbol-table.js';
 import { createSymbolTable } from '../symbol-table.js';
 import { createRegistrationTable } from './registration-table.js';
 
@@ -62,18 +62,26 @@ import { createRegistrationTable } from './registration-table.js';
 // ---------------------------------------------------------------------------
 
 /**
- * Aggregated read-only view of the semantic registries plus the nested
+ * Aggregated view of the semantic registries plus the nested
  * file/callable SymbolTable.
  *
- * SymbolTable exposes mutation (`add`, `clear`) because the ingestion
- * pipeline is the sole writer and needs to feed symbols as it walks
- * files. Query-only callers should treat the model as read-only.
+ * `symbols` is typed as {@link SymbolTableWriter} — consumers can
+ * register symbols and query them, but cannot reach `clear()`. The A2
+ * LSP fix (plan 006 Unit 7) lives here: external callers physically
+ * cannot leave the leaf indexes empty while the owner-scoped registries
+ * stay populated, because `clear()` is not on this type's surface.
+ *
+ * Full-model resets go through {@link MutableSemanticModel.clear};
+ * partial leaf-index resets go through
+ * {@link MutableSemanticModel.resetFileIndex} (Unit 8). Consumers that
+ * only need queries should type their fields as
+ * {@link SymbolTableReader} for principle-of-least-authority clarity.
  */
 export interface SemanticModel {
   readonly types: TypeRegistry;
   readonly methods: MethodRegistry;
   readonly fields: FieldRegistry;
-  readonly symbols: SymbolTable;
+  readonly symbols: SymbolTableWriter;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +109,9 @@ export interface MutableSemanticModel extends SemanticModel {
 
 export const createSemanticModel = (): MutableSemanticModel => {
   // 1. Create the pure, registry-unaware SymbolTable leaf.
+  // rawSymbols is the only handle in the codebase whose type (the
+  // internal createSymbolTable return) includes `.clear()`. cascadeClear
+  // below reaches it here; no external caller receives this variable.
   const rawSymbols = createSymbolTable();
 
   // 2. Create the three owner-scoped registries.
@@ -148,7 +159,12 @@ export const createSemanticModel = (): MutableSemanticModel => {
     rawSymbols.clear();
   };
 
-  const symbols: SymbolTable = {
+  // Writer-typed facade: exposes reads + add, but NO `clear` field.
+  // Callers holding a `SemanticModel.symbols` reference cannot desync
+  // the leaf indexes from the owner-scoped registries (A2 LSP fix,
+  // plan 006 Unit 7). Consumers that only query should widen their
+  // annotation to SymbolTableReader for least-authority clarity.
+  const symbols: SymbolTableWriter = {
     add: wrappedAdd,
     lookupExact: rawSymbols.lookupExact,
     lookupExactFull: rawSymbols.lookupExactFull,
@@ -156,7 +172,6 @@ export const createSemanticModel = (): MutableSemanticModel => {
     lookupCallableByName: rawSymbols.lookupCallableByName,
     getFiles: rawSymbols.getFiles,
     getStats: rawSymbols.getStats,
-    clear: cascadeClear,
   };
 
   return {

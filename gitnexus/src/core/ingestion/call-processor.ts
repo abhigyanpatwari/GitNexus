@@ -1,6 +1,6 @@
 import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
-import type { SymbolDefinition, SymbolTable } from './symbol-table.js';
+import type { SymbolDefinition, SymbolTableReader } from './symbol-table.js';
 import { CLASS_TYPES, CALL_TARGET_TYPES } from './symbol-table.js';
 import Parser from 'tree-sitter';
 import type { ResolutionContext } from './resolution-context.js';
@@ -204,7 +204,7 @@ function collectExportedBindings(
  *  exported symbols that have callables with known return types. */
 export function buildExportedTypeMapFromGraph(
   graph: KnowledgeGraph,
-  symbolTable: SymbolTable,
+  symbolTable: SymbolTableReader,
 ): ExportedTypeMap {
   const result: ExportedTypeMap = new Map();
   graph.forEachNode((node) => {

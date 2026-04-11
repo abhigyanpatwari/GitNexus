@@ -4,7 +4,9 @@ import Parser from 'tree-sitter';
 import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
-import type { SymbolTable } from './symbol-table.js';
+import type { SymbolTableReader, SymbolTableWriter } from './symbol-table.js';
+// SymbolTableReader is used for the FieldExtractorContext stub; the
+// parsing functions themselves need Writer because they call .add().
 import { ASTCache } from './ast-cache.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { extractVueScript, isVueSetupTopLevel } from './vue-sfc-extractor.js';
@@ -70,7 +72,7 @@ export interface WorkerExtractedData {
 const processParsingWithWorkers = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
-  symbolTable: SymbolTable,
+  symbolTable: SymbolTableWriter,
   astCache: ASTCache,
   workerPool: WorkerPool,
   onFileProgress?: FileProgressCallback,
@@ -256,7 +258,7 @@ const NOOP_SYMBOL_TABLE_SEQ = {
   lookupExactAll: () => [],
   lookupExact: () => undefined,
   lookupExactFull: () => undefined,
-} as unknown as SymbolTable;
+} as unknown as SymbolTableReader;
 
 function seqGetFieldInfo(
   classNode: SyntaxNode,
@@ -278,7 +280,7 @@ function seqGetFieldInfo(
 const processParsingSequential = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
-  symbolTable: SymbolTable,
+  symbolTable: SymbolTableWriter,
   astCache: ASTCache,
   onFileProgress?: FileProgressCallback,
 ) => {
@@ -650,7 +652,7 @@ const processParsingSequential = async (
 export const processParsing = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
-  symbolTable: SymbolTable,
+  symbolTable: SymbolTableWriter,
   astCache: ASTCache,
   onFileProgress?: FileProgressCallback,
   workerPool?: WorkerPool,

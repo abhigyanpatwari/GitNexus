@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { type SymbolTable } from '../../src/core/ingestion/symbol-table.js';
+import { type SymbolTableReader } from '../../src/core/ingestion/symbol-table.js';
 import {
   createSemanticModel,
   type MutableSemanticModel,
@@ -14,7 +14,7 @@ describe('SymbolTable', () => {
   // `table = model.symbols` so the 200+ file/callable test cases keep
   // their existing call sites unchanged.
   let model: MutableSemanticModel;
-  let table: SymbolTable;
+  let table: SymbolTableReader;
 
   beforeEach(() => {
     model = createSemanticModel();

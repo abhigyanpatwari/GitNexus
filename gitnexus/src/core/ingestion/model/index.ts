@@ -23,7 +23,11 @@ export {
 // SymbolTable lives at the parent of `model/` but is now exclusively
 // owned by SemanticModel. Re-exported here for the rare caller that
 // needs the file/callable interface in isolation (e.g. tests).
-export { type SymbolTable, createSymbolTable } from '../symbol-table.js';
+export {
+  type SymbolTableReader,
+  type SymbolTableWriter,
+  createSymbolTable,
+} from '../symbol-table.js';
 
 // Type registry (classes, structs, interfaces, enums, records, impls)
 export {

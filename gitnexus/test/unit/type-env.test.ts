@@ -1,7 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { buildTypeEnv, type TypeEnvironment } from '../../src/core/ingestion/type-env.js';
 import { BindingAccumulator } from '../../src/core/ingestion/binding-accumulator.js';
-import { type SymbolDefinition, type SymbolTable } from '../../src/core/ingestion/symbol-table.js';
+import {
+  type SymbolDefinition,
+  type SymbolTableReader,
+} from '../../src/core/ingestion/symbol-table.js';
 import {
   createSemanticModel,
   type SemanticModel,
@@ -91,20 +94,19 @@ function flatSize(typeEnv: TypeEnvironment): number {
  * working without forcing every call site to learn the new structure.
  */
 interface LegacyMockOverrides {
-  add?: SymbolTable['add'];
-  lookupExact?: SymbolTable['lookupExact'];
-  lookupExactFull?: SymbolTable['lookupExactFull'];
-  lookupExactAll?: SymbolTable['lookupExactAll'];
-  lookupCallableByName?: SymbolTable['lookupCallableByName'];
+  add?: SymbolTableReader['add'];
+  lookupExact?: SymbolTableReader['lookupExact'];
+  lookupExactFull?: SymbolTableReader['lookupExactFull'];
+  lookupExactAll?: SymbolTableReader['lookupExactAll'];
+  lookupCallableByName?: SymbolTableReader['lookupCallableByName'];
   lookupFieldByOwner?: FieldRegistry['lookupFieldByOwner'];
   lookupMethodByOwner?: MethodRegistry['lookupMethodByOwner'];
   lookupMethodByName?: MethodRegistry['lookupMethodByName'];
   lookupClassByName?: TypeRegistry['lookupClassByName'];
   lookupClassByQualifiedName?: TypeRegistry['lookupClassByQualifiedName'];
   lookupImplByName?: TypeRegistry['lookupImplByName'];
-  getFiles?: SymbolTable['getFiles'];
-  getStats?: SymbolTable['getStats'];
-  clear?: SymbolTable['clear'];
+  getFiles?: SymbolTableReader['getFiles'];
+  getStats?: SymbolTableReader['getStats'];
 }
 
 const createMockSymbolTable = (overrides: LegacyMockOverrides = {}): SemanticModel => {
@@ -128,10 +130,9 @@ const createMockSymbolTable = (overrides: LegacyMockOverrides = {}): SemanticMod
       callableCount: 0,
       totalSymbolCount: 0,
     }),
-    clear: () => {},
     ...overrides,
   };
-  const symbols: SymbolTable = {
+  const symbols: SymbolTableReader = {
     add: base.add,
     lookupExact: base.lookupExact,
     lookupExactFull: base.lookupExactFull,
@@ -139,7 +140,6 @@ const createMockSymbolTable = (overrides: LegacyMockOverrides = {}): SemanticMod
     lookupCallableByName: base.lookupCallableByName,
     getFiles: base.getFiles,
     getStats: base.getStats,
-    clear: base.clear,
   };
   const types: TypeRegistry = {
     lookupClassByName: base.lookupClassByName,
@@ -1281,7 +1281,6 @@ class RepoService {
             })),
         getFiles: () => [][Symbol.iterator](),
         getStats: () => ({ fileCount: 0 }),
-        clear: () => {},
       },
     });
 
