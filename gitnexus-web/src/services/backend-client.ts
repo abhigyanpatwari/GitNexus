@@ -264,11 +264,13 @@ const fetchWithTimeout = async (
 const assertOk = async (response: Response): Promise<void> => {
   if (response.ok) return;
 
-  let message = `Backend returned ${response.status} ${response.statusText}`;
+  let message = response.statusText;
   try {
     const body = await response.json();
     if (body && typeof body.error === 'string') {
       message = body.error;
+    } else if (body && typeof body.message === 'string') {
+      message = body.message;
     }
   } catch {
     // Response body was not JSON
