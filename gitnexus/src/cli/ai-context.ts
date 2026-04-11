@@ -334,7 +334,13 @@ export async function generateAIContextFiles(
   options?: AIContextOptions,
 ): Promise<{ files: string[] }> {
   const groupNames = await findGroupsContainingRegistryName(projectName);
-  const content = generateGitNexusContent(projectName, stats, generatedSkills, groupNames, options?.noStats);
+  const content = generateGitNexusContent(
+    projectName,
+    stats,
+    generatedSkills,
+    groupNames,
+    options?.noStats,
+  );
   const createdFiles: string[] = [];
 
   if (!options?.skipAgentsMd) {
