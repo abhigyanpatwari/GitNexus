@@ -32,6 +32,22 @@ export interface MethodRegistry {
     methodName: string,
     argCount?: number,
   ): SymbolDefinition | undefined;
+
+  /**
+   * Flat-by-name lookup across all owners. Returns every method registered
+   * with the given unqualified name, in registration order, accumulated
+   * across owners and overloads.
+   *
+   * Required by Tier 3 global resolution: after A4 (plan 006), Method and
+   * Constructor no longer land in `SymbolTable.callableByName`, so Tier 3
+   * reaches them through this flat index instead. Returns `[]` on miss —
+   * never `undefined` — so callers can concatenate without null checks.
+   *
+   * Reference identity: each returned def is the same object reference
+   * stored under `lookupMethodByOwner`, so a method symbol occupies one
+   * allocation reachable from two indexes.
+   */
+  lookupMethodByName(name: string): readonly SymbolDefinition[];
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +67,11 @@ export interface MutableMethodRegistry extends MethodRegistry {
 
 export const createMethodRegistry = (): MutableMethodRegistry => {
   const methodByOwner = new Map<string, SymbolDefinition[]>();
+  // Secondary flat-by-name index. Values are the SAME SymbolDefinition
+  // references stored under `methodByOwner` — no copy, just a second key.
+  // Populated in lockstep by `register()` and emptied by `clear()`.
+  const methodsByName = new Map<string, SymbolDefinition[]>();
+  const EMPTY: readonly SymbolDefinition[] = Object.freeze([]);
 
   const lookupMethodByOwner = (
     ownerNodeId: string,
@@ -93,6 +114,10 @@ export const createMethodRegistry = (): MutableMethodRegistry => {
     return pool[0];
   };
 
+  const lookupMethodByName = (name: string): readonly SymbolDefinition[] => {
+    return methodsByName.get(name) ?? EMPTY;
+  };
+
   const register = (ownerNodeId: string, methodName: string, def: SymbolDefinition): void => {
     const key = `${ownerNodeId}\0${methodName}`;
     const existing = methodByOwner.get(key);
@@ -101,11 +126,18 @@ export const createMethodRegistry = (): MutableMethodRegistry => {
     } else {
       methodByOwner.set(key, [def]);
     }
+    const byName = methodsByName.get(methodName);
+    if (byName) {
+      byName.push(def);
+    } else {
+      methodsByName.set(methodName, [def]);
+    }
   };
 
   const clear = (): void => {
     methodByOwner.clear();
+    methodsByName.clear();
   };
 
-  return { lookupMethodByOwner, register, clear };
+  return { lookupMethodByOwner, lookupMethodByName, register, clear };
 };

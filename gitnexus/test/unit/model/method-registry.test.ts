@@ -248,3 +248,95 @@ describe('MethodRegistry — clear()', () => {
     expect(reg.lookupMethodByOwner('class:User', 'save')?.nodeId).toBe('method:second');
   });
 });
+
+// ---------------------------------------------------------------------------
+// lookupMethodByName — flat-by-name secondary index (A4 / plan 006)
+// ---------------------------------------------------------------------------
+
+describe('MethodRegistry — lookupMethodByName', () => {
+  it('returns an empty array when no method with that name is registered', () => {
+    const reg = createMethodRegistry();
+    expect(reg.lookupMethodByName('save')).toEqual([]);
+  });
+
+  it('returns a singleton array after one registration', () => {
+    const reg = createMethodRegistry();
+    const def = makeMethod({ nodeId: 'method:User.save' });
+
+    reg.register('class:User', 'save', def);
+
+    const result = reg.lookupMethodByName('save');
+    expect(result).toHaveLength(1);
+    expect(result[0]).toBe(def);
+  });
+
+  it('accumulates homonym registrations across different owners in order', () => {
+    const reg = createMethodRegistry();
+    const userSave = makeMethod({ nodeId: 'method:User.save' });
+    const orderSave = makeMethod({ nodeId: 'method:Order.save' });
+
+    reg.register('class:User', 'save', userSave);
+    reg.register('class:Order', 'save', orderSave);
+
+    const result = reg.lookupMethodByName('save');
+    expect(result).toHaveLength(2);
+    expect(result).toEqual([userSave, orderSave]);
+  });
+
+  it('accumulates overloads under the same owner', () => {
+    const reg = createMethodRegistry();
+    const overload1 = makeMethod({ nodeId: 'method:User.save#0', parameterCount: 0 });
+    const overload2 = makeMethod({ nodeId: 'method:User.save#1', parameterCount: 1 });
+
+    reg.register('class:User', 'save', overload1);
+    reg.register('class:User', 'save', overload2);
+
+    const result = reg.lookupMethodByName('save');
+    expect(result).toHaveLength(2);
+    expect(result).toEqual([overload1, overload2]);
+  });
+
+  it('returns an empty array after clear()', () => {
+    const reg = createMethodRegistry();
+    reg.register('class:User', 'save', makeMethod({ nodeId: 'method:old' }));
+
+    reg.clear();
+
+    expect(reg.lookupMethodByName('save')).toEqual([]);
+  });
+
+  it('re-registering after clear only returns post-clear defs', () => {
+    const reg = createMethodRegistry();
+    reg.register('class:User', 'save', makeMethod({ nodeId: 'method:old' }));
+    reg.clear();
+    const fresh = makeMethod({ nodeId: 'method:fresh' });
+    reg.register('class:User', 'save', fresh);
+
+    const result = reg.lookupMethodByName('save');
+    expect(result).toHaveLength(1);
+    expect(result[0]).toBe(fresh);
+  });
+
+  it('returns the same SymbolDefinition reference as lookupMethodByOwner (dual-index identity)', () => {
+    const reg = createMethodRegistry();
+    const def = makeMethod({ nodeId: 'method:User.save' });
+
+    reg.register('class:User', 'save', def);
+
+    const byOwner = reg.lookupMethodByOwner('class:User', 'save');
+    const byName = reg.lookupMethodByName('save');
+
+    expect(byName).toHaveLength(1);
+    expect(Object.is(byName[0], byOwner)).toBe(true);
+  });
+
+  it('does not return methods with different names', () => {
+    const reg = createMethodRegistry();
+    reg.register('class:User', 'save', makeMethod({ nodeId: 'method:User.save' }));
+    reg.register('class:User', 'load', makeMethod({ nodeId: 'method:User.load' }));
+
+    expect(reg.lookupMethodByName('save')).toHaveLength(1);
+    expect(reg.lookupMethodByName('load')).toHaveLength(1);
+    expect(reg.lookupMethodByName('missing')).toEqual([]);
+  });
+});
