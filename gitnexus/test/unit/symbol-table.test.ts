@@ -1035,8 +1035,8 @@ describe('SymbolTable', () => {
       });
 
       expect(model.fields.lookupFieldByOwner('class:User', 'name')?.nodeId).toBe('prop:User.name');
-      // Property must NOT leak into callableByName — the invariant this
-      // refactor protects via the skipCallableIndex flag.
+      // Property must NOT leak into callableByName — Property is not in
+      // CALLABLE_TYPES, so SymbolTable.add() never appends it.
       expect(model.symbols.lookupCallableByName('name')).toHaveLength(0);
     });
 

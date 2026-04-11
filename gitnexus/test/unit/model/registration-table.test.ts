@@ -41,22 +41,10 @@ describe('createRegistrationTable', () => {
     }
   });
 
-  it('every DISPATCH_LABELS entry has a hook and skipCallableIndex flag', () => {
+  it('every DISPATCH_LABELS entry has a hook', () => {
     const table = createRegistrationTable(makeDeps());
     for (const [, decision] of table) {
       expect(typeof decision.hook).toBe('function');
-      expect(typeof decision.skipCallableIndex).toBe('boolean');
-    }
-  });
-
-  it('Property is the only entry with skipCallableIndex: true', () => {
-    const table = createRegistrationTable(makeDeps());
-    for (const [label, decision] of table) {
-      if (label === 'Property') {
-        expect(decision.skipCallableIndex).toBe(true);
-      } else {
-        expect(decision.skipCallableIndex).toBe(false);
-      }
     }
   });
 });

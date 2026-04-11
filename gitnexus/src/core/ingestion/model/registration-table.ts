@@ -96,13 +96,13 @@ export type RegistrationHook = (name: string, def: SymbolDefinition) => void;
 
 /**
  * Routing decision for one NodeLabel. `hook` performs the specialized
- * registry write; `skipCallableIndex` encodes the Property exclusion
- * from the callable-name index as explicit data rather than an implicit
- * `return` statement in `add()`.
+ * registry write into the appropriate owner-scoped registry. The
+ * callable-index gate lives inside `SymbolTable.add()` via the
+ * `CALLABLE_TYPES` allowlist — the dispatch table does not participate
+ * in that decision.
  */
 export interface RoutingDecision {
   readonly hook: RegistrationHook;
-  readonly skipCallableIndex: boolean;
 }
 
 /**
@@ -224,8 +224,9 @@ export const createRegistrationTable = (
   };
 
   // Hook 3: property — Property. Silently skipped without ownerId.
-  // Paired with `skipCallableIndex: true` in the table so names like
-  // `id` / `name` / `type` do not pollute `callableByName`.
+  // Property is not in `CALLABLE_TYPES`, so `SymbolTable.add()` already
+  // excludes it from `callableByName`; common property names like
+  // `id` / `name` / `type` never pollute the callable index.
   const propertyHook: RegistrationHook = (name, def) => {
     if (def.ownerId) {
       fields.register(def.ownerId, name, def);
@@ -241,18 +242,18 @@ export const createRegistrationTable = (
 
   return new Map<NodeLabel, RoutingDecision>([
     // class-like
-    ['Class', { hook: classHook, skipCallableIndex: false }],
-    ['Struct', { hook: classHook, skipCallableIndex: false }],
-    ['Interface', { hook: classHook, skipCallableIndex: false }],
-    ['Enum', { hook: classHook, skipCallableIndex: false }],
-    ['Record', { hook: classHook, skipCallableIndex: false }],
-    ['Trait', { hook: classHook, skipCallableIndex: false }],
+    ['Class', { hook: classHook }],
+    ['Struct', { hook: classHook }],
+    ['Interface', { hook: classHook }],
+    ['Enum', { hook: classHook }],
+    ['Record', { hook: classHook }],
+    ['Trait', { hook: classHook }],
     // method-like
-    ['Method', { hook: methodHook, skipCallableIndex: false }],
-    ['Constructor', { hook: methodHook, skipCallableIndex: false }],
-    // property (the one skipCallableIndex: true entry)
-    ['Property', { hook: propertyHook, skipCallableIndex: true }],
+    ['Method', { hook: methodHook }],
+    ['Constructor', { hook: methodHook }],
+    // property — callable-index exclusion is enforced by SymbolTable.add()
+    ['Property', { hook: propertyHook }],
     // impl-block
-    ['Impl', { hook: implHook, skipCallableIndex: false }],
+    ['Impl', { hook: implHook }],
   ]);
 };

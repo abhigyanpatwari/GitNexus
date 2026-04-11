@@ -209,12 +209,9 @@ export const createSemanticModel = (): MutableSemanticModel => {
     // Step 3: dispatch — O(1) Map.get + hook invocation. The hook is a
     // closure captured over exactly the registry it writes (principle of
     // least authority — see registration-table.ts for details).
-    //
-    // NOTE: the dispatch table's `skipCallableIndex` flag is NOT read
-    // here because the pure SymbolTable already gated callableByName on
-    // `CALLABLE_TYPES.has(type)`, and Property is not in CALLABLE_TYPES.
-    // The flag is preserved in the table as explicit documentation and
-    // as a safety net if a future refactor adds Property to CALLABLE_TYPES.
+    // The callable-index gate stays inside `rawSymbols.add()` via
+    // `CALLABLE_TYPES.has(type)`; the dispatch table only decides
+    // owner-scoped routing.
     const routing = dispatchTable.get(dispatchKey);
     if (routing) {
       routing.hook(name, def);

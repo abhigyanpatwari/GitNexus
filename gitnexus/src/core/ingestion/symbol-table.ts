@@ -211,10 +211,8 @@ export const createSymbolTable = (): SymbolTable => {
 
     // B. Callable Index — gated by CALLABLE_TYPES.
     //    Note: Property is NOT in CALLABLE_TYPES, so it never lands here.
-    //    If a future edit ever adds Property to CALLABLE_TYPES, the
-    //    higher-layer dispatch table's `skipCallableIndex` flag will
-    //    still need to be honored — which is why {@link createSemanticModel}
-    //    wraps this add() rather than letting it do owner-scoped routing.
+    //    This is the single source of truth for callable-index membership;
+    //    the higher-layer dispatch table only decides owner-scoped routing.
     if (CALLABLE_TYPES.has(type)) {
       const existing = callableByName.get(name);
       if (existing) {
