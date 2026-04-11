@@ -259,8 +259,10 @@ export class HttpRouteExtractor implements ContractExtractor {
     const out: ExtractedContract[] = [];
 
     // Skip Feign/client interfaces — annotated methods in interfaces are
-    // consumers (Feign, JAX-RS proxies), not provider endpoints
-    if (/\binterface\s+\w+/.test(content) && !/@(?:Rest)?Controller\b/.test(content)) {
+    // consumers (Feign, JAX-RS proxies), not provider endpoints.
+    // Anchored to line start (with optional access modifier) so we do not
+    // match "interface" inside comments or string literals.
+    if (/^\s*(?:public\s+)?interface\s+\w+/m.test(content) && !/@(?:Rest)?Controller\b/.test(content)) {
       return out;
     }
 

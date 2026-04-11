@@ -1593,15 +1593,33 @@ const processFileGroup = (
           // as Express route registrations.
           const callNode = captureMap['express_route'];
           const funcNode = callNode.childForFieldName?.('function') ?? callNode.children?.[0];
-          // Walk through nested member_expressions to get the innermost receiver name
+          // Walk through nested member_expressions and call_expressions to
+          // reach the innermost receiver identifier.  Handles chains like:
+          //   this.httpService.get('/path')   -> member chain    -> 'httpservice'
+          //   getClient().get('/path')         -> call_expression -> 'getclient'
+          //   axios.get('/path')               -> bare identifier -> 'axios'
           let receiverNode = funcNode?.childForFieldName?.('object') ?? funcNode?.children?.[0];
-          while (receiverNode?.type === 'member_expression') {
-            // Get the property (rightmost part) of the member expression
-            const propNode = receiverNode.childForFieldName?.('property');
-            if (propNode) {
-              receiverNode = propNode;
+          while (
+            receiverNode?.type === 'member_expression' ||
+            receiverNode?.type === 'call_expression'
+          ) {
+            if (receiverNode.type === 'member_expression') {
+              // Drill into the property (rightmost part) of the member expression
+              const propNode = receiverNode.childForFieldName?.('property');
+              if (propNode) {
+                receiverNode = propNode;
+              } else {
+                break;
+              }
             } else {
-              break;
+              // call_expression: unwrap to the function being called
+              const innerFunc =
+                receiverNode.childForFieldName?.('function') ?? receiverNode.children?.[0];
+              if (innerFunc && innerFunc !== receiverNode) {
+                receiverNode = innerFunc;
+              } else {
+                break;
+              }
             }
           }
           const receiverText = receiverNode?.text?.toLowerCase() ?? '';
