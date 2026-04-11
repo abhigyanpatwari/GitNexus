@@ -1,0 +1,334 @@
+import { describe, it, expect, vi } from 'vitest';
+import type { NodeLabel } from 'gitnexus-shared';
+import {
+  createRegistrationTable,
+  CALLABLE_ONLY_LABELS,
+  INERT_LABELS,
+  DISPATCH_LABELS,
+} from '../../../src/core/ingestion/model/registration-table.js';
+import { createTypeRegistry } from '../../../src/core/ingestion/model/type-registry.js';
+import { createMethodRegistry } from '../../../src/core/ingestion/model/method-registry.js';
+import { createFieldRegistry } from '../../../src/core/ingestion/model/field-registry.js';
+import type { SymbolDefinition } from '../../../src/core/ingestion/symbol-table.js';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const makeDeps = () => ({
+  types: createTypeRegistry(),
+  methods: createMethodRegistry(),
+  fields: createFieldRegistry(),
+});
+
+const makeDef = (overrides: Partial<SymbolDefinition> = {}): SymbolDefinition => ({
+  nodeId: 'node:test',
+  filePath: 'src/test.ts',
+  type: 'Class',
+  ...overrides,
+});
+
+// ---------------------------------------------------------------------------
+// Basic factory + table shape
+// ---------------------------------------------------------------------------
+
+describe('createRegistrationTable', () => {
+  it('returns a Map with one entry per DISPATCH_LABELS value', () => {
+    const table = createRegistrationTable(makeDeps());
+    expect(table.size).toBe(DISPATCH_LABELS.size);
+    for (const label of DISPATCH_LABELS) {
+      expect(table.has(label)).toBe(true);
+    }
+  });
+
+  it('every DISPATCH_LABELS entry has a hook and skipCallableIndex flag', () => {
+    const table = createRegistrationTable(makeDeps());
+    for (const [, decision] of table) {
+      expect(typeof decision.hook).toBe('function');
+      expect(typeof decision.skipCallableIndex).toBe('boolean');
+    }
+  });
+
+  it('Property is the only entry with skipCallableIndex: true', () => {
+    const table = createRegistrationTable(makeDeps());
+    for (const [label, decision] of table) {
+      if (label === 'Property') {
+        expect(decision.skipCallableIndex).toBe(true);
+      } else {
+        expect(decision.skipCallableIndex).toBe(false);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Kind taxonomy exhaustiveness
+// ---------------------------------------------------------------------------
+
+describe('NodeLabel taxonomy coverage', () => {
+  // Hardcoded mirror of the NodeLabel union in gitnexus-shared/src/graph/types.ts.
+  // Keeping it here as a static list is deliberate: if the shared union
+  // changes, this test fails loudly, and the fix is to update BOTH the
+  // shared type AND the registration-table allowlists in the same commit.
+  const ALL_NODE_LABELS: readonly NodeLabel[] = [
+    'Project',
+    'Package',
+    'Module',
+    'Folder',
+    'File',
+    'Class',
+    'Function',
+    'Method',
+    'Variable',
+    'Interface',
+    'Enum',
+    'Decorator',
+    'Import',
+    'Type',
+    'CodeElement',
+    'Community',
+    'Process',
+    'Struct',
+    'Macro',
+    'Typedef',
+    'Union',
+    'Namespace',
+    'Trait',
+    'Impl',
+    'TypeAlias',
+    'Const',
+    'Static',
+    'Property',
+    'Record',
+    'Delegate',
+    'Annotation',
+    'Constructor',
+    'Template',
+    'Section',
+    'Route',
+    'Tool',
+  ];
+
+  it('every NodeLabel appears in exactly one of DISPATCH / CALLABLE_ONLY / INERT', () => {
+    for (const label of ALL_NODE_LABELS) {
+      const inDispatch = DISPATCH_LABELS.has(label);
+      const inCallableOnly = CALLABLE_ONLY_LABELS.has(label);
+      const inInert = INERT_LABELS.has(label);
+      const count = Number(inDispatch) + Number(inCallableOnly) + Number(inInert);
+      expect(count, `label ${label} must be in exactly one category`).toBe(1);
+    }
+  });
+
+  it('CALLABLE_ONLY_LABELS includes Function, Macro, Delegate', () => {
+    expect(CALLABLE_ONLY_LABELS.has('Function')).toBe(true);
+    expect(CALLABLE_ONLY_LABELS.has('Macro')).toBe(true);
+    expect(CALLABLE_ONLY_LABELS.has('Delegate')).toBe(true);
+  });
+
+  it('DISPATCH_LABELS includes all 10 routed kinds', () => {
+    const expected = [
+      'Class',
+      'Struct',
+      'Interface',
+      'Enum',
+      'Record',
+      'Trait',
+      'Method',
+      'Constructor',
+      'Property',
+      'Impl',
+    ] as const;
+    for (const label of expected) {
+      expect(DISPATCH_LABELS.has(label)).toBe(true);
+    }
+    expect(DISPATCH_LABELS.size).toBe(expected.length);
+  });
+
+  it('INERT_LABELS includes metadata-only node kinds', () => {
+    expect(INERT_LABELS.has('File')).toBe(true);
+    expect(INERT_LABELS.has('Folder')).toBe(true);
+    expect(INERT_LABELS.has('Namespace')).toBe(true);
+    expect(INERT_LABELS.has('Variable')).toBe(true);
+    expect(INERT_LABELS.has('Import')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shared hook references (class-like group collapses to one closure)
+// ---------------------------------------------------------------------------
+
+describe('hook sharing across class-like entries', () => {
+  it('all 6 class-like labels share reference equality on their hook', () => {
+    const table = createRegistrationTable(makeDeps());
+    const classHook = table.get('Class')!.hook;
+    for (const label of ['Struct', 'Interface', 'Enum', 'Record', 'Trait'] as const) {
+      expect(table.get(label)!.hook).toBe(classHook);
+    }
+  });
+
+  it('Method and Constructor share reference equality on their hook', () => {
+    const table = createRegistrationTable(makeDeps());
+    expect(table.get('Method')!.hook).toBe(table.get('Constructor')!.hook);
+  });
+
+  it('class-like hook differs from method-like and property hooks', () => {
+    const table = createRegistrationTable(makeDeps());
+    expect(table.get('Class')!.hook).not.toBe(table.get('Method')!.hook);
+    expect(table.get('Class')!.hook).not.toBe(table.get('Property')!.hook);
+    expect(table.get('Class')!.hook).not.toBe(table.get('Impl')!.hook);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End-to-end hook behavior with real registries
+// ---------------------------------------------------------------------------
+
+describe('hook behavior (real registries, no mocks)', () => {
+  it('classHook writes to types.registerClass', () => {
+    const deps = makeDeps();
+    const table = createRegistrationTable(deps);
+    const def = makeDef({ nodeId: 'class:User', type: 'Class', qualifiedName: 'app.User' });
+    table.get('Class')!.hook('User', def);
+    expect(deps.types.lookupClassByName('User')).toHaveLength(1);
+    expect(deps.types.lookupClassByQualifiedName('app.User')).toHaveLength(1);
+  });
+
+  it('classHook falls back to the simple name when qualifiedName is absent', () => {
+    const deps = makeDeps();
+    const table = createRegistrationTable(deps);
+    const def = makeDef({ nodeId: 'class:User', type: 'Class' });
+    table.get('Class')!.hook('User', def);
+    expect(deps.types.lookupClassByQualifiedName('User')).toHaveLength(1);
+  });
+
+  it('methodHook writes to methods.register when ownerId is set', () => {
+    const deps = makeDeps();
+    const table = createRegistrationTable(deps);
+    const def = makeDef({
+      nodeId: 'mtd:save',
+      type: 'Method',
+      ownerId: 'class:User',
+    });
+    table.get('Method')!.hook('save', def);
+    expect(deps.methods.lookupMethodByOwner('class:User', 'save')?.nodeId).toBe('mtd:save');
+  });
+
+  it('methodHook silently skips registration when ownerId is missing', () => {
+    const deps = makeDeps();
+    const table = createRegistrationTable(deps);
+    const def = makeDef({ nodeId: 'mtd:free', type: 'Method' });
+    table.get('Method')!.hook('free', def);
+    expect(deps.methods.lookupMethodByOwner('', 'free')).toBeUndefined();
+  });
+
+  it('propertyHook writes to fields.register when ownerId is set', () => {
+    const deps = makeDeps();
+    const table = createRegistrationTable(deps);
+    const def = makeDef({
+      nodeId: 'prop:name',
+      type: 'Property',
+      ownerId: 'class:User',
+      declaredType: 'string',
+    });
+    table.get('Property')!.hook('name', def);
+    expect(deps.fields.lookupFieldByOwner('class:User', 'name')?.nodeId).toBe('prop:name');
+  });
+
+  it('propertyHook silently skips registration when ownerId is missing', () => {
+    const deps = makeDeps();
+    const table = createRegistrationTable(deps);
+    const def = makeDef({ nodeId: 'prop:orphan', type: 'Property' });
+    table.get('Property')!.hook('orphan', def);
+    expect(deps.fields.lookupFieldByOwner('', 'orphan')).toBeUndefined();
+  });
+
+  it('implHook writes to types.registerImpl, NOT types.registerClass', () => {
+    const deps = makeDeps();
+    const table = createRegistrationTable(deps);
+    const def = makeDef({ nodeId: 'impl:User', type: 'Impl' });
+    table.get('Impl')!.hook('User', def);
+    expect(deps.types.lookupImplByName('User')).toHaveLength(1);
+    // Critical: Impl must not pollute classByName — heritage resolution
+    // would otherwise treat an Impl as a parent type candidate.
+    expect(deps.types.lookupClassByName('User')).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Closure isolation (principle of least authority)
+// ---------------------------------------------------------------------------
+
+describe('closure isolation — each hook can only write to its registry', () => {
+  it('classHook invocation does not call methods.register or fields.register', () => {
+    const deps = makeDeps();
+    const methodsSpy = vi.spyOn(deps.methods, 'register');
+    const fieldsSpy = vi.spyOn(deps.fields, 'register');
+    const implSpy = vi.spyOn(deps.types, 'registerImpl');
+    const table = createRegistrationTable(deps);
+    table.get('Class')!.hook('User', makeDef({ nodeId: 'class:User', type: 'Class' }));
+    expect(methodsSpy).not.toHaveBeenCalled();
+    expect(fieldsSpy).not.toHaveBeenCalled();
+    expect(implSpy).not.toHaveBeenCalled();
+  });
+
+  it('methodHook invocation does not call types.* or fields.register', () => {
+    const deps = makeDeps();
+    const classSpy = vi.spyOn(deps.types, 'registerClass');
+    const implSpy = vi.spyOn(deps.types, 'registerImpl');
+    const fieldsSpy = vi.spyOn(deps.fields, 'register');
+    const table = createRegistrationTable(deps);
+    table
+      .get('Method')!
+      .hook('save', makeDef({ nodeId: 'mtd:save', type: 'Method', ownerId: 'class:User' }));
+    expect(classSpy).not.toHaveBeenCalled();
+    expect(implSpy).not.toHaveBeenCalled();
+    expect(fieldsSpy).not.toHaveBeenCalled();
+  });
+
+  it('propertyHook invocation does not call types.* or methods.register', () => {
+    const deps = makeDeps();
+    const classSpy = vi.spyOn(deps.types, 'registerClass');
+    const implSpy = vi.spyOn(deps.types, 'registerImpl');
+    const methodsSpy = vi.spyOn(deps.methods, 'register');
+    const table = createRegistrationTable(deps);
+    table
+      .get('Property')!
+      .hook('name', makeDef({ nodeId: 'prop:name', type: 'Property', ownerId: 'class:User' }));
+    expect(classSpy).not.toHaveBeenCalled();
+    expect(implSpy).not.toHaveBeenCalled();
+    expect(methodsSpy).not.toHaveBeenCalled();
+  });
+
+  it('implHook invocation does not call types.registerClass or methods/fields', () => {
+    const deps = makeDeps();
+    const classSpy = vi.spyOn(deps.types, 'registerClass');
+    const methodsSpy = vi.spyOn(deps.methods, 'register');
+    const fieldsSpy = vi.spyOn(deps.fields, 'register');
+    const table = createRegistrationTable(deps);
+    table.get('Impl')!.hook('User', makeDef({ nodeId: 'impl:User', type: 'Impl' }));
+    expect(classSpy).not.toHaveBeenCalled();
+    expect(methodsSpy).not.toHaveBeenCalled();
+    expect(fieldsSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Factory-per-instance isolation
+// ---------------------------------------------------------------------------
+
+describe('factory-per-instance isolation', () => {
+  it('two independent tables write to their own registries only', () => {
+    const depsA = makeDeps();
+    const depsB = makeDeps();
+    const tableA = createRegistrationTable(depsA);
+    const tableB = createRegistrationTable(depsB);
+
+    tableA.get('Class')!.hook('UserA', makeDef({ nodeId: 'class:UserA', type: 'Class' }));
+    tableB.get('Class')!.hook('UserB', makeDef({ nodeId: 'class:UserB', type: 'Class' }));
+
+    expect(depsA.types.lookupClassByName('UserA')).toHaveLength(1);
+    expect(depsA.types.lookupClassByName('UserB')).toHaveLength(0);
+    expect(depsB.types.lookupClassByName('UserB')).toHaveLength(1);
+    expect(depsB.types.lookupClassByName('UserA')).toHaveLength(0);
+  });
+});

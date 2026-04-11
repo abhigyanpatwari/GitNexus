@@ -50,6 +50,19 @@ export {
 // qualified-syntax). Pure function that depends only on the model + HeritageMap.
 export { lookupMethodByOwnerWithMRO } from './resolve.js';
 
+// SM-22: behavior-grouped dispatch table for SymbolTable.add() routing.
+// See registration-table.ts module JSDoc for the behavior group taxonomy
+// and "how to add a new NodeLabel" checklist.
+export {
+  type RegistrationHook,
+  type RoutingDecision,
+  type RegistrationTableDeps,
+  createRegistrationTable,
+  CALLABLE_ONLY_LABELS,
+  INERT_LABELS,
+  DISPATCH_LABELS,
+} from './registration-table.js';
+
 // Facade re-exports from parent module. These are not model implementations —
 // they live in the parent directory and are surfaced here so consumers can
 // import the full resolution-time data shape from a single module boundary.

@@ -4,6 +4,7 @@ import {
   type ResolutionContext,
 } from '../../src/core/ingestion/resolution-context.js';
 import { createSymbolTable } from '../../src/core/ingestion/symbol-table.js';
+import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
 import { isFileInPackageDir } from '../../src/core/ingestion/import-processor.js';
 
 /** Helper: resolve to single best definition (refuses ambiguous global) */
@@ -854,16 +855,18 @@ describe('SM-16: Tier 3 global — lookupClassByName + lookupImplByName + lookup
   });
 
   it('Rust: Impl is separate from Class-like types — does not affect heritage (lookupClassByName)', () => {
-    const table = createSymbolTable();
-    table.add('src/user.rs', 'User', 'Struct:src/user.rs:User', 'Struct');
-    table.add('src/user.rs', 'User', 'Impl:src/user.rs:User', 'Impl');
+    // SM-23 DAG: registry lookups go through SemanticModel; SymbolTable
+    // is a pure leaf with no registry knowledge.
+    const model = createSemanticModel();
+    model.symbols.add('src/user.rs', 'User', 'Struct:src/user.rs:User', 'Struct');
+    model.symbols.add('src/user.rs', 'User', 'Impl:src/user.rs:User', 'Impl');
 
     // lookupClassByName excludes Impl (preserves heritage resolution correctness)
-    const classDefs = table.lookupClassByName('User');
+    const classDefs = model.types.lookupClassByName('User');
     expect(classDefs.map((d) => d.type)).toEqual(['Struct']);
 
     // lookupImplByName returns only Impl nodes
-    const implDefs = table.lookupImplByName('User');
+    const implDefs = model.types.lookupImplByName('User');
     expect(implDefs.map((d) => d.type)).toEqual(['Impl']);
   });
 

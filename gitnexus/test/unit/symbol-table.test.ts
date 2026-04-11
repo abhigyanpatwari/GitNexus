@@ -1,15 +1,24 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { createSymbolTable, type SymbolTable } from '../../src/core/ingestion/symbol-table.js';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { type SymbolTable } from '../../src/core/ingestion/symbol-table.js';
 import {
   createSemanticModel,
   type MutableSemanticModel,
 } from '../../src/core/ingestion/model/semantic-model.js';
 
 describe('SymbolTable', () => {
+  // SM-23 DAG: SymbolTable is now a pure leaf with no registry knowledge.
+  // Tests that exercise owner-scoped lookups (lookupClassByName,
+  // lookupMethodByOwner, lookupFieldByOwner, lookupClassByQualifiedName,
+  // lookupImplByName) must go through SemanticModel which composes
+  // SymbolTable with the registries. We build a model and alias
+  // `table = model.symbols` so the 200+ file/callable test cases keep
+  // their existing call sites unchanged.
+  let model: MutableSemanticModel;
   let table: SymbolTable;
 
   beforeEach(() => {
-    table = createSymbolTable();
+    model = createSemanticModel();
+    table = model.symbols;
   });
 
   describe('add', () => {
@@ -155,7 +164,7 @@ describe('SymbolTable', () => {
       // No declaredType → still indexed in fieldByOwner (for write-access tracking
       // in dynamically-typed languages like Ruby/JS), but excluded from callable index
       expect(table.lookupCallableByName('name')).toEqual([]);
-      expect(table.lookupFieldByOwner('class:User', 'name')).toEqual({
+      expect(model.fields.lookupFieldByOwner('class:User', 'name')).toEqual({
         nodeId: 'prop:name',
         filePath: 'src/models.ts',
         type: 'Property',
@@ -216,7 +225,7 @@ describe('SymbolTable', () => {
         declaredType: 'Address',
         ownerId: 'class:User',
       });
-      const def = table.lookupFieldByOwner('class:User', 'address');
+      const def = model.fields.lookupFieldByOwner('class:User', 'address');
       expect(def).toBeDefined();
       expect(def!.declaredType).toBe('Address');
       expect(def!.nodeId).toBe('prop:address');
@@ -227,7 +236,7 @@ describe('SymbolTable', () => {
         declaredType: 'Address',
         ownerId: 'class:User',
       });
-      expect(table.lookupFieldByOwner('class:Unknown', 'address')).toBeUndefined();
+      expect(model.fields.lookupFieldByOwner('class:Unknown', 'address')).toBeUndefined();
     });
 
     it('returns undefined for unknown field name', () => {
@@ -235,16 +244,16 @@ describe('SymbolTable', () => {
         declaredType: 'Address',
         ownerId: 'class:User',
       });
-      expect(table.lookupFieldByOwner('class:User', 'email')).toBeUndefined();
+      expect(model.fields.lookupFieldByOwner('class:User', 'email')).toBeUndefined();
     });
 
     it('returns undefined for empty table', () => {
-      expect(table.lookupFieldByOwner('class:User', 'name')).toBeUndefined();
+      expect(model.fields.lookupFieldByOwner('class:User', 'name')).toBeUndefined();
     });
 
     it('indexes Property without declaredType (for dynamic language write-access)', () => {
       table.add('src/models.ts', 'name', 'prop:name', 'Property', { ownerId: 'class:User' });
-      expect(table.lookupFieldByOwner('class:User', 'name')).toEqual({
+      expect(model.fields.lookupFieldByOwner('class:User', 'name')).toEqual({
         nodeId: 'prop:name',
         filePath: 'src/models.ts',
         type: 'Property',
@@ -261,8 +270,8 @@ describe('SymbolTable', () => {
         declaredType: 'RepoName',
         ownerId: 'class:Repo',
       });
-      expect(table.lookupFieldByOwner('class:User', 'name')!.declaredType).toBe('string');
-      expect(table.lookupFieldByOwner('class:Repo', 'name')!.declaredType).toBe('RepoName');
+      expect(model.fields.lookupFieldByOwner('class:User', 'name')!.declaredType).toBe('string');
+      expect(model.fields.lookupFieldByOwner('class:Repo', 'name')!.declaredType).toBe('RepoName');
     });
   });
 
@@ -272,7 +281,7 @@ describe('SymbolTable', () => {
         returnType: 'Address',
         ownerId: 'class:User',
       });
-      const def = table.lookupMethodByOwner('class:User', 'getAddress');
+      const def = model.methods.lookupMethodByOwner('class:User', 'getAddress');
       expect(def).toBeDefined();
       expect(def!.returnType).toBe('Address');
       expect(def!.nodeId).toBe('method:getAddress');
@@ -287,8 +296,10 @@ describe('SymbolTable', () => {
         returnType: 'String',
         ownerId: 'class:User',
       });
-      expect(table.lookupMethodByOwner('class:User', 'getAddress')!.returnType).toBe('Address');
-      expect(table.lookupMethodByOwner('class:User', 'getName')!.returnType).toBe('String');
+      expect(model.methods.lookupMethodByOwner('class:User', 'getAddress')!.returnType).toBe(
+        'Address',
+      );
+      expect(model.methods.lookupMethodByOwner('class:User', 'getName')!.returnType).toBe('String');
     });
 
     it('distinguishes methods by owner', () => {
@@ -300,8 +311,10 @@ describe('SymbolTable', () => {
         returnType: 'void',
         ownerId: 'class:Address',
       });
-      expect(table.lookupMethodByOwner('class:User', 'save')!.nodeId).toBe('method:user:save');
-      expect(table.lookupMethodByOwner('class:Address', 'save')!.nodeId).toBe(
+      expect(model.methods.lookupMethodByOwner('class:User', 'save')!.nodeId).toBe(
+        'method:user:save',
+      );
+      expect(model.methods.lookupMethodByOwner('class:Address', 'save')!.nodeId).toBe(
         'method:address:save',
       );
     });
@@ -311,7 +324,7 @@ describe('SymbolTable', () => {
         returnType: 'void',
         ownerId: 'class:User',
       });
-      expect(table.lookupMethodByOwner('class:Unknown', 'save')).toBeUndefined();
+      expect(model.methods.lookupMethodByOwner('class:Unknown', 'save')).toBeUndefined();
     });
 
     it('returns undefined for unknown method name', () => {
@@ -319,16 +332,16 @@ describe('SymbolTable', () => {
         returnType: 'void',
         ownerId: 'class:User',
       });
-      expect(table.lookupMethodByOwner('class:User', 'delete')).toBeUndefined();
+      expect(model.methods.lookupMethodByOwner('class:User', 'delete')).toBeUndefined();
     });
 
     it('returns undefined for empty table', () => {
-      expect(table.lookupMethodByOwner('class:User', 'save')).toBeUndefined();
+      expect(model.methods.lookupMethodByOwner('class:User', 'save')).toBeUndefined();
     });
 
     it('does NOT index Method without ownerId', () => {
       table.add('src/utils.ts', 'helper', 'method:helper', 'Method');
-      expect(table.lookupMethodByOwner('', 'helper')).toBeUndefined();
+      expect(model.methods.lookupMethodByOwner('', 'helper')).toBeUndefined();
       // But it should still be in lookupCallableByName
       expect(table.lookupCallableByName('helper')).toHaveLength(1);
     });
@@ -344,7 +357,7 @@ describe('SymbolTable', () => {
         returnType: 'User',
         ownerId: 'class:UserRepo',
       });
-      const def = table.lookupMethodByOwner('class:UserRepo', 'find');
+      const def = model.methods.lookupMethodByOwner('class:UserRepo', 'find');
       expect(def).toBeDefined();
       expect(def!.nodeId).toBe('method:find:1');
       expect(def!.returnType).toBe('User');
@@ -359,7 +372,7 @@ describe('SymbolTable', () => {
         parameterCount: 2,
         ownerId: 'class:Handler',
       });
-      expect(table.lookupMethodByOwner('class:Handler', 'process')).toBeUndefined();
+      expect(model.methods.lookupMethodByOwner('class:Handler', 'process')).toBeUndefined();
     });
 
     it('indexes Constructor in methodByOwner', () => {
@@ -367,7 +380,7 @@ describe('SymbolTable', () => {
         parameterCount: 0,
         ownerId: 'class:User',
       });
-      expect(table.lookupMethodByOwner('class:User', 'User')).toEqual({
+      expect(model.methods.lookupMethodByOwner('class:User', 'User')).toEqual({
         nodeId: 'ctor:User',
         filePath: 'src/models.ts',
         type: 'Constructor',
@@ -389,7 +402,7 @@ describe('SymbolTable', () => {
         returnType: 'Number',
         ownerId: 'class:Converter',
       });
-      expect(table.lookupMethodByOwner('class:Converter', 'convert')).toBeUndefined();
+      expect(model.methods.lookupMethodByOwner('class:Converter', 'convert')).toBeUndefined();
     });
 
     it('Method with ownerId is still available via lookupCallableByName', () => {
@@ -405,9 +418,9 @@ describe('SymbolTable', () => {
         returnType: 'void',
         ownerId: 'class:User',
       });
-      expect(table.lookupMethodByOwner('class:User', 'save')).toBeDefined();
-      table.clear();
-      expect(table.lookupMethodByOwner('class:User', 'save')).toBeUndefined();
+      expect(model.methods.lookupMethodByOwner('class:User', 'save')).toBeDefined();
+      model.clear();
+      expect(model.methods.lookupMethodByOwner('class:User', 'save')).toBeUndefined();
     });
   });
 
@@ -460,20 +473,20 @@ describe('SymbolTable', () => {
         ownerId: 'class:User',
       });
       table.add('src/models.ts', 'User', 'class:User', 'Class');
-      table.clear();
+      model.clear();
       expect(table.getStats()).toEqual({
         fileCount: 0,
       });
       expect(table.lookupExact('src/a.ts', 'foo')).toBeUndefined();
-      expect(table.lookupFieldByOwner('class:User', 'address')).toBeUndefined();
-      expect(table.lookupMethodByOwner('class:User', 'save')).toBeUndefined();
+      expect(model.fields.lookupFieldByOwner('class:User', 'address')).toBeUndefined();
+      expect(model.methods.lookupMethodByOwner('class:User', 'save')).toBeUndefined();
       expect(table.lookupCallableByName('foo')).toEqual([]);
-      expect(table.lookupClassByName('User')).toEqual([]);
+      expect(model.types.lookupClassByName('User')).toEqual([]);
     });
 
     it('allows re-adding after clear', () => {
       table.add('src/a.ts', 'foo', 'func:foo', 'Function');
-      table.clear();
+      model.clear();
       table.add('src/b.ts', 'bar', 'func:bar', 'Function');
       expect(table.getStats()).toEqual({
         fileCount: 1,
@@ -484,7 +497,7 @@ describe('SymbolTable', () => {
       table.add('src/a.ts', 'foo', 'func:foo', 'Function');
       // Verify callable is found
       expect(table.lookupCallableByName('foo')).toHaveLength(1);
-      table.clear();
+      model.clear();
       // After clear the callable index must be gone — empty table returns nothing
       expect(table.lookupCallableByName('foo')).toEqual([]);
       // Re-adding and looking up works correctly
@@ -659,9 +672,9 @@ describe('SymbolTable', () => {
         declaredType: 'Date',
         ownerId: 'class:User',
       });
-      expect(table.lookupFieldByOwner('class:User', 'id')!.declaredType).toBe('number');
-      expect(table.lookupFieldByOwner('class:User', 'email')!.declaredType).toBe('string');
-      expect(table.lookupFieldByOwner('class:User', 'createdAt')!.declaredType).toBe('Date');
+      expect(model.fields.lookupFieldByOwner('class:User', 'id')!.declaredType).toBe('number');
+      expect(model.fields.lookupFieldByOwner('class:User', 'email')!.declaredType).toBe('string');
+      expect(model.fields.lookupFieldByOwner('class:User', 'createdAt')!.declaredType).toBe('Date');
     });
 
     it('returns the full SymbolDefinition (nodeId + filePath + type) not just declaredType', () => {
@@ -669,7 +682,7 @@ describe('SymbolTable', () => {
         declaredType: 'number',
         ownerId: 'class:Player',
       });
-      const def = table.lookupFieldByOwner('class:Player', 'score');
+      const def = model.fields.lookupFieldByOwner('class:Player', 'score');
       expect(def).toBeDefined();
       expect(def!.nodeId).toBe('prop:score');
       expect(def!.filePath).toBe('src/models.ts');
@@ -686,17 +699,17 @@ describe('SymbolTable', () => {
         declaredType: 'UUID',
         ownerId: 'class:B',
       });
-      expect(table.lookupFieldByOwner('class:A', 'id')!.nodeId).toBe('prop:a:id');
-      expect(table.lookupFieldByOwner('class:B', 'id')!.nodeId).toBe('prop:b:id');
+      expect(model.fields.lookupFieldByOwner('class:A', 'id')!.nodeId).toBe('prop:a:id');
+      expect(model.fields.lookupFieldByOwner('class:B', 'id')!.nodeId).toBe('prop:b:id');
       // An owner whose id is the concatenation of A's ownerId + fieldName must not match
-      expect(table.lookupFieldByOwner('class:A\0id', '')).toBeUndefined();
+      expect(model.fields.lookupFieldByOwner('class:A\0id', '')).toBeUndefined();
     });
   });
 
   describe('lookupClassByName', () => {
     it('returns Class definitions by name', () => {
       table.add('src/models.ts', 'User', 'class:User', 'Class');
-      const results = table.lookupClassByName('User');
+      const results = model.types.lookupClassByName('User');
       expect(results).toHaveLength(1);
       expect(results[0]).toEqual({
         nodeId: 'class:User',
@@ -708,28 +721,28 @@ describe('SymbolTable', () => {
 
     it('returns Struct definitions by name', () => {
       table.add('src/models.rs', 'Point', 'struct:Point', 'Struct');
-      const results = table.lookupClassByName('Point');
+      const results = model.types.lookupClassByName('Point');
       expect(results).toHaveLength(1);
       expect(results[0].type).toBe('Struct');
     });
 
     it('returns Interface definitions by name', () => {
       table.add('src/types.ts', 'Serializable', 'iface:Serializable', 'Interface');
-      const results = table.lookupClassByName('Serializable');
+      const results = model.types.lookupClassByName('Serializable');
       expect(results).toHaveLength(1);
       expect(results[0].type).toBe('Interface');
     });
 
     it('returns Enum definitions by name', () => {
       table.add('src/types.ts', 'Color', 'enum:Color', 'Enum');
-      const results = table.lookupClassByName('Color');
+      const results = model.types.lookupClassByName('Color');
       expect(results).toHaveLength(1);
       expect(results[0].type).toBe('Enum');
     });
 
     it('returns Record definitions by name', () => {
       table.add('src/models.java', 'Config', 'record:Config', 'Record');
-      const results = table.lookupClassByName('Config');
+      const results = model.types.lookupClassByName('Config');
       expect(results).toHaveLength(1);
       expect(results[0].type).toBe('Record');
     });
@@ -737,7 +750,7 @@ describe('SymbolTable', () => {
     it('does NOT include Function with the same name', () => {
       table.add('src/models.ts', 'User', 'class:User', 'Class');
       table.add('src/utils.ts', 'User', 'func:User', 'Function');
-      const results = table.lookupClassByName('User');
+      const results = model.types.lookupClassByName('User');
       expect(results).toHaveLength(1);
       expect(results[0].type).toBe('Class');
       expect(results[0].nodeId).toBe('class:User');
@@ -748,10 +761,10 @@ describe('SymbolTable', () => {
       table.add('src/a.ts', 'Bar', 'var:Bar', 'Variable');
       table.add('src/a.ts', 'Baz', 'prop:Baz', 'Property');
       table.add('src/a.ts', 'Qux', 'ctor:Qux', 'Constructor');
-      expect(table.lookupClassByName('Foo')).toEqual([]);
-      expect(table.lookupClassByName('Bar')).toEqual([]);
-      expect(table.lookupClassByName('Baz')).toEqual([]);
-      expect(table.lookupClassByName('Qux')).toEqual([]);
+      expect(model.types.lookupClassByName('Foo')).toEqual([]);
+      expect(model.types.lookupClassByName('Bar')).toEqual([]);
+      expect(model.types.lookupClassByName('Baz')).toEqual([]);
+      expect(model.types.lookupClassByName('Qux')).toEqual([]);
     });
 
     it('includes Trait in the class set (PHP use, Rust impl, Scala traits)', () => {
@@ -761,20 +774,20 @@ describe('SymbolTable', () => {
       // Struct` in Rust, etc. Added as part of PR #744 (SM-11 Codex review
       // fixes) after the PHP HasTimestamps trait walk gap was discovered.
       table.add('src/a.rs', 'Writer', 'trait:Writer', 'Trait');
-      const results = table.lookupClassByName('Writer');
+      const results = model.types.lookupClassByName('Writer');
       expect(results).toHaveLength(1);
       expect(results[0].nodeId).toBe('trait:Writer');
     });
 
     it('does NOT include other type-like labels outside the allowed class set', () => {
       table.add('src/a.ts', 'User', 'type:User', 'Type');
-      expect(table.lookupClassByName('User')).toEqual([]);
+      expect(model.types.lookupClassByName('User')).toEqual([]);
     });
 
     it('returns multiple classes with the same name from different files', () => {
       table.add('src/models/user.ts', 'User', 'class:user:User', 'Class');
       table.add('src/dto/user.ts', 'User', 'class:dto:User', 'Class');
-      const results = table.lookupClassByName('User');
+      const results = model.types.lookupClassByName('User');
       expect(results).toHaveLength(2);
       expect(results[0].filePath).toBe('src/models/user.ts');
       expect(results[1].filePath).toBe('src/dto/user.ts');
@@ -782,25 +795,25 @@ describe('SymbolTable', () => {
 
     it('returns empty array for unknown name', () => {
       table.add('src/models.ts', 'User', 'class:User', 'Class');
-      expect(table.lookupClassByName('NonExistent')).toEqual([]);
+      expect(model.types.lookupClassByName('NonExistent')).toEqual([]);
     });
 
     it('returns empty array for empty table', () => {
-      expect(table.lookupClassByName('User')).toEqual([]);
+      expect(model.types.lookupClassByName('User')).toEqual([]);
     });
 
     it('after clear(), returns empty array', () => {
       table.add('src/models.ts', 'User', 'class:User', 'Class');
-      expect(table.lookupClassByName('User')).toHaveLength(1);
-      table.clear();
-      expect(table.lookupClassByName('User')).toEqual([]);
+      expect(model.types.lookupClassByName('User')).toHaveLength(1);
+      model.clear();
+      expect(model.types.lookupClassByName('User')).toEqual([]);
     });
 
     it('returns mixed class-like types with the same name', () => {
       // e.g. a Class and an Interface both named 'Comparable' in different files
       table.add('src/base.ts', 'Comparable', 'class:Comparable', 'Class');
       table.add('src/types.ts', 'Comparable', 'iface:Comparable', 'Interface');
-      const results = table.lookupClassByName('Comparable');
+      const results = model.types.lookupClassByName('Comparable');
       expect(results).toHaveLength(2);
       expect(results.map((r) => r.type)).toEqual(['Class', 'Interface']);
     });
@@ -810,7 +823,7 @@ describe('SymbolTable', () => {
         returnType: 'User',
         ownerId: 'module:models',
       });
-      const results = table.lookupClassByName('User');
+      const results = model.types.lookupClassByName('User');
       expect(results).toHaveLength(1);
       expect(results[0].ownerId).toBe('module:models');
     });
@@ -818,14 +831,14 @@ describe('SymbolTable', () => {
     it('class-like symbols are available via lookupClassByName', () => {
       table.add('src/models.ts', 'User', 'class:User', 'Class');
       // classByName is the dedicated index for class-like lookups
-      expect(table.lookupClassByName('User')).toHaveLength(1);
+      expect(model.types.lookupClassByName('User')).toHaveLength(1);
     });
 
     it('allows re-adding after clear and returns correct results', () => {
       table.add('src/models.ts', 'User', 'class:User:v1', 'Class');
-      table.clear();
+      model.clear();
       table.add('src/models.ts', 'User', 'class:User:v2', 'Class');
-      const results = table.lookupClassByName('User');
+      const results = model.types.lookupClassByName('User');
       expect(results).toHaveLength(1);
       expect(results[0].nodeId).toBe('class:User:v2');
     });
@@ -840,8 +853,8 @@ describe('SymbolTable', () => {
         qualifiedName: 'Data.User',
       });
 
-      expect(table.lookupClassByName('User')).toHaveLength(2);
-      expect(table.lookupClassByQualifiedName('Services.User')).toEqual([
+      expect(model.types.lookupClassByName('User')).toHaveLength(2);
+      expect(model.types.lookupClassByQualifiedName('Services.User')).toEqual([
         {
           nodeId: 'class:services:User',
           filePath: 'src/services/user.cs',
@@ -849,14 +862,14 @@ describe('SymbolTable', () => {
           qualifiedName: 'Services.User',
         },
       ]);
-      const dataUserMatches = table.lookupClassByQualifiedName('Data.User');
+      const dataUserMatches = model.types.lookupClassByQualifiedName('Data.User');
       expect(dataUserMatches).toHaveLength(1);
       expect(dataUserMatches[0].qualifiedName).toBe('Data.User');
     });
 
     it('falls back to the simple name when no qualified metadata is provided', () => {
       table.add('src/models.ts', 'User', 'class:User', 'Class');
-      expect(table.lookupClassByQualifiedName('User')).toEqual([
+      expect(model.types.lookupClassByQualifiedName('User')).toEqual([
         {
           nodeId: 'class:User',
           filePath: 'src/models.ts',
@@ -870,16 +883,16 @@ describe('SymbolTable', () => {
       table.add('src/utils.ts', 'User', 'func:User', 'Function', {
         qualifiedName: 'Services.User',
       });
-      expect(table.lookupClassByQualifiedName('Services.User')).toEqual([]);
+      expect(model.types.lookupClassByQualifiedName('Services.User')).toEqual([]);
     });
 
     it('after clear(), returns empty array', () => {
       table.add('src/services/user.cs', 'User', 'class:User', 'Class', {
         qualifiedName: 'Services.User',
       });
-      expect(table.lookupClassByQualifiedName('Services.User')).toHaveLength(1);
-      table.clear();
-      expect(table.lookupClassByQualifiedName('Services.User')).toEqual([]);
+      expect(model.types.lookupClassByQualifiedName('Services.User')).toHaveLength(1);
+      model.clear();
+      expect(model.types.lookupClassByQualifiedName('Services.User')).toEqual([]);
     });
   });
 
@@ -988,6 +1001,121 @@ describe('SymbolTable', () => {
       });
       expect(model.symbols.lookupExact('src/user.ts', 'name')).toBe('prop:orphan.name');
       expect(model.fields.lookupFieldByOwner('class:User', 'name')).toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // SM-22 — dispatch table routing invariants
+  // -------------------------------------------------------------------------
+
+  describe('registration dispatch table (SM-22)', () => {
+    it('registering a Class hits types.registerClass exactly once and touches no other registry', () => {
+      const model = createSemanticModel();
+      const classSpy = vi.spyOn(model.types, 'registerClass');
+      const implSpy = vi.spyOn(model.types, 'registerImpl');
+      const methodsSpy = vi.spyOn(model.methods, 'register');
+      const fieldsSpy = vi.spyOn(model.fields, 'register');
+
+      model.symbols.add('src/user.ts', 'User', 'class:User', 'Class', {
+        qualifiedName: 'app.User',
+      });
+
+      expect(classSpy).toHaveBeenCalledTimes(1);
+      expect(implSpy).not.toHaveBeenCalled();
+      expect(methodsSpy).not.toHaveBeenCalled();
+      expect(fieldsSpy).not.toHaveBeenCalled();
+    });
+
+    it('registering a Property populates fields.register and DOES NOT append to callableByName', () => {
+      const model = createSemanticModel();
+      model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+      model.symbols.add('src/user.ts', 'name', 'prop:User.name', 'Property', {
+        ownerId: 'class:User',
+        declaredType: 'string',
+      });
+
+      expect(model.fields.lookupFieldByOwner('class:User', 'name')?.nodeId).toBe('prop:User.name');
+      // Property must NOT leak into callableByName — the invariant this
+      // refactor protects via the skipCallableIndex flag.
+      expect(model.symbols.lookupCallableByName('name')).toHaveLength(0);
+    });
+
+    it('registering a free Function populates callableByName but not methods.register', () => {
+      const model = createSemanticModel();
+      const methodsSpy = vi.spyOn(model.methods, 'register');
+
+      model.symbols.add('src/utils.ts', 'format', 'fn:format', 'Function');
+
+      expect(model.symbols.lookupCallableByName('format')).toHaveLength(1);
+      expect(methodsSpy).not.toHaveBeenCalled();
+    });
+
+    it('registering a Function-with-ownerId routes to methods.register via pre-dispatch normalization AND appears in callableByName', () => {
+      const model = createSemanticModel();
+      model.symbols.add('src/user.py', 'User', 'class:User', 'Class');
+      model.symbols.add('src/user.py', 'save', 'fn:User.save', 'Function', {
+        ownerId: 'class:User',
+      });
+
+      // Owner-scoped method lookup resolves it (Python-style class method).
+      expect(model.methods.lookupMethodByOwner('class:User', 'save')?.nodeId).toBe('fn:User.save');
+      // Function is in CALLABLE_TYPES, so it also appears in callableByName.
+      expect(model.symbols.lookupCallableByName('save')).toHaveLength(1);
+    });
+
+    it('registering an Impl populates lookupImplByName but NOT lookupClassByName', () => {
+      const model = createSemanticModel();
+      model.symbols.add('src/user.rs', 'User', 'impl:User', 'Impl');
+      // Impl is kept separate from class-like so heritage resolution
+      // does not treat it as a parent type candidate.
+      expect(model.types.lookupImplByName('User')).toHaveLength(1);
+      expect(model.types.lookupClassByName('User')).toHaveLength(0);
+    });
+
+    it('registering an inert NodeLabel only populates the file index', () => {
+      const model = createSemanticModel();
+      const classSpy = vi.spyOn(model.types, 'registerClass');
+      const implSpy = vi.spyOn(model.types, 'registerImpl');
+      const methodsSpy = vi.spyOn(model.methods, 'register');
+      const fieldsSpy = vi.spyOn(model.fields, 'register');
+
+      // `Variable` is in INERT_LABELS — no specialized registry, no
+      // callable index (it's not in CALLABLE_TYPES).
+      model.symbols.add('src/main.ts', 'CONFIG', 'var:CONFIG', 'Variable');
+
+      expect(model.symbols.lookupExact('src/main.ts', 'CONFIG')).toBe('var:CONFIG');
+      expect(classSpy).not.toHaveBeenCalled();
+      expect(implSpy).not.toHaveBeenCalled();
+      expect(methodsSpy).not.toHaveBeenCalled();
+      expect(fieldsSpy).not.toHaveBeenCalled();
+      expect(model.symbols.lookupCallableByName('CONFIG')).toHaveLength(0);
+    });
+
+    it('registering a Method-without-ownerId silently skips methods.register but still files it', () => {
+      const model = createSemanticModel();
+      const methodsSpy = vi.spyOn(model.methods, 'register');
+
+      model.symbols.add('src/orphan.ts', 'orphan', 'mtd:orphan', 'Method');
+
+      // File index still populated.
+      expect(model.symbols.lookupExact('src/orphan.ts', 'orphan')).toBe('mtd:orphan');
+      // Method registry NOT populated (no ownerId to key under).
+      expect(methodsSpy).not.toHaveBeenCalled();
+      // Method IS in CALLABLE_TYPES — still reaches callableByName.
+      expect(model.symbols.lookupCallableByName('orphan')).toHaveLength(1);
+    });
+
+    it('exhaustiveness guard does not fire for the current NodeLabel taxonomy', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // Fresh SymbolTable — triggers the guard at construction.
+      createSemanticModel();
+      // No warnings about missing NodeLabels — every label is accounted
+      // for in one of the three allowlists.
+      const mismatchWarnings = warnSpy.mock.calls.filter((args) =>
+        String(args[0]).startsWith('[SymbolTable] NodeLabel '),
+      );
+      expect(mismatchWarnings).toHaveLength(0);
+      warnSpy.mockRestore();
     });
   });
 });
