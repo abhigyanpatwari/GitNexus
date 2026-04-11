@@ -967,16 +967,29 @@ describe('SymbolTable', () => {
       );
     });
 
-    it('clear() cascades through both registries and the nested symbol table', () => {
+    it('clear() cascades through all three registries and the nested symbol table', () => {
       const model = buildModel();
       model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
       model.symbols.add('src/user.ts', 'save', 'mtd:User.save', 'Method', {
         ownerId: 'class:User',
       });
+      model.symbols.add('src/user.ts', 'name', 'prop:User.name', 'Property', {
+        ownerId: 'class:User',
+        declaredType: 'string',
+      });
+
+      // Pre-clear: every store is populated.
       expect(model.types.lookupClassByName('User')).toHaveLength(1);
+      expect(model.methods.lookupMethodByOwner('class:User', 'save')?.nodeId).toBe('mtd:User.save');
+      expect(model.fields.lookupFieldByOwner('class:User', 'name')?.nodeId).toBe('prop:User.name');
       expect(model.symbols.lookupExact('src/user.ts', 'User')).toBe('class:User');
+
       model.clear();
+
+      // Post-clear: every store is empty — types, methods, fields, symbols.
       expect(model.types.lookupClassByName('User')).toEqual([]);
+      expect(model.methods.lookupMethodByOwner('class:User', 'save')).toBeUndefined();
+      expect(model.fields.lookupFieldByOwner('class:User', 'name')).toBeUndefined();
       expect(model.symbols.lookupExact('src/user.ts', 'User')).toBeUndefined();
     });
 
