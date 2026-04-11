@@ -49,7 +49,7 @@ const EMPTY_SET: ReadonlySet<string> = new Set();
  * Build a HeritageMap from accumulated ExtractedHeritage records.
  *
  * Resolves class/interface/struct/trait names to nodeIds via
- * `ctx.symbols.model.types.lookupClassByName`. When a name resolves to multiple
+ * `ctx.model.types.lookupClassByName`. When a name resolves to multiple
  * candidates, all are recorded (partial-class / cross-file scenario).
  * Unresolvable names are silently skipped — a missing parent is better
  * than a wrong edge.
@@ -70,8 +70,8 @@ export const buildHeritageMap = (
 
   for (const h of heritage) {
     // ── Parent lookup (nodeId-based) ────────────────────────────────
-    const childDefs = ctx.symbols.model.types.lookupClassByName(h.className);
-    const parentDefs = ctx.symbols.model.types.lookupClassByName(h.parentName);
+    const childDefs = ctx.model.types.lookupClassByName(h.className);
+    const parentDefs = ctx.model.types.lookupClassByName(h.parentName);
 
     if (childDefs.length > 0 && parentDefs.length > 0) {
       for (const child of childDefs) {

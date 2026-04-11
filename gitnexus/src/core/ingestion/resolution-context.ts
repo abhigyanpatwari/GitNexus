@@ -20,8 +20,9 @@
  *   (three O(1) index lookups with a narrow, type-specific result set).
  */
 
-import type { SymbolTable, SymbolDefinition } from './symbol-table.js';
-import { createSymbolTable } from './symbol-table.js';
+import type { SymbolDefinition } from './symbol-table.js';
+import type { SemanticModel } from './model/semantic-model.js';
+import { createSemanticModel } from './model/semantic-model.js';
 import type { NamedImportMap } from './import-processor.js';
 import { isFileInPackageDir } from './import-processor.js';
 import { walkBindingChain } from './named-binding-processor.js';
@@ -59,8 +60,9 @@ export interface ResolutionContext {
   resolve(name: string, fromFile: string): TieredCandidates | null;
 
   // --- Data access (for pipeline wiring, not resolution) ---
-  /** Symbol table — used by parsing-processor to populate symbols. */
-  readonly symbols: SymbolTable;
+  /** Semantic model — the top-level container for types, methods, fields,
+   *  and the nested file/callable SymbolTable (SM-21 inversion). */
+  readonly model: SemanticModel;
   /** Raw maps — used by import-processor to populate import data. */
   readonly importMap: ImportMap;
   readonly packageMap: PackageMap;
@@ -86,7 +88,8 @@ export interface ResolutionContext {
 }
 
 export const createResolutionContext = (): ResolutionContext => {
-  const symbols = createSymbolTable();
+  const model = createSemanticModel();
+  const symbols = model.symbols;
   const importMap: ImportMap = new Map();
   const packageMap: PackageMap = new Map();
   const namedImportMap: NamedImportMap = new Map();
@@ -206,8 +209,8 @@ export const createResolutionContext = (): ResolutionContext => {
     // If a future language needs them at Tier 3, add a dedicated index.
     // Macro (C/C++) and Delegate (C#) ARE included in the callable index
     // since call-processor.ts treats them as callable targets.
-    const classDefs = symbols.model.types.lookupClassByName(name);
-    const implDefs = symbols.model.types.lookupImplByName(name);
+    const classDefs = model.types.lookupClassByName(name);
+    const implDefs = model.types.lookupImplByName(name);
     const callableDefs = symbols.lookupCallableByName(name);
 
     if (classDefs.length === 0 && implDefs.length === 0 && callableDefs.length === 0) {
@@ -271,7 +274,7 @@ export const createResolutionContext = (): ResolutionContext => {
   });
 
   const clear = (): void => {
-    symbols.clear();
+    model.clear();
     importMap.clear();
     packageMap.clear();
     namedImportMap.clear();
@@ -288,7 +291,7 @@ export const createResolutionContext = (): ResolutionContext => {
 
   return {
     resolve,
-    symbols,
+    model,
     importMap,
     packageMap,
     namedImportMap,

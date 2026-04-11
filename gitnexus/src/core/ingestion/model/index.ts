@@ -11,12 +11,19 @@
  * stay in `SymbolTable` by design.
  */
 
-// Unified semantic model (factory + interfaces)
+// Unified semantic model (factory + interfaces). Post-SM-21 inversion,
+// SemanticModel is the top-level container and owns the file/callable
+// SymbolTable as a nested `symbols` field.
 export {
   type SemanticModel,
   type MutableSemanticModel,
   createSemanticModel,
 } from './semantic-model.js';
+
+// SymbolTable lives at the parent of `model/` but is now exclusively
+// owned by SemanticModel. Re-exported here for the rare caller that
+// needs the file/callable interface in isolation (e.g. tests).
+export { type SymbolTable, createSymbolTable } from '../symbol-table.js';
 
 // Type registry (classes, structs, interfaces, enums, records, impls)
 export {

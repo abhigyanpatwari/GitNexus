@@ -334,7 +334,7 @@ async function runCrossFileBindingPropagation(
   // For the worker path, buildTypeEnv runs inside workers without SymbolTable,
   // so exported bindings must be collected from graph + SymbolTable in main thread.
   if (exportedTypeMap.size === 0 && graph.nodeCount > 0) {
-    const graphExports = buildExportedTypeMapFromGraph(graph, ctx.symbols);
+    const graphExports = buildExportedTypeMapFromGraph(graph, ctx.model.symbols);
     for (const [fp, exports] of graphExports) exportedTypeMap.set(fp, exports);
   }
 
@@ -361,7 +361,7 @@ async function runCrossFileBindingPropagation(
           filesWithGaps++;
           break;
         }
-        const def = ctx.symbols.lookupExactFull(binding.sourcePath, binding.exportedName);
+        const def = ctx.model.symbols.lookupExactFull(binding.sourcePath, binding.exportedName);
         if (def?.returnType) {
           filesWithGaps++;
           break;
@@ -413,11 +413,15 @@ async function runCrossFileBindingPropagation(
         }
       }
 
-      const importedReturns = buildImportedReturnTypes(filePath, ctx.namedImportMap, ctx.symbols);
+      const importedReturns = buildImportedReturnTypes(
+        filePath,
+        ctx.namedImportMap,
+        ctx.model.symbols,
+      );
       const importedRawReturns = buildImportedRawReturnTypes(
         filePath,
         ctx.namedImportMap,
-        ctx.symbols,
+        ctx.model.symbols,
       );
       if (seeded.size === 0 && importedReturns.size === 0) continue;
       if (!allPathSet.has(filePath)) continue;
@@ -657,7 +661,7 @@ async function runChunkedParseAndResolve(
   allORMQueries: ExtractedORMQuery[];
   bindingAccumulator: BindingAccumulator;
 }> {
-  const symbolTable = ctx.symbols;
+  const symbolTable = ctx.model.symbols;
 
   const parseableScanned = scannedFiles.filter((f) => {
     const lang = getLanguageFromFilename(f.path);

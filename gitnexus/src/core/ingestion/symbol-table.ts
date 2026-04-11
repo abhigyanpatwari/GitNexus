@@ -1,6 +1,12 @@
 import type { NodeLabel } from 'gitnexus-shared';
-import { createSemanticModel } from './model/semantic-model.js';
-import type { SemanticModel } from './model/semantic-model.js';
+import type {
+  MutableTypeRegistry,
+  MutableMethodRegistry,
+  MutableFieldRegistry,
+} from './model/semantic-model.js';
+import { createTypeRegistry } from './model/type-registry.js';
+import { createMethodRegistry } from './model/method-registry.js';
+import { createFieldRegistry } from './model/field-registry.js';
 
 export const CLASS_TYPES = new Set([
   'Class',
@@ -51,9 +57,29 @@ export interface SymbolDefinition {
   ownerId?: string;
 }
 
+/**
+ * File-scoped + callable-name-scoped symbol index (SM-21).
+ *
+ * Post-inversion, SymbolTable holds ONLY the file-indexed and
+ * name-keyed callable indexes — the things that are orthogonal to
+ * owner-scoped type/method/field knowledge. The type/method/field
+ * registries live on {@link SemanticModel} and are injected into
+ * SymbolTable's `add()` as a dependency. `SymbolTable` itself is
+ * nested under `SemanticModel.symbols`, so the ownership direction is:
+ *
+ *     SemanticModel (top-level)
+ *       ├── types / methods / fields     (owner-scoped registries)
+ *       └── symbols: SymbolTable         (file-indexed + callable-name index)
+ *
+ * Consumers should receive `SemanticModel` and reach into `.symbols`
+ * only when they need file-scoped or callable-name lookups; owner-scoped
+ * lookups go through `.types` / `.methods` / `.fields` directly.
+ */
 export interface SymbolTable {
   /**
-   * Register a new symbol definition
+   * Register a new symbol definition. Routes Property/Method/Constructor/
+   * class-like/Impl registrations into the injected semantic registries,
+   * and always populates the file index + callable index as appropriate.
    */
   add: (
     filePath: string,
@@ -98,25 +124,27 @@ export interface SymbolTable {
    */
   lookupCallableByName: (name: string) => SymbolDefinition[];
 
+  // ---------------------------------------------------------------------
+  // Registry convenience delegates
+  //
+  // SymbolTable does not *own* the type/method/field registries — they
+  // live on the parent {@link SemanticModel}. These delegates forward to
+  // the injected registries so standalone SymbolTable consumers (chiefly
+  // tests that build a SymbolTable without a SemanticModel wrapper) keep
+  // a flat, ergonomic lookup API. Production code should prefer
+  // `model.types.*`, `model.methods.*`, and `model.fields.*` directly.
+  // ---------------------------------------------------------------------
+
   /**
    * Look up a field/property by its owning class nodeId and field name.
-   * O(1) via dedicated eagerly-populated index keyed by `ownerNodeId\0fieldName`.
-   * Returns undefined when no matching property exists or the owner is ambiguous.
+   * Delegates to the injected {@link FieldRegistry}.
    */
   lookupFieldByOwner: (ownerNodeId: string, fieldName: string) => SymbolDefinition | undefined;
 
   /**
    * Lookup a method by owner class + name, optionally filtered by arity.
-   *
-   * When `argCount` is provided, overloads whose parameter count doesn't
-   * accommodate the call's argument count are filtered out before the
-   * returnType dedup runs. This lets D0 (`resolveMemberCall`) disambiguate
-   * arity-differing overloads (e.g. C++ `greet()` vs `greet(string)`) that
-   * would otherwise collide on the shared `ownerId + methodName` key.
-   *
-   * Same-arity, same-returnType overloads (e.g. `save(int)` vs `save(String)`,
-   * both returning `void`) still collapse to the first match — callers must
-   * gate D0 on overload concern before invoking this function for that case.
+   * Delegates to the injected {@link MethodRegistry}. See the registry
+   * documentation for overload disambiguation semantics.
    */
   lookupMethodByOwner: (
     ownerNodeId: string,
@@ -125,27 +153,20 @@ export interface SymbolTable {
   ) => SymbolDefinition | undefined;
 
   /**
-   * Look up class-like definitions (Class, Struct, Interface, Enum, Record) by name.
-   * O(1) via dedicated eagerly-populated index keyed by symbol name.
-   * Returns all matching definitions across files (e.g. partial classes).
-   * Used by Phase 1 semantic-model tasks to replace filtered global lookups.
+   * Look up class-like definitions (Class, Struct, Interface, Enum, Record,
+   * Trait) by name. Delegates to the injected {@link TypeRegistry}.
    */
   lookupClassByName: (name: string) => SymbolDefinition[];
 
   /**
    * Look up class-like definitions by canonical qualified name.
-   * Qualified names are normalized to dot-separated scope segments across languages,
-   * e.g. `App.Models.User`, `com.example.User`, or `Admin.User`.
-   * Top-level class-like symbols with no explicit scope are indexed under their simple name.
+   * Delegates to the injected {@link TypeRegistry}.
    */
   lookupClassByQualifiedName: (qualifiedName: string) => SymbolDefinition[];
 
   /**
-   * Look up Impl nodes by name.
-   * O(1) via dedicated eagerly-populated index keyed by symbol name.
-   * Used by Tier 3 resolution to include Rust impl blocks alongside
-   * class-like candidates so method lookups on `impl User { fn save() }` work
-   * correctly (Rust methods are indexed under the Impl nodeId, not the Struct).
+   * Look up Rust `Impl` blocks by name. Delegates to the injected
+   * {@link TypeRegistry}.
    */
   lookupImplByName: (name: string) => SymbolDefinition[];
 
@@ -164,29 +185,43 @@ export interface SymbolTable {
   };
 
   /**
-   * Read-only view of the aggregated semantic registries (types, methods,
-   * fields). Exposed so consumers in `core/ingestion/` can query the model
-   * directly via `table.model.types.*`, `table.model.methods.*`, and
-   * `table.model.fields.*` rather than routing through the delegate
-   * wrappers on this interface.
-   *
-   * The read-only `SemanticModel` variant (not `MutableSemanticModel`)
-   * prevents external callers from reaching registration APIs — those
-   * remain SymbolTable's responsibility via {@link add}.
-   */
-  readonly model: SemanticModel;
-
-  /**
-   * Cleanup memory
+   * Cleanup memory (only the file index + callable index owned here —
+   * the caller is responsible for clearing the injected registries).
    */
   clear: () => void;
 }
 
-export const createSymbolTable = (): SymbolTable => {
-  // SemanticModel — aggregated registries for class-like types, methods,
-  // and fields. SymbolTable delegates all registry operations to this model
-  // (SM-20). The three registries were previously inlined as Maps here.
-  const model = createSemanticModel();
+/**
+ * Dependencies injected by {@link createSemanticModel}. Passing the
+ * mutable variants lets `add()` register type/method/field symbols
+ * without knowing the parent SemanticModel.
+ */
+export interface SymbolTableDeps {
+  types: MutableTypeRegistry;
+  methods: MutableMethodRegistry;
+  fields: MutableFieldRegistry;
+}
+
+export const createSymbolTable = (deps?: SymbolTableDeps): SymbolTable => {
+  // Production path: SemanticModel injects its registries so the feed is
+  // shared with the top-level model.
+  //
+  // Test/standalone path: when no deps are passed, create standalone
+  // registries locally. Used by tests that only exercise file/callable
+  // lookups and don't need the parent SemanticModel container. Callers
+  // can reach the standalone registries via the returned symbol table's
+  // `add` (which still routes into them) — they are not otherwise
+  // reachable from the returned SymbolTable, matching the pre-SM-21
+  // public surface.
+  // When deps is undefined, this SymbolTable is standalone — it owns the
+  // registries and must clear them in `clear()`. When deps is injected by
+  // {@link createSemanticModel}, the parent model owns them and clears
+  // them from its own `clear()` method, so this SymbolTable must NOT clear
+  // the injected registries to avoid a double-clear race.
+  const ownsRegistries = deps === undefined;
+  const types = deps?.types ?? createTypeRegistry();
+  const methods = deps?.methods ?? createMethodRegistry();
+  const fields = deps?.fields ?? createFieldRegistry();
 
   // 1. File-Specific Index — stores full SymbolDefinition(s) for O(1) lookup.
   // Structure: FilePath -> (SymbolName -> SymbolDefinition[])
@@ -197,8 +232,6 @@ export const createSymbolTable = (): SymbolTable => {
   // Structure: SymbolName -> [Callable Definitions]
   // Only Function, Method, Constructor, Macro, Delegate symbols are indexed.
   const callableByName = new Map<string, SymbolDefinition[]>();
-
-  // Use the module-level CALLABLE_TYPES constant (exported for call-processor.ts).
 
   const add = (
     filePath: string,
@@ -248,43 +281,43 @@ export const createSymbolTable = (): SymbolTable => {
       fileMap.get(name)!.push(def);
     }
 
-    // B. Properties go to fieldByOwner index only — skip other indexes to prevent
-    // namespace pollution for common names like 'id', 'name', 'type'.
+    // B. Properties go to the fields registry only — skip other indexes to
+    // prevent namespace pollution for common names like 'id', 'name', 'type'.
     // Index ALL properties (even without declaredType) so write-access tracking
     // can resolve field ownership for dynamically-typed languages (Ruby, JS).
     if (type === 'Property' && metadata?.ownerId) {
-      model.fields.register(metadata.ownerId, name, def);
-      // Still add to fileIndex above (for lookupExact), but skip other indexes
+      fields.register(metadata.ownerId, name, def);
+      // Still added to fileIndex above (for lookupExact); skip other indexes.
       return;
     }
 
-    // C. Methods, constructors, and ownerId-bound Functions go to
-    // methodByOwner index (delegated to SemanticModel.methods).
+    // C. Methods, constructors, and ownerId-bound Functions go to the
+    // methods registry.
     //
     // Some language extractors emit class methods as `Function` with an
     // `ownerId` — notably Python (`def method(self):` inside a class body),
     // Rust trait methods, and Kotlin object/companion methods. Treating
-    // `Function` with ownerId the same as `Method` here makes D0
-    // (`resolveMemberCall`) work uniformly across all supported languages
-    // instead of silently falling through to D1-D4 widening.
+    // `Function` with ownerId the same as `Method` here makes owner-scoped
+    // method resolution work uniformly across all supported languages
+    // instead of silently falling through to name-only widening.
     if ((type === 'Method' || type === 'Constructor' || type === 'Function') && metadata?.ownerId) {
-      model.methods.register(metadata.ownerId, name, def);
+      methods.register(metadata.ownerId, name, def);
     }
 
-    // C2. Class-like types go to classByName index (delegated to SemanticModel.types).
+    // C2. Class-like types go to the types registry.
     if (CLASS_TYPES.has(type)) {
       const qualifiedKey = qualifiedName ?? name;
-      model.types.registerClass(name, qualifiedKey, def);
+      types.registerClass(name, qualifiedKey, def);
     }
 
-    // C3. Rust Impl blocks go to implByName (delegated to SemanticModel.types,
-    // separate from classByName to avoid polluting heritage resolution with
+    // C3. Rust Impl blocks go to implByName on the types registry
+    // (separate from classByName to avoid polluting heritage resolution with
     // Impl nodes as parent candidates).
     if (type === 'Impl') {
-      model.types.registerImpl(name, def);
+      types.registerImpl(name, def);
     }
 
-    // D. Eagerly maintain callable index (like classByName, implByName).
+    // D. Eagerly maintain callable index (like types/methods/fields above).
     if (CALLABLE_TYPES.has(type)) {
       const existing = callableByName.get(name);
       if (existing) {
@@ -313,32 +346,24 @@ export const createSymbolTable = (): SymbolTable => {
     return callableByName.get(name) ?? [];
   };
 
+  // Registry convenience delegates — forward to the injected registries.
   const lookupFieldByOwner = (
     ownerNodeId: string,
     fieldName: string,
-  ): SymbolDefinition | undefined => {
-    return model.fields.lookupFieldByOwner(ownerNodeId, fieldName);
-  };
+  ): SymbolDefinition | undefined => fields.lookupFieldByOwner(ownerNodeId, fieldName);
 
   const lookupMethodByOwner = (
     ownerNodeId: string,
     methodName: string,
     argCount?: number,
-  ): SymbolDefinition | undefined => {
-    return model.methods.lookupMethodByOwner(ownerNodeId, methodName, argCount);
-  };
+  ): SymbolDefinition | undefined => methods.lookupMethodByOwner(ownerNodeId, methodName, argCount);
 
-  const lookupClassByName = (name: string): SymbolDefinition[] => {
-    return model.types.lookupClassByName(name);
-  };
+  const lookupClassByName = (name: string): SymbolDefinition[] => types.lookupClassByName(name);
 
-  const lookupClassByQualifiedName = (qualifiedName: string): SymbolDefinition[] => {
-    return model.types.lookupClassByQualifiedName(qualifiedName);
-  };
+  const lookupClassByQualifiedName = (qualifiedName: string): SymbolDefinition[] =>
+    types.lookupClassByQualifiedName(qualifiedName);
 
-  const lookupImplByName = (name: string): SymbolDefinition[] => {
-    return model.types.lookupImplByName(name);
-  };
+  const lookupImplByName = (name: string): SymbolDefinition[] => types.lookupImplByName(name);
 
   /** Returns a live iterator over all indexed file paths (fileIndex.keys()).
    *  The iterator is invalidated if add() changes fileIndex.size during
@@ -353,7 +378,14 @@ export const createSymbolTable = (): SymbolTable => {
   const clear = () => {
     fileIndex.clear();
     callableByName.clear();
-    model.clear();
+    // Only clear registries we own. When SemanticModel injected them,
+    // the parent model handles clearing to avoid double-clearing them
+    // when both table.clear() and model.clear() are called in sequence.
+    if (ownsRegistries) {
+      types.clear();
+      methods.clear();
+      fields.clear();
+    }
   };
 
   return {
@@ -369,7 +401,6 @@ export const createSymbolTable = (): SymbolTable => {
     lookupImplByName,
     getFiles,
     getStats,
-    model,
     clear,
   };
 };

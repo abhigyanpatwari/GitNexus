@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createSymbolTable, type SymbolTable } from '../../src/core/ingestion/symbol-table.js';
+import {
+  createSemanticModel,
+  type MutableSemanticModel,
+} from '../../src/core/ingestion/model/semantic-model.js';
 
 describe('SymbolTable', () => {
   let table: SymbolTable;
@@ -879,120 +883,111 @@ describe('SymbolTable', () => {
     });
   });
 
-  describe('model property (SM-20 wire-up)', () => {
-    it('exposes types, methods, and fields registries', () => {
-      expect(table.model).toBeDefined();
-      expect(table.model.types).toBeDefined();
-      expect(table.model.methods).toBeDefined();
-      expect(table.model.fields).toBeDefined();
+  describe('SemanticModel container (SM-21 inversion)', () => {
+    // Post-inversion, the SemanticModel is the top-level container and
+    // SymbolTable is a nested `symbols` subfield. These tests exercise the
+    // inverted access pattern directly via createSemanticModel() so the
+    // factory wiring is covered end-to-end: feeding the symbol table via
+    // its `add()` populates the parent registries (types/methods/fields).
+    const buildModel = (): MutableSemanticModel => createSemanticModel();
+
+    it('exposes types, methods, fields, and symbols subfields', () => {
+      const model = buildModel();
+      expect(model.types).toBeDefined();
+      expect(model.methods).toBeDefined();
+      expect(model.fields).toBeDefined();
+      expect(model.symbols).toBeDefined();
     });
 
-    it('parity: lookupClassByName matches model.types.lookupClassByName', () => {
-      table.add('src/user.ts', 'User', 'class:User', 'Class', {
+    it('feeding a Class via model.symbols.add populates model.types', () => {
+      const model = buildModel();
+      model.symbols.add('src/user.ts', 'User', 'class:User', 'Class', {
         qualifiedName: 'app.User',
       });
-      const viaWrapper = table.lookupClassByName('User');
-      const viaModel = table.model.types.lookupClassByName('User');
-      expect(viaWrapper).toHaveLength(1);
-      expect(viaModel).toHaveLength(1);
-      expect(viaModel[0]!.nodeId).toBe(viaWrapper[0]!.nodeId);
+      expect(model.types.lookupClassByName('User')).toHaveLength(1);
+      expect(model.types.lookupClassByName('User')[0]!.nodeId).toBe('class:User');
+      expect(model.types.lookupClassByQualifiedName('app.User')).toHaveLength(1);
     });
 
-    it('parity: lookupClassByQualifiedName matches model.types.lookupClassByQualifiedName', () => {
-      table.add('src/user.ts', 'User', 'class:User', 'Class', {
-        qualifiedName: 'app.models.User',
-      });
-      const viaWrapper = table.lookupClassByQualifiedName('app.models.User');
-      const viaModel = table.model.types.lookupClassByQualifiedName('app.models.User');
-      expect(viaModel).toEqual(viaWrapper);
-    });
-
-    it('parity: lookupMethodByOwner matches model.methods.lookupMethodByOwner', () => {
-      table.add('src/user.ts', 'User', 'class:User', 'Class');
-      table.add('src/user.ts', 'save', 'mtd:User.save', 'Method', {
+    it('feeding a Method with ownerId populates model.methods', () => {
+      const model = buildModel();
+      model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+      model.symbols.add('src/user.ts', 'save', 'mtd:User.save', 'Method', {
         ownerId: 'class:User',
         parameterCount: 0,
       });
-      const viaWrapper = table.lookupMethodByOwner('class:User', 'save');
-      const viaModel = table.model.methods.lookupMethodByOwner('class:User', 'save');
-      expect(viaModel).toBeDefined();
-      expect(viaModel!.nodeId).toBe(viaWrapper!.nodeId);
+      expect(model.methods.lookupMethodByOwner('class:User', 'save')?.nodeId).toBe('mtd:User.save');
     });
 
-    it('parity: lookupFieldByOwner matches model.fields.lookupFieldByOwner', () => {
-      table.add('src/user.ts', 'User', 'class:User', 'Class');
-      table.add('src/user.ts', 'name', 'prop:User.name', 'Property', {
+    it('feeding a Property with ownerId populates model.fields', () => {
+      const model = buildModel();
+      model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+      model.symbols.add('src/user.ts', 'name', 'prop:User.name', 'Property', {
         ownerId: 'class:User',
         declaredType: 'string',
       });
-      const viaWrapper = table.lookupFieldByOwner('class:User', 'name');
-      const viaModel = table.model.fields.lookupFieldByOwner('class:User', 'name');
-      expect(viaModel).toBeDefined();
-      expect(viaModel!.nodeId).toBe(viaWrapper!.nodeId);
+      expect(model.fields.lookupFieldByOwner('class:User', 'name')?.nodeId).toBe('prop:User.name');
     });
 
-    it('parity: lookupImplByName matches model.types.lookupImplByName', () => {
-      table.add('src/user.rs', 'User', 'impl:User', 'Impl');
-      const viaWrapper = table.lookupImplByName('User');
-      const viaModel = table.model.types.lookupImplByName('User');
-      expect(viaModel).toEqual(viaWrapper);
+    it('feeding an Impl populates model.types.lookupImplByName', () => {
+      const model = buildModel();
+      model.symbols.add('src/user.rs', 'User', 'impl:User', 'Impl');
+      expect(model.types.lookupImplByName('User')).toHaveLength(1);
     });
 
-    it('arity filtering works through model.methods', () => {
-      table.add('src/user.ts', 'User', 'class:User', 'Class');
-      table.add('src/user.ts', 'greet', 'mtd:greet:0', 'Method', {
+    it('arity filtering disambiguates overloads via model.methods', () => {
+      const model = buildModel();
+      model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+      model.symbols.add('src/user.ts', 'greet', 'mtd:greet:0', 'Method', {
         ownerId: 'class:User',
         parameterCount: 0,
       });
-      table.add('src/user.ts', 'greet', 'mtd:greet:1', 'Method', {
+      model.symbols.add('src/user.ts', 'greet', 'mtd:greet:1', 'Method', {
         ownerId: 'class:User',
         parameterCount: 1,
       });
-      // argCount disambiguates arity-differing overloads identically via
-      // wrapper and direct model access.
-      expect(table.model.methods.lookupMethodByOwner('class:User', 'greet', 0)?.nodeId).toBe(
+      expect(model.methods.lookupMethodByOwner('class:User', 'greet', 0)?.nodeId).toBe(
         'mtd:greet:0',
       );
-      expect(table.model.methods.lookupMethodByOwner('class:User', 'greet', 1)?.nodeId).toBe(
+      expect(model.methods.lookupMethodByOwner('class:User', 'greet', 1)?.nodeId).toBe(
         'mtd:greet:1',
       );
     });
 
-    it('clear() cascades to model registries', () => {
-      table.add('src/user.ts', 'User', 'class:User', 'Class');
-      expect(table.model.types.lookupClassByName('User')).toHaveLength(1);
-      table.clear();
-      expect(table.model.types.lookupClassByName('User')).toEqual([]);
-    });
-
-    // Feeding audit — edge cases for add() → model registration branches.
-    // The happy-path parity tests above cover Class, Method, Property, Impl.
-    // These two cases exercise the non-obvious routing paths.
-
-    it('feeds Function-with-ownerId into model.methods (Python-style class method)', () => {
-      // Python extractors emit class methods as `Function` with ownerId set.
-      // The add() branch for Method/Constructor/Function-with-ownerId must
-      // route these into the method registry so owner-scoped resolution works
-      // uniformly across all supported languages.
-      table.add('src/user.py', 'User', 'class:User', 'Class');
-      table.add('src/user.py', 'save', 'fn:User.save', 'Function', {
+    it('clear() cascades through both registries and the nested symbol table', () => {
+      const model = buildModel();
+      model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+      model.symbols.add('src/user.ts', 'save', 'mtd:User.save', 'Method', {
         ownerId: 'class:User',
       });
-      expect(table.model.methods.lookupMethodByOwner('class:User', 'save')?.nodeId).toBe(
-        'fn:User.save',
-      );
+      expect(model.types.lookupClassByName('User')).toHaveLength(1);
+      expect(model.symbols.lookupExact('src/user.ts', 'User')).toBe('class:User');
+      model.clear();
+      expect(model.types.lookupClassByName('User')).toEqual([]);
+      expect(model.symbols.lookupExact('src/user.ts', 'User')).toBeUndefined();
+    });
+
+    it('feeds Function-with-ownerId into model.methods (Python-style class method)', () => {
+      // Python/Rust/Kotlin extractors emit class methods as `Function` with
+      // ownerId. The add() branch must route these into the method registry
+      // so owner-scoped resolution works uniformly across languages.
+      const model = buildModel();
+      model.symbols.add('src/user.py', 'User', 'class:User', 'Class');
+      model.symbols.add('src/user.py', 'save', 'fn:User.save', 'Function', {
+        ownerId: 'class:User',
+      });
+      expect(model.methods.lookupMethodByOwner('class:User', 'save')?.nodeId).toBe('fn:User.save');
     });
 
     it('silently skips Property without ownerId (no model.fields registration)', () => {
-      // Properties must have an ownerId to be reachable via lookupFieldByOwner.
-      // A Property registered without ownerId is still stored in the file
-      // index (for lookupExact) but never reaches the fields registry —
-      // documenting the intentional behavior.
-      table.add('src/user.ts', 'name', 'prop:orphan.name', 'Property', {
+      // Properties without ownerId are kept in the file index but never
+      // reach the fields registry — documenting the intentional behavior.
+      const model = buildModel();
+      model.symbols.add('src/user.ts', 'name', 'prop:orphan.name', 'Property', {
         declaredType: 'string',
       });
-      expect(table.lookupExact('src/user.ts', 'name')).toBe('prop:orphan.name');
-      expect(table.model.fields.lookupFieldByOwner('class:User', 'name')).toBeUndefined();
+      expect(model.symbols.lookupExact('src/user.ts', 'name')).toBe('prop:orphan.name');
+      expect(model.fields.lookupFieldByOwner('class:User', 'name')).toBeUndefined();
     });
   });
 });
@@ -1018,12 +1013,18 @@ describe('lookupMethodByOwnerWithMRO', () => {
   });
 
   it('child.parentMethod() resolves to Parent#parentMethod via MRO walk', () => {
-    ctx.symbols.add('src/parent.java', 'Parent', 'class:Parent', 'Class');
-    ctx.symbols.add('src/child.java', 'Child', 'class:Child', 'Class');
-    ctx.symbols.add('src/parent.java', 'parentMethod', 'method:Parent:parentMethod', 'Method', {
-      returnType: 'String',
-      ownerId: 'class:Parent',
-    });
+    ctx.model.symbols.add('src/parent.java', 'Parent', 'class:Parent', 'Class');
+    ctx.model.symbols.add('src/child.java', 'Child', 'class:Child', 'Class');
+    ctx.model.symbols.add(
+      'src/parent.java',
+      'parentMethod',
+      'method:Parent:parentMethod',
+      'Method',
+      {
+        returnType: 'String',
+        ownerId: 'class:Parent',
+      },
+    );
 
     const heritage: ExtractedHeritage[] = [
       { filePath: 'src/child.java', className: 'Child', parentName: 'Parent', kind: 'extends' },
@@ -1034,7 +1035,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Child',
       'parentMethod',
       map,
-      ctx.symbols.model,
+      ctx.model,
       SupportedLanguages.Java,
     );
     expect(result).toBeDefined();
@@ -1043,13 +1044,13 @@ describe('lookupMethodByOwnerWithMRO', () => {
   });
 
   it('child override returns child version (direct hit, no walk)', () => {
-    ctx.symbols.add('src/parent.java', 'Parent', 'class:Parent', 'Class');
-    ctx.symbols.add('src/child.java', 'Child', 'class:Child', 'Class');
-    ctx.symbols.add('src/parent.java', 'save', 'method:Parent:save', 'Method', {
+    ctx.model.symbols.add('src/parent.java', 'Parent', 'class:Parent', 'Class');
+    ctx.model.symbols.add('src/child.java', 'Child', 'class:Child', 'Class');
+    ctx.model.symbols.add('src/parent.java', 'save', 'method:Parent:save', 'Method', {
       returnType: 'void',
       ownerId: 'class:Parent',
     });
-    ctx.symbols.add('src/child.java', 'save', 'method:Child:save', 'Method', {
+    ctx.model.symbols.add('src/child.java', 'save', 'method:Child:save', 'Method', {
       returnType: 'void',
       ownerId: 'class:Child',
     });
@@ -1063,7 +1064,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Child',
       'save',
       map,
-      ctx.symbols.model,
+      ctx.model,
       SupportedLanguages.Java,
     );
     expect(result).toBeDefined();
@@ -1071,10 +1072,10 @@ describe('lookupMethodByOwnerWithMRO', () => {
   });
 
   it('3-level inheritance: grandchild → child → parent, method on parent found', () => {
-    ctx.symbols.add('src/a.java', 'A', 'class:A', 'Class');
-    ctx.symbols.add('src/b.java', 'B', 'class:B', 'Class');
-    ctx.symbols.add('src/c.java', 'C', 'class:C', 'Class');
-    ctx.symbols.add('src/a.java', 'greet', 'method:A:greet', 'Method', {
+    ctx.model.symbols.add('src/a.java', 'A', 'class:A', 'Class');
+    ctx.model.symbols.add('src/b.java', 'B', 'class:B', 'Class');
+    ctx.model.symbols.add('src/c.java', 'C', 'class:C', 'Class');
+    ctx.model.symbols.add('src/a.java', 'greet', 'method:A:greet', 'Method', {
       returnType: 'Greeting',
       ownerId: 'class:A',
     });
@@ -1089,7 +1090,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:C',
       'greet',
       map,
-      ctx.symbols.model,
+      ctx.model,
       SupportedLanguages.Java,
     );
     expect(result).toBeDefined();
@@ -1098,15 +1099,15 @@ describe('lookupMethodByOwnerWithMRO', () => {
   });
 
   it('diamond pattern: first-wins strategy returns first ancestor match in BFS order', () => {
-    ctx.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
-    ctx.symbols.add('src/b.ts', 'B', 'class:B', 'Class');
-    ctx.symbols.add('src/c.ts', 'C', 'class:C', 'Class');
-    ctx.symbols.add('src/d.ts', 'D', 'class:D', 'Class');
-    ctx.symbols.add('src/b.ts', 'foo', 'method:B:foo', 'Method', {
+    ctx.model.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
+    ctx.model.symbols.add('src/b.ts', 'B', 'class:B', 'Class');
+    ctx.model.symbols.add('src/c.ts', 'C', 'class:C', 'Class');
+    ctx.model.symbols.add('src/d.ts', 'D', 'class:D', 'Class');
+    ctx.model.symbols.add('src/b.ts', 'foo', 'method:B:foo', 'Method', {
       returnType: 'String',
       ownerId: 'class:B',
     });
-    ctx.symbols.add('src/c.ts', 'foo', 'method:C:foo', 'Method', {
+    ctx.model.symbols.add('src/c.ts', 'foo', 'method:C:foo', 'Method', {
       returnType: 'String',
       ownerId: 'class:C',
     });
@@ -1124,7 +1125,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:D',
       'foo',
       map,
-      ctx.symbols.model,
+      ctx.model,
       SupportedLanguages.TypeScript,
     );
     expect(result).toBeDefined();
@@ -1132,15 +1133,15 @@ describe('lookupMethodByOwnerWithMRO', () => {
   });
 
   it('diamond pattern: c3 strategy uses C3 linearization order', () => {
-    ctx.symbols.add('src/a.py', 'A', 'class:A', 'Class');
-    ctx.symbols.add('src/b.py', 'B', 'class:B', 'Class');
-    ctx.symbols.add('src/c.py', 'C', 'class:C', 'Class');
-    ctx.symbols.add('src/d.py', 'D', 'class:D', 'Class');
-    ctx.symbols.add('src/b.py', 'foo', 'method:B:foo', 'Method', {
+    ctx.model.symbols.add('src/a.py', 'A', 'class:A', 'Class');
+    ctx.model.symbols.add('src/b.py', 'B', 'class:B', 'Class');
+    ctx.model.symbols.add('src/c.py', 'C', 'class:C', 'Class');
+    ctx.model.symbols.add('src/d.py', 'D', 'class:D', 'Class');
+    ctx.model.symbols.add('src/b.py', 'foo', 'method:B:foo', 'Method', {
       returnType: 'str',
       ownerId: 'class:B',
     });
-    ctx.symbols.add('src/c.py', 'foo', 'method:C:foo', 'Method', {
+    ctx.model.symbols.add('src/c.py', 'foo', 'method:C:foo', 'Method', {
       returnType: 'str',
       ownerId: 'class:C',
     });
@@ -1158,7 +1159,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:D',
       'foo',
       map,
-      ctx.symbols.model,
+      ctx.model,
       SupportedLanguages.Python,
     );
     expect(result).toBeDefined();
@@ -1167,9 +1168,9 @@ describe('lookupMethodByOwnerWithMRO', () => {
   });
 
   it('qualified-syntax (Rust): returns undefined for inherited methods', () => {
-    ctx.symbols.add('src/parent.rs', 'Parent', 'class:Parent', 'Class');
-    ctx.symbols.add('src/child.rs', 'Child', 'class:Child', 'Class');
-    ctx.symbols.add('src/parent.rs', 'process', 'method:Parent:process', 'Method', {
+    ctx.model.symbols.add('src/parent.rs', 'Parent', 'class:Parent', 'Class');
+    ctx.model.symbols.add('src/child.rs', 'Child', 'class:Child', 'Class');
+    ctx.model.symbols.add('src/parent.rs', 'process', 'method:Parent:process', 'Method', {
       returnType: 'void',
       ownerId: 'class:Parent',
     });
@@ -1183,7 +1184,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Child',
       'process',
       map,
-      ctx.symbols.model,
+      ctx.model,
       SupportedLanguages.Rust,
     );
     // Rust requires qualified syntax — no auto-resolution
@@ -1191,8 +1192,8 @@ describe('lookupMethodByOwnerWithMRO', () => {
   });
 
   it('method not on any ancestor returns undefined', () => {
-    ctx.symbols.add('src/parent.java', 'Parent', 'class:Parent', 'Class');
-    ctx.symbols.add('src/child.java', 'Child', 'class:Child', 'Class');
+    ctx.model.symbols.add('src/parent.java', 'Parent', 'class:Parent', 'Class');
+    ctx.model.symbols.add('src/child.java', 'Child', 'class:Child', 'Class');
 
     const heritage: ExtractedHeritage[] = [
       { filePath: 'src/child.java', className: 'Child', parentName: 'Parent', kind: 'extends' },
@@ -1203,17 +1204,17 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Child',
       'nonExistent',
       map,
-      ctx.symbols.model,
+      ctx.model,
       SupportedLanguages.Java,
     );
     expect(result).toBeUndefined();
   });
 
   it('leftmost-base (C++): walks ancestors in BFS order', () => {
-    ctx.symbols.add('src/a.cpp', 'A', 'class:A', 'Class');
-    ctx.symbols.add('src/b.cpp', 'B', 'class:B', 'Class');
-    ctx.symbols.add('src/c.cpp', 'C', 'class:C', 'Class');
-    ctx.symbols.add('src/a.cpp', 'render', 'method:A:render', 'Method', {
+    ctx.model.symbols.add('src/a.cpp', 'A', 'class:A', 'Class');
+    ctx.model.symbols.add('src/b.cpp', 'B', 'class:B', 'Class');
+    ctx.model.symbols.add('src/c.cpp', 'C', 'class:C', 'Class');
+    ctx.model.symbols.add('src/a.cpp', 'render', 'method:A:render', 'Method', {
       returnType: 'void',
       ownerId: 'class:A',
     });
@@ -1228,7 +1229,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:C',
       'render',
       map,
-      ctx.symbols.model,
+      ctx.model,
       SupportedLanguages.CPlusPlus,
     );
     expect(result).toBeDefined();
@@ -1236,10 +1237,10 @@ describe('lookupMethodByOwnerWithMRO', () => {
   });
 
   it('implements-split (Java): walks ancestors to find inherited method', () => {
-    ctx.symbols.add('src/base.java', 'Base', 'class:Base', 'Class');
-    ctx.symbols.add('src/iface.java', 'IRepo', 'iface:IRepo', 'Interface');
-    ctx.symbols.add('src/child.java', 'Child', 'class:Child', 'Class');
-    ctx.symbols.add('src/base.java', 'save', 'method:Base:save', 'Method', {
+    ctx.model.symbols.add('src/base.java', 'Base', 'class:Base', 'Class');
+    ctx.model.symbols.add('src/iface.java', 'IRepo', 'iface:IRepo', 'Interface');
+    ctx.model.symbols.add('src/child.java', 'Child', 'class:Child', 'Class');
+    ctx.model.symbols.add('src/base.java', 'save', 'method:Base:save', 'Method', {
       returnType: 'void',
       ownerId: 'class:Base',
     });
@@ -1259,7 +1260,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Child',
       'save',
       map,
-      ctx.symbols.model,
+      ctx.model,
       SupportedLanguages.Java,
     );
     expect(result).toBeDefined();
@@ -1273,14 +1274,14 @@ describe('lookupMethodByOwnerWithMRO', () => {
     // level. lookupMethodByOwnerWithMRO itself uses BFS order and returns
     // the first match — this test pins that contract so a future regression
     // that starts returning undefined (or flips the order) fails loudly.
-    ctx.symbols.add('src/I1.java', 'I1', 'iface:I1', 'Interface');
-    ctx.symbols.add('src/I2.java', 'I2', 'iface:I2', 'Interface');
-    ctx.symbols.add('src/C.java', 'C', 'class:C', 'Class');
-    ctx.symbols.add('src/I1.java', 'handle', 'method:I1:handle', 'Method', {
+    ctx.model.symbols.add('src/I1.java', 'I1', 'iface:I1', 'Interface');
+    ctx.model.symbols.add('src/I2.java', 'I2', 'iface:I2', 'Interface');
+    ctx.model.symbols.add('src/C.java', 'C', 'class:C', 'Class');
+    ctx.model.symbols.add('src/I1.java', 'handle', 'method:I1:handle', 'Method', {
       returnType: 'void',
       ownerId: 'iface:I1',
     });
-    ctx.symbols.add('src/I2.java', 'handle', 'method:I2:handle', 'Method', {
+    ctx.model.symbols.add('src/I2.java', 'handle', 'method:I2:handle', 'Method', {
       returnType: 'void',
       ownerId: 'iface:I2',
     });
@@ -1296,7 +1297,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:C',
       'handle',
       map,
-      ctx.symbols.model,
+      ctx.model,
       SupportedLanguages.Java,
     );
     expect(result).toBeDefined();
@@ -1311,14 +1312,14 @@ describe('lookupMethodByOwnerWithMRO', () => {
     // Base before IFoo — class wins. Documents the current BFS-level
     // behavior; the strict Java "class always wins" rule is enforced at
     // the mro-processor graph pass.
-    ctx.symbols.add('src/Base.java', 'Base', 'class:Base', 'Class');
-    ctx.symbols.add('src/IFoo.java', 'IFoo', 'iface:IFoo', 'Interface');
-    ctx.symbols.add('src/Child.java', 'Child', 'class:Child', 'Class');
-    ctx.symbols.add('src/Base.java', 'handle', 'method:Base:handle', 'Method', {
+    ctx.model.symbols.add('src/Base.java', 'Base', 'class:Base', 'Class');
+    ctx.model.symbols.add('src/IFoo.java', 'IFoo', 'iface:IFoo', 'Interface');
+    ctx.model.symbols.add('src/Child.java', 'Child', 'class:Child', 'Class');
+    ctx.model.symbols.add('src/Base.java', 'handle', 'method:Base:handle', 'Method', {
       returnType: 'void',
       ownerId: 'class:Base',
     });
-    ctx.symbols.add('src/IFoo.java', 'handle', 'method:IFoo:handle', 'Method', {
+    ctx.model.symbols.add('src/IFoo.java', 'handle', 'method:IFoo:handle', 'Method', {
       returnType: 'void',
       ownerId: 'iface:IFoo',
     });
@@ -1333,7 +1334,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Child',
       'handle',
       map,
-      ctx.symbols.model,
+      ctx.model,
       SupportedLanguages.Java,
     );
     expect(result).toBeDefined();
@@ -1341,9 +1342,9 @@ describe('lookupMethodByOwnerWithMRO', () => {
   });
 
   it('implements-split (Kotlin): walks ancestors to find inherited method', () => {
-    ctx.symbols.add('src/base.kt', 'Base', 'class:Base', 'Class');
-    ctx.symbols.add('src/child.kt', 'Child', 'class:Child', 'Class');
-    ctx.symbols.add('src/base.kt', 'handle', 'method:Base:handle', 'Method', {
+    ctx.model.symbols.add('src/base.kt', 'Base', 'class:Base', 'Class');
+    ctx.model.symbols.add('src/child.kt', 'Child', 'class:Child', 'Class');
+    ctx.model.symbols.add('src/base.kt', 'handle', 'method:Base:handle', 'Method', {
       returnType: 'Unit',
       ownerId: 'class:Base',
     });
@@ -1357,7 +1358,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Child',
       'handle',
       map,
-      ctx.symbols.model,
+      ctx.model,
       SupportedLanguages.Kotlin,
     );
     expect(result).toBeDefined();
@@ -1365,9 +1366,9 @@ describe('lookupMethodByOwnerWithMRO', () => {
   });
 
   it('implements-split (C#): walks ancestors to find inherited method', () => {
-    ctx.symbols.add('src/Base.cs', 'Base', 'class:Base', 'Class');
-    ctx.symbols.add('src/Child.cs', 'Child', 'class:Child', 'Class');
-    ctx.symbols.add('src/Base.cs', 'Execute', 'method:Base:Execute', 'Method', {
+    ctx.model.symbols.add('src/Base.cs', 'Base', 'class:Base', 'Class');
+    ctx.model.symbols.add('src/Child.cs', 'Child', 'class:Child', 'Class');
+    ctx.model.symbols.add('src/Base.cs', 'Execute', 'method:Base:Execute', 'Method', {
       returnType: 'void',
       ownerId: 'class:Base',
     });
@@ -1381,7 +1382,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Child',
       'Execute',
       map,
-      ctx.symbols.model,
+      ctx.model,
       SupportedLanguages.CSharp,
     );
     expect(result).toBeDefined();
@@ -1391,9 +1392,9 @@ describe('lookupMethodByOwnerWithMRO', () => {
   it('first-wins (JavaScript): walks ancestors to find inherited method', () => {
     // JavaScript provider is wired separately from TypeScript — this guards
     // the provider wiring independent of the TS path.
-    ctx.symbols.add('src/animal.js', 'Animal', 'class:Animal', 'Class');
-    ctx.symbols.add('src/dog.js', 'Dog', 'class:Dog', 'Class');
-    ctx.symbols.add('src/animal.js', 'speak', 'method:Animal:speak', 'Method', {
+    ctx.model.symbols.add('src/animal.js', 'Animal', 'class:Animal', 'Class');
+    ctx.model.symbols.add('src/dog.js', 'Dog', 'class:Dog', 'Class');
+    ctx.model.symbols.add('src/animal.js', 'speak', 'method:Animal:speak', 'Method', {
       returnType: 'string',
       ownerId: 'class:Animal',
     });
@@ -1407,7 +1408,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:Dog',
       'speak',
       map,
-      ctx.symbols.model,
+      ctx.model,
       SupportedLanguages.JavaScript,
     );
     expect(result).toBeDefined();
@@ -1418,19 +1419,19 @@ describe('lookupMethodByOwnerWithMRO', () => {
     // Diamond: D extends B, C; B extends A; C extends A.
     // Both B and C define render(). leftmost-base must return B#render (first
     // branch in declaration order), not A#render or C#render.
-    ctx.symbols.add('src/a.cpp', 'A', 'class:A', 'Class');
-    ctx.symbols.add('src/b.cpp', 'B', 'class:B', 'Class');
-    ctx.symbols.add('src/c.cpp', 'C', 'class:C', 'Class');
-    ctx.symbols.add('src/d.cpp', 'D', 'class:D', 'Class');
-    ctx.symbols.add('src/a.cpp', 'render', 'method:A:render', 'Method', {
+    ctx.model.symbols.add('src/a.cpp', 'A', 'class:A', 'Class');
+    ctx.model.symbols.add('src/b.cpp', 'B', 'class:B', 'Class');
+    ctx.model.symbols.add('src/c.cpp', 'C', 'class:C', 'Class');
+    ctx.model.symbols.add('src/d.cpp', 'D', 'class:D', 'Class');
+    ctx.model.symbols.add('src/a.cpp', 'render', 'method:A:render', 'Method', {
       returnType: 'void',
       ownerId: 'class:A',
     });
-    ctx.symbols.add('src/b.cpp', 'render', 'method:B:render', 'Method', {
+    ctx.model.symbols.add('src/b.cpp', 'render', 'method:B:render', 'Method', {
       returnType: 'void',
       ownerId: 'class:B',
     });
-    ctx.symbols.add('src/c.cpp', 'render', 'method:C:render', 'Method', {
+    ctx.model.symbols.add('src/c.cpp', 'render', 'method:C:render', 'Method', {
       returnType: 'void',
       ownerId: 'class:C',
     });
@@ -1448,7 +1449,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:D',
       'render',
       map,
-      ctx.symbols.model,
+      ctx.model,
       SupportedLanguages.CPlusPlus,
     );
     expect(result).toBeDefined();
@@ -1458,8 +1459,8 @@ describe('lookupMethodByOwnerWithMRO', () => {
   });
 
   it('returns direct method on owner without walking (no heritage needed)', () => {
-    ctx.symbols.add('src/user.java', 'User', 'class:User', 'Class');
-    ctx.symbols.add('src/user.java', 'getName', 'method:User:getName', 'Method', {
+    ctx.model.symbols.add('src/user.java', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.java', 'getName', 'method:User:getName', 'Method', {
       returnType: 'String',
       ownerId: 'class:User',
     });
@@ -1470,7 +1471,7 @@ describe('lookupMethodByOwnerWithMRO', () => {
       'class:User',
       'getName',
       map,
-      ctx.symbols.model,
+      ctx.model,
       SupportedLanguages.Java,
     );
     expect(result).toBeDefined();
@@ -1497,8 +1498,8 @@ describe('resolveMemberCall', () => {
   });
 
   it('resolves direct method on owner type', () => {
-    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
-    ctx.symbols.add('src/user.ts', 'save', 'method:User:save', 'Method', {
+    ctx.model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.ts', 'save', 'method:User:save', 'Method', {
       returnType: 'void',
       ownerId: 'class:User',
     });
@@ -1513,9 +1514,9 @@ describe('resolveMemberCall', () => {
   });
 
   it('resolves inherited method via MRO walk', () => {
-    ctx.symbols.add('src/parent.java', 'Parent', 'class:Parent', 'Class');
-    ctx.symbols.add('src/child.java', 'Child', 'class:Child', 'Class');
-    ctx.symbols.add('src/parent.java', 'validate', 'method:Parent:validate', 'Method', {
+    ctx.model.symbols.add('src/parent.java', 'Parent', 'class:Parent', 'Class');
+    ctx.model.symbols.add('src/child.java', 'Child', 'class:Child', 'Class');
+    ctx.model.symbols.add('src/parent.java', 'validate', 'method:Parent:validate', 'Method', {
       returnType: 'boolean',
       ownerId: 'class:Parent',
     });
@@ -1539,7 +1540,7 @@ describe('resolveMemberCall', () => {
   });
 
   it('returns null for unknown method on known owner', () => {
-    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
     ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
 
     const result = resolveMemberCall('User', 'nonExistentMethod', 'src/app.ts', ctx);
@@ -1547,8 +1548,8 @@ describe('resolveMemberCall', () => {
   });
 
   it('returns result with correct confidence tier for same-file resolution', () => {
-    ctx.symbols.add('src/app.ts', 'User', 'class:User', 'Class');
-    ctx.symbols.add('src/app.ts', 'save', 'method:User:save', 'Method', {
+    ctx.model.symbols.add('src/app.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/app.ts', 'save', 'method:User:save', 'Method', {
       returnType: 'void',
       ownerId: 'class:User',
     });
@@ -1561,8 +1562,8 @@ describe('resolveMemberCall', () => {
   });
 
   it('returns result with import-scoped tier for cross-file resolution', () => {
-    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
-    ctx.symbols.add('src/user.ts', 'save', 'method:User:save', 'Method', {
+    ctx.model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.ts', 'save', 'method:User:save', 'Method', {
       returnType: 'void',
       ownerId: 'class:User',
     });
@@ -1576,10 +1577,10 @@ describe('resolveMemberCall', () => {
   });
 
   it('resolves with heritage map across C3 MRO chain (Python)', () => {
-    ctx.symbols.add('src/a.py', 'A', 'class:A', 'Class');
-    ctx.symbols.add('src/b.py', 'B', 'class:B', 'Class');
-    ctx.symbols.add('src/c.py', 'C', 'class:C', 'Class');
-    ctx.symbols.add('src/a.py', 'foo', 'method:A:foo', 'Method', {
+    ctx.model.symbols.add('src/a.py', 'A', 'class:A', 'Class');
+    ctx.model.symbols.add('src/b.py', 'B', 'class:B', 'Class');
+    ctx.model.symbols.add('src/c.py', 'C', 'class:C', 'Class');
+    ctx.model.symbols.add('src/a.py', 'foo', 'method:A:foo', 'Method', {
       returnType: 'str',
       ownerId: 'class:A',
     });
@@ -1608,8 +1609,8 @@ describe('resolveMemberCall', () => {
     // have used the tier of resolving "save" globally; new behaviour uses the
     // tier of resolving "User". Both happen to yield import-scoped here —
     // the test locks that the reported tier tracks the class lookup.
-    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
-    ctx.symbols.add('src/user.ts', 'save', 'method:User:save', 'Method', {
+    ctx.model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.ts', 'save', 'method:User:save', 'Method', {
       returnType: 'void',
       ownerId: 'class:User',
     });
@@ -1630,9 +1631,9 @@ describe('resolveMemberCall', () => {
   it('Rust: returns null for trait-inherited method (qualified-syntax MRO)', () => {
     // Trait Writer defines `save`. Struct User has an impl_item but NO save
     // method of its own — save is only available via trait.
-    ctx.symbols.add('src/writer.rs', 'Writer', 'trait:Writer', 'Trait');
-    ctx.symbols.add('src/user.rs', 'User', 'struct:User', 'Struct');
-    ctx.symbols.add('src/writer.rs', 'save', 'method:Writer:save', 'Method', {
+    ctx.model.symbols.add('src/writer.rs', 'Writer', 'trait:Writer', 'Trait');
+    ctx.model.symbols.add('src/user.rs', 'User', 'struct:User', 'Struct');
+    ctx.model.symbols.add('src/writer.rs', 'save', 'method:Writer:save', 'Method', {
       returnType: 'bool',
       ownerId: 'trait:Writer',
     });
@@ -1654,8 +1655,8 @@ describe('resolveMemberCall', () => {
     // Positive control: a method defined directly on User (not via trait)
     // resolves normally — demonstrates the null in the previous test is
     // specifically due to the trait-inheritance path, not a broken fixture.
-    ctx.symbols.add('src/user.rs', 'User', 'struct:User', 'Struct');
-    ctx.symbols.add('src/user.rs', 'name', 'method:User:name', 'Method', {
+    ctx.model.symbols.add('src/user.rs', 'User', 'struct:User', 'Struct');
+    ctx.model.symbols.add('src/user.rs', 'name', 'method:User:name', 'Method', {
       returnType: 'String',
       ownerId: 'struct:User',
     });
@@ -1679,13 +1680,13 @@ describe('resolveMemberCall', () => {
   it('disambiguates homonym classes: only one owns the method', () => {
     // Two classes both named `User` — one in auth.py (has `save`), one in
     // legacy.py (has `archive` but no `save`). Both are imported from app.py.
-    ctx.symbols.add('src/auth.py', 'User', 'class:auth:User', 'Class');
-    ctx.symbols.add('src/auth.py', 'save', 'method:auth:User:save', 'Method', {
+    ctx.model.symbols.add('src/auth.py', 'User', 'class:auth:User', 'Class');
+    ctx.model.symbols.add('src/auth.py', 'save', 'method:auth:User:save', 'Method', {
       returnType: 'None',
       ownerId: 'class:auth:User',
     });
-    ctx.symbols.add('src/legacy.py', 'User', 'class:legacy:User', 'Class');
-    ctx.symbols.add('src/legacy.py', 'archive', 'method:legacy:User:archive', 'Method', {
+    ctx.model.symbols.add('src/legacy.py', 'User', 'class:legacy:User', 'Class');
+    ctx.model.symbols.add('src/legacy.py', 'archive', 'method:legacy:User:archive', 'Method', {
       returnType: 'None',
       ownerId: 'class:legacy:User',
     });
@@ -1706,13 +1707,13 @@ describe('resolveMemberCall', () => {
     // Both homonym Users define a `save` method — resolveMemberCall refuses
     // to pick one. The caller (resolveCallTarget) falls through to D1-D4 which
     // may or may not be able to narrow further.
-    ctx.symbols.add('src/auth.py', 'User', 'class:auth:User', 'Class');
-    ctx.symbols.add('src/auth.py', 'save', 'method:auth:User:save', 'Method', {
+    ctx.model.symbols.add('src/auth.py', 'User', 'class:auth:User', 'Class');
+    ctx.model.symbols.add('src/auth.py', 'save', 'method:auth:User:save', 'Method', {
       returnType: 'None',
       ownerId: 'class:auth:User',
     });
-    ctx.symbols.add('src/legacy.py', 'User', 'class:legacy:User', 'Class');
-    ctx.symbols.add('src/legacy.py', 'save', 'method:legacy:User:save', 'Method', {
+    ctx.model.symbols.add('src/legacy.py', 'User', 'class:legacy:User', 'Class');
+    ctx.model.symbols.add('src/legacy.py', 'save', 'method:legacy:User:save', 'Method', {
       returnType: 'None',
       ownerId: 'class:legacy:User',
     });
@@ -1726,13 +1727,13 @@ describe('resolveMemberCall', () => {
     // Two homonym `User` classes in different files, both extending a common
     // `BaseUser` that owns `save`. Direct lookup on either User misses; MRO
     // walks both find BaseUser.save. Dedup by nodeId yields a single result.
-    ctx.symbols.add('src/base.ts', 'BaseUser', 'class:BaseUser', 'Class');
-    ctx.symbols.add('src/base.ts', 'save', 'method:BaseUser:save', 'Method', {
+    ctx.model.symbols.add('src/base.ts', 'BaseUser', 'class:BaseUser', 'Class');
+    ctx.model.symbols.add('src/base.ts', 'save', 'method:BaseUser:save', 'Method', {
       returnType: 'void',
       ownerId: 'class:BaseUser',
     });
-    ctx.symbols.add('src/a.ts', 'User', 'class:a:User', 'Class');
-    ctx.symbols.add('src/b.ts', 'User', 'class:b:User', 'Class');
+    ctx.model.symbols.add('src/a.ts', 'User', 'class:a:User', 'Class');
+    ctx.model.symbols.add('src/b.ts', 'User', 'class:b:User', 'Class');
     ctx.importMap.set('src/app.ts', new Set(['src/base.ts', 'src/a.ts', 'src/b.ts']));
 
     const heritage: ExtractedHeritage[] = [
@@ -1756,11 +1757,11 @@ describe('resolveMemberCall', () => {
     //
     // Both A and B inherit `method` from Base. Derived extends (A, B).
     // Leftmost-base strategy walks A's chain first → finds Base::method.
-    ctx.symbols.add('src/base.h', 'Base', 'class:Base', 'Class');
-    ctx.symbols.add('src/a.h', 'A', 'class:A', 'Class');
-    ctx.symbols.add('src/b.h', 'B', 'class:B', 'Class');
-    ctx.symbols.add('src/derived.h', 'Derived', 'class:Derived', 'Class');
-    ctx.symbols.add('src/base.h', 'method', 'method:Base:method', 'Method', {
+    ctx.model.symbols.add('src/base.h', 'Base', 'class:Base', 'Class');
+    ctx.model.symbols.add('src/a.h', 'A', 'class:A', 'Class');
+    ctx.model.symbols.add('src/b.h', 'B', 'class:B', 'Class');
+    ctx.model.symbols.add('src/derived.h', 'Derived', 'class:Derived', 'Class');
+    ctx.model.symbols.add('src/base.h', 'method', 'method:Base:method', 'Method', {
       returnType: 'int',
       ownerId: 'class:Base',
     });
@@ -1794,10 +1795,10 @@ describe('resolveMemberCall', () => {
     // C# uses implements-split MRO: class base chain walked first, then
     // interfaces. Here IService declares Save which is implemented by the
     // base class BaseService — MyService inherits Save through the class.
-    ctx.symbols.add('src/iservice.cs', 'IService', 'interface:IService', 'Interface');
-    ctx.symbols.add('src/base.cs', 'BaseService', 'class:BaseService', 'Class');
-    ctx.symbols.add('src/my.cs', 'MyService', 'class:MyService', 'Class');
-    ctx.symbols.add('src/base.cs', 'Save', 'method:BaseService:Save', 'Method', {
+    ctx.model.symbols.add('src/iservice.cs', 'IService', 'interface:IService', 'Interface');
+    ctx.model.symbols.add('src/base.cs', 'BaseService', 'class:BaseService', 'Class');
+    ctx.model.symbols.add('src/my.cs', 'MyService', 'class:MyService', 'Class');
+    ctx.model.symbols.add('src/base.cs', 'Save', 'method:BaseService:Save', 'Method', {
       returnType: 'void',
       ownerId: 'class:BaseService',
     });
@@ -1825,9 +1826,9 @@ describe('resolveMemberCall', () => {
     // Kotlin shares the implements-split MRO strategy with Java/C#. A class
     // inheriting from an interface that provides a default method should
     // resolve `obj.method()` to the interface's implementation.
-    ctx.symbols.add('src/validator.kt', 'Validator', 'interface:Validator', 'Interface');
-    ctx.symbols.add('src/user.kt', 'User', 'class:User', 'Class');
-    ctx.symbols.add('src/validator.kt', 'validate', 'method:Validator:validate', 'Method', {
+    ctx.model.symbols.add('src/validator.kt', 'Validator', 'interface:Validator', 'Interface');
+    ctx.model.symbols.add('src/user.kt', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/validator.kt', 'validate', 'method:Validator:validate', 'Method', {
       returnType: 'Boolean',
       ownerId: 'interface:Validator',
     });
@@ -1882,13 +1883,13 @@ describe('resolveCallTarget thin dispatcher (SM-19)', () => {
     // type-file verification guard requires the alias target file to be
     // among the receiver type's defining files before alias narrowing is
     // considered a valid signal.
-    ctx.symbols.add('src/auth.py', 'User', 'class:auth:User', 'Class');
-    ctx.symbols.add('src/auth.py', 'save', 'method:auth:User:save', 'Method', {
+    ctx.model.symbols.add('src/auth.py', 'User', 'class:auth:User', 'Class');
+    ctx.model.symbols.add('src/auth.py', 'save', 'method:auth:User:save', 'Method', {
       returnType: 'None',
       ownerId: 'class:auth:User',
     });
-    ctx.symbols.add('src/other.py', 'User', 'class:other:User', 'Class');
-    ctx.symbols.add('src/other.py', 'save', 'method:other:User:save', 'Method', {
+    ctx.model.symbols.add('src/other.py', 'User', 'class:other:User', 'Class');
+    ctx.model.symbols.add('src/other.py', 'save', 'method:other:User:save', 'Method', {
       returnType: 'None',
       ownerId: 'class:other:User',
     });
@@ -1914,8 +1915,8 @@ describe('resolveCallTarget thin dispatcher (SM-19)', () => {
   it('overloadHints ignored for member calls — resolveMemberCall resolves directly', () => {
     // With the thin dispatcher, overloadHints are not passed to resolveMemberCall
     // (it does not accept them). Single-candidate member calls still resolve.
-    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
-    ctx.symbols.add('src/user.ts', 'save', 'method:User:save', 'Method', {
+    ctx.model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.ts', 'save', 'method:User:save', 'Method', {
       returnType: 'void',
       ownerId: 'class:User',
     });
@@ -1942,8 +1943,8 @@ describe('resolveCallTarget thin dispatcher (SM-19)', () => {
     // Analogous to the overloadHints case: thin dispatcher delegates to
     // resolveMemberCall which resolves the single candidate without needing
     // argument-type disambiguation.
-    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
-    ctx.symbols.add('src/user.ts', 'save', 'method:User:save', 'Method', {
+    ctx.model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.ts', 'save', 'method:User:save', 'Method', {
       returnType: 'void',
       ownerId: 'class:User',
     });
@@ -1980,8 +1981,8 @@ describe('resolveStaticCall', () => {
   });
 
   it('resolves constructor with ownerId via lookupMethodByOwner', () => {
-    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
-    ctx.symbols.add('src/user.ts', 'User', 'ctor:User', 'Constructor', {
+    ctx.model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.ts', 'User', 'ctor:User', 'Constructor', {
       returnType: 'User',
       ownerId: 'class:User',
     });
@@ -1994,7 +1995,7 @@ describe('resolveStaticCall', () => {
   });
 
   it('returns class node when no constructor exists', () => {
-    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
     ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
 
     const result = resolveStaticCall('User', 'src/app.ts', ctx);
@@ -2004,7 +2005,7 @@ describe('resolveStaticCall', () => {
   });
 
   it('returns null for non-class symbol', () => {
-    ctx.symbols.add('src/utils.ts', 'helper', 'func:helper', 'Function');
+    ctx.model.symbols.add('src/utils.ts', 'helper', 'func:helper', 'Function');
     ctx.importMap.set('src/app.ts', new Set(['src/utils.ts']));
 
     const result = resolveStaticCall('helper', 'src/app.ts', ctx);
@@ -2019,8 +2020,8 @@ describe('resolveStaticCall', () => {
   });
 
   it('returns null when Constructor nodes lack ownerId', () => {
-    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
-    ctx.symbols.add('src/user.ts', 'User', 'ctor:User', 'Constructor', {
+    ctx.model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.ts', 'User', 'ctor:User', 'Constructor', {
       parameterCount: 1,
     });
     ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
@@ -2034,13 +2035,13 @@ describe('resolveStaticCall', () => {
   });
 
   it('disambiguates constructor by arity', () => {
-    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
-    ctx.symbols.add('src/user.ts', 'User', 'ctor:User:0', 'Constructor', {
+    ctx.model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.ts', 'User', 'ctor:User:0', 'Constructor', {
       parameterCount: 0,
       returnType: 'User',
       ownerId: 'class:User',
     });
-    ctx.symbols.add('src/user.ts', 'User', 'ctor:User:2', 'Constructor', {
+    ctx.model.symbols.add('src/user.ts', 'User', 'ctor:User:2', 'Constructor', {
       parameterCount: 2,
       returnType: 'User',
       ownerId: 'class:User',
@@ -2054,7 +2055,7 @@ describe('resolveStaticCall', () => {
   });
 
   it('returns correct confidence tier for import-scoped class', () => {
-    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
     ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
 
     const result = resolveStaticCall('User', 'src/app.ts', ctx);
@@ -2065,7 +2066,7 @@ describe('resolveStaticCall', () => {
   });
 
   it('returns correct confidence tier for same-file class', () => {
-    ctx.symbols.add('src/app.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/app.ts', 'User', 'class:User', 'Class');
 
     const result = resolveStaticCall('User', 'src/app.ts', ctx);
 
@@ -2075,8 +2076,8 @@ describe('resolveStaticCall', () => {
   });
 
   it('returns null for ambiguous homonym classes without constructor', () => {
-    ctx.symbols.add('src/a.ts', 'User', 'class:a:User', 'Class');
-    ctx.symbols.add('src/b.ts', 'User', 'class:b:User', 'Class');
+    ctx.model.symbols.add('src/a.ts', 'User', 'class:a:User', 'Class');
+    ctx.model.symbols.add('src/b.ts', 'User', 'class:b:User', 'Class');
     ctx.importMap.set('src/app.ts', new Set(['src/a.ts', 'src/b.ts']));
 
     const result = resolveStaticCall('User', 'src/app.ts', ctx);
@@ -2086,7 +2087,7 @@ describe('resolveStaticCall', () => {
   });
 
   it('routes through resolveCallTarget for constructor callForm', () => {
-    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
     ctx.importMap.set('src/app.ts', new Set(['src/user.ts']));
 
     const result = _resolveCallTargetForTesting(
@@ -2103,7 +2104,7 @@ describe('resolveStaticCall', () => {
   });
 
   it('routes through resolveCallTarget for free-form call targeting a class (Swift/Kotlin)', () => {
-    ctx.symbols.add('src/user.swift', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.swift', 'User', 'class:User', 'Class');
     ctx.importMap.set('src/app.swift', new Set(['src/user.swift']));
 
     const result = _resolveCallTargetForTesting(
@@ -2120,8 +2121,8 @@ describe('resolveStaticCall', () => {
   });
 
   it('reuses the pre-computed tiered result instead of calling ctx.resolve twice', () => {
-    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
-    ctx.symbols.add('src/user.ts', 'User', 'ctor:User', 'Constructor', {
+    ctx.model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.ts', 'User', 'ctor:User', 'Constructor', {
       returnType: 'User',
       ownerId: 'class:User',
     });
@@ -2147,8 +2148,8 @@ describe('resolveStaticCall', () => {
   });
 
   it('routes through resolveCallTarget for Java constructor call (new User())', () => {
-    ctx.symbols.add('src/User.java', 'User', 'class:java:User', 'Class');
-    ctx.symbols.add('src/User.java', 'User', 'ctor:java:User', 'Constructor', {
+    ctx.model.symbols.add('src/User.java', 'User', 'class:java:User', 'Class');
+    ctx.model.symbols.add('src/User.java', 'User', 'ctor:java:User', 'Constructor', {
       returnType: 'User',
       ownerId: 'class:java:User',
     });
@@ -2169,7 +2170,7 @@ describe('resolveStaticCall', () => {
   });
 
   it('routes through resolveCallTarget for Python free-form constructor (User())', () => {
-    ctx.symbols.add('models/user.py', 'User', 'class:py:User', 'Class');
+    ctx.model.symbols.add('models/user.py', 'User', 'class:py:User', 'Class');
     ctx.importMap.set('app.py', new Set(['models/user.py']));
 
     const result = _resolveCallTargetForTesting(
@@ -2186,7 +2187,7 @@ describe('resolveStaticCall', () => {
   });
 
   it('routes through resolveCallTarget for Kotlin free-form constructor (User())', () => {
-    ctx.symbols.add('src/User.kt', 'User', 'class:kt:User', 'Class');
+    ctx.model.symbols.add('src/User.kt', 'User', 'class:kt:User', 'Class');
     ctx.importMap.set('src/App.kt', new Set(['src/User.kt']));
 
     const result = _resolveCallTargetForTesting(
@@ -2210,7 +2211,7 @@ describe('resolveStaticCall', () => {
   // -------------------------------------------------------------------------
 
   it('returns a Struct node when no constructor exists (positive regression guard)', () => {
-    ctx.symbols.add('src/user.rs', 'User', 'struct:User', 'Struct');
+    ctx.model.symbols.add('src/user.rs', 'User', 'struct:User', 'Struct');
     ctx.importMap.set('src/app.rs', new Set(['src/user.rs']));
 
     const result = resolveStaticCall('User', 'src/app.rs', ctx);
@@ -2220,7 +2221,7 @@ describe('resolveStaticCall', () => {
   });
 
   it('returns a Record node when no constructor exists (positive regression guard)', () => {
-    ctx.symbols.add('src/User.cs', 'User', 'record:User', 'Record');
+    ctx.model.symbols.add('src/User.cs', 'User', 'record:User', 'Record');
     ctx.importMap.set('src/App.cs', new Set(['src/User.cs']));
 
     const result = resolveStaticCall('User', 'src/App.cs', ctx);
@@ -2232,7 +2233,7 @@ describe('resolveStaticCall', () => {
   it('null-routes when the sole candidate is an Interface (Java/C#/TS)', () => {
     // Constructor-shaped call on an interface name — not legal source, but
     // the resolver must refuse to emit a CALLS edge to a non-instantiable node.
-    ctx.symbols.add('src/validator.java', 'IValidator', 'iface:IValidator', 'Interface');
+    ctx.model.symbols.add('src/validator.java', 'IValidator', 'iface:IValidator', 'Interface');
     ctx.importMap.set('src/app.java', new Set(['src/validator.java']));
 
     const result = resolveStaticCall('IValidator', 'src/app.java', ctx);
@@ -2242,7 +2243,7 @@ describe('resolveStaticCall', () => {
 
   it('null-routes when the sole candidate is a Trait (PHP/Rust/Scala)', () => {
     // PHP `HasTimestamps` trait — not instantiable via constructor syntax.
-    ctx.symbols.add('src/timestamps.php', 'HasTimestamps', 'trait:HasTimestamps', 'Trait');
+    ctx.model.symbols.add('src/timestamps.php', 'HasTimestamps', 'trait:HasTimestamps', 'Trait');
     ctx.importMap.set('src/model.php', new Set(['src/timestamps.php']));
 
     const result = resolveStaticCall('HasTimestamps', 'src/model.php', ctx);
@@ -2251,7 +2252,7 @@ describe('resolveStaticCall', () => {
   });
 
   it('null-routes when the sole candidate is a Rust Trait (Display)', () => {
-    ctx.symbols.add('src/fmt.rs', 'Display', 'trait:rs:Display', 'Trait');
+    ctx.model.symbols.add('src/fmt.rs', 'Display', 'trait:rs:Display', 'Trait');
     ctx.importMap.set('src/app.rs', new Set(['src/fmt.rs']));
 
     const result = resolveStaticCall('Display', 'src/app.rs', ctx);
@@ -2263,8 +2264,8 @@ describe('resolveStaticCall', () => {
     // Rust `impl User { ... }` alongside `struct User { ... }` in the same file.
     // Same-file tier returns both via lookupExactAll, both pass CLASS_LIKE_TYPES,
     // but the instantiability filter must strip the Impl so the Struct wins.
-    ctx.symbols.add('src/user.rs', 'User', 'struct:rs:User', 'Struct');
-    ctx.symbols.add('src/user.rs', 'User', 'impl:rs:User', 'Impl');
+    ctx.model.symbols.add('src/user.rs', 'User', 'struct:rs:User', 'Struct');
+    ctx.model.symbols.add('src/user.rs', 'User', 'impl:rs:User', 'Impl');
 
     const result = resolveStaticCall('User', 'src/user.rs', ctx);
 
@@ -2275,7 +2276,7 @@ describe('resolveStaticCall', () => {
   it('null-routes when the sole candidate is a Rust Impl block (no Struct present)', () => {
     // Pathological extractor output: only the Impl survives tier resolution.
     // The instantiability filter must reject it rather than emit a wrong edge.
-    ctx.symbols.add('src/user.rs', 'User', 'impl:rs:User', 'Impl');
+    ctx.model.symbols.add('src/user.rs', 'User', 'impl:rs:User', 'Impl');
 
     const result = resolveStaticCall('User', 'src/user.rs', ctx);
 
@@ -2288,9 +2289,9 @@ describe('resolveStaticCall', () => {
     // extractor still resolves correctly. The Struct is also present so that
     // step-1's lookupClassByName pre-check succeeds (Impl alone isn't in the
     // classByName index).
-    ctx.symbols.add('src/user.rs', 'User', 'struct:rs:User', 'Struct');
-    ctx.symbols.add('src/user.rs', 'User', 'impl:rs:User', 'Impl');
-    ctx.symbols.add('src/user.rs', 'User', 'ctor:rs:User', 'Constructor', {
+    ctx.model.symbols.add('src/user.rs', 'User', 'struct:rs:User', 'Struct');
+    ctx.model.symbols.add('src/user.rs', 'User', 'impl:rs:User', 'Impl');
+    ctx.model.symbols.add('src/user.rs', 'User', 'ctor:rs:User', 'Constructor', {
       returnType: 'User',
       ownerId: 'impl:rs:User',
     });
@@ -2303,7 +2304,7 @@ describe('resolveStaticCall', () => {
   });
 
   it('routes through resolveCallTarget and null-routes Interface constructor-shaped calls', () => {
-    ctx.symbols.add('src/validator.java', 'IValidator', 'iface:IValidator', 'Interface');
+    ctx.model.symbols.add('src/validator.java', 'IValidator', 'iface:IValidator', 'Interface');
     ctx.importMap.set('src/app.java', new Set(['src/validator.java']));
 
     const result = _resolveCallTargetForTesting(
@@ -2321,7 +2322,7 @@ describe('resolveStaticCall', () => {
   });
 
   it('routes through resolveCallTarget and null-routes Trait free-form calls', () => {
-    ctx.symbols.add('src/timestamps.php', 'HasTimestamps', 'trait:HasTimestamps', 'Trait');
+    ctx.model.symbols.add('src/timestamps.php', 'HasTimestamps', 'trait:HasTimestamps', 'Trait');
     ctx.importMap.set('src/model.php', new Set(['src/timestamps.php']));
 
     const result = _resolveCallTargetForTesting(
@@ -2342,7 +2343,7 @@ describe('resolveStaticCall', () => {
     // so S0 was bypassed and Record free-form calls fell through to the
     // constructor-form retry path. This test would have silently passed with
     // the old (wasteful) code path — with the fix, S0 resolves it directly.
-    ctx.symbols.add('src/User.cs', 'User', 'record:cs:User', 'Record');
+    ctx.model.symbols.add('src/User.cs', 'User', 'record:cs:User', 'Record');
     ctx.importMap.set('src/App.cs', new Set(['src/User.cs']));
 
     const result = _resolveCallTargetForTesting(
@@ -2362,13 +2363,13 @@ describe('resolveStaticCall', () => {
     // Regression guard: if call.argCount were ever dropped at the S0 call
     // site, the 2-arg constructor would resolve to the 0-arg overload (or
     // return null via ambiguity). This test fails in either case.
-    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
-    ctx.symbols.add('src/user.ts', 'User', 'ctor:User:0', 'Constructor', {
+    ctx.model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.ts', 'User', 'ctor:User:0', 'Constructor', {
       parameterCount: 0,
       returnType: 'User',
       ownerId: 'class:User',
     });
-    ctx.symbols.add('src/user.ts', 'User', 'ctor:User:2', 'Constructor', {
+    ctx.model.symbols.add('src/user.ts', 'User', 'ctor:User:2', 'Constructor', {
       parameterCount: 2,
       returnType: 'User',
       ownerId: 'class:User',
@@ -2402,7 +2403,7 @@ describe('resolveFreeCall', () => {
   });
 
   it('resolves a free function call via import-scoped resolution', () => {
-    ctx.symbols.add('src/utils.ts', 'doStuff', 'func:doStuff', 'Function');
+    ctx.model.symbols.add('src/utils.ts', 'doStuff', 'func:doStuff', 'Function');
     ctx.importMap.set('src/app.ts', new Set(['src/utils.ts']));
 
     const result = resolveFreeCall('doStuff', 'src/app.ts', ctx);
@@ -2414,7 +2415,7 @@ describe('resolveFreeCall', () => {
   });
 
   it('resolves a free function call via same-file resolution', () => {
-    ctx.symbols.add('src/app.ts', 'helper', 'func:helper', 'Function');
+    ctx.model.symbols.add('src/app.ts', 'helper', 'func:helper', 'Function');
 
     const result = resolveFreeCall('helper', 'src/app.ts', ctx);
 
@@ -2430,8 +2431,8 @@ describe('resolveFreeCall', () => {
   });
 
   it('returns null for ambiguous free function calls (multiple candidates)', () => {
-    ctx.symbols.add('src/a.ts', 'doStuff', 'func:a:doStuff', 'Function');
-    ctx.symbols.add('src/b.ts', 'doStuff', 'func:b:doStuff', 'Function');
+    ctx.model.symbols.add('src/a.ts', 'doStuff', 'func:a:doStuff', 'Function');
+    ctx.model.symbols.add('src/b.ts', 'doStuff', 'func:b:doStuff', 'Function');
     ctx.importMap.set('src/app.ts', new Set(['src/a.ts', 'src/b.ts']));
 
     const result = resolveFreeCall('doStuff', 'src/app.ts', ctx);
@@ -2440,7 +2441,7 @@ describe('resolveFreeCall', () => {
   });
 
   it('delegates to resolveStaticCall for free-form class targets (Swift/Kotlin)', () => {
-    ctx.symbols.add('src/user.swift', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.swift', 'User', 'class:User', 'Class');
     ctx.importMap.set('src/app.swift', new Set(['src/user.swift']));
 
     const result = resolveFreeCall('User', 'src/app.swift', ctx);
@@ -2450,7 +2451,7 @@ describe('resolveFreeCall', () => {
   });
 
   it('delegates to resolveStaticCall for Record free-form targets (C#/Kotlin)', () => {
-    ctx.symbols.add('src/User.cs', 'User', 'record:cs:User', 'Record');
+    ctx.model.symbols.add('src/User.cs', 'User', 'record:cs:User', 'Record');
     ctx.importMap.set('src/App.cs', new Set(['src/User.cs']));
 
     const result = resolveFreeCall('User', 'src/App.cs', ctx);
@@ -2460,7 +2461,7 @@ describe('resolveFreeCall', () => {
   });
 
   it('null-routes Trait free-form calls via resolveStaticCall', () => {
-    ctx.symbols.add('src/timestamps.php', 'HasTimestamps', 'trait:HasTimestamps', 'Trait');
+    ctx.model.symbols.add('src/timestamps.php', 'HasTimestamps', 'trait:HasTimestamps', 'Trait');
     ctx.importMap.set('src/model.php', new Set(['src/timestamps.php']));
 
     const result = resolveFreeCall('HasTimestamps', 'src/model.php', ctx);
@@ -2469,7 +2470,7 @@ describe('resolveFreeCall', () => {
   });
 
   it('uses tieredOverride when provided', () => {
-    ctx.symbols.add('src/utils.ts', 'doStuff', 'func:doStuff', 'Function');
+    ctx.model.symbols.add('src/utils.ts', 'doStuff', 'func:doStuff', 'Function');
     ctx.importMap.set('src/app.ts', new Set(['src/utils.ts']));
 
     const tiered = ctx.resolve('doStuff', 'src/app.ts');
@@ -2491,7 +2492,7 @@ describe('resolveFreeCall', () => {
   });
 
   it('routes through resolveCallTarget for free-form calls', () => {
-    ctx.symbols.add('src/utils.ts', 'doStuff', 'func:doStuff', 'Function');
+    ctx.model.symbols.add('src/utils.ts', 'doStuff', 'func:doStuff', 'Function');
     ctx.importMap.set('src/app.ts', new Set(['src/utils.ts']));
 
     const result = _resolveCallTargetForTesting(
@@ -2518,7 +2519,7 @@ describe('resolveFreeCall', () => {
   // file-extension branching; these guard the dispatch chain per language.
 
   it('resolves a Go free function (doStuff())', () => {
-    ctx.symbols.add('src/helper.go', 'doStuff', 'func:go:doStuff', 'Function');
+    ctx.model.symbols.add('src/helper.go', 'doStuff', 'func:go:doStuff', 'Function');
     ctx.importMap.set('src/main.go', new Set(['src/helper.go']));
 
     const result = _resolveCallTargetForTesting(
@@ -2532,7 +2533,7 @@ describe('resolveFreeCall', () => {
   });
 
   it('resolves a Python free function (def helper(): ... helper())', () => {
-    ctx.symbols.add('helpers.py', 'helper', 'func:py:helper', 'Function');
+    ctx.model.symbols.add('helpers.py', 'helper', 'func:py:helper', 'Function');
     ctx.importMap.set('app.py', new Set(['helpers.py']));
 
     const result = _resolveCallTargetForTesting(
@@ -2546,7 +2547,7 @@ describe('resolveFreeCall', () => {
   });
 
   it('resolves a Rust free function outside any impl block (free_fn())', () => {
-    ctx.symbols.add('src/helpers.rs', 'free_fn', 'func:rs:free_fn', 'Function');
+    ctx.model.symbols.add('src/helpers.rs', 'free_fn', 'func:rs:free_fn', 'Function');
     ctx.importMap.set('src/main.rs', new Set(['src/helpers.rs']));
 
     const result = _resolveCallTargetForTesting(
@@ -2564,7 +2565,7 @@ describe('resolveFreeCall', () => {
     // indexing the function directly in its declaring file. The test guards
     // the dispatch chain for .java files, not the extractor's handling of
     // static imports specifically.
-    ctx.symbols.add('src/Utils.java', 'doStuff', 'func:java:doStuff', 'Function');
+    ctx.model.symbols.add('src/Utils.java', 'doStuff', 'func:java:doStuff', 'Function');
     ctx.importMap.set('src/App.java', new Set(['src/Utils.java']));
 
     const result = _resolveCallTargetForTesting(
@@ -2578,7 +2579,7 @@ describe('resolveFreeCall', () => {
   });
 
   it('resolves a JavaScript module-level function (moduleFn())', () => {
-    ctx.symbols.add('src/helpers.js', 'moduleFn', 'func:js:moduleFn', 'Function');
+    ctx.model.symbols.add('src/helpers.js', 'moduleFn', 'func:js:moduleFn', 'Function');
     ctx.importMap.set('src/app.js', new Set(['src/helpers.js']));
 
     const result = _resolveCallTargetForTesting(
@@ -2595,10 +2596,10 @@ describe('resolveFreeCall', () => {
   // differing only in parameter count.
 
   it('narrows overloaded free functions by argCount (2-arg overload selected)', () => {
-    ctx.symbols.add('src/utils.ts', 'helper', 'func:helper:0', 'Function', {
+    ctx.model.symbols.add('src/utils.ts', 'helper', 'func:helper:0', 'Function', {
       parameterCount: 0,
     });
-    ctx.symbols.add('src/utils.ts', 'helper', 'func:helper:2', 'Function', {
+    ctx.model.symbols.add('src/utils.ts', 'helper', 'func:helper:2', 'Function', {
       parameterCount: 2,
     });
     ctx.importMap.set('src/app.ts', new Set(['src/utils.ts']));
@@ -2614,10 +2615,10 @@ describe('resolveFreeCall', () => {
   });
 
   it('narrows overloaded free functions by argCount (0-arg overload selected)', () => {
-    ctx.symbols.add('src/utils.ts', 'helper', 'func:helper:0', 'Function', {
+    ctx.model.symbols.add('src/utils.ts', 'helper', 'func:helper:0', 'Function', {
       parameterCount: 0,
     });
-    ctx.symbols.add('src/utils.ts', 'helper', 'func:helper:2', 'Function', {
+    ctx.model.symbols.add('src/utils.ts', 'helper', 'func:helper:2', 'Function', {
       parameterCount: 2,
     });
     ctx.importMap.set('src/app.ts', new Set(['src/utils.ts']));
@@ -2637,7 +2638,7 @@ describe('resolveFreeCall', () => {
   // so a silent tier-table refactor surfaces here.
 
   it('resolves a globally-visible free function via Tier 3 with global confidence', () => {
-    ctx.symbols.add('lib/global.ts', 'helper', 'func:global:helper', 'Function');
+    ctx.model.symbols.add('lib/global.ts', 'helper', 'func:global:helper', 'Function');
     // No importMap entry — must fall through to Tier 3 (global).
 
     const result = _resolveCallTargetForTesting(
@@ -2661,11 +2662,11 @@ describe('resolveFreeCall', () => {
   //      preComputedArgTypes at the disambiguation site.
 
   it('disambiguates overloads via preComputedArgTypes (String overload matched)', () => {
-    ctx.symbols.add('src/utils.ts', 'helper', 'func:helper:str', 'Function', {
+    ctx.model.symbols.add('src/utils.ts', 'helper', 'func:helper:str', 'Function', {
       parameterCount: 1,
       parameterTypes: ['String'],
     });
-    ctx.symbols.add('src/utils.ts', 'helper', 'func:helper:int', 'Function', {
+    ctx.model.symbols.add('src/utils.ts', 'helper', 'func:helper:int', 'Function', {
       parameterCount: 1,
       parameterTypes: ['Int'],
     });
@@ -2683,11 +2684,11 @@ describe('resolveFreeCall', () => {
   });
 
   it('disambiguates overloads via preComputedArgTypes (Int overload matched)', () => {
-    ctx.symbols.add('src/utils.ts', 'helper', 'func:helper:str', 'Function', {
+    ctx.model.symbols.add('src/utils.ts', 'helper', 'func:helper:str', 'Function', {
       parameterCount: 1,
       parameterTypes: ['String'],
     });
-    ctx.symbols.add('src/utils.ts', 'helper', 'func:helper:int', 'Function', {
+    ctx.model.symbols.add('src/utils.ts', 'helper', 'func:helper:int', 'Function', {
       parameterCount: 1,
       parameterTypes: ['Int'],
     });
@@ -2717,7 +2718,7 @@ describe('resolveFreeCall', () => {
   // will need to be updated alongside that work — that is the correct signal.
 
   it('null-routes Enum free-form calls (Color() — no instantiable fallback)', () => {
-    ctx.symbols.add('src/color.ts', 'Color', 'enum:Color', 'Enum');
+    ctx.model.symbols.add('src/color.ts', 'Color', 'enum:Color', 'Enum');
     ctx.importMap.set('src/app.ts', new Set(['src/color.ts']));
 
     const result = _resolveCallTargetForTesting(
@@ -2748,8 +2749,13 @@ describe('resolveFreeCall', () => {
 
   it('dedupes Swift extension candidates by shortest file path (free-form retry path)', () => {
     // Two same-name Class entries, different path lengths.
-    ctx.symbols.add('src/User.swift', 'User', 'class:User:primary', 'Class');
-    ctx.symbols.add('src/Extensions/UserExtensions.swift', 'User', 'class:User:extension', 'Class');
+    ctx.model.symbols.add('src/User.swift', 'User', 'class:User:primary', 'Class');
+    ctx.model.symbols.add(
+      'src/Extensions/UserExtensions.swift',
+      'User',
+      'class:User:extension',
+      'Class',
+    );
     ctx.importMap.set(
       'src/App.swift',
       new Set(['src/User.swift', 'src/Extensions/UserExtensions.swift']),
@@ -2790,8 +2796,8 @@ describe('resolveFreeCall', () => {
     //      'constructor' form, which — per CONSTRUCTOR_TARGET_TYPES — prefers
     //      the Constructor node over the Class node.
     //   4. Single survivor → returned as the call target.
-    ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
-    ctx.symbols.add('src/user.ts', 'User', 'ctor:User:ownerless', 'Constructor', {
+    ctx.model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+    ctx.model.symbols.add('src/user.ts', 'User', 'ctor:User:ownerless', 'Constructor', {
       parameterCount: 0,
       // No ownerId — this is the pathological extractor output the retry path
       // exists to handle.
@@ -2816,7 +2822,7 @@ describe('resolveFreeCall', () => {
     // language coverage table in PR #756 review flagged this as uncovered;
     // this test exercises the `.php` dispatch path for free calls. Matches
     // the shape of the existing Go/Python/Rust/Java/JS language tests above.
-    ctx.symbols.add('src/helpers.php', 'helper', 'func:php:helper', 'Function');
+    ctx.model.symbols.add('src/helpers.php', 'helper', 'func:php:helper', 'Function');
     ctx.importMap.set('src/app.php', new Set(['src/helpers.php']));
 
     const result = _resolveCallTargetForTesting(

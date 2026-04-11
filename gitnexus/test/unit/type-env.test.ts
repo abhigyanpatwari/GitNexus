@@ -1,11 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { buildTypeEnv, type TypeEnvironment } from '../../src/core/ingestion/type-env.js';
 import { BindingAccumulator } from '../../src/core/ingestion/binding-accumulator.js';
-import {
-  createSymbolTable,
-  type SymbolDefinition,
-  type SymbolTable,
-} from '../../src/core/ingestion/symbol-table.js';
+import { type SymbolDefinition, type SymbolTable } from '../../src/core/ingestion/symbol-table.js';
+import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
 import {
   stripNullable,
   extractSimpleTypeName,
@@ -78,7 +75,17 @@ function flatSize(typeEnv: TypeEnvironment): number {
   return count;
 }
 
-const createMockSymbolTable = (overrides: Partial<SymbolTable> = {}): SymbolTable => {
+/**
+ * SM-21 inversion: production code now receives a {@link SemanticModel},
+ * not a {@link SymbolTable}. This helper still accepts the legacy override
+ * shape (flat `lookupClassByName`, `lookupMethodByOwner`, etc.) used
+ * throughout the rest of this file, and projects it into the SemanticModel
+ * shape that `buildTypeEnv` expects: `types/methods/fields` registries +
+ * a nested `symbols` file-index. Keeps the existing test overrides
+ * working without forcing every call site to learn the new structure.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const createMockSymbolTable = (overrides: any = {}): any => {
   const base = {
     add: () => {},
     lookupExact: () => undefined,
@@ -96,30 +103,32 @@ const createMockSymbolTable = (overrides: Partial<SymbolTable> = {}): SymbolTabl
     }),
     clear: () => {},
     ...overrides,
-  } as unknown as SymbolTable;
-  // SM-20 wire-up: production code now queries the model directly
-  // (symbolTable.model.types/methods/fields). Provide a model proxy that
-  // forwards to the (possibly overridden) top-level lookup stubs so existing
-  // tests that override `lookupClassByName` / `lookupMethodByOwner` /
-  // `lookupFieldByOwner` keep working without stubbing the model shape.
+  };
   return {
-    ...base,
-    model: {
-      types: {
-        lookupClassByName: (name: string) => base.lookupClassByName(name),
-        lookupClassByQualifiedName: (name: string) => base.lookupClassByQualifiedName(name),
-        lookupImplByName: (name: string) => base.lookupImplByName(name),
-      },
-      methods: {
-        lookupMethodByOwner: (ownerNodeId: string, methodName: string, argCount?: number) =>
-          base.lookupMethodByOwner(ownerNodeId, methodName, argCount),
-      },
-      fields: {
-        lookupFieldByOwner: (ownerNodeId: string, fieldName: string) =>
-          base.lookupFieldByOwner(ownerNodeId, fieldName),
-      },
+    types: {
+      lookupClassByName: (name: string) => base.lookupClassByName(name),
+      lookupClassByQualifiedName: (name: string) => base.lookupClassByQualifiedName(name),
+      lookupImplByName: (name: string) => base.lookupImplByName(name),
     },
-  } as unknown as SymbolTable;
+    methods: {
+      lookupMethodByOwner: (ownerNodeId: string, methodName: string, argCount?: number) =>
+        base.lookupMethodByOwner(ownerNodeId, methodName, argCount),
+    },
+    fields: {
+      lookupFieldByOwner: (ownerNodeId: string, fieldName: string) =>
+        base.lookupFieldByOwner(ownerNodeId, fieldName),
+    },
+    symbols: {
+      add: base.add,
+      lookupExact: base.lookupExact,
+      lookupExactFull: base.lookupExactFull,
+      lookupExactAll: (filePath: string, name: string) => base.lookupExactAll(filePath, name),
+      lookupCallableByName: (name: string) => base.lookupCallableByName(name),
+      getFiles: base.getFiles,
+      getStats: base.getStats,
+      clear: base.clear,
+    },
+  };
 };
 
 const createClassDef = (
@@ -1216,44 +1225,44 @@ class RepoService {
   });
 
   describe('destructured call results', () => {
-    // Minimal mock SymbolTable for call-result return type lookup.
-    // Includes SM-20 model shim so resolveFieldType's class-def cache
-    // (which reads through symbolTable.model.types.lookupClassByName) works.
+    // Minimal mock SemanticModel for call-result return type lookup
+    // (SM-21 inversion — buildTypeEnv takes a SemanticModel via `model:`).
     const makeSymbolTable = (callables: Array<{ name: string; returnType?: string }>) => ({
-      lookupCallableByName: (name: string) =>
-        callables
-          .filter((c) => c.name === name)
-          .map((c) => ({
-            nodeId: 'n1',
-            filePath: 'src.ts',
-            type: 'Function' as const,
-            returnType: c.returnType,
-          })),
-      lookupClassByName: () => [],
-      lookupExact: () => undefined,
-      lookupExactFull: () => undefined,
-      add: () => {},
-      getStats: () => ({ fileCount: 0 }),
-      clear: () => {},
-      model: {
-        types: {
-          lookupClassByName: () => [],
-          lookupClassByQualifiedName: () => [],
-          lookupImplByName: () => [],
-        },
-        methods: {
-          lookupMethodByOwner: () => undefined,
-        },
-        fields: {
-          lookupFieldByOwner: () => undefined,
-        },
+      types: {
+        lookupClassByName: () => [],
+        lookupClassByQualifiedName: () => [],
+        lookupImplByName: () => [],
+      },
+      methods: {
+        lookupMethodByOwner: () => undefined,
+      },
+      fields: {
+        lookupFieldByOwner: () => undefined,
+      },
+      symbols: {
+        add: () => {},
+        lookupExact: () => undefined,
+        lookupExactFull: () => undefined,
+        lookupExactAll: () => [],
+        lookupCallableByName: (name: string) =>
+          callables
+            .filter((c) => c.name === name)
+            .map((c) => ({
+              nodeId: 'n1',
+              filePath: 'src.ts',
+              type: 'Function' as const,
+              returnType: c.returnType,
+            })),
+        getFiles: () => [][Symbol.iterator](),
+        getStats: () => ({ fileCount: 0 }),
+        clear: () => {},
       },
     });
 
     it('emits callResult + fieldAccess items for const { x } = fn()', () => {
       const symbolTable = makeSymbolTable([{ name: 'getUser', returnType: 'User' }]);
       const tree = parse('const { name } = getUser();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', { symbolTable: symbolTable as any });
+      const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable as any });
       // callResult resolves __destr_getUser_N → User
       // fieldAccess resolves name via User's properties (no Property nodes in mock → undefined)
       // But the callResult itself IS emitted — verify constructorBindings is still empty
@@ -1266,14 +1275,14 @@ class RepoService {
         'async function f() { const { data } = await fetchData(); }',
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript', { symbolTable: symbolTable as any });
+      const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable as any });
       expect(typeEnv.constructorBindings).toEqual([]);
     });
 
     it('gracefully handles no return type (composable without annotation)', () => {
       const symbolTable = makeSymbolTable([{ name: 'useUserRole' }]); // no returnType
       const tree = parse('const { isMaker } = useUserRole();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', { symbolTable: symbolTable as any });
+      const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable as any });
       // No return type → callResult unresolved → fieldAccess unresolved
       expect(flatGet(typeEnv, 'isMaker')).toBeUndefined();
     });
@@ -2085,17 +2094,12 @@ class RepoService {
         `,
           Kotlin,
         );
-        // User is NOT defined in this file, but SymbolTable knows it's a Class
-        const mockSymbolTable = {
+        // User is NOT defined in this file, but SemanticModel knows it's a Class
+        const mockSymbolTable = createMockSymbolTable({
           lookupClassByName: (name: string) =>
             name === 'User' ? [{ nodeId: 'n1', filePath: 'models.kt', type: 'Class' }] : [],
-          lookupExact: () => undefined,
-          lookupExactFull: () => undefined,
-          add: () => {},
-          getStats: () => ({ fileCount: 0 }),
-          clear: () => {},
-        };
-        const typeEnv = buildTypeEnv(tree, 'kotlin', { symbolTable: mockSymbolTable as any });
+        });
+        const typeEnv = buildTypeEnv(tree, 'kotlin', { model: mockSymbolTable as any });
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -2108,17 +2112,8 @@ class RepoService {
         `,
           Kotlin,
         );
-        const mockSymbolTable = {
-          lookupClassByName: () => [],
-          lookupCallableByName: () => [],
-          lookupFieldByOwner: () => undefined,
-          lookupExact: () => undefined,
-          lookupExactFull: () => undefined,
-          add: () => {},
-          getStats: () => ({ fileCount: 0 }),
-          clear: () => {},
-        };
-        const typeEnv = buildTypeEnv(tree, 'kotlin', { symbolTable: mockSymbolTable as any });
+        const mockSymbolTable = createMockSymbolTable({});
+        const typeEnv = buildTypeEnv(tree, 'kotlin', { model: mockSymbolTable as any });
         expect(flatGet(typeEnv, 'result')).toBeUndefined();
       });
 
@@ -2198,7 +2193,7 @@ def main():
           Python,
         );
         const typeEnv = buildTypeEnv(tree, 'python', {
-          symbolTable: makeClassLookupTable({
+          model: makeClassLookupTable({
             User: [createClassDef('User', 'Class', 'models.py')],
           }),
         });
@@ -2214,7 +2209,7 @@ def main():
           Python,
         );
         const typeEnv = buildTypeEnv(tree, 'python', {
-          symbolTable: makeClassLookupTable({}),
+          model: makeClassLookupTable({}),
         });
         expect(flatGet(typeEnv, 'result')).toBeUndefined();
       });
@@ -2228,7 +2223,7 @@ def main():
           Python,
         );
         const typeEnv = buildTypeEnv(tree, 'python', {
-          symbolTable: makeClassLookupTable({
+          model: makeClassLookupTable({
             User: [createClassDef('User', 'Class', 'models.py')],
           }),
         });
@@ -2245,7 +2240,7 @@ void run() {
           CPP,
         );
         const typeEnv = buildTypeEnv(tree, 'cpp', {
-          symbolTable: makeClassLookupTable({
+          model: makeClassLookupTable({
             User: [createClassDef('User', 'Class', 'models.h')],
           }),
         });
@@ -2262,7 +2257,7 @@ void run() {
           CPP,
         );
         const typeEnv = buildTypeEnv(tree, 'cpp', {
-          symbolTable: makeClassLookupTable({}),
+          model: makeClassLookupTable({}),
         });
         expect(flatGet(typeEnv, 'result')).toBeUndefined();
       });
@@ -2277,7 +2272,7 @@ end
           Ruby,
         );
         const typeEnv = buildTypeEnv(tree, 'ruby', {
-          symbolTable: makeClassLookupTable({
+          model: makeClassLookupTable({
             User: [createClassDef('User', 'Class', 'models/user.rb')],
           }),
         });
@@ -2294,7 +2289,7 @@ end
           Ruby,
         );
         const typeEnv = buildTypeEnv(tree, 'ruby', {
-          symbolTable: makeClassLookupTable({
+          model: makeClassLookupTable({
             UserService: [createClassDef('UserService', 'Class', 'models/user_service.rb')],
           }),
         });
@@ -2311,7 +2306,7 @@ end
           Ruby,
         );
         const typeEnv = buildTypeEnv(tree, 'ruby', {
-          symbolTable: makeClassLookupTable({}),
+          model: makeClassLookupTable({}),
         });
         expect(flatGet(typeEnv, 'result')).toBeUndefined();
       });
@@ -2326,7 +2321,7 @@ void run() {
 `,
           );
           const typeEnv = buildTypeEnv(tree, 'dart', {
-            symbolTable: makeClassLookupTable({
+            model: makeClassLookupTable({
               User: [createClassDef('User', 'Class', 'models.dart')],
             }),
           });
@@ -2342,7 +2337,7 @@ void run() {
 `,
           );
           const typeEnv = buildTypeEnv(tree, 'dart', {
-            symbolTable: makeClassLookupTable({
+            model: makeClassLookupTable({
               User: [createClassDef('User', 'Class', 'models.dart')],
             }),
           });
@@ -2358,7 +2353,7 @@ void run() {
 `,
           );
           const typeEnv = buildTypeEnv(tree, 'dart', {
-            symbolTable: makeClassLookupTable({}),
+            model: makeClassLookupTable({}),
           });
           expect(flatGet(typeEnv, 'result')).toBeUndefined();
         });
@@ -2374,7 +2369,7 @@ fn run() {
           Rust,
         );
         const typeEnv = buildTypeEnv(tree, 'rust', {
-          symbolTable: makeClassLookupTable({
+          model: makeClassLookupTable({
             UserService: [createClassDef('UserService', 'Struct', 'models.rs')],
           }),
         });
@@ -2391,7 +2386,7 @@ fn run() {
           Rust,
         );
         const typeEnv = buildTypeEnv(tree, 'rust', {
-          symbolTable: makeClassLookupTable({}),
+          model: makeClassLookupTable({}),
         });
         expect(flatGet(typeEnv, 'value')).toBeUndefined();
       });
@@ -2406,7 +2401,7 @@ func run() {
 `,
           );
           const typeEnv = buildTypeEnv(tree, 'swift', {
-            symbolTable: makeClassLookupTable({
+            model: makeClassLookupTable({
               User: [createClassDef('User', 'Class', 'Models/User.swift')],
             }),
           });
@@ -2422,7 +2417,7 @@ func run() {
 `,
           );
           const typeEnv = buildTypeEnv(tree, 'swift', {
-            symbolTable: makeClassLookupTable({
+            model: makeClassLookupTable({
               User: [createClassDef('User', 'Class', 'Models/User.swift')],
             }),
           });
@@ -2438,7 +2433,7 @@ func run() {
 `,
           );
           const typeEnv = buildTypeEnv(tree, 'swift', {
-            symbolTable: makeClassLookupTable({}),
+            model: makeClassLookupTable({}),
           });
           expect(flatGet(typeEnv, 'result')).toBeUndefined();
         });
@@ -2466,7 +2461,7 @@ function process(user: User) {
                 }
               : undefined,
         });
-        const typeEnv = buildTypeEnv(tree, 'typescript', { symbolTable });
+        const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable });
         expect(flatGet(typeEnv, 'addr')).toBe('Address');
       });
 
@@ -2482,7 +2477,7 @@ function process(user: User) {
         const symbolTable = createMockSymbolTable({
           lookupClassByName: () => [],
         });
-        const typeEnv = buildTypeEnv(tree, 'typescript', { symbolTable });
+        const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable });
         expect(flatGet(typeEnv, 'addr')).toBeUndefined();
       });
 
@@ -2511,7 +2506,7 @@ function process(repo: Repo) {
               : undefined,
           lookupCallableByName,
         });
-        const typeEnv = buildTypeEnv(tree, 'typescript', { symbolTable });
+        const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable });
         expect(flatGet(typeEnv, 'profile')).toBe('Profile');
         expect(lookupCallableByName).not.toHaveBeenCalledWith('getProfile');
       });
@@ -2545,7 +2540,7 @@ function process(repo: Repo) {
           lookupCallableByName,
         });
         const typeEnv = buildTypeEnv(tree, 'typescript', {
-          symbolTable,
+          model: symbolTable,
           parentMap: new Map([['Repo', ['BaseRepo']]]),
         });
         expect(flatGet(typeEnv, 'profile')).toBe('Profile');
@@ -2586,7 +2581,7 @@ function process(repo: Repo) {
           lookupExactAll: () => [],
           lookupCallableByName,
         });
-        const typeEnv = buildTypeEnv(tree, 'typescript', { symbolTable });
+        const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable });
         expect(flatGet(typeEnv, 'profile')).toBe('Profile');
         expect(lookupCallableByName).not.toHaveBeenCalledWith('getProfile');
       });
@@ -2626,7 +2621,7 @@ function process(repo: Repo) {
           lookupCallableByName,
         });
         const typeEnv = buildTypeEnv(tree, 'typescript', {
-          symbolTable,
+          model: symbolTable,
           parentMap: new Map([['Repo', ['BaseRepo']]]),
         });
         expect(flatGet(typeEnv, 'profile')).toBe('Profile');
@@ -2679,7 +2674,7 @@ function process(repo: Repo) {
           lookupExactAll: () => [],
           lookupCallableByName,
         });
-        const typeEnv = buildTypeEnv(tree, 'typescript', { symbolTable });
+        const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable });
         expect(flatGet(typeEnv, 'profile')).toBeUndefined();
         expect(lookupCallableByName).not.toHaveBeenCalledWith('getProfile');
       });
@@ -2728,7 +2723,7 @@ function process(repo: Repo) {
               : [],
           lookupCallableByName,
         });
-        const typeEnv = buildTypeEnv(tree, 'typescript', { symbolTable });
+        const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable });
         expect(flatGet(typeEnv, 'profile')).toBe('Profile');
         expect(lookupCallableByName).not.toHaveBeenCalledWith('getProfile');
       });
@@ -2781,7 +2776,7 @@ function process(repo: Repo) {
           lookupCallableByName,
         });
         const typeEnv = buildTypeEnv(tree, 'typescript', {
-          symbolTable,
+          model: symbolTable,
           parentMap: new Map([['Repo', ['BaseRepo']]]),
         });
         expect(flatGet(typeEnv, 'profile')).toBeUndefined();
@@ -2836,7 +2831,7 @@ function process(repo: Repo) {
           lookupCallableByName,
         });
         const typeEnv = buildTypeEnv(tree, 'typescript', {
-          symbolTable,
+          model: symbolTable,
           parentMap: new Map([['Repo', ['BaseRepo']]]),
         });
         expect(flatGet(typeEnv, 'profile')).toBe('Profile');
@@ -2852,22 +2847,24 @@ function process(repo: Repo) {
 `,
           TypeScript.typescript,
         );
-        const symbolTable = createSymbolTable();
-        symbolTable.add('models.ts', 'Repo', 'class:Repo', 'Class');
-        symbolTable.add('base.ts', 'BaseRepo', 'class:BaseRepo', 'Class');
-        symbolTable.add('base.ts', 'getProfile', 'method:BaseRepo:getProfile#1', 'Method', {
+        // SM-21: construct a real SemanticModel and feed it via
+        // model.symbols.add so the nested registries are populated.
+        const model = createSemanticModel();
+        model.symbols.add('models.ts', 'Repo', 'class:Repo', 'Class');
+        model.symbols.add('base.ts', 'BaseRepo', 'class:BaseRepo', 'Class');
+        model.symbols.add('base.ts', 'getProfile', 'method:BaseRepo:getProfile#1', 'Method', {
           ownerId: 'class:BaseRepo',
           parameterCount: 1,
           returnType: 'User',
         });
-        symbolTable.add('base.ts', 'getProfile', 'method:BaseRepo:getProfile#2', 'Method', {
+        model.symbols.add('base.ts', 'getProfile', 'method:BaseRepo:getProfile#2', 'Method', {
           ownerId: 'class:BaseRepo',
           parameterCount: 2,
           returnType: 'Admin',
         });
-        const lookupCallableByName = vi.spyOn(symbolTable, 'lookupCallableByName');
+        const lookupCallableByName = vi.spyOn(model.symbols, 'lookupCallableByName');
         const typeEnv = buildTypeEnv(tree, 'typescript', {
-          symbolTable,
+          model,
           parentMap: new Map([['Repo', ['BaseRepo']]]),
         });
         expect(flatGet(typeEnv, 'profile')).toBeUndefined();
@@ -5780,24 +5777,20 @@ function process() {
   });
 
   describe('importedReturnTypes (Phase 14 E3)', () => {
-    // Minimal mock SymbolTable that returns a known callable
-    const makeSymbolTable = (callables: Array<{ name: string; returnType?: string }>) => ({
-      lookupCallableByName: (name: string) =>
-        callables
-          .filter((c) => c.name === name)
-          .map((c) => ({
-            nodeId: 'n1',
-            filePath: 'src.ts',
-            type: 'Function' as const,
-            returnType: c.returnType,
-          })),
-      lookupClassByName: () => [],
-      lookupExact: () => undefined,
-      lookupExactFull: () => undefined,
-      add: () => {},
-      getStats: () => ({ fileCount: 0 }),
-      clear: () => {},
-    });
+    // Minimal mock SemanticModel that returns a known callable via
+    // model.symbols.lookupCallableByName (SM-21 inversion).
+    const makeSymbolTable = (callables: Array<{ name: string; returnType?: string }>) =>
+      createMockSymbolTable({
+        lookupCallableByName: (name: string) =>
+          callables
+            .filter((c) => c.name === name)
+            .map((c) => ({
+              nodeId: 'n1',
+              filePath: 'src.ts',
+              type: 'Function' as const,
+              returnType: c.returnType,
+            })),
+      });
 
     it('SymbolTable has unambiguous match → uses it, ignores cross-file', () => {
       // SymbolTable knows getConfig() returns Config (SymbolType)
@@ -5805,7 +5798,7 @@ function process() {
       const symbolTable = makeSymbolTable([{ name: 'getConfig', returnType: 'Config' }]);
       const tree = parse('const c = getConfig();', TypeScript.typescript);
       const typeEnv = buildTypeEnv(tree, 'typescript', {
-        symbolTable: symbolTable as any,
+        model: symbolTable as any,
         importedReturnTypes: new Map([['getConfig', 'WrongType']]),
       });
       // SymbolTable result (Config) wins over cross-file fallback (WrongType)
@@ -5817,7 +5810,7 @@ function process() {
       const symbolTable = makeSymbolTable([]);
       const tree = parse('const c = getConfig();', TypeScript.typescript);
       const typeEnv = buildTypeEnv(tree, 'typescript', {
-        symbolTable: symbolTable as any,
+        model: symbolTable as any,
         importedReturnTypes: new Map([['getConfig', 'Config']]),
       });
       // Cross-file fallback provides Config
@@ -5832,7 +5825,7 @@ function process() {
       ]);
       const tree = parse('const r = process();', TypeScript.typescript);
       const typeEnv = buildTypeEnv(tree, 'typescript', {
-        symbolTable: symbolTable as any,
+        model: symbolTable as any,
         importedReturnTypes: new Map([['process', 'User']]),
       });
       // Ambiguous → conservative → no binding produced
@@ -5852,7 +5845,7 @@ function process() {
       const symbolTable = makeSymbolTable([{ name: 'getUser', returnType: 'User' }]);
       const tree = parse('const u = getUser();', TypeScript.typescript);
       const typeEnv = buildTypeEnv(tree, 'typescript', {
-        symbolTable: symbolTable as any,
+        model: symbolTable as any,
         importedReturnTypes: new Map([['getUser', 'CrossFileUser']]),
       });
       // SymbolTable result (User) wins

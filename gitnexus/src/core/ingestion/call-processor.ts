@@ -651,7 +651,7 @@ function findInterfaceDispatchTargets(
 
   const results: ResolveResult[] = [];
   for (const implFile of implFiles) {
-    const methods = ctx.symbols.lookupExactAll(implFile, calledName);
+    const methods = ctx.model.symbols.lookupExactAll(implFile, calledName);
     for (const method of methods) {
       if (method.nodeId !== primaryNodeId) {
         results.push({
@@ -807,7 +807,7 @@ export const processCalls = async (
     const importedReturnTypes = importedReturnTypesMap?.get(file.path);
     const importedRawReturnTypes = importedRawReturnTypesMap?.get(file.path);
     const typeEnv = buildTypeEnv(tree, language, {
-      symbolTable: ctx.symbols,
+      model: ctx.model,
       parentMap,
       importedBindings,
       importedReturnTypes,
@@ -816,7 +816,7 @@ export const processCalls = async (
       extractFunctionName: provider?.methodExtractor?.extractFunctionName,
     });
     if (typeEnv && exportedTypeMap) {
-      const fileExports = collectExportedBindings(typeEnv, file.path, ctx.symbols, graph);
+      const fileExports = collectExportedBindings(typeEnv, file.path, ctx.model.symbols, graph);
       if (fileExports) exportedTypeMap.set(file.path, fileExports);
     }
     if (bindingAccumulator) {
@@ -1020,7 +1020,7 @@ export const processCalls = async (
                   description: item.accessorType,
                 },
               });
-              ctx.symbols.add(file.path, item.propName, nodeId, 'Property', {
+              ctx.model.symbols.add(file.path, item.propName, nodeId, 'Property', {
                 ...(propEnclosingClassId ? { ownerId: propEnclosingClassId } : {}),
                 ...(item.declaredType ? { declaredType: item.declaredType } : {}),
               });
@@ -1092,8 +1092,8 @@ export const processCalls = async (
           if (
             isSubclassOf(ctorType, receiverTypeName, parentMap) ||
             isSubclassOf(ctorType, receiverTypeName, globalParentMap) ||
-            (ctx.symbols.model.types.lookupClassByName(ctorType).length > 0 &&
-              ctx.symbols.model.types.lookupClassByName(receiverTypeName).length > 0)
+            (ctx.model.types.lookupClassByName(ctorType).length > 0 &&
+              ctx.model.types.lookupClassByName(receiverTypeName).length > 0)
           ) {
             receiverTypeName = ctorType;
           }
@@ -1576,7 +1576,7 @@ const resolveModuleAliasedCall = (
     const cacheKey = `${call.calledName}\0${moduleFile}`;
     let defs = widenCache?.get(cacheKey);
     if (!defs) {
-      defs = ctx.symbols.lookupCallableByName(call.calledName);
+      defs = ctx.model.symbols.lookupCallableByName(call.calledName);
       widenCache?.set(cacheKey, defs);
     }
     filtered = filterCallableCandidates(defs, call.argCount, call.callForm).filter(
@@ -1618,7 +1618,7 @@ const resolveMemberCallByFile = (
   const typeFiles = new Set(typeResolved.candidates.map((d) => d.filePath));
 
   const methodPool = filterCallableCandidates(
-    ctx.symbols.lookupCallableByName(calledName),
+    ctx.model.symbols.lookupCallableByName(calledName),
     argCount,
     callForm,
   );
@@ -1950,7 +1950,7 @@ const resolveFieldOwnership = (
   const classDef = typeResolved.candidates.find((d) => CLASS_LIKE_TYPES.has(d.type));
   if (!classDef) return undefined;
 
-  return ctx.symbols.model.fields.lookupFieldByOwner(classDef.nodeId, fieldName) ?? undefined;
+  return ctx.model.fields.lookupFieldByOwner(classDef.nodeId, fieldName) ?? undefined;
 };
 
 /**
@@ -2013,11 +2013,11 @@ const resolveMethodByOwner = (
           candidate.nodeId,
           methodName,
           heritageMap,
-          ctx.symbols.model,
+          ctx.model,
           language,
           argCount,
         )
-      : ctx.symbols.model.methods.lookupMethodByOwner(candidate.nodeId, methodName, argCount);
+      : ctx.model.methods.lookupMethodByOwner(candidate.nodeId, methodName, argCount);
     if (!def) continue;
     if (!firstDef) {
       firstDef = def;
@@ -2264,7 +2264,7 @@ export const resolveStaticCall = (
   //    is supplied, the caller has already paid for the tiered lookup, so this
   //    pre-check still prevents the class-candidate filter + lookupMethodByOwner
   //    loop from running on obviously non-class targets.
-  const allClasses = ctx.symbols.model.types.lookupClassByName(className);
+  const allClasses = ctx.model.types.lookupClassByName(className);
   if (allClasses.length === 0) return null;
 
   // 2. Scope via ctx.resolve for import-tier information. Reuse the caller's
@@ -2295,11 +2295,7 @@ export const resolveStaticCall = (
   let firstDef: SymbolDefinition | undefined;
   let ambiguous = false;
   for (const candidate of classCandidates) {
-    const def = ctx.symbols.model.methods.lookupMethodByOwner(
-      candidate.nodeId,
-      className,
-      argCount,
-    );
+    const def = ctx.model.methods.lookupMethodByOwner(candidate.nodeId, className, argCount);
     if (!def || def.type !== 'Constructor') continue;
     if (!firstDef) {
       firstDef = def;
