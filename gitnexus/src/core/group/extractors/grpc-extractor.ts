@@ -4,7 +4,12 @@ import { glob } from 'glob';
 import Parser from 'tree-sitter';
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
-import { GRPC_SCAN_GLOB, getPluginForFile, type GrpcDetection } from './grpc-patterns/index.js';
+import {
+  GRPC_SCAN_GLOB,
+  getPluginForFile,
+  hasProtoPlugin,
+  type GrpcDetection,
+} from './grpc-patterns/index.js';
 
 /**
  * Language-agnostic orchestrator for gRPC (provider + consumer) contract
@@ -362,28 +367,33 @@ export class GrpcExtractor implements ContractExtractor {
   ): Promise<ExtractedContract[]> {
     const out: ExtractedContract[] = [];
     const protoContext = await buildProtoContext(repoPath);
-
-    // ─── Proto files — definitive provider source ─────────────────
-    const protoFiles = await glob('**/*.proto', {
-      cwd: repoPath,
-      ignore: ['**/node_modules/**', '**/.git/**', '**/vendor/**'],
-      nodir: true,
-    });
-    for (const rel of protoFiles) {
-      const content = readSafe(repoPath, rel);
-      if (content) {
-        out.push(
-          ...this.parseProtoFile(
-            content,
-            rel,
-            protoContext.packagesByProto.get(normalizeProtoPath(rel)) ?? '',
-          ),
-        );
-      }
-    }
     const protoMap = protoContext.servicesByName;
 
-    // ─── Source files — delegate to per-language plugins ──────────
+    // ─── Proto files — definitive provider source ─────────────────
+    // When tree-sitter-proto is available, .proto files are handled by
+    // the plugin loop below (they're in GRPC_SCAN_GLOB). Otherwise
+    // fall back to the manual string-sanitizing parser.
+    if (!hasProtoPlugin) {
+      const protoFiles = await glob('**/*.proto', {
+        cwd: repoPath,
+        ignore: ['**/node_modules/**', '**/.git/**', '**/vendor/**'],
+        nodir: true,
+      });
+      for (const rel of protoFiles) {
+        const content = readSafe(repoPath, rel);
+        if (content) {
+          out.push(
+            ...this.parseProtoFile(
+              content,
+              rel,
+              protoContext.packagesByProto.get(normalizeProtoPath(rel)) ?? '',
+            ),
+          );
+        }
+      }
+    }
+
+    // ─── Source files (+ .proto when plugin available) ────────────
     const sourceFiles = await glob(GRPC_SCAN_GLOB, {
       cwd: repoPath,
       ignore: ['**/node_modules/**', '**/.git/**', '**/vendor/**', '**/dist/**', '**/build/**'],
